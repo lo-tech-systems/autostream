@@ -429,6 +429,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
   "master_volume": 59,
   "selected_output_count": 2,
   "muted": false,
+  "input": {"index": 1, "type": "turntable", "label": "Turntable"},
   "track_id": {
     "enabled": true,
     "state": "identified",
@@ -457,7 +458,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 
 **Success response (200) - no outputs selected:**
 ```json
-{"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0, "muted": false, "appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
+{"ok": true, "playing": false, "master_volume": null, "selected_output_count": 0, "muted": false, "input": null, "appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
 ```
 
 | Field | Type | Notes |
@@ -469,6 +470,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 | `track_id` | object | Grouped now-playing/track-identification state for authorized dials (see below) |
 | `repeat` | object | Repeat-recording/replay state (see below). Omitted entirely when the daemon has never reported it (older monitor binary, or no poll yet) |
 | `appliance_id` | string\|null | This appliance's stable identity (20 lowercase hex characters), or `null` for an identity-less appliance |
+| `input` | object\|null | The input behind the current session (see below); `null` when nothing is playing. Absent from a 0.6.x appliance |
 
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
 and `POST /api/dial/volume`; `muted` is an explicit flag the appliance sets and clears from
@@ -525,6 +527,19 @@ object shows the new state and position, and `playing` is `true` for an accepted
 Starting or seeking a replay also restarts track identification, so `track_id` reads
 `waiting_for_audio` until a fresh identification lands, rather than continuing to show the
 track from before the seek.
+
+#### `input` object
+
+| Field | Type | Rule |
+|---|---|---|
+| `input` | object or null | Present on every `ok: true` response from 0.7.0 on; absent on `ok: false` responses and from 0.6.x appliances. `null` when no session is active. Non-null whenever `playing` is true, except within one coordinator poll (0.5 s) of a session edge, when the two may briefly disagree |
+| `input.index` | int | 1 or 2. During a replay, the input the recording came from |
+| `input.type` | string | One of `turntable`, `cd`, `line`, lowercase. A later release may add tokens; a dial treats an unknown token as "some input" and still uses `label` |
+| `input.label` | string | Display text, used verbatim: `Turntable`, `CD`, `Line`. Never empty when the object is present |
+
+`type` and `label` reflect the appliance's current settings, so a mid-session type change is
+visible on the next poll. The object rides on `dial_status=v1` without a new capability
+indicator, like `track_id`.
 
 #### `repeat` object
 
@@ -1800,7 +1815,7 @@ Responses:
 |---|---|---|
 | `dial_api=v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
 | `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
-| `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
+| `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume and, from 0.7.0, the `input` object |
 | `dial_outputs=v1`; version 2 (JSON only) | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the pairing fields, the PIN submission and `retry_after_s` |
 | `dial_eq=v1`; version 2 (JSON only) | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; version 1 is bass/treble over the output EQ bands. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the six-band `bands` field on both routes |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |

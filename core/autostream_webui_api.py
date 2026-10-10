@@ -74,6 +74,7 @@ from autostream_config import (
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
     VALID_AIRPLAY_MODES,
+    input_type_label,
     input_type_silence_threshold_dbfs,
     is_valid_monitor_device_id,
     load_config,
@@ -1092,6 +1093,20 @@ def _dial_repeat_object(base_url: str | None = None) -> dict | None:
     }
 
 
+def _dial_input_dict(parsed) -> dict | None:
+    """The dial protocol's "input" object: the input behind the current
+    session, or None when nothing is playing. A replay resolves to the
+    input it was recorded from. Reads cached state and the config snapshot
+    only."""
+    from autostream_core import get_session_source_input_index
+    idx = get_session_source_input_index()
+    if idx not in (1, 2):
+        return None
+    audio = parsed.audio1 if idx == 1 else parsed.audio2
+    input_type = normalize_input_type(getattr(audio, "input_type", "line"))
+    return {"index": idx, "type": input_type, "label": input_type_label(input_type)}
+
+
 def _dial_auth_gate(handler, json_obj: dict) -> str | None:
     """Shared dial_id/authorization guard for the dial protocol routes.
 
@@ -1178,6 +1193,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "track_id": _dial_track_id_dict(),
         "appliance_id": get_appliance_id(),
         "muted": muted,
+        "input": _dial_input_dict(parsed),
     }
     repeat = _dial_repeat_object(base_url)
     if repeat is not None:

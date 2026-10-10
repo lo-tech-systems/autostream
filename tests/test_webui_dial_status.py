@@ -119,6 +119,8 @@ def _invoke(
     repeat_status: dict | None = None,
     session_state: dict | None = None,
     speaks_v2: bool = True,
+    source_input: int | None = None,
+    input_types: tuple[str, str] = ("line", "line"),
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_status_post_json and return (status, body, update_mock).
 
@@ -130,6 +132,9 @@ def _invoke(
     default -- no cached daemon "repeat" block, e.g. an older monitor binary
     or no poll yet). session_state, when given, is what the patched
     get_session_state() returns instead of one derived from `playing`.
+    source_input is what get_session_source_input_index() returns (input 1
+    while playing, None otherwise, by default); input_types are the two
+    inputs' configured types.
     """
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
@@ -144,6 +149,7 @@ def _invoke(
 
     parsed = MagicMock()
     parsed.owntone.base_url = BASE_URL
+    parsed.audio1.input_type, parsed.audio2.input_type = input_types
 
     def _cfg_snapshot(state):
         if config_error:
@@ -163,6 +169,9 @@ def _invoke(
         patch("autostream_webui_api.get_repeat_status", return_value=repeat_status),
         patch("autostream_core.get_active_track_identification_snapshot",
               return_value=track_id_snapshot),
+        patch("autostream_core.get_session_source_input_index",
+              return_value=source_input if source_input is not None
+              else (1 if playing else None)),
     ):
         send_dial_status_post_json(handler, state, json_obj)
 
@@ -453,6 +462,52 @@ def _daemon_block(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+class TestInputField:
+    def test_live_input1_names_its_type(self):
+        code, body, _ = _invoke(
+            {"dial_id": DIAL_ID}, playing=True, input_types=("cd", "line"))
+        assert code == 200
+        assert body["input"] == {"index": 1, "type": "cd", "label": "CD"}
+
+    def test_replay_names_the_origin_input(self):
+        code, body, _ = _invoke(
+            {"dial_id": DIAL_ID}, playing=True, source_input=2,
+            input_types=("line", "turntable"))
+        assert body["input"] == {
+            "index": 2, "type": "turntable", "label": "Turntable"}
+
+    def test_idle_is_null(self):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, playing=False)
+        assert code == 200
+        assert "input" in body
+        assert body["input"] is None
+
+    def test_absent_from_error_bodies(self):
+        _, body, _ = _invoke({"dial_id": DIAL_ID}, playing=True, config_error=True)
+        assert body == {"ok": False, "error": "config_error"}
+        _, body, _ = _invoke(
+            {"dial_id": DIAL_ID}, playing=True, list_result=_fail_list())
+        assert body["ok"] is False
+        assert "input" not in body
+
+    def test_absent_when_unauthorized(self):
+        code, body, _ = _invoke(
+            {"dial_id": DIAL_ID}, playing=True, authorized=False, speaks_v2=False)
+        assert code == 403
+        assert "input" not in body
+
+    @pytest.mark.parametrize("input_type,label", [
+        ("turntable", "Turntable"),
+        ("cd", "CD"),
+        ("line", "Line"),
+    ])
+    def test_labels(self, input_type, label):
+        _, body, _ = _invoke(
+            {"dial_id": DIAL_ID}, playing=True, input_types=(input_type, "line"))
+        assert body["input"]["type"] == input_type
+        assert body["input"]["label"] == label
 
 
 class TestRepeatField:
@@ -803,6 +858,11 @@ class TestDialProtocolDoc:
         assert "track_id" in text
         assert "artwork_url" in text
         assert "provider artwork" in text.lower()
+
+    def test_dial_protocol_documents_input_object(self):
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "#### `input` object" in text
 
     def test_dial_protocol_documents_screen_settings_endpoints(self):
         doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
