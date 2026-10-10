@@ -674,16 +674,15 @@ HOME_CARDS_SCRIPT = """
     sl.disabled=inactive;
     if(String(sl.value)!==String(val)) sl.value=String(val);
   }
-  function updateMasterMuteCard(muted){
-    var card=document.getElementById('master-volume-card');
-    var btn=document.getElementById('master_mute_btn');
-    if(!card||!btn) return;
+  function updateMuteIndicator(muted){
     var m=!!muted;
-    card.classList.toggle('is-muted',m);
-    btn.hidden=!m;
+    var vu=document.getElementById('np-vu');
+    var btn=document.getElementById('np_mute_btn');
+    if(vu) vu.hidden=m;
+    if(btn){ btn.hidden=!m; btn.disabled=false; }
   }
   async function unmuteMaster(){
-    var btn=document.getElementById('master_mute_btn');
+    var btn=document.getElementById('np_mute_btn');
     if(btn) btn.disabled=true;
     try{
       var r=await fetch(window.__MUTE_URL||'/api/mute',{
@@ -694,7 +693,7 @@ HOME_CARDS_SCRIPT = """
       });
       var j=null;
       try{ j=await r.json(); }catch(e){ j=null; }
-      if(j&&j.ok) updateMasterMuteCard(!!j.muted);
+      if(j&&j.ok) updateMuteIndicator(!!j.muted);
     }catch(e){}
     finally{ if(btn) btn.disabled=false; }
   }
@@ -1706,17 +1705,19 @@ ICON_BLUETOOTH = (
     '</svg>'
 )
 
-# The master volume card's mute icon: a speaker body/cone with a diagonal
-# slash through it, matching the figure the dial's own footer glyph draws
-# (see dial_display_compositor._draw_speaker_glyph(muted=True)) so the two
-# UIs show the same symbol. currentColor so it follows the button's own
-# color (see .master-mute-btn in theme.css) rather than carrying its own.
+# The mute indicator shown in place of the level meter while muted: a
+# speaker body/cone with a diagonal slash through it, matching the figure
+# the dial's own footer glyph draws (see dial_display_compositor.
+# _draw_speaker_glyph(muted=True)) so the two UIs show the same symbol —
+# including that glyph's own slash centred on the speaker body rather than
+# the icon's box. currentColor so it follows the button's own color (see
+# .np-mute-btn) rather than carrying its own.
 ICON_SPEAKER_MUTED = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
     ' fill="none" stroke="currentColor" stroke-width="2"'
     ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
     '<path d="M3 9v6h4l5 5V4L7 9H3z" fill="currentColor" stroke="none"/>'
-    '<path d="M2 2l20 20"/>'
+    '<path d="M1 5l14 14"/>'
     '</svg>'
 )
 

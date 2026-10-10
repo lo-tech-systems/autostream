@@ -651,18 +651,153 @@ class TestWebUIMuteRoute:
             api.send_mute_post_json(_handler(), MagicMock(), "")
         assert captured["code"] == 400
 
-    def test_master_card_markup_contains_button_and_icon(self):
+    def test_mute_icon_markup_and_slash_path(self):
         from autostream_webui_assets import ICON_SPEAKER_MUTED
         assert "<svg" in ICON_SPEAKER_MUTED
         assert "currentColor" in ICON_SPEAKER_MUTED
+        # The slash is centred on the speaker body, matching the dial's own
+        # shifted glyph (see dial_display_compositor._draw_speaker_glyph).
+        assert 'd="M1 5l14 14"' in ICON_SPEAKER_MUTED
 
-    def test_page_js_contains_mute_card_functions(self):
+    def test_page_js_contains_mute_indicator_functions(self):
         import autostream_webui_assets as assets
         src = inspect_source(assets)
-        assert "updateMasterMuteCard" in src
+        assert "updateMuteIndicator" in src
         assert "unmuteMaster" in src
+        assert "updateMasterMuteCard" not in src
 
 
 def inspect_source(module) -> str:
     import inspect
     return inspect.getsource(module)
+
+
+# ---------------------------------------------------------------------------
+# 10. WebUI now-playing level slot: the VU meter and the mute indicator share
+# one fixed-width slot (see _VU_STEREO_CSS's .np-level rule) so muting never
+# shifts the name/signal text beside it.
+# ---------------------------------------------------------------------------
+
+def _render_airplay_page_html(show_input_detail: bool = True) -> str:
+    """Invoke send_airplay_page() with every external dependency mocked and
+    return the rendered HTML — trimmed down from test_track_id_home_render.py's
+    own helper, this module's own copy so it stands on its own."""
+    from autostream_webui_page_airplay import send_airplay_page
+
+    handler = MagicMock()
+    chunks: list[bytes] = []
+    handler.wfile.write = lambda d: chunks.append(d)
+    handler._csrf_token = "testcsrf"
+    handler._pending_set_cookies = []
+
+    auth = MagicMock()
+    auth.get_csrf_token.return_value = "testcsrf"
+
+    state = MagicMock()
+    state.config_path = "dummy.ini"
+
+    parsed = MagicMock()
+    parsed.owntone.base_url = "http://localhost:3689"
+    parsed.owntone.output_name = "autostream"
+    parsed.owntone.volume_percent = 20
+    parsed.webui.show_master_volume = False
+    parsed.webui.show_input_detail = show_input_detail
+    parsed.webui.show_hostname_on_home = False
+    parsed.webui.control_other_appliances = False
+    parsed.webui.hidden_outputs = []
+    parsed.webui.dark_mode = False
+    parsed.track_identification = MagicMock(enabled=False)
+
+    playback = MagicMock()
+    playback.inputs = {}
+    playback.stylus_banner_text = ""
+    playback.belt_banner_text = ""
+    playback.bearing_banner_text = ""
+    playback.has_warning = False
+    playback.to_public_dict.return_value = {}
+
+    list_result = MagicMock(ok=False, outputs=[])
+    buf_result = MagicMock(ok=True, value="2250")
+
+    from contextlib import ExitStack
+    patches = [
+        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
+        patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
+        patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+        patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
+        patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
+        patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+        patch("autostream_core.get_active_track_identification_snapshot",
+              return_value=_disabled_ti_snapshot()),
+        patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        send_airplay_page(handler, state, auth)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _disabled_ti_snapshot():
+    from track_id.models import disabled_snapshot
+    return disabled_snapshot()
+
+
+def _render_remote_home_html() -> str:
+    from autostream_webui_page_airplay import send_remote_home_page
+
+    handler = MagicMock()
+    chunks: list[bytes] = []
+    handler.wfile.write = lambda d: chunks.append(d)
+    handler._csrf_token = "testcsrf"
+    handler._pending_set_cookies = []
+
+    state = MagicMock()
+    state.config_path = "dummy.ini"
+
+    parsed = MagicMock()
+    parsed.owntone.volume_percent = 20
+    parsed.webui.dark_mode = False
+    parsed.webui.show_hostname_on_home = False
+    parsed.webui.control_other_appliances = False
+
+    from contextlib import ExitStack
+    patches = [
+        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        patch("autostream_webui_page_airplay.get_appliance_id", return_value="1" * 20),
+        patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
+        patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        send_remote_home_page(handler, state, "a" * 20)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+class TestNowPlayingLevelSlotMarkup:
+    def test_airplay_page_has_np_level_with_meter_and_mute_button(self):
+        html = _render_airplay_page_html(show_input_detail=True)
+        assert 'id="np-level"' in html
+        assert 'id="np-vu"' in html
+        assert 'id="np_mute_btn"' in html
+
+    def test_airplay_page_omits_the_meter_without_input_detail_but_keeps_the_button(self):
+        html = _render_airplay_page_html(show_input_detail=False)
+        assert 'id="np-level"' in html
+        assert 'id="np-vu"' not in html
+        assert 'id="np_mute_btn"' in html
+
+    def test_master_card_no_longer_has_a_mute_button(self):
+        html = _render_airplay_page_html()
+        assert 'master-volume-card' in html  # the card itself still renders
+        assert 'master_mute_btn' not in html
+        assert 'master-mute-btn' not in html
+
+    def test_remote_placeholder_page_mirrors_the_level_slot(self):
+        html = _render_remote_home_html()
+        assert 'id="np-level"' in html
+        assert 'id="np_mute_btn"' in html
+        assert 'master_mute_btn' not in html
