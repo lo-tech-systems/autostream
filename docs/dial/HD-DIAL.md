@@ -15,9 +15,10 @@ work, not what we have confirmed. If you try one, please report what you see.
 ## What you need
 
 - A Raspberry Pi with enough memory to run a browser. A Pi 4 or Pi 5 is the
-  expectation. A Pi 3 is marginal. A Pi Zero 2 W (the board used for the small
-  SPI dial) has 512 MB of RAM and is unlikely to be comfortable; it is not a
-  target.
+  expectation. A board with 1 GB of RAM or more is recommended. The kiosk has
+  been started on a Pi 3 Model A+ (512 MB), where it runs but is short of
+  memory and leans on swap. A Pi Zero 2 W (the board used for the small SPI
+  dial) has the same 512 MB and is not a target.
 - A touchscreen of about 5 inches or larger, connected by HDMI (with USB
   touch) or by the Pi's DSI connector. The page is designed at 800x480 and
   scales up to larger panels such as 1024x600 and 1280x800. It is landscape
@@ -45,8 +46,9 @@ On top of the normal dial install this:
   Chromium) and a font package;
 - creates an account of its own for the browser, so the browser runs apart
   from the dial's state files;
-- enables the graphics driver (`vc4-kms-v3d`) and a 128 MB GPU memory split
-  in the Pi's boot configuration;
+- enables the graphics driver (`vc4-kms-v3d`) in the Pi's boot
+  configuration. It leaves the GPU memory split alone, because that driver
+  takes its memory from the kernel's own pool;
 - selects the **HD touchscreen** screen type with no touch driver (the
   browser reads the touchscreen itself);
 - installs and enables the kiosk service, `autostream_dial_kiosk`, and a
@@ -275,7 +277,8 @@ service is not answering. Restart `autostream_dial` and read its log.
 
 **The browser shows a graphics error or is very slow.** Check that the
 installer's boot changes took effect (they need a reboot) and that the board
-has enough memory. A Zero 2 W is not expected to cope.
+has enough memory (1 GB or more is recommended). On a Pi 3 the browser
+falls back to software rendering, which works but is slower.
 
 **Touch does nothing, or hits the wrong place.** The browser reads the
 touchscreen directly, so check the panel's own USB or DSI touch connection and

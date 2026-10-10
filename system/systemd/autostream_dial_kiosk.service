@@ -29,7 +29,7 @@ SyslogIdentifier=autostream-dial-kiosk
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 # Wait for the page's server so the browser never paints a connection error.
 ExecStartPre=/bin/sh -c 'until curl -fsS http://127.0.0.1:7843/api/v1/state >/dev/null; do sleep 1; done'
-ExecStart=/usr/bin/cage -- /usr/bin/chromium --kiosk --ozone-platform=wayland --ignore-gpu-blocklist --enable-gpu-rasterization --noerrdialogs --disable-infobars --disable-pinch --overscroll-history-navigation=0 --no-first-run --disable-features=TranslateUI --disable-session-crashed-bubble --user-data-dir=/var/lib/autostream-kiosk/chromium http://127.0.0.1:7843/
+ExecStart=/usr/bin/cage -- /usr/bin/chromium --kiosk --ozone-platform=wayland --noerrdialogs --disable-infobars --disable-pinch --overscroll-history-navigation=0 --no-first-run --disable-features=TranslateUI,MediaRouter --disable-session-crashed-bubble --disable-background-networking --disable-component-update --disable-sync --disable-extensions --no-default-browser-check --renderer-process-limit=1 --user-data-dir=/var/lib/autostream-kiosk/chromium http://127.0.0.1:7843/
 Restart=always
 RestartSec=3
 

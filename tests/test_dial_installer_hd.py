@@ -135,11 +135,16 @@ class TestKioskUnit:
     def test_exec_start_runs_cage_with_the_kiosk_flags(self):
         cmd = _unit_value("ExecStart")
         assert cmd.startswith("/usr/bin/cage -- /usr/bin/chromium ")
-        for flag in ("--kiosk", "--ozone-platform=wayland", "--ignore-gpu-blocklist",
-                     "--enable-gpu-rasterization", "--noerrdialogs", "--disable-infobars",
+        for flag in ("--kiosk", "--ozone-platform=wayland", "--noerrdialogs", "--disable-infobars",
                      "--disable-pinch", "--overscroll-history-navigation=0",
-                     "--no-first-run"):
+                     "--no-first-run", "--disable-features=TranslateUI,MediaRouter",
+                     "--disable-session-crashed-bubble", "--disable-background-networking",
+                     "--disable-component-update", "--disable-sync", "--disable-extensions",
+                     "--no-default-browser-check", "--renderer-process-limit=1",
+                     "--user-data-dir=/var/lib/autostream-kiosk/chromium"):
             assert flag in cmd.split(), flag
+        for flag in ("--ignore-gpu-blocklist", "--enable-gpu-rasterization"):
+            assert flag not in cmd, flag
 
     def test_the_only_url_is_the_loopback_page(self):
         cmd = _unit_value("ExecStart")
@@ -382,14 +387,21 @@ class TestBootConfig:
                        "[all]\ngpu_mem=128\ndtoverlay=vc4-kms-v3d\n")
         self._idempotent(env, cfg)
 
-    def test_configure_hd_boot_sets_overlay_and_gpu_memory_idempotently(self, tmp_path):
+    def test_configure_hd_boot_sets_overlay_and_leaves_gpu_memory_alone(self, tmp_path):
         env = Env(tmp_path)
         cfg = self._cfg(tmp_path, "gpu_mem=16\n")
         for _ in range(2):
             r = _run(env, f'configure_hd_boot "{cfg.as_posix()}"')
             assert r.returncode == 0, r.stderr
         lines = cfg.read_text(encoding="utf-8").splitlines()
-        assert sorted(lines) == ["dtoverlay=vc4-kms-v3d", "gpu_mem=128"]
+        assert sorted(lines) == ["dtoverlay=vc4-kms-v3d", "gpu_mem=16"]
+
+    def test_configure_hd_boot_adds_no_gpu_mem_line(self, tmp_path):
+        env = Env(tmp_path)
+        cfg = self._cfg(tmp_path, "dtparam=audio=on\n")
+        r = _run(env, f'configure_hd_boot "{cfg.as_posix()}"')
+        assert r.returncode == 0, r.stderr
+        assert "gpu_mem" not in cfg.read_text(encoding="utf-8")
 
     def test_the_spi_path_never_calls_the_boot_helpers(self):
         text = INSTALLER.read_text(encoding="utf-8")

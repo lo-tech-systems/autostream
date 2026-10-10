@@ -499,12 +499,12 @@ ensure_boot_overlay() {
 }
 
 configure_hd_boot() {
-    # The kiosk browser needs the KMS graphics driver and a GPU memory split
-    # large enough for it. A DSI panel's own overlay is left to the owner.
+    # The kiosk browser needs the KMS graphics driver. Its graphics memory
+    # comes from the kernel CMA pool, so gpu_mem is left as the system has it.
+    # A DSI panel's own overlay is left to the owner.
     # Takes effect on the next boot.
     local cfg="${1:-/boot/firmware/config.txt}"
     ensure_boot_overlay vc4-kms-v3d "${cfg}"
-    write_boot_config_line gpu_mem 128 "${cfg}"
 }
 
 # ---- Boot splash -------------------------------------------------------------
