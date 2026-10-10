@@ -3385,6 +3385,35 @@ class TestCompactPicker:
         assert list(result.crop(p.title).getdata()) == list(blank.crop(p.title).getdata())
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_title_text_is_horizontally_centered_not_left_aligned(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(rows=(("Kitchen", False, "1:23"),))
+        result = compositor.compose_list(
+            metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
+        )
+        from PIL import ImageDraw
+        font = _load_font(metrics.font_body)
+        draw = ImageDraw.Draw(Image.new("RGB", (metrics.width, metrics.height)))
+        bbox = draw.textbbox((0, 0), _COMPACT_PICKER_TITLE, font=font)
+        text_w = bbox[2] - bbox[0]
+        # Mirrors _draw_label_centered's own x arithmetic exactly.
+        cx = (p.title[0] + p.title[2]) // 2
+        expected_left = cx - text_w // 2
+
+        title_band = result.crop(p.title)
+        lit_columns = [
+            x for x in range(title_band.width)
+            if any(min(title_band.getpixel((x, y))) > 200 for y in range(title_band.height))
+        ]
+        assert lit_columns, "expected some lit pixel in the title band"
+        actual_left = min(lit_columns)
+        # The measured left edge sits at the textbbox-derived centred x, not
+        # at metrics.pad (where a left-aligned title would start) -- a small
+        # tolerance absorbs antialiasing at the "near white" threshold.
+        assert abs(actual_left - expected_left) <= 4
+        assert actual_left > metrics.pad + 2
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_two_rows_land_in_row0_and_row1(self, compositor, metrics):
         p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         state = ListState(rows=(("Kitchen", False, "1:23"), ("Lounge", True, "4:56")), has_prev=False, has_next=False)
@@ -3499,6 +3528,61 @@ class TestCompactRepeatEnable:
         )
         assert list(disarmed.crop(c.bottom_row).getdata()) != list(armed.crop(c.bottom_row).getdata())
         assert _has_near_white_pixel(armed.crop(c.bottom_row))
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_repeat_play_label_fits_the_row_without_truncation(self, metrics):
+        # Regression test for a real bug: the label used to be truncated to
+        # "Repea..." because the arm-dot box was the row's own (much taller,
+        # on compact, than the base tier's row ever is) height, leaving too
+        # little width for the label. _draw_toggle_row's compact caller now
+        # passes a smaller, fixed-width dot_box (metrics.icon) instead -- see
+        # _body_compact_toggle. Mirrors that function's own arithmetic
+        # exactly so a regression in the wiring (not just the geometry
+        # rule) would be caught.
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        pad = metrics.pad
+        row_rect = c.bottom_row
+        dot_box = metrics.icon
+        dot_x0 = row_rect[2] - pad - dot_box
+        label_rect_x1 = dot_x0 - pad
+        label_max_w = (label_rect_x1 - row_rect[0]) - pad  # _draw_label's own max_w
+
+        from PIL import ImageDraw
+        font = _load_font(metrics.font_body)
+        draw = ImageDraw.Draw(Image.new("RGB", (metrics.width, metrics.height)))
+        bbox = draw.textbbox((0, 0), "Repeat Play", font=font)
+        text_w = bbox[2] - bbox[0]
+        assert text_w <= label_max_w, (text_w, label_max_w)
+        assert _truncate_to_width(draw, "Repeat Play", font, label_max_w) == "Repeat Play"
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_repeat_play_label_renders_whole_not_ellipsised(self, compositor, metrics):
+        # Belt-and-braces integration check alongside the geometry-level
+        # test above: render the real frame and confirm the label's own
+        # rendered pixels extend into the right-hand portion of where the
+        # un-truncated word "Play" must sit -- a truncated "Repea..." would
+        # not reach anywhere near there.
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        result = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        pad = metrics.pad
+        row_rect = c.bottom_row
+        dot_box = metrics.icon
+        dot_x0 = row_rect[2] - pad - dot_box
+        label_rect = (row_rect[0], row_rect[1], dot_x0 - pad, row_rect[3])
+        from PIL import ImageDraw
+        font = _load_font(metrics.font_body)
+        draw = ImageDraw.Draw(Image.new("RGB", (metrics.width, metrics.height)))
+        full_w = draw.textbbox((0, 0), "Repeat Play", font=font)[2]
+        truncated_w = draw.textbbox((0, 0), "Repea...", font=font)[2]
+        # A point past where a truncated "Repea..." would end, but still
+        # within the un-truncated label's own drawn width.
+        probe_x = label_rect[0] + pad + (truncated_w + full_w) // 2
+        assert probe_x < label_rect[2]
+        region = result.crop((probe_x, label_rect[1], label_rect[2], label_rect[3]))
+        assert _has_near_white_pixel(region)
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_back_control_lights_the_right_dot_not_the_left(self, compositor, metrics):

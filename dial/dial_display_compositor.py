@@ -1479,16 +1479,28 @@ def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> N
 
 def _draw_toggle_row(
     img: Image.Image, metrics: LayoutMetrics, row_rect: tuple[int, int, int, int], label: str, armed: bool,
+    *, dot_box: int | None = None,
 ) -> None:
     """A label plus an on/off dot marker drawn into *row_rect* — shared by
     the repeat screen's "Repeat Play" enable row, the per-output detail
     page's own enable row (both pass repeat_layout_for(...).row) and the
-    compact tier's own enable screen (which passes its top_row instead)."""
+    compact tier's own enable screen (which passes its bottom_row instead).
+
+    *dot_box* sizes the arm-dot's own box, width only — its height still
+    always spans the full *row_rect*, so the dot itself (drawn centred
+    within that box by _draw_arm_dot) stays vertically centred on the row
+    either way. None (every non-compact caller) keeps today's box: the
+    row's own height, giving a square box exactly as before. The compact
+    tier's own row is far taller relative to its own width than the base
+    tier's row ever is, so its own caller (_body_compact_toggle) passes a
+    smaller fixed width instead — the row is a single touch zone regardless
+    of how big the dot itself is drawn, so shrinking it costs nothing but
+    frees the width "Repeat Play" needs to fit without truncating."""
     pad = metrics.pad
     row_font = _load_font(metrics.font_body)
     draw = ImageDraw.Draw(img)
-    dot_box = row_rect[3] - row_rect[1]
-    dot_rect = (row_rect[2] - pad - dot_box, row_rect[1], row_rect[2] - pad, row_rect[3])
+    box_w = dot_box if dot_box is not None else row_rect[3] - row_rect[1]
+    dot_rect = (row_rect[2] - pad - box_w, row_rect[1], row_rect[2] - pad, row_rect[3])
     label_rect = (row_rect[0], row_rect[1], dot_rect[0] - pad, row_rect[3])
     _draw_label(draw, label_rect, label, row_font, pad)
     _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, armed, supersample=metrics.supersample)
@@ -1681,14 +1693,15 @@ def _draw_compact_list_row(
 
 def _body_compact_list(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """The compact tier's replay picker: a tight title bar across the top,
-    then a 35/65 split — cancel top-left and "more" (lit when a second page
-    exists — the compact tier wraps rather than clamping, see the manager's
-    own paging) bottom-left, both drawn at the picker's own smaller glyph
-    size; the two visible rows (current-row highlighting is a Frame.
-    highlights entry, drawn before this body runs) fill the right column."""
+    horizontally centred, then a 35/65 split — cancel top-left and "more"
+    (lit when a second page exists — the compact tier wraps rather than
+    clamping, see the manager's own paging) bottom-left, both drawn at the
+    picker's own smaller glyph size; the two visible rows (current-row
+    highlighting is a Frame.highlights entry, drawn before this body runs)
+    fill the right column."""
     p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
     draw = ImageDraw.Draw(img)
-    _draw_label(draw, p.title, _COMPACT_PICKER_TITLE, _load_font(metrics.font_body), metrics.pad)
+    _draw_label_centered(draw, p.title, _COMPACT_PICKER_TITLE, _load_font(metrics.font_body))
     row_font = _load_font(metrics.font_body)
     pad = metrics.pad
     for cell, row in zip((p.row0, p.row1), body.rows):
@@ -1702,10 +1715,15 @@ def _body_compact_list(img: Image.Image, metrics: LayoutMetrics, body: Body) -> 
 def _body_compact_toggle(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """The compact tier's repeat-enable screen: the back control (second
     dot lit) top-left, "Repeat Play" plus its arm dot spanning the full
-    bottom row — no separate cancel; the top-right cell is left empty."""
+    bottom row — no separate cancel; the top-right cell is left empty. The
+    arm dot's own box is capped at metrics.icon (the same reference every
+    other compact icon-sized glyph already uses) rather than the row's own
+    height: that row is far taller relative to its own width than the base
+    tier's row ever is, so the label needs the width back to fit "Repeat
+    Play" whole (see _draw_toggle_row's own dot_box paragraph)."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
     _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, _GLYPH_RGB, supersample=metrics.supersample)
-    _draw_toggle_row(img, metrics, c.bottom_row, body.label, body.armed)
+    _draw_toggle_row(img, metrics, c.bottom_row, body.label, body.armed, dot_box=metrics.icon)
     _draw_compact_dividers(img, c, metrics, vertical="top")
 
 
