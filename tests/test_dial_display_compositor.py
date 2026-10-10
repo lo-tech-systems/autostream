@@ -70,9 +70,13 @@ from dial_display_compositor import (  # noqa: E402
     _GLYPH_SUPERSAMPLE,
     _INVERTED_GLYPH_RGB,
     OVERLAY_DIM_FACTOR,
+    _COMPACT_PICKER_TITLE,
+    _COMPACT_SMALL_GLYPH_FRACTION,
     _compact_controls_frame,
+    _compact_glyph_box,
     _compact_list_frame,
     _compact_repeat_frame,
+    _compact_small_glyph_box,
     _compose_frame,
     _draw_speaker_glyph,
     _glyph_tile,
@@ -98,9 +102,12 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
+    COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
+    CompactPickerLayout,
     TouchZone,
     compact_layout_for,
+    compact_picker_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -2757,6 +2764,20 @@ class TestLargeNeverRaises:
 # mute, left to right, plus the persistent mute wash and GLYPH_MUTE itself.
 # ---------------------------------------------------------------------------
 
+def _two_dots_centers(box: tuple[int, int, int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
+    """The (left, right) dot centre coordinates _draw_two_dots() paints
+    into *box* — mirrors that painter's own geometry so a test can sample
+    each dot directly rather than alpha-composite a whole tile."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    r = max(2, round(min(w, h) * 0.12))
+    cy = y0 + h / 2.0
+    gap = r * 3
+    cx0 = x0 + w / 2.0 - gap / 2.0
+    cx1 = x0 + w / 2.0 + gap / 2.0
+    return (round(cx0), round(cy)), (round(cx1), round(cy))
+
+
 def _has_near_white_pixel(region) -> bool:
     """True if *region* contains a pixel close to the glyph colour
     (255, 255, 255) — a cheap proxy for "a glyph stroke was drawn here"."""
@@ -3198,29 +3219,34 @@ class TestCompactDividers:
         assert result.getpixel((c.divider_x, metrics.height - 5)) == (255, 255, 255)
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_picker_screen_has_a_full_cross(self, compositor, metrics):
-        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    def test_picker_screen_has_a_title_line_a_row_line_and_a_column_line_below_the_title(
+        self, compositor, metrics,
+    ):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         state = ListState(rows=(("Kitchen", False, "1:23"),), has_prev=False, has_next=False)
         result = compositor.compose_list(
             metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
         )
-        assert result.getpixel((5, c.divider_y)) == (255, 255, 255)
-        assert result.getpixel((c.divider_x, 5)) == (255, 255, 255)
-        assert result.getpixel((c.divider_x, metrics.height - 5)) == (255, 255, 255)
+        assert result.getpixel((5, p.title_divider_y)) == (255, 255, 255)
+        assert result.getpixel((5, p.divider_y)) == (255, 255, 255)
+        assert result.getpixel((p.divider_x, p.title_divider_y + 5)) == (255, 255, 255)
+        assert result.getpixel((p.divider_x, metrics.height - 5)) == (255, 255, 255)
+        # The column line never crosses into the title band itself.
+        assert result.getpixel((p.divider_x, 2)) != (255, 255, 255)
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_repeat_enable_screen_has_horizontal_only(self, compositor, metrics):
+    def test_repeat_enable_screen_has_a_vertical_divider_only_above_the_toggle_row(self, compositor, metrics):
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         result = compositor.compose_repeat(
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
             rotate=False, bgr=False, metrics=metrics,
         )
         assert result.getpixel((5, c.divider_y)) == (255, 255, 255)
-        assert result.getpixel((c.divider_x, 5)) != (255, 255, 255)
+        assert result.getpixel((c.divider_x, 5)) == (255, 255, 255)
         assert result.getpixel((c.divider_x, metrics.height - 5)) != (255, 255, 255)
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_repeat_replaying_screen_has_bottom_row_vertical_only(self, compositor, metrics):
+    def test_repeat_replaying_screen_has_a_full_cross(self, compositor, metrics):
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
         result = compositor.compose_repeat(
@@ -3229,7 +3255,8 @@ class TestCompactDividers:
             rotate=False, bgr=False, base=base, metrics=metrics,
         )
         assert result.getpixel((5, c.divider_y)) == (255, 255, 255)
-        assert result.getpixel((c.divider_x, 5)) != (255, 255, 255)
+        assert result.getpixel((metrics.width - 5, c.divider_y)) == (255, 255, 255)
+        assert result.getpixel((c.divider_x, 5)) == (255, 255, 255)
         assert result.getpixel((c.divider_x, metrics.height - 5)) == (255, 255, 255)
 
 
@@ -3258,6 +3285,23 @@ class TestCompactPlayingScreen:
         )
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         assert list(inert.crop(c.tl).getdata()) != list(active.crop(c.tl).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_dots_light_the_left_one_not_the_right(self, compositor, metrics):
+        # The playing screen's own page-indicator state -- the LEFT dot,
+        # unlike both repeat surfaces' back control (see
+        # TestCompactRepeatEnable/TestCompactRepeatReplaying), which light
+        # the right one.
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        result = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, dots=True), metrics=metrics,
+        )
+        box = _compact_glyph_box(c.tl)
+        left_centre, right_centre = _two_dots_centers(box)
+        assert min(result.getpixel(left_centre)) > 200
+        assert min(result.getpixel(right_centre)) < 200
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_muted_cell_is_a_solid_white_wash_with_a_black_glyph(self, compositor, metrics):
@@ -3316,9 +3360,33 @@ class TestCompactPlayingScreen:
 
 
 class TestCompactPicker:
+    def test_title_string_is_replay(self):
+        assert _COMPACT_PICKER_TITLE == "Replay"
+
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_two_rows_land_in_tl_and_bl(self, compositor, metrics):
-        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    def test_title_text_lands_in_the_title_band(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(rows=(("Kitchen", False, "1:23"),), has_prev=False, has_next=False)
+        blank = compositor.compose_list(
+            metrics.width, metrics.height, ListState(rows=(("", False, ""),)),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        result = compositor.compose_list(
+            metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
+        )
+        # Blank rows still carry the constant "Replay" title, so both frames
+        # already show it — the meaningful check is that some pixel of the
+        # title band itself is lit at all (the title is always drawn).
+        assert _has_near_white_pixel(result.crop(p.title))
+        # Nothing below the title band changes between the two blank rows'
+        # frames and this one except the row content itself, so a diff
+        # confined to the row cells (not the title band) proves the title
+        # is drawn once, from a fixed rect, independent of row content.
+        assert list(result.crop(p.title).getdata()) == list(blank.crop(p.title).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_two_rows_land_in_row0_and_row1(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         state = ListState(rows=(("Kitchen", False, "1:23"), ("Lounge", True, "4:56")), has_prev=False, has_next=False)
         blank = compositor.compose_list(
             metrics.width, metrics.height, ListState(rows=(("", False, ""), ("", False, "")), has_prev=False, has_next=False),
@@ -3327,37 +3395,72 @@ class TestCompactPicker:
         result = compositor.compose_list(
             metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
         )
-        assert list(result.crop(c.tl).getdata()) != list(blank.crop(c.tl).getdata())
-        assert list(result.crop(c.bl).getdata()) != list(blank.crop(c.bl).getdata())
+        assert list(result.crop(p.row0).getdata()) != list(blank.crop(p.row0).getdata())
+        assert list(result.crop(p.row1).getdata()) != list(blank.crop(p.row1).getdata())
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_current_row_gets_the_highlight_wash(self, compositor, metrics):
-        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         not_current = ListState(rows=(("Kitchen", False, "1:23"), ("Lounge", False, "4:56")))
         current = ListState(rows=(("Kitchen", True, "1:23"), ("Lounge", False, "4:56")))
         a = compositor.compose_list(metrics.width, metrics.height, not_current, rotate=False, bgr=False, metrics=metrics)
         b = compositor.compose_list(metrics.width, metrics.height, current, rotate=False, bgr=False, metrics=metrics)
-        assert list(a.crop(c.tl).getdata()) != list(b.crop(c.tl).getdata())
-        assert list(a.crop(c.bl).getdata()) == list(b.crop(c.bl).getdata())
+        assert list(a.crop(p.row0).getdata()) != list(b.crop(p.row0).getdata())
+        assert list(a.crop(p.row1).getdata()) == list(b.crop(p.row1).getdata())
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_more_chevron_lit_iff_more_than_one_page(self, compositor, metrics):
-        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         one_page = ListState(rows=(("Kitchen", False, "1:23"),), has_prev=False, has_next=False)
         two_pages = ListState(rows=(("Kitchen", False, "1:23"),), has_prev=False, has_next=True)
         a = compositor.compose_list(metrics.width, metrics.height, one_page, rotate=False, bgr=False, metrics=metrics)
         b = compositor.compose_list(metrics.width, metrics.height, two_pages, rotate=False, bgr=False, metrics=metrics)
-        assert list(a.crop(c.tr).getdata()) != list(b.crop(c.tr).getdata())
+        assert list(a.crop(p.more).getdata()) != list(b.crop(p.more).getdata())
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_placeholder_row_lands_alone_in_tl(self, compositor, metrics):
-        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    def test_cancel_and_more_glyph_boxes_are_smaller_than_the_full_cell_box(self, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        small = _compact_small_glyph_box(p.cancel)
+        full = _compact_glyph_box(p.cancel)
+        small_side = small[2] - small[0]
+        full_side = full[2] - full[0]
+        assert small_side < full_side
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_placeholder_row_lands_alone_in_row0(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         blank = ListState(rows=(("", False, ""),))
         placeholder = ListState(rows=(("Nothing to replay", False),))
         a = compositor.compose_list(metrics.width, metrics.height, blank, rotate=False, bgr=False, metrics=metrics)
         b = compositor.compose_list(metrics.width, metrics.height, placeholder, rotate=False, bgr=False, metrics=metrics)
-        assert list(a.crop(c.tl).getdata()) != list(b.crop(c.tl).getdata())
-        assert list(a.crop(c.bl).getdata()) == list(b.crop(c.bl).getdata())
+        assert list(a.crop(p.row0).getdata()) != list(b.crop(p.row0).getdata())
+        assert list(a.crop(p.row1).getdata()) == list(b.crop(p.row1).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_pressed_row1_washes_row1_only(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(rows=(("Kitchen", False, "1:23"), ("Lounge", False, "4:56")))
+        unpressed = compositor.compose_list(metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics)
+        pressed = compositor.compose_list(
+            metrics.width, metrics.height,
+            ListState(rows=state.rows, pressed=(TouchZone.LIST_ROW, 1)),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(unpressed.crop(p.row1).getdata()) != list(pressed.crop(p.row1).getdata())
+        assert list(unpressed.crop(p.row0).getdata()) == list(pressed.crop(p.row0).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_pressed_back_washes_cancel_only(self, compositor, metrics):
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(rows=(("Kitchen", False, "1:23"),))
+        unpressed = compositor.compose_list(metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics)
+        pressed = compositor.compose_list(
+            metrics.width, metrics.height,
+            ListState(rows=state.rows, pressed=(TouchZone.LIST_BACK, None)),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(unpressed.crop(p.cancel).getdata()) != list(pressed.crop(p.cancel).getdata())
+        assert list(unpressed.crop(p.more).getdata()) == list(pressed.crop(p.more).getdata())
 
     def test_base_is_dimmed_behind_when_given(self, compositor):
         metrics = _COMPACT_240
@@ -3384,7 +3487,7 @@ class TestCompactPicker:
 
 class TestCompactRepeatEnable:
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_label_and_arm_dot_present(self, compositor, metrics):
+    def test_label_and_arm_dot_present_on_the_full_width_bottom_row(self, compositor, metrics):
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         disarmed = compositor.compose_repeat(
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
@@ -3394,22 +3497,76 @@ class TestCompactRepeatEnable:
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=True),
             rotate=False, bgr=False, metrics=metrics,
         )
-        assert list(disarmed.crop(c.top_row).getdata()) != list(armed.crop(c.top_row).getdata())
-        assert _has_near_white_pixel(armed.crop(c.top_row))
+        assert list(disarmed.crop(c.bottom_row).getdata()) != list(armed.crop(c.bottom_row).getdata())
+        assert _has_near_white_pixel(armed.crop(c.bottom_row))
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_cancel_cross_in_bottom_row(self, compositor, metrics):
+    def test_back_control_lights_the_right_dot_not_the_left(self, compositor, metrics):
+        # The second dot marks the repeat pages -- distinct from the
+        # playing screen's own first-lit dots tile (see TestCompactPlayingScreen).
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         result = compositor.compose_repeat(
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
             rotate=False, bgr=False, metrics=metrics,
         )
-        assert _has_near_white_pixel(result.crop(c.bottom_row))
+        box = _compact_glyph_box(c.tl)
+        left_centre, right_centre = _two_dots_centers(box)
+        assert min(result.getpixel(right_centre)) > 200
+        assert min(result.getpixel(left_centre)) < 200
+
+    def test_right_lit_glyph_tile_differs_from_the_left_lit_one(self):
+        right = _glyph_tile(GLYPH_TWO_DOTS, (1, _GLYPH_RGB), 32, 32, 4)
+        left = _glyph_tile(GLYPH_TWO_DOTS, (0, _GLYPH_RGB), 32, 32, 4)
+        assert list(right.getdata()) != list(left.getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_nothing_drawn_in_the_dead_top_right_cell(self, compositor, metrics):
+        from dial_display_compositor import _LIST_BG_RGB
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        armed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=True),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        disarmed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        expected = tuple(round(ch * OVERLAY_DIM_FACTOR) for ch in _LIST_BG_RGB)
+        assert all(px == expected for px in armed.crop(c.tr).getdata())
+        assert all(px == expected for px in disarmed.crop(c.tr).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_pressed_repeat_play_washes_the_bottom_row_only(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        unpressed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        pressed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False, pressed=TouchZone.REPEAT_PLAY),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(unpressed.crop(c.bottom_row).getdata()) != list(pressed.crop(c.bottom_row).getdata())
+        assert list(unpressed.crop(c.tl).getdata()) == list(pressed.crop(c.tl).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_pressed_dots_washes_tl_only(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        unpressed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        pressed = compositor.compose_repeat(
+            metrics.width, metrics.height, _repeat_state(layout="enable", armed=False, pressed=TouchZone.DOTS),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert list(unpressed.crop(c.tl).getdata()) != list(pressed.crop(c.tl).getdata())
+        assert list(unpressed.crop(c.bottom_row).getdata()) == list(pressed.crop(c.bottom_row).getdata())
 
 
 class TestCompactRepeatReplaying:
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_line_drawn_in_top_row(self, compositor, metrics):
+    def test_time_drawn_in_tr(self, compositor, metrics):
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
         blank = compositor.compose_repeat(
@@ -3422,28 +3579,41 @@ class TestCompactRepeatReplaying:
             _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
             rotate=False, bgr=False, base=base, metrics=metrics,
         )
-        assert list(blank.crop(c.top_row).getdata()) != list(with_line.crop(c.top_row).getdata())
+        assert list(blank.crop(c.tr).getdata()) != list(with_line.crop(c.tr).getdata())
 
-    def test_too_long_a_line_falls_back_to_the_position_half(self, compositor):
-        # A pathologically long duration string overflows even the 240x240
-        # top row; the renderer must fall back to the part before " / "
-        # rather than let _draw_text_with_halo silently ellipsis the whole
-        # thing (which would show a truncated duration, not a position).
+    def test_time_shows_the_position_only_never_the_duration(self, compositor):
+        # The manager's own line always carries "position / duration"; the
+        # compact replaying cell is a quarter of the panel and the owner's
+        # spec names the position alone -- an unconditional split on " / ",
+        # not a fit-driven fallback.
         metrics = _COMPACT_240
         base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
-        long_line = "12:34 / " + "9" * 40 + ":00"
-        with_fallback = compositor.compose_repeat(
+        with_full_line = compositor.compose_repeat(
             metrics.width, metrics.height,
-            _repeat_state(layout="replaying", line=long_line, start_enabled=True, stop_enabled=True),
+            _repeat_state(layout="replaying", line="72:34 / 80:00", start_enabled=True, stop_enabled=True),
             rotate=False, bgr=False, base=base, metrics=metrics,
         )
         position_only = compositor.compose_repeat(
             metrics.width, metrics.height,
-            _repeat_state(layout="replaying", line="12:34", start_enabled=True, stop_enabled=True),
+            _repeat_state(layout="replaying", line="72:34", start_enabled=True, stop_enabled=True),
             rotate=False, bgr=False, base=base, metrics=metrics,
         )
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
-        assert list(with_fallback.crop(c.top_row).getdata()) == list(position_only.crop(c.top_row).getdata())
+        assert list(with_full_line.crop(c.tr).getdata()) == list(position_only.crop(c.tr).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_back_control_lights_the_right_dot_not_the_left(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        result = compositor.compose_repeat(
+            metrics.width, metrics.height,
+            _repeat_state(layout="replaying", line="0:10 / 1:00", start_enabled=True, stop_enabled=True),
+            rotate=False, bgr=False, base=base, metrics=metrics,
+        )
+        box = _compact_glyph_box(c.tl)
+        left_centre, right_centre = _two_dots_centers(box)
+        assert min(result.getpixel(right_centre)) > 200
+        assert min(result.getpixel(left_centre)) < 200
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_restart_and_stop_dimmed_when_disabled(self, compositor, metrics):

@@ -113,11 +113,13 @@ from dial_touch_layout import (
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
     CompactLayout,
+    CompactPickerLayout,
     LayoutMetrics,
     OverlayLayout,
     Rect,
     TouchZone,
     compact_layout_for,
+    compact_picker_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -218,6 +220,16 @@ _INVERTED_GLYPH_RGB = (0, 0, 0)
 # via the existing _draw_minus_glyph/_draw_plus_glyph, which derive their
 # own reach from the rect's own size.
 _COMPACT_GLYPH_FRACTION = 0.5
+
+# A second, smaller glyph-box fraction for the replay picker's cancel and
+# "more" cells only — the whole point of moving them into the picker's own
+# narrower left column is that they read as secondary controls next to the
+# two visible targets, not as full-size quadrant glyphs. Every other compact
+# cell keeps _COMPACT_GLYPH_FRACTION.
+_COMPACT_SMALL_GLYPH_FRACTION = 0.4
+
+# The replay picker's own title-bar text.
+_COMPACT_PICKER_TITLE = "Replay"
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -1571,6 +1583,36 @@ def _compact_glyph_box(rect: tuple[int, int, int, int]) -> tuple[int, int, int, 
     return _centred_box(rect, side)
 
 
+def _compact_small_glyph_box(rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """A smaller glyph box than _compact_glyph_box's, sized at
+    _COMPACT_SMALL_GLYPH_FRACTION of *rect*'s own short side — used only for
+    the replay picker's cancel and "more" cells, which sit in a narrower
+    column beside the two visible targets and read better at a size smaller
+    than every other compact cell's own glyph."""
+    x0, y0, x1, y1 = rect
+    side = round(min(x1 - x0, y1 - y0) * _COMPACT_SMALL_GLYPH_FRACTION)
+    return _centred_box(rect, side)
+
+
+def _draw_compact_picker_dividers(img: Image.Image, layout: "CompactPickerLayout", metrics: LayoutMetrics) -> None:
+    """The replay picker's own white divider lines, drawn last so they sit
+    on top of any glyph's own edges: the line under the title band (full
+    width), the line between the two grid rows (full width), and the column
+    line separating the controls from the two targets — drawn only from the
+    title line down to the bottom edge, since it never crosses the title
+    band itself."""
+    draw = ImageDraw.Draw(img)
+    w = metrics.divider_w
+    draw.line(
+        [(0, layout.title_divider_y), (metrics.width - 1, layout.title_divider_y)], fill=_DIVIDER_RGB, width=w,
+    )
+    draw.line([(0, layout.divider_y), (metrics.width - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
+    draw.line(
+        [(layout.divider_x, layout.title_divider_y), (layout.divider_x, metrics.height - 1)],
+        fill=_DIVIDER_RGB, width=w,
+    )
+
+
 def _draw_compact_dividers(
     img: Image.Image, layout: "CompactLayout", metrics: LayoutMetrics, *, vertical: str,
 ) -> None:
@@ -1578,15 +1620,18 @@ def _draw_compact_dividers(
     on top of any glyph's own edges. The horizontal line at divider_y,
     spanning the full width, is always drawn; *vertical* selects how much
     of the line at divider_x is drawn: "full" (both rows — the playing 2x2
-    and the replay picker), "bottom" (the bottom row only — the repeat
-    screen's replaying layout, whose top row is a single time strip) or
-    "none" (the repeat screen's enable layout, whose top row is a single
-    toggle strip)."""
+    and the repeat screen's replaying layout, now its own 2x2), "top" (the
+    top row only — the repeat screen's enable layout, whose bottom row is a
+    single full-width toggle strip), "bottom" (the bottom row only) or
+    "none" (neither row has a vertical divider)."""
     draw = ImageDraw.Draw(img)
     w = metrics.divider_w
     draw.line([(0, layout.divider_y), (metrics.width - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
     if vertical == "full":
         draw.line([(layout.divider_x, 0), (layout.divider_x, metrics.height - 1)], fill=_DIVIDER_RGB, width=w)
+    elif vertical == "top":
+        y1 = layout.top_row[3]
+        draw.line([(layout.divider_x, 0), (layout.divider_x, y1 - 1)], fill=_DIVIDER_RGB, width=w)
     elif vertical == "bottom":
         y0 = layout.bottom_row[1]
         draw.line([(layout.divider_x, y0), (layout.divider_x, metrics.height - 1)], fill=_DIVIDER_RGB, width=w)
@@ -1635,54 +1680,53 @@ def _draw_compact_list_row(
 
 
 def _body_compact_list(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
-    """The compact tier's replay picker: the two visible rows on the left
-    (current-row highlighting is a Frame.highlights entry, drawn before
-    this body runs), "more" (lit when a second page exists — the compact
-    tier wraps rather than clamping, see the manager's own paging) top
-    right, cancel bottom right."""
-    c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+    """The compact tier's replay picker: a tight title bar across the top,
+    then a 35/65 split — cancel top-left and "more" (lit when a second page
+    exists — the compact tier wraps rather than clamping, see the manager's
+    own paging) bottom-left, both drawn at the picker's own smaller glyph
+    size; the two visible rows (current-row highlighting is a Frame.
+    highlights entry, drawn before this body runs) fill the right column."""
+    p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+    draw = ImageDraw.Draw(img)
+    _draw_label(draw, p.title, _COMPACT_PICKER_TITLE, _load_font(metrics.font_body), metrics.pad)
     row_font = _load_font(metrics.font_body)
     pad = metrics.pad
-    for cell, row in zip((c.tl, c.bl), body.rows):
+    for cell, row in zip((p.row0, p.row1), body.rows):
         _draw_compact_list_row(img, cell, row, row_font, pad)
     ss = metrics.supersample
-    _draw_glyph(img, _compact_glyph_box(c.tr), GLYPH_CHEVRON, "down", body.has_more, supersample=ss)
-    _draw_glyph(img, _compact_glyph_box(c.br), GLYPH_CROSS, supersample=ss)
-    _draw_compact_dividers(img, c, metrics, vertical="full")
+    _draw_glyph(img, _compact_small_glyph_box(p.cancel), GLYPH_CROSS, supersample=ss)
+    _draw_glyph(img, _compact_small_glyph_box(p.more), GLYPH_CHEVRON, "down", body.has_more, supersample=ss)
+    _draw_compact_picker_dividers(img, p, metrics)
 
 
 def _body_compact_toggle(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
-    """The compact tier's repeat-enable screen: "Repeat Play" plus its arm
-    dot on the top row, cancel (the cross glyph) on the bottom row."""
+    """The compact tier's repeat-enable screen: the back control (second
+    dot lit) top-left, "Repeat Play" plus its arm dot spanning the full
+    bottom row — no separate cancel; the top-right cell is left empty."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
-    _draw_toggle_row(img, metrics, c.top_row, body.label, body.armed)
-    _draw_glyph(img, _compact_glyph_box(c.bottom_row), GLYPH_CROSS, supersample=metrics.supersample)
-    _draw_compact_dividers(img, c, metrics, vertical="none")
+    _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, _GLYPH_RGB, supersample=metrics.supersample)
+    _draw_toggle_row(img, metrics, c.bottom_row, body.label, body.armed)
+    _draw_compact_dividers(img, c, metrics, vertical="top")
 
 
 def _body_compact_replay(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
-    """The compact tier's repeat-replaying screen: the position line
-    centred (with a halo, like the base tier's own repeat line) in the top
-    row — falling back to the position-only half of the line when the full
-    "m:ss / m:ss" string does not fit — Restart bottom-left and Stop
-    bottom-right, each dimmed when its own action is not currently
-    accepted."""
+    """The compact tier's repeat-replaying screen, its own 2x2: the back
+    control (second dot lit) top-left, the position-only time (never the
+    duration — the manager's own "m:ss / m:ss" line, split before " / ")
+    top-right with a halo, like the base tier's own repeat line, Restart
+    bottom-left and Stop bottom-right, each dimmed when its own action is
+    not currently accepted."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
-    font = _load_font(metrics.font_readout)
-    line = body.line
-    if font is not None and line and " / " in line:
-        draw = ImageDraw.Draw(img)
-        max_w = c.top_row[2] - c.top_row[0] - 2 * metrics.pad
-        measured = _text_size(draw, line, font)
-        if measured is not None and measured[0] > max_w:
-            line = line.split(" / ", 1)[0]
-    _draw_text_with_halo(img, c.top_row, line, font, metrics, align="center")
     ss = metrics.supersample
+    _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, _GLYPH_RGB, supersample=ss)
+    font = _load_font(metrics.font_readout)
+    position = body.line.split(" / ", 1)[0] if body.line else body.line
+    _draw_text_with_halo(img, c.tr, position, font, metrics, align="center")
     start_color = _GLYPH_RGB if body.start_enabled else _DIMMED_GLYPH_RGB
     stop_color = _GLYPH_RGB if body.stop_enabled else _DIMMED_GLYPH_RGB
     _draw_glyph(img, _compact_glyph_box(c.bl), GLYPH_RESTART, start_color, supersample=ss)
     _draw_glyph(img, _compact_glyph_box(c.br), GLYPH_STOP, stop_color, supersample=ss)
-    _draw_compact_dividers(img, c, metrics, vertical="bottom")
+    _draw_compact_dividers(img, c, metrics, vertical="full")
 
 
 _BODY_RENDERERS = {
@@ -2022,24 +2066,24 @@ def _list_highlight_rects(rows: tuple, layout) -> tuple[Rect, ...]:
     return tuple(layout.rows[i] for i, row in enumerate(rows[:len(layout.rows)]) if row[1])
 
 
-def _compact_list_highlight_rects(rows: tuple, layout: "CompactLayout") -> tuple[Rect, ...]:
+def _compact_list_highlight_rects(rows: tuple, cells: tuple[Rect, Rect]) -> tuple[Rect, ...]:
     """The compact picker's own current-row wash: the same rule
-    _list_highlight_rects() applies, over the two compact cells (tl/bl)
-    instead of list_layout_for()'s own row rects."""
-    cells = (layout.tl, layout.bl)
+    _list_highlight_rects() applies, over *cells* — the picker layout's own
+    (row0, row1) rects — instead of list_layout_for()'s own row rects."""
     return tuple(cells[i] for i, row in enumerate(rows[:len(cells)]) if row[1])
 
 
 def _compact_list_frame(state: ListState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     """The compact tier's replay picker: dimmed base behind (the manager's
     own current base image, passed through compose_list()'s *base*),
-    pressed and the current-row wash resolved against the compact grid."""
-    c = compact_layout_for(width, height, metrics=metrics)
+    pressed and the current-row wash resolved against the picker's own
+    title-band-plus-grid layout."""
+    p = compact_picker_layout_for(width, height, metrics=metrics)
     return Frame(
         background=BG_BASE,
         dim_all=True,
         pressed=_list_pressed_rects(state, width, height, metrics),
-        highlights=_compact_list_highlight_rects(state.rows, c),
+        highlights=_compact_list_highlight_rects(state.rows, (p.row0, p.row1)),
         header=None,
         body=Body(BODY_COMPACT_LIST, rows=state.rows, has_more=state.has_prev or state.has_next),
         footer=Footer(FOOTER_NONE),
