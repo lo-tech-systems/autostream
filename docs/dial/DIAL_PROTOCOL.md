@@ -4,6 +4,11 @@ This document is the authoritative spec for the wire protocol between autostream
 and autostream appliances. Breaking changes require a version bump and a new capability indicator
 in the mDNS TXT record.
 
+Out of scope: the dial's own loopback poll of its local Wi-Fi watcher (`GET
+127.0.0.1:9080/network_status`, every 15 s) and its use of the local nginx offline-recovery
+CGI (`POST 127.0.0.1/offline/reboot`) for the Restart action are dial-local, not part of the
+appliance<->dial protocol, and are not documented here.
+
 ---
 
 ## 1. mDNS Service Types
@@ -52,6 +57,34 @@ Port: **7842** (dial HTTP server).
 **Name constraints:** dial names are restricted to printable ASCII (0x20-0x7e) excluding `;`
 (avahi field separator) and `|` (config delimiter). Names containing these characters are
 rejected by `autostream_admin update-dial-service`.
+
+### `_autostream._tcp` - autostream appliance, always-on
+
+Announced continuously by an autostream appliance, whether or not a capture is currently
+active - unlike `_autostream-playing._tcp` above, which is announced only while playing. A
+dial's own second mDNS browser, started only once a screen is fitted, scans this service
+type to build a roster that also covers idle appliances, so a dial can bind to (and poll
+`POST /api/dial/status` and send repeat commands against) an appliance that is not
+currently playing - the repeat/replay picker's "idle focus".
+
+| TXT field | Value | Meaning |
+|---|---|---|
+| `id` | 20 lowercase hex characters | This appliance's stable identity, same meaning as `id` on `_autostream-playing._tcp` |
+| `version` | e.g. `1.2.3` | Installed autostream version |
+| `dial_api` | `v1` | Gates the sighting the same way as on `_autostream-playing._tcp` - an appliance without it is not tracked for the dial's roster |
+| `dial_status` | `v1` | `POST /api/dial/status` is available |
+| `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
+| `dial_eq` | `v1` | `POST /api/dial/eq` and `POST /api/dial/eq/set` are available |
+| `repeat` | `v1` | Repeat recording/replay is enabled on this appliance; surfaced to the dial as `repeat_capable` in its roster |
+
+This service also carries `ui`, `federation`, and `control` TXT fields used for
+appliance-to-appliance federation (see `docs/APPLIANCE-FEDERATION.md`). The dial does not
+read any of these three - authorization for what a dial can do with a rostered appliance
+comes entirely from the per-dial UUID check on each protocol call, never from the
+peer-control setting. `audio_status` is not carried here - it is specific to
+`_autostream-playing._tcp`.
+
+Port: **80** (appliance HTTP server, same as `_autostream-playing._tcp`).
 
 ---
 
@@ -143,7 +176,9 @@ explicit `POST /api/dial/mute {"action": "restore"}`.
 | `"all_outputs_failed"` | Every per-output update call failed |
 
 **Authorization failure: 403** (empty body). Returned when `dial_id` is absent, empty, or
-not present in `dials.json`.
+not present in `dials.json`. Unlike `POST /api/dial/status` below, this endpoint does not
+distinguish a definitive miss from a transiently unreadable dials store - both cases are
+403 here.
 
 ---
 
@@ -622,7 +657,8 @@ under section 4 for why.
 
 ### `POST /configure`
 
-All fields optional. PIN required to change `name`, `step_percent`, `new_pin`, or `auto_update` if a PIN is set.
+All fields optional. PIN required to change `name`, `step_percent`, `new_pin`,
+`auto_update`, or `update_channel` if a PIN is set.
 
 PIN recovery completion: include `"pin_recovery": true` with `"new_pin"` to complete recovery
 without knowing the current PIN (window must be active and volume confirmed).
@@ -750,12 +786,53 @@ and bounds the time available to confirm presence and set a new PIN.
 A request found on a dial with no PIN configured is still consumed (deleted) at startup,
 but never arms anything - there is nothing to recover.
 
+### `POST /auth-changed`
+
+Advisory, appliance-initiated notification that a given `appliance_id`'s dial authorization
+may have changed. Fired by the main appliance (fire-and-forget, one retry after a short
+delay on failure) immediately after its own `POST /api/dial/authorize` or `POST
+/api/dial/revoke` handler responds, so an already-open dial screen or an in-flight status
+poll can react without waiting for its next scheduled tick.
+
+**No PIN required, and never authenticated** - anyone on the LAN can reach port 7842, so
+this endpoint grants nothing by itself: it only causes the dial to enqueue a probe, and
+only when the source IP matches a sighting the dial has already rostered for that
+`appliance_id` (see `_autostream-playing._tcp`/`_autostream._tcp` above). Authorization
+truth for the dial protocol routes still comes entirely from the dial's own status poll.
+
+**Request body:**
+```json
+{"appliance_id": "a1b2c3d4e5f6a7b8c9d0"}
+```
+
+**Response:** always `202 {"ok": true}`, whether or not the id is known, rostered, or
+rate-limited - the response must never leak that information to an unauthenticated caller.
+
+| `error` (`400`) | Meaning |
+|---|---|
+| `invalid_json` | Body is not valid JSON |
+| `body_must_be_object` | JSON root is not an object |
+| `invalid_appliance_id` | `appliance_id` missing or not 20 lowercase hex characters |
+
+**Rate limiting.** At most one accepted push per source IP every 2 seconds, and per
+`appliance_id` every 5 seconds; a push outside these windows is still answered `202` but
+never enqueued. This limits the probes a single caller (or a spoofed source) can trigger,
+not the endpoint's own reachability.
+
 ### `POST /update`
 
 Triggers a firmware update. Returns immediately:
 ```json
 {"ok": true}
 ```
+
+**Failure response (200 body):**
+```json
+{"ok": false, "error": "scheduler_failed"}
+```
+
+Returned when the admin command that schedules the updater run could not be started. The
+update itself has not been attempted in this case.
 
 ### `GET /update/status`
 
@@ -817,6 +894,7 @@ values from this endpoint.
     "screen_type": "st7735s_160x128",
     "bgr": false,
     "touch_type": "none",
+    "always_show_controls": false,
     "screen_size_inches": null,
     "layout_size": null,
     "volume_scope": "current",
@@ -855,6 +933,7 @@ values from this endpoint.
     "screen_type": "st7735s_160x128",
     "bgr": false,
     "touch_type": "none",
+    "always_show_controls": false,
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -878,6 +957,7 @@ values from this endpoint.
 | `screen.screen_type` | string | Persisted display profile key. Optional, defaults to the dial's default profile |
 | `screen.bgr` | bool | Persisted colour-order swap setting. Optional, defaults to `false` |
 | `screen.touch_type` | string | Persisted touch controller key. Optional, defaults to `"none"` (touch disabled). An unrecognised value is rejected outright - see **Validation** under `POST /screen/settings` below |
+| `screen.always_show_controls` | bool | Persisted "always show controls" setting - keeps the now-playing/volume overlay visible rather than only on a touch. Optional, defaults to `false`. No separate capability gate: like `rotate`/`bgr`, it is always accepted and always reported |
 | `screen.screen_size_inches` | number\|null | Persisted physical screen diagonal, in inches. `null` means "use the selected profile's own built-in default" (see `default_inches` under **Supported profiles** below). Optional, defaults to `null` |
 | `screen.layout_size` | string\|null | Persisted logical render size: the dial composes and hit-tests every screen at this size and resamples the finished frame to the panel. `null` means "use the panel's own resolution" - today's behaviour. When present, must be one of the keys in `layout_sizes` for the current `screen_type`. Optional, defaults to `null` |
 | `screen.volume_scope` | string | Which appliances a volume twist addresses while `screen.fitted` is true: `"current"` (the bound appliance) or `"all"` (every playing appliance). Optional, defaults to `"current"`. See **Scope capability gate** and **Broadcast scope** below |
@@ -896,6 +976,7 @@ values from this endpoint.
 | `runtime.rotate` | bool | Effective rotation flag currently applied by the display manager |
 | `runtime.screen_type` | string | The **active** display profile key - see **Configured vs. active** below |
 | `runtime.bgr` | bool | The **active** colour-order swap setting - see **Configured vs. active** below |
+| `runtime.always_show_controls` | bool | The **active** "always show controls" setting; applies live, so this always matches `screen.always_show_controls` |
 | `runtime.touch_type` | string | What the touch stack **actually did at startup**, set once after touch construction finishes. One of: the constructed controller key (e.g. `"xpt2046"`) when touch was built and started; `"none"` when touch was deliberately not built (disabled by config, or no screen fitted); `"failed"` when construction was attempted and raised. Polled before startup construction finishes, it reads `""` - the same early-poll caveat as `can_confirm_presence` under `GET /configure`. This is distinct from `screen.touch_type` (the persisted configuration), which changes the instant a `POST /screen/settings` saves it even though the running process has not restarted to pick it up yet |
 | `runtime.active` | bool | `true` when a non-no-op display path is open |
 | `runtime.backend` | string | Name of the currently active driver (e.g. `noop`, `adafruit_st7735s`) |
@@ -1033,7 +1114,27 @@ restart was actually fired for it:
     "rotate": false,
     "screen_type": "st7735s_160x128",
     "bgr": false,
-    "touch_type": "xpt2046"
+    "touch_type": "xpt2046",
+    "always_show_controls": false,
+    "screen_size_inches": null,
+    "layout_size": null,
+    "volume_scope": "current",
+    "mute_scope": "current"
+  },
+  "layout_sizes": [],
+  "layout": {
+    "logical_width": 160,
+    "logical_height": 128,
+    "physical_width": 160,
+    "physical_height": 128,
+    "resampled": false,
+    "size_chosen": false,
+    "content_tier": "base",
+    "touch_short": false
+  },
+  "scope": {
+    "volume": "all",
+    "mute": "all"
   },
   "runtime": {
     "fitted": true,
@@ -1041,6 +1142,7 @@ restart was actually fired for it:
     "screen_type": "st7735s_160x128",
     "bgr": false,
     "touch_type": "none",
+    "always_show_controls": false,
     "active": false,
     "backend": "noop",
     "backend_loaded": false,
@@ -1054,6 +1156,11 @@ restart was actually fired for it:
   "restarting": true
 }
 ```
+
+(`layout_sizes`, `layout`, and `scope` follow the same shape and gating rules as on `GET
+/screen/settings` above - they are included here as they always are on every `POST
+/screen/settings` response, success or `screen_apply_failed`. `supported`/`supported_touch`
+are not - a client re-fetches `GET /screen/settings` for those.)
 
 (`runtime.touch_type` in this example still reads `"none"` - the previously-running
 state - because the touch controller change does not apply live; see **`restart_required`**
@@ -1117,10 +1224,10 @@ capability gate** above: gate on `supported_touch`, not on `supported`.
 **Layout-size capability gate** above: gate on `layout_sizes`, not on `supported` or
 `supported_touch`.
 
-Both response shapes below also carry a `layout` object (see **Layout report** above) for
-the configuration they echo: the success path's `layout` reflects the newly-saved `screen`,
-and the `screen_apply_failed` path's `layout` reflects the still-persisted `screen` it
-echoes instead.
+Both response shapes below also carry `layout_sizes`, `layout` (see **Layout report**
+above), and `scope` for the configuration they echo: the success path reflects the
+newly-saved `screen`, and the `screen_apply_failed` path reflects the still-persisted
+`screen` it echoes instead.
 
 **Validation:**
 
@@ -1135,6 +1242,10 @@ echoes instead.
 - `touch_type` is optional and defaults to `"none"` when omitted; when present it must be a
   string naming a controller key present in `supported_touch`. An unknown value is rejected
   outright, the same as `screen_type`.
+- `always_show_controls` is optional and defaults to `false` when omitted; when present it
+  must also be a strict JSON boolean. Unlike `touch_type`/`screen_type`/`layout_size`, this
+  field has no capability gate - it is always accepted, the same as `rotate`/`bgr` - so an
+  old appliance's whole-object POST (which never sends it) never 400s.
 - `screen_size_inches` is optional and defaults to `null` when omitted (meaning "use the
   selected profile's own default"); when present it must be a JSON number (not a boolean)
   between `0.5` and `20`, or JSON `null`. Anything else is rejected outright.
@@ -1162,15 +1273,29 @@ echoes instead.
 /screen/settings`, a `screen_type` change is applied to the live display **before** being
 written to disk, and is persisted only if the apply succeeded:
 
-- `fitted`, `rotate`, and `bgr` can never fail to apply, so they are always persisted
-  regardless of runtime outcome - this part of the ordering is unchanged from before.
+- `fitted`, `rotate`, and `bgr` can never fail to apply on their own, so a request that
+  changes only these (with `screen_type` unchanged) is always persisted regardless of
+  runtime outcome - this part of the ordering is unchanged from before.
+- `[ ]` A request that bundles a `screen_type` change with other field changes (`fitted`,
+  `rotate`, `bgr`, `touch_type`, etc.) in the same POST and hits the failure path below
+  appears, from the handler, to discard the whole posted `screen` object - not just
+  `screen_type` - since the on-disk config is a single write. This has not been confirmed
+  against a real bundled-request test; treat mixed screen_type + other-field POSTs as
+  all-or-nothing until this is verified.
 - If a `screen_type` change is requested while `fitted` is true and the new panel driver
   fails to open, the response is:
   ```json
   {
     "ok": false,
     "error": "screen_apply_failed",
-    "screen": { "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false },
+    "screen": {
+      "fitted": true, "rotate": false, "screen_type": "st7735s_160x128", "bgr": false,
+      "touch_type": "none", "always_show_controls": false, "screen_size_inches": null,
+      "layout_size": null, "volume_scope": "current", "mute_scope": "current"
+    },
+    "layout_sizes": [ "..." ],
+    "layout": { "...": "..." },
+    "scope": { "volume": "all", "mute": "all" },
     "runtime": { "...": "..." }
   }
   ```
@@ -1197,6 +1322,7 @@ written to disk, and is persisted only if the apply succeeded:
 | `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume |
 | `dial_outputs=v1` | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume |
 | `dial_eq=v1` | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; bass/treble over the output EQ bands |
+| `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 
 `POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same
 UUID-in-body authorization as `POST /api/dial/volume` and was added to the appliance API
