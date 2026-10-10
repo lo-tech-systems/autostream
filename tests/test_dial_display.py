@@ -45,6 +45,7 @@ from dial_mdns import PlayingTarget
 from dial_touch_layout import TouchZone, list_layout_for, metrics_for
 import dial_display as dd
 from dial_display import (
+    SCREEN_POLICIES,
     SELECTOR_TIMEOUT_SECONDS,
     DialDisplay,
     DisplayBackend,
@@ -4932,3 +4933,41 @@ class TestRefreshIdleAffordance:
         display._overlay_signal.clear()
         display._refresh_idle_affordance([self._roster_row(aid)], now)
         assert display._overlay_signal.is_set()
+
+
+# ---------------------------------------------------------------------------
+# The screen policy table itself: shape and cross-row consistency checks,
+# independent of any particular screen's behaviour (covered above and by
+# the trace corpus).
+# ---------------------------------------------------------------------------
+
+class TestScreenPolicyTable:
+    def test_table_has_exactly_the_four_screens(self):
+        assert set(SCREEN_POLICIES) == {"main", "selector", "picker", "repeat"}
+
+    def test_state_attr_is_an_attribute_of_a_fresh_display(self):
+        display, fb, gt = _make_display(targets=[])
+        for policy in SCREEN_POLICIES.values():
+            if policy.state_attr is not None:
+                assert hasattr(display, policy.state_attr)
+
+    def test_open_and_paint_are_dial_display_methods(self):
+        for policy in SCREEN_POLICIES.values():
+            assert callable(policy.open)
+            assert policy.open.__qualname__.startswith("DialDisplay.")
+            if policy.paint is not None:
+                assert callable(policy.paint)
+                assert policy.paint.__qualname__.startswith("DialDisplay.")
+
+    def test_back_to_names_a_table_key(self):
+        for policy in SCREEN_POLICIES.values():
+            assert policy.back_to in SCREEN_POLICIES
+
+    def test_exactly_selector_and_picker_are_paged(self):
+        paged = {name for name, policy in SCREEN_POLICIES.items() if policy.paged}
+        assert paged == {"selector", "picker"}
+
+    def test_picker_touch_extends_timeout_is_pinned_false(self):
+        # Today's actual value — see the row's own comment. Flip only as a
+        # deliberate, reviewed product decision with its own test.
+        assert SCREEN_POLICIES["picker"].touch_extends_timeout is False

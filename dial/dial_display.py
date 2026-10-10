@@ -142,6 +142,45 @@ _REPEAT_LOOP_GAP_S = 1.5
 # never touched by this.
 REPEAT_COUNTER_LATENCY_S = 2.0
 
+
+# ---------------------------------------------------------------------------
+# Screen policy table
+#
+# One policy row per screen, read by the manager wherever the screen showing
+# decides what happens: what the touch side is told, how it is painted,
+# whether and when it times out, what the poll does to it when nothing
+# plays, and what a close hands back to. Adding a screen is adding a row
+# here plus its own opener and painter; nothing else in the manager should
+# need to name screens.
+# ---------------------------------------------------------------------------
+
+# How the poll reacts to a screen when it finds nothing playing.
+IDLE_KEEP = "keep"                       # the screen stays; its own timeout closes it
+IDLE_CLOSE = "close"                     # popped to main
+IDLE_KEEP_WITH_FOCUS = "keep_with_focus" # kept only while an idle focus gives it something to show
+
+
+@dataclass(frozen=True)
+class ScreenPolicy:
+    """One screen's policy — see the module note above. `open`/`paint` are
+    unbound DialDisplay methods; `open` returns False to refuse the request
+    and leave the current screen in place (e.g. the repeat screen with
+    nothing to show for it)."""
+    name: str
+    state_attr: str | None            # the manager attribute holding this screen's state, or None (main)
+    surface: tuple[str, bool, bool] | None   # (surface, name_active, dots_active) for touch, or None: computed (main)
+    open: object                      # unbound DialDisplay method (self) -> bool
+    paint: object                     # unbound DialDisplay method (self) -> None, or None: main's own paint path
+    paged: bool                       # a paged list: page requests apply, rows are sliced per page
+    inactivity_timeout_s: float | None
+    touch_extends_timeout: bool       # touch activity re-stamps opened_at
+    when_nothing_plays: str           # IDLE_KEEP | IDLE_CLOSE | IDLE_KEEP_WITH_FOCUS
+    defers_sleep: bool                # open (or requested) screen holds off the idle-sleep countdown
+    close_reveals_overlay: bool       # a DOTS toggle-close arms the one-shot main-overlay reveal
+    closes_on_focus_clear: bool       # a manual-focus clear pops it
+    back_to: str                      # the screen a back/close request returns to
+
+
 # Pillow renamed these resample enums in recent versions; fall back for
 # older installs, the same guard dial_display_image.py/dial_display_
 # compositor.py use for their own resizes.
@@ -871,11 +910,14 @@ class DialDisplay:
             return False
         self._touch_activity_pending = False
         self._idle_started_at = None
-        if self._screen == "selector" and self._selector is not None:
-            # Any touch activity while the selector is open extends its
-            # inactivity timeout — see SELECTOR_TIMEOUT_SECONDS and the
-            # _repaint_run timeout branch below.
-            self._selector = dataclasses.replace(self._selector, opened_at=time.monotonic())
+        policy = _policy(self._screen)
+        if policy.touch_extends_timeout:
+            # Touch activity while this screen is open extends its own
+            # inactivity timeout — see ScreenPolicy.touch_extends_timeout
+            # and the _repaint_run timeout branch below.
+            state = getattr(self, policy.state_attr)
+            if state is not None:
+                setattr(self, policy.state_attr, dataclasses.replace(state, opened_at=time.monotonic()))
         if self._display_sleeping:
             self._wake_locked()
             return True
@@ -972,20 +1014,17 @@ class DialDisplay:
         "idle" is reported only while the idle affordance is drawn — a tap
         on a plain logo with nothing held stays reveal-only, as before this
         feature existed.
+
+        Every secondary screen's surface tuple is fixed by its policy row
+        (ScreenPolicy.surface) — the repeat screen's own top-band NAME zone
+        is always meaningful while it is showing (it only ever opens for a
+        focused/reporting appliance, and closes before that appliance's
+        name could go stale — see toggle_repeat_screen() and the empty-
+        target branch of _poll_once).
         """
-        if self._screen == "selector":
-            return ("selector", False, False)
-        if self._screen == "picker":
-            return ("picker", False, False)
-        if self._screen == "repeat":
-            # name_active is unconditionally True here: the repeat screen
-            # only ever opens for a focused/reporting appliance (see
-            # toggle_repeat_screen()) and closes before that appliance's
-            # name could go stale (the empty-target branch of _poll_once
-            # always pops the screen before clearing _now_playing), so its
-            # own top-band NAME zone is always meaningful while this screen
-            # is showing.
-            return ("repeat", True, True)
+        policy = _policy(self._screen)
+        if policy.surface is not None:
+            return policy.surface
         if self._now_playing is None:
             return ("idle" if self._idle_affordance else "hidden", False, False)
         name_active = True
@@ -1476,12 +1515,13 @@ class DialDisplay:
         self._apply_screen_requests_locked()
         if not (self._backend_open and self._backend is not None):
             return woke
-        if self._screen in ("selector", "picker"):
-            self._display_list_locked()
+        policy = _policy(self._screen)
+        if policy.paint is not None:
+            policy.paint(self)
             return woke
-        if self._screen == "repeat":
-            self._display_repeat_locked()
-            return woke
+        # Main has no policy paint of its own — the idle chassis vs. bare
+        # artwork/logo choice depends on artwork, affordance and now-
+        # playing, none of which the table carries.
         if self._current_base_image is None:
             return woke
         if self._idle_chassis_due_locked():
@@ -1528,7 +1568,7 @@ class DialDisplay:
         """Touch-thread entry (dial_main's on_zone_tap, for a LIST_BACK
         tap): pop back to main from whichever list-chassis screen (the
         appliance selector or the replay picker) is open."""
-        self._screen_request = "main"
+        self._screen_request = _policy(self._screen).back_to
         self._overlay_signal.set()
 
     close_selector = close_list  # alias kept for existing direct callers/tests
@@ -1610,7 +1650,8 @@ class DialDisplay:
         repeat store already holds.
         """
         if self._screen == "repeat":
-            self._repeat_close_reveal = True
+            if _policy(self._screen).close_reveals_overlay:
+                self._repeat_close_reveal = True
             self._screen_request = "main"
             self._overlay_signal.set()
             return
@@ -1697,7 +1738,7 @@ class DialDisplay:
         volume readout on main. Lock-free request, exactly like
         close_list()."""
         if self._screen == screen:
-            self._screen_request = "main"
+            self._screen_request = _policy(self._screen).back_to
             self._overlay_signal.set()
 
     def set_manual_focus_pending(self, appliance_id: str, service_name: str) -> None:
@@ -1777,11 +1818,53 @@ class DialDisplay:
                 )
         return None
 
+    def _open_main_locked(self) -> bool:
+        """The "main" row's opener: pop to main. Extracted verbatim from
+        the old request-folding branch so the table's `open` field can
+        name it directly."""
+        self._close_secondary_locked()
+        return True
+
+    def _open_selector_locked(self) -> bool:
+        """The selector row's opener: open, or re-open, at page 0 with a
+        restarted inactivity clock, carrying over whatever rows were last
+        built. Deliberately does not clear another screen's own state on a
+        direct switch (e.g. from repeat) — _close_secondary_locked is the
+        one place that does."""
+        rows = self._selector.rows if self._selector is not None else ()
+        self._selector = SelectorState(rows=rows, page=0, opened_at=time.monotonic())
+        self._screen = "selector"
+        return True
+
+    def _open_picker_locked(self) -> bool:
+        """The picker row's opener — the replay picker's counterpart to
+        _open_selector_locked."""
+        rows = self._picker.rows if self._picker is not None else ()
+        self._picker = PickerState(rows=rows, page=0, opened_at=time.monotonic())
+        self._screen = "picker"
+        return True
+
+    def _open_repeat_locked(self) -> bool:
+        """The repeat row's opener: build the screen, or refuse (leaving
+        the current screen in place) when there is nothing to build it for
+        — see _build_repeat_screen_locked."""
+        screen = self._build_repeat_screen_locked()
+        if screen is None:
+            return False
+        self._repeat_screen = screen
+        self._screen = "repeat"
+        return True
+
     def _apply_screen_requests_locked(self) -> None:
         """Fold pending open_selector()/close_list()/list_page()/
         toggle_repeat_screen()/open_picker() touch-thread requests into
-        self._screen/self._selector/self._repeat_screen/self._picker.
-        Caller holds self._lock; runs on the repeat thread only.
+        self._screen and the per-screen state, via the screen policy
+        table: the requested row's own `open` method decides whether the
+        switch happens at all (it can refuse and leave the current screen
+        showing); a switch that does happen clears the pressed channel; a
+        pending page delta applies to whichever row is showing, when that
+        row is paged. Caller holds self._lock; runs on the repeat thread
+        only.
         """
         previous_screen = self._screen
         request = self._screen_request
@@ -1789,21 +1872,8 @@ class DialDisplay:
         delta = self._page_request
         self._page_request = 0
 
-        if request == "selector":
-            rows = self._selector.rows if self._selector is not None else ()
-            self._selector = SelectorState(rows=rows, page=0, opened_at=time.monotonic())
-            self._screen = "selector"
-        elif request == "picker":
-            rows = self._picker.rows if self._picker is not None else ()
-            self._picker = PickerState(rows=rows, page=0, opened_at=time.monotonic())
-            self._screen = "picker"
-        elif request == "repeat":
-            screen = self._build_repeat_screen_locked()
-            if screen is not None:
-                self._repeat_screen = screen
-                self._screen = "repeat"
-        elif request == "main":
-            self._close_secondary_locked()
+        if request is not None:
+            _policy(request).open(self)
 
         if self._screen != previous_screen:
             # A press on a zone the new screen shares with the old one
@@ -1811,28 +1881,20 @@ class DialDisplay:
             # screens) must not carry its wash onto the screen it opens.
             self._pressed = None
 
-        active = (
-            self._selector if self._screen == "selector"
-            else self._picker if self._screen == "picker"
-            else None
-        )
-        if delta and active is not None:
-            new_page = _clamp_page(active.page + delta, len(active.rows), self._rows_per_page())
-            if new_page != active.page:
-                updated = dataclasses.replace(active, page=new_page)
-                if self._screen == "selector":
-                    self._selector = updated
-                else:
-                    self._picker = updated
+        policy = _policy(self._screen)
+        if delta and policy.paged:
+            active = getattr(self, policy.state_attr)
+            if active is not None:
+                new_page = _clamp_page(active.page + delta, len(active.rows), self._rows_per_page())
+                if new_page != active.page:
+                    setattr(self, policy.state_attr, dataclasses.replace(active, page=new_page))
 
     def _check_secondary_timeout(self) -> None:
-        """Close the appliance selector or the replay picker after
-        SELECTOR_TIMEOUT_SECONDS of no touch activity — called from the
-        repaint thread's own 1s timeout branch, so this runs even when
-        nothing else signals a repaint. The repeat screen has NO timeout
-        of its own: it is the device's second screen, a user may be
-        watching the Replaying line, and the dots toggle back to main at
-        any time.
+        """Close the screen showing after its own inactivity timeout —
+        called from the repaint thread's own 1s timeout branch, so this
+        runs even when nothing else signals a repaint. A screen with no
+        timeout of its own (main, repeat) is simply never closed from here
+        — see ScreenPolicy.inactivity_timeout_s.
 
         self._screen/self._selector/self._picker are read lock-free here:
         all three are also written by the poll thread (_poll_once's
@@ -1843,12 +1905,13 @@ class DialDisplay:
         The actual close below is re-checked and applied under the lock
         regardless.
         """
-        if self._screen not in ("selector", "picker"):
+        policy = _policy(self._screen)
+        if policy.inactivity_timeout_s is None:
             return
-        state = self._selector if self._screen == "selector" else self._picker
+        state = getattr(self, policy.state_attr)
         if state is None:
             return
-        if time.monotonic() - state.opened_at >= SELECTOR_TIMEOUT_SECONDS:
+        if time.monotonic() - state.opened_at >= policy.inactivity_timeout_s:
             with self._lock:
                 self._close_secondary_locked()
 
@@ -2307,11 +2370,12 @@ class DialDisplay:
 
     def _clear_focus(self, reason: str) -> None:
         """Poll thread only: drop the manual focus and any pending grace,
-        and close an open repeat screen (it was opened for that focus)."""
+        and close the current screen when its policy says a focus clear
+        should pop it (the repeat screen was opened for that focus)."""
         self._manual_focus_id = None
         self._focus_pending = None
         logging.info("dial display: manual focus cleared (%s)", reason)
-        if self._screen == "repeat":
+        if _policy(self._screen).closes_on_focus_clear:
             with self._lock:
                 self._close_secondary_locked()
 
@@ -2448,20 +2512,24 @@ class DialDisplay:
             self._refresh_selector_rows(roster, idle_focus.appliance_id if idle_focus is not None else None)
 
             with self._lock:
-                # The two list screens are the idle-state screens for
-                # choosing what to replay or what to control, so a poll
-                # that finds nothing playing must not close them; their own
-                # inactivity timeout does. The repeat screen is closed
-                # unless an idle focus keeps it meaningful.
-                # A pending "selector"/"picker" request (an open_* call just
-                # ran on the touch thread, the repaint thread has not
-                # applied it yet) counts as open too, so this poll never
-                # clobbers a list that is opening this very tick.
-                list_open = (
-                    self._screen in ("selector", "picker")
-                    or self._screen_request in ("selector", "picker")
-                )
-                if self._screen == "repeat" and idle_focus is None:
+                # Each screen's own row says what a poll finding nothing
+                # playing does to it: IDLE_KEEP screens (the two list
+                # screens) are left alone — their own inactivity timeout
+                # closes them; IDLE_KEEP_WITH_FOCUS (repeat) closes unless
+                # an idle focus keeps it meaningful. A pending request for a
+                # screen that defers sleep (an open_* call just ran on the
+                # touch thread, the repaint thread has not applied it yet)
+                # counts as open too, so this poll never clobbers a list
+                # that is opening this very tick.
+                open_or_requested = [_policy(self._screen)]
+                if self._screen_request is not None:
+                    open_or_requested.append(_policy(self._screen_request))
+                list_open = any(p.defers_sleep for p in open_or_requested)
+                current = _policy(self._screen)
+                if (
+                    current.when_nothing_plays == IDLE_CLOSE
+                    or (current.when_nothing_plays == IDLE_KEEP_WITH_FOCUS and idle_focus is None)
+                ):
                     self._close_secondary_locked()
                 if not list_open:
                     if self._idle_started_at is None:
@@ -2525,8 +2593,6 @@ class DialDisplay:
                     self._reporting_appliance_id = None
                     self._update_dots_active(now)
 
-            self.show_logo()
-            return
             self.show_logo()
             return
 
@@ -2770,6 +2836,50 @@ class DialDisplay:
         logging.info("dial display: artwork replaced (%s)", url_key)
         if was_showing == "logo":
             logging.info("dial display: showing artwork")
+
+
+# The table itself is defined after the class body so its `open`/`paint`
+# entries can name the class's own (unbound) methods directly.
+SCREEN_POLICIES: dict[str, ScreenPolicy] = {
+    "main": ScreenPolicy(
+        name="main", state_attr=None, surface=None,
+        open=DialDisplay._open_main_locked, paint=None, paged=False,
+        inactivity_timeout_s=None, touch_extends_timeout=False,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=False,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
+    ),
+    "selector": ScreenPolicy(
+        name="selector", state_attr="_selector", surface=("selector", False, False),
+        open=DialDisplay._open_selector_locked, paint=DialDisplay._display_list_locked, paged=True,
+        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
+    ),
+    "picker": ScreenPolicy(
+        name="picker", state_attr="_picker", surface=("picker", False, False),
+        open=DialDisplay._open_picker_locked, paint=DialDisplay._display_list_locked, paged=True,
+        # touch_extends_timeout is False here — today's actual behaviour,
+        # kept exactly as it is rather than "fixed" to match the selector's.
+        inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=False,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
+    ),
+    "repeat": ScreenPolicy(
+        name="repeat", state_attr="_repeat_screen", surface=("repeat", True, True),
+        open=DialDisplay._open_repeat_locked, paint=DialDisplay._display_repeat_locked, paged=False,
+        inactivity_timeout_s=None, touch_extends_timeout=False,
+        when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
+        close_reveals_overlay=True, closes_on_focus_clear=True, back_to="main",
+    ),
+}
+
+
+def _policy(name: str) -> ScreenPolicy:
+    """The policy row for screen/request name *name*. An unknown name is a
+    programming error and raises KeyError — no runtime path can produce one,
+    since self._screen and every screen request are only ever set to a
+    table key by the entry points above."""
+    return SCREEN_POLICIES[name]
 
 
 def _adafruit_backend_factory_for_screen_type(screen_type: str):
