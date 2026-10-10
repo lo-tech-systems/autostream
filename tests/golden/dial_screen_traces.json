@@ -23912,6 +23912,1598 @@
       ]
     }
   ],
+  "output_needs_pin_row_shows_pair_page_without_sending": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "outputs",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1600000000000000000",
+        "loaded": false,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": []
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1600000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1600000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1600000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": "output",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1600000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1600000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "output",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "output",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1600000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1600000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "output",
+      "screen_request": "info_value",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "output",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1600000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O16",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1600000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1600000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1600000000000000000",
+      "restarting_open": false,
+      "screen": "info_value",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info_value",
+        false,
+        false,
+        false
+      ]
+    }
+  ],
+  "output_pin_required_shows_pair_page_and_returns": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "outputs",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": false,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": []
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "outputs",
+      "screen_request": "output",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "outputs",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1500000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "output",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "output",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1500000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": [
+        "1",
+        true,
+        0,
+        1000.0
+      ],
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "output",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "output",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1500000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": [
+        "1",
+        true,
+        0,
+        1000.0
+      ],
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "output",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "output",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1500000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "outputs_request": [
+        "output_set",
+        "rejected",
+        "pin_required",
+        "1"
+      ],
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "output",
+      "screen_request": "info_value",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "output",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1500000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "outputs_request": [
+        "output_set",
+        "rejected",
+        "pin_required",
+        "1"
+      ],
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "info_value",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info_value",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1500000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "outputs_request": [
+        "output_set",
+        "rejected",
+        "pin_required",
+        "1"
+      ],
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "info_value",
+      "screen_request": "output",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info_value",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "o1500000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "O15",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": {
+        "appliance_id": "o1500000000000000000",
+        "opened_at": 1000.0,
+        "output_id": "1"
+      },
+      "outputs": {
+        "appliance_id": "o1500000000000000000",
+        "loaded": true,
+        "opened_at": 1000.0,
+        "page": 0,
+        "rows": [
+          [
+            "1",
+            "Apple TV",
+            false,
+            0
+          ]
+        ]
+      },
+      "outputs_optimistic": null,
+      "outputs_request": [
+        "output_set",
+        "rejected",
+        "pin_required",
+        "1"
+      ],
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "o1500000000000000000",
+      "restarting_open": false,
+      "screen": "output",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "output",
+        true,
+        false,
+        false
+      ]
+    }
+  ],
   "output_toggle_tap_sets_optimistic_override": [
     {
       "bound_appliance_id": null,

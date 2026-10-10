@@ -301,6 +301,10 @@ Tap the X (where the page dots normally sit) to go back to the list, or the
 row itself to switch that output on or off. Compact panels have no volume
 readout to tap, so this whole feature is unreachable there.
 
+If a speaker needs pairing (a new Apple TV, for example), the page reads
+**Pair in Autostream**: enter the PIN in the appliance's web UI, where the
+prompt appears, then try again. Tap anywhere to go back.
+
 ## EQ page
 
 Rich and larger panels only, never available on compact, even for an

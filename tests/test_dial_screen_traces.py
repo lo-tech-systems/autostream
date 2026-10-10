@@ -182,14 +182,18 @@ def _repeat_obj(**overrides) -> dict:
 
 def _outputs_body(rows) -> dict:
     """rows: an iterable of (id, name, selected, volume, remote_in_use
-    [, is_default]) tuples -- the shape POST /api/dial/outputs returns, fed
-    straight to on_outputs_result() via the "outputs_result" step. The
-    "is_default" key is sent only for a row that gives a sixth element."""
+    [, is_default [, needs_auth_key]]) tuples -- the shape POST
+    /api/dial/outputs returns, fed straight to on_outputs_result() via the
+    "outputs_result" step. The "is_default" key is sent only for a row that
+    gives a sixth element, "needs_auth_key" only for one that gives a
+    seventh."""
     def _row(row):
         i, n, s, v, r, *rest = row
         body = {"id": i, "name": n, "selected": s, "volume": v, "remote_in_use": r}
         if rest:
             body["is_default"] = rest[0]
+        if len(rest) > 1:
+            body["needs_auth_key"] = rest[1]
         return body
 
     return {"ok": True, "outputs": [_row(row) for row in rows]}
@@ -371,6 +375,12 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         _, aid, status, body = step
         d.core.on_outputs_result("fetch", aid, status, body, {})
         d._apply_pending_snapshot()
+    elif kind == "outputs_set_result":
+        # ("outputs_set_result", appliance_id, status, body) -- the reply to
+        # a set the outputs worker sent, fed to the same callback.
+        _, aid, status, body = step
+        d.core.on_outputs_result("set", aid, status, body, {})
+        d._apply_pending_snapshot()
     elif kind == "tick_outputs_refresh":
         d._tick_outputs_refresh()
     elif kind == "hide_controls":
@@ -490,9 +500,18 @@ def _snapshot(ctx: _Ctx) -> dict:
     )
     default_extra = {} if default_row is None else {"outputs_default": default_row}
 
+    # Present only once an output request has been answered, for the same
+    # reason: a request still pending (a tap whose reply the scenario never
+    # feeds) records nothing.
+    request = core_snap.outputs_request
+    request_extra = {} if request is None or request.state == "pending" else {
+        "outputs_request": [request.kind, request.state, request.error, request.output_id],
+    }
+
     return {
         **appliance_extra,
         **default_extra,
+        **request_extra,
         "screen": d._screen,
         "showing": d._showing,
         "screen_request": d._screen_request,
@@ -1293,6 +1312,44 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("targets", []),
         ("poll",),
         ("outputs_result", aid_a, 200, _outputs_body([("1", "Bedroom", False, 0, False)])),
+        ("repaint",),
+    ])
+
+    # An enable the appliance refuses because the speaker wants a PIN puts
+    # the pairing hint over the output page; closing it returns there.
+    aid = _aid("o15")
+    t = _target("O15", aid, dial_outputs=True)
+    add("output_pin_required_shows_pair_page_and_returns", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Apple TV", False, 0, False)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("output_toggle_tap",),
+        ("repaint",),
+        ("outputs_set_result", aid, 200, {"ok": False, "pin_required": True, "error": "Output requires PIN"}),
+        ("repaint",),
+        ("close_list",),
+        ("repaint",),
+    ])
+
+    # A row already known to need pairing shows the hint at the tap, with
+    # no request sent (no request outcome is recorded).
+    aid = _aid("o16")
+    t = _target("O16", aid, dial_outputs=True)
+    add("output_needs_pin_row_shows_pair_page_without_sending", [
+        ("targets", [t]),
+        ("poll",),
+        ("open_outputs",),
+        ("repaint",),
+        ("outputs_result", aid, 200, _outputs_body([("1", "Apple TV", False, 0, False, False, True)])),
+        ("repaint",),
+        ("outputs_row_tap", 0),
+        ("repaint",),
+        ("output_toggle_tap",),
         ("repaint",),
     ])
 
@@ -2637,6 +2694,8 @@ class TestPreCoreScenariosUnchanged:
         "appliance_warning_pages_below_sdhealth",
         "appliance_warning_ok_holds_until_cleared",
         "outputs_default_row_marked",
+        "output_pin_required_shows_pair_page_and_returns",
+        "output_needs_pin_row_shows_pair_page_without_sending",
     }
 
     def test_every_scenario_is_unchanged(self):

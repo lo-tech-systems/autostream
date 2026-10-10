@@ -11241,3 +11241,235 @@ class TestOnInput:
         display._screen = "outputs"
         display.on_input("mute")
         assert display._screen_request is None
+
+
+# ---------------------------------------------------------------------------
+# The "Pair in Autostream" page: a speaker that needs a PIN cannot be paired
+# on the small screen, so its output page gives way to a hint page.
+# ---------------------------------------------------------------------------
+
+class _SpyLock:
+    """A lock that counts acquisitions and delegates to a real one."""
+
+    def __init__(self):
+        self._real = threading.Lock()
+        self.acquire_calls = 0
+
+    def acquire(self, *args, **kwargs):
+        self.acquire_calls += 1
+        return self._real.acquire(*args, **kwargs)
+
+    def release(self):
+        return self._real.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info):
+        self.release()
+
+
+class TestPairInAutostreamPage:
+    AID = "a" * 20
+    PIN_REQUIRED = {"ok": False, "pin_required": True, "error": "Output requires PIN"}
+
+    def _detail(self, needs_auth_key=False, selected=False):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        row = OutputRow(id="1", name="Apple TV", selected=selected, volume=0, needs_auth_key=needs_auth_key)
+        seed_outputs(display, (row,), loaded=False)
+        display._output_detail = dd.OutputDetailState(
+            appliance_id=self.AID, output_id="1", opened_at=time.monotonic(),
+        )
+        display._screen = "output"
+        return display
+
+    def _fold(self, display):
+        display._apply_pending_snapshot()
+        with display._lock:
+            display._apply_screen_requests_locked()
+
+    def _refuse(self, display, body):
+        with patch("dial_core.enqueue_set"):
+            assert display.core.set_output(self.AID, "1", selected=True).accepted
+        display.core.on_outputs_result("set", self.AID, 200, body)
+        self._fold(display)
+
+    def test_pairing_hint_text(self):
+        label, text = dd._pairing_hint("Lounge")
+        assert label == dd_compositor.PAIR_IN_AUTOSTREAM_TEXT == "Pair in Autostream"
+        assert text == "Enter the PIN in Lounge's web UI"
+
+    @pytest.mark.parametrize("width,height,mm_per_px", _HINT_TIERS)
+    @pytest.mark.parametrize("name", ["Lounge", "CD Player", "Living Room Hi-Fi"])
+    def test_pairing_hint_text_fits_without_truncation(self, width, height, mm_per_px, name):
+        from PIL import ImageDraw
+        from dial_touch_layout import info_value_layout_for
+
+        metrics = metrics_for(width, height, mm_per_px)
+        label, text = dd._pairing_hint(name)
+        layout = info_value_layout_for(width, height, metrics=metrics)
+        draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+        lines, font = dd_compositor._fit_value_lines(
+            draw, text, (metrics.font_readout, metrics.font_body), layout.value,
+        )
+        assert lines and font is not None
+        assert " ".join(lines) == text
+        max_w = layout.value[2] - layout.value[0]
+        for line in lines:
+            assert dd_compositor._text_size(draw, line, font)[0] <= max_w
+        title_w = dd_compositor._text_size(draw, label, dd_compositor._load_font(metrics.font_body))[0]
+        assert title_w <= width - 2 * metrics.pad
+
+    @pytest.mark.parametrize("key", [
+        k for k, prof in __import__("dial_display_profiles").DISPLAY_PROFILES.items() if prof.surface == "spi"
+    ])
+    def test_pairing_hint_fits_every_spi_profile_at_its_default_size(self, key):
+        from PIL import ImageDraw
+        from dial_touch_layout import info_value_layout_for
+
+        profile = get_profile(key)
+        width, height = profile.width, profile.height
+        metrics = metrics_for(width, height, mm_per_px_for(profile, profile.default_diagonal_inches))
+        label, text = dd._pairing_hint("Living Room Hi-Fi")
+        layout = info_value_layout_for(width, height, metrics=metrics)
+        draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+        lines, font = dd_compositor._fit_value_lines(
+            draw, text, (metrics.font_readout, metrics.font_body), layout.value,
+        )
+        assert lines and font is not None and " ".join(lines) == text
+        max_w = layout.value[2] - layout.value[0]
+        assert all(dd_compositor._text_size(draw, line, font)[0] <= max_w for line in lines)
+        title_w = dd_compositor._text_size(draw, label, dd_compositor._load_font(metrics.font_body))[0]
+        assert title_w <= width - 2 * metrics.pad
+
+    def test_a_pin_required_effect_opens_the_pair_page_over_the_output_page_and_back_returns_there(self):
+        display = self._detail()
+        self._refuse(display, self.PIN_REQUIRED)
+        assert display._screen == "info_value"
+        assert display._info_value.hint[0] == "Pair in Autostream"
+        with display._lock:
+            display._repaint_current_locked()
+        display.close_list()
+        self._fold(display)
+        assert display._screen == "output"
+        assert display._output_detail.output_id == "1"
+        assert display._outputs is not None
+
+    def test_the_page_times_out_to_the_main_page(self):
+        display = self._detail()
+        self._refuse(display, self.PIN_REQUIRED)
+        opened_at = display._info_value.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS - 1):
+            display._check_secondary_timeout()
+        assert display._screen == "info_value"
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
+            display._check_secondary_timeout()
+        assert display._screen == "main"
+
+    def test_the_effect_is_ignored_when_the_output_page_is_not_up(self):
+        display = self._detail()
+        display._screen = "outputs"
+        display._output_detail = None
+        self._refuse(display, self.PIN_REQUIRED)
+        assert display._screen == "outputs"
+        assert display._screen_request is None
+
+    def test_the_effect_is_ignored_for_another_output_or_appliance(self):
+        display = self._detail()
+        for effect in (
+            dd.OutputsEffect(self.AID, "9", "output_set", "rejected", "pin_required"),
+            dd.OutputsEffect("b" * 20, "1", "output_set", "rejected", "pin_required"),
+        ):
+            display._apply_outputs_outcome(effect)
+            assert display._screen_request is None
+
+    @pytest.mark.parametrize("body", [
+        {"ok": False, "error": "rate_limited", "retry_after_s": 7},
+        {"ok": False, "error": "output_in_use"},
+        {"ok": False, "error": "encoder_capacity"},
+        {"ok": True},
+    ])
+    def test_any_other_outcome_shows_nothing(self, body):
+        display = self._detail()
+        self._refuse(display, body)
+        assert display._screen == "output"
+        assert display._screen_request is None
+
+    def test_a_needs_pin_row_shows_the_pair_page_without_calling_the_core(self):
+        display = self._detail(needs_auth_key=True)
+        with patch("dial_core.enqueue_set") as send:
+            display.output_toggle_tap()
+        send.assert_not_called()
+        assert display.core.outputs_override() is None
+        assert display.core.snapshot().outputs_request is None
+        self._fold(display)
+        assert display._screen == "info_value"
+        assert display._info_value.hint[0] == "Pair in Autostream"
+
+    def test_switching_a_needs_pin_row_off_is_not_short_circuited(self):
+        display = self._detail(needs_auth_key=True, selected=True)
+        with patch("dial_core.enqueue_set") as send:
+            display.output_toggle_tap()
+        send.assert_called_once()
+        assert display._screen_request is None
+
+    def test_a_hint_cannot_open_over_the_main_page(self):
+        display, fb, gt = _make_display(targets=[])
+        display._info_value_hint = dd._pairing_hint("Lounge")
+        with display._lock:
+            assert display._open_info_value_locked() is False
+        assert display._screen == "main"
+        assert display._info_value is None
+        assert display._info_value_hint is None
+
+    def test_a_hint_over_the_selector_still_returns_to_the_selector(self):
+        display, fb, gt = _make_display(targets=[])
+        display._screen = "selector"
+        display._info_value_hint = dd._unauthorised_hint("Lounge")
+        with display._lock:
+            assert display._open_info_value_locked() is True
+        assert display._back_target("info_value") == "selector"
+
+    def test_the_appliance_changing_while_the_page_is_up_closes_it(self):
+        display = self._detail()
+        self._refuse(display, self.PIN_REQUIRED)
+        assert display._screen == "info_value"
+        display.core.set_field("reporting_id", "b" * 20)
+        display.core.set_roster([_roster_entry(appliance_id="b" * 20, dial_outputs=True)])
+        with display._lock:
+            display._close_secondary_locked()
+        assert display._screen == "main"
+        assert display._output_detail is None
+        assert display._info_value is None
+
+    def test_the_first_touch_of_a_sleeping_screen_only_wakes(self):
+        import dial_touch as dt
+        from dial_touch_filter import TouchEvent, TouchEventType
+
+        display = self._detail()
+        display.enable()
+        self._refuse(display, self.PIN_REQUIRED)
+        with display._lock:
+            display._sleep_locked()
+        assert display.is_sleeping() is True
+        assert display._screen == "main"
+        width, height = display._active_panel_dims()
+        sm = dt.TouchStateMachine(width, height, is_asleep=display.is_sleeping)
+        sm.set_surface(*display.touch_surface(), 1.0)
+        actions = sm.on_filter_event(TouchEvent(TouchEventType.PRESS, width // 2, height // 2, None), 1.0)
+        assert [a.kind for a in actions] == [dt.ACTION_WAKE]
+        assert display._screen_request is None
+
+    def test_the_entry_points_take_neither_the_view_lock_nor_the_core_lock(self):
+        display = self._detail(needs_auth_key=True)
+        view_spy, core_spy = _SpyLock(), _SpyLock()
+        display._lock = view_spy
+        display._core._lock = core_spy
+        display.output_toggle_tap()
+        display._apply_outputs_outcome(
+            dd.OutputsEffect(self.AID, "1", "output_set", "rejected", "pin_required"),
+        )
+        assert view_spy.acquire_calls == 0
+        assert core_spy.acquire_calls == 0

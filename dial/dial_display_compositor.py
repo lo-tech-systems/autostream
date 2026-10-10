@@ -243,6 +243,10 @@ _DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
 # (label and secondary) so it reads as unavailable next to the live rows.
 NOT_AUTHORISED_TEXT = "Not authorised"
 
+# The hint page's title for a speaker that has to be paired (it asks for a
+# PIN) in the appliance's web UI, which the small screen cannot do.
+PAIR_IN_AUTOSTREAM_TEXT = "Pair in Autostream"
+
 # A list row's trailing mark for the appliance's default output. Drawn after
 # the label and never truncated; present in the DejaVu faces the dial ships.
 DEFAULT_MARK = "•"

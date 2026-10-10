@@ -51,6 +51,7 @@ from dial_display_compositor import (
     NOT_AUTHORISED_TEXT,
     OutputViewState,
     OverlayState,
+    PAIR_IN_AUTOSTREAM_TEXT,
     RepeatViewState,
     WIFI_GREY,
     WIFI_OFF,
@@ -72,14 +73,14 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    EqState, OutputRow, PickerRow, SelectorRow,
+    PIN_ERRORS, EqState, OutputRow, PickerRow, SelectorRow,
     dots_active,
     eq_gain, selector_rows,
 )
 import dial_core_poll
 from dial_core import (
     DEFAULT_POLL_INTERVAL_S, RECONCILE_INTERVAL_S, DialCore, PollIO,
-    RepeatEffect,
+    OutputsEffect, RepeatEffect,
 )
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
@@ -717,6 +718,12 @@ def _unauthorised_hint(label: str) -> tuple[str, str]:
     return NOT_AUTHORISED_TEXT, f"Allow this dial in {label}'s web UI (Setup, Dials)"
 
 
+def _pairing_hint(label: str) -> tuple[str, str]:
+    """The (title, text) the value view shows for a speaker that must be
+    paired in the appliance's web UI, which the small screen cannot do."""
+    return PAIR_IN_AUTOSTREAM_TEXT, f"Enter the PIN in {label}'s web UI"
+
+
 def _picker_list_row(row: PickerRow) -> tuple:
     return (row.label, False, format_mmss(row.seconds))
 
@@ -1095,6 +1102,9 @@ class DialDisplay:
         # unauthorised selector row asks the value view to show, consumed
         # by the view's opener like self._info_value_index.
         self._info_value_hint: tuple[str, str] | None = None
+        # The screen a hint view returns to: the one it opened over
+        # ("selector" or "output"). Written only by _open_info_value_locked.
+        self._info_value_return: str = "selector"
         # Zero-arg callable -> tuple[InfoRow, ...], wired by set_info_provider()
         # at startup (dial_main.py, after the HTTP server exists). None
         # (e.g. a NoOpDisplayStatusProvider stand-in, or before wiring runs)
@@ -2628,7 +2638,7 @@ class DialDisplay:
         if screen == "info_value":
             view = self._info_value
             if view is not None and view.hint is not None:
-                return "selector"
+                return self._info_value_return
         return _policy(screen).back_to
 
     def _request_back(self, screen: str) -> None:
@@ -3056,8 +3066,33 @@ class DialDisplay:
         state = self._outputs
         if row is None or state is None:
             return
+        if not row.selected and row.needs_auth_key:
+            # Known to need pairing, which only the appliance's web UI can
+            # do: say so rather than send a request that will be refused.
+            self._show_pairing_hint(state)
+            return
         if self._core.set_output(state.appliance_id, row.id, selected=not row.selected).accepted:
             self._overlay_signal.set()
+
+    def _show_pairing_hint(self, state) -> None:
+        """Ask for the pairing hint over the output page. Lock-free."""
+        self._info_value_hint = _pairing_hint(appliance_display_name(state.service_name))
+        self._screen_request = "info_value"
+        self._overlay_signal.set()
+
+    def _apply_outputs_outcome(self, effect: OutputsEffect) -> None:
+        """React to what an output request's outcome means for the screen:
+        a speaker that wants a PIN gets the pairing hint, when its own page
+        is the one up. Every other outcome needs nothing here, since the
+        fetch after the set already reconciles. Lock-free."""
+        if effect.outcome != "rejected" or effect.error not in PIN_ERRORS:
+            return
+        state, detail = self._outputs, self._output_detail
+        if (
+            self._screen == "output" and state is not None and detail is not None
+            and state.appliance_id == effect.appliance_id and detail.output_id == effect.output_id
+        ):
+            self._show_pairing_hint(state)
 
     def output_volume_tap(self, delta: int) -> None:
         """Touch-thread entry (OUTPUT_UP/OUTPUT_DOWN, repeating): absolute
@@ -3164,12 +3199,15 @@ class DialDisplay:
         the view is the list's child and its own back_to returns there.
 
         A pending hint (self._info_value_hint, from an unauthorised selector
-        row) opens the view over the selector instead, only while the
-        selector is showing; the selector's state is left untouched."""
+        row or a speaker that needs pairing) opens the view over the
+        screen it came from instead, only while the
+        selector or the output page is showing; that screen's state is left
+        untouched."""
         hint, self._info_value_hint = self._info_value_hint, None
         if hint is not None:
-            if self._screen != "selector":
+            if self._screen not in ("selector", "output"):
                 return False
+            self._info_value_return = self._screen
             self._info_value = InfoValueState(index=0, opened_at=time.monotonic(), hint=hint)
             self._screen = "info_value"
             return True
@@ -3245,6 +3283,10 @@ class DialDisplay:
         current screen (the outputs list) stays showing."""
         state, output_id = self._outputs, self._output_open_id
         self._output_open_id = None
+        if output_id is None and self._screen == "info_value" and self._output_detail is not None:
+            # Back from a hint that opened over this page: the page's own
+            # state is still here, so show it again with a fresh clock.
+            output_id = self._output_detail.output_id
         if state is None or output_id is None or not any(r.id == output_id for r in self._rows_of(state)):
             return False
         self._output_detail = OutputDetailState(
@@ -4519,6 +4561,8 @@ class DialDisplay:
         for effect in self._core.take_effects():
             if isinstance(effect, RepeatEffect):
                 self._apply_repeat_outcome(effect.appliance_id, effect.outcome)
+            elif isinstance(effect, OutputsEffect):
+                self._apply_outputs_outcome(effect)
             else:
                 self._apply_source_effects(effect)
 
