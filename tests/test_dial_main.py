@@ -1486,6 +1486,10 @@ class TestBuildTouchSourceWiring:
         with self._built() as (cfg, display, result, captured, *_):
             assert captured["kwargs"]["get_persistent_overlay"] is display.persistent_overlay_shown
 
+    def test_touch_surface_getter_wired_to_display(self):
+        with self._built() as (cfg, display, result, captured, *_):
+            assert captured["kwargs"]["get_touch_surface"] is display.touch_surface
+
     def test_volume_up_enqueues_step_percent_and_notifies_activity(self):
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_volume_up"]()
@@ -1621,6 +1625,90 @@ class TestBuildTouchSourceWiring:
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_reveal_overlay"]()
             captured["kwargs"]["on_set_pressed_zone"](TouchZone.UP)
+
+    def test_set_pressed_zone_for_a_list_zone_does_not_touch_the_main_overlay(self):
+        """LIST_* zones only ever arm on the selector surface, which is
+        rendered through compose_list()/ListState, not OverlayState at all
+        — publishing one here would incorrectly leave the MAIN overlay
+        snapshot visible=True, so the next return to the main screen would
+        show the volume overlay revealed despite no genuine touch there."""
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.LIST_ROW)
+            display.set_overlay.assert_not_called()
+            # Touch activity/presence are still genuine, though.
+            display.notify_touch_activity.assert_called_once()
+
+    def test_set_pressed_zone_clear_after_a_list_zone_is_also_suppressed(self):
+        """The single-shot flash's own clear (zone=None) that follows a
+        LIST_* press must not leak through as a stray main-overlay update
+        either."""
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.LIST_BACK)
+            captured["kwargs"]["on_set_pressed_zone"](None)
+            display.set_overlay.assert_not_called()
+
+    def test_set_pressed_zone_clear_after_name_still_updates_the_overlay(self):
+        """NAME's own pressed highlight IS drawn on the main overlay (it is
+        one of zones_for()'s zones), so its clear must NOT be swallowed by
+        the same suppression that protects LIST_* zones."""
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_set_pressed_zone"](TouchZone.NAME)
+            captured["kwargs"]["on_set_pressed_zone"](None)
+            assert display.set_overlay.call_count == 2
+            first_state = display.set_overlay.call_args_list[0][0][0]
+            second_state = display.set_overlay.call_args_list[1][0][0]
+            assert first_state.pressed == TouchZone.NAME
+            assert second_state.pressed is None
+
+    def test_on_zone_tap_name_opens_the_selector(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.NAME, None)
+            display.open_selector.assert_called_once()
+            display.notify_touch_activity.assert_called_once()
+
+    def test_on_zone_tap_list_back_closes_the_selector(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_BACK, None)
+            display.close_selector.assert_called_once()
+
+    def test_on_zone_tap_list_down_pages_forward(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_DOWN, None)
+            display.selector_page.assert_called_once_with(1)
+
+    def test_on_zone_tap_list_up_pages_backward(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_UP, None)
+            display.selector_page.assert_called_once_with(-1)
+
+    def test_on_zone_tap_list_row_picks_the_row(self):
+        from dial_touch_layout import TouchZone
+
+        with self._built() as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.LIST_ROW, 2)
+            display.selector_pick.assert_called_once_with(2)
+
+    def test_on_zone_tap_confirms_presence(self):
+        from dial_touch_layout import TouchZone
+
+        confirm = MagicMock()
+        with self._built(confirm_presence=confirm) as (cfg, display, result, captured, *_):
+            captured["kwargs"]["on_zone_tap"](TouchZone.NAME, None)
+        confirm.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

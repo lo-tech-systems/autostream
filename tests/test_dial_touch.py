@@ -22,15 +22,20 @@ from dial_touch import (  # noqa: E402
     ACTION_SET_PRESSED_ZONE,
     ACTION_VOLUME_DOWN,
     ACTION_VOLUME_UP,
+    ACTION_ZONE_TAP,
     DISMISS_S,
     FIRST_REPEAT_S,
     PRESSED_FLASH_S,
     REPEAT_INTERVAL_S,
+    SURFACE_HELD,
+    SURFACE_HIDDEN,
+    SURFACE_SELECTOR,
+    TouchAction,
     TouchEventSource,
     TouchStateMachine,
 )
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
-from dial_touch_layout import TouchZone, zones_for  # noqa: E402
+from dial_touch_layout import TouchZone, list_layout_for, list_zone_at, zones_for  # noqa: E402
 
 WIDTH, HEIGHT = 160, 128
 _ZONES = zones_for(WIDTH, HEIGHT)
@@ -921,3 +926,239 @@ class TestDisplayConfigChanged:
         assert touch_filter.calls == []  # transform left untouched
         # The synthetic release is still delivered regardless.
         assert sm.pressed_zone is None
+
+
+# ---------------------------------------------------------------------------
+# set_surface() — surface-aware hit-test (the selector screen) and the
+# single-shot ACTION_ZONE_TAP zones (NAME, LIST_*).
+# ---------------------------------------------------------------------------
+
+_LIST_LAYOUT = list_layout_for(WIDTH, HEIGHT)
+
+
+def _list_row_center(i: int) -> tuple[int, int]:
+    x0, y0, x1, y1 = _LIST_LAYOUT.rows[i]
+    return ((x0 + x1) // 2, (y0 + y1) // 2)
+
+
+def _list_bar_center(rect) -> tuple[int, int]:
+    x0, y0, x1, y1 = rect
+    return ((x0 + x1) // 2, (y0 + y1) // 2)
+
+
+LIST_ROW0_XY = _list_row_center(0)
+LIST_BACK_XY = _list_bar_center(_LIST_LAYOUT.back)
+LIST_DOWN_XY = _list_bar_center(_LIST_LAYOUT.down)
+LIST_UP_XY = _list_bar_center(_LIST_LAYOUT.up)
+NAME_XY = (lambda r: ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2))(zones_for(WIDTH, HEIGHT)[TouchZone.NAME])
+
+
+class TestSetSurface:
+    def test_same_surface_is_a_noop_but_updates_name_active(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        assert sm.set_surface(SURFACE_HIDDEN, False, now=0.0) == []
+        assert sm.surface == SURFACE_HIDDEN
+        # A same-surface call updates name_active without touching anything
+        # else — provable by then arming NAME successfully.
+        sm._overlay_visible = True
+        assert sm.set_surface(SURFACE_HIDDEN, True, now=0.0) == []
+        actions = sm.on_filter_event(press_event(NAME_XY), now=0.1)
+        assert any(a.kind == ACTION_ZONE_TAP for a in actions)
+
+    def test_selector_surface_arms_immediately_without_reveal(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        actions = sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+
+    def test_list_row_tap_reports_its_index(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        actions = sm.on_filter_event(press_event(_list_row_center(2)), now=0.1)
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.LIST_ROW
+        assert tap.index == 2
+
+    def test_list_back_down_up_taps(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        for xy, expected_zone in (
+            (LIST_BACK_XY, TouchZone.LIST_BACK),
+            (LIST_DOWN_XY, TouchZone.LIST_DOWN),
+            (LIST_UP_XY, TouchZone.LIST_UP),
+        ):
+            sm.on_filter_event(release_event(), now=0.0)
+            actions = sm.on_filter_event(press_event(xy), now=0.1)
+            tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+            assert tap.zone == expected_zone
+            assert tap.index is None
+
+    def test_list_tap_is_single_shot_no_repeat(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.LIST_ROW
+        # The flash clears itself; no ACTION_ZONE_TAP is re-emitted by tick().
+        actions = sm.tick(now=PRESSED_FLASH_S)
+        assert actions == [TouchAction(ACTION_SET_PRESSED_ZONE, None)]
+        actions = sm.tick(now=FIRST_REPEAT_S + 1.0)
+        assert actions == []
+
+    def test_name_zone_inactive_when_name_active_false(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, False, now=0.0)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(NAME_XY), now=0.0)
+        assert actions == []  # dead zone: name_active is False
+
+    def test_name_zone_active_emits_zone_tap(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, True, now=0.0)
+        sm._overlay_visible = True
+        actions = sm.on_filter_event(press_event(NAME_XY), now=0.0)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.NAME
+        assert tap.index is None
+
+    def test_surface_change_with_finger_down_drops_the_latch(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.0)
+        assert sm.pressed_zone == TouchZone.LIST_ROW
+
+        actions = sm.set_surface(SURFACE_HIDDEN, False, now=0.1)
+        assert sm.pressed_zone is None
+        assert any(a.kind == ACTION_SET_PRESSED_ZONE and a.zone is None for a in actions)
+
+    def test_change_to_hidden_emits_dismiss(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HELD, False, now=0.0)
+        assert sm.overlay_visible is True
+        actions = sm.set_surface(SURFACE_HIDDEN, False, now=0.1)
+        assert any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
+        assert sm.overlay_visible is False
+
+    def test_change_to_held_or_selector_counts_as_visible(self):
+        for target in (SURFACE_HELD, SURFACE_SELECTOR):
+            sm = TouchStateMachine(WIDTH, HEIGHT)
+            sm.set_surface(target, False, now=0.0)
+            assert sm.overlay_visible is True
+            assert sm.held_visible is True
+
+    def test_dismiss_clock_disabled_on_selector(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.0)
+        sm.on_filter_event(release_event(), now=0.05)
+        # Held (selector counts as held) disables the dismiss clock in
+        # tick() — far past DISMISS_S, the overlay stays "visible".
+        actions = sm.tick(now=DISMISS_S * 10)
+        assert not any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
+        assert sm.overlay_visible is True
+
+
+class TestTouchEventSourceSurfacePolling:
+    def test_getter_changes_drive_set_surface_on_change_only(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+
+        values = iter([
+            (SURFACE_HIDDEN, False),
+            (SURFACE_HIDDEN, False),
+            (SURFACE_SELECTOR, False),
+            (SURFACE_SELECTOR, False),
+            (SURFACE_HIDDEN, False),
+        ])
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_touch_surface=lambda: next(values),
+        )
+
+        source._poll_surface()  # baseline
+        assert sm.surface == SURFACE_HIDDEN
+
+        source._poll_surface()  # unchanged
+        assert sm.surface == SURFACE_HIDDEN
+
+        source._poll_surface()  # -> selector
+        assert sm.surface == SURFACE_SELECTOR
+
+        source._poll_surface()  # unchanged
+        assert sm.surface == SURFACE_SELECTOR
+
+        source._poll_surface()  # -> hidden
+        assert sm.surface == SURFACE_HIDDEN
+
+    def test_raising_get_touch_surface_is_treated_as_hidden(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+
+        def boom():
+            raise RuntimeError("display gone")
+
+        source = TouchEventSource(driver, touch_filter, sm, get_touch_surface=boom)
+        source._poll_surface()
+        assert sm.surface == SURFACE_HIDDEN
+
+    def test_legacy_get_persistent_overlay_only_still_behaves_exactly_as_before(self):
+        """get_touch_surface omitted entirely: _poll_surface() must fall
+        back to the untouched legacy _poll_held_visible() path, so existing
+        held/hidden-only wiring (dial_main.py, pre-selector) keeps working
+        byte for byte."""
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+
+        values = iter([False, True, False])
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            get_persistent_overlay=lambda: next(values),
+        )
+        # The legacy path drives held_visible directly via
+        # set_held_visible() — it never touches surface at all, which is
+        # exactly the "byte for byte" guarantee: existing wiring that only
+        # ever polled get_persistent_overlay must see no new behaviour.
+        source._poll_surface()
+        assert sm.held_visible is False
+        source._poll_surface()
+        assert sm.held_visible is True
+        source._poll_surface()
+        assert sm.held_visible is False
+
+    def test_no_getter_at_all_is_a_no_op(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(driver, touch_filter, sm)
+        source._poll_surface()  # must not raise, must not change anything
+        assert sm.surface == SURFACE_HIDDEN
+        assert sm.held_visible is False
+
+
+class TestZoneTapDispatch:
+    def test_on_zone_tap_receives_zone_and_index(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+
+        calls = []
+        source = TouchEventSource(
+            driver, touch_filter, sm,
+            on_zone_tap=lambda zone, index: calls.append((zone, index)),
+        )
+        source._dispatch(sm.on_filter_event(press_event(_list_row_center(1)), now=0.0))
+        assert calls == [(TouchZone.LIST_ROW, 1)]
+
+    def test_no_callback_injected_is_a_safe_noop(self):
+        driver = FakeDriver()
+        touch_filter = TouchFilter(WIDTH, HEIGHT)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_SELECTOR, False, now=0.0)
+        source = TouchEventSource(driver, touch_filter, sm)
+        # Must not raise even though on_zone_tap was never supplied.
+        source._dispatch(sm.on_filter_event(press_event(LIST_ROW0_XY), now=0.0))

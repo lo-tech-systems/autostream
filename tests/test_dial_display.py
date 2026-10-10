@@ -35,9 +35,10 @@ from dial_config import DialDisplayConfig
 from dial_display_compositor import OverlayState
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
 from dial_mdns import PlayingTarget
-from dial_touch_layout import TouchZone
+from dial_touch_layout import TouchZone, list_layout_for
 import dial_display as dd
 from dial_display import (
+    SELECTOR_TIMEOUT_SECONDS,
     DialDisplay,
     DisplayBackend,
     NoOpBackend,
@@ -2294,3 +2295,374 @@ class TestManualFocus:
             display._poll_once()
         assert display.get_status()["showing"] == "artwork"
         assert display._source_service_name == "Focus"
+
+
+# ---------------------------------------------------------------------------
+# Appliance-selector screen (2.7, 2.5.5) — open/close/page/pick, row
+# filtering, the inactivity timeout, and the screen's interaction with
+# sleep/backend lifecycle and the touch-facing surfaces.
+# ---------------------------------------------------------------------------
+
+class TestSelectorRows:
+    def test_rows_only_authorized_targets_with_nonempty_id(self):
+        good = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        unauth = _target(name="B", service_name="B", appliance_id="b" * 20, auth="unauthorized")
+        unknown = _target(name="C", service_name="C", appliance_id="c" * 20, auth="unknown")
+        no_id = _target(name="D", service_name="D", appliance_id="", auth="authorized")
+        display, fb, gt = _make_display(targets=[good, unauth, unknown, no_id])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        assert [r.label for r in display._selector.rows] == ["A"]
+        assert [r.appliance_id for r in display._selector.rows] == ["a" * 20]
+
+    def test_current_follows_manual_focus(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized", playing_since=1.0)
+        b = _target(name="B", service_name="B", appliance_id="b" * 20, auth="authorized", playing_since=2.0)
+        display, fb, gt = _make_display(targets=[a, b])
+        display.enable()
+        display.set_manual_focus("b" * 20)
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        current_ids = {r.appliance_id for r in display._selector.rows if r.current}
+        assert current_ids == {"b" * 20}
+
+    def test_current_follows_reporting_target_with_no_focus(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized", playing_since=1.0)
+        b = _target(name="B", service_name="B", appliance_id="b" * 20, auth="authorized", playing_since=2.0)
+        display, fb, gt = _make_display(targets=[a, b])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        # No focus, no identified artwork -> select_volume_target falls back
+        # to the oldest playing target (A).
+        current_ids = {r.appliance_id for r in display._selector.rows if r.current}
+        assert current_ids == {"a" * 20}
+
+    def test_page_preserved_across_rebuild_but_clamped_to_new_count(self):
+        targets = [
+            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
+                     auth="authorized", playing_since=float(i))
+            for i in range(5)
+        ]
+        display, fb, gt = _make_display(targets=targets)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        display.selector_page(+1)  # page 1 (rows_per_page == 3 -> pages 0,1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 1
+
+        # Roster shrinks to one row: the next poll's rebuild must clamp the
+        # preserved page back down rather than raise or go negative.
+        gt.return_value = [targets[0]]
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        assert display._selector.page == 0
+
+
+class TestSelectorOpenCloseAndRepaint:
+    def _display_with_one_row(self, always_show_controls=False):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[a], always_show_controls=always_show_controls)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        return display, fb, gt
+
+    def test_open_selector_then_repaint_sets_screen_and_pushes_a_frame(self):
+        display, fb, gt = self._display_with_one_row()
+        before = len(fb.displayed)
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+        assert len(fb.displayed) == before + 1
+
+    def test_repaint_calls_compose_list_while_open(self):
+        display, fb, gt = self._display_with_one_row()
+        with patch.object(
+            display._compositor, "compose_list", wraps=display._compositor.compose_list,
+        ) as spy:
+            display.open_selector()
+            with display._lock:
+                display._repaint_current_locked()
+        assert spy.call_count == 1
+
+    def test_close_selector_returns_to_main(self):
+        display, fb, gt = self._display_with_one_row()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+
+        display.close_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+        assert display._selector is None
+
+    def test_no_authorized_rows_shows_no_devices_placeholder(self):
+        t = _target(auth="unknown")  # controllable (Phase 1), but never listed
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        width, height = display._active_panel_dims()
+        with display._lock:
+            list_state = display._build_list_state_locked(width, height)
+        assert list_state.rows == (("No devices", False),)
+        assert list_state.has_prev is False
+        assert list_state.has_next is False
+
+    def test_persistent_overlay_shown_false_while_open(self):
+        display, fb, gt = self._display_with_one_row(always_show_controls=True)
+        # Force the "artwork on screen" precondition directly rather than
+        # faking a full artwork fetch — this test is only about the
+        # selector's own gate on persistent_overlay_shown().
+        with display._lock:
+            display._current_base_is_artwork = True
+        assert display.persistent_overlay_shown() is True
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.persistent_overlay_shown() is False
+
+
+class TestSelectorPickAndPage:
+    def _opened_display(self, count=1):
+        targets = [
+            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
+                     auth="authorized", playing_since=float(i))
+            for i in range(count)
+        ]
+        display, fb, gt = _make_display(targets=targets)
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        return display, fb, gt, targets
+
+    def test_pick_sets_focus_and_closes(self):
+        display, fb, gt, targets = self._opened_display(count=1)
+        display.selector_pick(0)
+        assert display.manual_focus_id() == "0" * 20
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+    def test_stale_index_closes_without_setting_focus(self):
+        display, fb, gt, targets = self._opened_display(count=1)
+        display.selector_pick(5)  # out of range for a single row
+        assert display.manual_focus_id() is None
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "main"
+
+    def test_page_clamps_to_valid_range(self):
+        display, fb, gt, targets = self._opened_display(count=5)  # rows_per_page == 3 -> pages 0, 1
+        assert display._selector.page == 0
+
+        display.selector_page(-1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 0
+
+        display.selector_page(+5)
+        with display._lock:
+            display._repaint_current_locked()
+        width, height = display._active_panel_dims()
+        rows_per_page = list_layout_for(width, height).rows_per_page
+        max_page = (len(targets) - 1) // rows_per_page
+        assert display._selector.page == max_page
+
+    def test_pick_addresses_the_current_page_not_page_zero(self):
+        display, fb, gt, targets = self._opened_display(count=5)
+        width, height = display._active_panel_dims()
+        rows_per_page = list_layout_for(width, height).rows_per_page
+        display.selector_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 1
+
+        display.selector_pick(0)  # row 0 of PAGE 1, not row 0 overall
+        expected_id = targets[rows_per_page].appliance_id
+        assert display.manual_focus_id() == expected_id
+
+
+class TestSelectorTimeout:
+    def _opened_display(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[a])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        return display
+
+    def test_closes_after_timeout_of_inactivity(self):
+        display = self._opened_display()
+        opened_at = display._selector.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
+            display._check_selector_timeout()
+        assert display._screen == "main"
+
+    def test_stays_open_before_the_timeout(self):
+        display = self._opened_display()
+        opened_at = display._selector.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS - 1):
+            display._check_selector_timeout()
+        assert display._screen == "selector"
+
+    def test_touch_activity_refreshes_the_deadline(self):
+        display = self._opened_display()
+        opened_at = display._selector.opened_at
+        with patch("dial_display.time.monotonic", return_value=opened_at + 10):
+            display.notify_touch_activity()
+            with display._lock:
+                display._repaint_current_locked()
+        assert display._selector.opened_at == opened_at + 10
+
+        # Well past the ORIGINAL deadline, but still short of a fresh one.
+        with patch("dial_display.time.monotonic", return_value=opened_at + SELECTOR_TIMEOUT_SECONDS + 1):
+            display._check_selector_timeout()
+        assert display._screen == "selector"
+
+
+class TestSelectorAndSleepBackendLifecycle:
+    def test_empty_target_branch_closes_selector_before_sleep_decision(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[a])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+
+        gt.return_value = []  # nothing playing any more
+        display._poll_once()
+        assert display._screen == "main"
+        assert display._selector is None
+
+    def test_sleep_pops_to_main(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+
+        with display._lock:
+            display._sleep_locked()
+        assert display._screen == "main"
+        assert display._selector is None
+
+    def test_disable_pops_to_main(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[a])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+
+        display.disable()
+        assert display._screen == "main"
+
+    def test_swap_backend_pops_to_main(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[a])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "selector"
+
+        with display._lock:
+            display._swap_backend_locked()
+        assert display._screen == "main"
+
+
+class TestTouchSurface:
+    def test_selector_while_open(self):
+        a = _target(name="A", service_name="A", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[a])
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display.touch_surface() == ("selector", False)
+
+    def test_hidden_with_name_active_when_something_is_playing(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.touch_surface() == ("hidden", True)
+
+    def test_held_with_name_active(self):
+        t = _target()
+        display, fb, gt = _make_display(targets=[t], always_show_controls=True)
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert display.touch_surface() == ("held", True)
+
+    def test_hidden_with_name_inactive_when_nothing_playing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._poll_once()
+        assert display.touch_surface() == ("hidden", False)
+
+
+class TestOverlayNameField:
+    def test_name_populated_from_reporting_target_when_visible(self):
+        t = _target(name="CD_Player", service_name="autostream on CD_Player")
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        display.set_overlay(OverlayState(visible=True))
+        with display._lock:
+            overlay = display._effective_overlay_locked(display._overlay_snapshot)
+        assert overlay.name == "CD Player"
+
+    def test_name_empty_when_nothing_playing(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._poll_once()
+        display.set_overlay(OverlayState(visible=True))
+        with display._lock:
+            overlay = display._effective_overlay_locked(display._overlay_snapshot)
+        assert overlay.name == ""
+
+    def test_name_active_unconditional_with_a_single_authorized_appliance(self):
+        # Q4: the name (and its tap-zone) are always active whenever a
+        # controllable appliance is shown, including the single-appliance
+        # case — never gated on "two or more authorized" rows.
+        t = _target(name="Solo", service_name="Solo", appliance_id="a" * 20, auth="authorized")
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        assert len(display._selector.rows) == 1
+        assert display.touch_surface() == ("hidden", True)

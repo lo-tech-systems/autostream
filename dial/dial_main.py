@@ -368,9 +368,32 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
     def on_dismiss_overlay() -> None:
         display.set_overlay(OverlayState(visible=False))
 
+    # LIST_* zones only ever arm while the selector screen is on the panel
+    # (see dial_touch.TouchStateMachine._arm's surface branch), and the
+    # selector is rendered through compose_list()/ListState, not through
+    # OverlayState at all. Publishing an OverlayState for one of these
+    # zones — even the SET_PRESSED_ZONE(None) that later clears the flash —
+    # would incorrectly leave the MAIN overlay's published snapshot
+    # visible=True, so the very next time the screen returns to "main" it
+    # would show the volume overlay revealed despite no genuine touch there.
+    # _list_zone_pressed tracks "the in-flight press was a list zone" across
+    # the two calls (press, then its flash-clear) so both are suppressed.
+    # The selector's own pressed-row feedback is not wired in this phase
+    # (see dial_display._build_list_state_locked's docstring); touch
+    # activity/presence are still recorded either way, since a list tap is
+    # a genuine touch.
+    _LIST_ZONES = (TouchZone.LIST_BACK, TouchZone.LIST_DOWN, TouchZone.LIST_UP, TouchZone.LIST_ROW)
+    _list_zone_pressed = [False]
+
     def on_set_pressed_zone(zone) -> None:
         _confirm_presence()
         display.notify_touch_activity()
+        if zone in _LIST_ZONES:
+            _list_zone_pressed[0] = True
+            return
+        if zone is None and _list_zone_pressed[0]:
+            _list_zone_pressed[0] = False
+            return
         display.set_overlay(OverlayState(visible=True, pressed=zone, muted=is_muted()))
 
     def on_volume_up() -> None:
@@ -400,6 +423,24 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         muted = enqueue_mute()
         display.set_overlay(OverlayState(visible=True, pressed=TouchZone.MUTE, muted=muted))
 
+    def on_zone_tap(zone, index) -> None:
+        # NAME opens the appliance selector; the LIST_* zones act on it —
+        # see dial_display.DialDisplay's selector screen state (2.7) and
+        # dial_touch.py's SURFACES paragraph for how a press ever reaches
+        # one of these zones in the first place.
+        _confirm_presence()
+        display.notify_touch_activity()
+        if zone == TouchZone.NAME:
+            display.open_selector()
+        elif zone == TouchZone.LIST_BACK:
+            display.close_selector()
+        elif zone == TouchZone.LIST_DOWN:
+            display.selector_page(+1)
+        elif zone == TouchZone.LIST_UP:
+            display.selector_page(-1)
+        elif zone == TouchZone.LIST_ROW:
+            display.selector_pick(index)
+
     touch_source = TouchEventSource(
         driver, touch_filter, state_machine,
         on_reveal_overlay=on_reveal_overlay,
@@ -408,7 +449,14 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None):
         on_mute_toggle=on_mute_toggle,
         on_dismiss_overlay=on_dismiss_overlay,
         on_set_pressed_zone=on_set_pressed_zone,
+        on_zone_tap=on_zone_tap,
         get_noncomposited_generation=display.noncomposited_generation,
+        # get_touch_surface (surface + name_active) is the preferred sync;
+        # get_persistent_overlay is kept as the legacy fallback so a
+        # display stand-in that only implements the older attribute (or
+        # the NoOp provider, which implements neither) still behaves
+        # exactly as before — see dial_touch.TouchEventSource._poll_surface.
+        get_touch_surface=getattr(display, "touch_surface", None),
         get_persistent_overlay=getattr(display, "persistent_overlay_shown", None),
         axis_signs=(
             profile.touch_swap_xy, profile.touch_invert_x, profile.touch_invert_y

@@ -38,7 +38,7 @@ from dial_auth import (
     OUTCOME_UNAUTHORIZED,
     auth_map,
 )
-from dial_display_compositor import DialDisplayCompositor, OverlayState
+from dial_display_compositor import DialDisplayCompositor, ListState, OverlayState
 from dial_display_image import (
     MAX_ARTWORK_RESPONSE_BYTES,
     decode_artwork,
@@ -49,7 +49,9 @@ from dial_display_profiles import (
     UnknownDisplayProfileError,
     get_profile,
 )
+from dial_mdns import appliance_display_name
 from dial_target_status import enrich_targets, fetch_target_status
+from dial_touch_layout import list_layout_for
 from dial_volume import (
     is_muted,
     note_master_volume_positive,
@@ -83,6 +85,10 @@ DIAL_STATUS_TIMEOUT_SECONDS = 2.0
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
 DISPLAY_IDLE_SLEEP_SECONDS = 15 * 60
 RECONCILE_INTERVAL_SECONDS = 60
+# How long the appliance-selector screen stays open with no touch activity
+# before it closes back to the main (now-playing) screen. Refreshed by any
+# touch activity while open — see _apply_touch_activity_locked.
+SELECTOR_TIMEOUT_SECONDS = 18
 
 
 def _fetch_artwork(url: str, timeout: float) -> tuple[bytes | None, str]:
@@ -158,6 +164,36 @@ class NowPlaying:
     artist: str
     title: str          # kept for a future title line; unused by the overlay
     master_volume: int | None
+
+
+@dataclass(frozen=True)
+class SelectorRow:
+    """One row of the appliance-selector screen — see SelectorState."""
+    appliance_id: str
+    label: str        # appliance_display_name(service_name)
+    current: bool     # this row is the focus (manual, else the reporting-from target)
+
+
+@dataclass(frozen=True)
+class SelectorState:
+    """Immutable snapshot of the appliance-selector screen's rows and
+    paging, as last built by the poll thread (_refresh_selector_rows).
+
+    rows: every AUTHORIZED, rostered (playing), identified appliance — see
+        _refresh_selector_rows for the exact filter. ALL rows across every
+        page, not just the current one; the compositor's ListState (built
+        separately, at repaint time) slices out the current page.
+    page: the current page index. Preserved across each rebuild (clamped to
+        the new row count) so an open selector's page does not jump back to
+        0 every ~6s poll tick; reset to 0 only when the selector is freshly
+        opened (see open_selector()/_apply_screen_requests_locked()).
+    opened_at: monotonic time of the open, or of the last touch activity
+        while open (see _apply_touch_activity_locked) — what
+        SELECTOR_TIMEOUT_SECONDS counts down from.
+    """
+    rows: tuple[SelectorRow, ...]
+    page: int
+    opened_at: float
 
 
 # ---------------------------------------------------------------------------
@@ -334,11 +370,32 @@ class DialDisplay:
         self._last_reconcile_at = 0.0
         self._reconcile_due = True          # first tick reconciles
         # Manual focus: appliance_id chosen by the user, or None for
-        # auto-pick. Read and cleared by the poll thread; set by whatever
-        # eventually drives the selector (not wired in this phase). Plain
-        # reference read/write, same discipline as _overlay_snapshot. Never
-        # persisted.
+        # auto-pick. Read and cleared by the poll thread; set by
+        # selector_pick() below (the touch thread, via dial_main's
+        # on_zone_tap dispatch for a LIST_ROW tap). Plain reference
+        # read/write, same discipline as _overlay_snapshot. Never persisted.
         self._manual_focus_id: str | None = None
+
+        # ---- Selector screen state -------------------------------------
+        # self._screen is written under self._lock — usually by the repaint
+        # thread (_apply_screen_requests_locked()/_close_selector_locked()),
+        # occasionally by the poll thread (the empty-target branch,
+        # _sleep_locked) — and read lock-free elsewhere (a plain str read is
+        # atomic) — same discipline as _current_base_is_artwork.
+        # "main": the now-playing screen. "selector": the appliance list.
+        self._screen = "main"
+        # Last-built rows, refreshed every poll tick regardless of whether
+        # the selector is actually open (_refresh_selector_rows) so opening
+        # it never waits on a poll; published under self._lock. None until
+        # the first poll runs.
+        self._selector: SelectorState | None = None
+        # Touch-thread requests (open_selector/close_selector/selector_page)
+        # are flag writes only — plain str/int, no lock — folded into
+        # self._screen/self._selector by the repaint thread
+        # (_apply_screen_requests_locked), the same pattern
+        # _touch_activity_pending uses. None means "no pending request".
+        self._screen_request: str | None = None
+        self._page_request = 0
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -532,6 +589,11 @@ class DialDisplay:
             return False
         self._touch_activity_pending = False
         self._idle_started_at = None
+        if self._screen == "selector" and self._selector is not None:
+            # Any touch activity while the selector is open extends its
+            # inactivity timeout — see SELECTOR_TIMEOUT_SECONDS and the
+            # _repaint_run timeout branch below.
+            self._selector = dataclasses.replace(self._selector, opened_at=time.monotonic())
         if self._display_sleeping:
             self._wake_locked()
             return True
@@ -561,18 +623,44 @@ class DialDisplay:
     def persistent_overlay_shown(self) -> bool:
         """True while the display is holding the controls overlay visible
         on its own (always_show_controls on, artwork on screen, backend
-        open, not asleep). Plain attribute reads; the touch thread polls
-        this once per loop iteration (see dial_touch.TouchEventSource.
-        _poll_held_visible) so a finger can never arm against controls that
-        are not actually drawn — when this turns False (screen went to the
-        logo, went to sleep, or the setting was turned off), the touch side
-        is forced back to reveal-on-touch within one loop tick."""
+        open, not asleep, and the MAIN screen is showing — never true while
+        the appliance selector is open). Plain attribute reads; the touch
+        thread polls this once per loop iteration (see dial_touch.
+        TouchEventSource._poll_held_visible, the legacy fallback path) so a
+        finger can never arm against controls that are not actually drawn —
+        when this turns False (screen went to the logo, went to sleep, the
+        setting was turned off, or the selector opened), the touch side is
+        forced back to reveal-on-touch within one loop tick."""
         return (
             self._config.always_show_controls
             and self._current_base_is_artwork
             and self._backend_open
             and not self._display_sleeping
+            and self._screen == "main"
         )
+
+    def touch_surface(self) -> tuple[str, bool]:
+        """(surface, name_active) for dial_touch.TouchStateMachine.
+        set_surface() — see that module's SURFACES paragraph. Polled once
+        per loop iteration by TouchEventSource; a plain-attribute read
+        discipline, same as persistent_overlay_shown() and
+        noncomposited_generation().
+
+        name_active is true whenever there is a controllable appliance
+        currently shown (self._now_playing is not None) — unconditional,
+        per the low-level design's Q4: the appliance name and its tap-zone
+        are always active in that case, never gated on how many
+        appliances are authorized. It is independent of held/hidden: by
+        the time a second press can sample the NAME zone at all, the
+        REVEAL-ONLY FIRST TOUCH rule (dial_touch.py) has already made the
+        overlay visible.
+        """
+        if self._screen == "selector":
+            return ("selector", False)
+        name_active = self._now_playing is not None
+        if self.persistent_overlay_shown():
+            return ("held", name_active)
+        return ("hidden", name_active)
 
     def request_repaint(self) -> None:
         """Ask the repaint thread to recompose the current base against the
@@ -661,6 +749,10 @@ class DialDisplay:
         self._source_artwork_url = ""
         self._current_rendered_image = None
         self._current_base_is_artwork = False
+        # A reopen after a screen_type swap starts on the main screen, not
+        # wherever the list happened to be — the old panel's geometry is
+        # gone anyway.
+        self._close_selector_locked()
         self._enable_locked()
 
     def _disable_locked(self) -> None:
@@ -680,6 +772,8 @@ class DialDisplay:
         self._idle_started_at = None
         self._display_sleeping = False
         self._current_base_is_artwork = False
+        # A later re-enable starts on the main screen.
+        self._close_selector_locked()
 
     def _clear_locked(self) -> None:
         if self._backend_open and self._backend is not None:
@@ -692,6 +786,11 @@ class DialDisplay:
         self._mark_noncomposited_locked()
 
     def _sleep_locked(self) -> None:
+        # Pop to the main screen before the backlight goes off — the
+        # appliance list must never be the last thing left on screen
+        # (I8; see also the empty-target branch in _poll_once, which is
+        # the only path that can reach sleep with a fresh reason to check).
+        self._close_selector_locked()
         if self._backend_open and self._backend is not None:
             try:
                 self._backend.sleep()
@@ -850,6 +949,12 @@ class DialDisplay:
             explicitly, else the current mute belief (dial_volume.is_muted())
             — a reveal that follows a mute from the physical button or an
             earlier touch session must not show the tri-state default.
+          - name: appliance_display_name() of the reporting-from target's
+            service name, or "" when nothing is playing. ALWAYS populated
+            whenever a controllable appliance is shown — per the low-level
+            design's Q4, this is unconditional, never gated on how many
+            appliances are authorized (the plan's "two or more" wording is
+            explicitly withdrawn there).
 
         held-visible: when always_show_controls is on and artwork is on
         screen (and the display is not asleep), the overlay is forced
@@ -874,10 +979,11 @@ class DialDisplay:
             return snapshot
         now_playing = self._now_playing
         artist = now_playing.artist if now_playing is not None else ""
+        name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
         volume = shown_volume(now_playing.service_name) if now_playing is not None else None
         muted = snapshot.muted if snapshot.muted is not None else is_muted()
         return dataclasses.replace(
-            snapshot, visible=True, artist=artist, volume=volume, muted=muted,
+            snapshot, visible=True, artist=artist, volume=volume, muted=muted, name=name,
         )
 
     def _redisplay_current_locked(self) -> None:
@@ -927,9 +1033,11 @@ class DialDisplay:
             if self._repaint_stop_event.is_set():
                 break
             if not signaled:
-                # Plain timeout — nothing to do, go back to waiting. This
-                # periodic wake exists only so stop() is noticed promptly
-                # even if no overlay signal ever arrives.
+                # Plain timeout — nothing to do beyond the selector's own
+                # inactivity check, then go back to waiting. This periodic
+                # wake exists only so stop() is noticed promptly even if no
+                # overlay signal ever arrives.
+                self._check_selector_timeout()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
             # set_overlay() call that lands after this clear() (including
@@ -951,24 +1059,230 @@ class DialDisplay:
                 self._poll_wake.set()
 
     def _repaint_current_locked(self) -> bool:
-        """Recompose the last base frame against the latest overlay snapshot
-        and push it — used by the repaint thread when only the overlay
-        itself changed (no new poll-driven frame). No-op if the backend is
-        closed or nothing has ever been displayed yet.
+        """Recompose and push the current screen — used by the repaint
+        thread when only the overlay or the screen itself changed (no new
+        poll-driven frame). No-op if the backend is closed.
 
         Returns True when applying pending touch activity woke the display
         (see _apply_touch_activity_locked) — propagated to the caller so it
         can run the wake-pass side effects outside self._lock.
         """
         # Wake first if touch asked for it, so the backlight is on before
-        # the overlay frame is pushed rather than one repaint later.
+        # the frame is pushed rather than one repaint later.
         woke = self._apply_touch_activity_locked()
+        # Fold any pending open_selector()/close_selector()/selector_page()
+        # request into self._screen/self._selector before deciding what to
+        # paint — see _apply_screen_requests_locked().
+        self._apply_screen_requests_locked()
         if not (self._backend_open and self._backend is not None):
+            return woke
+        if self._screen == "selector":
+            self._display_selector_locked()
             return woke
         if self._current_base_image is None:
             return woke
         self._display_locked(self._current_base_image)
         return woke
+
+    # ---- appliance selector screen -----------------------------------------
+    #
+    # Touch-thread entry points (open_selector/close_selector/selector_page/
+    # selector_pick) are flag-write-plus-signal only, exactly like
+    # notify_touch_activity()/set_manual_focus() — the actual screen-state
+    # change happens on the repaint thread under self._lock
+    # (_apply_screen_requests_locked). Rows themselves are built ONLY on the
+    # poll thread (_refresh_selector_rows) — the touch thread never builds
+    # rows, it only reads the last-published SelectorState.
+
+    def open_selector(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a NAME tap).
+        Also forces an immediate reconcile/poll so any not-yet-confirmed
+        row is checked within about one poll interval of opening, per the
+        low-level design's review note (unknown rows confirmed quickly
+        rather than left stale for up to 60s)."""
+        self._screen_request = "selector"
+        self._reconcile_due = True
+        auth_map.force_due()
+        self._poll_wake.set()
+        self._overlay_signal.set()
+
+    def close_selector(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_BACK tap,
+        or selector_pick() below)."""
+        self._screen_request = "main"
+        self._overlay_signal.set()
+
+    def selector_page(self, delta: int) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_DOWN/
+        LIST_UP tap): +1 for the next page, -1 for the previous. Clamped to
+        the valid range by _apply_screen_requests_locked()."""
+        self._page_request += delta
+        self._overlay_signal.set()
+
+    def selector_pick(self, index: int) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_ROW tap).
+
+        Reads the last-published SelectorState (plain reference read, no
+        lock — same discipline as _overlay_snapshot). When *index* still
+        falls within the CURRENT page, sets manual focus to that row's
+        appliance. A stale index — the row disappeared between paint and
+        tap, e.g. the appliance stopped playing — is silently treated as
+        "back": no focus change, no error dialog. Either way the selector
+        closes.
+        """
+        selector = self._selector
+        if selector is not None and selector.rows:
+            page_rows = self._selector_page_rows(selector)
+            if 0 <= index < len(page_rows):
+                self.set_manual_focus(page_rows[index].appliance_id)
+        self.close_selector()
+
+    def _selector_page_rows(self, selector: SelectorState) -> tuple[SelectorRow, ...]:
+        """The CURRENT page's slice of *selector*.rows — shared by
+        selector_pick() (touch thread, lock-free) and _build_list_state_
+        locked() (repaint thread) so the two can never disagree about which
+        rows are on screen. rows_per_page comes from dial_touch_layout, the
+        same single source of truth the touch hit-test itself reads."""
+        width, height = self._active_panel_dims()
+        rows_per_page = list_layout_for(width, height).rows_per_page
+        start = selector.page * rows_per_page
+        return selector.rows[start:start + rows_per_page]
+
+    def _close_selector_locked(self) -> None:
+        """Pop to the main screen. Caller holds self._lock. Called from the
+        repaint thread's own request-folding, from sleep/disable/swap (so a
+        later wake/reopen never resumes on a stale list), and is what a
+        stale selector_pick() index falls back to."""
+        self._screen = "main"
+        self._selector = None
+        self._overlay_signal.set()
+
+    def _apply_screen_requests_locked(self) -> None:
+        """Fold pending open_selector()/close_selector()/selector_page()
+        touch-thread requests into self._screen/self._selector. Caller
+        holds self._lock; runs on the repaint thread only.
+        """
+        request = self._screen_request
+        self._screen_request = None
+        delta = self._page_request
+        self._page_request = 0
+
+        if request == "selector":
+            rows = self._selector.rows if self._selector is not None else ()
+            self._selector = SelectorState(rows=rows, page=0, opened_at=time.monotonic())
+            self._screen = "selector"
+        elif request == "main":
+            self._close_selector_locked()
+
+        if delta and self._screen == "selector" and self._selector is not None:
+            width, height = self._active_panel_dims()
+            rows_per_page = list_layout_for(width, height).rows_per_page
+            row_count = len(self._selector.rows)
+            max_page = max(0, (row_count - 1) // rows_per_page) if row_count else 0
+            new_page = max(0, min(self._selector.page + delta, max_page))
+            if new_page != self._selector.page:
+                self._selector = dataclasses.replace(self._selector, page=new_page)
+
+    def _check_selector_timeout(self) -> None:
+        """Close the selector after SELECTOR_TIMEOUT_SECONDS of no touch
+        activity — called from the repaint thread's own 1s timeout branch,
+        so this runs even when nothing else signals a repaint.
+
+        self._screen and self._selector are read lock-free here: both are
+        also written by the poll thread (_poll_once's empty-target branch,
+        _sleep_locked), not only the repaint thread, but every write is
+        already under self._lock and each is a plain reference/str
+        assignment — the same "a stale read costs at most one harmless
+        extra tick" discipline _sleeping_lockfree() documents. The actual
+        close below is re-checked and applied under the lock regardless.
+        """
+        if self._screen != "selector":
+            return
+        selector = self._selector
+        if selector is None:
+            return
+        if time.monotonic() - selector.opened_at >= SELECTOR_TIMEOUT_SECONDS:
+            with self._lock:
+                self._close_selector_locked()
+
+    def _refresh_selector_rows(self, targets: list, reporting_id: str | None) -> None:
+        """Rebuild the selector's row list from *targets* — see section 2.7
+        of the low-level design. Runs on the poll thread at the end of
+        every _poll_once, whether or not the selector screen is actually
+        open right now, so opening it always shows fresh rows without
+        waiting for a poll. The touch thread never builds rows.
+
+        Rows: every target with a non-empty appliance_id whose auth is
+        AUTHORIZED (not just "not unauthorized" — an unknown appliance is
+        controllable but not yet confirmed, so it stays off the list until
+        a probe confirms it). *current* marks the manual focus when one is
+        set, else the reporting-from target (*reporting_id*).
+
+        The page is PRESERVED (clamped to the new row count) across each
+        rebuild — resetting it to 0 here would make an open selector jump
+        back to its first page every ~6s poll tick. It is reset to 0 only
+        by a fresh open_selector() (see _apply_screen_requests_locked).
+        """
+        focus_id = self._manual_focus_id
+        current_id = focus_id if focus_id is not None else reporting_id
+        rows = tuple(
+            SelectorRow(
+                appliance_id=t.appliance_id,
+                label=appliance_display_name(t.service_name),
+                current=(t.appliance_id == current_id),
+            )
+            for t in targets
+            if t.appliance_id and t.auth == AUTH_AUTHORIZED
+        )
+        with self._lock:
+            prev = self._selector
+            width, height = self._active_panel_dims()
+            rows_per_page = list_layout_for(width, height).rows_per_page
+            max_page = max(0, (len(rows) - 1) // rows_per_page) if rows else 0
+            page = max(0, min(prev.page, max_page)) if prev is not None else 0
+            opened_at = prev.opened_at if prev is not None else 0.0
+            self._selector = SelectorState(rows=rows, page=page, opened_at=opened_at)
+
+    def _build_list_state_locked(self, width: int, height: int) -> ListState:
+        """Build the compositor's ListState for the CURRENT page. Caller
+        holds self._lock; runs on the repaint thread only. Live touch-press
+        feedback is not wired into the selector chassis in this phase —
+        pressed is always None here (compose_list still supports it, for
+        the compositor's own tests)."""
+        selector = self._selector
+        if selector is None or not selector.rows:
+            return ListState(rows=(("No devices", False),), has_prev=False, has_next=False)
+        rows_per_page = list_layout_for(width, height).rows_per_page
+        start = selector.page * rows_per_page
+        page_rows = selector.rows[start:start + rows_per_page]
+        return ListState(
+            rows=tuple((row.label, row.current) for row in page_rows),
+            has_prev=selector.page > 0,
+            has_next=start + rows_per_page < len(selector.rows),
+        )
+
+    def _display_selector_locked(self) -> None:
+        """Compose and push the selector-screen frame — the compose_list()
+        counterpart to _display_locked(). Bypasses _display_locked()
+        entirely (that path composes the artwork/overlay screen and would
+        overwrite self._current_base_image, which must survive a selector
+        visit unchanged so closing it re-paints the same base). Caller
+        holds self._lock.
+        """
+        width, height = self._active_panel_dims()
+        list_state = self._build_list_state_locked(width, height)
+        try:
+            composed = self._compositor.compose_list(
+                width, height, list_state,
+                rotate=self._config.rotate, bgr=self._config.bgr,
+            )
+            self._backend.display(composed)
+        except Exception as e:
+            self._record_error_locked("display_write_failed")
+            self._log_limiter.log(
+                logging.WARNING, "display_write_failed",
+                "dial display: backend write failed: %s", e,
+            )
 
     # ---- polling loop ----------------------------------------------------
 
@@ -1136,6 +1450,10 @@ class DialDisplay:
             self._now_playing = None
             observe_master_volume(None, None)
             with self._lock:
+                # The list must never be the last thing on screen when
+                # nothing is playing any more — pop to main before the
+                # sleep decision below (I8).
+                self._close_selector_locked()
                 if self._idle_started_at is None:
                     self._idle_started_at = time.monotonic()
                 if self._display_sleeping:
@@ -1230,6 +1548,7 @@ class DialDisplay:
         targets_controllable = [t for t in targets if t.auth != AUTH_UNAUTHORIZED]
         reporting = select_volume_target(targets_controllable, selected_service)
         reporting_name = reporting.service_name if reporting is not None else None
+        reporting_id = reporting.appliance_id if reporting is not None else None
         record = records.get(reporting_name) if reporting_name else None
         master_volume = record.get("master_volume") if record else None
         # Free reconciliation for the dial mute belief (dial_volume.py),
@@ -1269,6 +1588,7 @@ class DialDisplay:
             self._reconcile_pass(targets, visited)
             self._last_reconcile_at = now
             self._reconcile_due = False
+        self._refresh_selector_rows(targets, reporting_id)
 
     # ---- artwork selection -------------------------------------------------
 
