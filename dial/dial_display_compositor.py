@@ -107,9 +107,10 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
@@ -595,6 +596,28 @@ class RevealLayers:
     bottom_keep: Image.Image
     strip_add: Image.Image
     strip_keep: Image.Image
+    # The same layers as uint16 arrays for the numpy compositing path, plus
+    # the strip rows the chrome actually touches; None when numpy is not
+    # available (the Pillow path is used then). Derived from the images
+    # above, so excluded from equality and repr.
+    arrays: "_RevealArrays | None" = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class _RevealArrays:
+    """RevealLayers' layers as (rows, cols, 3) uint16 arrays, so a slide
+    frame is pure arithmetic. `strip_runs` lists the half-open row ranges
+    (relative to the strip) where the chrome changes anything, that is
+    where add is not 0 or keep is not 255 in some column; every other
+    strip row passes the base through unchanged and is never touched."""
+
+    top_add: object
+    top_keep: object
+    bottom_add: object
+    bottom_keep: object
+    strip_add: object
+    strip_keep: object
+    strip_runs: tuple
 
 
 # Background sources for _new_frame(): where a frame's base image comes
@@ -2069,6 +2092,56 @@ def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
     return img
 
 
+# Logged at most once per process: a missing numpy is a one-time
+# environment problem, not a per-frame event.
+_numpy_missing_logged = False
+
+
+def _numpy_module():
+    """Return the numpy module, or None (logged once) when it is missing."""
+    global _numpy_missing_logged
+    try:
+        import numpy
+    except ImportError:
+        if not _numpy_missing_logged:
+            _logger.warning(
+                "dial display: python3-numpy is not installed; the artwork "
+                "reveal falls back to slower Pillow compositing. Install "
+                "python3-numpy to fix this."
+            )
+            _numpy_missing_logged = True
+        return None
+    return numpy
+
+
+def _active_runs(np, add, keep) -> tuple:
+    """Half-open row ranges of a layer where it is not the identity."""
+    active = ((add != 0) | (keep != 255)).any(axis=(1, 2))
+    padded = np.concatenate(([0], active.astype(np.int8), [0]))
+    edges = np.flatnonzero(np.diff(padded))
+    return tuple((int(a), int(b)) for a, b in zip(edges[::2], edges[1::2]))
+
+
+def _build_reveal_arrays(layers: RevealLayers) -> "_RevealArrays | None":
+    np = _numpy_module()
+    if np is None:
+        return None
+    try:
+        def arr(img):
+            return np.array(img, dtype=np.uint16)
+
+        strip_add, strip_keep = arr(layers.strip_add), arr(layers.strip_keep)
+        return _RevealArrays(
+            top_add=arr(layers.top_add), top_keep=arr(layers.top_keep),
+            bottom_add=arr(layers.bottom_add), bottom_keep=arr(layers.bottom_keep),
+            strip_add=strip_add, strip_keep=strip_keep,
+            strip_runs=_active_runs(np, strip_add, strip_keep),
+        )
+    except Exception:
+        _logger.warning("dial display: reveal layer arrays unavailable", exc_info=True)
+        return None
+
+
 @functools.lru_cache(maxsize=2)
 def _reveal_layers(
     frame: Frame, width: int, height: int, metrics: LayoutMetrics,
@@ -2083,24 +2156,43 @@ def _reveal_layers(
     through: black render = add, white render - black render = keep. A
     pure function of its arguments, memoised the same way _glyph_tile()
     is (see _load_font()'s statelessness note): two entries, so the
-    now-playing and the repeat screen's layers can both stay warm."""
+    now-playing and the repeat screen's layers can both stay warm. The
+    numpy forms of the layers are built here too, once per slide."""
     black = Image.new("RGB", (width, height), (0, 0, 0))
     white = Image.new("RGB", (width, height), (255, 255, 255))
     add = _compose_frame(black, width, height, frame, rotate=False, bgr=False, metrics=metrics)
     lit = _compose_frame(white, width, height, frame, rotate=False, bgr=False, metrics=metrics)
     keep = ImageChops.subtract(lit, add)
-    return RevealLayers(
+    layers = RevealLayers(
         top_band=top_band, bottom_band=bottom_band, strip=strip,
         top_add=add.crop(top_band), top_keep=keep.crop(top_band),
         bottom_add=add.crop(bottom_band), bottom_keep=keep.crop(bottom_band),
         strip_add=add.crop(strip), strip_keep=keep.crop(strip),
     )
+    arrays = _build_reveal_arrays(layers)
+    if arrays is not None:
+        layers = dataclasses.replace(layers, arrays=arrays)
+    return layers
 
 
 def _apply_layer(region: Image.Image, add: Image.Image, keep: Image.Image) -> Image.Image:
     """The chrome laid over *region*: add + keep * region / 255, per
     channel. All three images are the same size."""
     return ImageChops.add(ImageChops.multiply(region, keep), add)
+
+
+def _apply_layer_np(np, region, add, keep):
+    """_apply_layer() on arrays, bit-identical to Pillow's multiply (the
+    truncated a * b // 255) then saturating add. *region* is uint8, *add*
+    and *keep* uint16 of the same shape; returns uint16 in 0..255."""
+    t = region.astype(np.uint16)
+    t *= keep
+    # (t + 1 + (t >> 8)) >> 8 is exactly t // 255 for every t up to 255 * 255.
+    t += (t >> 8) + 1
+    t >>= 8
+    t += add
+    np.minimum(t, 255, out=t)
+    return t
 
 
 def _reveal_frame(base, layers: RevealLayers, progress: float) -> Image.Image:
@@ -2114,7 +2206,66 @@ def _reveal_frame(base, layers: RevealLayers, progress: float) -> Image.Image:
     panel edge while the artwork underneath never moves and shows bare
     where the chrome has gone. Reproduces the ordinary frame at 0 and the
     bare base at 1 to within rounding; the callers short-circuit both
-    endpoints to the exact frames anyway."""
+    endpoints to the exact frames anyway.
+
+    The normal path does the whole frame as arithmetic on one array and
+    converts back once, touching only the strip rows the chrome changes;
+    that keeps the per-frame cost low and, unlike Pillow's chop and blend
+    calls, lets other threads run while it works. The bands are
+    bit-identical to the Pillow path; the strip fade is exact too, apart
+    from possible one-level float rounding differences. Without numpy, or
+    if the array path fails for any reason, the same frame is built with
+    Pillow instead; this never raises for either."""
+    arrays = layers.arrays
+    if arrays is not None:
+        np = _numpy_module()
+        if np is not None:
+            try:
+                return _reveal_frame_np(np, base, layers, arrays, progress)
+            except Exception:
+                _logger.warning("dial display: numpy reveal failed; using Pillow", exc_info=True)
+    return _reveal_frame_pillow(base, layers, progress)
+
+
+def _reveal_frame_np(np, base, layers: RevealLayers, arrays: _RevealArrays, progress: float):
+    width, height = layers.strip[2], layers.bottom_band[3]
+    src = _new_frame(base, width, height, BG_BASE)
+    out = np.array(src, dtype=np.uint8)
+    x0, y0, x1, y1 = layers.strip
+    if x1 > x0 and y1 > y0 and arrays.strip_runs:
+        alpha = np.float32(1.0 - progress)
+        for r0, r1 in arrays.strip_runs:
+            region = out[y0 + r0:y0 + r1, x0:x1]
+            applied = _apply_layer_np(
+                np, region, arrays.strip_add[r0:r1], arrays.strip_keep[r0:r1],
+            )
+            base_f = region.astype(np.float32)
+            applied = applied.astype(np.float32)
+            applied -= base_f
+            applied *= alpha
+            applied += base_f
+            region[...] = applied.astype(np.uint8)
+    x0, y0, x1, y1 = layers.top_band
+    band_h = y1 - y0
+    dy = round(progress * band_h)
+    if dy < band_h:
+        region = out[y0:y1 - dy, x0:x1]
+        region[...] = _apply_layer_np(
+            np, region, arrays.top_add[dy:band_h], arrays.top_keep[dy:band_h],
+        )
+    x0, y0, x1, y1 = layers.bottom_band
+    band_h = y1 - y0
+    dy = round(progress * band_h)
+    if dy < band_h:
+        region = out[y0 + dy:y1, x0:x1]
+        region[...] = _apply_layer_np(
+            np, region, arrays.bottom_add[:band_h - dy], arrays.bottom_keep[:band_h - dy],
+        )
+    return Image.fromarray(out, "RGB")
+
+
+def _reveal_frame_pillow(base, layers: RevealLayers, progress: float) -> Image.Image:
+    """_reveal_frame() with Pillow's own chop and blend operations."""
     width, height = layers.strip[2], layers.bottom_band[3]
     out = _new_frame(base, width, height, BG_BASE)
     x0, y0, x1, y1 = layers.strip

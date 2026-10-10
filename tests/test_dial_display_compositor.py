@@ -5788,3 +5788,215 @@ class TestRepeatRevealProgress:
         full = compositor.compose_repeat(w, h, state, reveal_progress=1.0, **kw)
         bare = compositor.compose_repeat(w, h, state, controls=False, **kw)
         assert list(full.getdata()) == list(bare.getdata())
+
+
+# ---------------------------------------------------------------------------
+# The reveal's numpy compositing path against the Pillow path it replaces.
+# ---------------------------------------------------------------------------
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None
+
+import dial_display_compositor as _dc  # noqa: E402
+from dial_display_compositor import (  # noqa: E402
+    _apply_layer_np,
+    _reveal_frame,
+    _reveal_frame_pillow,
+)
+
+
+def _random_base(metrics, seed=7):
+    """An artwork-like base: smooth gradients plus per-pixel noise."""
+    rng = np.random.default_rng(seed)
+    w, h = metrics.width, metrics.height
+    yy, xx = np.mgrid[0:h, 0:w]
+    smooth = (xx * 255 // max(w - 1, 1) + yy * 255 // max(h - 1, 1)) // 2
+    noise = rng.integers(-40, 41, size=(h, w, 3))
+    arr = np.clip(smooth[..., None] + noise, 0, 255).astype(np.uint8)
+    arr[: h // 3, : w // 3] = rng.integers(0, 256, size=(h // 3, w // 3, 3), dtype=np.uint8)
+    return Image.fromarray(arr, "RGB")
+
+
+def _now_layers(metrics):
+    w, h = metrics.width, metrics.height
+    layout = layout_for(w, h, metrics=metrics)
+    frame = _now_playing_frame(_reveal_overlay(), w, h, metrics)
+    return _reveal_layers(frame, w, h, metrics, layout.top_band, layout.bottom_band, layout.artwork)
+
+
+def _replay_layers(metrics):
+    w, h = metrics.width, metrics.height
+    layout = repeat_layout_for(w, h, metrics=metrics)
+    strip = (0, layout.top_band[3], w, layout.bottom_band[1])
+    frame = _repeat_frame(_replaying_state(), w, h, metrics)
+    return _reveal_layers(frame, w, h, metrics, layout.top_band, layout.bottom_band, strip)
+
+
+_LAYER_BUILDERS = {"now_playing": _now_layers, "replaying": _replay_layers}
+_SLIDE_PROGRESS = [0.02, 0.1, 0.25, 0.4, 0.5, 0.63, 0.8, 0.95, 0.99]
+
+
+def _max_dev(a, b):
+    return int(np.abs(
+        np.asarray(a, dtype=np.int16) - np.asarray(b, dtype=np.int16)
+    ).max())
+
+
+@pytest.mark.skipif(np is None, reason="numpy not installed")
+class TestRevealNumpyPath:
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("kind", sorted(_LAYER_BUILDERS))
+    @pytest.mark.parametrize("p", _SLIDE_PROGRESS)
+    def test_matches_the_pillow_path(self, compositor, metrics, kind, p):
+        layers = _LAYER_BUILDERS[kind](metrics)
+        assert layers.arrays is not None
+        base = _random_base(metrics)
+        got = np.asarray(_reveal_frame(base, layers, p))
+        want = np.asarray(_reveal_frame_pillow(base, layers, p))
+        assert got.shape == want.shape
+        # The strip fade may differ from Pillow's float blend by a level.
+        assert _max_dev(got, want) <= 1
+        # The bands are bit-identical: compare every row outside the strip.
+        for x0, y0, x1, y1 in (layers.top_band, layers.bottom_band):
+            assert np.array_equal(got[y0:y1, x0:x1], want[y0:y1, x0:x1])
+
+    def test_multiply_and_add_are_pillows_exactly(self):
+        rng = np.random.default_rng(1)
+        shape = (16, 64, 3)
+        for _ in range(20):
+            region = rng.integers(0, 256, size=shape, dtype=np.uint8)
+            keep = rng.integers(0, 256, size=shape, dtype=np.uint8)
+            add = rng.integers(0, 256, size=shape, dtype=np.uint8)
+            want = _apply_layer(
+                Image.fromarray(region, "RGB"), Image.fromarray(add, "RGB"),
+                Image.fromarray(keep, "RGB"),
+            )
+            got = _apply_layer_np(
+                np, region, add.astype(np.uint16), keep.astype(np.uint16),
+            )
+            assert np.array_equal(got.astype(np.uint8), np.asarray(want))
+        # Every multiplier pair, including the extremes.
+        a = np.repeat(np.arange(256, dtype=np.uint8), 256).reshape(256, 256, 1).repeat(3, 2)
+        b = a.transpose(1, 0, 2).copy()
+        zero = np.zeros(a.shape, dtype=np.uint16)
+        want = ImageChops.multiply(Image.fromarray(a, "RGB"), Image.fromarray(b, "RGB"))
+        got = _apply_layer_np(np, a, zero, b.astype(np.uint16))
+        assert np.array_equal(got.astype(np.uint8), np.asarray(want))
+
+    def test_strip_fade_arithmetic_within_a_level_of_blend(self):
+        rng = np.random.default_rng(2)
+        for alpha in [0.0, 0.01, 0.1, 0.25, 0.333, 0.5, 0.7, 0.9, 0.999]:
+            a = rng.integers(0, 256, size=(24, 40, 3), dtype=np.uint8)
+            b = rng.integers(0, 256, size=(24, 40, 3), dtype=np.uint8)
+            want = Image.blend(Image.fromarray(a, "RGB"), Image.fromarray(b, "RGB"), alpha)
+            a_f = a.astype(np.float32)
+            got = b.astype(np.float32)
+            got -= a_f
+            got *= np.float32(alpha)
+            got += a_f
+            assert _max_dev(got.astype(np.uint8), np.asarray(want)) <= 1
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("kind", sorted(_LAYER_BUILDERS))
+    def test_active_strip_rows_cover_every_changing_row(self, metrics, kind):
+        layers = _LAYER_BUILDERS[kind](metrics)
+        arrays = layers.arrays
+        add = np.asarray(layers.strip_add, dtype=np.int16)
+        keep = np.asarray(layers.strip_keep, dtype=np.int16)
+        changes = ((add != 0) | (keep != 255)).any(axis=(1, 2))
+        covered = np.zeros(len(changes), dtype=bool)
+        for r0, r1 in arrays.strip_runs:
+            assert 0 <= r0 < r1 <= len(changes)
+            covered[r0:r1] = True
+        assert np.array_equal(covered, changes)
+        assert changes.any()
+        assert arrays.strip_add.dtype == np.uint16
+
+    @pytest.mark.parametrize("kind", sorted(_LAYER_BUILDERS))
+    def test_pass_through_strip_rows_are_bit_exact_base(self, kind):
+        metrics = _RICH_METRICS
+        layers = _LAYER_BUILDERS[kind](metrics)
+        base = _random_base(metrics, seed=11)
+        got = np.asarray(_reveal_frame(base, layers, 0.5))
+        src = np.asarray(base)
+        x0, y0, x1, y1 = layers.strip
+        active = np.zeros(y1 - y0, dtype=bool)
+        for r0, r1 in layers.arrays.strip_runs:
+            active[r0:r1] = True
+        # Rows the bands' slides do not reach are the ones inside the strip.
+        for r in np.flatnonzero(~active):
+            assert np.array_equal(got[y0 + r, x0:x1], src[y0 + r, x0:x1])
+
+    def test_band_rows_are_all_active_by_construction(self):
+        layers = _now_layers(_RICH_METRICS)
+        for add, keep in ((layers.top_add, layers.top_keep), (layers.bottom_add, layers.bottom_keep)):
+            a = np.asarray(add, dtype=np.int16)
+            k = np.asarray(keep, dtype=np.int16)
+            assert ((a != 0) | (k != 255)).any(axis=(1, 2)).all()
+
+    def test_base_image_is_not_mutated(self):
+        metrics = _RICH_METRICS
+        layers = _now_layers(metrics)
+        base = _random_base(metrics)
+        before = base.tobytes()
+        _reveal_frame(base, layers, 0.4)
+        assert base.tobytes() == before
+
+    def test_layers_are_still_a_frozen_dataclass(self):
+        layers = _now_layers(_RICH_METRICS)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            layers.arrays = None
+        assert layers == dataclasses.replace(layers, arrays=None)
+
+    def test_missing_numpy_falls_back_and_logs_once(self, caplog, monkeypatch):
+        metrics = _RICH_METRICS
+        layers = _now_layers(metrics)  # built with numpy available
+        base = _random_base(metrics)
+        monkeypatch.setattr(_dc, "_numpy_missing_logged", False)
+        monkeypatch.setitem(sys.modules, "numpy", None)
+        with caplog.at_level("WARNING", logger=_dc._logger.name):
+            first = _reveal_frame(base, layers, 0.5)
+            second = _reveal_frame(base, layers, 0.3)
+            _reset_render_caches()
+            rebuilt = _now_layers(metrics)
+            third = _reveal_frame(base, rebuilt, 0.5)
+        assert rebuilt.arrays is None
+        assert first.tobytes() == _reveal_frame_pillow(base, layers, 0.5).tobytes()
+        assert second.tobytes() == _reveal_frame_pillow(base, layers, 0.3).tobytes()
+        assert third.tobytes() == _reveal_frame_pillow(base, rebuilt, 0.5).tobytes()
+        assert sum("numpy is not installed" in r.getMessage() for r in caplog.records) == 1
+        _reset_render_caches()
+
+    def test_numpy_failure_mid_frame_falls_back_without_raising(self, monkeypatch):
+        metrics = _RICH_METRICS
+        layers = _now_layers(metrics)
+        base = _random_base(metrics)
+        before = base.tobytes()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated numpy failure")
+
+        monkeypatch.setattr(_dc, "_apply_layer_np", boom)
+        got = _reveal_frame(base, layers, 0.5)
+        assert got.tobytes() == _reveal_frame_pillow(base, layers, 0.5).tobytes()
+        assert base.tobytes() == before
+
+    def test_failure_after_partial_work_still_falls_back(self, monkeypatch):
+        metrics = _RICH_METRICS
+        layers = _now_layers(metrics)
+        base = _random_base(metrics)
+        real = _dc._apply_layer_np
+        calls = []
+
+        def flaky(*args, **kwargs):
+            calls.append(1)
+            if len(calls) > 1:
+                raise MemoryError("simulated")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(_dc, "_apply_layer_np", flaky)
+        got = _reveal_frame(base, layers, 0.5)
+        assert len(calls) > 1
+        assert got.tobytes() == _reveal_frame_pillow(base, layers, 0.5).tobytes()
