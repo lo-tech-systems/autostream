@@ -74,9 +74,13 @@ from dial_warnings import WarningManager, WarningStore
 
 def _target(
     name="Kitchen", ip="192.168.1.10", port=80,
-    dial_status=True, appliance_id="", auth="unknown",
+    dial_status=True, appliance_id=None, auth="unknown",
     service_name=None, playing_since=100.0, dial_proto_version=0,
 ) -> PlayingTarget:
+    # Identified by default (a name-derived id): an identity-less target
+    # (appliance_id="") is never acted on, so it has to be asked for.
+    if appliance_id is None:
+        appliance_id = (name.encode().hex() + "0" * 20)[:20]
     return PlayingTarget(
         ip=ip, port=port, name=name,
         dial_api=True, audio_status=True, dial_status=dial_status,
@@ -848,7 +852,8 @@ class TestLogoFallback:
 
 # ---------------------------------------------------------------------------
 # Idle sleep — 15 minutes of no playing targets dims the display; any
-# playing target (including unauthorized/erroring ones) counts as activity.
+# playing target (including erroring ones, but not unauthorized or
+# identity-less ones) counts as activity.
 # ---------------------------------------------------------------------------
 
 class _FakeClock:
@@ -998,19 +1003,93 @@ class TestIdleSleep:
         assert status["display_idle_seconds"] == 0
         assert fb.sleep_calls == 0
 
-    def test_unauthorized_target_present_counts_as_activity(self):
+    def test_unauthorized_only_targets_do_not_hold_off_idle_sleep(self):
         t = _target(auth="unauthorized")
         display, fb, gt = _make_display(targets=[t])
         display.enable()
         clock = _FakeClock()
         with patch("dial_display.time.monotonic", clock):
-            for _ in range(5):
-                display._poll_once()
-                clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()
             status = display.get_status()
-        assert status["display_sleeping"] is False
-        assert status["display_idle_seconds"] == 0
-        assert fb.sleep_calls == 0
+        assert status["display_sleeping"] is True
+        assert fb.sleep_calls == 1
+
+    def _asleep_display(self, clock):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
+            display._poll_once()
+        assert display.get_status()["display_sleeping"] is True
+        return display, fb, gt
+
+    def test_unauthorized_only_targets_do_not_wake_sleeping_panel(self):
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        gt.return_value = [_target(auth="unauthorized")]
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+        assert display.get_status()["display_sleeping"] is True
+        assert fb.wake_calls == 0
+
+    def test_unauthorized_only_targets_show_idle_not_playing(self):
+        t = _target(auth="unauthorized")
+        display, fb, gt = _make_display(targets=[t])
+        display.enable()
+        with patch("dial_display.fetch_target_status") as fetch:
+            display._poll_once()
+        fetch.assert_not_called()
+        assert display.get_status()["showing"] == "logo"
+        assert display._now_playing is None
+        assert display._reporting_appliance_id is None
+        assert display.current_source_service_name() is None
+
+    def test_unauthorized_only_targets_keep_the_idle_clock_running(self):
+        display, fb, gt = _make_display(targets=[_target(auth="unauthorized")])
+        display.enable()
+        clock = _FakeClock()
+        with patch("dial_display.time.monotonic", clock):
+            display._poll_once()
+            clock.t += 5.0
+            display._poll_once()
+            status = display.get_status()
+        assert status["display_idle_seconds"] == 5
+
+    def test_unknown_identified_target_still_wakes_panel(self):
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        t = _target(auth="unknown")
+        gt.return_value = [t]
+        with patch("dial_display.time.monotonic", clock),              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        assert display.get_status()["display_sleeping"] is False
+        assert fb.wake_calls == 1
+        assert display._reporting_appliance_id == t.appliance_id
+
+    def test_authorized_target_wakes_panel_alongside_unauthorized_one(self):
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        refused = _target(name="Lounge", auth="unauthorized", playing_since=1.0)
+        ok = _target(name="Kitchen", auth="authorized", playing_since=2.0)
+        gt.return_value = [refused, ok]
+        with patch("dial_display.time.monotonic", clock),              patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        assert display.get_status()["display_sleeping"] is False
+        assert display._reporting_appliance_id == ok.appliance_id
+
+    def test_unresolved_identityless_target_does_not_wake_panel(self):
+        clock = _FakeClock()
+        display, fb, gt = self._asleep_display(clock)
+        gt.return_value = [_target(appliance_id="")]
+        with patch("dial_display.time.monotonic", clock),              patch("dial_display.fetch_target_status") as fetch:
+            display._poll_once()
+        fetch.assert_not_called()
+        assert display.get_status()["display_sleeping"] is True
+        assert fb.wake_calls == 0
+        assert display._reporting_appliance_id is None
 
     def test_disable_while_asleep_resets_idle_and_sleep_state(self):
         display, fb, gt = _make_display(targets=[])
@@ -10937,7 +11016,7 @@ class TestUntypedRefusal:
         assert dial_auth.auth_map.state(aid) == dial_auth.AUTH_UNAUTHORIZED
 
     def test_refusal_for_an_unresolved_target_changes_nothing(self):
-        t = _target(name="Hall", service_name="Hall")
+        t = _target(name="Hall", service_name="Hall", appliance_id="")
         display, fb, gt = _make_display(targets=[t])
         assert display._apply_status_to_auth(t, self._refusal()) is False
 

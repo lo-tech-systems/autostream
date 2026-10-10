@@ -5285,6 +5285,15 @@ class DialDisplay:
         # cadence already covers them.) force_due() takes the leaf dial_auth
         # lock, so it is called here, before self._lock is taken below.
         playing_ids = {t.appliance_id for t in targets if t.appliance_id}
+        # The targets this dial may act on: not confirmed unauthorized, and
+        # carrying an identity (an unresolved legacy or identity-less
+        # appliance cannot be addressed or tracked). Everything below that
+        # wakes, binds, reports or offers a volume target works from this
+        # list; the raw list still feeds the selector (via the roster) so a
+        # refused appliance stays listed.
+        visible_targets = [
+            t for t in targets if t.auth != AUTH_UNAUTHORIZED and t.appliance_id
+        ]
         stopped_ids = self._prev_playing_ids - playing_ids
         if stopped_ids:
             self._reconcile_due = True
@@ -5327,7 +5336,7 @@ class DialDisplay:
                 None,
             )
             focus_target = next(
-                (t for t in targets if t.appliance_id == focus_id and t.auth != AUTH_UNAUTHORIZED),
+                (t for t in visible_targets if t.appliance_id == focus_id),
                 None,
             )
             if focus_entry is None:
@@ -5349,12 +5358,15 @@ class DialDisplay:
         # idle screen (5.2).
         idle_focus = focus_entry if (focus_entry is not None and focus_target is None) else None
 
-        # Any visible playing target counts as activity — including
-        # unauthorized or status-erroring ones — because the mDNS
-        # _autostream-playing._tcp presence alone means audio is playing
-        # somewhere on the network, regardless of whether this dial's
-        # display is allowed to source artwork from it.
-        if targets:
+        # Any visible playing target counts as activity, including
+        # status-erroring ones: the mDNS _autostream-playing._tcp presence
+        # alone means audio is playing on an appliance this dial can talk
+        # to. A confirmed-unauthorized appliance, or one with no identity
+        # after legacy resolution, does not count: the dial may not use it
+        # or control it, so its playback must neither wake the panel nor
+        # hold off idle sleep. (Unknown auth still counts: it is
+        # controllable until a refusal says otherwise.)
+        if visible_targets:
             woke = False
             with self._lock:
                 self._idle_started_at = None
@@ -5534,7 +5546,7 @@ class DialDisplay:
                 bid = self._bound_appliance_id
                 if bid is not None:
                     bound_target = next(
-                        (t for t in targets if t.appliance_id == bid and t.auth != AUTH_UNAUTHORIZED),
+                        (t for t in visible_targets if t.appliance_id == bid),
                         None,
                     )
                     if bound_target is None:
@@ -5546,8 +5558,8 @@ class DialDisplay:
             # playing_since-ordered walk is unchanged.
             pin_target = focus_target if focus_target is not None else bound_target
             ordered = (
-                [pin_target] + [t for t in targets if t is not pin_target]
-                if pin_target is not None else targets
+                [pin_target] + [t for t in visible_targets if t is not pin_target]
+                if pin_target is not None else visible_targets
             )
             identified_without_art = None
             for target in ordered:
@@ -5642,8 +5654,7 @@ class DialDisplay:
         if idle_focus is not None:
             reporting = idle_focus
         else:
-            targets_controllable = [t for t in targets if t.auth != AUTH_UNAUTHORIZED]
-            reporting = select_volume_target(targets_controllable, selected_service)
+            reporting = select_volume_target(visible_targets, selected_service)
         reporting_name = reporting.service_name if reporting is not None else None
         reporting_id = reporting.appliance_id if reporting is not None else None
         self._reporting_appliance_id = reporting_id
@@ -5670,7 +5681,7 @@ class DialDisplay:
         # Whether a service's status carries the flag at all decides how a
         # missing value is treated (see the store's comment block).
         reports_mute = {
-            t.service_name: getattr(t, "status_reports_mute", True) for t in targets
+            t.service_name: getattr(t, "status_reports_mute", True) for t in visible_targets
         }
         for walked_name, walked_record in records.items():
             if walked_name == reporting_name:
@@ -5684,7 +5695,7 @@ class DialDisplay:
             requested_at=status_sent_at.get(reporting_name, 0.0),
             status_reports_mute=reports_mute.get(reporting_name, True),
         )
-        forget_mute_states_except({t.service_name for t in targets})
+        forget_mute_states_except({t.service_name for t in visible_targets})
         if isinstance(master_volume, int) and not isinstance(master_volume, bool):
             observe_master_volume(reporting_name, master_volume)
         elif reporting_name is not None:

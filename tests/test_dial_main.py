@@ -1199,8 +1199,8 @@ class TestEndToEndDisplaySelection:
     def test_oldest_playing_since_target_selected_first(self):
         """Two playing targets — the one added first (older playing_since) must
         be polled and win the selection when both offer usable artwork."""
-        self._add_playing(name="Older", ip="192.168.1.10")
-        self._add_playing(name="Newer", ip="192.168.1.11")
+        self._add_playing(name="Older", ip="192.168.1.10", appliance_id="b" * 20)
+        self._add_playing(name="Newer", ip="192.168.1.11", appliance_id="c" * 20)
         display = self._make_real_display()
 
         polled = []
@@ -2166,8 +2166,8 @@ class TestBuildTouchSourceLayoutWiring:
 class TestVolumeTargetsResolver:
     def _targets(self):
         from dial_mdns import PlayingTarget
-        older = PlayingTarget(ip="1.0.0.1", port=80, name="Older", service_name="older", playing_since=10.0)
-        newer = PlayingTarget(ip="1.0.0.2", port=80, name="Newer", service_name="newer", playing_since=20.0)
+        older = PlayingTarget(ip="1.0.0.1", port=80, name="Older", service_name="older", appliance_id="older", playing_since=10.0)
+        newer = PlayingTarget(ip="1.0.0.2", port=80, name="Newer", service_name="newer", appliance_id="newer", playing_since=20.0)
         return [older, newer]
 
     def test_display_reports_a_present_service_name_even_if_not_oldest(self):
@@ -2238,9 +2238,9 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
         from dial_mdns import PlayingTarget
 
-        older = PlayingTarget(ip="1.0.0.1", port=80, name="Older", service_name="older",
+        older = PlayingTarget(ip="1.0.0.1", port=80, name="Older", service_name="older", appliance_id="older",
                                playing_since=10.0, auth="unauthorized")
-        newer = PlayingTarget(ip="1.0.0.2", port=80, name="Newer", service_name="newer",
+        newer = PlayingTarget(ip="1.0.0.2", port=80, name="Newer", service_name="newer", appliance_id="newer",
                                playing_since=20.0, auth="unknown")
         display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
@@ -2254,7 +2254,7 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
         from dial_mdns import PlayingTarget
 
-        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
+        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x", appliance_id="x",
                            playing_since=1.0, auth="unknown")
         display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
@@ -2266,7 +2266,7 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
         from dial_mdns import PlayingTarget
 
-        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
+        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x", appliance_id="x",
                            playing_since=1.0, auth="authorized")
         display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
@@ -2278,7 +2278,7 @@ class TestVolumeTargetsResolver:
         import dial_main as dm
         from dial_mdns import PlayingTarget
 
-        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x",
+        t = PlayingTarget(ip="1.0.0.1", port=80, name="X", service_name="x", appliance_id="x",
                            playing_since=1.0, auth="unauthorized")
         display = MagicMock(spec=["current_source_service_name"])
         display.current_source_service_name = MagicMock(return_value=None)
@@ -2332,7 +2332,7 @@ class TestVolumeTargetsResolver:
         from dial_mdns import PlayingTarget
 
         targets = self._targets()
-        blocked = PlayingTarget(ip="1.0.0.3", port=80, name="Blocked", service_name="blocked",
+        blocked = PlayingTarget(ip="1.0.0.3", port=80, name="Blocked", service_name="blocked", appliance_id="blocked",
                                  playing_since=30.0, auth="unauthorized")
         focused = object()
         display = MagicMock(spec=["current_source_service_name", "focus_volume_target"])
@@ -2414,7 +2414,7 @@ class TestEffectiveScopeEndToEnd:
 
         http_server = self._server(fitted=False)
         targets = [
-            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n, appliance_id=n)
             for n in ("a", "b")
         ]
         display = MagicMock(spec=["current_source_service_name"])
@@ -2433,7 +2433,7 @@ class TestEffectiveScopeEndToEnd:
 
         http_server = self._server(fitted=True, volume_scope="current")
         targets = [
-            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n, appliance_id=n)
             for n in ("a", "b")
         ]
         display = MagicMock(spec=["current_source_service_name"])
@@ -2452,7 +2452,7 @@ class TestEffectiveScopeEndToEnd:
 
         http_server = self._server(fitted=False)
         targets = [
-            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n, appliance_id=n)
             for n in ("a", "b")
         ]
         volume_targets_fn = MagicMock(return_value=["single-target"])
@@ -2466,7 +2466,7 @@ class TestEffectiveScopeEndToEnd:
 
         http_server = self._server(fitted=True, mute_scope="current")
         targets = [
-            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n, appliance_id=n)
             for n in ("a", "b")
         ]
         volume_targets_fn = MagicMock(return_value=["single-target"])
@@ -2503,7 +2503,7 @@ class TestMuteTargetsResolver:
         http_server.effective_mute_scope = "all"
         volume_targets_fn = MagicMock(return_value=["single-target"])
         targets = [
-            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n, appliance_id=n)
             for n in ("a", "b", "c")
         ]
         all_targets_fn = MagicMock(return_value=targets)
@@ -2527,7 +2527,7 @@ class TestMuteTargetsResolver:
         server = _FakeServer()
         volume_targets_fn = MagicMock(return_value=["single-target"])
         targets = [
-            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n)
+            PlayingTarget(ip="1.0.0.1", port=80, name=n, service_name=n, appliance_id=n)
             for n in ("a", "b")
         ]
         all_targets_fn = MagicMock(return_value=targets)
@@ -2544,13 +2544,37 @@ class TestMuteTargetsResolver:
         http_server = MagicMock()
         http_server.effective_mute_scope = "all"
         volume_targets_fn = MagicMock(return_value=[])
-        authorized = PlayingTarget(ip="1.0.0.1", port=80, name="A", service_name="a", auth="unknown")
-        blocked = PlayingTarget(ip="1.0.0.2", port=80, name="B", service_name="b", auth="unauthorized")
+        authorized = PlayingTarget(ip="1.0.0.1", port=80, name="A", service_name="a", appliance_id="a", auth="unknown")
+        blocked = PlayingTarget(ip="1.0.0.2", port=80, name="B", service_name="b", appliance_id="b", auth="unauthorized")
         all_targets_fn = MagicMock(return_value=[authorized, blocked])
 
         resolve = dm._build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=all_targets_fn)
 
         assert resolve() == [authorized]
+
+    def test_identityless_targets_excluded_from_every_resolution(self):
+        import dial_main as dm
+        from dial_mdns import PlayingTarget
+
+        identified = PlayingTarget(ip="1.0.0.1", port=80, name="A", service_name="a",
+                                   appliance_id="a", playing_since=20.0)
+        anonymous = PlayingTarget(ip="1.0.0.2", port=80, name="B", service_name="b",
+                                  appliance_id="", playing_since=10.0)
+        both = [anonymous, identified]
+        display = MagicMock(spec=["current_source_service_name"])
+        display.current_source_service_name = MagicMock(return_value="b")
+
+        single = dm._build_volume_targets_fn(display, get_targets=lambda: both)
+        assert single() == [identified]
+        fan_out = dm._build_volume_targets_fn(
+            display, get_targets=lambda: both, scope_fn=lambda: "all", get_all_targets=lambda: both,
+        )
+        assert fan_out() == [identified]
+        http_server = MagicMock()
+        http_server.effective_mute_scope = "all"
+        mute = dm._build_mute_targets_fn(http_server, single, get_all_targets=lambda: both)
+        assert mute() == [identified]
+        assert dm._build_volume_targets_fn(display, get_targets=lambda: [anonymous])() == []
 
     def test_single_target_mute_follows_the_focus_entry(self):
         """scope "current": single-target mute is exactly whatever the

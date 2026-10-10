@@ -268,8 +268,8 @@ def _build_volume_targets_fn(
 
     Under broadcast scope "all" (scope_fn returns SCOPE_ALL — a screenless
     dial, or one whose screen was later unfitted, cannot choose an
-    appliance), every playing target with auth != "unauthorized" is
-    returned, focus ignored: a fleet-wide twist has no single appliance to
+    appliance), every playing target with auth != "unauthorized" and an
+    identity is returned, focus ignored: a fleet-wide twist has no single appliance to
     pin to. Otherwise (scope_fn absent or returning anything else) today's
     single-target behaviour: a manual focus (playing or idle) the display is
     showing, when it has one, else the display's artwork source, else the
@@ -285,7 +285,9 @@ def _build_volume_targets_fn(
     every resolver here already follows), so a /screen/settings save or a
     screen being unfitted applies to the very next twist with no restart.
 
-    Rows with a confirmed 412 (auth == "unauthorized") are excluded. Rows
+    Rows with a confirmed refusal (auth == "unauthorized") are excluded, as
+    are rows with no identity (an unresolved legacy or identity-less
+    appliance cannot be tracked or addressed). Rows
     whose auth is still "unknown" stay eligible — the encoder must be live
     from the first second, and only a definitive miss removes a row.
     """
@@ -294,7 +296,7 @@ def _build_volume_targets_fn(
 
     def resolve():
         if scope_fn is not None and scope_fn() == SCOPE_ALL:
-            return [t for t in get_all_targets() if t.auth != "unauthorized"]
+            return [t for t in get_all_targets() if t.auth != "unauthorized" and t.appliance_id]
         if focus_getter is not None:
             try:
                 focused = focus_getter()
@@ -302,7 +304,7 @@ def _build_volume_targets_fn(
                 focused = None
             if focused is not None:
                 return [focused]
-        targets = [t for t in get_targets() if t.auth != "unauthorized"]
+        targets = [t for t in get_targets() if t.auth != "unauthorized" and t.appliance_id]
         preferred = None
         if getter is not None:
             try:
@@ -320,11 +322,11 @@ def _build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=get_p
     Reads the scope through http_server (not a captured cfg value) so a
     /screen/settings change, or the screen being unfitted, applies without a
     restart, exactly like step_percent does for the encoder today. As with
-    volume, unauthorized rows are excluded from the "all" fan-out; unknown
-    rows stay eligible."""
+    volume, unauthorized and identity-less rows are excluded from the "all"
+    fan-out; unknown rows stay eligible."""
     def resolve():
         if http_server.effective_mute_scope == SCOPE_ALL:
-            return [t for t in get_all_targets() if t.auth != "unauthorized"]
+            return [t for t in get_all_targets() if t.auth != "unauthorized" and t.appliance_id]
         return volume_targets_fn()
     return resolve
 
