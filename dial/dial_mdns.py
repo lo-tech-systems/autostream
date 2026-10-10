@@ -3,7 +3,9 @@ _autostream._tcp, and the merged roster built from both.
 
 Scans for autostream appliances announcing _autostream-playing._tcp.  Only
 entries that carry dial_api=v1 in their TXT record are tracked — earlier
-appliances without this field are ignored.
+appliances without this field are ignored.  The separate dial_proto TXT key
+names the protocol dialect (see _DIAL_PROTO_ACCEPTED); absent means the
+earlier dialect, which also announces no id on the playing record.
 
 IPv4 only.  Deduplication across interfaces is handled by the shared
 MdnsBrowser, keyed by mDNS service name.  get_playing_targets() returns one
@@ -17,7 +19,8 @@ knowledge for that id lives entirely in dial_auth, and is stamped onto every
 target this module returns as `auth` — this module never decides who is
 authorized, it only carries the id and reports the current answer.
 
-A second browser (started only when a screen is fitted) scans
+A second browser (started when a screen is fitted, or when a playing target
+without an id needs one resolved) scans
 _autostream._tcp — every dial-capable appliance, playing or idle — and
 get_roster() merges it with the playing browser's own view into one list
 keyed by appliance_id. The merge is also the single feeder of general
@@ -54,6 +57,14 @@ from dataclasses import dataclass
 
 _APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 
+# dial_proto TXT value -> protocol generation. Anything else (absent or an
+# unknown value) is generation 0, the earlier dialect.
+_DIAL_PROTO_ACCEPTED = {"v2": 2}
+
+
+def _parse_dial_proto(txt: dict) -> int:
+    return _DIAL_PROTO_ACCEPTED.get(txt.get("dial_proto", ""), 0)
+
 # The mDNS service name prefix stripped by appliance_display_name().
 _SERVICE_PREFIX = "autostream on "
 
@@ -72,6 +83,19 @@ class PlayingTarget:
     playing_since:      float = 0.0
     appliance_id:       str   = ""
     auth:               str   = dial_auth.AUTH_UNKNOWN
+    dial_proto_version: int   = 0
+
+    @property
+    def typed_refusals(self) -> bool:
+        return self.dial_proto_version >= 2
+
+    @property
+    def status_reports_mute(self) -> bool:
+        return self.dial_proto_version >= 2
+
+    @property
+    def needs_id_resolution(self) -> bool:
+        return self.appliance_id == "" and self.dial_proto_version == 0
 
 
 # Tracks whether we have ever seen a playing target — persists across
@@ -135,6 +159,7 @@ def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
         service_name=svc_name,
         playing_since=playing_since,
         appliance_id=appliance_id,
+        dial_proto_version=_parse_dial_proto(txt),
     )
     return (svc_name, target)
 
@@ -189,9 +214,40 @@ def _with_auth(target: PlayingTarget) -> PlayingTarget:
     return dataclasses.replace(target, auth=state)
 
 
+def resolve_legacy_ids(targets, generals) -> list[PlayingTarget]:
+    """Fill in the appliance_id of playing targets whose record carries none.
+
+    An appliance of the earlier dialect announces its id only on the general
+    record, so a target that needs_id_resolution takes the id of the general
+    sighting at the same (ip, port). The match is fed to dial_auth as a
+    sighting, exactly as a playing record carrying the id would have been; a
+    target with no match is returned unchanged. `generals` is an iterable of
+    GeneralSighting, or a mapping whose values are.
+    """
+    if hasattr(generals, "values"):
+        generals = generals.values()
+    by_addr: dict[tuple[str, int], str] = {}
+    for g in sorted(generals, key=lambda g: g.appliance_id, reverse=True):
+        by_addr[(g.ip, g.port)] = g.appliance_id
+    out: list[PlayingTarget] = []
+    for t in targets:
+        aid = by_addr.get((t.ip, t.port)) if t.needs_id_resolution else None
+        if aid:
+            dial_auth.auth_map.note_sighting(aid, t.ip, t.port, time.monotonic())
+            t = dataclasses.replace(t, appliance_id=aid)
+        out.append(t)
+    return out
+
+
+def _resolved(targets: list[PlayingTarget]) -> list[PlayingTarget]:
+    if not any(t.needs_id_resolution for t in targets):
+        return targets
+    return resolve_legacy_ids(targets, _general_browser.get_snapshot())
+
+
 def get_playing_targets() -> list[PlayingTarget]:
     """Return one entry per mDNS service name — deduplicated across interfaces."""
-    return [_with_auth(t) for t in _browser.get_snapshot().values()]
+    return [_with_auth(t) for t in _resolved(list(_browser.get_snapshot().values()))]
 
 
 def get_display_targets() -> list[PlayingTarget]:
@@ -212,7 +268,7 @@ def get_display_targets() -> list[PlayingTarget]:
                 playing_since=state["playing_since"],
             ))
     targets.sort(key=lambda t: (t.playing_since, t.name, t.ip, t.port))
-    return [_with_auth(t) for t in targets]
+    return [_with_auth(t) for t in _resolved(targets)]
 
 
 def _avahi_unescape(s: str) -> str:
@@ -277,6 +333,11 @@ class GeneralSighting:
     repeat: bool          # repeat=v1
     dial_outputs: bool    # dial_outputs=v1
     dial_eq: bool         # dial_eq=v1
+    # A record with no dial_api: an appliance of the earlier dialect. Kept
+    # only so its id can be matched to an id-less playing record; it is never
+    # rostered, as nothing says it has a status route.
+    legacy: bool = False
+    dial_proto_version: int = 0
 
 
 # Conflict-detection state for the general browser, keyed the same way as
@@ -303,8 +364,9 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
     """Parse a resolved _autostream._tcp event for the dial's general
     browser.
 
-    Requires dial_api=v1 (not ui/federation, which are appliance-to-
-    appliance capabilities the dial has no use for) and a valid id. The
+    Requires a valid id and dial_api=v1, or no dial_api at all (a legacy
+    sighting, used only for id resolution; ui/federation are appliance-to-
+    appliance capabilities the dial has no use for). The
     control TXT flag is deliberately not read here: dials are gated by
     per-dial authorization only, never by the peer-control setting.
 
@@ -315,8 +377,10 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
     appliance_id = txt.get("id", "")
     if not _APPLIANCE_ID_RE.match(appliance_id):
         return None
-    if txt.get("dial_api") != "v1":
+    dial_api = txt.get("dial_api")
+    if dial_api not in (None, "v1"):
         return None
+    legacy = dial_api is None
     try:
         port = int(parts[8])
     except (ValueError, IndexError):
@@ -325,9 +389,9 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
     hostname = parts[6]
     ip = parts[7]
     version = txt.get("version", "")
-    repeat = txt.get("repeat") == "v1"
-    dial_outputs = txt.get("dial_outputs") == "v1"
-    dial_eq = txt.get("dial_eq") == "v1"
+    repeat = txt.get("repeat") == "v1" and not legacy
+    dial_outputs = txt.get("dial_outputs") == "v1" and not legacy
+    dial_eq = txt.get("dial_eq") == "v1" and not legacy
 
     with _general_lock:
         _general_svc[service_name] = (appliance_id, hostname)
@@ -348,6 +412,8 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
         repeat=repeat,
         dial_outputs=dial_outputs,
         dial_eq=dial_eq,
+        legacy=legacy,
+        dial_proto_version=0 if legacy else _parse_dial_proto(txt),
     )
     return (appliance_id, sighting)
 
@@ -406,6 +472,15 @@ class RosterEntry:
     dial_outputs:   bool = False
     dial_eq:        bool = False
     auth:           str = dial_auth.AUTH_UNKNOWN
+    dial_proto_version: int = 0
+
+    @property
+    def typed_refusals(self) -> bool:
+        return self.dial_proto_version >= 2
+
+    @property
+    def status_reports_mute(self) -> bool:
+        return self.dial_proto_version >= 2
 
 
 def _safe_state(appliance_id: str) -> str:
@@ -421,11 +496,12 @@ def _safe_state(appliance_id: str) -> str:
 def get_roster() -> list[RosterEntry]:
     """Merged view of every rostered appliance, keyed by appliance_id.
 
-    Every playing target with an id is rostered with the playing sighting
-    as its canonical (ip, port); every non-conflicted general sighting NOT
-    already in the playing set is rostered with the general sighting as
-    its canonical address. Identity-less playing targets are never
-    rostered.
+    Every playing target with an id (resolved from the general record where
+    the playing record carries none) is rostered with the playing sighting
+    as its canonical (ip, port); every non-conflicted, non-legacy general
+    sighting NOT already in the playing set is rostered with the general
+    sighting as its canonical address. Unresolved identity-less playing
+    targets are never rostered.
 
     Called from the display poll thread only. This function is the ONLY
     caller of note_sighting for general sightings — the playing parser
@@ -458,9 +534,10 @@ def get_roster() -> list[RosterEntry]:
             dial_status=t.dial_status,
             dial_outputs=t.dial_outputs,
             dial_eq=t.dial_eq,
+            dial_proto_version=t.dial_proto_version,
         ))
     for aid, g in general.items():
-        if aid in playing or aid in conflicts:
+        if aid in playing or aid in conflicts or g.legacy:
             continue
         # Outside _general_lock: dial_auth._lock is a leaf lock and must
         # never be nested with another lock.
@@ -475,6 +552,7 @@ def get_roster() -> list[RosterEntry]:
             repeat_capable=g.repeat,
             dial_outputs=g.dial_outputs,
             dial_eq=g.dial_eq,
+            dial_proto_version=g.dial_proto_version,
         ))
 
     roster.sort(key=lambda r: (
@@ -488,8 +566,9 @@ def start_general_browser(
 ) -> None:
     """Start the background mDNS browser for _autostream._tcp.  Idempotent.
 
-    Started only when a screen is fitted (see dial_main.py) — an unfitted
-    dial has no roster/repeat UI to feed, so there is nothing for this
+    Started when a screen is fitted (see dial_main.py), or when a playing
+    target without an id needs one resolved — an unfitted dial with nothing
+    to resolve has no roster/repeat UI to feed, so there is nothing for this
     browser's avahi-browse child process to be worth running for.
     """
     _general_browser.start(shutdown_event=shutdown_event)

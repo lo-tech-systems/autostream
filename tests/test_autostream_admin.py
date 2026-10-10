@@ -380,6 +380,11 @@ class TestAvahiXmlEscaping:
         assert "dial_proto=v2" in records
         assert "dial_api=v1" in records
 
+    def test_dial_service_template_advertises_dial_proto_v2(self):
+        template = Path(__file__).resolve().parent.parent / "system" / "avahi" / "autostream-dial.service"
+        records = [r.text for r in ET.parse(template).getroot().iter("txt-record")]
+        assert "dial_proto=v2" in records
+
     def test_dial_proto_constant_is_v2(self):
         assert m.DIAL_PROTO_VERSION == "v2"
 

@@ -44,7 +44,8 @@ def _make_cfg():
     return cfg
 
 
-def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=True):
+def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=True,
+                      playing_targets=None):
     """Run dial_main.main() with all hardware and service dependencies patched.
 
     shutdown_event_setter: callable(shutdown_event) called in a background thread
@@ -52,6 +53,7 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=Tru
     raise_in_loop: if provided, raised instead of executing the loop body.
     fitted: cfg.display.fitted — gates whether the general mDNS browser is
         started (see dial_main.main()'s startup wiring).
+    playing_targets: if provided, what dial_main.get_playing_targets returns.
     """
     import dial_main as dm
 
@@ -116,7 +118,10 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=Tru
          patch("dial_main.start_outputs_worker"), \
          patch("dial_main.start_eq_worker"), patch("dial_main.start_network_worker"), \
          patch("dial_main.DialControlServer", return_value=mock_control), \
-         patch("threading.Event", _CapturingEvent):
+         patch("threading.Event", _CapturingEvent), \
+         patch("dial_main.get_playing_targets",
+               **({"return_value": playing_targets}
+                  if playing_targets is not None else {"wraps": dm.get_playing_targets})):
         dm.main()
 
     return (
@@ -153,6 +158,41 @@ class TestGeneralBrowserStartup:
         # shutdown path — it must still run even when the browser was never
         # started, exactly like stop_playing_browser().
         stop_general.assert_called_once()
+
+    @staticmethod
+    def _slow_stop(ev):
+        # Outlast a few loop iterations (the patched Event caps each wait at
+        # 0.1 s) so the loop body runs before shutdown.
+        time.sleep(0.4)
+        ev.set()
+
+    def test_general_browser_started_for_idless_playing_target(self):
+        from dial_mdns import PlayingTarget
+        target = PlayingTarget(ip="10.0.0.1", port=80, name="x", dial_api=True)
+        _ev, _stop, _http, _ctrl, start_general, _stg, _sr = _run_main_patched(
+            fitted=False, shutdown_event_setter=self._slow_stop,
+            playing_targets=[target],
+        )
+        start_general.assert_called_once()
+
+    def test_general_browser_not_started_when_target_has_id(self):
+        from dial_mdns import PlayingTarget
+        target = PlayingTarget(ip="10.0.0.1", port=80, name="x", dial_api=True,
+                               appliance_id="a" * 20)
+        _ev, _stop, _http, _ctrl, start_general, _stg, _sr = _run_main_patched(
+            fitted=False, shutdown_event_setter=self._slow_stop,
+            playing_targets=[target],
+        )
+        start_general.assert_not_called()
+
+    def test_general_browser_not_started_twice_when_fitted(self):
+        from dial_mdns import PlayingTarget
+        target = PlayingTarget(ip="10.0.0.1", port=80, name="x", dial_api=True)
+        _ev, _stop, _http, _ctrl, start_general, _stg, _sr = _run_main_patched(
+            fitted=True, shutdown_event_setter=self._slow_stop,
+            playing_targets=[target],
+        )
+        start_general.assert_called_once()
 
 
 class TestRepeatWorkerStartup:

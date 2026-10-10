@@ -694,8 +694,11 @@ def main() -> None:
     # The general-appliance browser feeds the roster/repeat-store machinery
     # display.start() (and, later, touch) reads — an unfitted dial has no
     # roster/repeat UI to feed, so it is not worth an extra avahi-browse
-    # child for that case.
-    if cfg.display.fitted:
+    # child for that case. An appliance of the earlier dialect announces its
+    # id only on the general record, so the browser also starts, on any dial,
+    # as soon as an id-less playing target appears (checked in the loop below).
+    general_started = bool(cfg.display.fitted)
+    if general_started:
         start_general_browser(shutdown_event=shutdown_event)
 
     # Wired here, after the HTTP server exists (its get_runtime_status()
@@ -889,7 +892,11 @@ def main() -> None:
         )
 
         while not shutdown_event.wait(5):
-            led.set_playing() if get_playing_targets() else led.set_idle()
+            targets = get_playing_targets()
+            if not general_started and any(t.needs_id_resolution for t in targets):
+                general_started = True
+                start_general_browser(shutdown_event=shutdown_event)
+            led.set_playing() if targets else led.set_idle()
     finally:
         _remove_running_marker()
         stop_playing_browser()

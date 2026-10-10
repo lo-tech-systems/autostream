@@ -440,9 +440,9 @@ class TestGeneralBrowserParsing:
     def setup_method(self):
         _clear_general()
 
-    def test_requires_dial_api_v1(self):
+    def test_absent_dial_api_is_kept_as_legacy_sighting(self):
         dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID}"))
-        assert dm._general_browser.get_snapshot() == {}
+        assert dm._general_browser.get_snapshot()[_VALID_ID].legacy is True
 
     def test_wrong_dial_api_version_ignored(self):
         dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v2"))
@@ -768,3 +768,112 @@ class TestGeneralBrowserWrappers:
         with patch.object(dm._general_browser, "stop") as mock_stop:
             dm.stop_general_browser()
         mock_stop.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# dial_proto parsing and legacy id resolution.
+# ---------------------------------------------------------------------------
+
+class TestDialProto:
+    def setup_method(self):
+        _clear()
+        _clear_general()
+        dial_auth.auth_map.reset()
+
+    def _playing(self, txt):
+        dm._browser._handle_line(_av_add(txt=txt))
+        return dm.get_playing_targets()[0]
+
+    def test_playing_record_dial_proto_v2_sets_version_2(self):
+        assert self._playing("dial_api=v1 dial_proto=v2").dial_proto_version == 2
+
+    def test_playing_record_without_dial_proto_is_version_0(self):
+        assert self._playing("dial_api=v1").dial_proto_version == 0
+
+    def test_playing_record_dial_proto_v3_is_version_0(self):
+        assert self._playing("dial_api=v1 dial_proto=v3").dial_proto_version == 0
+
+    def test_playing_record_still_needs_dial_api_v1(self):
+        dm._browser._handle_line(_av_add(txt="dial_proto=v2"))
+        assert dm.get_playing_targets() == []
+
+    def test_general_record_without_dial_api_is_legacy_sighting(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} version=0.6.0"))
+        g = dm._general_browser.get_snapshot()[_VALID_ID]
+        assert g.legacy is True
+        assert g.dial_proto_version == 0
+        assert not (g.repeat or g.dial_outputs or g.dial_eq)
+
+    def test_general_record_dial_proto_v2_sets_version_2(self):
+        dm._general_browser._handle_line(
+            _gen_add(txt=f"id={_VALID_ID} dial_api=v1 dial_proto=v2"))
+        g = dm._general_browser.get_snapshot()[_VALID_ID]
+        assert g.legacy is False
+        assert g.dial_proto_version == 2
+
+    def test_legacy_sighting_is_not_rostered_idle(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID}"))
+        assert dm.get_roster() == []
+
+    def test_legacy_sighting_does_not_feed_note_sighting(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID}"))
+        dm.get_roster()
+        assert _VALID_ID not in dial_auth.auth_map._entries
+
+    def test_resolve_legacy_ids_fills_id_from_general_at_same_ip_port(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.7", port="80",
+                                         txt="dial_api=v1 dial_status=v1"))
+        dm._general_browser._handle_line(_gen_add(ip="10.0.0.7", port="80",
+                                                  txt=f"id={_VALID_ID}"))
+        [t] = dm.get_playing_targets()
+        assert t.appliance_id == _VALID_ID
+        assert t.dial_proto_version == 0
+        assert _VALID_ID in dial_auth.auth_map._entries
+        [r] = dm.get_roster()
+        assert (r.appliance_id, r.playing, r.dial_proto_version) == (_VALID_ID, True, 0)
+        assert [d.appliance_id for d in dm.get_display_targets()] == [_VALID_ID]
+
+    def test_resolve_legacy_ids_leaves_unmatched_target_blank(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.7", txt="dial_api=v1"))
+        dm._general_browser._handle_line(_gen_add(ip="10.0.0.8", txt=f"id={_VALID_ID}"))
+        dm._general_browser._handle_line(_gen_add(
+            name="Other", ip="10.0.0.7", port="8080", txt=f"id={_VALID_ID2}"))
+        [t] = dm.get_playing_targets()
+        assert t.appliance_id == ""
+        assert dm.get_roster() == []
+
+    def test_resolve_legacy_ids_accepts_plain_iterable(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.7", txt="dial_api=v1"))
+        dm._general_browser._handle_line(_gen_add(ip="10.0.0.7", txt=f"id={_VALID_ID}"))
+        raw = list(dm._browser.get_snapshot().values())
+        gens = list(dm._general_browser.get_snapshot().values())
+        assert [t.appliance_id for t in dm.resolve_legacy_ids(raw, gens)] == [_VALID_ID]
+
+    def test_v2_target_without_id_is_not_resolved(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.7", txt="dial_api=v1 dial_proto=v2"))
+        dm._general_browser._handle_line(_gen_add(ip="10.0.0.7", txt=f"id={_VALID_ID}"))
+        assert dm.get_playing_targets()[0].appliance_id == ""
+
+    def test_target_with_id_is_not_overridden(self):
+        dm._browser._handle_line(_av_add(ip="10.0.0.7",
+                                         txt=f"dial_api=v1 id={_VALID_ID}"))
+        dm._general_browser._handle_line(_gen_add(ip="10.0.0.7", txt=f"id={_VALID_ID2}"))
+        assert dm.get_playing_targets()[0].appliance_id == _VALID_ID
+
+    def test_status_reports_mute_only_for_dial_proto_v2(self):
+        v1 = self._playing("dial_api=v1")
+        assert (v1.typed_refusals, v1.status_reports_mute) == (False, False)
+        _clear()
+        v2 = self._playing("dial_api=v1 dial_proto=v2")
+        assert (v2.typed_refusals, v2.status_reports_mute) == (True, True)
+
+    def test_roster_entry_carries_dial_proto_for_playing_and_idle(self):
+        dm._browser._handle_line(_av_add(
+            name="Playing", ip="10.0.0.1",
+            txt=f"dial_api=v1 dial_proto=v2 id={_VALID_ID}"))
+        dm._general_browser._handle_line(_gen_add(
+            name="Idle", ip="10.0.0.2",
+            txt=f"id={_VALID_ID2} dial_api=v1 dial_proto=v2"))
+        roster = dm.get_roster()
+        assert [(r.playing, r.dial_proto_version, r.status_reports_mute)
+                for r in roster] == [(True, 2, True), (False, 2, True)]
