@@ -28,6 +28,10 @@ with no artwork of its own — see focus_volume_target()). The roster and the
 repeat store are display-side only, read by the volume resolver only
 through the display's focus accessor.
 
+This manager also consumes the network poller's view (dial_network.py, via
+on_network_view()) for the idle screen's Wi-Fi status icon and the No-WiFi
+page.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
@@ -59,6 +63,7 @@ from dial_display_compositor import (
     EqViewState,
     InfoValueView,
     ListState,
+    NoWifiView,
     OutputViewState,
     OverlayState,
     RepeatViewState,
@@ -80,6 +85,13 @@ from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
+from dial_network import (
+    LINK_CONNECTED,
+    LINK_DOWN,
+    LINK_IGNORED,
+    NetworkView,
+)
+from dial_network import request_reboot as _request_reboot
 from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
@@ -184,6 +196,23 @@ REPEAT_COUNTER_LATENCY_S = 2.0
 # _compact_controls_hidden() — the same "long enough to act on, short
 # enough to get out of the way" reasoning applies to both.
 CONTROLS_HIDE_SECONDS = 6.0
+
+# The idle screen's offline flash: the Wi-Fi glyph alternates grey/red,
+# switching every half period (a 1 Hz cycle). The repaint loop schedules
+# itself onto these boundaries — see _next_repaint_deadline()/
+# _tick_wifi_flash(); nothing else in the process ticks for it.
+WIFI_FLASH_HALF_PERIOD_S = 0.5
+
+# How many consecutive "down" polls (15 s apart) open the No-WiFi page on
+# their own: three, so a brief drop that recovers within about 45 s only
+# ever flashes the icon. A tap on the flashing icon opens the page at once.
+NOWIFI_PROMPT_STREAK = 3
+
+# The "Restarting..." screen is meant to end when the reboot takes the panel
+# down. If the reboot request itself failed (nginx down, helper refused),
+# fall back to main after this long so the dial is never stuck on it; the
+# poller then raises the No-WiFi page again if the link is still down.
+RESTARTING_TIMEOUT_SECONDS = 90.0
 
 # A plain dark base pushed for the moment between the display switching to
 # show a different appliance and that appliance's own artwork/logo actually
@@ -527,6 +556,23 @@ class EqScreenState:
     bass_db: "int | None" = None
     treble_db: "int | None" = None
     loaded: bool = False
+
+
+@dataclass(frozen=True)
+class NoWifiState:
+    """The No-WiFi page: nothing but the clock every screen state carries.
+    Its content is fixed and the link state it reflects lives on the
+    manager (self._network) so the poller can update it while the page is
+    open."""
+    opened_at: float
+
+
+@dataclass(frozen=True)
+class RestartingState:
+    """The "Restarting..." screen shown from a Restart tap until the reboot
+    takes the panel down — or until RESTARTING_TIMEOUT_SECONDS, whichever
+    comes first."""
+    opened_at: float
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +945,7 @@ class DialDisplay:
         # atomic) — same discipline as the other lock-free-read fields above.
         # "main": the now-playing screen. "selector": the appliance list.
         # "repeat": the repeat screen. "picker": the replay picker.
+        # "nowifi": the No-WiFi page. "restarting": the reboot screen.
         self._screen = "main"
         # Last-built rows, refreshed every poll tick regardless of whether
         # the selector is actually open (_refresh_selector_rows) so opening
@@ -991,6 +1038,27 @@ class DialDisplay:
         # the compact tier even when the appliance advertises dial_eq (no
         # EQ page there).
         self._eq_available = False
+        # ---- Wi-Fi link state (the idle icon and the No-WiFi page) ------
+        # The latest NetworkView from the network poller — written by the
+        # poller's own thread in on_network_view() (a plain reference
+        # assignment, no lock — the on_repeat_result discipline), read at
+        # paint time under self._lock and lock-free by the repaint loop's
+        # deadline scheduling. None until the first poll lands (drawn as an
+        # all-grey, steady icon).
+        self._network: "NetworkView | None" = None
+        # Consecutive down polls; reset by any connected poll. Poller
+        # thread only.
+        self._wifi_down_streak = 0
+        # Set by a Dismiss tap (touch thread), cleared by a connected poll
+        # (poller thread): while True the poller never re-opens the page
+        # for the current incident. Plain bool, both writers are single
+        # assignments.
+        self._wifi_dismissed = False
+        # The two new screens' own states — same write/read discipline as
+        # self._info (opener under self._lock, cleared by
+        # _close_secondary_locked via the policy table).
+        self._nowifi: "NoWifiState | None" = None
+        self._restarting: "RestartingState | None" = None
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -2005,6 +2073,7 @@ class DialDisplay:
                 self._tick_outputs_refresh()
                 self._tick_controls_hidden()
                 self._tick_controls_shown()
+                self._tick_wifi_flash()
                 continue
             # Coalesce: clear the event BEFORE doing any work. Any
             # set_overlay() call that lands after this clear() (including
@@ -2723,6 +2792,26 @@ class DialDisplay:
         self._screen = "output"
         return True
 
+    def _open_nowifi_locked(self) -> bool:
+        """The No-WiFi row's opener: refuse while the dial is restarting
+        (that screen must stay until the reboot lands or times out);
+        otherwise open with a fresh clock."""
+        if self._screen == "restarting":
+            return False
+        self._nowifi = NoWifiState(opened_at=time.monotonic())
+        self._screen = "nowifi"
+        return True
+
+    def _open_restarting_locked(self) -> bool:
+        """The restarting row's opener: always opens, and drops the No-WiFi
+        page's own state on the way (this is the one screen reached
+        directly from it, and it never returns there — the poller re-raises
+        the page if the box is still up and still offline)."""
+        self._nowifi = None
+        self._restarting = RestartingState(opened_at=time.monotonic())
+        self._screen = "restarting"
+        return True
+
     def _apply_screen_requests_locked(self) -> None:
         """Fold pending open_selector()/close_list()/list_page()/
         toggle_repeat_screen()/open_picker() touch-thread requests into
@@ -2824,8 +2913,9 @@ class DialDisplay:
 
     def _next_repaint_deadline(self) -> "float | None":
         """The earliest monotonic time something on screen must change on
-        its own: the replaying counter's next integer boundary, or the end
-        of a controls-hide window (see hide_controls()). None when nothing
+        its own: the replaying counter's next integer boundary, the end
+        of a controls-hide window (see hide_controls()), or the offline
+        flash's next half-period boundary. None when nothing
         is scheduled — the caller then falls back to its own housekeeping
         cadence. Lock-free plain reads, the same discipline
         _check_secondary_timeout() uses; reads repeat_store's own leaf lock
@@ -2842,6 +2932,10 @@ class DialDisplay:
             deadlines.append(self._controls_hidden_until + 0.005)
         if self._controls_shown_until > time.monotonic() and self._compact_tier():
             deadlines.append(self._controls_shown_until + 0.005)
+        if self._wifi_flashing():
+            now = time.monotonic()
+            half = WIFI_FLASH_HALF_PERIOD_S
+            deadlines.append((math.floor(now / half) + 1) * half + 0.005)
         return min(deadlines) if deadlines else None
 
     def _tick_outputs_refresh(self) -> None:
@@ -3119,6 +3213,28 @@ class DialDisplay:
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
         ))
 
+    def _display_nowifi_locked(self) -> None:
+        """Compose and push the No-WiFi page over the current base image
+        (the idle logo or the last artwork, dimmed; a flat chassis when
+        nothing has been rendered yet). Bypasses _display_locked() like
+        every other secondary screen. Caller holds self._lock."""
+        pressed = self._pressed[0] if self._pressed is not None else None
+        metrics = self._metrics_locked()
+        base = self._current_base_image
+        self._push_frame_locked(lambda: self._compositor.compose_nowifi(
+            base, metrics.width, metrics.height, NoWifiView(pressed=pressed),
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        ))
+
+    def _display_restarting_locked(self) -> None:
+        """Compose and push the "Restarting..." frame. Caller holds
+        self._lock."""
+        metrics = self._metrics_locked()
+        self._push_frame_locked(lambda: self._compositor.compose_restarting(
+            metrics.width, metrics.height,
+            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        ))
+
     def _display_list_locked(self) -> None:
         """Compose and push whichever list-chassis screen is open (the
         appliance selector, the replay picker, the outputs list or the
@@ -3358,13 +3474,135 @@ class DialDisplay:
                 self._eq_optimistic = None
         self._overlay_signal.set()
 
+    # ---- Wi-Fi link: the idle icon and the No-WiFi page -------------------
+
+    def on_network_view(self, view: "NetworkView") -> None:
+        """Callback for the network poller (dial_network.py). Runs on the
+        POLLER thread — never the poll/repaint/touch threads — and takes NO
+        lock of this class's own; every write here is a single attribute
+        assignment, and any screen change goes through self._screen_request
+        for the repaint thread to fold in (see _apply_screen_requests_
+        locked), exactly like on_repeat_result().
+
+        connected: the streak and the dismissal both reset (the incident is
+        over) and an open No-WiFi page closes on its own.
+        down: the streak grows; at NOWIFI_PROMPT_STREAK the page opens
+        unless it was dismissed for this incident, is already open or
+        requested, another screen is in the way (never stomp on a list or
+        the repeat/EQ pages the user is looking at), or the dial is
+        restarting.
+        ignored (setup mode, reboot pending): the streak resets but the
+        dismissal is kept — only a connected poll ends an incident.
+        unknown (a failed read): nothing changes at all — one missed poll
+        never flips the icon or the prompt.
+        Never raises."""
+        try:
+            self._network = view
+            if view.link == LINK_CONNECTED:
+                self._wifi_down_streak = 0
+                self._wifi_dismissed = False
+                if self._screen == "nowifi":
+                    self._screen_request = "main"
+                elif self._screen_request == "nowifi":
+                    self._screen_request = None
+            elif view.link == LINK_DOWN:
+                self._wifi_down_streak += 1
+                if (
+                    self._wifi_down_streak >= NOWIFI_PROMPT_STREAK
+                    and not self._wifi_dismissed
+                    and self._screen == "main"
+                    and self._screen_request is None
+                ):
+                    self._screen_request = "nowifi"
+            elif view.link == LINK_IGNORED:
+                self._wifi_down_streak = 0
+            self._overlay_signal.set()
+        except Exception:
+            logging.debug("dial display: on_network_view raised", exc_info=True)
+
+    def _wifi_link(self) -> str:
+        """The latest link verdict, or "unknown" before the first poll.
+        Plain reference read, safe from any thread."""
+        view = self._network
+        return view.link if view is not None else "unknown"
+
+    def _wifi_flashing(self) -> bool:
+        """True exactly while the idle screen is the one on screen and the
+        link is down — the only time the flash is drawn and the only time
+        the repaint loop has to wake for it. Lock-free plain reads, the
+        _check_secondary_timeout() discipline (a stale read costs one
+        harmless extra repaint)."""
+        return (
+            self._screen == "main" and self._now_playing is None
+            and self._backend_open and not self._display_sleeping
+            and self._wifi_link() == LINK_DOWN
+        )
+
+    @staticmethod
+    def _wifi_alarm_phase(now: float) -> bool:
+        """Which half of the flash *now* falls in: True is the red half."""
+        return int(now // WIFI_FLASH_HALF_PERIOD_S) % 2 == 0
+
+    def _idle_wifi_args_locked(self) -> "tuple[int, bool]":
+        """(wifi_bars, wifi_alarm) for compose_idle(): steady lit arcs while
+        connected, the flash's current phase while down (grey = 0 bars, no
+        alarm; red = alarm), and a steady all-grey glyph while the link is
+        ignored or unknown. Caller holds self._lock."""
+        view = self._network
+        if view is None:
+            return 0, False
+        if view.link == LINK_CONNECTED:
+            return view.bars, False
+        if view.link == LINK_DOWN:
+            return 0, self._wifi_alarm_phase(time.monotonic())
+        return 0, False
+
+    def open_nowifi(self) -> None:
+        """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_WIFI
+        tap): open the No-WiFi page while the link is down — the manual
+        route back to Restart after a Dismiss, so it ignores the dismissal.
+        Inert while connected/unknown (the corner square is always in the
+        idle table; only a flashing icon means anything). Plain write plus
+        a repaint signal."""
+        if self._wifi_link() != LINK_DOWN:
+            return
+        self._screen_request = "nowifi"
+        self._overlay_signal.set()
+
+    def nowifi_dismiss_tap(self) -> None:
+        """Touch-thread entry (NOWIFI_DISMISS): close the page and suppress
+        its automatic re-opening until a connected poll ends this
+        incident. The icon keeps flashing; a tap on it re-opens the page."""
+        self._wifi_dismissed = True
+        self._screen_request = _policy("nowifi").back_to
+        self._overlay_signal.set()
+
+    def nowifi_restart_tap(self) -> None:
+        """Touch-thread entry (NOWIFI_RESTART): show "Restarting..." at
+        once, then ask for the reboot. request_reboot() does its I/O on its
+        own short-lived thread and is rate-gated, so a second tap inside
+        the cooldown only re-shows the screen. Never raises."""
+        self._screen_request = "restarting"
+        self._overlay_signal.set()
+        _request_reboot()
+
+    def _tick_wifi_flash(self) -> None:
+        """Wake the repaint loop for the flash's next half-period while the
+        idle screen is flashing — called from the repaint thread's own
+        timeout branch (see _repaint_run), whose wait _next_repaint_
+        deadline() has already sized onto the boundary."""
+        if self._wifi_flashing():
+            self._overlay_signal.set()
+
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
         logo (the arrows-on-disc image) whenever the idle affordance is due,
         else the plain logo already stored as the current base — either
-        way with the "i" information badge and no volume/mute controls
-        overlay (nothing is playing, so there is nothing else on this
-        screen to control). Reached whenever nothing is playing (see
+        way with the "i" information badge and the Wi-Fi status glyph
+        top-left (steady bars while connected, the grey/red flash while
+        down) and no volume/mute controls overlay (nothing is playing, so
+        there is nothing else on this screen to control). Reached whenever
+        nothing is playing (see
         _idle_chassis_due_locked), not only while a replay is available;
         degrades to the plain base if the replay image cannot be loaded.
         Caller holds self._lock; a no-op if the backend is closed or nothing
@@ -3378,9 +3616,11 @@ class DialDisplay:
             (load_logo(self._replay_logo_path, metrics.width, metrics.height) if self._idle_affordance else None)
             or self._current_base_image
         )
+        wifi_bars, wifi_alarm = self._idle_wifi_args_locked()
         self._push_frame_locked(lambda: self._compositor.compose_idle(
             base, metrics.width, metrics.height,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+            wifi_bars=wifi_bars, wifi_alarm=wifi_alarm,
         ))
 
     # ---- polling loop ----------------------------------------------------
@@ -4346,6 +4586,30 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=True, back_to="outputs",
         bound_to_appliance=True,
+    ),
+    # The No-WiFi page: opened by the poller after NOWIFI_PROMPT_STREAK
+    # down polls or by a tap on the flashing idle icon; closed by Dismiss,
+    # by a connected poll, or by Restart (which replaces it). No inactivity
+    # timeout — it is an alarm, not a menu. defers_sleep=False: the page
+    # sleeps with the normal idle timer like the idle screen it sits over,
+    # and the poller re-raises it within one poll interval of the next
+    # wake if the link is still down.
+    "nowifi": ScreenPolicy(
+        name="nowifi", state_attr="_nowifi", surface=("nowifi", False, False, False),
+        open=DialDisplay._open_nowifi_locked, paint=DialDisplay._display_nowifi_locked, paged=False,
+        inactivity_timeout_s=None, touch_extends_timeout=False,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=False,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
+    ),
+    # "Restarting...": nothing tappable; ends when the reboot takes the
+    # panel down, or falls back to main after RESTARTING_TIMEOUT_SECONDS if
+    # the reboot request failed.
+    "restarting": ScreenPolicy(
+        name="restarting", state_attr="_restarting", surface=("restarting", False, False, False),
+        open=DialDisplay._open_restarting_locked, paint=DialDisplay._display_restarting_locked, paged=False,
+        inactivity_timeout_s=RESTARTING_TIMEOUT_SECONDS, touch_extends_timeout=False,
+        when_nothing_plays=IDLE_KEEP, defers_sleep=True,
+        close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
 }
 

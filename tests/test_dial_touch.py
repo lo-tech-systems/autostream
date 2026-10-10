@@ -33,11 +33,13 @@ from dial_touch import (  # noqa: E402
     SURFACE_IDLE,
     SURFACE_INFO,
     SURFACE_INFO_VALUE,
+    SURFACE_NOWIFI,
     SURFACE_OUTPUT,
     SURFACE_OUTPUTS,
     SURFACE_PICKER,
     SURFACE_REPEAT,
     SURFACE_REPEAT_REPLAY,
+    SURFACE_RESTARTING,
     SURFACE_SELECTOR,
     TouchAction,
     TouchEventSource,
@@ -53,6 +55,8 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO,
     GEOMETRY_INFO_VALUE,
     GEOMETRY_MAIN,
+    GEOMETRY_NONE,
+    GEOMETRY_NOWIFI,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT_REPLAY,
     TouchZone,
@@ -64,6 +68,7 @@ from dial_touch_layout import (  # noqa: E402
     list_layout_for,
     list_zone_at,
     metrics_for,
+    nowifi_layout_for,
     output_layout_for,
     repeat_layout_for,
     zones_for,
@@ -1439,6 +1444,7 @@ REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
 REPEAT_OUTPUTS_XY = _rect_center(_REPEAT_LAYOUT.volume_cluster)
 IDLE_XY = (WIDTH // 2, HEIGHT - 1)
 IDLE_INFO_XY = _rect_center(idle_layout_for(WIDTH, HEIGHT).info)
+IDLE_WIFI_XY = _rect_center(idle_layout_for(WIDTH, HEIGHT).wifi)
 
 
 class TestNewSurfacesArmImmediately:
@@ -1486,6 +1492,14 @@ class TestNewSurfacesArmImmediately:
         sm.set_surface(SURFACE_IDLE, False, now=0.0)
         actions = sm.on_filter_event(press_event(IDLE_INFO_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+
+    def test_idle_wifi_arms_immediately_without_reveal(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0)
+        actions = sm.on_filter_event(press_event(IDLE_WIFI_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
+        assert tap.zone == TouchZone.IDLE_WIFI
 
     def test_picker_row_arms_immediately_without_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1996,6 +2010,29 @@ class TestRepeatSurfacesFormOneSet:
         source._poll_surface()
         source._poll_surface()
         assert len(reveal_calls) == 1
+
+
+class TestNoWifiAndRestartingSurfaces:
+    def test_surface_map(self):
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_NOWIFI] == GEOMETRY_NOWIFI
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_RESTARTING] == GEOMETRY_NONE
+
+    def test_nowifi_cells_arm_as_zone_taps(self):
+        l = nowifi_layout_for(WIDTH, HEIGHT)
+        for rect, zone in ((l.dismiss, TouchZone.NOWIFI_DISMISS), (l.restart, TouchZone.NOWIFI_RESTART)):
+            sm = TouchStateMachine(WIDTH, HEIGHT)
+            sm.set_surface(SURFACE_NOWIFI, False, now=0.0)
+            actions = sm.on_filter_event(press_event(_rect_center(rect)), now=0.1)
+            assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+            assert actions[-1].zone == zone
+
+    def test_restarting_surface_is_held_but_inert(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_RESTARTING, False, now=0.0)
+        assert sm.held_visible is True
+        for xy in (UP_XY, DOWN_XY, MUTE_XY, (WIDTH // 2, HEIGHT // 2)):
+            assert sm.on_filter_event(press_event(xy), now=0.1) == []
+            sm.on_filter_event(release_event(), now=0.2)
 
 
 # ---------------------------------------------------------------------------

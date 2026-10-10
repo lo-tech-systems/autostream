@@ -35,6 +35,8 @@ from dial_mdns import (
     stop_general_browser,
     stop_playing_browser,
 )
+from dial_network import latest as network_latest
+from dial_network import start_network_worker
 from dial_outputs import start_outputs_worker
 from dial_repeat import start_repeat_worker
 from dial_target_status import enrich_targets
@@ -484,11 +486,12 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         # overlay on return — see display.cycle_pages()); REPEAT_* act on
         # the repeat screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own
         # bars; IDLE_REPLAY opens the replay picker; IDLE_INFO opens the
-        # idle screen's read-only info page; OUTPUTS opens the outputs
-        # list; OUTPUT_* act on the per-output detail page; ARTWORK hides
-        # the main screen's own bands for a few seconds — see
-        # dial_touch.py's SURFACES paragraph for how a press ever reaches
-        # one of these zones in the first place.
+        # idle screen's read-only info page; IDLE_WIFI opens the No-WiFi
+        # page while the link is down; NOWIFI_* act on that page; OUTPUTS
+        # opens the outputs list; OUTPUT_* act on the per-output detail
+        # page; ARTWORK hides the main screen's own bands for a few
+        # seconds — see dial_touch.py's SURFACES paragraph for how a press
+        # ever reaches one of these zones in the first place.
         _confirm_presence()
         display.notify_touch_activity()
         if zone == TouchZone.NAME:
@@ -521,6 +524,12 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
             display.open_picker()
         elif zone == TouchZone.IDLE_INFO:
             display.open_info()
+        elif zone == TouchZone.IDLE_WIFI:
+            display.open_nowifi()
+        elif zone == TouchZone.NOWIFI_DISMISS:
+            display.nowifi_dismiss_tap()
+        elif zone == TouchZone.NOWIFI_RESTART:
+            display.nowifi_restart_tap()
         elif zone == TouchZone.OUTPUTS:
             display.open_outputs()
         elif zone == TouchZone.OUTPUT_BACK:
@@ -659,7 +668,9 @@ def main() -> None:
     # which has no screen and so no provider to set.
     if hasattr(display, "set_info_provider"):
         display.set_info_provider(
-            lambda: gather_dial_info(http_server.get_runtime_status()["name"], VERSION)
+            lambda: gather_dial_info(
+                http_server.get_runtime_status()["name"], VERSION, network=network_latest(),
+            )
         )
     display.start()
 
@@ -702,6 +713,12 @@ def main() -> None:
     # dial_eq.py's module docstring). on_result degrades to a no-op for a
     # NoOpDisplayStatusProvider (no on_eq_result method).
     start_eq_worker(cfg, on_result=getattr(display, "on_eq_result", None))
+
+    # The Wi-Fi link poller: its own thread, one loopback read of the local
+    # watcher every 15 s (see dial_network.py's module docstring). Feeds the
+    # idle screen's status glyph and the No-WiFi page; on_view degrades to a
+    # no-op for a NoOpDisplayStatusProvider (no on_network_view method).
+    start_network_worker(on_view=getattr(display, "on_network_view", None))
 
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch

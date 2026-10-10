@@ -15,7 +15,7 @@ then the footer, then rotate/BGR. What differs between screens is
 only the data — a frozen Frame descriptor made of a background choice plus
 a Header/Body/Footer triple — never the drawing order. Each of the public
 entry points (compose(), compose_list(), compose_repeat(), compose_output(),
-compose_idle()) is a thin adapter that turns its own state snapshot
+compose_idle(), compose_nowifi(), compose_restarting()) is a thin adapter that turns its own state snapshot
 (OverlayState, ListState, RepeatViewState, OutputViewState, or nothing at
 all) into a Frame and hands it to the pipeline. The outputs list reuses
 compose_list() outright (it is just another row list); only the detail
@@ -110,6 +110,7 @@ from dial_touch_layout import (
     GEOMETRY_EQ,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
+    GEOMETRY_NOWIFI,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
@@ -127,6 +128,7 @@ from dial_touch_layout import (
     layout_for,
     list_layout_for,
     metrics_for,
+    nowifi_layout_for,
     repeat_layout_for,
     scale_px,
     zone_rects_for,
@@ -218,6 +220,20 @@ _DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
 # clearly against a white glyph.
 _INVERTED_GLYPH_RGB = (0, 0, 0)
 
+# The idle screen's Wi-Fi glyph while the link is down alternates between
+# all-grey (_DIMMED_GLYPH_RGB) and this alarm red — a clear "something is
+# wrong" that still reads against a dimmed logo and against the white "i".
+_ALARM_RGB = (226, 62, 51)
+
+# The No-WiFi card off the compact tier: a flat dark surface, a thin
+# translucent white outline, and a soft dark drop shadow offset down-right —
+# sharp (rectangular) corners throughout, no rounding.
+_CARD_FILL_RGB = (24, 25, 28)
+_CARD_OUTLINE_RGB = (255, 255, 255)
+_CARD_OUTLINE_ALPHA = 70
+_CARD_SHADOW_RGB = (0, 0, 0)
+_CARD_SHADOW_ALPHA = 140
+
 # Fraction of a compact cell's own short side a cell's centred glyph box
 # occupies (0.5): 57px at the 240x240 reference, 30px at 128x128. Minus/
 # plus are the one exception — they are drawn straight onto the cell rect
@@ -234,6 +250,12 @@ _COMPACT_SMALL_GLYPH_FRACTION = 0.4
 
 # The replay picker's own title-bar text.
 _COMPACT_PICKER_TITLE = "Replay"
+
+# The No-WiFi page's fixed strings and the restart screen's one line.
+NOWIFI_MESSAGE_TEXT = "No WiFi"
+NOWIFI_DISMISS_TEXT = "Dismiss"
+NOWIFI_RESTART_TEXT = "Restart"
+RESTARTING_TEXT = "Restarting..."
 
 @dataclass(frozen=True)
 class OverlayState:
@@ -480,6 +502,15 @@ class InfoValueView:
     value: str   # the field's own value, drawn large, wrapped or shrunk to fit
 
 
+@dataclass(frozen=True)
+class NoWifiView:
+    """Immutable snapshot of what the No-WiFi page should show — nothing
+    but the pressed cell, if any: the page's text is fixed and its
+    geometry comes from nowifi_layout_for()."""
+
+    pressed: "TouchZone | None" = None
+
+
 # Background sources for _new_frame(): where a frame's base image comes
 # from before anything is drawn on top of it.
 BG_BASE = "base"          # the caller's panel-sized image (artwork or logo)
@@ -501,6 +532,8 @@ BODY_COMPACT_TOGGLE = "compact_toggle"      # the repeat screen's "Repeat Play" 
 BODY_COMPACT_REPLAY = "compact_replay"      # the repeat screen's time line + Restart/Stop
 BODY_INFO_VALUE = "info_value"              # the compact info page's own drill-in: label + wrapped value
 BODY_EQ_BARS = "eq_bars"                    # the EQ page's own bass/treble bar rows
+BODY_NOWIFI = "nowifi"                      # the No-WiFi page: message row + Dismiss | Restart cells + crosshair dividers
+BODY_CENTRED_LABEL = "centred_label"        # one string centred on the whole panel (the "Restarting..." screen)
 
 # The EQ bars' own +/-6 dB range — how far the marker can travel each way
 # from centre_x. Duplicated (not imported) from the appliance/manager side:
@@ -563,6 +596,8 @@ class Body:
     stop_enabled: bool = True     # BODY_COMPACT_REPLAY: Stop drawn full-brightness vs dimmed
     bass_db: "int | None" = None    # BODY_EQ_BARS
     treble_db: "int | None" = None  # BODY_EQ_BARS
+    wifi_bars: int = 0            # BODY_IDLE_BADGE: lit arcs on the wifi glyph (0..3); 0 draws it all grey
+    wifi_alarm: bool = False      # BODY_IDLE_BADGE: the offline flash's red phase — every part of the glyph in alarm red
 
 
 @dataclass(frozen=True)
@@ -597,6 +632,11 @@ class Frame:
     pressed: tuple[Rect, ...] = ()     # rects to wash, in the order they should be drawn
     highlights: tuple[Rect, ...] = ()  # rects to wash at the row-highlight strength, under any press
     washes: tuple[tuple[Rect, int], ...] = ()  # (rect, alpha) pairs for a persistent state wash, drawn after highlights and before pressed
+    # A card drawn over the dimmed background before any highlight/wash/
+    # pressed rect: drop shadow, flat fill, thin outline. None (the default,
+    # byte-identical to before this field existed) draws nothing. The
+    # No-WiFi page off the compact tier is the one user.
+    card: "Rect | None" = None
     header: Header | None = None
     body: Body = Body()
     footer: Footer = Footer()
@@ -805,22 +845,63 @@ class DialDisplayCompositor:
 
     def compose_idle(
         self, base, width: int, height: int, *, rotate: bool, bgr: bool,
-        metrics: LayoutMetrics | None = None,
+        metrics: LayoutMetrics | None = None, wifi_bars: int = 0, wifi_alarm: bool = False,
     ):
         """Build one display-ready frame for the idle screen: *base* — the
         logo the manager chose (the plain disc, or the replay-available
         arrows-on-disc logo when a held recording can be replayed) — with no
         volume/mute controls overlay, since nothing is playing and there is
         nothing on this screen to control, plus the small "i" information
-        badge in the top-right corner (see BODY_IDLE_BADGE) on every idle
-        frame regardless of which logo is showing. *base* is assumed already
-        panel-sized (the manager's own logo load). rotate/bgr are applied
-        last, in the same order compose() uses. Never raises beyond a None
-        passthrough. metrics: see compose()."""
+        badge in the top-right corner and the Wi-Fi status glyph in the
+        top-left one (see BODY_IDLE_BADGE) on every idle frame regardless of
+        which logo is showing. wifi_bars (0..3) is how many of the glyph's
+        arcs are lit; 0 draws the whole glyph dimmed. wifi_alarm=True draws
+        the whole glyph, dot included, in alarm red — the manager passes the
+        red half of its offline flash here, so this module stays stateless.
+        *base* is assumed already panel-sized (the manager's own logo load).
+        rotate/bgr are applied last, in the same order compose() uses. Never
+        raises beyond a None passthrough. metrics: see compose()."""
         if base is None:
             return base
         return _compose_frame(
-            base, width, height, Frame(BG_BASE, body=Body(BODY_IDLE_BADGE)),
+            base, width, height,
+            Frame(BG_BASE, body=Body(BODY_IDLE_BADGE, wifi_bars=wifi_bars, wifi_alarm=wifi_alarm)),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
+    def compose_nowifi(
+        self, base, width: int, height: int, view: NoWifiView, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
+        """Build one display-ready frame for the No-WiFi page: the current
+        base image (*base*, or a flat chassis when None) dimmed to
+        OVERLAY_DIM_FACTOR, then — off the compact tier — a centred card
+        (Frame.card: shadow, fill, outline), and on every tier the fixed
+        "No WiFi" message over the Dismiss | Restart cells with a white
+        crosshair (see BODY_NOWIFI). The pressed cell, if any, carries the
+        ordinary press wash and nothing else — the cells have no fill of
+        their own. rotate/bgr last, as always. Never raises: a font failure
+        leaves the dividers and card without text. metrics: see compose()."""
+        if metrics is None:
+            metrics = metrics_for(width, height)
+        return _compose_frame(
+            base, width, height, _nowifi_frame(view, width, height, metrics),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
+    def compose_restarting(
+        self, width: int, height: int, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
+        """Build the "Restarting..." frame: a flat chassis fill with the
+        one string centred, identical on every tier (see
+        BODY_CENTRED_LABEL). Shown from a Restart tap until the reboot
+        takes the panel down. Never raises: a font failure leaves the flat
+        fill alone. metrics: see compose()."""
+        if metrics is None:
+            metrics = metrics_for(width, height)
+        return _compose_frame(
+            None, width, height, Frame(BG_CHASSIS, body=Body(BODY_CENTRED_LABEL, line=RESTARTING_TEXT)),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -1371,11 +1452,13 @@ GLYPH_MUTE = "mute"                    # params: () or (color,) — the main scr
 GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
 GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
 GLYPH_INFO = "info"                    # params: () — the idle screen's information badge
+GLYPH_WIFI = "wifi"                    # params: (lit, color) — the idle screen's Wi-Fi status glyph
 
-# Fraction of the idle info zone's own short side the "i" badge occupies —
-# about 3.2mm on every shipped panel, since the zone itself is 8mm by
-# construction wherever density is known (see dial_touch_layout.IdleLayout).
-_INFO_GLYPH_FRACTION = 0.4
+# Fraction of the idle info zone's own short side the "i" badge's box
+# occupies. The painter's disc is 0.42 of that box, so 0.60 gives a disc of
+# radius 0.25 of the zone — sized to read as one pair with the Wi-Fi glyph in
+# the opposite corner (outer arc radius 0.33 of its zone).
+_INFO_GLYPH_FRACTION = 0.60
 
 # The "i" cut from the information badge's white disc: plain black, for
 # tourist-sign contrast against the disc regardless of what the idle
@@ -1642,6 +1725,34 @@ def _draw_info_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     )
 
 
+def _draw_wifi_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, lit: int, color=_GLYPH_RGB) -> None:
+    """The idle screen's Wi-Fi status glyph: a dot with three arcs fanning
+    upward from it. The innermost *lit* arcs (0..3) and the dot are drawn in
+    *color*; the rest in the dimmed glyph shade. lit=0 dims the dot as well,
+    so "no link" reads as an entirely grey glyph, and the offline flash's
+    red phase passes lit=3 with the alarm colour so every part turns red.
+
+    Sized from the canvas short side S (the whole zone square, not a
+    centred sub-box): outer arc radius 0.33 S, arc radii 0.42/0.71/1.00 of
+    that, stroke 0.062 S, dot radius 0.78 of the stroke, dot centre at
+    0.56 S from the top. The arcs span 222..318 degrees in Pillow's own
+    clockwise-from-3-o'clock convention, i.e. a 96 degree fan centred
+    straight up. Rendered into a (w, h) canvas — see _draw_glyph."""
+    short = min(w, h)
+    cx = w / 2
+    dot_cy = 0.56 * short
+    stroke = max(2, round(short * 0.062))
+    outer_r = 0.33 * short
+    dot_r = round(stroke * 0.78)
+    dim = _DIMMED_GLYPH_RGB
+    for i, fraction in enumerate((0.42, 0.71, 1.00)):
+        r = outer_r * fraction
+        arc_color = color if i < lit else dim
+        draw.arc([cx - r, dot_cy - r, cx + r, dot_cy + r], start=222, end=318, fill=arc_color, width=stroke)
+    dot_color = color if lit > 0 else dim
+    draw.ellipse([cx - dot_r, dot_cy - dot_r, cx + dot_r, dot_cy + dot_r], fill=dot_color)
+
+
 # Dispatch table for _glyph_tile()'s kinded paint step — built here, after
 # every painter above is defined, and looked up by name at call time so its
 # own position in the module relative to _glyph_tile()/_draw_glyph() (defined
@@ -1657,6 +1768,7 @@ _GLYPH_PAINTERS = {
     GLYPH_RESTART: _draw_restart_glyph,
     GLYPH_STOP: _draw_stop_glyph,
     GLYPH_INFO: _draw_info_glyph,
+    GLYPH_WIFI: _draw_wifi_glyph,
 }
 
 
@@ -1781,13 +1893,18 @@ def _body_none(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
 
 
 def _body_idle_badge(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
-    """The idle screen's own "i" information badge, drawn in the top-right
-    corner regardless of which base image (the plain logo or the
-    replay-available one) is showing underneath — see compose_idle()."""
+    """The idle screen's own corner glyphs, drawn regardless of which base
+    image (the plain logo or the replay-available one) is showing
+    underneath — see compose_idle(): the "i" information badge top-right,
+    and the Wi-Fi status glyph top-left, lit to body.wifi_bars arcs, or
+    entirely alarm red when body.wifi_alarm is set."""
     layout = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
     x0, y0, x1, y1 = layout.info
     side = round(min(x1 - x0, y1 - y0) * _INFO_GLYPH_FRACTION)
     _draw_glyph(img, _centred_box(layout.info, side), GLYPH_INFO, supersample=metrics.supersample)
+    lit = 3 if body.wifi_alarm else max(0, min(3, int(body.wifi_bars)))
+    color = _ALARM_RGB if body.wifi_alarm else _GLYPH_RGB
+    _draw_glyph(img, layout.wifi, GLYPH_WIFI, lit, color, supersample=metrics.supersample)
 
 
 def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -2156,6 +2273,33 @@ def _body_eq_bars(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     )
 
 
+def _body_nowifi(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The No-WiFi page's content on every tier: the fixed message centred
+    in the message row (readout size), Dismiss and Restart centred in
+    their cells (body size), then the white crosshair — a horizontal line
+    at divider_y across the card's full width and a vertical line at
+    divider_x spanning the bottom row only (the message row is never
+    split). On the compact tier the card is the whole panel, so this is
+    exactly the 2x2's own "bottom" divider pattern."""
+    layout = nowifi_layout_for(metrics.width, metrics.height, metrics=metrics)
+    draw = ImageDraw.Draw(img)
+    _draw_label_centered(draw, layout.message, NOWIFI_MESSAGE_TEXT, _load_font(metrics.font_readout))
+    body_font = _load_font(metrics.font_body)
+    _draw_label_centered(draw, layout.dismiss, NOWIFI_DISMISS_TEXT, body_font)
+    _draw_label_centered(draw, layout.restart, NOWIFI_RESTART_TEXT, body_font)
+    w = metrics.divider_w
+    cx0, cy0, cx1, cy1 = layout.card
+    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
+    draw.line([(layout.divider_x, layout.dismiss[1]), (layout.divider_x, cy1 - 1)], fill=_DIVIDER_RGB, width=w)
+
+
+def _body_centred_label(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """One string (body.line) centred on the whole panel at the readout
+    size — the "Restarting..." screen."""
+    draw = ImageDraw.Draw(img)
+    _draw_label_centered(draw, (0, 0, metrics.width, metrics.height), body.line, _load_font(metrics.font_readout))
+
+
 _BODY_RENDERERS = {
     BODY_NONE: _body_none,
     BODY_NOW_PLAYING: _body_now_playing,
@@ -2170,6 +2314,8 @@ _BODY_RENDERERS = {
     BODY_COMPACT_REPLAY: _body_compact_replay,
     BODY_INFO_VALUE: _body_info_value,
     BODY_EQ_BARS: _body_eq_bars,
+    BODY_NOWIFI: _body_nowifi,
+    BODY_CENTRED_LABEL: _body_centred_label,
 }
 
 
@@ -2260,6 +2406,41 @@ _FOOTER_RENDERERS = {
 }
 
 
+def _draw_card(img: Image.Image, rect: Rect, metrics: LayoutMetrics) -> None:
+    """A sharp-cornered card: a dark translucent drop shadow offset down
+    and right by the panel's pad, a flat fill, then a thin translucent
+    white outline. The shadow and outline are each a _draw_wash-style
+    alpha composite clipped to the panel, so nothing outside the panel is
+    ever touched and the outline reads as a subtle edge rather than a hard
+    line."""
+    x0, y0, x1, y1 = rect
+    offset = max(2, metrics.pad // 2)
+    shadow = (
+        min(metrics.width, x0 + offset), min(metrics.height, y0 + offset),
+        min(metrics.width, x1 + offset), min(metrics.height, y1 + offset),
+    )
+    _draw_wash(img, shadow, _CARD_SHADOW_RGB, _CARD_SHADOW_ALPHA)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=_CARD_FILL_RGB)
+    _draw_card_outline(img, (x0, y0, x1, y1), metrics.divider_w)
+
+
+def _draw_card_outline(img: Image.Image, rect: Rect, width: int) -> None:
+    """The card's own thin outline, alpha-composited over its fill so it
+    reads as a subtle translucent edge rather than a flat, opaque line."""
+    x0, y0, x1, y1 = rect
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).rectangle(
+        [0, 0, w - 1, h - 1], outline=(*_CARD_OUTLINE_RGB, _CARD_OUTLINE_ALPHA), width=width,
+    )
+    region = img.crop(rect).convert("RGBA")
+    composited = Image.alpha_composite(region, layer).convert("RGB")
+    img.paste(composited, (x0, y0))
+
+
 def _compose_frame(
     base, width: int, height: int, frame: Frame, *, rotate: bool, bgr: bool,
     metrics: LayoutMetrics | None = None,
@@ -2294,6 +2475,8 @@ def _compose_frame(
         _dim_rect(img, layout.bottom_band)
     if frame.dim_all:
         _dim_rect(img, (0, 0, width, height))
+    if frame.card is not None:
+        _draw_card(img, frame.card, metrics)
     for rect in frame.highlights:
         _draw_row_highlight(img, rect)
     for rect, alpha in frame.washes:
@@ -2471,6 +2654,32 @@ def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetr
             name=state.name, volume=state.volume, muted=state.muted, dots_filled=2, dots_count=3,
         ),
         body=Body(BODY_EQ_BARS, bass_db=state.bass_db, treble_db=state.treble_db),
+        footer=Footer(FOOTER_NONE),
+    )
+
+
+def _nowifi_pressed_rects(
+    pressed: "TouchZone | None", width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[Rect, ...]:
+    """The No-WiFi page's pressed-rect lookup: a zone from another
+    geometry washes nothing."""
+    rect = _zone_rect(GEOMETRY_NOWIFI, pressed, None, width, height, metrics)
+    return (rect,) if rect is not None else ()
+
+
+def _nowifi_frame(view: NoWifiView, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    """Dimmed base on every tier; the card only off compact (on compact the
+    2x2 fills the panel and the dimmed base is the whole backdrop, the same
+    convention every other compact screen follows)."""
+    layout = nowifi_layout_for(width, height, metrics=metrics)
+    compact = metrics.content_tier == CONTENT_COMPACT
+    return Frame(
+        background=BG_BASE,
+        dim_all=True,
+        card=None if compact else layout.card,
+        pressed=_nowifi_pressed_rects(view.pressed, width, height, metrics),
+        header=None,
+        body=Body(BODY_NOWIFI),
         footer=Footer(FOOTER_NONE),
     )
 

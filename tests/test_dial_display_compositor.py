@@ -36,12 +36,14 @@ from dial_display_compositor import (  # noqa: E402
     BODY_COMPACT_LIST,
     BODY_COMPACT_REPLAY,
     BODY_COMPACT_TOGGLE,
+    BODY_CENTRED_LABEL,
     BODY_EQ_BARS,
     BODY_IDLE_BADGE,
     BODY_INFO_VALUE,
     BODY_LIST_ROWS,
     BODY_NONE,
     BODY_NOW_PLAYING,
+    BODY_NOWIFI,
     BODY_REPEAT_LINE,
     BODY_REPEAT_ROW,
     BODY_TOGGLE_ROW,
@@ -65,14 +67,19 @@ from dial_display_compositor import (  # noqa: E402
     GLYPH_RESTART,
     GLYPH_STOP,
     GLYPH_TWO_DOTS,
+    GLYPH_WIFI,
     Header,
     InfoValueView,
     ListState,
+    NoWifiView,
     OutputViewState,
     PLAY_GLYPH,
     OverlayState,
     RepeatViewState,
+    RESTARTING_TEXT,
     _BODY_RENDERERS,
+    _ALARM_RGB,
+    _CARD_FILL_RGB,
     _DIMMED_GLYPH_RGB,
     _FOOTER_RENDERERS,
     _GLYPH_PAINTERS,
@@ -80,6 +87,7 @@ from dial_display_compositor import (  # noqa: E402
     _GLYPH_SUPERSAMPLE,
     _INFO_GLYPH_FRACTION,
     _INVERTED_GLYPH_RGB,
+    _LIST_BG_RGB,
     OVERLAY_DIM_FACTOR,
     _COMPACT_PICKER_TITLE,
     _COMPACT_SMALL_GLYPH_FRACTION,
@@ -133,6 +141,7 @@ from dial_touch_layout import (  # noqa: E402
     layout_for,
     list_layout_for,
     metrics_for,
+    nowifi_layout_for,
     repeat_layout_for,
     zone_rects_for,
     zones_for,
@@ -406,6 +415,17 @@ class TestStatelessness:
         first = compositor.compose_info_value(240, 240, view, rotate=False, bgr=False)
         second = compositor.compose_info_value(240, 240, view, rotate=False, bgr=False)
         assert list(first.getdata()) == list(second.getdata())
+
+    def test_compose_nowifi_holds_no_attributes_that_change_between_calls(self, compositor):
+        before = dict(vars(compositor))
+        base = Image.new("RGB", (160, 128), (32, 32, 32))
+        compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=False, bgr=False)
+        compositor.compose_nowifi(None, 240, 240, NoWifiView(pressed=TouchZone.NOWIFI_RESTART),
+                                  rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973))
+        compositor.compose_restarting(160, 128, rotate=False, bgr=False)
+        compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=2, wifi_alarm=True)
+        after = dict(vars(compositor))
+        assert before == after == {}
 
 
 class TestOverlayInert:
@@ -1734,16 +1754,19 @@ class TestComposeIdle:
         return Image.new("RGB", (160, 128), (32, 32, 32))
 
     def test_renders_the_base_plus_the_info_badge_only(self, compositor):
-        # Every idle frame now carries the "i" badge (the badge
-        # shows on the plain logo too, not only the replay-available one),
-        # so the only pixels that ever differ from the plain base are the
-        # ones inside its own box.
+        # Every idle frame now carries the "i" badge and the Wi-Fi glyph
+        # (both show on the plain logo too, not only the replay-available
+        # one), so the only pixels that ever differ from the plain base are
+        # the ones inside one of their two boxes.
         base = self._logo()
         result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
-        info = idle_layout_for(160, 128).info
+        idle = idle_layout_for(160, 128)
+        info, wifi = idle.info, idle.wifi
         for y in range(128):
             for x in range(160):
                 if info[0] <= x < info[2] and info[1] <= y < info[3]:
+                    continue
+                if wifi[0] <= x < wifi[2] and wifi[1] <= y < wifi[3]:
                     continue
                 assert result.getpixel((x, y)) == base.getpixel((x, y))
 
@@ -1752,6 +1775,12 @@ class TestComposeIdle:
         result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
         info = idle_layout_for(160, 128).info
         assert list(result.crop(info).getdata()) != list(base.crop(info).getdata())
+
+    def test_wifi_glyph_drawn_inside_its_own_box(self, compositor):
+        base = self._logo()
+        result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        wifi = idle_layout_for(160, 128).wifi
+        assert list(result.crop(wifi).getdata()) != list(base.crop(wifi).getdata())
 
     def test_none_base_returns_none(self, compositor):
         assert compositor.compose_idle(None, 160, 128, rotate=False, bgr=False) is None
@@ -1769,6 +1798,303 @@ class TestComposeIdle:
         assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
         swapped = compositor.compose_idle(base, 160, 128, rotate=False, bgr=True)
         assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
+
+
+# ---------------------------------------------------------------------------
+# GLYPH_WIFI — the idle screen's Wi-Fi status glyph.
+# ---------------------------------------------------------------------------
+
+class TestWifiGlyph:
+    """GLYPH_WIFI: a dot with three arcs fanning upward; the innermost
+    `lit` arcs and the dot in the given colour, the rest dimmed."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_render_caches()
+        yield
+        _reset_render_caches()
+
+    S = 60
+
+    def _arc_points(self):
+        # The vertical centre line crosses each arc at dot_cy - r_i.
+        s = self.S
+        dot_cy = 0.56 * s
+        outer = 0.33 * s
+        return [(s // 2, round(dot_cy - outer * f)) for f in (0.42, 0.71, 1.00)], (s // 2, round(dot_cy))
+
+    def test_registered_painter(self):
+        assert GLYPH_WIFI in _GLYPH_PAINTERS
+
+    def test_corners_transparent(self):
+        tile = _glyph_tile(GLYPH_WIFI, (3, _GLYPH_RGB), self.S, self.S, 4)
+        px = tile.load()
+        for corner in ((0, 0), (self.S - 1, 0), (0, self.S - 1), (self.S - 1, self.S - 1)):
+            assert px[corner][3] == 0
+
+    # The smallest (innermost) arc's own antialiasing softens its sampled
+    # centreline pixel a little after the supersample/LANCZOS downsample —
+    # comfortably opaque, just short of the outer arcs' own full 255. 150
+    # still rules out anything actually transparent.
+    _MIN_OPAQUE_ALPHA = 150
+
+    @pytest.mark.parametrize("lit", [0, 1, 2, 3])
+    def test_innermost_lit_arcs_are_white_and_the_rest_grey(self, lit):
+        tile = _glyph_tile(GLYPH_WIFI, (lit, _GLYPH_RGB), self.S, self.S, 4)
+        px = tile.load()
+        arcs, dot = self._arc_points()
+        for i, (x, y) in enumerate(arcs):
+            r, g, b, a = px[x, y]
+            assert a > self._MIN_OPAQUE_ALPHA
+            if i < lit:
+                assert r > 150 and g > 150 and b > 150
+            else:
+                assert r < 130 and g < 130 and b < 130
+        r, g, b, a = px[dot]
+        assert a > self._MIN_OPAQUE_ALPHA
+        assert (r > 150) == (lit > 0)
+
+    def test_alarm_colour_reaches_every_part(self):
+        tile = _glyph_tile(GLYPH_WIFI, (3, _ALARM_RGB), self.S, self.S, 4)
+        px = tile.load()
+        arcs, dot = self._arc_points()
+        for x, y in arcs + [dot]:
+            r, g, b, a = px[x, y]
+            assert a > self._MIN_OPAQUE_ALPHA and r > 150 and g < 130 and b < 130
+
+    def test_symmetric_about_the_vertical_centre(self):
+        # Unlike the "i" badge's plain ellipse/rectangle shapes, Pillow's arc
+        # rasterizer is not pixel-exact about a vertical centreline once
+        # supersampled and downsampled with LANCZOS: a handful of edge pixels
+        # on the arcs' own antialiased boundary land a few alpha levels off
+        # their mirror. A generous per-channel tolerance (and skipping pixels
+        # where both sides are already near-transparent noise) still catches
+        # any genuine left/right asymmetry in the glyph's own geometry.
+        s = 61
+        tile = _glyph_tile(GLYPH_WIFI, (2, _GLYPH_RGB), s, s, 4)
+        px = tile.load()
+        for y in range(0, s, 5):
+            for dx in range(0, s // 2, 5):
+                left, right = px[dx, y], px[s - 1 - dx, y]
+                if left[3] < 30 and right[3] < 30:
+                    continue
+                assert all(abs(left[i] - right[i]) <= 40 for i in range(4)), (dx, y, left, right)
+
+    def test_lit_and_colour_are_distinct_cache_keys(self):
+        _glyph_tile.cache_clear()
+        _glyph_tile(GLYPH_WIFI, (1, _GLYPH_RGB), 30, 30, 4)
+        _glyph_tile(GLYPH_WIFI, (2, _GLYPH_RGB), 30, 30, 4)
+        _glyph_tile(GLYPH_WIFI, (2, _ALARM_RGB), 30, 30, 4)
+        _glyph_tile(GLYPH_WIFI, (2, _ALARM_RGB), 30, 30, 4)
+        info = _glyph_tile.cache_info()
+        assert info.misses == 3 and info.hits == 1
+
+
+# ---------------------------------------------------------------------------
+# compose_idle — the Wi-Fi status glyph's own bars/alarm parameters.
+# ---------------------------------------------------------------------------
+
+class TestComposeIdleWifi:
+    def _logo(self, size=(160, 128)):
+        return Image.new("RGB", size, (32, 32, 32))
+
+    def test_bars_change_only_the_wifi_box(self, compositor):
+        base = self._logo()
+        a = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=1)
+        b = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=3)
+        wifi = idle_layout_for(160, 128).wifi
+        assert list(a.crop(wifi).getdata()) != list(b.crop(wifi).getdata())
+        for y in range(128):
+            for x in range(160):
+                if wifi[0] <= x < wifi[2] and wifi[1] <= y < wifi[3]:
+                    continue
+                assert a.getpixel((x, y)) == b.getpixel((x, y))
+
+    def test_alarm_paints_red_in_the_wifi_box(self, compositor):
+        base = self._logo()
+        frame = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_alarm=True)
+        wifi = idle_layout_for(160, 128).wifi
+        reds = [p for p in frame.crop(wifi).getdata() if p[0] > 150 and p[1] < 130 and p[2] < 130]
+        assert reds
+        grey_frame = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=0)
+        assert not [p for p in grey_frame.crop(wifi).getdata() if p[0] > 150 and p[1] < 130]
+
+    def test_bars_clamped_to_zero_three(self, compositor):
+        base = self._logo()
+        assert list(compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=9).getdata()) == \
+            list(compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=3).getdata())
+        assert list(compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=-1).getdata()) == \
+            list(compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=0).getdata())
+
+    def test_info_badge_disc_radius_is_a_quarter_of_the_zone(self, compositor):
+        # 0.42 * _INFO_GLYPH_FRACTION == 0.25 (to within a pixel at 320x240).
+        assert abs(0.42 * _INFO_GLYPH_FRACTION - 0.25) < 0.01
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_idle(self._logo((320, 240)), 320, 240, rotate=False, bgr=False, metrics=metrics)
+        x0, y0, x1, y1 = idle_layout_for(320, 240, metrics=metrics).info
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        # The disc's own top edge sits ~11 px above the centre on a 45 px
+        # zone (box 27 px, disc radius 0.42 * 27 = 11.3): 9 px up is inside
+        # the disc and clear of the "i" dot, 14 px up is outside the box.
+        assert frame.getpixel((cx, cy - 9))[0] > 200
+        assert frame.getpixel((cx, cy - 14)) == (32, 32, 32)
+
+
+# ---------------------------------------------------------------------------
+# compose_nowifi — the No-WiFi page: dimmed base, card off compact,
+# crosshair, press wash.
+# ---------------------------------------------------------------------------
+
+class TestComposeNoWifi:
+    """compose_nowifi(): dimmed base, card off compact, crosshair, press wash."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def _base(self, size):
+        return Image.new("RGB", size, (200, 200, 200))
+
+    def test_rich_card_geometry_is_pinned(self):
+        layout = nowifi_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
+        assert layout.card == (41, 48, 278, 192)
+        assert layout.message == (41, 48, 278, 114)
+        assert layout.dismiss == (41, 126, 153, 192)
+        assert layout.restart == (166, 126, 278, 192)
+        assert (layout.divider_x, layout.divider_y) == (159, 120)
+
+    def test_backdrop_outside_the_card_is_dimmed_base(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
+                                          rotate=False, bgr=False, metrics=metrics)
+        dimmed = round(200 * OVERLAY_DIM_FACTOR)
+        for xy in ((2, 2), (317, 2), (2, 237), (20, 120)):
+            assert frame.getpixel(xy) == (dimmed, dimmed, dimmed)
+
+    def test_card_fill_outline_and_shadow(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
+                                          rotate=False, bgr=False, metrics=metrics)
+        card = nowifi_layout_for(320, 240, metrics=metrics).card
+        # An interior point away from text/dividers is the flat fill.
+        assert frame.getpixel((card[0] + 6, card[1] + 6)) == _CARD_FILL_RGB
+        # The outline is a thin translucent white edge on the card's own
+        # border: lighter than the fill in every channel, but not fully
+        # white (it is blended, not opaque).
+        outline_px = frame.getpixel((card[0], card[1] + 20))
+        assert all(outline_px[i] > _CARD_FILL_RGB[i] for i in range(3))
+        assert outline_px != (255, 255, 255)
+        # The shadow darkens the dimmed backdrop just outside the bottom-right corner.
+        dimmed = round(200 * OVERLAY_DIM_FACTOR)
+        assert frame.getpixel((card[2] + 1, card[3] - 20))[0] < dimmed
+
+    def test_crosshair_horizontal_full_card_width_vertical_bottom_row_only(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
+                                          rotate=False, bgr=False, metrics=metrics)
+        l = nowifi_layout_for(320, 240, metrics=metrics)
+        for x in (l.card[0] + 1, l.divider_x, l.card[2] - 2):
+            assert frame.getpixel((x, l.divider_y)) == (255, 255, 255)
+        assert frame.getpixel((l.divider_x, l.dismiss[1] + 5)) == (255, 255, 255)
+        assert frame.getpixel((l.divider_x, l.card[3] - 2)) == (255, 255, 255)
+        # No vertical line through the message row (just inside the card fill,
+        # clear of the text: sample near the row's top-left).
+        assert frame.getpixel((l.divider_x, l.message[1] + 4)) == _CARD_FILL_RGB
+
+    def test_pressed_dismiss_washes_only_its_cell(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        plain = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
+                                          rotate=False, bgr=False, metrics=metrics)
+        pressed = compositor.compose_nowifi(self._base((320, 240)), 320, 240,
+                                            NoWifiView(pressed=TouchZone.NOWIFI_DISMISS),
+                                            rotate=False, bgr=False, metrics=metrics)
+        l = nowifi_layout_for(320, 240, metrics=metrics)
+        p_in = pressed.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3))
+        assert p_in[0] > _CARD_FILL_RGB[0]                 # washed brighter than the fill
+        assert plain.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3)) == _CARD_FILL_RGB
+        assert pressed.getpixel((l.restart[0] + 3, l.restart[1] + 3)) == _CARD_FILL_RGB
+        assert list(pressed.crop(l.message).getdata()) == list(plain.crop(l.message).getdata())
+
+    def test_stale_zone_washes_nothing(self, compositor):
+        a = compositor.compose_nowifi(self._base((160, 128)), 160, 128, NoWifiView(), rotate=False, bgr=False)
+        b = compositor.compose_nowifi(self._base((160, 128)), 160, 128, NoWifiView(pressed=TouchZone.MUTE),
+                                      rotate=False, bgr=False)
+        assert list(a.getdata()) == list(b.getdata())
+
+    def test_none_base_falls_back_to_chassis(self, compositor):
+        frame = compositor.compose_nowifi(None, 160, 128, NoWifiView(), rotate=False, bgr=False)
+        dimmed = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        assert frame.getpixel((1, 1)) == dimmed
+
+    def test_compact_is_full_screen_two_by_two_no_card(self, compositor):
+        metrics = metrics_for(240, 240, 0.0973)
+        frame = compositor.compose_nowifi(self._base((240, 240)), 240, 240, NoWifiView(),
+                                          rotate=False, bgr=False, metrics=metrics)
+        dimmed = round(200 * OVERLAY_DIM_FACTOR)
+        assert frame.getpixel((2, 2)) == (dimmed, dimmed, dimmed)       # no card fill on compact
+        l = nowifi_layout_for(240, 240, metrics=metrics)
+        assert (l.dismiss, l.restart, l.divider_x, l.divider_y) == ((0, 126, 114, 240), (126, 126, 240, 240), 120, 120)
+        assert frame.getpixel((5, 120)) == (255, 255, 255)              # horizontal, full width
+        assert frame.getpixel((120, 200)) == (255, 255, 255)            # vertical, bottom row
+        assert frame.getpixel((120, 8)) == (dimmed, dimmed, dimmed)     # none in the top row
+
+    def test_compact_pressed_restart_washes_its_cell(self, compositor):
+        metrics = metrics_for(240, 240, 0.0973)
+        plain = compositor.compose_nowifi(self._base((240, 240)), 240, 240, NoWifiView(),
+                                          rotate=False, bgr=False, metrics=metrics)
+        pressed = compositor.compose_nowifi(self._base((240, 240)), 240, 240,
+                                            NoWifiView(pressed=TouchZone.NOWIFI_RESTART),
+                                            rotate=False, bgr=False, metrics=metrics)
+        assert pressed.getpixel((130, 130))[0] > plain.getpixel((130, 130))[0]
+        assert pressed.getpixel((5, 130)) == plain.getpixel((5, 130))
+
+    def test_rotate_and_bgr_applied(self, compositor):
+        base = self._base((160, 128))
+        plain = compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=False, bgr=False)
+        rotated = compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=True, bgr=False)
+        assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
+        swapped = compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=False, bgr=True)
+        assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
+
+    def test_never_raises_without_a_font(self, compositor):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            frame = compositor.compose_nowifi(self._base((160, 128)), 160, 128, NoWifiView(),
+                                              rotate=False, bgr=False)
+        assert frame.size == (160, 128)
+
+
+# ---------------------------------------------------------------------------
+# compose_restarting — the "Restarting..." screen: flat chassis, centred text.
+# ---------------------------------------------------------------------------
+
+class TestComposeRestarting:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_flat_chassis_with_centred_text(self, compositor, width, height):
+        frame = compositor.compose_restarting(width, height, rotate=False, bgr=False)
+        for xy in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+            assert frame.getpixel(xy) == _LIST_BG_RGB
+        row = [frame.getpixel((x, height // 2)) for x in range(width)]
+        ink_x = [x for x, p in enumerate(row) if p != _LIST_BG_RGB]
+        assert ink_x
+        # The ink's own bounding box is centred on the panel — a per-column
+        # ink-count comparison would be thrown off by "Restarting..." itself
+        # being visually denser at the start (solid letters) than the end
+        # (three dots), which is a property of the string, not of centring.
+        bbox_mid = (min(ink_x) + max(ink_x)) / 2
+        assert abs(bbox_mid - width / 2) <= max(6, width * 0.08)
+
+    def test_font_failure_leaves_the_flat_fill(self, compositor):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            frame = compositor.compose_restarting(160, 128, rotate=False, bgr=False)
+        assert set(frame.getdata()) == {_LIST_BG_RGB}
 
 
 # ---------------------------------------------------------------------------
@@ -1966,12 +2292,12 @@ class TestMetricsByteEquivalence:
         with_metrics = compositor.compose_idle(
             base, width, height, rotate=False, bgr=False, metrics=metrics,
         )
-        a = idle_layout_for(width, height).info
-        b = idle_layout_for(width, height, metrics=metrics).info
-        box = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+        idle_a = idle_layout_for(width, height)
+        idle_b = idle_layout_for(width, height, metrics=metrics)
+        boxes = (idle_a.info, idle_b.info, idle_a.wifi, idle_b.wifi)
         for y in range(height):
             for x in range(width):
-                if box[0] <= x < box[2] and box[1] <= y < box[3]:
+                if any(bx0 <= x < bx1 and by0 <= y < by1 for bx0, by0, bx1, by1 in boxes):
                     continue
                 assert plain.getpixel((x, y)) == with_metrics.getpixel((x, y))
 
@@ -2149,6 +2475,37 @@ def _render_cache_corpus(width, height, metrics=None):
         "idle",
         lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False, metrics=metrics),
     ))
+    cases.append((
+        "idle_down_grey",
+        lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_bars=0),
+    ))
+    cases.append((
+        "idle_alarm",
+        lambda c: c.compose_idle(
+            logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_alarm=True,
+        ),
+    ))
+    cases.append((
+        "idle_bars3",
+        lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_bars=3),
+    ))
+    cases.append((
+        "nowifi",
+        lambda c: c.compose_nowifi(
+            logo, width, height, NoWifiView(), rotate=False, bgr=False, metrics=metrics,
+        ),
+    ))
+    cases.append((
+        "nowifi_pressed",
+        lambda c: c.compose_nowifi(
+            logo, width, height, NoWifiView(pressed=TouchZone.NOWIFI_DISMISS),
+            rotate=False, bgr=False, metrics=metrics,
+        ),
+    ))
+    cases.append((
+        "restarting",
+        lambda c: c.compose_restarting(width, height, rotate=False, bgr=False, metrics=metrics),
+    ))
 
     return cases
 
@@ -2280,7 +2637,7 @@ class TestPlayGlyphTile:
 
         assert set(_GLYPH_PAINTERS) == {
             GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_PAGE_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
-            GLYPH_RESTART, GLYPH_STOP, GLYPH_INFO,
+            GLYPH_RESTART, GLYPH_STOP, GLYPH_INFO, GLYPH_WIFI,
         }
 
     def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):

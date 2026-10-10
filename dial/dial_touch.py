@@ -75,7 +75,10 @@ maps to GEOMETRY_LIST (the outputs list reuses the same list chassis as
 the selector/picker); "output" maps to GEOMETRY_OUTPUT (the per-output
 detail page); "info" maps to GEOMETRY_INFO (the idle screen's read-only
 info page — the list table with every row entry removed, so a row tap
-lands in no zone); "eq" maps to GEOMETRY_EQ (the EQ page, rich/large only)
+lands in no zone); "eq" maps to GEOMETRY_EQ (the EQ page, rich/large only);
+"nowifi" maps to GEOMETRY_NOWIFI (the No-WiFi page's Dismiss/Restart
+cells); "restarting" maps to GEOMETRY_NONE (nothing tappable, so no press
+can arm anything while the reboot is pending)
 — all held like the selector. The map is many-to-one on purpose: which surfaces share a geometry is a policy decision (reveal
 timing, what a row tap does), never a geometric one —
 dial_touch_layout.py itself only ever describes its geometries, never a
@@ -124,6 +127,8 @@ from dial_touch_layout import (
     GEOMETRY_INFO_VALUE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
+    GEOMETRY_NONE,
+    GEOMETRY_NOWIFI,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
@@ -222,6 +227,13 @@ SURFACE_INFO_VALUE = "info_value"
 # other secondary surface; hit-tests use the GEOMETRY_EQ table (DOTS/NAME/
 # OUTPUTS reused from the main geometry, plus the bass/treble bar steppers).
 SURFACE_EQ = "eq"
+# The No-WiFi page: held like every other secondary surface; its geometry
+# (GEOMETRY_NOWIFI) is the two cells, Dismiss and Restart.
+SURFACE_NOWIFI = "nowifi"
+# The "Restarting..." screen: held (so the touch side treats it as a
+# visible surface, not a reveal-on-touch one) but with an EMPTY geometry —
+# no press anywhere can arm anything until the reboot takes the panel down.
+SURFACE_RESTARTING = "restarting"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -240,6 +252,8 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_INFO: GEOMETRY_INFO,
     SURFACE_INFO_VALUE: GEOMETRY_INFO_VALUE,
     SURFACE_EQ: GEOMETRY_EQ,
+    SURFACE_NOWIFI: GEOMETRY_NOWIFI,
+    SURFACE_RESTARTING: GEOMETRY_NONE,
 }
 
 # The repeat screen's two surfaces, treated as one set by the repeat-close

@@ -43,6 +43,7 @@ from dial_display_profiles import (
     mm_per_px_for_size,
 )
 from dial_mdns import PlayingTarget
+from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_touch_layout import TouchZone, list_layout_for, metrics_for
 import dial_display as dd
 from dial_display import (
@@ -6576,10 +6577,20 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_nine_screens(self):
+    def test_table_has_exactly_the_eleven_screens(self):
         assert set(SCREEN_POLICIES) == {
             "main", "selector", "picker", "info", "info_value", "repeat", "eq", "outputs", "output",
+            "nowifi", "restarting",
         }
+
+    def test_nowifi_and_restarting_rows(self):
+        assert SCREEN_POLICIES["nowifi"].inactivity_timeout_s is None
+        assert SCREEN_POLICIES["nowifi"].defers_sleep is False
+        assert SCREEN_POLICIES["nowifi"].back_to == "main"
+        assert SCREEN_POLICIES["nowifi"].surface == ("nowifi", False, False, False)
+        assert SCREEN_POLICIES["restarting"].inactivity_timeout_s == dd.RESTARTING_TIMEOUT_SECONDS
+        assert SCREEN_POLICIES["restarting"].touch_extends_timeout is False
+        assert SCREEN_POLICIES["restarting"].surface == ("restarting", False, False, False)
 
     def test_info_value_back_to_is_info(self):
         # The compact info page's own drill-in returns to the list it
@@ -7570,3 +7581,280 @@ class TestInfoValueScreen:
         display.enable()
         self._opened_value(display, 0)
         assert display.touch_surface() == ("info_value", False, False, False)
+
+
+# ---------------------------------------------------------------------------
+# The Wi-Fi link state machine: the idle icon, the No-WiFi page and the
+# "Restarting..." screen driven by dial_network's poller callback.
+# ---------------------------------------------------------------------------
+
+def _view(link, bars=0):
+    return NetworkView(link=link, device_state="", bars=bars, updated_at=1.0)
+
+
+def _fold(display):
+    with display._lock:
+        display._repaint_current_locked()
+
+
+class TestNoWifiStateMachine:
+    def _idle_display(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        display._poll_once()          # nothing playing: idle screen, _now_playing None
+        _fold(display)
+        return display, fb
+
+    def test_unknown_before_first_poll_draws_steady_grey(self):
+        display, fb = self._idle_display()
+        with display._lock:
+            assert display._idle_wifi_args_locked() == (0, False)
+        assert display._wifi_flashing() is False
+
+    def test_connected_view_gives_steady_bars(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_CONNECTED, bars=2))
+        with display._lock:
+            assert display._idle_wifi_args_locked() == (2, False)
+        assert display._wifi_flashing() is False
+        assert display._screen_request is None
+
+    def test_down_flashes_with_the_monotonic_phase(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._wifi_flashing() is True
+        with patch("dial_display.time.monotonic", return_value=1000.0):
+            with display._lock:
+                assert display._idle_wifi_args_locked() == (0, True)
+        with patch("dial_display.time.monotonic", return_value=1000.5):
+            with display._lock:
+                assert display._idle_wifi_args_locked() == (0, False)
+
+    def test_flash_deadline_is_the_next_half_period(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_DOWN))
+        with patch("dial_display.time.monotonic", return_value=1000.2):
+            assert display._next_repaint_deadline() == pytest.approx(1000.5 + 0.005)
+
+    def test_tick_wifi_flash_signals_only_while_flashing(self):
+        display, fb = self._idle_display()
+        display._overlay_signal.clear()
+        display._tick_wifi_flash()
+        assert not display._overlay_signal.is_set()
+        display.on_network_view(_view(LINK_DOWN))
+        display._overlay_signal.clear()
+        display._tick_wifi_flash()
+        assert display._overlay_signal.is_set()
+
+    def test_no_flash_off_the_idle_screen(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_DOWN))
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        _fold(display)
+        assert display._screen == "info"
+        assert display._wifi_flashing() is False
+
+    def test_streak_of_three_opens_the_page_from_main(self):
+        display, fb = self._idle_display()
+        for expected in (None, None, "nowifi"):
+            display.on_network_view(_view(LINK_DOWN))
+            assert display._screen_request == expected
+        _fold(display)
+        assert display._screen == "nowifi"
+        assert display._nowifi is not None
+        assert display.touch_surface() == ("nowifi", False, False, False)
+
+    def test_unknown_does_not_reset_or_advance_the_streak(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_DOWN))
+        display.on_network_view(_view(LINK_DOWN))
+        display.on_network_view(_view(LINK_UNKNOWN))
+        assert display._wifi_down_streak == 2 and display._screen_request is None
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request == "nowifi"
+
+    def test_ignored_resets_the_streak_but_keeps_the_dismissal(self):
+        display, fb = self._idle_display()
+        display._wifi_dismissed = True
+        display.on_network_view(_view(LINK_DOWN))
+        display.on_network_view(_view(LINK_IGNORED))
+        assert display._wifi_down_streak == 0 and display._wifi_dismissed is True
+        assert display._screen_request is None
+
+    def test_connected_auto_closes_the_page_and_ends_the_incident(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        assert display._screen == "nowifi"
+        display.on_network_view(_view(LINK_CONNECTED, bars=3))
+        assert display._screen_request == "main"
+        _fold(display)
+        assert display._screen == "main" and display._nowifi is None
+        assert display._wifi_down_streak == 0 and display._wifi_dismissed is False
+
+    def test_connected_cancels_a_pending_open(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request == "nowifi"
+        display.on_network_view(_view(LINK_CONNECTED, bars=1))
+        assert display._screen_request is None
+
+    def test_dismiss_suppresses_reopen_until_connected(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        display.nowifi_dismiss_tap()
+        assert display._wifi_dismissed is True
+        _fold(display)
+        assert display._screen == "main"
+        for _ in range(5):
+            display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request is None            # suppressed
+        assert display._wifi_flashing() is True           # icon still flashes
+        display.on_network_view(_view(LINK_CONNECTED, bars=2))
+        display.on_network_view(_view(LINK_DOWN))
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request is None
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request == "nowifi"        # a fresh incident
+
+    def test_icon_tap_opens_despite_dismissal_and_is_inert_while_connected(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_CONNECTED, bars=3))
+        display.open_nowifi()
+        assert display._screen_request is None
+        display.on_network_view(_view(LINK_DOWN))
+        display._wifi_dismissed = True
+        display.open_nowifi()
+        assert display._screen_request == "nowifi"
+        _fold(display)
+        assert display._screen == "nowifi"
+
+    def test_auto_open_never_stomps_on_another_screen(self):
+        display, fb = self._idle_display()
+        with patch("dial_display.threading.Thread"):
+            display.open_info()
+        _fold(display)
+        for _ in range(4):
+            display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request is None and display._screen == "info"
+        display.close_list()
+        _fold(display)
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request == "nowifi"
+
+    def test_page_has_no_timeout(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        with patch("dial_display.time.monotonic", return_value=time.monotonic() + 3600):
+            display._check_secondary_timeout()
+        assert display._screen == "nowifi"
+
+    def test_page_paints_a_frame(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        before = len(fb.displayed)
+        _fold(display)
+        assert len(fb.displayed) == before + 1
+
+    def test_page_does_not_defer_the_idle_sleep_clock(self):
+        # defers_sleep=False: the No-WiFi page sleeps with the normal idle
+        # timer rather than holding the panel lit for as long as the link
+        # stays down. _idle_display() has already run one _poll_once() on
+        # the bare idle screen, so the clock is already ticking; opening the
+        # page must not reset it back to None the way an actual list screen
+        # would.
+        display, fb = self._idle_display()
+        assert display._idle_started_at is not None
+        started_at = display._idle_started_at
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        assert display._screen == "nowifi"
+        display._poll_once()
+        assert display._idle_started_at == started_at
+
+    def test_sleeps_with_the_normal_idle_timer_and_the_poller_reraises_after_wake(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        assert display._screen == "nowifi"
+        with patch("dial_display.time.monotonic",
+                   return_value=time.monotonic() + dd.DISPLAY_IDLE_SLEEP_SECONDS + 1):
+            display._poll_once()
+        assert display._display_sleeping is True
+        assert display._screen == "main" and display._nowifi is None
+        # The poller's next poll (within NETWORK_POLL_INTERVAL_S of the next
+        # wake) finds the link still down and the incident's streak intact
+        # (sleeping never resets it, only a connected/ignored poll does) and
+        # re-raises the page at once.
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request == "nowifi"
+
+    def test_restart_tap_shows_restarting_and_requests_the_reboot(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        with patch("dial_display._request_reboot") as reboot:
+            display.nowifi_restart_tap()
+        reboot.assert_called_once_with()
+        _fold(display)
+        assert display._screen == "restarting" and display._nowifi is None
+        assert display.touch_surface() == ("restarting", False, False, False)
+
+    def test_nowifi_open_refused_while_restarting(self):
+        display, fb = self._idle_display()
+        display.on_network_view(_view(LINK_DOWN))
+        with patch("dial_display._request_reboot"):
+            display.nowifi_restart_tap()
+        _fold(display)
+        display.on_network_view(_view(LINK_DOWN))
+        display.on_network_view(_view(LINK_DOWN))
+        display.on_network_view(_view(LINK_DOWN))
+        assert display._screen_request is None            # not "main", so the streak gate holds
+        display._screen_request = "nowifi"
+        _fold(display)
+        assert display._screen == "restarting"
+
+    def test_restarting_falls_back_to_main_after_its_timeout(self):
+        display, fb = self._idle_display()
+        with patch("dial_display._request_reboot"):
+            display.nowifi_restart_tap()
+        _fold(display)
+        with patch("dial_display.time.monotonic", return_value=time.monotonic() + dd.RESTARTING_TIMEOUT_SECONDS + 1):
+            display._check_secondary_timeout()
+        assert display._screen == "main" and display._restarting is None
+
+    def test_callback_never_raises(self):
+        display, fb = self._idle_display()
+        display.on_network_view(object())        # no .link attribute
+        display.on_network_view(None)
+
+    def test_sleep_pops_the_page(self):
+        display, fb = self._idle_display()
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        _fold(display)
+        with display._lock:
+            display._sleep_locked()
+        assert display._screen == "main" and display._nowifi is None
+
+    def test_compact_page_paints(self):
+        display, fb, gt = _make_compact_display(targets=[])
+        display.enable()
+        display._poll_once()
+        _fold(display)
+        for _ in range(3):
+            display.on_network_view(_view(LINK_DOWN))
+        before = len(fb.displayed)
+        _fold(display)
+        assert display._screen == "nowifi" and len(fb.displayed) == before + 1

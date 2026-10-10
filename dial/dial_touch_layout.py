@@ -56,9 +56,9 @@ keeps the dead-zone band feeling the same physical size across profiles
 rather than shrinking to nothing on a big panel or ballooning on a small
 one.
 
-SURFACES: this module describes geometry for FOUR hit-test geometries
-(GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_IDLE), never
-mixed. Each geometry's tappable rectangles live in one ordered table —
+SURFACES: this module describes geometry for several hit-test geometries
+(GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_IDLE, and others
+below), never mixed. Each geometry's tappable rectangles live in one ordered table —
 `zone_rects_for(geometry, width, height)` — that both `hit_test()` below
 and the compositor's pressed-zone wash read, so the two can never disagree
 about where a boundary sits.
@@ -78,15 +78,18 @@ pops back to main and reveals the main screen's volume overlay), NAME
 the outputs list like the main screen — the repeat screen has no mute
 control of its own), REPEAT_PLAY (the enable layout's arm/disarm row),
 REPEAT_START, REPEAT_STOP. The IDLE geometry
-(`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_INFO, a small
-top-right square opening the read-only info list, listed first so it wins
-the corner it shares with IDLE_REPLAY, which covers the whole panel below
-the top band. GEOMETRY_INFO is the info page's own reading of the LIST
-table with every LIST_ROW entry removed (its rows are display-only). A
+(`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_WIFI and
+IDLE_INFO, two small corner squares listed first so they win the corners
+they share with IDLE_REPLAY, which covers the whole panel below the top
+band. GEOMETRY_INFO is the info page's own reading of the LIST
+table with every LIST_ROW entry removed (its rows are display-only).
+GEOMETRY_NOWIFI is the No-WiFi page's own table (Dismiss | Restart);
+GEOMETRY_NONE is an empty table (the "Restarting..." screen has nothing
+tappable at all). A
 caller never mixes geometries — which one to hit-test against is decided
 elsewhere
 (dial_touch.TouchStateMachine.set_surface, which maps its own surface
-strings onto these four geometries many-to-one) — but `hit_test()` and
+strings onto these geometries many-to-one) — but `hit_test()` and
 every per-geometry wrapper are pure functions of (x, y, width, height) and
 are the ONLY hit-test functions any state machine calls.
 
@@ -396,6 +399,10 @@ class TouchZone(str, Enum):
     IDLE_INFO: the idle screen's own small top-right "i" affordance,
     reachable on every idle dial regardless of whether a replay is held —
     opens the read-only info list (see IdleLayout.info/GEOMETRY_INFO).
+    IDLE_WIFI: the idle screen's own small top-left Wi-Fi status square,
+    the mirror image of IDLE_INFO — a tap opens the No-WiFi page while the
+    link is down (inert while connected; see DialDisplay.open_nowifi).
+    NOWIFI_DISMISS, NOWIFI_RESTART: the No-WiFi page's two cells.
     ARTWORK: the main surface's inter-band strip (between the top and
     bottom bands); a tap hides the bands for a few seconds.
     EQ_BASS_DOWN, EQ_BASS_UP, EQ_TREBLE_DOWN, EQ_TREBLE_UP: the EQ page's
@@ -427,6 +434,9 @@ class TouchZone(str, Enum):
     EQ_BASS_UP = "eq_bass_up"
     EQ_TREBLE_DOWN = "eq_treble_down"
     EQ_TREBLE_UP = "eq_treble_up"
+    IDLE_WIFI = "idle_wifi"
+    NOWIFI_DISMISS = "nowifi_dismiss"
+    NOWIFI_RESTART = "nowifi_restart"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
@@ -462,9 +472,17 @@ GEOMETRY_INFO_VALUE = "info_value"
 # _eq_available) -- DOTS/NAME/OUTPUTS reused from the main geometry, plus
 # the bass/treble bar steppers.
 GEOMETRY_EQ = "eq"
+# The No-WiFi page's own table: Dismiss and Restart, laid out by
+# nowifi_layout_for() (a centred card off compact, the 2x2's bottom row on
+# it). The message row is display-only and has no entry.
+GEOMETRY_NOWIFI = "nowifi"
+# An empty table: the "Restarting..." screen has nothing tappable at all, and
+# a surface mapped here can never arm a zone. Kept as a named geometry (not
+# an absent one) so the surface map never has to fall back to MAIN.
+GEOMETRY_NONE = "none"
 GEOMETRIES = (
     GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
-    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ,
+    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_NOWIFI, GEOMETRY_NONE,
 )
 
 
@@ -603,13 +621,14 @@ def _repeat_replay_zone_rects(
 
 
 def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
-    # IDLE_INFO first: on rich the info square dips a few pixels below the
-    # top band into IDLE_REPLAY's own rect, and on compact IDLE_REPLAY is
-    # the whole panel — either way the two overlap, and hit_test's
-    # first-match order is what gives the "i" the corner while leaving
+    # The two corner squares first: on rich they dip a few pixels below
+    # the top band into IDLE_REPLAY's own rect, and on compact IDLE_REPLAY
+    # is the whole panel — either way they overlap it, and hit_test's
+    # first-match order is what gives each square its corner while leaving
     # IDLE_REPLAY's own published rect untouched.
     layout = idle_layout_for(width, height, metrics=metrics)
     return (
+        ZoneRect(TouchZone.IDLE_WIFI, layout.wifi),
         ZoneRect(TouchZone.IDLE_INFO, layout.info),
         ZoneRect(TouchZone.IDLE_REPLAY, layout.replay),
     )
@@ -668,6 +687,22 @@ def _eq_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = No
     )
 
 
+def _nowifi_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_NOWIFI: the page's two cells, Dismiss then Restart. The
+    message row is display-only. Tier differences live entirely in
+    nowifi_layout_for()."""
+    layout = nowifi_layout_for(width, height, metrics=metrics)
+    return (
+        ZoneRect(TouchZone.NOWIFI_DISMISS, layout.dismiss),
+        ZoneRect(TouchZone.NOWIFI_RESTART, layout.restart),
+    )
+
+
+def _none_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_NONE: nothing is tappable."""
+    return ()
+
+
 _GEOMETRY_BUILDERS = {
     GEOMETRY_MAIN: _main_zone_rects,
     GEOMETRY_LIST: _list_zone_rects,
@@ -678,6 +713,8 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_INFO: _info_zone_rects,
     GEOMETRY_INFO_VALUE: _info_value_zone_rects,
     GEOMETRY_EQ: _eq_zone_rects,
+    GEOMETRY_NOWIFI: _nowifi_zone_rects,
+    GEOMETRY_NONE: _none_zone_rects,
 }
 
 
@@ -834,12 +871,16 @@ class IdleLayout:
     (reusing the same centre-low rect the main surface's artist line
     occupies — `affordance`), the actuating rect for the whole panel
     below the top band (`replay`, == the IDLE_REPLAY zone, resolved by
-    idle_zone_at()), and the small top-right "i" square (`info`, == the
-    IDLE_INFO zone) that opens the read-only info list on every idle dial."""
+    idle_zone_at()), the small top-right "i" square (`info`, == the
+    IDLE_INFO zone) that opens the read-only info list on every idle dial,
+    and its mirror image top-left (`wifi`, == the IDLE_WIFI zone): the
+    Wi-Fi status glyph, the same side as `info`, tappable while the link
+    is down."""
 
     affordance: Rect
     replay: Rect
     info: Rect
+    wifi: Rect = (0, 0, 0, 0)
 
 
 @dataclass(frozen=True)
@@ -959,6 +1000,64 @@ def compact_picker_layout_for(
         cancel=(0, y0, lx1, y1), more=(0, y2, lx1, y3),
         row0=(rx0, y0, width, y1), row1=(rx0, y2, width, y3),
         divider_x=divider_x, divider_y=(y1 + y2) // 2,
+    )
+
+
+# The No-WiFi card's share of the panel off the compact tier. On compact the
+# page is the whole panel (the 2x2 grid), so neither fraction is read there.
+NOWIFI_CARD_WIDTH_FRACTION = 0.74
+NOWIFI_CARD_HEIGHT_FRACTION = 0.60
+
+
+@dataclass(frozen=True)
+class NoWifiLayout:
+    """The No-WiFi page: a card (the whole panel on compact, a centred
+    rectangle elsewhere) split into a full-width message row over two
+    cells — Dismiss left (== NOWIFI_DISMISS), Restart right (==
+    NOWIFI_RESTART) — with the usual 2*margin dead gap between every pair
+    of neighbours. divider_y is the horizontal line between the rows;
+    divider_x is the vertical line between the two cells, drawn in the
+    bottom row only (the message row has no vertical split)."""
+
+    card: Rect
+    message: Rect
+    dismiss: Rect
+    restart: Rect
+    divider_x: int
+    divider_y: int
+
+
+def nowifi_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> NoWifiLayout:
+    """Compute the No-WiFi page geometry for a *width* x *height* panel.
+
+    Compact: exactly the compact 2x2 — message = top_row, dismiss = bl,
+    restart = br, dividers = the grid's own. Every other tier: a card
+    NOWIFI_CARD_WIDTH_FRACTION x NOWIFI_CARD_HEIGHT_FRACTION of the panel,
+    centred, its rows and its bottom-row cells split with the same
+    _split(total, margin, [1, 1]) rule the compact grid uses, offset to the
+    card's origin. metrics=None means metrics_for(width, height)."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    m = metrics.margin
+    if metrics.content_tier == CONTENT_COMPACT:
+        c = compact_layout_for(width, height, metrics=metrics)
+        return NoWifiLayout(
+            card=(0, 0, width, height), message=c.top_row, dismiss=c.bl, restart=c.br,
+            divider_x=c.divider_x, divider_y=c.divider_y,
+        )
+    card_w = round(width * NOWIFI_CARD_WIDTH_FRACTION)
+    card_h = round(height * NOWIFI_CARD_HEIGHT_FRACTION)
+    x0 = (width - card_w) // 2
+    y0 = (height - card_h) // 2
+    (r0a, r0b), (r1a, r1b) = _split(card_h, m, [1, 1])
+    (c0a, c0b), (c1a, c1b) = _split(card_w, m, [1, 1])
+    return NoWifiLayout(
+        card=(x0, y0, x0 + card_w, y0 + card_h),
+        message=(x0, y0 + r0a, x0 + card_w, y0 + r0b),
+        dismiss=(x0 + c0a, y0 + r1a, x0 + c0b, y0 + r1b),
+        restart=(x0 + c1a, y0 + r1a, x0 + c1b, y0 + r1b),
+        divider_x=x0 + (c0b + c1a) // 2,
+        divider_y=y0 + (r0b + r1a) // 2,
     )
 
 
@@ -1296,16 +1395,18 @@ def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = N
     compact tier (which has no top band of its own to exclude), the whole
     panel; info is an 8mm-floor square in the top-right corner (the
     fingertip floor wherever density is known, else a band-high square),
-    reachable on every idle dial regardless of tier or replay availability."""
+    reachable on every idle dial regardless of tier or replay availability;
+    wifi is the identical square mirrored into the top-left corner."""
     if metrics is None:
         metrics = metrics_for(width, height)
     layout = layout_for(width, height, metrics=metrics)
     m = metrics.margin
     side = metrics.touch_min_px if metrics.touch_min_px is not None else metrics.band_h
     info: Rect = (width - m - side, m, width - m, m + side)
+    wifi: Rect = (m, m, m + side, m + side)
     if metrics.content_tier == CONTENT_COMPACT:
-        return IdleLayout(affordance=layout.artist, replay=(0, 0, width, height), info=info)
-    return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height), info=info)
+        return IdleLayout(affordance=layout.artist, replay=(0, 0, width, height), info=info, wifi=wifi)
+    return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height), info=info, wifi=wifi)
 
 
 def idle_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:

@@ -18,15 +18,18 @@ if _DIAL not in sys.path:
 
 from dial_info import (  # noqa: E402
     INFO_LABELS,
+    SIGNAL_DISCONNECTED,
     SIGNAL_NORMAL,
     SIGNAL_STRONG,
     SIGNAL_WEAK,
     _BLANK,
     _ipv4,
     _wifi_status,
+    configured_ssid,
     gather_dial_info,
     signal_category_from_dbm,
     signal_category_from_percent,
+    wifi_status,
 )
 
 
@@ -49,7 +52,7 @@ class TestGatherShape:
         return patch.multiple(
             "dial_info",
             _ipv4=MagicMock(side_effect=defaults["ipv4"]),
-            _wifi_status=MagicMock(side_effect=defaults["wifi"]),
+            wifi_status=MagicMock(side_effect=defaults["wifi"]),
             _disk_free=MagicMock(side_effect=defaults["disk"]),
         )
 
@@ -269,4 +272,123 @@ class TestSubprocessTimeout:
             rows = gather_dial_info("Dial", "1.0")
         assert dict(rows)["IPv4"] == _BLANK
         assert dict(rows)["WiFi"] == _BLANK
-        assert dict(rows)["Signal"] == _BLANK
+        assert dict(rows)["Signal"] == SIGNAL_DISCONNECTED
+
+
+# ---------------------------------------------------------------------------
+# The (WiFi, Signal) rows against the network poller's own verdict, and the
+# configured-network fallback used while the dial is not joined to anything.
+# ---------------------------------------------------------------------------
+
+class _Net:
+    def __init__(self, link):
+        self.link = link
+
+
+class TestWifiRowsAgainstTheWatcher:
+    def _rows(self, network, wifi=("HomeNet", SIGNAL_STRONG), configured="HomeNet"):
+        with patch("dial_info._ipv4", return_value="10.0.0.5"), \
+             patch("dial_info._disk_free", return_value="1.0 GB"), \
+             patch("dial_info.wifi_status", side_effect=wifi if callable(wifi) else lambda: wifi), \
+             patch("dial_info.configured_ssid", return_value=configured):
+            return dict(gather_dial_info("Dial", "1.0", network=network))
+
+    def test_connected_shows_joined_network_and_category(self):
+        rows = self._rows(_Net("connected"))
+        assert (rows["WiFi"], rows["Signal"]) == ("HomeNet", SIGNAL_STRONG)
+
+    def test_down_shows_configured_ssid_and_disconnected(self):
+        rows = self._rows(_Net("down"), wifi=(_BLANK, _BLANK), configured="HomeNet")
+        assert (rows["WiFi"], rows["Signal"]) == ("HomeNet", SIGNAL_DISCONNECTED)
+
+    def test_down_overrides_a_stale_joined_reading(self):
+        rows = self._rows(_Net("down"), wifi=("Elsewhere", SIGNAL_WEAK), configured="HomeNet")
+        assert (rows["WiFi"], rows["Signal"]) == ("HomeNet", SIGNAL_DISCONNECTED)
+
+    def test_down_with_nothing_configured_shows_dash_and_disconnected(self):
+        rows = self._rows(_Net("down"), wifi=(_BLANK, _BLANK), configured=None)
+        assert (rows["WiFi"], rows["Signal"]) == (_BLANK, SIGNAL_DISCONNECTED)
+
+    def test_no_watcher_view_but_no_association_is_disconnected(self):
+        rows = self._rows(None, wifi=(_BLANK, _BLANK), configured="HomeNet")
+        assert (rows["WiFi"], rows["Signal"]) == ("HomeNet", SIGNAL_DISCONNECTED)
+
+    def test_no_watcher_view_and_joined_is_unchanged(self):
+        rows = self._rows(None, wifi=("HomeNet", SIGNAL_NORMAL))
+        assert (rows["WiFi"], rows["Signal"]) == ("HomeNet", SIGNAL_NORMAL)
+
+    def test_probe_raising_without_a_verdict_keeps_the_dash_pair(self):
+        rows = self._rows(None, wifi=lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert (rows["WiFi"], rows["Signal"]) == (_BLANK, _BLANK)
+
+    def test_configured_ssid_raising_degrades_to_dash(self):
+        with patch("dial_info._ipv4", return_value="10.0.0.5"), \
+             patch("dial_info._disk_free", return_value="1.0 GB"), \
+             patch("dial_info.wifi_status", return_value=(_BLANK, _BLANK)), \
+             patch("dial_info.configured_ssid", side_effect=RuntimeError("boom")):
+            rows = dict(gather_dial_info("Dial", "1.0", network=_Net("down")))
+        assert (rows["WiFi"], rows["Signal"]) == (_BLANK, SIGNAL_DISCONNECTED)
+
+
+# ---------------------------------------------------------------------------
+# configured_ssid: the network-state file (uuid preferred, then name), the
+# legacy name-only fallback, and every failure mode along the way.
+# ---------------------------------------------------------------------------
+
+class TestConfiguredSsid:
+    STATE = '{"schema_version": 1, "connection_name": "HomeNet-profile", "connection_uuid": "abc-123"}'
+
+    def test_uuid_preferred_then_nmcli(self):
+        with patch("builtins.open", mock_open(read_data=self.STATE)), \
+             patch("dial_info._run", return_value=_completed(stdout="HomeNet\n")) as run:
+            assert configured_ssid() == "HomeNet"
+        assert run.call_args[0][0] == ["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "abc-123"]
+
+    def test_name_used_when_uuid_blank(self):
+        state = '{"schema_version": 1, "connection_name": "HomeNet-profile", "connection_uuid": ""}'
+        with patch("builtins.open", mock_open(read_data=state)), \
+             patch("dial_info._run", return_value=_completed(stdout="HomeNet\n")) as run:
+            assert configured_ssid() == "HomeNet"
+        assert run.call_args[0][0][-1] == "HomeNet-profile"
+
+    def test_legacy_name_file_fallback(self):
+        handles = {
+            "/etc/autostream-network.json": OSError("missing"),
+            "/opt/autostream/ssid": "LegacyProfile\n",
+        }
+
+        def fake_open(path, *args, **kwargs):
+            value = handles[path]
+            if isinstance(value, Exception):
+                raise value
+            return mock_open(read_data=value)()
+
+        with patch("builtins.open", side_effect=fake_open), \
+             patch("dial_info._run", return_value=_completed(stdout="LegacyNet\n")) as run:
+            assert configured_ssid() == "LegacyNet"
+        assert run.call_args[0][0][-1] == "LegacyProfile"
+
+    def test_nothing_configured_is_none_without_a_subprocess(self):
+        with patch("builtins.open", side_effect=OSError("missing")), patch("dial_info._run") as run:
+            assert configured_ssid() is None
+        run.assert_not_called()
+
+    def test_invalid_json_falls_back_to_legacy(self):
+        def fake_open(path, *args, **kwargs):
+            if path == "/etc/autostream-network.json":
+                return mock_open(read_data="{not json")()
+            return mock_open(read_data="P\n")()
+
+        with patch("builtins.open", side_effect=fake_open), \
+             patch("dial_info._run", return_value=_completed(stdout="Net\n")):
+            assert configured_ssid() == "Net"
+
+    def test_nmcli_failure_is_none(self):
+        with patch("builtins.open", mock_open(read_data=self.STATE)), \
+             patch("dial_info._run", return_value=_completed(stdout="", returncode=10)):
+            assert configured_ssid() is None
+        with patch("builtins.open", mock_open(read_data=self.STATE)), patch("dial_info._run", return_value=None):
+            assert configured_ssid() is None
+
+    def test_public_wifi_status_is_the_old_private_name(self):
+        assert wifi_status is _wifi_status

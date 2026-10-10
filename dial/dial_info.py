@@ -7,19 +7,21 @@ gatherer, called from a short-lived worker thread the display manager starts
 each time the info page opens (see dial_display.DialDisplay.open_info()/
 _gather_info()). Its only entry point, gather_dial_info(), NEVER RAISES:
 every source is read defensively and any failure degrades that one field to
-"-", never the whole page. It is bounded, too — at most two subprocesses are
-ever spawned by one call, each capped at _CMD_TIMEOUT_S, so a hung network
-tool can never leave the gather thread running indefinitely.
+"-", never the whole page. It is bounded, too — at most three subprocesses
+are ever spawned by one call, each capped at _CMD_TIMEOUT_S, so a hung
+network tool can never leave the gather thread running indefinitely.
 
 Six fields, in display order: the dial's own name and firmware version
 (passed in by the caller — see dial_main.py's wiring), its IPv4 address, the
-Wi-Fi network it is joined to and a coarse signal category for it, and the
-free space on its root filesystem.
+Wi-Fi network it is joined to — or, while it is not joined, the network it
+is configured for — and a coarse signal category (Disconnected while not
+joined), and the free space on its root filesystem.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
@@ -30,6 +32,15 @@ INFO_LABELS = ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free")
 SIGNAL_WEAK = "Weak"
 SIGNAL_NORMAL = "Normal"
 SIGNAL_STRONG = "Strong"
+# The Signal field while the dial is not joined to any network: an explicit
+# word rather than the "-" every failed probe also shows.
+SIGNAL_DISCONNECTED = "Disconnected"
+
+# The configured network: the profile the Wi-Fi watcher commits, by
+# connection name and uuid (never an SSID directly), with the older
+# name-only file as a fallback. Both are root-written, world-readable.
+NETWORK_STATE_PATH = "/etc/autostream-network.json"
+LEGACY_CONNECTION_NAME_PATH = "/opt/autostream/ssid"
 
 # NetworkManager reports Wi-Fi signal as a 0-100 percent; these are the
 # categorisation thresholds for it (see signal_category_from_percent()).
@@ -189,8 +200,11 @@ def _iwgetid_ssid() -> "str | None":
     return ssid or None
 
 
-def _wifi_status() -> "tuple[str, str]":
-    """(ssid, category), or (_BLANK, _BLANK) when every source fails."""
+def wifi_status() -> "tuple[str, str]":
+    """(ssid, category) for the JOINED network, or (_BLANK, _BLANK) when
+    every source fails or nothing is joined. Also the network poller's
+    signal source (dial_network.py), so the idle icon and this page always
+    grade the link with the same categories."""
     via_nmcli = _wifi_status_nmcli()
     if via_nmcli is not None:
         return via_nmcli
@@ -199,6 +213,46 @@ def _wifi_status() -> "tuple[str, str]":
         return (_BLANK, _BLANK)
     ssid = _iwgetid_ssid() or _BLANK
     return (ssid, signal_category_from_dbm(dbm))
+
+
+_wifi_status = wifi_status  # name kept for existing callers and tests
+
+
+def _configured_connection() -> "str | None":
+    """The committed Wi-Fi profile's uuid (preferred) or name, from the
+    network state file, else the legacy name-only file; None when the dial
+    has no configured network or neither file is readable. Pure file
+    reads, no subprocess."""
+    try:
+        with open(NETWORK_STATE_PATH, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            for key in ("connection_uuid", "connection_name"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(LEGACY_CONNECTION_NAME_PATH, encoding="utf-8") as handle:
+            name = handle.read().strip()
+        return name or None
+    except OSError:
+        return None
+
+
+def configured_ssid() -> "str | None":
+    """The SSID of the configured network profile, whether or not it is
+    currently joined: one bounded nmcli read of the profile's own ssid
+    setting. None when nothing is configured or nmcli cannot answer."""
+    key = _configured_connection()
+    if key is None:
+        return None
+    result = _run(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", key])
+    if result is None or result.returncode != 0:
+        return None
+    ssid = result.stdout.strip()
+    return ssid or None
 
 
 def _disk_free() -> "str | None":
@@ -216,21 +270,31 @@ def _disk_free() -> "str | None":
     return f"{int(mb)} MB"
 
 
-def gather_dial_info(name: str, version: str) -> "tuple[tuple[str, str], ...]":
+def gather_dial_info(name: str, version: str, network=None) -> "tuple[tuple[str, str], ...]":
     """(label, value) pairs in display order — the info page's own content,
     gathered fresh on every open. Every source is guarded separately (a
     single bad source degrades only its own field to "-"), and the whole
     function is guarded again besides: a wholly broken environment still
     returns six "-" rows rather than raising into the caller's worker
-    thread. Bounded: at most two subprocesses, each capped at
-    _CMD_TIMEOUT_S (see _ipv4()/_wifi_status())."""
+    thread. Bounded: at most three subprocesses, each capped at
+    _CMD_TIMEOUT_S (see _ipv4()/wifi_status()/configured_ssid()).
+
+    *network* is the network poller's latest view (dial_network.latest(),
+    or None when unavailable): its link verdict decides the WiFi/Signal
+    rows while the dial is offline. The rows show the JOINED network and
+    its category while joined; while not joined (the watcher says the link
+    is down, or the dial's own probes find no association) they show the
+    CONFIGURED network's SSID and "Disconnected", so a dial that has lost
+    its network still names the network it is trying to reach. Probes that
+    fail outright with no watcher verdict keep the "-" pair: unknown is not
+    the same as disconnected."""
     try:
         try:
             ipv4 = _ipv4() or _BLANK
         except Exception:
             ipv4 = _BLANK
         try:
-            wifi = _wifi_status()
+            wifi = _wifi_rows(network)
         except Exception:
             wifi = (_BLANK, _BLANK)
         try:
@@ -247,3 +311,23 @@ def gather_dial_info(name: str, version: str) -> "tuple[tuple[str, str], ...]":
         )
     except Exception:
         return tuple((label, _BLANK) for label in INFO_LABELS)
+
+
+def _wifi_rows(network) -> "tuple[str, str]":
+    """(WiFi, Signal) values — see gather_dial_info() for the rule. The
+    watcher's verdict is read duck-typed (anything with a `link` attribute
+    equal to "down"), so this module needs no import from the poller."""
+    down = getattr(network, "link", None) == "down"
+    try:
+        joined = wifi_status()
+    except Exception:
+        joined = None
+    if down or joined == (_BLANK, _BLANK):
+        try:
+            configured = configured_ssid()
+        except Exception:
+            configured = None
+        return (configured or _BLANK, SIGNAL_DISCONNECTED)
+    if joined is None:
+        return (_BLANK, _BLANK)
+    return joined

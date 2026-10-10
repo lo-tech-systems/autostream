@@ -37,6 +37,8 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO_VALUE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
+    GEOMETRY_NONE,
+    GEOMETRY_NOWIFI,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
@@ -67,6 +69,7 @@ from dial_touch_layout import (  # noqa: E402
     list_layout_for,
     list_zone_at,
     metrics_for,
+    nowifi_layout_for,
     output_layout_for,
     repeat_layout_for,
     repeat_zone_at,
@@ -520,6 +523,7 @@ class TestIdleInfoZone:
         assert metrics.touch_min_px == 45
         idle = idle_layout_for(320, 240, metrics=metrics)
         assert idle.info == (269, 6, 314, 51)
+        assert idle.wifi == (6, 6, 51, 51)
         assert idle.replay == (0, 48, 320, 240)
 
     def test_pinned_at_240x240_compact(self):
@@ -527,6 +531,7 @@ class TestIdleInfoZone:
         assert metrics.touch_min_px == 83
         idle = idle_layout_for(240, 240, metrics=metrics)
         assert idle.info == (151, 6, 234, 89)
+        assert idle.wifi == (6, 6, 89, 89)
         assert idle.replay == (0, 0, 240, 240)
 
     def test_pinned_at_128x128_compact(self):
@@ -534,6 +539,7 @@ class TestIdleInfoZone:
         assert metrics.touch_min_px == 40
         idle = idle_layout_for(128, 128, metrics=metrics)
         assert idle.info == (85, 3, 125, 43)
+        assert idle.wifi == (3, 3, 43, 43)
         assert idle.replay == (0, 0, 128, 128)
 
     def test_pinned_at_160x128_base(self):
@@ -541,6 +547,7 @@ class TestIdleInfoZone:
         assert metrics.touch_min_px == 36
         idle = idle_layout_for(160, 128, metrics=metrics)
         assert idle.info == (121, 3, 157, 39)
+        assert idle.wifi == (3, 3, 39, 39)
         assert idle.replay == (0, 32, 160, 128)
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
@@ -623,6 +630,7 @@ class TestZoneRectsOrder:
     def test_idle_order(self):
         entries = zone_rects_for(GEOMETRY_IDLE, 160, 128)
         assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.IDLE_WIFI, None),
             (TouchZone.IDLE_INFO, None),
             (TouchZone.IDLE_REPLAY, None),
         ]
@@ -680,6 +688,7 @@ class TestZoneRectsMatchLayoutFields:
     def test_idle_rect_is_layout_field(self, width, height):
         layout = idle_layout_for(width, height)
         entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_IDLE, width, height)}
+        assert entries[TouchZone.IDLE_WIFI] == layout.wifi
         assert entries[TouchZone.IDLE_INFO] == layout.info
         assert entries[TouchZone.IDLE_REPLAY] == layout.replay
 
@@ -826,19 +835,24 @@ class TestInfoGeometry:
 
 class TestIdleZoneAtExhaustive:
     """Every pixel of every profile size, plus a one-pixel ring outside the
-    panel: IDLE_INFO inside the "i" square (checked first, so it wins the
-    corner it shares with IDLE_REPLAY), else IDLE_REPLAY iff the point is
+    panel: IDLE_WIFI inside the top-left square, else IDLE_INFO inside the
+    "i" square (checked first, so the two corner squares win the corners
+    they share with IDLE_REPLAY), else IDLE_REPLAY iff the point is
     on-panel and at or below the top band, else None."""
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_matches_top_band_boundary_at_every_pixel_and_a_ring_outside(self, width, height):
         band_h = height // 4
-        info = idle_layout_for(width, height).info
+        idle = idle_layout_for(width, height)
+        info = idle.info
         ix0, iy0, ix1, iy1 = info
+        wx0, wy0, wx1, wy1 = idle.wifi
         for y in range(-1, height + 1):
             for x in range(-1, width + 1):
                 expected = None
-                if ix0 <= x < ix1 and iy0 <= y < iy1:
+                if wx0 <= x < wx1 and wy0 <= y < wy1:
+                    expected = TouchZone.IDLE_WIFI
+                elif ix0 <= x < ix1 and iy0 <= y < iy1:
                     expected = TouchZone.IDLE_INFO
                 elif 0 <= x < width and 0 <= y < height and y >= band_h:
                     expected = TouchZone.IDLE_REPLAY
@@ -856,6 +870,81 @@ class TestIdleLayoutReplayField:
     def test_replay_is_the_panel_below_the_top_band(self, width, height):
         idle = idle_layout_for(width, height)
         assert idle.replay == (0, height // 4, width, height)
+
+
+class TestIdleWifiZone:
+    def test_mirrors_the_info_square(self):
+        for metrics in (metrics_for(320, 240, 0.1778), metrics_for(240, 240, 0.0973),
+                        metrics_for(128, 128, 0.2021), metrics_for(160, 128, 0.2231), metrics_for(160, 128)):
+            idle = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
+            m = metrics.margin
+            side = idle.info[2] - idle.info[0]
+            assert idle.wifi == (m, m, m + side, m + side)
+            assert idle.wifi[3] == idle.info[3] and idle.wifi[1] == idle.info[1]
+
+    def test_pinned(self):
+        assert idle_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778)).wifi == (6, 6, 51, 51)
+        assert idle_layout_for(240, 240, metrics=metrics_for(240, 240, 0.0973)).wifi == (6, 6, 89, 89)
+        assert idle_layout_for(128, 128, metrics=metrics_for(128, 128, 0.2021)).wifi == (3, 3, 43, 43)
+        assert idle_layout_for(160, 128, metrics=metrics_for(160, 128, 0.2231)).wifi == (3, 3, 39, 39)
+        assert idle_layout_for(160, 128).wifi == (3, 3, 35, 35)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_wifi_and_info_never_overlap(self, width, height):
+        idle = idle_layout_for(width, height)
+        assert idle.wifi[2] <= idle.info[0]
+
+
+class TestNoWifiLayout:
+    def test_rich_pinned(self):
+        l = nowifi_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
+        assert l.card == (41, 48, 278, 192)
+        assert l.message == (41, 48, 278, 114)
+        assert l.dismiss == (41, 126, 153, 192)
+        assert l.restart == (166, 126, 278, 192)
+        assert (l.divider_x, l.divider_y) == (159, 120)
+
+    def test_base_pinned(self):
+        l = nowifi_layout_for(160, 128)
+        assert l.card == (21, 25, 139, 102)
+        assert l.message == (21, 25, 139, 60)
+        assert l.dismiss == (21, 67, 77, 102)
+        assert l.restart == (83, 67, 139, 102)
+        assert (l.divider_x, l.divider_y) == (80, 63)
+
+    def test_compact_is_the_two_by_two(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+            l = nowifi_layout_for(metrics.width, metrics.height, metrics=metrics)
+            assert l.card == (0, 0, metrics.width, metrics.height)
+            assert (l.message, l.dismiss, l.restart) == (c.top_row, c.bl, c.br)
+            assert (l.divider_x, l.divider_y) == (c.divider_x, c.divider_y)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_cells_inside_card_with_dead_gaps(self, width, height):
+        l = nowifi_layout_for(width, height)
+        m = metrics_for(width, height).margin
+        for r in (l.message, l.dismiss, l.restart):
+            assert l.card[0] <= r[0] < r[2] <= l.card[2] and l.card[1] <= r[1] < r[3] <= l.card[3]
+        assert l.dismiss[1] - l.message[3] >= 2 * m
+        assert l.restart[0] - l.dismiss[2] >= 2 * m
+        assert l.message[3] <= l.divider_y < l.dismiss[1]
+        assert l.dismiss[2] <= l.divider_x < l.restart[0]
+
+    def test_nowifi_table_is_dismiss_then_restart(self):
+        entries = zone_rects_for(GEOMETRY_NOWIFI, 160, 128)
+        l = nowifi_layout_for(160, 128)
+        assert entries == (ZoneRect(TouchZone.NOWIFI_DISMISS, l.dismiss), ZoneRect(TouchZone.NOWIFI_RESTART, l.restart))
+
+    def test_none_table_is_empty_everywhere(self):
+        for width, height in PROFILE_SIZES:
+            assert zone_rects_for(GEOMETRY_NONE, width, height) == ()
+            assert hit_test(GEOMETRY_NONE, width // 2, height // 2, width, height) is None
+
+    def test_message_row_is_dead(self):
+        l = nowifi_layout_for(160, 128)
+        cx, cy = (l.message[0] + l.message[2]) // 2, (l.message[1] + l.message[3]) // 2
+        assert hit_test(GEOMETRY_NOWIFI, cx, cy, 160, 128) is None
 
 
 # ---------------------------------------------------------------------------
@@ -970,11 +1059,13 @@ class TestDensityHasNoEffectOnGeometry:
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_idle_layout_for_info_square_is_density_dependent(self, size, mm):
         # The one deliberate exception to this class's own invariant: see
-        # test_idle_layout_for_unaffected above.
+        # test_idle_layout_for_unaffected above. wifi mirrors info, so it is
+        # density-dependent for the same reason.
         width, height = size
         base = idle_layout_for(width, height)
         dense = idle_layout_for(width, height, metrics=metrics_for(width, height, mm))
         assert base.info != dense.info
+        assert base.wifi != dense.wifi
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_zone_rects_for_unaffected(self, size, mm):
@@ -1765,9 +1856,10 @@ class TestCompactZoneTables:
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_idle_table_is_the_whole_panel(self, metrics):
         entries = zone_rects_for(GEOMETRY_IDLE, metrics.width, metrics.height, metrics=metrics)
-        info = idle_layout_for(metrics.width, metrics.height, metrics=metrics).info
+        idle = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
         assert entries == (
-            ZoneRect(TouchZone.IDLE_INFO, info),
+            ZoneRect(TouchZone.IDLE_WIFI, idle.wifi),
+            ZoneRect(TouchZone.IDLE_INFO, idle.info),
             ZoneRect(TouchZone.IDLE_REPLAY, (0, 0, metrics.width, metrics.height)),
         )
 
@@ -1821,18 +1913,22 @@ class TestCompactZoneTables:
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_idle_every_pixel_resolves_info_first_then_replay(self, metrics):
-        # GEOMETRY_IDLE's own version: IDLE_INFO and IDLE_REPLAY overlap by
-        # design (IDLE_REPLAY is the whole panel on compact), so every pixel
-        # inside the "i" square resolves to IDLE_INFO and every other pixel
-        # resolves to IDLE_REPLAY — no dead gap anywhere.
+        # GEOMETRY_IDLE's own version: IDLE_WIFI/IDLE_INFO and IDLE_REPLAY
+        # overlap by design (IDLE_REPLAY is the whole panel on compact), so
+        # every pixel inside one of the two corner squares resolves to that
+        # square's own zone and every other pixel resolves to IDLE_REPLAY —
+        # no dead gap anywhere.
         w, h = metrics.width, metrics.height
-        info = idle_layout_for(w, h, metrics=metrics).info
-        ix0, iy0, ix1, iy1 = info
+        idle = idle_layout_for(w, h, metrics=metrics)
+        ix0, iy0, ix1, iy1 = idle.info
+        wx0, wy0, wx1, wy1 = idle.wifi
         for y in range(h):
             for x in range(w):
                 result = hit_test(GEOMETRY_IDLE, x, y, w, h, metrics=metrics)
                 assert result is not None
-                if ix0 <= x < ix1 and iy0 <= y < iy1:
+                if wx0 <= x < wx1 and wy0 <= y < wy1:
+                    assert result.zone == TouchZone.IDLE_WIFI
+                elif ix0 <= x < ix1 and iy0 <= y < iy1:
                     assert result.zone == TouchZone.IDLE_INFO
                 else:
                     assert result.zone == TouchZone.IDLE_REPLAY
@@ -1898,7 +1994,9 @@ class TestCompactIdleGeometry:
         for y in range(metrics.height):
             for x in range(metrics.width):
                 hit = hit_test(GEOMETRY_IDLE, x, y, metrics.width, metrics.height, metrics=metrics)
-                assert hit is not None and hit.zone in (TouchZone.IDLE_INFO, TouchZone.IDLE_REPLAY)
+                assert hit is not None and hit.zone in (
+                    TouchZone.IDLE_WIFI, TouchZone.IDLE_INFO, TouchZone.IDLE_REPLAY,
+                )
 
 
 class TestInfoValueGeometry:

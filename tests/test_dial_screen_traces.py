@@ -38,6 +38,7 @@ import dial_display as dd
 from dial_config import DialDisplayConfig
 from dial_display import DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget, RosterEntry
+from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_touch_layout import TouchZone
 
@@ -342,6 +343,18 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.hide_controls()
     elif kind == "tick_controls_hidden":
         d._tick_controls_hidden()
+    elif kind == "network":
+        # ("network", link, bars) -- feeds the poller's callback directly,
+        # the same shape the worker calls it with after a poll.
+        d.on_network_view(NetworkView(link=step[1], bars=step[2] if len(step) > 2 else 0, updated_at=ctx.clock.t))
+    elif kind == "open_nowifi":
+        d.open_nowifi()
+    elif kind == "nowifi_dismiss":
+        d.nowifi_dismiss_tap()
+    elif kind == "nowifi_restart":
+        d.nowifi_restart_tap()
+    elif kind == "tick_wifi_flash":
+        d._tick_wifi_flash()
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
 
@@ -384,6 +397,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "appliance_id": eq.appliance_id, "opened_at": eq.opened_at,
         "bass_db": eq.bass_db, "treble_db": eq.treble_db, "loaded": eq.loaded,
     }
+    network = d._network
 
     return {
         "screen": d._screen,
@@ -400,6 +414,12 @@ def _snapshot(ctx: _Ctx) -> dict:
         "eq": eq_repr,
         "eq_optimistic": list(d._eq_optimistic) if d._eq_optimistic is not None else None,
         "eq_available": d._eq_available,
+        "network": None if network is None else {
+            "link": network.link, "bars": network.bars,
+            "down_streak": d._wifi_down_streak, "dismissed": d._wifi_dismissed,
+        },
+        "nowifi_open": d._nowifi is not None,
+        "restarting_open": d._restarting is not None,
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
         "reporting_appliance_id": d._reporting_appliance_id,
@@ -437,7 +457,8 @@ def _run_scenario(steps: list[tuple], *, cfg=None, backend=None) -> list[dict]:
          patch("dial_display.enrich_targets", side_effect=ctx.fake_enrich), \
          patch("dial_display._fetch_artwork", return_value=(b"jpegdata", "")), \
          patch("dial_display.decode_artwork", return_value=artwork_image), \
-         patch("dial_display_compositor.transform_artwork_for_panel", return_value=artwork_image):
+         patch("dial_display_compositor.transform_artwork_for_panel", return_value=artwork_image), \
+         patch("dial_display._request_reboot"):
         ctx.display.enable()
         ctx.frame_offset = len(ctx.fb.displayed)
         trace = []
@@ -1347,6 +1368,128 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("poll",),
     ])
 
+    # ---- Wi-Fi link state machine: the idle icon and the No-WiFi page ----
+
+    add("nowifi_streak_of_three_opens_then_connected_closes", [
+        ("targets", []),
+        ("poll",),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("network", LINK_CONNECTED, 3),
+        ("repaint",),
+    ])
+
+    add("nowifi_dismiss_suppresses_until_connected", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("nowifi_dismiss",),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("network", LINK_CONNECTED, 2),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+    ])
+
+    add("nowifi_unknown_does_not_break_the_streak", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_UNKNOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+    ])
+
+    add("nowifi_ignored_resets_the_streak", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_IGNORED),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+    ])
+
+    add("nowifi_icon_tap_reopens_after_dismiss", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("nowifi_dismiss",),
+        ("repaint",),
+        ("open_nowifi",),
+        ("repaint",),
+    ])
+
+    add("nowifi_never_opens_over_the_info_page", [
+        ("targets", []),
+        ("poll",),
+        ("open_info",),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("close_list",),
+        ("repaint",),
+        ("network", LINK_DOWN),
+        ("repaint",),
+    ])
+
+    add("nowifi_restart_shows_restarting_then_times_out", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("nowifi_restart",),
+        ("repaint",),
+        ("advance", dd.RESTARTING_TIMEOUT_SECONDS + 1),
+        ("check_timeout",),
+        ("repaint",),
+    ])
+
+    add("nowifi_flash_tick_repaints_idle", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("tick_wifi_flash",),
+        ("repaint",),
+        ("advance", 0.5),
+        ("tick_wifi_flash",),
+        ("repaint",),
+    ])
+
+    add("nowifi_sleep_pops_the_page", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("network", LINK_DOWN),
+        ("repaint",),
+        ("sleep_locked",),
+        ("repaint",),
+    ])
+
     return scenarios
 
 
@@ -1459,6 +1602,25 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
         {"cfg": cfg3, "backend": fb3},
     ))
 
+    # The No-WiFi page on compact (the full-screen 2x2, no card): a streak
+    # of three down polls opens it, Dismiss returns to idle.
+    cfg4, fb4 = _compact_display_args()
+    scenarios.append((
+        "compact_nowifi_page_and_dismiss",
+        [
+            ("targets", []),
+            ("poll",),
+            ("repaint",),  # touch_surface == "idle"
+            ("network", LINK_DOWN),
+            ("network", LINK_DOWN),
+            ("network", LINK_DOWN),
+            ("repaint",),  # opens the No-WiFi page, full-screen 2x2
+            ("nowifi_dismiss",),
+            ("repaint",),  # back to idle; icon keeps flashing
+        ],
+        {"cfg": cfg4, "backend": fb4},
+    ))
+
     return scenarios
 
 
@@ -1521,6 +1683,30 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("repaint",),
         ],
         {"cfg": cfg2, "backend": fb2},
+    ))
+
+    # The No-WiFi page on the rich tier (a centred card): a streak of three
+    # down polls opens it, Restart shows "Restarting..." and asks for the
+    # reboot, then that screen times out back to main when the (mocked)
+    # reboot request never actually brings the box down.
+    cfg3, fb3 = _rich_display_args()
+    scenarios.append((
+        "rich_nowifi_page_and_restart",
+        [
+            ("targets", []),
+            ("poll",),
+            ("repaint",),  # touch_surface == "idle"
+            ("network", LINK_DOWN),
+            ("network", LINK_DOWN),
+            ("network", LINK_DOWN),
+            ("repaint",),  # opens the No-WiFi page, centred card
+            ("nowifi_restart",),
+            ("repaint",),  # "Restarting..."
+            ("advance", dd.RESTARTING_TIMEOUT_SECONDS + 1),
+            ("check_timeout",),
+            ("repaint",),  # falls back to main
+        ],
+        {"cfg": cfg3, "backend": fb3},
     ))
 
     return scenarios
@@ -1752,6 +1938,9 @@ def _strip_new_fields(step: dict) -> dict:
     stripped.pop("eq", None)
     stripped.pop("eq_optimistic", None)
     stripped.pop("eq_available", None)
+    stripped.pop("network", None)
+    stripped.pop("nowifi_open", None)
+    stripped.pop("restarting_open", None)
     if "touch_surface" in stripped:
         stripped["touch_surface"] = stripped["touch_surface"][:3]
     return stripped
@@ -1844,6 +2033,9 @@ def _strip_binding_fields(step: dict) -> dict:
     stripped.pop("eq", None)
     stripped.pop("eq_optimistic", None)
     stripped.pop("eq_available", None)
+    stripped.pop("network", None)
+    stripped.pop("nowifi_open", None)
+    stripped.pop("restarting_open", None)
     return stripped
 
 
