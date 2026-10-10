@@ -1548,9 +1548,11 @@ inline constexpr double kPreRollSeconds = 5.0;
 // probation window itself needing to grow anywhere near kPreRollSeconds.
 inline constexpr double kInterruptSustainSeconds = 1.25;
 
-// Live-interrupt probation window for a LINE-LEVEL input (silence threshold
-// at or below kImmediateInterruptThresholdDbfs, autostream_monitor.h): a
-// line source (CD player, digital deck) is already at full level from its
+// Live-interrupt probation window for any input not configured as a
+// turntable. The input type the coordinator sends chooses it; only when no
+// type is sent does the silence threshold decide (at or below
+// kImmediateInterruptThresholdDbfs, autostream_monitor.h). A line source
+// (CD player, digital deck) is already at full level from its
 // very first sample, unlike a turntable's mechanical start, so a much
 // shorter sustain is enough to trust it -- 0.25 s still rejects a
 // single-block transient (blocks are 20 ms) while confirming a genuine

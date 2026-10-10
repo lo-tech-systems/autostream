@@ -75,11 +75,11 @@ for higher-level orchestration, UI, settings, and playback-backend control.
     stream once armed, until disarmed or new live audio interrupts it
     (crossfades out on interrupt)
   - a live interrupt of an actively-playing replay is probation-gated: the
-    new audio must sustain above threshold -- 0.25 s for a line-level input,
-    1.25 s for a turntable -- bounded by a 5 s wall clock, before the
-    crossfade begins, so a brief transient cannot tear down a replay. A
-    probation that does not sustain expires silently, leaving the replay
-    untouched
+    new audio must sustain above threshold -- 0.25 s unless the input is
+    configured as a turntable, then 1.25 s -- bounded by a 5 s wall clock,
+    before the crossfade begins, so a brief transient cannot tear down a
+    replay. A probation that does not sustain expires silently, leaving the
+    replay untouched
   - `RepeatRecorder` uses the same SPSC-ring + low-priority-worker-thread
     pattern as `OutputDumpWriter`; encodes to MP2 (libtwolame) or PCM s16.
     The recording lives in a FIXED ARENA reserved once, when the feature is

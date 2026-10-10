@@ -795,10 +795,11 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
             // Fresh arm: any accumulation left over from a previous,
             // already-resolved probation attempt must not leak into this
             // one -- see _interrupt_probation's declaration comment. The
-            // window itself depends on which kind of input is interrupting:
-            // a line-level input confirms almost at once
-            // (kImmediateInterruptSustainSeconds), a turntable-level input
-            // needs the longer kInterruptSustainSeconds window.
+            // window itself depends on the input type the coordinator sent
+            // (or, when none was sent, on the silence threshold): a
+            // non-turntable input confirms almost at once
+            // (kImmediateInterruptSustainSeconds), a turntable needs the
+            // longer kInterruptSustainSeconds window.
             _interrupt_probation.reset(_pending_interrupt_immediate
                 ? kImmediateInterruptSustainSeconds : kInterruptSustainSeconds);
             _probation_armed_time      = get_monotonic_time();

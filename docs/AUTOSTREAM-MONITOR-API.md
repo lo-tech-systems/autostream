@@ -141,7 +141,8 @@ Request:
   "silence_threshold_dbfs":-66.0,
   "silence_seconds":30,
   "track_change_silence_seconds":1.25,
-  "minimum_playback_seconds":30
+  "minimum_playback_seconds":30,
+  "input_type":"turntable"
 }
 ```
 
@@ -174,6 +175,15 @@ Request fields:
   - default if omitted: `30`
   - `0` disables the hold entirely
   - see "Minimum playback hold" below for the exact suppression semantics
+- `input_type`
+  - one of `turntable`, `cd`, `line`; optional
+  - chooses the replay-interrupt probation window (1.25 s for `turntable`,
+    0.25 s otherwise)
+  - matched exactly; send it in lower case
+  - an unknown value (including `Turntable` or a padded value) is accepted
+    and treated as not a turntable
+  - if absent, the threshold-based choice described under "Interrupt
+    probation" below applies, for older coordinators
 
 Important behavior:
 
@@ -220,18 +230,18 @@ recording of the thump) well before real music arrives.
   silence-timeout reason is held back.
 - **Interrupt probation.** A live edge arriving while a replay is actively
   playing does not interrupt it on its own. It arms a probation gate whose
-  sustain window comes from the interrupting input's own silence-threshold
-  preset: 0.25 s for a line-level input (silence threshold at or below
-  -55 dBFS, i.e. the line preset), or 1.25 s for a turntable (the -45 dBFS
-  preset), either way bounded by a 5 s wall clock. If the audio does not
-  sustain within that window, the probation expires silently -- replay never
-  stopped, nothing was freed, no status field changed -- and the only
-  operator-visible trace is a WARN-level log line. It re-arms on the next
-  capture-start edge. The gate exists so that a brief transient (a needle
-  bump, a stray click) cannot tear down an active replay. Once probation
-  confirms, the crossfade begins: the replay ramps down and the
-  interrupting input ramps up together over 1.5 s in the same output
-  stream, heard the moment it starts.
+  sustain window comes from the interrupting input's `input_type`: 1.25 s
+  for `turntable`, 0.25 s for any other type. A coordinator that sends no
+  type gets 0.25 s when the silence threshold is at or below -55 dBFS and
+  1.25 s above it. Either way the window is bounded by a 5 s wall clock.
+  If the audio does not sustain within that window, the probation expires
+  silently -- replay never stopped, nothing was freed, no status field
+  changed -- and the only operator-visible trace is a WARN-level log line.
+  It re-arms on the next capture-start edge. The gate exists so that a
+  brief transient (a needle bump, a stray click) cannot tear down an active
+  replay. Once probation confirms, the crossfade begins: the replay ramps
+  down and the interrupting input ramps up together over 1.5 s in the same
+  output stream, heard the moment it starts.
 
   One exception: if the replay is *already* fading out for some other reason
   (a disarm, say), a live edge upgrades that fade in place and takes over

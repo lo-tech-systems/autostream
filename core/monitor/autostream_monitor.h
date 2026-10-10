@@ -36,6 +36,7 @@
 
 #include "autostream_monitor_utils.h"
 #include "autostream_track_gap_detector.h"
+#include "autostream_input_activity.h"
 #include "autostream_repeat_buffer.h"
 #include "autostream_id_tap.h"
 #include "autostream_spsc_ring.h"
@@ -98,15 +99,14 @@ struct InputConfig
     int         silence_seconds              = 30;      // silence duration before stopping
     float       track_change_silence_seconds = 1.25f;  // gap duration (s) that marks a track boundary [0.5, 5.0]
     int         minimum_playback_seconds     = 30;      // minimum playback hold, seconds; 0 disables [0, 300]
+    std::string input_type;                 // "turntable", "cd" or "line"; empty when the coordinator sent none
 };
 
-// A line-level input (CD player, digital deck) is one whose configured
-// silence threshold sits at or below this; the line preset is -60 dBFS, the
-// turntable preset -45 dBFS -- silence_threshold_dbfs is the one setting the
-// coordinator sends that tells the two apart, so InputChannel::immediate_
-// interrupt() tests against this boundary to pick the live-interrupt
-// probation window (kImmediateInterruptSustainSeconds vs
-// kInterruptSustainSeconds, autostream_repeat_buffer.h).
+// Boundary for a coordinator that sends no input_type: a silence threshold
+// at or below this reads as a line-level input (the line preset is
+// -60 dBFS, the turntable preset -45 dBFS). When the coordinator names
+// the type, the type decides and this boundary is not consulted. See
+// input_type_immediate_interrupt().
 inline constexpr float kImmediateInterruptThresholdDbfs = -55.0f;
 
 
@@ -3153,16 +3153,12 @@ public:
         return _config.minimum_playback_seconds;
     }
 
-    // True for a line-level input (silence threshold at or below
-    // kImmediateInterruptThresholdDbfs), false for a turntable-level one.
-    // Read under _config_mutex like the accessors above; passed to
-    // RepeatController::notify_capture_started() so the live-interrupt
-    // probation gate can pick a shorter sustain window for a line input
-    // than for a turntable.
+    // Whether a live edge on this input gets the short replay-interrupt
+    // probation window; resolved once in configure() so the process
+    // thread reads a flag, not the config under its mutex.
     bool immediate_interrupt() const
     {
-        std::lock_guard<std::mutex> lock(_config_mutex);
-        return _config.silence_threshold_dbfs <= kImmediateInterruptThresholdDbfs;
+        return _immediate_interrupt.load(std::memory_order_relaxed);
     }
 
     // ── Live DSP pull-model accessors ─────────────────────────────────────
@@ -3400,6 +3396,7 @@ private:
     // accessor above for the deliberate boundary conversion back to the
     // legacy int16 scale for replay's own domain.
     std::atomic<float> _silence_threshold_sample{0.0f};
+    std::atomic<bool> _immediate_interrupt{true};   // resolved from input_type in configure(); read lock-free per block
 
     // ── ALSA capture ─────────────────────────────────────────────────────────
     AlsaCapture _alsa;

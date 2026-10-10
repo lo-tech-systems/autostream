@@ -674,8 +674,13 @@ bool InputChannel::configure(const InputConfig& cfg)
     _config_valid             = true;
     _silence_threshold_sample.store(dbfs_to_linear_threshold(cfg.silence_threshold_dbfs),
                                     std::memory_order_relaxed);
-    LOG_INFO("[input%d] Configured device='%s', silence_threshold=%.1f dBFS, silence_seconds=%d",
-             _index, cfg.alsa_device.c_str(), cfg.silence_threshold_dbfs, cfg.silence_seconds);
+    _immediate_interrupt.store(
+        input_type_immediate_interrupt(cfg.input_type, cfg.silence_threshold_dbfs,
+                                       kImmediateInterruptThresholdDbfs),
+        std::memory_order_relaxed);
+    LOG_INFO("[input%d] Configured device='%s', input_type='%s', silence_threshold=%.1f dBFS, silence_seconds=%d",
+             _index, cfg.alsa_device.c_str(), cfg.input_type.c_str(),
+             cfg.silence_threshold_dbfs, cfg.silence_seconds);
     return true;
 }
 

@@ -704,6 +704,7 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         int idx = json_get_int(json_command, "input", 0);
         InputConfig cfg;
         cfg.alsa_device             = json_get_string(json_command, "device");
+        cfg.input_type              = json_get_string(json_command, "input_type");
         cfg.silence_threshold_dbfs  = json_get_float(json_command, "silence_threshold_dbfs", -66.0f);
         cfg.silence_seconds         = json_get_int(json_command, "silence_seconds", 30);
         // track_change_silence_seconds is optional; -1 sentinel means "not provided".

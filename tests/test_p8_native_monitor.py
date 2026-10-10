@@ -153,6 +153,9 @@ class TestControlProtocolSourceInspection:
             or r'\"ok\": false' in dispatcher_src
         ), "dispatch_command() must emit ok:false responses for error paths"
 
+    def test_configure_input_reads_input_type(self, dispatcher_src):
+        assert 'json_get_string(json_command, "input_type")' in dispatcher_src
+
     def test_track_change_seq_emitted_in_status_json(self, dispatcher_src):
         assert "track_change_seq" in dispatcher_src, (
             "autostream_monitor.cpp must include track_change_seq in the "
@@ -427,6 +430,20 @@ class TestCppTrackGapDetector:
             binary_name="test_track_gap_detector",
         )
         assert ok, f"test_track_gap_detector failed:\n{output}"
+
+
+@linux_only
+@gpp_available
+class TestCppInputActivity:
+    """Compile and run test_input_activity.cpp (header-only, no extra libs)."""
+
+    def test_compile_and_run(self):
+        ok, output = _compile_and_run(
+            src_files=["core/monitor/tests/test_input_activity.cpp"],
+            extra_flags=[],
+            binary_name="test_input_activity",
+        )
+        assert ok, f"test_input_activity failed:\n{output}"
 
 
 @linux_only
