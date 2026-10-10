@@ -1423,7 +1423,7 @@ register(
         methods=("POST",),
         handler="_route_post_dial_status",
         scheme="dial",
-        comment="Non-object JSON body is passed through as {} -- sender 403s on missing dial_id.",
+        comment="Non-object JSON body is passed through as {} -- sender 400s on missing dial_id.",
     )
 )
 

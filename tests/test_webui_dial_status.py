@@ -2,11 +2,16 @@
 
 Covers:
 1.  Routing: dispatched in the UUID-auth block before session/CSRF.
-2.  Authorization: absent, empty, non-string, unauthorized UUID → HTTP 403 {}.
+2.  Authorization: absent, empty or non-string dial_id → HTTP 400
+    missing_dial_id; a definitive unauthorized miss → HTTP 412
+    dial_not_authorized with appliance_id; an unreadable dials store →
+    HTTP 200 ok:false auth_unavailable (never 503 -- nginx would rewrite
+    that to a 302, hiding the token from the dial).
 3.  Malformed JSON → HTTP 400 (router's native behavior).
-4.  Non-object JSON root → HTTP 403 (reaches handler as {}).
-4b. Router-level: non-object JSON body does NOT trigger HTTP 400 for /api/dial/status.
-5.  Valid authorized UUID → HTTP 200 with ok:true.
+4.  Non-object JSON root → HTTP 400 missing_dial_id (reaches handler as {}).
+4b. Router-level: non-object JSON body does NOT trigger HTTP 400 at the
+    router layer for /api/dial/status (the handler's own gate produces it).
+5.  Valid authorized UUID → HTTP 200 with ok:true and appliance_id.
 6.  application/json with charset parameter is accepted.
 7.  selected output volumes [40, 60] → master_volume:50, selected_output_count:2.
 8.  Tie cases [40, 61] and [41, 62] match Python round().
@@ -20,7 +25,11 @@ Covers:
 15. Handler never calls update_output().
 16. calculate_master_volume() helper unit tests.
 17. Both Avahi template and autostream_admin generate dial_status=v1.
-18. NGINX policy: 403 is not in the intercepted error_page set.
+18. NGINX policy: 403 and 412 are not in the intercepted error_page set
+    (412 is the definitive not-authorized signal and must reach the dial
+    unrewritten); 503 IS in that set (a dial reaching this endpoint through
+    nginx never sees a raw 503, which is why auth_unavailable is signalled
+    as 200 ok:false instead).
 """
 from __future__ import annotations
 
@@ -39,6 +48,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
+from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_players import ListOutputsResult, OutputInfo, ActionResult
 from autostream_webui_api import (
     calculate_master_volume,
@@ -54,6 +64,7 @@ from track_id.models import (
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
+TEST_APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"  # 20 lowercase hex-shaped chars
 
 
 # ---------------------------------------------------------------------------
@@ -88,18 +99,28 @@ def _invoke(
     json_obj: dict,
     *,
     authorized: bool = True,
+    auth_state: str | None = None,
+    appliance_id: str | None = TEST_APPLIANCE_ID,
     list_result: ListOutputsResult | None = None,
     config_error: bool = False,
     playing: bool = False,
     track_id_snapshot: TrackIdentificationSnapshot | None = None,
 ) -> tuple[int, dict, MagicMock]:
-    """Call send_dial_status_post_json and return (status, body, update_mock)."""
+    """Call send_dial_status_post_json and return (status, body, update_mock).
+
+    auth_state, when given, overrides `authorized` and is returned verbatim
+    by the patched dial_authorization() (one of AUTH_AUTHORIZED,
+    AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE). appliance_id is what the patched
+    get_appliance_id() returns (None for an identity-less appliance).
+    """
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
     if list_result is None:
         list_result = _ok_list()
     if track_id_snapshot is None:
         track_id_snapshot = disabled_snapshot()
+    if auth_state is None:
+        auth_state = AUTH_AUTHORIZED if authorized else AUTH_NOT_AUTHORIZED
 
     update_mock = MagicMock()
 
@@ -112,7 +133,8 @@ def _invoke(
         return parsed
 
     with (
-        patch("autostream_webui_api.is_dial_authorized", return_value=authorized),
+        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
+        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_webui_api.update_output", update_mock),
@@ -132,30 +154,57 @@ def _invoke(
 # ---------------------------------------------------------------------------
 
 class TestAuthorization:
-    def test_missing_dial_id_returns_403_empty(self):
+    def test_missing_dial_id_returns_400_missing_dial_id(self):
         code, body, _ = _invoke({})
-        assert code == 403
-        assert body == {}
+        assert code == 400
+        assert body == {"ok": False, "error": "missing_dial_id"}
 
-    def test_empty_dial_id_returns_403_empty(self):
+    def test_empty_dial_id_returns_400_missing_dial_id(self):
         code, body, _ = _invoke({"dial_id": ""})
-        assert code == 403
-        assert body == {}
+        assert code == 400
+        assert body == {"ok": False, "error": "missing_dial_id"}
 
-    def test_non_string_dial_id_returns_403_empty(self):
+    def test_non_string_dial_id_returns_400_missing_dial_id(self):
         code, body, _ = _invoke({"dial_id": 12345})
-        assert code == 403
-        assert body == {}
+        assert code == 400
+        assert body == {"ok": False, "error": "missing_dial_id"}
 
-    def test_unauthorized_dial_id_returns_403_empty(self):
+    def test_unauthorized_dial_id_returns_412(self):
         code, body, _ = _invoke({"dial_id": DIAL_ID}, authorized=False)
-        assert code == 403
-        assert body == {}
+        assert code == 412
+        assert body == {
+            "ok": False,
+            "error": "dial_not_authorized",
+            "appliance_id": TEST_APPLIANCE_ID,
+        }
+
+    def test_unauthorized_dial_id_appliance_id_null_when_identity_less(self):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, authorized=False, appliance_id=None)
+        assert code == 412
+        assert body["appliance_id"] is None
+
+    def test_auth_unavailable_returns_200_ok_false(self):
+        """Q1: an unreadable dials store is signalled as 200 ok:false, never
+        503 -- nginx would rewrite a raw 503 to a 302 before it reached the
+        dial, hiding the auth_unavailable token."""
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, auth_state=AUTH_UNAVAILABLE)
+        assert code == 200
+        assert body == {"ok": False, "error": "auth_unavailable"}
 
     def test_authorized_dial_id_returns_200_ok(self):
         code, body, _ = _invoke({"dial_id": DIAL_ID})
         assert code == 200
         assert body["ok"] is True
+
+    def test_authorized_dial_id_response_carries_appliance_id(self):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, appliance_id=TEST_APPLIANCE_ID)
+        assert code == 200
+        assert body["appliance_id"] == TEST_APPLIANCE_ID
+
+    def test_authorized_dial_id_response_appliance_id_null_when_identity_less(self):
+        code, body, _ = _invoke({"dial_id": DIAL_ID}, appliance_id=None)
+        assert code == 200
+        assert body["appliance_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +275,8 @@ class TestPlayingField:
         parsed = MagicMock()
         parsed.owntone.base_url = BASE_URL
         with (
-            patch("autostream_webui_api.is_dial_authorized", return_value=True),
+            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
             patch("autostream_webui_api.list_outputs", return_value=_ok_list()),
             patch("autostream_webui_api.get_session_state",
@@ -359,7 +409,8 @@ class TestFailurePaths:
         state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
         handler = _make_handler()
         with (
-            patch("autostream_webui_api.is_dial_authorized", return_value=True),
+            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("autostream_webui_api.get_session_state",
                   return_value={"active": False, "source": None}),
             patch("autostream_webui_api._config_snapshot",
@@ -384,7 +435,8 @@ class TestFailurePaths:
         parsed = MagicMock()
         parsed.owntone.base_url = BASE_URL
         with (
-            patch("autostream_webui_api.is_dial_authorized", return_value=True),
+            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("autostream_webui_api.get_session_state",
                   return_value={"active": False, "source": None}),
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
@@ -512,30 +564,56 @@ class TestAvahiDialStatus:
 
 
 # ---------------------------------------------------------------------------
-# NGINX policy: 403 must NOT be intercepted by error_page
+# NGINX policy: 403 and 412 must NOT be intercepted by error_page; 503 IS.
+#
+# 412 is the dial protocol's definitive not-authorized signal (section 0.3
+# invariant 7 / Q1): it must reach the dial unrewritten, which is exactly
+# what "not in the intercepted set" guarantees. 503 IS intercepted (rewritten
+# to a 302 to /offline/), which is precisely why auth_unavailable is
+# signalled as HTTP 200 {"ok": false, "error": "auth_unavailable"} rather
+# than a raw 503 -- a 503 would never reach the dial as such.
 # ---------------------------------------------------------------------------
+
+def _nginx_intercepted_codes() -> set[int]:
+    nginx_conf = REPO_ROOT / "system" / "nginx" / "autostream-nginx.conf"
+    if not nginx_conf.exists():
+        pytest.skip("main nginx config not found")
+    text = nginx_conf.read_text(encoding="utf-8")
+    import re
+    codes: set[int] = set()
+    for ep in re.findall(r"error_page\s+([^;]+);", text):
+        for code_str in ep.strip().split():
+            # Last token starting with @ or / is the handler, not a code.
+            if code_str.startswith(("@", "/")):
+                break
+            if code_str.isdigit():
+                codes.add(int(code_str))
+    return codes
+
 
 class TestNginxPolicy403:
     def test_main_nginx_error_page_does_not_intercept_403(self):
-        nginx_conf = REPO_ROOT / "system" / "nginx" / "autostream-nginx.conf"
-        if not nginx_conf.exists():
-            pytest.skip("main nginx config not found")
-        text = nginx_conf.read_text(encoding="utf-8")
-        # Extract error_page directives
-        import re
-        error_pages = re.findall(r"error_page\s+([^;]+);", text)
-        for ep in error_pages:
-            codes = ep.strip().split()
-            # Last token starting with @ or / is the handler, not a code
-            for code_str in codes:
-                if code_str.startswith(("@", "/")):
-                    break
-                if code_str.isdigit() and int(code_str) == 403:
-                    pytest.fail(
-                        f"Main NGINX error_page intercepts 403; "
-                        f"POST /api/dial/status must return native 403. "
-                        f"Found: error_page {ep}"
-                    )
+        codes = _nginx_intercepted_codes()
+        if 403 in codes:
+            pytest.fail(
+                "Main NGINX error_page intercepts 403; "
+                "POST /api/dial/status must return native 403."
+            )
+
+    def test_main_nginx_error_page_does_not_intercept_412(self):
+        codes = _nginx_intercepted_codes()
+        if 412 in codes:
+            pytest.fail(
+                "Main NGINX error_page intercepts 412; the dial protocol's "
+                "definitive dial_not_authorized signal must reach the dial "
+                "unrewritten."
+            )
+
+    def test_main_nginx_error_page_intercepts_503(self):
+        """Documents why auth_unavailable is 200 ok:false, not 503: a 503
+        never survives the nginx boundary as a 503."""
+        codes = _nginx_intercepted_codes()
+        assert 503 in codes
 
 
 # ---------------------------------------------------------------------------
@@ -648,14 +726,16 @@ class TestRouterLevelDialStatus:
     """Router-level tests: do_POST() routing behavior for /api/dial/status.
 
     Verifies that a non-object JSON body (e.g. an array or null) does NOT
-    cause the router to return HTTP 400.  Instead the body is treated as {}
-    and the handler returns HTTP 403 for a missing dial_id.  This differs from
-    /api/dial/volume and /api/dial/mute, which return HTTP 400 for non-object
-    JSON to reject malformed requests early.
+    cause the ROUTER to return HTTP 400.  Instead the body is treated as {}
+    and passed to the handler, whose own dial_id gate now produces the 400
+    missing_dial_id response.  This differs from /api/dial/volume and
+    /api/dial/mute, which still return HTTP 400 for non-object JSON to
+    reject malformed requests early, at the router layer.
     """
 
     def test_array_body_reaches_handler_as_empty_object(self):
-        """JSON array body must not produce HTTP 400; handler returns 403."""
+        """JSON array body must not produce a router-level HTTP 400; the
+        handler receives {} and applies its own missing_dial_id gate."""
         body = b"[]"
         handler = _make_do_post_handler("/api/dial/status", body)
 

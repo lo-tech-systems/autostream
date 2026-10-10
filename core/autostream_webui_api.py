@@ -20,6 +20,9 @@ Contents:
   - send_output_eq_config_json   -- POST /api/output_eq/config
   - send_output_eq_reset_json    -- POST /api/output_eq/reset
   - send_output_eq_status_json   -- GET /api/output_eq/status
+  - send_dial_volume_post_json   -- POST /api/dial/volume
+  - send_dial_status_post_json   -- POST /api/dial/status
+  - send_dial_mute_post_json     -- POST /api/dial/mute
 """
 
 from __future__ import annotations
@@ -74,8 +77,13 @@ from autostream_config import (
     set_input_mode,
     suggested_silence_threshold_dbfs,
 )
-from autostream_rpi import is_high_performance_pi
-from autostream_dials import is_dial_authorized
+from autostream_rpi import get_appliance_id, is_high_performance_pi
+from autostream_dials import (
+    AUTH_AUTHORIZED,
+    AUTH_UNAVAILABLE,
+    dial_authorization,
+    is_dial_authorized,
+)
 from autostream_core import (
     any_monitor_capturing,
     apply_track_id_config_live_from_parsed,
@@ -926,18 +934,46 @@ def _dial_track_id_dict() -> dict:
     }
 
 
+def _dial_auth_gate(handler, json_obj: dict) -> str | None:
+    """Shared dial_id/authorization guard for the dial protocol routes.
+
+    Returns the dial_id when the caller is authorized, else sends the
+    protocol response itself and returns None:
+      400 {"ok": false, "error": "missing_dial_id"}        dial_id absent, empty or not a string
+      200 {"ok": false, "error": "auth_unavailable"}       dials store unreadable (transient to the dial)
+      412 {"ok": false, "error": "dial_not_authorized",
+           "appliance_id": <id or null>}                   definitive miss
+
+    Order matters: the shape check (400) runs before the store is ever read,
+    so a malformed request never touches the file; the store-unavailable
+    case (200 ok:false) is checked before the definitive-miss case (412).
+    """
+    dial_id = json_obj.get("dial_id", "")
+    if not isinstance(dial_id, str) or not dial_id:
+        send_json(handler, 400, {"ok": False, "error": "missing_dial_id"})
+        return None
+    auth = dial_authorization(dial_id)
+    if auth == AUTH_UNAVAILABLE:
+        send_json(handler, 200, {"ok": False, "error": "auth_unavailable"})
+        return None
+    if auth != AUTH_AUTHORIZED:
+        send_json(handler, 412, {
+            "ok": False,
+            "error": "dial_not_authorized",
+            "appliance_id": get_appliance_id(),
+        })
+        return None
+    return dial_id
+
+
 def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/status — UUID-auth only (no session/CSRF required).
 
     Returns fresh, side-effect-free playing state, master volume, and grouped
     track_id now-playing state. Never fetches remote artwork on the request path.
     """
-    dial_id = json_obj.get("dial_id", "")
-    if not isinstance(dial_id, str) or not dial_id:
-        send_json(handler, 403, {})
-        return
-    if not is_dial_authorized(dial_id):
-        send_json(handler, 403, {})
+    dial_id = _dial_auth_gate(handler, json_obj)
+    if dial_id is None:
         return
 
     playing = _session_playing()
@@ -969,6 +1005,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "master_volume": master_volume,
         "selected_output_count": selected_output_count,
         "track_id": _dial_track_id_dict(),
+        "appliance_id": get_appliance_id(),
     })
 
 
