@@ -455,6 +455,7 @@ class TestDisplaySettings:
             "touch_type": dc.DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
@@ -496,6 +497,7 @@ class TestDisplaySettings:
             "touch_type": dc.DEFAULT_TOUCH_KEY,
             "always_show_controls": False,
             "screen_size_inches": None,
+            "layout_size": None,
         }
 
 
@@ -852,6 +854,127 @@ class TestScreenSizeInchesSetting:
         with _redirect(tmp_path, hw_path=hw, settings_path=s):
             cfg = load_config()
         assert cfg.display.screen_size_inches is None
+
+
+class TestLayoutSizeSetting:
+    def test_default_is_none(self):
+        assert DialDisplayConfig().layout_size is None
+
+    def test_missing_display_defaults_none(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.layout_size is None
+
+    def test_hw_display_value_applied(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={
+            "fitted": True, "screen_type": "ili9341_320x240", "layout_size": "large",
+        })
+        with _redirect(tmp_path, hw_path=hw):
+            cfg = load_config()
+        assert cfg.display.layout_size == "large"
+
+    def test_mutable_settings_override_hw(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw, display={
+            "fitted": True, "screen_type": "ili9341_320x240", "layout_size": "small",
+        })
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={
+            "fitted": True, "screen_type": "ili9341_320x240", "layout_size": "medium",
+        })
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.layout_size == "medium"
+
+    def test_save_persists_string(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(uuid="x", display=DialDisplayConfig(
+                fitted=True, screen_type="ili9341_320x240", layout_size="large",
+            ))
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"]["layout_size"] == "large"
+
+    def test_save_persists_none_as_null(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        orig = dc.SETTINGS_PATH
+        dc.SETTINGS_PATH = s
+        try:
+            cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, layout_size=None))
+            save_config(cfg)
+            data = json.loads(s.read_text())
+        finally:
+            dc.SETTINGS_PATH = orig
+        assert data["display"]["layout_size"] is None
+
+    def test_validate_accepts_null(self):
+        result = validate_screen_settings({"fitted": True})
+        assert result.layout_size is None
+
+    def test_validate_accepts_offered_key_for_default_profile(self):
+        result = validate_screen_settings({"fitted": True, "layout_size": "small"})
+        assert result.layout_size == "small"
+
+    @pytest.mark.parametrize("key", ["small", "medium", "large"])
+    def test_validate_accepts_every_offered_key_on_a_4x3_panel(self, key):
+        result = validate_screen_settings({
+            "fitted": True, "screen_type": "ili9341_320x240", "layout_size": key,
+        })
+        assert result.layout_size == key
+
+    def test_validate_rejects_non_string(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "layout_size": 1})
+
+    def test_validate_rejects_bool(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "layout_size": True})
+
+    def test_validate_rejects_unknown_string(self):
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({"fitted": True, "layout_size": "huge"})
+
+    def test_validate_rejects_key_not_offered_for_screen_type(self):
+        """"medium" is native on a 4:3 panel but not offered on the default
+        5:4 st7789_240x240... use a square panel instead, which offers
+        nothing at all."""
+        with pytest.raises(InvalidScreenSettings):
+            validate_screen_settings({
+                "fitted": True, "screen_type": "st7789_240x240", "layout_size": "medium",
+            })
+
+    def test_persisted_resolver_warns_and_yields_none_for_unknown_value(self, caplog):
+        from dial_config import _resolve_persisted_layout_size
+        with caplog.at_level("WARNING"):
+            result = _resolve_persisted_layout_size("huge", "ili9341_320x240")
+        assert result is None
+        assert "layout_size" in caplog.text
+
+    def test_persisted_resolver_warns_and_yields_none_for_value_not_offered(self, caplog):
+        from dial_config import _resolve_persisted_layout_size
+        with caplog.at_level("WARNING"):
+            result = _resolve_persisted_layout_size("medium", "st7789_240x240")
+        assert result is None
+        assert "layout_size" in caplog.text
+
+    def test_persisted_resolver_silent_for_none(self, caplog):
+        from dial_config import _resolve_persisted_layout_size
+        with caplog.at_level("WARNING"):
+            result = _resolve_persisted_layout_size(None, "ili9341_320x240")
+        assert result is None
+        assert caplog.text == ""
+
+    def test_persisted_resolver_accepts_offered_value(self):
+        from dial_config import _resolve_persisted_layout_size
+        assert _resolve_persisted_layout_size("large", "ili9341_320x240") == "large"
 
 
 class TestValidateScreenSettings:

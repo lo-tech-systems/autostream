@@ -20,7 +20,7 @@ from pathlib import Path
 # docstring for why that must never change. Importing it here is therefore
 # safe even though dial_config is imported unconditionally at process start,
 # before the display stack gets a chance to isolate a broken Adafruit install.
-from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES
+from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES, LAYOUT_SIZES, layout_sizes_for
 
 # dial_touch_controllers.py is likewise pure data (no hardware imports) — see
 # its module docstring for the same argument as dial_display_profiles above.
@@ -89,6 +89,11 @@ class DialDisplayConfig:
     # and resolution ship in several physical sizes. See
     # dial_display_profiles.effective_diagonal_inches().
     screen_size_inches: float | None = None
+    # Logical render size, or None to render at the panel's own resolution
+    # (today's behaviour). One of dial_display_profiles.LAYOUT_SIZES' keys;
+    # the frame is composed at that size and resampled to the panel, and
+    # touch is mapped the other way. See layout_context_for().
+    layout_size: str | None = None
 
 
 @dataclass
@@ -137,13 +142,18 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     (int or float, not bool) between 0.5 and 20 inches, or JSON null — a
     range wide enough for every SPI panel plausibly wired to this dial while
     still catching an obvious typo.
+    `layout_size` is optional (defaults to None, meaning "compose at the
+    panel's own resolution"); if present it must be a string naming a key in
+    dial_display_profiles.LAYOUT_SIZES, or JSON null, and that key must be
+    one the selected screen_type actually offers (see layout_sizes_for()) —
+    an offered-elsewhere key is rejected the same as an unknown one.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
     unknown = set(obj.keys()) - {
         "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
-        "screen_size_inches",
+        "screen_size_inches", "layout_size",
     }
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
@@ -182,10 +192,20 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
                 "screen.screen_size_inches must be a number between 0.5 and 20, or null"
             )
         screen_size_inches = float(screen_size_inches)
+    layout_size = obj.get("layout_size")
+    if layout_size is not None:
+        if not isinstance(layout_size, str) or layout_size not in LAYOUT_SIZES:
+            raise InvalidScreenSettings(
+                f"screen.layout_size must be one of {sorted(LAYOUT_SIZES)} or null"
+            )
+        if layout_size not in layout_sizes_for(DISPLAY_PROFILES[screen_type]):
+            raise InvalidScreenSettings(
+                f"screen.layout_size {layout_size!r} is not available for screen_type {screen_type!r}"
+            )
     return DialDisplayConfig(
         fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
         touch_type=touch_type, always_show_controls=always_show_controls,
-        screen_size_inches=screen_size_inches,
+        screen_size_inches=screen_size_inches, layout_size=layout_size,
     )
 
 
@@ -249,6 +269,33 @@ def _resolve_persisted_screen_size(value: object) -> float | None:
     return float(value)
 
 
+def _resolve_persisted_layout_size(value: object, screen_type: str) -> str | None:
+    """Resolve a persisted layout_size value against the already-resolved
+    *screen_type*, falling back to None (meaning "render at the panel's own
+    size") with a warning log for anything unusable, rather than raising.
+
+    Mirrors the other _resolve_persisted_* helpers above: a corrupt or stale
+    settings file (a renamed/removed size, or a screen_type swap that no
+    longer offers a previously-valid size) must not brick the dial at
+    startup. Missing or JSON null both silently mean None.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in LAYOUT_SIZES:
+        logging.warning(
+            "dial config: unusable persisted layout_size %r — rendering at the "
+            "panel's own size", value,
+        )
+        return None
+    if value not in layout_sizes_for(DISPLAY_PROFILES[screen_type]):
+        logging.warning(
+            "dial config: persisted layout_size %r is not available for screen_type "
+            "%s — rendering at the panel's own size", value, screen_type,
+        )
+        return None
+    return value
+
+
 def _read_env_file(path: Path) -> dict[str, str]:
     """Parse a KEY=VALUE env file without executing it."""
     data: dict[str, str] = {}
@@ -286,14 +333,16 @@ def load_config() -> DialConfig:
 
     hw_display = hw.get('display')
     if isinstance(hw_display, dict):
+        hw_screen_type = _resolve_persisted_screen_type(hw_display.get('screen_type'))
         cfg.display = DialDisplayConfig(
             fitted=bool(hw_display.get('fitted', False)),
             rotate=bool(hw_display.get('rotate', False)),
-            screen_type=_resolve_persisted_screen_type(hw_display.get('screen_type')),
+            screen_type=hw_screen_type,
             bgr=bool(hw_display.get('bgr', False)),
             touch_type=_resolve_persisted_touch_type(hw_display.get('touch_type')),
             always_show_controls=bool(hw_display.get('always_show_controls', False)),
             screen_size_inches=_resolve_persisted_screen_size(hw_display.get('screen_size_inches')),
+            layout_size=_resolve_persisted_layout_size(hw_display.get('layout_size'), hw_screen_type),
         )
 
     if SETTINGS_PATH.exists():
@@ -306,12 +355,13 @@ def load_config() -> DialConfig:
         cfg.mute_all_playing = bool(s.get('mute_all_playing', cfg.mute_all_playing))
         s_display = s.get('display')
         if isinstance(s_display, dict):
+            s_screen_type = _resolve_persisted_screen_type(
+                s_display.get('screen_type', cfg.display.screen_type)
+            )
             cfg.display = DialDisplayConfig(
                 fitted=bool(s_display.get('fitted', cfg.display.fitted)),
                 rotate=bool(s_display.get('rotate', cfg.display.rotate)),
-                screen_type=_resolve_persisted_screen_type(
-                    s_display.get('screen_type', cfg.display.screen_type)
-                ),
+                screen_type=s_screen_type,
                 bgr=bool(s_display.get('bgr', cfg.display.bgr)),
                 touch_type=_resolve_persisted_touch_type(
                     s_display.get('touch_type', cfg.display.touch_type)
@@ -321,6 +371,9 @@ def load_config() -> DialConfig:
                 ),
                 screen_size_inches=_resolve_persisted_screen_size(
                     s_display.get('screen_size_inches', cfg.display.screen_size_inches)
+                ),
+                layout_size=_resolve_persisted_layout_size(
+                    s_display.get('layout_size', cfg.display.layout_size), s_screen_type
                 ),
             )
 
@@ -360,6 +413,7 @@ def save_config(cfg: DialConfig) -> None:
             'touch_type':  cfg.display.touch_type,
             'always_show_controls': cfg.display.always_show_controls,
             'screen_size_inches': cfg.display.screen_size_inches,
+            'layout_size': cfg.display.layout_size,
         },
     }
     with _save_lock:

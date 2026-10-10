@@ -230,18 +230,123 @@ def list_profiles() -> list[dict]:
     ]
 
 
-def mm_per_px_for(profile: DisplayProfile, diagonal_inches: float) -> float:
-    """Physical pixel pitch for *profile* glass of *diagonal_inches*:
-    diagonal_mm / diagonal_px, with diagonal_px = hypot(width, height).
-    Square pixels are assumed, as every panel in the table has."""
+def mm_per_px_for_size(diagonal_inches: float, width: int, height: int) -> float:
+    """Physical pixel pitch when *diagonal_inches* of glass carries a
+    *width* x *height* grid: diagonal_mm / hypot(width, height). The formula
+    every panel in the table shares — square pixels assumed."""
     diagonal_mm = diagonal_inches * MM_PER_INCH
-    return diagonal_mm / math.hypot(profile.width, profile.height)
+    return diagonal_mm / math.hypot(width, height)
+
+
+def mm_per_px_for(profile: DisplayProfile, diagonal_inches: float) -> float:
+    """Physical pixel pitch for *profile* glass of *diagonal_inches* — see
+    mm_per_px_for_size()."""
+    return mm_per_px_for_size(diagonal_inches, profile.width, profile.height)
 
 
 def effective_diagonal_inches(profile: DisplayProfile, override: float | None) -> float:
     """The diagonal size in effect for *profile*: *override* when a user has
     set one, else the profile's own built-in default."""
     return override if override is not None else profile.default_diagonal_inches
+
+
+# ---------------------------------------------------------------------------
+# Layout size: an optional logical render size, distinct from a profile's own
+# physical pixel grid. When set, every screen is composed at this size and
+# resampled to the panel afterwards (see dial_display.py), and touch readings
+# are mapped the other way (see dial_touch_filter.py) — so the whole stack
+# agrees on one geometry per configuration. None means "compose at the
+# panel's own size", today's only behaviour and still the default.
+# ---------------------------------------------------------------------------
+
+LAYOUT_SIZES: dict[str, tuple[int, int]] = {
+    "small": (160, 128),
+    "medium": (320, 240),
+    "large": (640, 480),
+}
+
+# A named layout size is offered on a panel only when stretching it to the
+# panel distorts by at most this much (the ratio of the two per-axis scale
+# factors, minus one). 0.08 admits 5:4 against 4:3 (0.067) and refuses a 4:3
+# or 5:4 size on a square panel (0.25 and up).
+LAYOUT_ASPECT_TOLERANCE = 0.08
+
+
+def layout_sizes_for(profile: DisplayProfile) -> list[str]:
+    """The LAYOUT_SIZES keys *profile* can render at, in table order."""
+    offered = []
+    for key, (lw, lh) in LAYOUT_SIZES.items():
+        sx, sy = profile.width / lw, profile.height / lh
+        if max(sx, sy) / min(sx, sy) - 1.0 <= LAYOUT_ASPECT_TOLERANCE:
+            offered.append(key)
+    return offered
+
+
+def layout_size_options(profile: DisplayProfile) -> list[dict]:
+    """layout_sizes_for() as the API publishes it: [{"key", "text"}, ...],
+    text e.g. "Medium (320x240)". Native is not listed: the client
+    represents it as the absence of a value (JSON null)."""
+    return [
+        {"key": key, "text": f"{key.capitalize()} ({LAYOUT_SIZES[key][0]}x{LAYOUT_SIZES[key][1]})"}
+        for key in layout_sizes_for(profile)
+    ]
+
+
+def logical_size_for(profile: DisplayProfile, layout_size: str | None) -> tuple[int, int]:
+    """The compose-space size for *profile* under *layout_size*: the named
+    size, or the panel's own when None."""
+    if layout_size is None:
+        return profile.width, profile.height
+    return LAYOUT_SIZES[layout_size]
+
+
+@dataclass(frozen=True)
+class LayoutContext:
+    """Everything the display, the touch stack and the HTTP handler need to
+    agree on for one screen configuration: the logical size frames are
+    composed and hit-tested in, the physical size they are resampled to, the
+    density per LOGICAL pixel, and whether the size was chosen deliberately
+    (which lifts metrics_for()'s touch_short veto)."""
+    logical_width: int
+    logical_height: int
+    physical_width: int
+    physical_height: int
+    mm_per_px: float
+    size_chosen: bool
+
+    @property
+    def logical_size(self) -> tuple[int, int]:
+        return self.logical_width, self.logical_height
+
+    @property
+    def physical_size(self) -> tuple[int, int]:
+        return self.physical_width, self.physical_height
+
+    @property
+    def resamples(self) -> bool:
+        return self.logical_size != self.physical_size
+
+
+def layout_context_for(display_cfg) -> LayoutContext:
+    """The LayoutContext for a DialDisplayConfig-shaped object (reads
+    screen_type, screen_size_inches, layout_size by attribute; imports
+    nothing from dial_config). An unknown screen_type falls back to the
+    default profile, as every other resolver here does."""
+    try:
+        profile = get_profile(display_cfg.screen_type)
+    except UnknownDisplayProfileError:
+        profile = get_profile(DEFAULT_PROFILE_KEY)
+    layout_size = getattr(display_cfg, "layout_size", None)
+    if layout_size not in LAYOUT_SIZES:
+        layout_size = None
+    lw, lh = logical_size_for(profile, layout_size)
+    inches = effective_diagonal_inches(profile, getattr(display_cfg, "screen_size_inches", None))
+    return LayoutContext(
+        logical_width=lw, logical_height=lh,
+        physical_width=profile.width, physical_height=profile.height,
+        mm_per_px=mm_per_px_for_size(inches, lw, lh),
+        size_chosen=layout_size is not None,
+    )
 
 
 def backend_name_for(profile: DisplayProfile) -> str:
