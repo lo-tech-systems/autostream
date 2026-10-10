@@ -218,7 +218,7 @@ class TestView:
         panel = HdPanel(hub, settings=lambda: settings, backlight=FakeBacklight(), clock=clock)
         assert panel.view() == {
             "asleep": False, "brightness": 55, "sleep_after_s": 900, "backlight": "sysfs",
-            "always_show_controls": True,
+            "always_show_controls": True, "kiosk": False,
         }
 
     def test_with_no_backlight_the_kind_is_none(self, panel):

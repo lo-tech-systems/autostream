@@ -63,13 +63,16 @@ class FakePanel:
         self._publish = publish
         self.asleep = False
         self.backlight = "sysfs"
+        self.kiosk = False
         self.calls: list = []
 
     def view(self) -> dict:
-        return {"asleep": self.asleep, "backlight": self.backlight}
+        return {"asleep": self.asleep, "backlight": self.backlight, "kiosk": self.kiosk}
 
-    def set_view(self, asleep: bool, backlight: str) -> None:
+    def set_view(self, asleep: bool, backlight: str, kiosk: "bool | None" = None) -> None:
         self.asleep, self.backlight = asleep, backlight
+        if kiosk is not None:
+            self.kiosk = kiosk
         self._publish()
 
     def wake(self) -> None:

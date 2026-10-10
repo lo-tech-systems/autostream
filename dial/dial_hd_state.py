@@ -357,6 +357,7 @@ def _panel_block(panel: "Mapping | None", settings: "Mapping | None") -> dict:
         "sleep_after_s": pick("sleep_after_s", DEFAULT_SLEEP_AFTER_S),
         "backlight": _text(panel.get("backlight", "none")),
         "always_show_controls": bool(pick("always_show_controls", False)),
+        "kiosk": bool(panel.get("kiosk", False)),
     }
 
 

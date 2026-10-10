@@ -168,8 +168,12 @@ class TestShape:
                        settings={"brightness": 55, "sleep_after_s": 900, "always_show_controls": True})
         assert state["panel"] == {
             "asleep": True, "brightness": 55, "sleep_after_s": 900, "backlight": "none",
-            "always_show_controls": True}
+            "always_show_controls": True, "kiosk": False}
         assert build_state(hs.SCENARIOS["nothing_playing"].snapshot)["panel"]["brightness"] == 80
+
+    def test_the_kiosk_flag_is_false_unless_the_panel_says_so(self):
+        assert _state("playing_artwork")["panel"]["kiosk"] is False
+        assert _state("playing_artwork", panel={"kiosk": True})["panel"]["kiosk"] is True
 
     def test_recovery_takes_a_tuple_or_a_mapping(self):
         assert _state("recovery_pending")["recovery"] == {"active": True, "confirmed": False}

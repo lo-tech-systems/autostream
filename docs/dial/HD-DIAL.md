@@ -75,7 +75,9 @@ so that choice alone shows nothing.
 
 ## Using the screen
 
-The screen has two sides. Everything is touch; there is no keyboard.
+The screen has two sides. Everything is touch; there is no keyboard, and the
+mouse pointer is hidden on the dial's own screen (it stays visible when you
+open the same page from a laptop).
 
 ### Appliances and speakers
 

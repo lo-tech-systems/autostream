@@ -58,7 +58,7 @@
         outputs: null,
         eq: null,
         warnings: { due: null, cards: [] },
-        panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", always_show_controls: false },
+        panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", always_show_controls: false, kiosk: false },
         recovery: { active: false, confirmed: false }
     };
 
@@ -217,7 +217,7 @@
         notice: null, viewing: null,
         touchAt: Date.now(), forceHidden: false, covered: false, activityAt: 0,
         focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
-        replayClock: null, stopHold: null
+        replayClock: null, stopHold: null, host: window.location.hostname
     };
     const pending = {};         // control key -> { value, deadline }
     const dragging = new Set();  // control keys under a finger
@@ -516,6 +516,11 @@
         return dueShown ? cardFrom(due, owner) : null;
     }
 
+    // The dial's own screen is a loopback page, a laptop is not.
+    function isLoopbackHost(host) {
+        return host === "127.0.0.1" || host === "localhost" || host === "[::1]";
+    }
+
     function derive(s, local) {
         const offline = local.offline;
         const byId = new Map(s.appliances.map((a) => [a.id, a]));
@@ -594,6 +599,7 @@
             replay: replay,
             eq: eq,
             settings: settings,
+            hidePointer: !!panel.kiosk && isLoopbackHost(local.host),
             sheet: { open: local.sheetOpen, info: deriveInfo(local.info) },
             modal: modal,
             controlsHidden: hideable && (local.forceHidden || idle),
@@ -966,6 +972,7 @@
     }
 
     function paint(vm) {
+        document.documentElement.classList.toggle("no-pointer", vm.hidePointer);
         els.app.classList.toggle("offline", vm.offline);
         els.app.classList.toggle("dimmed", vm.settings.dim !== null);
         if (vm.settings.dim !== null) { els.app.style.setProperty("--dim", String(vm.settings.dim)); }
@@ -1559,6 +1566,9 @@
 
     // Leaving the page (a kiosk reload) closes the stream now, so the server
     // is not left holding a client slot until its next write.
+    // Exposed so the host rule can be checked on its own.
+    window.hdIsLoopbackHost = isLoopbackHost;
+
     window.addEventListener("pagehide", () => {
         if (source) { source.close(); }
     });

@@ -86,18 +86,21 @@ class Backlight:
 class HdPanel:
     """*hub* is published to on every transition. *settings* returns the
     current screen settings (sleep_after_s, brightness, always_show_controls).
+    *kiosk* says the page is shown on this dial's own screen.
     *inputs*, when given, returns (playing, interrupting) and feeds the
     background tick started by start()."""
 
     def __init__(
         self, hub, *, settings: Callable[[], object], backlight: "Backlight | None" = None,
         inputs: "Callable[[], tuple[bool, bool]] | None" = None, clock=time.monotonic,
+        kiosk: bool = False,
     ) -> None:
         self._hub = hub
         self._settings = settings
         self._backlight = backlight
         self._inputs = inputs
         self._clock = clock
+        self._kiosk = kiosk
         self._lock = threading.Lock()
         self._hw_lock = threading.Lock()
         self._asleep = False
@@ -139,7 +142,8 @@ class HdPanel:
 
     def view(self) -> dict:
         """The panel block's inputs: asleep, brightness, sleep_after_s,
-        backlight kind and always_show_controls."""
+        backlight kind, always_show_controls and whether this is the kiosk
+        surface."""
         settings = self._settings()
         with self._lock:
             asleep = self._asleep
@@ -149,6 +153,7 @@ class HdPanel:
             "sleep_after_s": settings.sleep_after_s,
             "backlight": self.backlight_kind,
             "always_show_controls": settings.always_show_controls,
+            "kiosk": self._kiosk,
         }
 
     # ---- transitions -------------------------------------------------------

@@ -64,7 +64,8 @@ class Driver:
                 if confirmed:
                     window.confirm_volume()
             self.backend.panel.set_view(
-                bool(scenario.panel.get("asleep")), scenario.panel.get("backlight", "sysfs"))
+                bool(scenario.panel.get("asleep")), scenario.panel.get("backlight", "sysfs"),
+                bool(scenario.panel.get("kiosk")))
             self.backend.core.publish(snapshot=scenario.snapshot)
         else:
             self._count += 1

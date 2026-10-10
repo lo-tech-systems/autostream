@@ -1589,6 +1589,41 @@ class TestControlsFade:
 # The event stream is closed when the page goes
 # ---------------------------------------------------------------------------
 
+class TestPointer:
+    """The pointer is hidden on the dial's own screen only: the panel says it
+    is the kiosk and the page came from a loopback host."""
+
+    @staticmethod
+    def cursors(page) -> list:
+        return page.evaluate(
+            "['body', '#mute', '#appliances .appliance']"
+            ".map((s) => getComputedStyle(document.querySelector(s)).cursor)")
+
+    def test_the_kiosk_screen_shows_no_pointer(self, page, hd):
+        hd.show(dataclasses.replace(hs.SCENARIOS["playing_artwork"], panel={**hs.PANEL_AWAKE, "kiosk": True}))
+        open_page(page, hd)
+        expect(page.locator("html")).to_have_class(re.compile("no-pointer"))
+        assert self.cursors(page) == ["none", "none", "none"]
+
+    def test_a_screen_that_is_not_the_kiosk_keeps_the_pointer(self, page, hd):
+        open_page(page, hd)
+        expect(page.locator("html")).not_to_have_class(re.compile("no-pointer"))
+        assert "none" not in self.cursors(page)
+
+    def test_the_pointer_comes_back_when_the_kiosk_flag_goes(self, page, hd):
+        hd.show(dataclasses.replace(hs.SCENARIOS["playing_artwork"], panel={**hs.PANEL_AWAKE, "kiosk": True}))
+        open_page(page, hd)
+        expect(page.locator("html")).to_have_class(re.compile("no-pointer"))
+        hd.show(hs.SCENARIOS["playing_artwork"])
+        expect(page.locator("html")).not_to_have_class(re.compile("no-pointer"))
+
+    def test_only_loopback_hosts_count_as_the_dials_own_screen(self, page, hd):
+        open_page(page, hd)
+        hosts = ["127.0.0.1", "localhost", "[::1]", "192.0.2.10", "dial.local", "127.0.0.1.example", ""]
+        assert page.evaluate("(hosts) => hosts.map(window.hdIsLoopbackHost)", hosts) == [
+            True, True, True, False, False, False, False]
+
+
 class TestStreamLifetime:
     def test_the_page_closes_its_stream_when_it_is_hidden(self, page, hd):
         page.add_init_script(

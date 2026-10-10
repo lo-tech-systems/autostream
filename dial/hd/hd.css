@@ -382,3 +382,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 @media (prefers-reduced-motion: reduce) {
     .sheet, .eq, .scrim, .sleep, .progress-bar, .right > :not(.art-zone) { transition: none; animation: none; }
 }
+
+/* The dial's own touchscreen shows no pointer. */
+html.no-pointer, html.no-pointer * { cursor: none !important; }

@@ -75,7 +75,8 @@
     "brightness": 80,
     "sleep_after_s": 300,
     "backlight": "sysfs",
-    "always_show_controls": false
+    "always_show_controls": false,
+    "kiosk": false
   },
   "recovery": {
     "active": true,

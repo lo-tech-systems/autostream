@@ -790,6 +790,7 @@ def main() -> None:
         hd_panel = HdPanel(
             hd_hub, settings=lambda: http_server.display_config,
             backlight=Backlight.detect() if kiosk_surface else None, inputs=panel_inputs,
+            kiosk=kiosk_surface,
         )
         hd_server = HdServer(
             cfg, core, http_server=http_server, panel=hd_panel, hub=hd_hub, port=cfg.hd_port,
