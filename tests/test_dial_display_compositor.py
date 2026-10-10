@@ -39,10 +39,12 @@ from dial_display_compositor import (  # noqa: E402
     DialDisplayCompositor,
     FOOTER_LABELS,
     FOOTER_LIST_BAR,
+    FOOTER_LIST_RAIL,
     FOOTER_NONE,
     FOOTER_VOLUME,
     Frame,
     GLYPH_CHEVRON,
+    GLYPH_CROSS,
     GLYPH_TWO_DOTS,
     ListState,
     LOOP_GLYPH,
@@ -63,6 +65,7 @@ from dial_display_compositor import (  # noqa: E402
     format_mmss,
 )
 from dial_touch_layout import (  # noqa: E402
+    CONTENT_BASE,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_REPEAT,
@@ -86,11 +89,24 @@ PROFILE_SIZES = [
     (320, 240),  # ili9341_320x240 (duplicate size, both must work)
 ]
 _CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778, 0.1778]
-# Densities chosen to resolve to compact/large respectively.
+# Densities chosen to resolve to base at every panel size — proves the
+# metrics-threading seam changed no base pixel. A (size, mm) pair that
+# resolves to a richer content tier is a deliberate geometry change instead
+# (see TestRichTierRendering) rather than a byte-equivalence case.
 _OUT_OF_TIER_MM_PER_PX = [0.05, 0.5]
-_METRICS_EQUIVALENCE_CASES = list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX)) + [
-    (size, mm) for size in PROFILE_SIZES for mm in _OUT_OF_TIER_MM_PER_PX
+_METRICS_EQUIVALENCE_CASES = [
+    (size, mm)
+    for size, mm in (
+        list(zip(PROFILE_SIZES, _CONFIRMED_MM_PER_PX))
+        + [(size, mm) for size in PROFILE_SIZES for mm in _OUT_OF_TIER_MM_PER_PX]
+    )
+    if metrics_for(size[0], size[1], mm).content_tier == CONTENT_BASE
 ]
+
+# A confirmed rich panel (the shipped 320x240 density) and a confirmed large
+# one (640x480), used by the rail-specific render/pressed-wash tests below.
+_RICH_METRICS = metrics_for(320, 240, 0.1778)
+_LARGE_METRICS = metrics_for(640, 480, 0.127)
 
 
 def _marked_image(size=(4, 4)):
@@ -1428,7 +1444,7 @@ class TestComposeFramePipeline:
             assert kind in _BODY_RENDERERS
 
     def test_every_footer_kind_has_a_renderer(self):
-        for kind in (FOOTER_NONE, FOOTER_VOLUME, FOOTER_LABELS, FOOTER_LIST_BAR):
+        for kind in (FOOTER_NONE, FOOTER_VOLUME, FOOTER_LABELS, FOOTER_LIST_BAR, FOOTER_LIST_RAIL):
             assert kind in _FOOTER_RENDERERS
 
     def test_default_frame_renders_the_base_unchanged(self):
@@ -1587,7 +1603,7 @@ def _repeat_state_for_cache_tests(**overrides) -> RepeatViewState:
     return RepeatViewState(**base)
 
 
-def _render_cache_corpus(width, height):
+def _render_cache_corpus(width, height, metrics=None):
     """Every distinct screen/state combination the glyph-tile and halo-layer
     caches can be exercised by: the main overlay (with/without dots, a
     pressed zone, a muted state, empty/short/long text), the appliance-
@@ -1596,7 +1612,10 @@ def _render_cache_corpus(width, height):
     layouts, a pressed zone, the fade-out Stop wash) and the idle screen.
     Returns a list of
     (name, render(compositor) -> Image) pairs so the same corpus can be run
-    cold, warm and with the caches bypassed."""
+    cold, warm and with the caches bypassed. *metrics*, when given, is
+    threaded through every render call the same way the display manager
+    threads its own resolved LayoutMetrics through — None reproduces
+    today's density-unaware geometry."""
     base = Image.new("RGB", (width, height), (200, 150, 100))
     logo = Image.new("RGB", (width, height), (32, 32, 32))
     long_text = "A Very Long Name Indeed Of Considerable Length" * 2
@@ -1610,7 +1629,7 @@ def _render_cache_corpus(width, height):
             f"main/{name}",
             lambda c, state=state: c.compose(
                 base, width, height, rotate=False, bgr=False, is_artwork=False,
-                overlay=OverlayState(**state),
+                overlay=OverlayState(**state), metrics=metrics,
             ),
         ))
 
@@ -1626,7 +1645,9 @@ def _render_cache_corpus(width, height):
     def add_list(name, state):
         cases.append((
             f"list/{name}",
-            lambda c, state=state: c.compose_list(width, height, state, rotate=False, bgr=False),
+            lambda c, state=state: c.compose_list(
+                width, height, state, rotate=False, bgr=False, metrics=metrics,
+            ),
         ))
 
     add_list("empty", ListState(rows=()))
@@ -1646,7 +1667,7 @@ def _render_cache_corpus(width, height):
         cases.append((
             f"repeat/{name}",
             lambda c, state=state, base_img=base_img: c.compose_repeat(
-                width, height, state, rotate=False, bgr=False, base=base_img,
+                width, height, state, rotate=False, bgr=False, base=base_img, metrics=metrics,
             ),
         ))
 
@@ -1670,7 +1691,10 @@ def _render_cache_corpus(width, height):
         base_img=base,
     )
 
-    cases.append(("idle", lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False)))
+    cases.append((
+        "idle",
+        lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False, metrics=metrics),
+    ))
 
     return cases
 
@@ -1709,6 +1733,250 @@ class TestRenderCacheEquivalence:
         for (name, cold_img), (_, warm_img), (_, bypassed_img) in zip(cold, warm, bypassed):
             assert cold_img.tobytes() == warm_img.tobytes(), f"{name}: cold != warm"
             assert cold_img.tobytes() == bypassed_img.tobytes(), f"{name}: cold != bypassed"
+
+
+# (size, metrics) pairs re-running the same corpus with an explicit,
+# resolved LayoutMetrics threaded through every call — the base entries
+# prove the metrics-threading seam (4.1) and the supersample pass-through
+# changed no base pixel; the rich/large entries prove the same cold/warm/
+# bypassed discipline holds for the new right-rail footer and its glyph
+# tiles (a different supersample factor on the large tier).
+_CONTENT_TIER_CACHE_CASES = [
+    ((160, 128), metrics_for(160, 128)),
+    ((128, 128), metrics_for(128, 128)),
+    ((240, 240), metrics_for(240, 240, 0.0973)),
+    ((320, 240), _RICH_METRICS),
+    ((640, 480), _LARGE_METRICS),
+]
+
+
+class TestRenderCacheEquivalenceWithMetrics:
+    """Same cold/warm/bypassed discipline as TestRenderCacheEquivalence,
+    but with an explicit LayoutMetrics threaded through every render call
+    instead of relying on the metrics=None default."""
+
+    @pytest.mark.parametrize("size,metrics", _CONTENT_TIER_CACHE_CASES)
+    def test_cold_warm_bypassed_are_byte_identical(self, size, metrics):
+        width, height = size
+        compositor = DialDisplayCompositor()
+
+        def render_all():
+            return [(name, fn(compositor)) for name, fn in _render_cache_corpus(width, height, metrics=metrics)]
+
+        try:
+            _reset_font_cache()
+            cold = render_all()
+            warm = render_all()
+            with patch("dial_display_compositor._glyph_tile", _glyph_tile.__wrapped__), \
+                 patch("dial_display_compositor._halo_layer", _halo_layer.__wrapped__):
+                bypassed = render_all()
+        finally:
+            _reset_font_cache()
+
+        for (name, cold_img), (_, warm_img), (_, bypassed_img) in zip(cold, warm, bypassed):
+            assert cold_img.tobytes() == warm_img.tobytes(), f"{name}: cold != warm"
+            assert cold_img.tobytes() == bypassed_img.tobytes(), f"{name}: cold != bypassed"
+
+
+# ---------------------------------------------------------------------------
+# The right-rail list on the rich/large tiers: FOOTER_LIST_RAIL's rendering,
+# the GLYPH_CROSS tile, pressed-wash-follows-the-table, and the pressed-rect
+# lookup resolving against the same (possibly band-capped) metrics the
+# renderer drew with.
+# ---------------------------------------------------------------------------
+
+class TestCrossGlyph:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_render_caches()
+        yield
+        _reset_render_caches()
+
+    def test_glyph_cross_has_a_registered_painter(self):
+        from dial_display_compositor import _GLYPH_PAINTERS
+        assert GLYPH_CROSS in _GLYPH_PAINTERS
+
+    def test_tile_has_both_diagonals_and_empty_corners(self):
+        w, h = 60, 72
+        tile = _glyph_tile(GLYPH_CROSS, (), w, h, 4)
+        assert tile.size == (w, h)
+        assert tile.mode == "RGBA"
+        pixels = tile.load()
+        assert pixels[w // 2, h // 2][3] > 0  # the two diagonals cross here
+        for corner in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            assert pixels[corner][3] == 0
+
+
+class TestRailFooterRendering:
+    """The right-rail footer (FOOTER_LIST_RAIL), exercised through
+    compose_list() with rich metrics at the shipped 320x240 density."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    @staticmethod
+    def _rows():
+        return (("CD Player", True), ("Kitchen", False), ("Study", False), ("Lounge", False))
+
+    def test_never_raises_and_returns_panel_sized_frame(self, compositor):
+        result = compositor.compose_list(
+            320, 240, ListState(rows=self._rows()), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert result.size == (320, 240)
+
+    def test_separator_column_is_drawn_left_of_the_rail(self, compositor):
+        from dial_display_compositor import _LIST_SEPARATOR_RGB
+        layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
+        result = compositor.compose_list(
+            320, 240, ListState(rows=self._rows()), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert result.getpixel((layout.rail[0] - 1, 10)) == _LIST_SEPARATOR_RGB
+
+    def test_rail_column_is_dimmed_relative_to_the_chassis(self, compositor):
+        layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
+        result = compositor.compose_list(
+            320, 240, ListState(rows=()), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        # The rail sits over the same flat chassis fill as the rest of the
+        # panel; dimming it must make it read darker than an untouched
+        # chassis pixel elsewhere on the frame.
+        chassis_pixel = result.getpixel((5, 5))
+        rail_pixel = result.getpixel((layout.rail[2] - 2, layout.rail[1] + 2))
+        assert sum(rail_pixel) < sum(chassis_pixel)
+
+    def test_paging_state_only_affects_its_own_chevron(self, compositor):
+        layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
+        neither = compositor.compose_list(
+            320, 240, ListState(rows=self._rows(), has_prev=False, has_next=False),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        both = compositor.compose_list(
+            320, 240, ListState(rows=self._rows(), has_prev=True, has_next=True),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert list(neither.crop(layout.rail_up).getdata()) != list(both.crop(layout.rail_up).getdata())
+        assert list(neither.crop(layout.rail_down).getdata()) != list(both.crop(layout.rail_down).getdata())
+        # The cross (back/cancel) is always lit, regardless of paging state.
+        assert list(neither.crop(layout.rail_cancel).getdata()) == list(both.crop(layout.rail_cancel).getdata())
+
+    def test_rail_glyphs_do_not_bleed_past_the_separator(self, compositor):
+        # A rail glyph's drawing must be confined to its own rect — the
+        # separator column and everything left of it (the row area) must be
+        # unaffected by the paging state, which only ever touches the rail.
+        layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
+        neither = compositor.compose_list(
+            320, 240, ListState(rows=self._rows(), has_prev=False, has_next=False),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        both = compositor.compose_list(
+            320, 240, ListState(rows=self._rows(), has_prev=True, has_next=True),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        rows_region = (0, 0, layout.rail[0] - 1, 240)
+        assert list(neither.crop(rows_region).getdata()) == list(both.crop(rows_region).getdata())
+
+
+class TestRailPressedWash:
+    """Pressed-zone wash on the rail follows the zone table exactly — a
+    LIST_BACK press washes rail_cancel, not a bottom-bar rect (there is
+    none on this tier), and a row index washes its own row only."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    @staticmethod
+    def _rows():
+        return (("CD Player", True), ("Kitchen", False), ("Study", False), ("Lounge", False))
+
+    def test_list_back_washes_rail_cancel_only(self, compositor):
+        layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
+        unpressed = compositor.compose_list(
+            320, 240, ListState(rows=self._rows()), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        pressed = compositor.compose_list(
+            320, 240, ListState(rows=self._rows(), pressed=(TouchZone.LIST_BACK, None)),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert list(unpressed.crop(layout.rail_cancel).getdata()) != list(pressed.crop(layout.rail_cancel).getdata())
+        for rect in (layout.rail_up, layout.rail_down):
+            assert list(unpressed.crop(rect).getdata()) == list(pressed.crop(rect).getdata())
+
+    def test_pressed_row_washes_only_that_row(self, compositor):
+        layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
+        unpressed = compositor.compose_list(
+            320, 240, ListState(rows=self._rows()), rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        pressed = compositor.compose_list(
+            320, 240, ListState(rows=self._rows(), pressed=(TouchZone.LIST_ROW, 3)),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert list(unpressed.crop(layout.rows[3]).getdata()) != list(pressed.crop(layout.rows[3]).getdata())
+        for i in range(3):
+            assert list(unpressed.crop(layout.rows[i]).getdata()) == list(pressed.crop(layout.rows[i]).getdata())
+
+    def test_stale_row_index_washes_nothing_and_never_raises(self, compositor):
+        result = compositor.compose_list(
+            320, 240, ListState(rows=self._rows(), pressed=(TouchZone.LIST_ROW, 99)),
+            rotate=False, bgr=False, metrics=_RICH_METRICS,
+        )
+        assert result.size == (320, 240)
+
+
+class TestPressedRectsFollowRenderedMetrics:
+    """The pressed-rect lookup (_zone_rect, via _main_pressed_rects/
+    _repeat_pressed_rects) must resolve against the SAME metrics the
+    renderer drew with. Proven at a panel/density pair where the 12 mm band
+    cap actually moves the header/footer bands away from their base-tier
+    position (320x240 at a coarser density than the shipped panel) — if the
+    pressed lookup ever fell back to density-free geometry, the wash would
+    land on the wrong rect."""
+
+    def test_main_screen_down_press_washes_the_capped_rect(self, compositor):
+        width, height = 320, 240
+        metrics = metrics_for(width, height, 0.2778)
+        base_layout = layout_for(width, height)
+        capped_layout = layout_for(width, height, metrics=metrics)
+        assert capped_layout.down != base_layout.down  # the cap actually moved it
+
+        base_img = Image.new("RGB", (width, height), (100, 120, 140))
+        unpressed = compositor.compose(
+            base_img, width, height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="Kitchen"), metrics=metrics,
+        )
+        pressed = compositor.compose(
+            base_img, width, height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, name="Kitchen", pressed=TouchZone.DOWN), metrics=metrics,
+        )
+        assert list(unpressed.crop(capped_layout.down).getdata()) != list(pressed.crop(capped_layout.down).getdata())
+
+    def test_repeat_screen_start_press_washes_the_capped_rect(self, compositor):
+        width, height = 320, 240
+        metrics = metrics_for(width, height, 0.2778)
+        capped_layout = repeat_layout_for(width, height, metrics=metrics)
+        base_img = Image.new("RGB", (width, height), (100, 120, 140))
+
+        def _state(**overrides):
+            state = dict(
+                name="Kitchen", layout="replaying", armed=True, line="0:10 / 1:00",
+                start_enabled=True, stop_enabled=True, stop_pressed=False,
+            )
+            state.update(overrides)
+            return RepeatViewState(**state)
+
+        unpressed = compositor.compose_repeat(
+            width, height, _state(), rotate=False, bgr=False, base=base_img, metrics=metrics,
+        )
+        pressed = compositor.compose_repeat(
+            width, height, _state(pressed=TouchZone.REPEAT_START),
+            rotate=False, bgr=False, base=base_img, metrics=metrics,
+        )
+        assert list(unpressed.crop(capped_layout.start).getdata()) != list(pressed.crop(capped_layout.start).getdata())
 
 
 class TestGlyphTileCacheAccounting:

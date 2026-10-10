@@ -339,6 +339,7 @@ FOOTER_NONE = "none"
 FOOTER_VOLUME = "volume"           # minus | plus glyphs + divider
 FOOTER_LABELS = "labels"           # left | right centred labels + divider
 FOOTER_LIST_BAR = "list_bar"       # back | down | up chevrons
+FOOTER_LIST_RAIL = "list_rail"     # up chevron | cross | down chevron on the right rail
 
 
 @dataclass(frozen=True)
@@ -445,7 +446,7 @@ class DialDisplayCompositor:
         if overlay is None or not overlay.visible:
             return _finish(image, rotate, bgr)
 
-        frame = _now_playing_frame(overlay, image.width, image.height)
+        frame = _now_playing_frame(overlay, image.width, image.height, metrics)
         return _compose_frame(
             image, image.width, image.height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
         )
@@ -470,8 +471,10 @@ class DialDisplayCompositor:
         glyph failure degrades to a plainer row, matching compose()'s own
         text-failure discipline. metrics: see compose().
         """
+        if metrics is None:
+            metrics = metrics_for(width, height)
         return _compose_frame(
-            None, width, height, _list_frame(state, width, height),
+            None, width, height, _list_frame(state, width, height, metrics),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -495,8 +498,10 @@ class DialDisplayCompositor:
         plainer frame, matching compose()'s own discipline. metrics: see
         compose().
         """
+        if metrics is None:
+            metrics = metrics_for(width, height)
         return _compose_frame(
-            base, width, height, _repeat_frame(state, width, height),
+            base, width, height, _repeat_frame(state, width, height, metrics),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -623,7 +628,7 @@ def _draw_top_band_content(
     pad = metrics.pad
     _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
-        _draw_glyph(frame, dots_rect, GLYPH_TWO_DOTS, dots_filled)
+        _draw_glyph(frame, dots_rect, GLYPH_TWO_DOTS, dots_filled, supersample=metrics.supersample)
 
 
 def _dim_rect(frame: Image.Image, rect: tuple[int, int, int, int]) -> None:
@@ -950,8 +955,7 @@ GLYPH_SELECTED_DOT = "selected_dot"    # params: ()
 GLYPH_LOOP = "loop"                    # params: (rgb,) — colour explicit so
                                         # more than one accent shade can share
                                         # this one cache without colliding
-GLYPH_CROSS = "cross"                  # reserved for a future glyph; no
-                                        # painter is registered for it yet
+GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
 
 
 @functools.lru_cache(maxsize=48)
@@ -1094,6 +1098,18 @@ def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> Non
         draw.ellipse(box, outline=_GLYPH_RGB, width=max(1, r // 3))
 
 
+def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """Two diagonal strokes forming an X — the right-rail's back/cancel
+    control. Same stroke width and reach rules as _draw_chevron so the
+    three rail glyphs read as one family. Rendered into a (w, h) canvas —
+    see _draw_glyph."""
+    stroke = max(1, min(w, h) // 7)
+    cx, cy = w / 2, h / 2
+    r = min(w, h) * 0.28
+    draw.line([(cx - r, cy - r), (cx + r, cy + r)], fill=_GLYPH_RGB, width=stroke)
+    draw.line([(cx - r, cy + r), (cx + r, cy - r)], fill=_GLYPH_RGB, width=stroke)
+
+
 # Dispatch table for _glyph_tile()'s kinded paint step — built here, after
 # every painter above is defined, and looked up by name at call time so its
 # own position in the module relative to _glyph_tile()/_draw_glyph() (defined
@@ -1104,6 +1120,7 @@ _GLYPH_PAINTERS = {
     GLYPH_ARM_DOT: _draw_arm_dot,
     GLYPH_SELECTED_DOT: _draw_selected_dot,
     GLYPH_LOOP: _draw_loop_glyph,
+    GLYPH_CROSS: _draw_cross_glyph,
 }
 
 
@@ -1215,7 +1232,7 @@ def _body_repeat_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
     dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
     label_rect = (row[0], row[1], dot_rect[0] - pad, row[3])
     _draw_label(draw, label_rect, "Repeat Play", row_font, pad)
-    _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, body.armed)
+    _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, body.armed, supersample=metrics.supersample)
 
 
 def _body_repeat_line(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -1250,17 +1267,17 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
         right_edge = x1 - pad
         if is_loop:
             loop_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph(img, loop_rect, GLYPH_LOOP, _LOOP_GLYPH_RGB)
+            _draw_glyph(img, loop_rect, GLYPH_LOOP, _LOOP_GLYPH_RGB, supersample=metrics.supersample)
             draw = ImageDraw.Draw(img)
             right_edge -= check_box
             if checked:
                 check_rect = (right_edge - check_box, y0, right_edge, y1)
-                _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT)
+                _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT, supersample=metrics.supersample)
                 draw = ImageDraw.Draw(img)
                 right_edge -= check_box
         elif checked:
             check_rect = (right_edge - check_box, y0, right_edge, y1)
-            _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT)
+            _draw_glyph(img, check_rect, GLYPH_SELECTED_DOT, supersample=metrics.supersample)
             draw = ImageDraw.Draw(img)
             right_edge -= check_box
 
@@ -1318,9 +1335,27 @@ def _footer_labels(img: Image.Image, layout, metrics: LayoutMetrics, footer: Foo
 
 def _footer_list_bar(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     ll = list_layout_for(metrics.width, metrics.height, metrics=metrics)
-    _draw_glyph(img, ll.back, GLYPH_CHEVRON, "left", True)
-    _draw_glyph(img, ll.down, GLYPH_CHEVRON, "down", footer.has_next)
-    _draw_glyph(img, ll.up, GLYPH_CHEVRON, "up", footer.has_prev)
+    ss = metrics.supersample
+    _draw_glyph(img, ll.back, GLYPH_CHEVRON, "left", True, supersample=ss)
+    _draw_glyph(img, ll.down, GLYPH_CHEVRON, "down", footer.has_next, supersample=ss)
+    _draw_glyph(img, ll.up, GLYPH_CHEVRON, "up", footer.has_prev, supersample=ss)
+
+
+def _footer_list_rail(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
+    """The right-rail counterpart to _footer_list_bar(): the same three
+    controls (previous page, back/cancel, next page), stacked top to bottom
+    in a dimmed column at the panel's right edge instead of side by side in
+    a bottom bar. A 1px separator column marks the boundary between the rows
+    and the rail, in the same shade the row separators use."""
+    ll = list_layout_for(metrics.width, metrics.height, metrics=metrics)
+    _dim_rect(img, ll.rail)
+    ImageDraw.Draw(img).line(
+        [(ll.rail[0] - 1, 0), (ll.rail[0] - 1, ll.rail[3] - 1)], fill=_LIST_SEPARATOR_RGB, width=1,
+    )
+    ss = metrics.supersample
+    _draw_glyph(img, ll.rail_up, GLYPH_CHEVRON, "up", footer.has_prev, supersample=ss)
+    _draw_glyph(img, ll.rail_cancel, GLYPH_CROSS, supersample=ss)
+    _draw_glyph(img, ll.rail_down, GLYPH_CHEVRON, "down", footer.has_next, supersample=ss)
 
 
 _FOOTER_RENDERERS = {
@@ -1328,6 +1363,7 @@ _FOOTER_RENDERERS = {
     FOOTER_VOLUME: _footer_volume,
     FOOTER_LABELS: _footer_labels,
     FOOTER_LIST_BAR: _footer_list_bar,
+    FOOTER_LIST_RAIL: _footer_list_rail,
 }
 
 
@@ -1368,31 +1404,39 @@ def _compose_frame(
     return _finish(img, rotate, bgr)
 
 
-def _zone_rect(geometry: str, zone: "TouchZone | None", index: "int | None", width: int, height: int) -> "Rect | None":
+def _zone_rect(
+    geometry: str, zone: "TouchZone | None", index: "int | None", width: int, height: int,
+    metrics: "LayoutMetrics | None" = None,
+) -> "Rect | None":
     """The rect the touch layer would report for (zone, index) on
     *geometry*, or None when no such entry exists (a zone from another
-    geometry, or a stale LIST_ROW index): nothing is washed."""
+    geometry, or a stale LIST_ROW index): nothing is washed. *metrics*
+    resolves the same way zone_rects_for() resolves it, so a pressed rect
+    is always looked up against the exact geometry a renderer drew — never
+    a density-free approximation of it."""
     if zone is None:
         return None
-    for entry in zone_rects_for(geometry, width, height):
+    for entry in zone_rects_for(geometry, width, height, metrics=metrics):
         if entry.zone == zone and entry.index == index:
             return entry.rect
     return None
 
 
-def _main_pressed_rects(pressed: "TouchZone | None", width: int, height: int) -> tuple[Rect, ...]:
+def _main_pressed_rects(
+    pressed: "TouchZone | None", width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[Rect, ...]:
     """The now-playing screen's pressed-rect lookup: a stale or unrecognised
     zone (e.g. one that belongs to a different geometry) washes nothing."""
-    rect = _zone_rect(GEOMETRY_MAIN, pressed, None, width, height)
+    rect = _zone_rect(GEOMETRY_MAIN, pressed, None, width, height, metrics)
     return (rect,) if rect is not None else ()
 
 
-def _now_playing_frame(overlay: OverlayState, width: int, height: int) -> Frame:
+def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     return Frame(
         background=BG_BASE,
         dim_top=True,
         dim_bottom=True,
-        pressed=_main_pressed_rects(overlay.pressed, width, height),
+        pressed=_main_pressed_rects(overlay.pressed, width, height, metrics),
         header=Header(
             name=overlay.name, volume=overlay.volume, muted=overlay.muted,
             dots_filled=0 if overlay.dots else None,
@@ -1402,20 +1446,22 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int) -> Frame:
     )
 
 
-def _repeat_pressed_rects(state: RepeatViewState, width: int, height: int) -> tuple[Rect, ...]:
+def _repeat_pressed_rects(
+    state: RepeatViewState, width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[Rect, ...]:
     """The repeat screen's pressed-rect lookup: a genuine touch first, then
     the fade-out-in-flight Stop wash layered on top of it when replaying —
     same order the two highlights are drawn in today."""
     rects = []
-    rect = _zone_rect(GEOMETRY_REPEAT, state.pressed, None, width, height)
+    rect = _zone_rect(GEOMETRY_REPEAT, state.pressed, None, width, height, metrics)
     if rect is not None:
         rects.append(rect)
     if state.layout == "replaying" and state.stop_pressed:
-        rects.append(_zone_rect(GEOMETRY_REPEAT, TouchZone.REPEAT_STOP, None, width, height))
+        rects.append(_zone_rect(GEOMETRY_REPEAT, TouchZone.REPEAT_STOP, None, width, height, metrics))
     return tuple(rects)
 
 
-def _repeat_frame(state: RepeatViewState, width: int, height: int) -> Frame:
+def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     replaying = state.layout == "replaying"
     if replaying:
         body = Body(BODY_REPEAT_LINE, line=state.line)
@@ -1430,31 +1476,38 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int) -> Frame:
         background=BG_BASE if replaying else BG_CHASSIS,
         dim_top=True,
         dim_bottom=replaying,
-        pressed=_repeat_pressed_rects(state, width, height),
+        pressed=_repeat_pressed_rects(state, width, height, metrics),
         header=Header(name=state.name, volume=state.volume, muted=state.muted, dots_filled=1),
         body=body,
         footer=footer,
     )
 
 
-def _list_pressed_rects(state: ListState, width: int, height: int) -> tuple[Rect, ...]:
+def _list_pressed_rects(
+    state: ListState, width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[Rect, ...]:
     """The selector screen's pressed-rect lookup: a stale LIST_ROW index
     (the roster shrank between paint and tap) washes nothing rather than
     raising."""
     if state.pressed is None:
         return ()
     zone, index = state.pressed
-    rect = _zone_rect(GEOMETRY_LIST, zone, index, width, height)
+    rect = _zone_rect(GEOMETRY_LIST, zone, index, width, height, metrics)
     return (rect,) if rect is not None else ()
 
 
-def _list_frame(state: ListState, width: int, height: int) -> Frame:
+def _list_frame(state: ListState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
+    layout = list_layout_for(width, height, metrics=metrics)
+    rail = layout.rail is not None
     return Frame(
         background=BG_CHASSIS,
         dim_top=False,
-        dim_bottom=True,
-        pressed=_list_pressed_rects(state, width, height),
+        dim_bottom=not rail,
+        pressed=_list_pressed_rects(state, width, height, metrics),
         header=None,
         body=Body(BODY_LIST_ROWS, rows=state.rows),
-        footer=Footer(FOOTER_LIST_BAR, has_prev=state.has_prev, has_next=state.has_next),
+        footer=Footer(
+            FOOTER_LIST_RAIL if rail else FOOTER_LIST_BAR,
+            has_prev=state.has_prev, has_next=state.has_next,
+        ),
     )
