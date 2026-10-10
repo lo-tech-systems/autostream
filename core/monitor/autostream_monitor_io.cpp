@@ -678,6 +678,8 @@ bool InputChannel::configure(const InputConfig& cfg)
         input_type_immediate_interrupt(cfg.input_type, cfg.silence_threshold_dbfs,
                                        kImmediateInterruptThresholdDbfs),
         std::memory_order_relaxed);
+    _activity_gated.store(input_type_activity_gated(cfg.input_type),
+                          std::memory_order_relaxed);
     LOG_INFO("[input%d] Configured device='%s', input_type='%s', silence_threshold=%.1f dBFS, silence_seconds=%d",
              _index, cfg.alsa_device.c_str(), cfg.input_type.c_str(),
              cfg.silence_threshold_dbfs, cfg.silence_seconds);
@@ -785,8 +787,12 @@ bool InputChannel::start(std::string* error_out)
     // than the nominal target rate. This keeps the first plausibility check in
     // RateEstimator::feed() anchored to the real device rate.
     _rate_estimator.reset(_alsa.actual_rate(), AudioMonitor::output_rate_hz());
+    _capture_rate_hz = _alsa.actual_rate();
 
     // Reset silence tracking and capture-thread private state.
+    _activity_gate.reset();
+    _gate_prev_enabled                = false;
+    _gate_prev_threshold_sample       = -1.0f;
     _last_above_threshold_time        = 0.0;
     _capture_start_time               = 0.0;
     _last_notify_capture_started_time = 0.0;
@@ -914,6 +920,7 @@ void InputChannel::stop()
     _session_effective_peak_linear.store(0.0f, std::memory_order_relaxed);
     _track_change_seq.store(0, std::memory_order_relaxed);
     _track_gap_detector.reset();
+    _activity_gate.reset();
 
     {
         std::lock_guard<std::mutex> lock(_status_mutex);
@@ -1218,7 +1225,7 @@ void InputChannel::process_thread_func()
         float silence_threshold_sample = 0.0f;
         bool  is_above_threshold = false;
         float track_change_silence_seconds = 0.0f;
-        bool should_capture = update_silence_state(peak_sample, now,
+        bool should_capture = update_silence_state(peak_sample, frames_in, now,
                                                      silence_threshold_sample,
                                                      is_above_threshold,
                                                      track_change_silence_seconds);
@@ -1392,6 +1399,7 @@ float InputChannel::update_metering(int frames_in)
 // once per iteration as today.
 //
 bool InputChannel::update_silence_state(float   peak_sample,
+                                         int     frames_in,
                                          double  now,
                                          float&  silence_threshold_sample,
                                          bool&   is_above_threshold,
@@ -1409,9 +1417,39 @@ bool InputChannel::update_silence_state(float   peak_sample,
     }
     silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
 
-    // Plain float comparison (still no log10/trig on this hot path).
+    // The gate's running total is only meaningful against one threshold
+    // and one setting; discard it when either changes.
+    bool gated = _activity_gated.load(std::memory_order_relaxed);
+    if (gated != _gate_prev_enabled
+        || silence_threshold_sample != _gate_prev_threshold_sample)
+    {
+        _activity_gate.reset();
+        _gate_prev_enabled          = gated;
+        _gate_prev_threshold_sample = silence_threshold_sample;
+    }
+
+    bool was_active = (_last_above_threshold_time > 0.0)
+                   && ((now - _last_above_threshold_time)
+                       < static_cast<double>(silence_seconds));
+
+    // Plain float comparison (still no log10/trig on this hot path). An
+    // active input is refreshed by any single block at the threshold; a
+    // gated input that is not yet active must first accumulate enough
+    // above-threshold time.
     if (peak_sample >= silence_threshold_sample)
-        _last_above_threshold_time = now;
+    {
+        if (!gated || was_active || _capture_rate_hz <= 0)
+        {
+            _last_above_threshold_time = now;
+        }
+        else
+        {
+            double block_seconds =
+                static_cast<double>(frames_in) / static_cast<double>(_capture_rate_hz);
+            if (_activity_gate.on_block(now, block_seconds))
+                _last_above_threshold_time = now;
+        }
+    }
 
     // Raw debounced "signal present" state -- unaffected by the minimum
     // playback hold below. Callers use this for is_silent status/VU

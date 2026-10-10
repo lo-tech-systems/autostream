@@ -234,6 +234,10 @@ recording of the thump) well before real music arrives.
   for `turntable`, 0.25 s for any other type. A coordinator that sends no
   type gets 0.25 s when the silence threshold is at or below -55 dBFS and
   1.25 s above it. Either way the window is bounded by a 5 s wall clock.
+  On a gated input the capture-start edge that arms the probation is the
+  activity gate's own firing, so the probation begins after the gate's
+  60 ms and the two sustain tests do not overlap; the probation itself
+  keeps using the raw per-block flag.
   If the audio does not sustain within that window, the probation expires
   silently -- replay never stopped, nothing was freed, no status field
   changed -- and the only operator-visible trace is a WARN-level log line.
@@ -258,6 +262,20 @@ What the hold does **not** affect:
   independent, much shorter silence window on both the live and replay
   paths and is never suppressed by the hold.
 - `minimum_playback_seconds=0` reproduces pre-hold behaviour exactly.
+
+#### Activity gate
+
+For an input with an `input_type` other than `cd`, the input becomes active
+(its `silent` flag goes false and a capture session can start) only once
+blocks at or above the silence threshold have added up to 60 ms within one
+second. An unrecognised `input_type` is treated like `line`. The blocks need
+not be consecutive, and a below-threshold block does not reset the total.
+Once active, any single block at the threshold refreshes the activity as
+before. A `cd` input starts on the first block at the threshold, and so does
+an input with no `input_type`, which is not gated. The track-gap detector,
+the interrupt probation and the recorder's onset gate keep using the raw
+per-block flag. The running total is discarded when the threshold or the
+type changes and when the input stops.
 
 ### Silence-timeout tail trim
 

@@ -352,6 +352,70 @@ class TestStartStopOutputDump:
 
 
 # ---------------------------------------------------------------------------
+# Source-inspection: activity gate wiring
+# ---------------------------------------------------------------------------
+
+class TestActivityGateSourceInspection:
+    """The gate is configured, fed and reset in the places the audio loop needs."""
+
+    @pytest.fixture(scope="class")
+    def io_src(self):
+        p = REPO_ROOT / "core" / "monitor" / "autostream_monitor_io.cpp"
+        if not p.exists():
+            pytest.skip(f"autostream_monitor_io.cpp not found at {p}")
+        return _read_source(p)
+
+    @staticmethod
+    def _squash(src):
+        return " ".join(src.split())
+
+    def test_configure_resolves_gate_from_input_type(self, io_src):
+        assert "input_type_activity_gated(cfg.input_type)" in io_src, (
+            "configure() does not resolve the gate flag from cfg.input_type"
+        )
+
+    def test_gate_is_fed_in_one_place(self, io_src):
+        n = io_src.count("_activity_gate.on_block(")
+        assert n == 1, f"expected one _activity_gate.on_block( call, found {n}"
+
+    def test_capture_rate_copied_once_in_start(self, io_src):
+        needle = "_capture_rate_hz = _alsa.actual_rate();"
+        assert io_src.count(needle) == 1, "capture rate must be copied exactly once"
+        pos = io_src.index(needle)
+        start = io_src.index("bool InputChannel::start(")
+        stop = io_src.index("void InputChannel::stop()")
+        assert start < pos < stop, "capture rate must be copied inside start()"
+
+    def test_update_silence_state_has_no_alsa_or_logging(self, io_src):
+        head = "bool InputChannel::update_silence_state("
+        begin = io_src.index(head)
+        end = io_src.index("\n// ──", begin)
+        body = io_src[begin:end]
+        assert "_alsa." not in body, "update_silence_state must not call into ALSA"
+        assert "LOG_" not in body, "update_silence_state must not log"
+
+    def test_gate_reset_count(self, io_src):
+        n = io_src.count("_activity_gate.reset()")
+        assert n == 3, f"expected 3 _activity_gate.reset() calls, found {n}"
+
+    def test_probation_feed_uses_raw_comparison(self, io_src):
+        flat = self._squash(io_src)
+        assert ("_repeat_controller.notify_probation_block( _index, "
+                "peak_sample >= silence_threshold_sample, now);") in flat, (
+            "probation feed no longer receives the raw comparison"
+        )
+
+    def test_track_gap_detector_uses_raw_flag(self, io_src):
+        flat = self._squash(io_src)
+        assert "bool raw_above = (peak_sample >= silence_threshold_sample);" in flat, (
+            "raw_above is no longer the raw comparison"
+        )
+        assert "_track_gap_detector.update(_capturing.load(), raw_above, now," in flat, (
+            "track-gap detector no longer receives raw_above"
+        )
+
+
+# ---------------------------------------------------------------------------
 # C++ build suite (Linux with g++ only)
 # ---------------------------------------------------------------------------
 

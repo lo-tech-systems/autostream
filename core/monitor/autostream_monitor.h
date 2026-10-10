@@ -3278,7 +3278,9 @@ private:
     // handle_session_edges() need, read exactly once per iteration as today.
     // peak_sample/silence_threshold_sample are linear amplitudes in
     // [0.0, 1.0], not int16-scale sample counts -- see compute_peak_sample().
+    // frames_in sizes the block for the activity gate.
     bool update_silence_state(float   peak_sample,
+                               int     frames_in,
                                double  now,
                                float&  silence_threshold_sample,
                                bool&   is_above_threshold,
@@ -3397,6 +3399,7 @@ private:
     // legacy int16 scale for replay's own domain.
     std::atomic<float> _silence_threshold_sample{0.0f};
     std::atomic<bool> _immediate_interrupt{true};   // resolved from input_type in configure(); read lock-free per block
+    std::atomic<bool> _activity_gated{false};       // resolved from input_type in configure(); read lock-free per block
 
     // ── ALSA capture ─────────────────────────────────────────────────────────
     AlsaCapture _alsa;
@@ -3473,6 +3476,15 @@ private:
     TrackGapDetector       _track_gap_detector;
     std::atomic<uint32_t>  _track_change_seq{0};
     float                  _prev_track_change_silence_seconds{-1.0f};
+
+    // ── Activity gate (process thread only) ──────────────────────────────────
+    ActivityGate _activity_gate;
+    bool  _gate_prev_enabled          = false;
+    float _gate_prev_threshold_sample = -1.0f;
+    // Negotiated capture rate, copied from the ALSA handle in start() before
+    // the threads exist, so the process thread can size a block in seconds
+    // without calling into AlsaCapture, whose accessors lock.
+    int   _capture_rate_hz = 0;
 
     // ── process_thread_func() constants and scratch buffers ──────────────────
     // Formerly local to process_thread_func(): a std::vector(size) local is
