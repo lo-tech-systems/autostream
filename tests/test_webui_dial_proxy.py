@@ -945,6 +945,34 @@ class TestHandleDialScreenSettings:
         }
         assert "uuid" not in sent_body
 
+    def test_get_and_post_pass_through_surface_brightness_and_sleep_verbatim(self):
+        """The HD fields travel both ways unaltered; the proxy neither
+        gates nor strips them."""
+        sighting = MagicMock(ip="1.2.3.4", port=7842)
+        conn = _conn_success(
+            body=b'{"ok":true,"screen":{"fitted":true,"rotate":false,"surface":"kiosk",'
+                 b'"sleep_after_s":900,"brightness":45},"runtime":{"backend":"noop"}}'
+        )
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json") as mock_send, \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_get(MagicMock(), "uuid")
+        data = mock_send.call_args[0][2]
+        assert data["screen"]["surface"] == "kiosk"
+        assert data["screen"]["sleep_after_s"] == 900
+        assert data["screen"]["brightness"] == 45
+
+        conn = _conn_success(body=b'{"ok":true,"screen":{},"runtime":{}}')
+        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+             patch("autostream_webui_dials.send_json"), \
+             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+            handle_dial_screen_settings_post(
+                MagicMock(),
+                {"uuid": "my-uuid", "screen": {"fitted": True, "sleep_after_s": 60, "brightness": 20}},
+            )
+        sent_body = json.loads(conn.request.call_args[1]["body"])
+        assert sent_body["screen"] == {"fitted": True, "sleep_after_s": 60, "brightness": 20}
+
     def test_get_passes_through_volume_and_mute_scope_and_scope_block_verbatim(self):
         """volume_scope/mute_scope and the informational `scope` block must
         reach the browser unaltered -- the proxy is a generic pass-through

@@ -708,7 +708,7 @@ def _dial_card_html(
                     </label>
                     <span>Has Screen Fitted</span>
                   </div>
-                  <div class="dial-screen-ctl-row" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                  <div class="dial-screen-rotate-row dial-screen-ctl-row" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <label class="output-toggle" style="margin:0;">
                       <input type="checkbox" class="dial-screen-rotate" data-dial-action="save-screen" disabled>
                       <span class="switch"></span>
@@ -726,6 +726,7 @@ def _dial_card_html(
                     <span>Screen Type:</span>
                     <select class="dial-screen-type" data-dial-action="save-screen" disabled></select>
                   </div>
+                  <p class="dial-screen-hd-note dial-screen-ctl-row" style="display:none;margin:0.25rem 0 0;font-size:0.85em;color:var(--color-text-secondary,#888);">Needs the HD kiosk install; see the HD dial guide.</p>
                   <div class="dial-screen-size-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <span>Screen Size (inches):</span>
                     <input type="number" class="dial-screen-size" step="0.1" min="0.5" max="20"
@@ -740,6 +741,21 @@ def _dial_card_html(
                   <div class="dial-screen-touch-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <span>Touch Panel:</span>
                     <select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>
+                  </div>
+                  <div class="dial-screen-brightness-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Brightness:</span>
+                    <input type="range" class="dial-screen-brightness" min="5" max="100" step="5"
+                           data-dial-action="save-screen" disabled style="flex:1;min-width:0;">
+                    <span class="dial-screen-brightness-val"></span>
+                  </div>
+                  <div class="dial-screen-sleep-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+                    <span>Sleep after:</span>
+                    <select class="dial-screen-sleep" data-dial-action="save-screen" disabled>
+                      <option value="60">1 min</option>
+                      <option value="300">5 min</option>
+                      <option value="900">15 min</option>
+                      <option value="0">Never</option>
+                    </select>
                   </div>
                   <div class="dial-screen-controls-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <label class="output-toggle" style="margin:0;">
@@ -3857,6 +3873,10 @@ def send_setup_page(
           if (!fittedEl || !rotateEl) return;
           var off = fittedEl.disabled || !fittedEl.checked;
           rotateEl.disabled = off;
+          var brightEl = card.querySelector('.dial-screen-brightness');
+          var sleepEl = card.querySelector('.dial-screen-sleep');
+          if (brightEl) brightEl.disabled = off;
+          if (sleepEl) sleepEl.disabled = off;
           if (bgrEl) bgrEl.disabled = off;
           if (typeEl) typeEl.disabled = off;
           if (sizeEl) sizeEl.disabled = off;
@@ -3873,7 +3893,8 @@ def send_setup_page(
           // check touch at runtime; this is purely a UI courtesy.
           var ctlEl = card.querySelector('.dial-screen-always-controls');
           var ctlRow = card.querySelector('.dial-screen-controls-row');
-          var noTouch = !touchEl || touchEl.value === '' || touchEl.value === 'none';
+          var noTouch = card.dataset.surface !== 'kiosk'
+            && (!touchEl || touchEl.value === '' || touchEl.value === 'none');
           if (ctlEl) ctlEl.disabled = off || noTouch;
           if (ctlRow) ctlRow.classList.toggle('is-disabled', off || noTouch);
           // Volume/mute scope: without a screen the dial cannot pick an
@@ -4519,11 +4540,72 @@ def send_setup_page(
               delete card.dataset.scopeCaps;
               scopeRows.forEach(function(r) {{ r.style.display = 'none'; }});
             }}
+            dialApplySurface(card, j);
             // Only now is it safe to save: the controls hold the dial's real
             // values, so a whole-object POST cannot reset an unread field.
             card.dataset.screenLoaded = '1';
             dialSyncScreenControlsEnabled(card);
           }} catch(e) {{}}
+        }}
+
+        // Shows the rows that fit the dial's screen. A kiosk (HD) dial has
+        // no panel wiring to configure and no frame to show, so the SPI-only
+        // rows and the "Show dial screen" button are hidden and brightness
+        // and sleep appear instead, each only when the dial's own GET
+        // carried the field (an older dial never gets it back). A dial that
+        // sends no `surface` is an SPI dial. Runs after the per-row gates in
+        // dialLoadScreenSettings so it has the last word on visibility.
+        function dialApplySurface(card, j) {{
+          var screen = (j && j.screen) || {{}};
+          var kiosk = screen.surface === 'kiosk';
+          card.dataset.surface = kiosk ? 'kiosk' : 'spi';
+          var spiOnly = ['dial-screen-rotate-row', 'dial-screen-bgr-row', 'dial-screen-size-row',
+            'dial-screen-layout-row', 'dial-screen-touch-row', 'dial-screen-layout-note',
+            'dial-screen-touch-warning'];
+          if (kiosk) {{
+            spiOnly.forEach(function(cls) {{
+              var el = card.querySelector('.' + cls);
+              if (el) el.style.display = 'none';
+            }});
+          }} else {{
+            var rotateRow = card.querySelector('.dial-screen-rotate-row');
+            if (rotateRow) rotateRow.style.display = 'flex';
+          }}
+          var showBtn = card.querySelector('[data-dial-action="show-screen"]');
+          if (showBtn) showBtn.style.display = kiosk ? 'none' : '';
+          var brightEl = card.querySelector('.dial-screen-brightness');
+          var brightRow = card.querySelector('.dial-screen-brightness-row');
+          if (kiosk && screen.brightness !== undefined) {{
+            card.dataset.brightnessCaps = '1';
+            if (brightEl) brightEl.value = screen.brightness;
+            dialSyncBrightnessLabel(card);
+            if (brightRow) brightRow.style.display = 'flex';
+          }} else {{
+            delete card.dataset.brightnessCaps;
+            if (brightRow) brightRow.style.display = 'none';
+          }}
+          var sleepEl = card.querySelector('.dial-screen-sleep');
+          var sleepRow = card.querySelector('.dial-screen-sleep-row');
+          if (kiosk && screen.sleep_after_s !== undefined) {{
+            card.dataset.sleepCaps = '1';
+            if (sleepEl) sleepEl.value = String(screen.sleep_after_s);
+            if (sleepRow) sleepRow.style.display = 'flex';
+          }} else {{
+            delete card.dataset.sleepCaps;
+            if (sleepRow) sleepRow.style.display = 'none';
+          }}
+          // A kiosk profile chosen while a panel is still active needs the
+          // kiosk install on the dial first.
+          var noteEl = card.querySelector('.dial-screen-hd-note');
+          var runtime = j && j.runtime;
+          var panelActive = !!(runtime && runtime.backend && runtime.backend !== 'noop');
+          if (noteEl) noteEl.style.display = (screen.screen_type === 'hd_kiosk' && panelActive) ? 'block' : 'none';
+        }}
+
+        function dialSyncBrightnessLabel(card) {{
+          var el = card.querySelector('.dial-screen-brightness');
+          var val = card.querySelector('.dial-screen-brightness-val');
+          if (el && val) val.textContent = el.value + '%';
         }}
 
         // Fill the layout-size <select> with the fixed "Native" option
@@ -4588,7 +4670,7 @@ def send_setup_page(
         function dialRenderLayoutNotes(card, layout) {{
           var noteEl = card.querySelector('.dial-screen-layout-note');
           var warnEl = card.querySelector('.dial-screen-touch-warning');
-          if (!layout || typeof layout !== 'object') {{
+          if (!layout || typeof layout !== 'object' || card.dataset.surface === 'kiosk') {{
             if (noteEl) noteEl.style.display = 'none';
             if (warnEl) warnEl.style.display = 'none';
             return;
@@ -4677,6 +4759,15 @@ def send_setup_page(
             screen.volume_scope = (volEl && volEl.dataset.stored) || 'current';
             screen.mute_scope = (muteEl && muteEl.dataset.stored) || 'current';
           }}
+          // HD fields: only a kiosk dial that published them gets them back.
+          if (card.dataset.brightnessCaps === '1') {{
+            var brightEl = card.querySelector('.dial-screen-brightness');
+            if (brightEl && brightEl.value !== '') screen.brightness = parseInt(brightEl.value, 10);
+          }}
+          if (card.dataset.sleepCaps === '1') {{
+            var sleepEl = card.querySelector('.dial-screen-sleep');
+            if (sleepEl && sleepEl.value !== '') screen.sleep_after_s = parseInt(sleepEl.value, 10);
+          }}
           var body = {{uuid: uuid, screen: screen}};
           if (card.dataset.pinSet === 'true') {{
             var unlockedPin = _dialUnlockedPins.has(card) ? _dialUnlockedPins.get(card) : null;
@@ -4688,7 +4779,7 @@ def send_setup_page(
           // the checkboxes, so remember what to restore it to on failure.
           var prevValue = null;
           if (changedEl) {{
-            prevValue = (changedEl.tagName === 'SELECT' || changedEl.type === 'number')
+            prevValue = (changedEl.tagName === 'SELECT' || changedEl.type === 'number' || changedEl.type === 'range')
               ? changedEl.value : changedEl.checked;
           }}
           try {{
@@ -4706,6 +4797,12 @@ def send_setup_page(
                     result.body.screen ? result.body.screen.layout_size : null
                   );
                 }}
+                var savedSurface = (result.body && result.body.screen && result.body.screen.surface === 'kiosk') ? 'kiosk' : 'spi';
+                if (savedSurface !== card.dataset.surface) {{
+                  // A new screen type can move the dial between SPI and kiosk;
+                  // reload so the rows match what it now reports.
+                  dialLoadScreenSettings(card);
+                }}
                 dialRenderLayoutNotes(card, result.body ? result.body.layout : null);
                 dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
                 dialSyncScreenControlsEnabled(card);
@@ -4716,7 +4813,7 @@ def send_setup_page(
               // Revert only the control the user changed — the others
               // still hold their pre-save values.
               if (changedEl) {{
-                if (changedEl.tagName === 'SELECT' || changedEl.type === 'number') changedEl.value = prevValue;
+                if (changedEl.tagName === 'SELECT' || changedEl.type === 'number' || changedEl.type === 'range') changedEl.value = prevValue;
                 else changedEl.checked = prevValue;
                 if (changedEl.classList.contains('dial-volume-scope')
                     || changedEl.classList.contains('dial-mute-scope')) changedEl.dataset.stored = prevValue;
@@ -4726,7 +4823,7 @@ def send_setup_page(
           }} catch(e) {{
             dialMsg(card, 'Network error', false);
             if (changedEl) {{
-              if (changedEl.tagName === 'SELECT' || changedEl.type === 'number') changedEl.value = prevValue;
+              if (changedEl.tagName === 'SELECT' || changedEl.type === 'number' || changedEl.type === 'range') changedEl.value = prevValue;
               else changedEl.checked = prevValue;
               if (changedEl.classList.contains('dial-volume-scope')
                   || changedEl.classList.contains('dial-mute-scope')) changedEl.dataset.stored = prevValue;
@@ -5412,6 +5509,9 @@ def send_setup_page(
         // (global, rendered in _body_prefix).
         function _initDialsCard() {{
           document.querySelectorAll('.dial-card').forEach(function(card) {{
+            card.addEventListener('input', function(ev) {{
+              if (ev.target.classList.contains('dial-screen-brightness')) dialSyncBrightnessLabel(card);
+            }});
             card.addEventListener('change', function(ev) {{
               var action = ev.target.dataset.dialAction;
               if (action === 'toggle-allow') dialToggleAllow(card, ev.target.checked);
