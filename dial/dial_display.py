@@ -1496,10 +1496,14 @@ class DialDisplay:
             self.selector_pick(index)
 
     def _rows_per_page(self) -> int:
-        """Rows per list page for the active panel. Safe with or without
-        self._lock (reads _active_panel_dims only)."""
+        """Rows per list page for the active panel — the same density-aware
+        count the repaint thread paints with, so the touch-thread page slice
+        and the painted page can never disagree about which rows are on
+        screen. Safe with or without self._lock (reads _active_panel_dims and
+        self._mm_per_px only, exactly as _metrics_locked does)."""
         width, height = self._active_panel_dims()
-        return _rows_per_page_for(width, height)
+        metrics = metrics_for(width, height, mm_per_px=self._mm_per_px)
+        return _rows_per_page_for(width, height, metrics=metrics)
 
     def _current_page_rows(self, state) -> tuple:
         """The current page's slice of *state*.rows, for either a

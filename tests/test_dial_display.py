@@ -2947,6 +2947,56 @@ class TestSelectorPickAndPage:
         assert display.manual_focus_id() == expected_id
 
 
+class TestListPagingMatchesPaintedRows:
+    """Regression: the touch-thread page slice must use the SAME density-aware
+    rows-per-page the repaint thread paints with. On a physically large panel
+    whose short side puts it in the richer content tier the list paints four
+    rows per page, not three; if the touch path still counts three, a tap on
+    the fourth row reads as a miss and the second page starts one row late.
+    Uses the 320x240 2.8-inch panel (band tall enough that the touch-floor
+    veto does not pull it back to the base three-row layout)."""
+
+    def _rich_opened(self, count):
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        targets = [
+            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
+                     auth="authorized", playing_since=float(i))
+            for i in range(count)
+        ]
+        display, fb, gt = _make_display(
+            screen_type="ili9341_320x240", backend=fb, targets=targets,
+        )
+        display.enable()
+        with patch("dial_display.fetch_target_status", return_value=_status_result(track_id=None)):
+            display._poll_once()
+        display.open_selector()
+        with display._lock:
+            display._repaint_current_locked()
+        return display, fb, gt, targets
+
+    def test_rows_per_page_matches_painted_metrics(self):
+        display, fb, gt, targets = self._rich_opened(count=5)
+        with display._lock:
+            painted = display._metrics_locked().rows_per_page
+        assert painted == 4  # richer tier on the 2.8-inch 320x240 panel
+        assert display._rows_per_page() == painted
+
+    def test_fourth_row_is_pickable_not_a_miss(self):
+        display, fb, gt, targets = self._rich_opened(count=5)
+        display.selector_pick(3)  # the fourth row of page 0
+        assert display.manual_focus_id() == "3" * 20
+
+    def test_second_page_starts_after_a_full_first_page(self):
+        display, fb, gt, targets = self._rich_opened(count=6)
+        display.selector_page(+1)
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._selector.page == 1
+        display.selector_pick(0)  # row 0 of PAGE 1 == the fifth target overall
+        assert display.manual_focus_id() == "4" * 20
+
+
 # ---------------------------------------------------------------------------
 # Shared paging/list-state helpers — pure functions, exercised directly
 # without a display instance where possible.
