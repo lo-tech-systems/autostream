@@ -512,17 +512,14 @@ def _draw_top_band_content(
     muted: bool | None,
     width: int,
     height: int,
-    halo: bool,
 ) -> None:
     """Draw the top band's pager dots, appliance name and mute/volume
     readout into *frame* in place — the piece of the top band shared
-    verbatim by the main screen's now-playing overlay (_draw_overlay,
-    halo=True: the name is drawn over arbitrary album art) and the repeat
-    screen's own top band (_draw_repeat, halo=False: a flat chassis
-    background in the enable layout, or an already band-dimmed artwork/
-    logo base in the replaying layout — see the module docstring's halo
-    paragraph for why only text drawn directly over undimmed artwork needs
-    it).
+    verbatim by the main screen's now-playing overlay (_draw_overlay) and
+    the repeat screen's own top band (_draw_repeat). The name is drawn
+    plain: it always sits over the dimmed top band, which gives it enough
+    contrast without the soft halo the artist/title lines need over
+    undimmed album art.
 
     Caller is responsible for dimming the band (and drawing any
     pressed-zone highlight) before calling this, same discipline as every
@@ -537,11 +534,8 @@ def _draw_top_band_content(
 
     draw = ImageDraw.Draw(frame)
     _draw_volume_cluster(draw, volume_cluster_rect, volume, muted, volume_font, width, height)
-    if halo:
-        _draw_text_with_halo(frame, name_rect, name_text, name_font, width, height)
-    else:
-        pad = _pad_px(width, height)
-        _draw_label(ImageDraw.Draw(frame), name_rect, name_text, name_font, pad)
+    pad = _pad_px(width, height)
+    _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
         _draw_glyph_supersampled(
             frame, dots_rect, lambda d, w, h: _draw_two_dots(d, w, h, filled=dots_filled),
@@ -581,7 +575,7 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
         dots_filled=0 if overlay.dots else None,
         name_rect=layout.name, name_text=overlay.name,
         volume_cluster_rect=layout.volume_cluster, volume=overlay.volume, muted=overlay.muted,
-        width=width, height=height, halo=False,
+        width=width, height=height,
     )
 
     # The artist/title lines are main-screen-only (the repeat screen has no
@@ -591,10 +585,11 @@ def _draw_overlay(image: Image.Image, width: int, height: int, overlay: OverlayS
     artist_font = _load_font(artist_px)
     _draw_text_with_halo(frame, layout.title, overlay.title, artist_font, width, height)
     _draw_text_with_halo(frame, layout.artist, overlay.artist, artist_font, width, height)
-    draw = ImageDraw.Draw(frame)
-    _draw_minus_glyph(draw, layout.down)
-    _draw_plus_glyph(draw, layout.up)
-    _draw_band_divider(draw, layout, width, height)
+    _draw_bottom_band(
+        frame, layout, width, height,
+        left_rect=layout.down, right_rect=layout.up,
+        draw_left=_draw_minus_glyph, draw_right=_draw_plus_glyph,
+    )
     return frame
 
 
@@ -623,6 +618,25 @@ def _draw_band_divider(draw: ImageDraw.ImageDraw, layout: OverlayLayout, width: 
     y0 = layout.bottom_band[1]
     y1 = layout.bottom_band[3] - 1
     draw.line([(x, y0), (x, y1)], fill=_DIVIDER_RGB, width=line_width)
+
+
+def _draw_bottom_band(
+    frame: Image.Image, layout, width: int, height: int, *,
+    left_rect, right_rect, draw_left, draw_right,
+) -> None:
+    """Draw the bottom band's two controls with the white divider between
+    them — the footer shared by the volume screen (minus/plus glyphs) and
+    the repeat screen's replaying layout (Restart/Stop labels), the
+    counterpart to the shared _draw_top_band_content() header. draw_left and
+    draw_right are callables (draw, rect) that render the left and right
+    control into their rect — the only part that differs between screens.
+    The caller has already dimmed the band and drawn any pressed highlight;
+    text/glyphs land on top. *layout* need only carry divider_x and
+    bottom_band (both OverlayLayout and RepeatLayout do)."""
+    draw = ImageDraw.Draw(frame)
+    draw_left(draw, left_rect)
+    draw_right(draw, right_rect)
+    _draw_band_divider(draw, layout, width, height)
 
 
 def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
@@ -1094,15 +1108,13 @@ def _draw_repeat(width: int, height: int, state: RepeatViewState, base=None) -> 
     line_font = _load_font(line_px)
 
     # The dots draw the RIGHT dot filled (this is the second of the two
-    # screens) and are never omitted here — see _draw_top_band_content;
-    # halo=False since the enable layout has no arbitrary artwork behind
-    # it, and the replaying layout's base image is already band-dimmed.
+    # screens) and are never omitted here — see _draw_top_band_content.
     _draw_top_band_content(
         frame,
         dots_rect=layout.dots, dots_filled=1,
         name_rect=layout.name, name_text=state.name,
         volume_cluster_rect=layout.volume_cluster, volume=state.volume, muted=state.muted,
-        width=width, height=height, halo=False,
+        width=width, height=height,
     )
     draw = ImageDraw.Draw(frame)
 
@@ -1116,9 +1128,12 @@ def _draw_repeat(width: int, height: int, state: RepeatViewState, base=None) -> 
     else:
         start_color = _GLYPH_RGB if state.start_enabled else _DIMMED_GLYPH_RGB
         stop_color = _GLYPH_RGB if state.stop_enabled else _DIMMED_GLYPH_RGB
-        _draw_label_centered(draw, layout.start, "Restart", line_font, color=start_color)
-        _draw_label_centered(draw, layout.stop, "Stop", line_font, color=stop_color)
-        _draw_band_divider(draw, layout, width, height)
+        _draw_bottom_band(
+            frame, layout, width, height,
+            left_rect=layout.start, right_rect=layout.stop,
+            draw_left=lambda d, r: _draw_label_centered(d, r, "Restart", line_font, color=start_color),
+            draw_right=lambda d, r: _draw_label_centered(d, r, "Stop", line_font, color=stop_color),
+        )
         _draw_text_with_halo(frame, layout.line, state.line, line_font, width, height, align="center")
 
     return frame
