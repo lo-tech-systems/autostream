@@ -658,7 +658,7 @@ class TestOutputsRefreshBoundary:
     def test_outputs_refresh_tick_boundary(self):
         display = self._opened()
         clock = _FakeClock(1000.0)
-        with _patch_monotonic(clock), patch("dial_display.enqueue_fetch") as enqueue:
+        with _patch_monotonic(clock), patch("dial_core.enqueue_fetch") as enqueue:
             display._tick_outputs_refresh()
             assert enqueue.call_count == 1          # the first tick is due at once
             clock.t = 1001.99
@@ -674,7 +674,7 @@ class TestOutputsRefreshBoundary:
 
     def test_outputs_refresh_runs_for_the_detail_page_and_not_for_main(self):
         clock = _FakeClock(1000.0)
-        with _patch_monotonic(clock), patch("dial_display.enqueue_fetch") as enqueue:
+        with _patch_monotonic(clock), patch("dial_core.enqueue_fetch") as enqueue:
             self._opened(screen="output")._tick_outputs_refresh()
             assert enqueue.call_count == 1
             self._opened(screen="main")._tick_outputs_refresh()
@@ -694,7 +694,7 @@ class TestEqOptimisticWindow:
         display = _eq_display()
         clock = _FakeClock(1000.0)
         fetched = {"ok": True, "bass_db": 0, "treble_db": 0}
-        with _patch_monotonic(clock), patch("dial_display._enqueue_eq_set"):
+        with _patch_monotonic(clock), patch("dial_core._enqueue_eq_set"):
             assert display._open_eq_locked() is True
             display.eq_step("bass", +2)
             clock.t = 1001.99
@@ -712,7 +712,7 @@ class TestEqOptimisticWindow:
     def test_eq_step_preserves_the_other_controls_shown_value(self):
         display = _eq_display()
         clock = _FakeClock(1000.0)
-        with _patch_monotonic(clock), patch("dial_display._enqueue_eq_set"):
+        with _patch_monotonic(clock), patch("dial_core._enqueue_eq_set"):
             display._open_eq_locked()
             display.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": 1, "treble_db": -3}, {})
             display.eq_step("bass", +9)

@@ -161,6 +161,17 @@ class TestHandleLineAdd:
         targets = dm.get_playing_targets()
         assert targets[0].dial_eq is False
 
+    def test_dial_eq_version_follows_the_advertised_value(self):
+        for txt, flag, version in (
+            ("dial_api=v1 dial_eq=v1", True, 1),
+            ("dial_api=v1 dial_eq=v2", True, 2),
+            ("dial_api=v1 dial_eq=v9", False, 0),
+            ("dial_api=v1", False, 0),
+        ):
+            dm._browser._handle_line(_av_add(txt=txt))
+            target = dm.get_playing_targets()[0]
+            assert (target.dial_eq, target.dial_eq_version) == (flag, version)
+
     def test_service_name_stored(self):
         dm._browser._handle_line(_av_add(name="Kitchen"))
         targets = dm.get_playing_targets()
@@ -495,6 +506,21 @@ class TestGeneralBrowserParsing:
     def test_dial_eq_absent_sets_dial_eq_false(self):
         dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v1"))
         assert dm._general_browser.get_snapshot()[_VALID_ID].dial_eq is False
+
+    def test_dial_eq_version_follows_the_advertised_value(self):
+        for txt, flag, version in (
+            ("dial_api=v1 dial_eq=v1", True, 1),
+            ("dial_api=v1 dial_eq=v2", True, 2),
+            ("dial_api=v1", False, 0),
+        ):
+            dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} {txt}"))
+            sighting = dm._general_browser.get_snapshot()[_VALID_ID]
+            assert (sighting.dial_eq, sighting.dial_eq_version) == (flag, version)
+
+    def test_dial_eq_version_reaches_the_roster(self):
+        dm._general_browser._handle_line(_gen_add(txt=f"id={_VALID_ID} dial_api=v1 dial_eq=v2"))
+        roster = dm.get_roster()
+        assert (roster[0].dial_eq, roster[0].dial_eq_version) == (True, 2)
 
     def test_valid_entry_fields_parsed(self):
         dm._general_browser._handle_line(_gen_add(

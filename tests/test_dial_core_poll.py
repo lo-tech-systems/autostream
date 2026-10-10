@@ -562,3 +562,86 @@ class TestFetchArtworkBytes:
     def test_url_log_key_is_short_and_non_reversible(self):
         key = cp.url_log_key(self.URL)
         assert len(key) == 12 and "provider" not in key
+
+
+# ---------------------------------------------------------------------------
+# Outputs and EQ replies
+# ---------------------------------------------------------------------------
+
+from dial_core_state import EqBand, OutputRow  # noqa: E402
+
+
+def _out(id="1", name="Bedroom", selected=True, volume=40, **extra):
+    return {"id": id, "name": name, "selected": selected, "volume": volume, **extra}
+
+
+class TestParseOutputsBody:
+    def test_well_formed_rows_become_output_rows(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [_out(), _out("2", "Study", False, 0)]})
+        assert rows == (OutputRow("1", "Bedroom", True, 40), OutputRow("2", "Study", False, 0))
+
+    def test_an_empty_list_is_a_valid_result(self):
+        assert cp.parse_outputs_body(200, {"ok": True, "outputs": []}) == ()
+
+    def test_an_output_in_use_elsewhere_is_kept_and_marked(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [
+            _out("1", remote_in_use=False),
+            _out("2", remote_in_use=True, remote_owner="Hall"),
+            _out("3", remote_in_use=True),
+        ]})
+        assert [(r.id, r.remote_in_use, r.remote_owner) for r in rows] == [
+            ("1", False, None), ("2", True, "Hall"), ("3", True, None),
+        ]
+
+    def test_an_owner_is_only_carried_for_a_row_in_use(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [
+            _out("1", remote_in_use=False, remote_owner="Hall"),
+        ]})
+        assert rows[0].remote_owner is None
+
+    def test_a_malformed_row_in_use_is_skipped_not_fatal(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [
+            _out("1"), {"id": "2", "remote_in_use": True},
+        ]})
+        assert rows == (OutputRow("1", "Bedroom", True, 40),)
+
+    @pytest.mark.parametrize("body", [
+        {"ok": True, "outputs": [{"id": "1"}]},
+        {"ok": True, "outputs": ["bad"]},
+        {"ok": True, "outputs": [_out(id="")]},
+        {"ok": True, "outputs": [_out(selected="yes")]},
+        {"ok": True, "outputs": [_out(volume=True)]},
+        {"ok": True, "outputs": [_out(volume="4")]},
+        {"ok": True, "outputs": "nope"},
+        {"ok": False, "error": "backend_unavailable"},
+        None,
+    ])
+    def test_anything_malformed_is_transient(self, body):
+        assert cp.parse_outputs_body(200, body) is None
+
+    def test_a_failed_request_is_transient(self):
+        assert cp.parse_outputs_body(412, {"ok": True, "outputs": []}) is None
+        assert cp.parse_outputs_body(None, None) is None
+
+    def test_levels_are_clamped(self):
+        rows = cp.parse_outputs_body(200, {"ok": True, "outputs": [_out(volume=250), _out("2", volume=-5)]})
+        assert [r.volume for r in rows] == [100, 0]
+
+
+class TestParseEqBody:
+    def test_bass_and_treble_become_the_two_bands_of_the_first_capability(self):
+        assert cp.parse_eq_body(200, {"ok": True, "bass_db": 3, "treble_db": -2}) == (
+            EqBand("bass", None, 3, -6, 6), EqBand("treble", None, -2, -6, 6),
+        )
+
+    @pytest.mark.parametrize("status, body", [
+        (500, None),
+        (200, None),
+        (200, {"ok": False}),
+        (200, {"ok": True, "bass_db": "2", "treble_db": 1}),
+        (200, {"ok": True, "bass_db": 2}),
+        (200, {"ok": True, "bass_db": True, "treble_db": 1}),
+        (412, {"ok": True, "bass_db": 1, "treble_db": 1}),
+    ])
+    def test_anything_malformed_or_failed_is_dropped(self, status, body):
+        assert cp.parse_eq_body(status, body) is None

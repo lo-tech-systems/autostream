@@ -8361,7 +8361,7 @@ class TestOutputDetailOpener:
 class TestOutputsTouchEntries:
     def test_open_outputs_enqueues_fetch_and_requests_screen(self):
         display = _make_outputs_display()
-        with patch("dial_display.enqueue_fetch") as mock_fetch:
+        with patch("dial_core.enqueue_fetch") as mock_fetch:
             display.open_outputs()
         mock_fetch.assert_called_once()
         target = mock_fetch.call_args[0][0]
@@ -8370,7 +8370,7 @@ class TestOutputsTouchEntries:
 
     def test_open_outputs_noop_without_capability(self):
         display = _make_outputs_display(dial_outputs=False)
-        with patch("dial_display.enqueue_fetch") as mock_fetch:
+        with patch("dial_core.enqueue_fetch") as mock_fetch:
             display.open_outputs()
         mock_fetch.assert_not_called()
         assert display._screen_request is None
@@ -8411,7 +8411,7 @@ class TestOutputsTouchEntries:
 
     def test_output_toggle_tap_enqueues_and_sets_optimistic(self):
         display = self._opened_detail(selected=False, volume=0)
-        with patch("dial_display.enqueue_set") as mock_set:
+        with patch("dial_core.enqueue_set") as mock_set:
             display.output_toggle_tap()
         mock_set.assert_called_once()
         target, out_id = mock_set.call_args[0]
@@ -8424,7 +8424,7 @@ class TestOutputsTouchEntries:
 
     def test_output_toggle_tap_disables(self):
         display = self._opened_detail(selected=True, volume=40)
-        with patch("dial_display.enqueue_set") as mock_set:
+        with patch("dial_core.enqueue_set") as mock_set:
             display.output_toggle_tap()
         kwargs = mock_set.call_args[1]
         assert kwargs["selected"] is False
@@ -8436,13 +8436,13 @@ class TestOutputsTouchEntries:
         display._output_detail = dd.OutputDetailState(
             appliance_id=display._outputs.appliance_id, output_id="missing", opened_at=1000.0,
         )
-        with patch("dial_display.enqueue_set") as mock_set:
+        with patch("dial_core.enqueue_set") as mock_set:
             display.output_toggle_tap()
         mock_set.assert_not_called()
 
     def test_output_volume_tap_steps_from_row_volume(self):
         display = self._opened_detail(selected=True, volume=40)
-        with patch("dial_display.enqueue_set") as mock_set:
+        with patch("dial_core.enqueue_set") as mock_set:
             display.output_volume_tap(+2)
         kwargs = mock_set.call_args[1]
         assert kwargs["selected"] is True
@@ -8452,26 +8452,26 @@ class TestOutputsTouchEntries:
     def test_output_volume_tap_steps_from_optimistic_value(self):
         display = self._opened_detail(selected=True, volume=40)
         display._outputs_optimistic = ("1", True, 42, 1000.0)
-        with patch("dial_display.enqueue_set"):
+        with patch("dial_core.enqueue_set"):
             display.output_volume_tap(+2)
         assert display._outputs_optimistic[2] == 44
 
     def test_output_volume_tap_ignored_when_disabled(self):
         display = self._opened_detail(selected=False, volume=0)
-        with patch("dial_display.enqueue_set") as mock_set:
+        with patch("dial_core.enqueue_set") as mock_set:
             display.output_volume_tap(+2)
         mock_set.assert_not_called()
         assert display._outputs_optimistic is None
 
     def test_output_volume_tap_clamps_at_100(self):
         display = self._opened_detail(selected=True, volume=99)
-        with patch("dial_display.enqueue_set") as mock_set:
+        with patch("dial_core.enqueue_set") as mock_set:
             display.output_volume_tap(+10)
         assert mock_set.call_args[1]["volume"] == 100
 
     def test_output_volume_tap_clamps_at_0(self):
         display = self._opened_detail(selected=True, volume=1)
-        with patch("dial_display.enqueue_set") as mock_set:
+        with patch("dial_core.enqueue_set") as mock_set:
             display.output_volume_tap(-10)
         assert mock_set.call_args[1]["volume"] == 0
 
@@ -8611,13 +8611,13 @@ class TestEqStep:
 
     def test_noop_without_an_open_eq_screen(self):
         display, fb, gt = _make_display(targets=[])
-        with patch("dial_display._enqueue_eq_set") as mock_set:
+        with patch("dial_core._enqueue_eq_set") as mock_set:
             display.eq_step("bass", +1)
         mock_set.assert_not_called()
 
     def test_steps_from_zero_when_unloaded(self):
         display = self._opened()
-        with patch("dial_display._enqueue_eq_set") as mock_set:
+        with patch("dial_core._enqueue_eq_set") as mock_set:
             display.eq_step("bass", +1)
         assert display._eq_optimistic[0] == 1
         target, kwargs = mock_set.call_args[0][0], mock_set.call_args[1]
@@ -8626,7 +8626,7 @@ class TestEqStep:
     def test_steps_from_current_state_value(self):
         display = self._opened()
         display._eq = dataclasses.replace(display._eq, bass_db=2, treble_db=0, loaded=True)
-        with patch("dial_display._enqueue_eq_set"):
+        with patch("dial_core._enqueue_eq_set"):
             display.eq_step("bass", +1)
         assert display._eq_optimistic[0] == 3
 
@@ -8634,14 +8634,14 @@ class TestEqStep:
         display = self._opened()
         display._eq = dataclasses.replace(display._eq, bass_db=2, loaded=True)
         display._eq_optimistic = (5, None, time.monotonic() + 10.0)
-        with patch("dial_display._enqueue_eq_set"):
+        with patch("dial_core._enqueue_eq_set"):
             display.eq_step("bass", +1)
         assert display._eq_optimistic[0] == 6
 
     def test_clamps_at_plus_six(self):
         display = self._opened()
         display._eq = dataclasses.replace(display._eq, bass_db=6, loaded=True)
-        with patch("dial_display._enqueue_eq_set") as mock_set:
+        with patch("dial_core._enqueue_eq_set") as mock_set:
             display.eq_step("bass", +1)
         assert display._eq_optimistic[0] == 6
         assert mock_set.call_args[1]["bass_db"] == 6
@@ -8649,20 +8649,20 @@ class TestEqStep:
     def test_clamps_at_minus_six(self):
         display = self._opened()
         display._eq = dataclasses.replace(display._eq, treble_db=-6, loaded=True)
-        with patch("dial_display._enqueue_eq_set") as mock_set:
+        with patch("dial_core._enqueue_eq_set") as mock_set:
             display.eq_step("treble", -1)
         assert display._eq_optimistic[1] == -6
 
     def test_stepping_one_control_preserves_the_others_shown_value(self):
         display = self._opened()
         display._eq = dataclasses.replace(display._eq, bass_db=2, treble_db=-3, loaded=True)
-        with patch("dial_display._enqueue_eq_set"):
+        with patch("dial_core._enqueue_eq_set"):
             display.eq_step("treble", +1)
         assert display._eq_optimistic == (2, -2, display._eq_optimistic[2])
 
     def test_target_is_the_open_eq_screens_own_appliance(self):
         display = self._opened()
-        with patch("dial_display._enqueue_eq_set") as mock_set:
+        with patch("dial_core._enqueue_eq_set") as mock_set:
             display.eq_step("bass", +1)
         target = mock_set.call_args[0][0]
         assert target.appliance_id == display._eq.appliance_id
@@ -8779,7 +8779,7 @@ class TestCyclePages:
         self._apply(display)
         assert display._screen == "repeat"
 
-        with patch("dial_display._enqueue_eq_fetch"):
+        with patch("dial_core._enqueue_eq_fetch"):
             display.cycle_pages()
         self._apply(display)
         assert display._screen == "eq"
@@ -8790,7 +8790,7 @@ class TestCyclePages:
 
     def test_main_to_eq_to_main_when_no_repeat_record(self):
         display = self._setup(repeat_available=False, eq_available=True)
-        with patch("dial_display._enqueue_eq_fetch"):
+        with patch("dial_core._enqueue_eq_fetch"):
             display.cycle_pages()
         self._apply(display)
         assert display._screen == "eq"
@@ -8818,7 +8818,7 @@ class TestCyclePages:
 
     def test_opening_eq_enqueues_one_fetch(self):
         display = self._setup(repeat_available=False, eq_available=True)
-        with patch("dial_display._enqueue_eq_fetch") as mock_fetch:
+        with patch("dial_core._enqueue_eq_fetch") as mock_fetch:
             display.cycle_pages()
         mock_fetch.assert_called_once()
 
@@ -10791,7 +10791,7 @@ class TestOutputsReturnToOpeningPage:
         display = _make_outputs_display()
         display._screen = origin
         assert display._open_outputs_locked() is True
-        with patch("dial_display._enqueue_eq_fetch"):
+        with patch("dial_core._enqueue_eq_fetch"):
             display.close_list()
         assert display._screen_request == origin
 
@@ -10823,7 +10823,7 @@ class TestOutputsReturnToOpeningPage:
         with display._lock:
             assert display._open_eq_locked() is True
             assert display._open_outputs_locked() is True
-        with patch("dial_display._enqueue_eq_fetch") as fetch:
+        with patch("dial_core._enqueue_eq_fetch") as fetch:
             display.close_list()
         fetch.assert_called_once()
         with display._lock:
@@ -10851,7 +10851,7 @@ class TestOutputsReturnToOpeningPage:
             display._open_eq_locked()
             display._open_outputs_locked()
         display._outputs = dataclasses.replace(display._outputs, opened_at=time.monotonic() - 3600)
-        with patch("dial_display._enqueue_eq_fetch"):
+        with patch("dial_core._enqueue_eq_fetch"):
             display._check_secondary_timeout()
         assert display._screen_request == "eq"
         assert display._screen == "outputs"
@@ -11736,3 +11736,266 @@ class TestAsleepIdleTouchDoesNotPressAnything:
 
         self._tap(display, sm, centre, 2.0)
         assert display._screen_request is not None
+
+
+# ---------------------------------------------------------------------------
+# Outputs, EQ and transport state held by the core
+# ---------------------------------------------------------------------------
+
+class TestOutputsHeldByTheCore:
+    AID = "a" * 20
+
+    def _body(self, *rows):
+        return {"ok": True, "outputs": [
+            {"id": i, "name": n, "selected": s, "volume": v, "remote_in_use": u,
+             **({"remote_owner": "Hall"} if u else {})}
+            for (i, n, s, v, u) in rows
+        ]}
+
+    def test_the_core_keeps_the_row_in_use_elsewhere_and_the_screen_does_not(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display.on_outputs_result("fetch", self.AID, 200, self._body(
+            ("1", "Bedroom", True, 40, False), ("2", "Study", True, 10, True),
+        ), {})
+        core_rows = display._core.snapshot().outputs.rows
+        assert [(r.id, r.remote_in_use, r.remote_owner) for r in core_rows] == [
+            ("1", False, None), ("2", True, "Hall"),
+        ]
+        assert display._outputs.rows == (dd.OutputRow("1", "Bedroom", True, 40),)
+
+    def test_a_result_with_a_row_in_use_paints_the_same_list_as_one_without(self):
+        frames = []
+        for rows in (
+            (("1", "Bedroom", True, 40, False), ("2", "Study", True, 10, True)),
+            (("1", "Bedroom", True, 40, False),),
+        ):
+            display = _make_outputs_display()
+            display._open_outputs_locked()
+            display.on_outputs_result("fetch", self.AID, 200, self._body(*rows), {})
+            with display._lock:
+                frames.append(display._build_outputs_list_state_locked(160, 128))
+        assert frames[0] == frames[1]
+
+    def test_the_filtered_rows_equal_what_the_screen_always_parsed(self):
+        body = self._body(("1", "Bedroom", True, 40, False), ("2", "Study", True, 10, True))
+        assert dd._parse_outputs_body(200, body) == (dd.OutputRow("1", "Bedroom", True, 40),)
+
+    def test_a_detail_row_taken_elsewhere_counts_as_vanished(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display.on_outputs_result("fetch", self.AID, 200, self._body(("1", "Bedroom", True, 40, False)), {})
+        display._output_detail = dd.OutputDetailState(
+            appliance_id=self.AID, output_id="1", opened_at=time.monotonic(),
+        )
+        display._screen = "output"
+        display.on_outputs_result("fetch", self.AID, 200, self._body(("1", "Bedroom", True, 40, True)), {})
+        assert display._screen_request == "outputs"
+
+    def test_the_screen_rows_follow_the_core_through_a_fold(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display.on_outputs_result("fetch", self.AID, 200, self._body(("1", "Bedroom", True, 40, False)), {})
+        assert display._core.snapshot().outputs.rows[0].volume == 40
+        display.on_outputs_result("fetch", self.AID, 200, self._body(("1", "Bedroom", True, 41, False)), {})
+        assert display._outputs.rows[0].volume == 41
+        assert display._core.snapshot().outputs.rows[0].volume == 41
+
+    def test_a_tap_on_a_row_the_appliance_has_since_refused_sends_nothing(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        display.on_outputs_result("fetch", self.AID, 200, self._body(("1", "Bedroom", True, 40, False)), {})
+        display._output_detail = dd.OutputDetailState(
+            appliance_id=self.AID, output_id="1", opened_at=time.monotonic(),
+        )
+        display._screen = "output"
+        display._last_roster = [_roster_entry(appliance_id=self.AID, auth="unauthorized", dial_outputs=True)]
+        with patch("dial_core.enqueue_set") as send:
+            display.output_toggle_tap()
+            display.output_volume_tap(+1)
+        send.assert_not_called()
+        assert display._outputs_optimistic is None
+
+    def test_the_override_lives_in_the_core(self):
+        display = _make_outputs_display()
+        display._outputs_optimistic = ("1", True, 40, 1000.0)
+        assert display._core.outputs_override() == ("1", True, 40, 1000.0)
+        display._core.set_outputs_override(None)
+        assert display._outputs_optimistic is None
+
+
+class TestOutputsInterest:
+    AID = "a" * 20
+
+    def _watch(self, display):
+        return dict(display._core._state.outputs_watch)
+
+    def test_opening_registers_interest_and_asks_once(self):
+        display = _make_outputs_display()
+        with patch("dial_core.enqueue_fetch") as fetch:
+            display.open_outputs()
+            with display._lock:
+                display._apply_screen_requests_locked()
+            display._sync_core_interest()
+        assert fetch.call_count == 1
+        assert self._watch(display) == {"spi": self.AID}
+        assert display._core.snapshot().outputs.appliance_id == self.AID
+
+    def test_interest_is_dropped_when_the_screen_closes(self):
+        display = _make_outputs_display()
+        with patch("dial_core.enqueue_fetch"):
+            display.open_outputs()
+            with display._lock:
+                display._apply_screen_requests_locked()
+            display._sync_core_interest()
+            with display._lock:
+                display._close_secondary_locked()
+            display._sync_core_interest()
+        assert self._watch(display) == {}
+        assert display._core.snapshot().outputs is None
+
+    def test_interest_survives_until_the_requested_screen_has_opened(self):
+        display = _make_outputs_display()
+        with patch("dial_core.enqueue_fetch"):
+            display.open_outputs()
+            display._sync_core_interest()
+        assert self._watch(display) == {"spi": self.AID}
+
+    def test_a_request_that_never_opens_gives_its_interest_back(self):
+        display = _make_outputs_display()
+        with patch("dial_core.enqueue_fetch"):
+            display.open_outputs()
+            display._screen_request = None
+            display._sync_core_interest()
+        assert self._watch(display) == {}
+
+    def test_the_periodic_refresh_comes_from_the_core_and_only_while_showing(self):
+        display = _make_outputs_display()
+        with patch("dial_core.enqueue_fetch") as fetch:
+            display._open_outputs_locked()
+            display._screen = "main"
+            display._tick_outputs_refresh()
+            assert fetch.call_count == 0
+            display._screen = "outputs"
+            display._tick_outputs_refresh()
+            assert fetch.call_count == 1
+        assert self._watch(display) == {"spi": self.AID}
+
+    def test_a_second_watcher_keeps_the_core_state_after_the_screen_closes(self):
+        display = _make_outputs_display()
+        with patch("dial_core.enqueue_fetch"):
+            display.open_outputs()
+            with display._lock:
+                display._apply_screen_requests_locked()
+            display._sync_core_interest()
+            display._core.watch_outputs(self.AID, "hd", True)
+            with display._lock:
+                display._close_secondary_locked()
+            display._sync_core_interest()
+        assert self._watch(display) == {"hd": self.AID}
+        assert display._core.snapshot().outputs is not None
+
+
+class TestEqHeldByTheCore:
+    AID = "a" * 20
+
+    def _opened(self):
+        display = _make_eq_display()
+        display._open_eq_locked()
+        return display
+
+    def test_the_fold_stores_bass_and_treble_as_two_bands(self):
+        display = self._opened()
+        display.on_eq_result("fetch", self.AID, 200, {"ok": True, "bass_db": 2, "treble_db": -1}, {})
+        bands = display._core.snapshot().eq.bands
+        assert [(b.id, b.frequency_hz, b.gain_db, b.min_db, b.max_db) for b in bands] == [
+            ("bass", None, 2, -6, 6), ("treble", None, -1, -6, 6),
+        ]
+        assert (display._eq.bass_db, display._eq.treble_db, display._eq.loaded) == (2, -1, True)
+
+    def test_a_reading_without_the_two_bands_leaves_the_page_loading(self):
+        display = self._opened()
+        other = (dd.EqBand("peq1", 100, 3, -12, 12), dd.EqBand("peq2", 250, 0, -12, 12))
+        with patch("dial_core_poll.parse_eq_body", return_value=other):
+            display.on_eq_result("fetch", self.AID, 200, {"ok": True}, {})
+        assert (display._eq.bass_db, display._eq.treble_db, display._eq.loaded) == (None, None, False)
+        with display._lock:
+            view = display._build_eq_view_locked(display._eq, time.monotonic())
+        assert view.loaded is False and view.bass_db is None and view.treble_db is None
+
+    def test_the_override_maps_between_the_screen_pair_and_the_core_bands(self):
+        display = self._opened()
+        display._eq_optimistic = (5, None, 1002.0)
+        assert display._core.eq_override() == ((("bass", 5),), 1002.0)
+        assert display._eq_optimistic == (5, None, 1002.0)
+        display._eq_optimistic = (None, -2, 1003.0)
+        assert display._core.eq_override() == ((("treble", -2),), 1003.0)
+        display._eq_optimistic = None
+        assert display._core.eq_override() == ((), 0.0)
+        assert display._eq_optimistic is None
+
+    def test_a_step_is_made_by_the_core_from_the_screen_readings(self):
+        display = self._opened()
+        display._eq = dataclasses.replace(display._eq, bass_db=1, treble_db=-3, loaded=True)
+        with patch("dial_core._enqueue_eq_set") as send:
+            display.eq_step("treble", -9)
+        assert send.call_args[1] == {"treble_db": -6}
+        assert display._eq_optimistic[:2] == (1, -6)
+
+    def test_cycling_to_the_page_registers_interest_and_asks_once(self):
+        display = _make_eq_display()
+        with patch("dial_core._enqueue_eq_fetch") as fetch:
+            display.cycle_pages()
+            with display._lock:
+                display._apply_screen_requests_locked()
+            display._sync_core_interest()
+        assert fetch.call_count == 1
+        assert display._core._state.eq_watch == {"spi": self.AID}
+        assert display._core.snapshot().eq.appliance_id == self.AID
+
+    def test_closing_the_page_drops_the_interest(self):
+        display = _make_eq_display()
+        with patch("dial_core._enqueue_eq_fetch"):
+            display.cycle_pages()
+            with display._lock:
+                display._apply_screen_requests_locked()
+            display._sync_core_interest()
+            with display._lock:
+                display._close_secondary_locked()
+            display._sync_core_interest()
+        assert display._core._state.eq_watch == {}
+        assert display._core.snapshot().eq is None
+
+
+class TestTransportRecordedByTheTaps:
+    def _opened(self, state="idle", armed=False):
+        return TestRepeatScreenTouchEntries()._opened(state=state, armed=armed)
+
+    def test_arm_is_recorded_pending(self):
+        display, aid = self._opened(state="idle")
+        with patch("dial_display.enqueue_arm"):
+            display.repeat_toggle_tap()
+        request = display._core.snapshot().transport
+        assert (request.appliance_id, request.kind, request.state) == (aid, "arm", "pending")
+
+    def test_start_is_recorded_as_a_seek(self):
+        display, aid = self._opened(state="hold")
+        with patch("dial_display.enqueue_transport"):
+            display.repeat_start_tap()
+        assert display._core.snapshot().transport.kind == "seek"
+
+    def test_stop_is_recorded_and_its_own_ack_settles_it(self):
+        display, aid = self._opened(state="replaying")
+        with patch("dial_display.enqueue_transport"):
+            display.repeat_stop_tap()
+        assert display._core.snapshot().transport.kind == "stop"
+        display.on_repeat_result("transport", aid, 200, {"ok": True, "state": "hold"})
+        assert display._core.snapshot().transport.state == "accepted"
+
+    def test_a_rejected_seek_is_recorded_with_its_error(self):
+        display, aid = self._opened(state="hold")
+        with patch("dial_display.enqueue_transport"):
+            display.repeat_start_tap()
+        display.on_repeat_result("transport", aid, 412, {"ok": False, "error": "fading_out"})
+        request = display._core.snapshot().transport
+        assert (request.state, request.error) == ("rejected", "fading_out")

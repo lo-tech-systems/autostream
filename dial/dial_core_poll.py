@@ -31,7 +31,9 @@ from dial_auth import (
     OUTCOME_UNAUTHORIZED,
     auth_map,
 )
-from dial_core_state import Artwork, Selection, artwork_key, walk_fallback, walk_step
+from dial_core_state import (
+    EQ_LIMIT_DB, Artwork, EqBand, OutputRow, Selection, artwork_key, walk_fallback, walk_step,
+)
 from dial_mdns import appliance_display_name
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
@@ -405,4 +407,61 @@ def fetch_artwork_bytes(
         data=data,
         content_type="",
         fetched_at=now_fn(),
+    )
+
+
+# ---- outputs and EQ replies ---------------------------------------------------
+
+
+def parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
+    """Validate and convert a POST /api/dial/outputs response body into
+    rows. None on anything malformed, non-200 or unreachable: transient, so
+    the caller keeps the last good rows. An output another appliance has
+    taken is kept and marked (`remote_in_use`, with `remote_owner` when the
+    reply names it) so a surface can show it dimmed; one that is not
+    well-formed is skipped, as it never made the result unusable."""
+    if status != 200 or not isinstance(body, dict) or body.get("ok") is not True:
+        return None
+    raw = body.get("outputs")
+    if not isinstance(raw, list):
+        return None
+    rows = []
+    for o in raw:
+        if not isinstance(o, dict):
+            return None
+        in_use = bool(o.get("remote_in_use"))
+        out_id, name, selected, volume = o.get("id"), o.get("name"), o.get("selected"), o.get("volume")
+        valid = (
+            isinstance(out_id, str) and bool(out_id) and isinstance(name, str)
+            and isinstance(selected, bool)
+            and isinstance(volume, int) and not isinstance(volume, bool)
+        )
+        if not valid:
+            if in_use:
+                continue
+            return None
+        owner = o.get("remote_owner")
+        rows.append(OutputRow(
+            id=out_id, name=name, selected=selected, volume=max(0, min(100, volume)),
+            remote_in_use=in_use,
+            remote_owner=owner if in_use and isinstance(owner, str) and owner else None,
+        ))
+    return tuple(rows)
+
+
+def parse_eq_body(status, body) -> "tuple[EqBand, ...] | None":
+    """Validate a POST /api/dial/eq response body and map it to bands: the
+    two derived controls of the bass/treble capability, `"bass"` and
+    `"treble"`, each in the +-EQ_LIMIT_DB range with no centre frequency.
+    None on anything malformed or failed."""
+    if status != 200 or not isinstance(body, dict) or not body.get("ok"):
+        return None
+    bass, treble = body.get("bass_db"), body.get("treble_db")
+    if isinstance(bass, bool) or not isinstance(bass, int):
+        return None
+    if isinstance(treble, bool) or not isinstance(treble, int):
+        return None
+    return (
+        EqBand("bass", None, bass, -EQ_LIMIT_DB, EQ_LIMIT_DB),
+        EqBand("treble", None, treble, -EQ_LIMIT_DB, EQ_LIMIT_DB),
     )

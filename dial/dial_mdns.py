@@ -65,6 +65,16 @@ _DIAL_PROTO_ACCEPTED = {"v2": 2}
 def _parse_dial_proto(txt: dict) -> int:
     return _DIAL_PROTO_ACCEPTED.get(txt.get("dial_proto", ""), 0)
 
+
+_DIAL_EQ_VERSIONS = {"v1": 1, "v2": 2}
+
+
+def _parse_dial_eq(txt: dict) -> int:
+    """The EQ capability version a TXT record advertises: 1 for the
+    bass/treble pair, 2 for the six-band shape, 0 for none or anything
+    unrecognised."""
+    return _DIAL_EQ_VERSIONS.get(txt.get("dial_eq", ""), 0)
+
 # The mDNS service name prefix stripped by appliance_display_name().
 _SERVICE_PREFIX = "autostream on "
 
@@ -84,6 +94,7 @@ class PlayingTarget:
     appliance_id:       str   = ""
     auth:               str   = dial_auth.AUTH_UNKNOWN
     dial_proto_version: int   = 0
+    dial_eq_version:    int   = 0
 
     @property
     def typed_refusals(self) -> bool:
@@ -155,11 +166,12 @@ def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
         audio_status=(txt.get('audio_status') == 'v1'),
         dial_status=(txt.get('dial_status') == 'v1'),
         dial_outputs=(txt.get('dial_outputs') == 'v1'),
-        dial_eq=(txt.get('dial_eq') == 'v1'),
+        dial_eq=(_parse_dial_eq(txt) >= 1),
         service_name=svc_name,
         playing_since=playing_since,
         appliance_id=appliance_id,
         dial_proto_version=_parse_dial_proto(txt),
+        dial_eq_version=_parse_dial_eq(txt),
     )
     return (svc_name, target)
 
@@ -338,6 +350,7 @@ class GeneralSighting:
     # rostered, as nothing says it has a status route.
     legacy: bool = False
     dial_proto_version: int = 0
+    dial_eq_version: int = 0
 
 
 # Conflict-detection state for the general browser, keyed the same way as
@@ -391,7 +404,8 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
     version = txt.get("version", "")
     repeat = txt.get("repeat") == "v1" and not legacy
     dial_outputs = txt.get("dial_outputs") == "v1" and not legacy
-    dial_eq = txt.get("dial_eq") == "v1" and not legacy
+    dial_eq_version = 0 if legacy else _parse_dial_eq(txt)
+    dial_eq = dial_eq_version >= 1
 
     with _general_lock:
         _general_svc[service_name] = (appliance_id, hostname)
@@ -414,6 +428,7 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
         dial_eq=dial_eq,
         legacy=legacy,
         dial_proto_version=0 if legacy else _parse_dial_proto(txt),
+        dial_eq_version=dial_eq_version,
     )
     return (appliance_id, sighting)
 
@@ -473,6 +488,7 @@ class RosterEntry:
     dial_eq:        bool = False
     auth:           str = dial_auth.AUTH_UNKNOWN
     dial_proto_version: int = 0
+    dial_eq_version: int = 0
 
     @property
     def typed_refusals(self) -> bool:
@@ -535,6 +551,7 @@ def get_roster() -> list[RosterEntry]:
             dial_outputs=t.dial_outputs,
             dial_eq=t.dial_eq,
             dial_proto_version=t.dial_proto_version,
+            dial_eq_version=t.dial_eq_version,
         ))
     for aid, g in general.items():
         if aid in playing or aid in conflicts or g.legacy:
@@ -553,6 +570,7 @@ def get_roster() -> list[RosterEntry]:
             dial_outputs=g.dial_outputs,
             dial_eq=g.dial_eq,
             dial_proto_version=g.dial_proto_version,
+            dial_eq_version=g.dial_eq_version,
         ))
 
     roster.sort(key=lambda r: (

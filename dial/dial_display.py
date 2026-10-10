@@ -92,9 +92,9 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    NowPlaying, OutputRow, PickerRow, SelectorRow, artwork_key, availability, choose_pin,
+    ACCEPTED_REPLAY_GRACE_S, EQ_LIMIT_DB, EqBand, EqState, NowPlaying, OutputRow, PickerRow, SelectorRow, artwork_key, availability, choose_pin,
     dots_active, eq_available, idle_affordance, outputs_available, picker_rows,
-    reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
+    eq_gain, reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
     walk_order, with_accepted_replay,
 )
 from dial_core_poll import (
@@ -104,9 +104,6 @@ from dial_core_poll import (
 )
 import dial_core_poll
 from dial_core import DialCore
-from dial_eq import _EqTarget
-from dial_eq import enqueue_fetch as _enqueue_eq_fetch
-from dial_eq import enqueue_set as _enqueue_eq_set
 from dial_mdns import PlayingTarget, appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
 from dial_network import (
@@ -116,7 +113,6 @@ from dial_network import (
     NetworkView,
 )
 from dial_network import request_reboot as _request_reboot
-from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_sdhealth import SdHealthView, is_low as _sd_is_low
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import repeat_store
@@ -196,16 +192,6 @@ RECONCILE_INTERVAL_SECONDS = 60
 # _check_secondary_timeout.
 SELECTOR_TIMEOUT_SECONDS = 18
 
-# How often the outputs list refetches while an outputs screen is showing —
-# see _tick_outputs_refresh(). The same round trip also runs once, right
-# away, whenever an outputs screen opens (open_outputs()), so this cadence
-# only covers staying open past that first fetch.
-OUTPUTS_REFRESH_S = 2.0
-
-# The EQ page's own bass/treble range -- both ends (this manager's eq_step
-# and the appliance's own apply_eq_fields) independently clamp to it.
-EQ_LIMIT_DB = 6
-
 # The page-dots cycle order — see cycle_pages(). "main" is always available
 # (the fallback every cycle lands on); "repeat" and "eq" are skipped when
 # _repeat_page_available()/self._eq_available says there is nothing to show.
@@ -215,11 +201,6 @@ _PAGE_ORDER = ("main", "repeat", "eq")
 # the appliance has not yet reached the playing set — see
 # set_manual_focus_pending() and the empty-targets branch of _poll_once.
 FOCUS_PENDING_GRACE_S = 10.0
-
-# How long a replay the appliance has just accepted may be shown as playing
-# before its own playing advertisement reaches the dial (normally a few
-# seconds) — see DialDisplay._with_accepted_replay().
-ACCEPTED_REPLAY_GRACE_S = 20.0
 
 # The fixed inter-loop gap the appliance's replay engine inserts between
 # the end of a buffer and its restart — used only to wrap the locally
@@ -925,32 +906,36 @@ def _output_list_row(row: "OutputRow") -> tuple:
 
 
 def _parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
-    """Validate and convert a POST /api/dial/outputs response body into the
-    manager's own row type. None on anything malformed, non-200 or
-    unreachable — transient, so the caller keeps showing the last good
-    snapshot, the same discipline _apply_status_to_repeat uses for a bad
-    body. An output the appliance reports as in use by another autostream
-    instance is dropped entirely, matching the Home page's own filtering."""
-    if status != 200 or not isinstance(body, dict) or body.get("ok") is not True:
+    """The outputs a POST /api/dial/outputs response lists that this screen
+    can offer: the core's parse (None on anything malformed, non-200 or
+    unreachable, so the caller keeps showing the last good snapshot) less
+    the outputs another autostream instance has taken, matching the Home
+    page's own filtering."""
+    rows = dial_core_poll.parse_outputs_body(status, body)
+    if rows is None:
         return None
-    raw = body.get("outputs")
-    if not isinstance(raw, list):
-        return None
-    rows = []
-    for o in raw:
-        if not isinstance(o, dict):
-            return None
-        if o.get("remote_in_use"):
-            continue
-        out_id, name, selected, volume = o.get("id"), o.get("name"), o.get("selected"), o.get("volume")
-        if not isinstance(out_id, str) or not out_id or not isinstance(name, str):
-            return None
-        if not isinstance(selected, bool):
-            return None
-        if not isinstance(volume, int) or isinstance(volume, bool):
-            return None
-        rows.append(OutputRow(id=out_id, name=name, selected=selected, volume=max(0, min(100, volume))))
-    return tuple(rows)
+    return _offerable(rows)
+
+
+def _eq_bands_of(screen: "EqScreenState") -> tuple:
+    """The bands a screen's bass and treble readings stand for, for the
+    readings it has."""
+    bands = []
+    for band_id, gain in (("bass", screen.bass_db), ("treble", screen.treble_db)):
+        if gain is not None:
+            bands.append(EqBand(band_id, None, gain, -EQ_LIMIT_DB, EQ_LIMIT_DB))
+    return tuple(bands)
+
+
+def _eq_loaded(eq: "EqState") -> bool:
+    """Whether the EQ page has a reading it can draw: one has landed and it
+    carries a band the page knows."""
+    return eq.loaded and any(b.id in ("bass", "treble") for b in eq.bands)
+
+
+def _offerable(rows: "tuple[OutputRow, ...]") -> "tuple[OutputRow, ...]":
+    """*rows* without the outputs another appliance has taken."""
+    return tuple(r for r in rows if not r.remote_in_use)
 
 
 # ---------------------------------------------------------------------------
@@ -1252,14 +1237,6 @@ class DialDisplay:
         # controls start hidden, never flashed on appearance). Plain float
         # write/read, same discipline as _controls_hidden_until.
         self._controls_shown_until: float = 0.0
-        # Touch-thread write, worker-thread read: the appliance id a Stop
-        # transport was just sent for, so on_repeat_result (worker thread)
-        # can tell a Stop's own ok ack apart from a Seek's without new
-        # plumbing through the repeat worker (both share the same
-        # "transport" kind) — see repeat_stop_tap()/on_repeat_result(). None
-        # when no stop is outstanding. Plain reference, same discipline as
-        # _focus_pending.
-        self._pending_repeat_stop_id: str | None = None
 
         # ---- Selector, repeat and picker screen state -------------------
         # self._screen is written under self._lock — usually by the repaint
@@ -1338,37 +1315,29 @@ class DialDisplay:
         # its opener and by on_outputs_result's fold (worker thread); read
         # lock-free by the touch thread's outputs_row_tap()/output_toggle_
         # tap()/output_volume_tap() entries, mirroring self._repeat_screen's
-        # discipline.
-        self._outputs: OutputsState | None = None
+        # discipline. Its rows are the core's, less the outputs another
+        # appliance has taken, refreshed in the fold; a rows or loaded
+        # change made here is carried to the core by _flush_core_state().
+        self._outputs_view: OutputsState | None = None
+        self._eq_view: "EqScreenState | None" = None
+        self._core_outputs_dirty = False
+        self._core_eq_dirty = False
+        # Serialises the interest this view holds in the core's outputs and
+        # EQ state with the requests that open the screens, see
+        # _sync_core_interest().
+        self._interest_lock = threading.Lock()
+        self._watched_outputs_id: str | None = None
+        self._watched_eq_id: str | None = None
         # The per-output detail page's own state — same write/read
         # discipline as self._outputs.
         self._output_detail: OutputDetailState | None = None
         # Touch-thread plain write: the row a LIST_ROW tap on the outputs
         # list chose, consumed by the detail page's opener.
         self._output_open_id: str | None = None
-        # Touch-thread plain write: an optimistic (output_id, selected,
-        # volume, stamped-time) override shown immediately after a toggle or
-        # volume step, before the worker's reconciling fetch lands — same
-        # plain-reference discipline as self._pressed/self._overlay_snapshot.
-        # Cleared once a fetch result stamped after it lands (on_outputs_
-        # result) or once a stale one is superseded.
-        self._outputs_optimistic: "tuple[str, bool, int | None, float] | None" = None
-        # Repeat-thread-only: when an outputs screen last asked for a
-        # refresh — see _tick_outputs_refresh().
-        self._outputs_refresh_at: float = 0.0
-        # The EQ page's own state — same write/read discipline as
-        # self._outputs: written under self._lock by its opener and by
-        # on_eq_result's fold (worker thread); read lock-free by the touch
-        # thread's eq_step() entry.
-        self._eq: "EqScreenState | None" = None
-        # Touch-thread plain write: a pending optimistic (bass, treble,
-        # expires_at) override shown immediately after an eq_step() tap,
-        # before the worker's reconciling fetch lands — same plain-reference
-        # discipline as self._outputs_optimistic. Either element of the pair
-        # may be None (only one control was just stepped); cleared once a
-        # fetch result stamped after it lands (on_eq_result) or once it
-        # expires.
-        self._eq_optimistic: "tuple[int | None, int | None, float] | None" = None
+        # The EQ page's own state (self._eq_view) — same write/read
+        # discipline as the outputs screen's: written under self._lock by
+        # its opener and by on_eq_result's fold (worker thread); read
+        # lock-free by the touch thread's eq_step() entry.
         # ---- Wi-Fi link state (the idle icon and the No-WiFi page) ------
         # The latest NetworkView from the network poller — written by the
         # poller's own thread in on_network_view() (a plain reference
@@ -1806,6 +1775,66 @@ class DialDisplay:
     _accepted_replay = _focus_property("accepted_replay")
     _now_playing = _snapshot_property("now_playing")
     _dots_active = _snapshot_property("dots_active")
+    @property
+    def _outputs(self) -> "OutputsState | None":
+        return self._outputs_view
+
+    @_outputs.setter
+    def _outputs(self, value: "OutputsState | None") -> None:
+        old = self._outputs_view
+        self._outputs_view = value
+        if value is not None and (
+            old is None or old.appliance_id != value.appliance_id
+            or old.loaded != value.loaded or old.rows != value.rows
+        ):
+            self._core_outputs_dirty = True
+
+    @property
+    def _eq(self) -> "EqScreenState | None":
+        return self._eq_view
+
+    @_eq.setter
+    def _eq(self, value: "EqScreenState | None") -> None:
+        old = self._eq_view
+        self._eq_view = value
+        if value is not None and (
+            old is None or old.appliance_id != value.appliance_id or old.loaded != value.loaded
+            or old.bass_db != value.bass_db or old.treble_db != value.treble_db
+        ):
+            self._core_eq_dirty = True
+
+    @property
+    def _outputs_optimistic(self) -> "tuple[str, bool, int | None, float] | None":
+        """The pending (output_id, selected, volume, stamped_at) tap shown
+        ahead of the appliance's own list, held by the core."""
+        return self._core.outputs_override()
+
+    @_outputs_optimistic.setter
+    def _outputs_optimistic(self, value) -> None:
+        self._core.set_outputs_override(value)
+
+    @property
+    def _eq_optimistic(self) -> "tuple[int | None, int | None, float] | None":
+        """The pending (bass, treble, expires_at) tap shown ahead of the
+        appliance's own reading, held by the core as one gain per band; an
+        element is None when only the other control was stepped."""
+        pairs, expires_at = self._core.eq_override()
+        if not pairs and not expires_at:
+            return None
+        gains = dict(pairs)
+        return gains.get("bass"), gains.get("treble"), expires_at
+
+    @_eq_optimistic.setter
+    def _eq_optimistic(self, value) -> None:
+        if value is None:
+            self._core.set_eq_override((), 0.0)
+            return
+        bass, treble, expires_at = value
+        pairs = tuple(
+            (band, gain) for band, gain in (("bass", bass), ("treble", treble)) if gain is not None
+        )
+        self._core.set_eq_override(pairs, expires_at)
+
     _outputs_available = _snapshot_property("outputs_available")
     _eq_available = _snapshot_property("eq_available")
     _idle_affordance = _snapshot_property("idle_affordance")
@@ -2866,6 +2895,7 @@ class DialDisplay:
             self._overlay_signal.clear()
             with self._lock:
                 woke = self._repaint_current_locked()
+            self._sync_core_interest()
             if woke:
                 # Outside the lock: force_due() takes the leaf dial_auth
                 # lock, which must never nest with self._lock.
@@ -2972,7 +3002,7 @@ class DialDisplay:
         if target == "eq":
             entry = self._eq_target_lockfree()
             if entry is not None:
-                _enqueue_eq_fetch(_EqTarget(entry.appliance_id, entry.ip, entry.port))
+                self._core.fetch_eq(entry.appliance_id)
         self._screen_request = target
         self._overlay_signal.set()
 
@@ -3126,8 +3156,10 @@ class DialDisplay:
             if candidate == "eq" and self._eq_available:
                 target = self._eq_target_lockfree()
                 if target is not None:
-                    _enqueue_eq_fetch(_EqTarget(target.appliance_id, target.ip, target.port))
-                    self._screen_request = "eq"
+                    with self._interest_lock:
+                        self._core.watch_eq(target.appliance_id, "spi", True)
+                        self._watched_eq_id = target.appliance_id
+                        self._screen_request = "eq"
                     self._overlay_signal.set()
                     return
             if candidate == "main":
@@ -3168,6 +3200,7 @@ class DialDisplay:
         if rec is None or not rec.available:
             return
         if rec.state in ("recording", "pending", "idle"):
+            self._core.begin_transport(screen.appliance_id, "arm")
             enqueue_arm(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), not rec.armed)
         elif rec.state == "replaying":
             # In the replaying layout this row is the position line over
@@ -3186,6 +3219,7 @@ class DialDisplay:
         if rec is None or not rec.available:
             return
         if rec.state in ("replaying", "hold"):
+            self._core.begin_transport(screen.appliance_id, "seek")
             enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "seek", 0.0)
 
     def repeat_stop_tap(self) -> None:
@@ -3200,11 +3234,11 @@ class DialDisplay:
         if rec is None or not rec.available:
             return
         if rec.state == "replaying":
-            # Recorded so on_repeat_result (the worker thread) can tell this
-            # Stop's own ok ack apart from an unrelated Seek's — the repeat
-            # worker reports both under the same "transport" kind, so kind
-            # alone cannot distinguish them. See on_repeat_result().
-            self._pending_repeat_stop_id = screen.appliance_id
+            # Recorded as the pending request so on_repeat_result (the
+            # worker thread) can tell this Stop's own ok ack apart from an
+            # unrelated Seek's — the repeat worker reports both under the
+            # same "transport" kind, so kind alone cannot distinguish them.
+            self._core.begin_transport(screen.appliance_id, "stop")
             enqueue_transport(_RepeatTarget(screen.appliance_id, screen.ip, screen.port), "stop", 0.0)
 
     def set_pressed(self, zone, index=None) -> None:
@@ -3314,6 +3348,7 @@ class DialDisplay:
                 row = page_rows[index]
                 self.set_manual_focus_pending(row.appliance_id, row.service_name)
                 self._arm_replay_timer(row.appliance_id)
+                self._core.begin_transport(row.appliance_id, "seek")
                 enqueue_transport(_RepeatTarget(row.appliance_id, row.ip, row.port), "seek", 0.0)
         self.close_list()
 
@@ -3366,8 +3401,10 @@ class DialDisplay:
         entry = self._outputs_target_lockfree()
         if entry is None:
             return
-        enqueue_fetch(_OutputsTarget(entry.appliance_id, entry.ip, entry.port))
-        self._screen_request = "outputs"
+        with self._interest_lock:
+            self._core.watch_outputs(entry.appliance_id, "spi", True)
+            self._watched_outputs_id = entry.appliance_id
+            self._screen_request = "outputs"
         self._overlay_signal.set()
 
     def outputs_row_tap(self, index: int) -> None:
@@ -3395,19 +3432,6 @@ class DialDisplay:
             return None
         return next((r for r in state.rows if r.id == detail.output_id), None)
 
-    def _shown_output_level(self, row: "OutputRow") -> "int | None":
-        """The volume *row* should currently show to a touch-thread caller
-        stepping it further: the pending optimistic override's volume when
-        it names this row and says selected; else row.volume when
-        row.selected; else None (disabled — no level to step). Plain reads;
-        safe lock-free (this is a touch-thread helper) or under self._lock
-        (the paint-time callers reach the same value their own way — see
-        _build_outputs_list_state_locked/_build_output_view_locked)."""
-        override = self._outputs_optimistic
-        if override is not None and override[0] == row.id and override[1]:
-            return override[2]
-        return row.volume if row.selected else None
-
     def output_toggle_tap(self) -> None:
         """Touch-thread entry (OUTPUT_TOGGLE): enable this output at the
         appliance's own configured default volume (the dial sends no
@@ -3419,13 +3443,9 @@ class DialDisplay:
         state = self._outputs
         if row is None or state is None:
             return
-        selected = not row.selected
-        self._outputs_optimistic = (row.id, selected, row.volume, time.monotonic())
-        enqueue_set(
-            _OutputsTarget(state.appliance_id, state.ip, state.port), row.id,
-            selected=selected, volume=None,
-        )
-        self._overlay_signal.set()
+        self._flush_core_state()
+        if self._core.set_output(state.appliance_id, row.id, selected=not row.selected).accepted:
+            self._overlay_signal.set()
 
     def output_volume_tap(self, delta: int) -> None:
         """Touch-thread entry (OUTPUT_UP/OUTPUT_DOWN, repeating): absolute
@@ -3437,16 +3457,9 @@ class DialDisplay:
         state = self._outputs
         if row is None or state is None:
             return
-        shown = self._shown_output_level(row)
-        if shown is None:
-            return
-        new = max(0, min(100, shown + delta))
-        self._outputs_optimistic = (row.id, True, new, time.monotonic())
-        enqueue_set(
-            _OutputsTarget(state.appliance_id, state.ip, state.port), row.id,
-            selected=True, volume=new,
-        )
-        self._overlay_signal.set()
+        self._flush_core_state()
+        if self._core.step_output_volume(state.appliance_id, row.id, delta).accepted:
+            self._overlay_signal.set()
 
     def _close_secondary_locked(self) -> None:
         """Pop to the main screen from any secondary screen — the
@@ -3939,22 +3952,73 @@ class DialDisplay:
         return min(deadlines) if deadlines else None
 
     def _tick_outputs_refresh(self) -> None:
-        """Enqueue a fresh outputs-list fetch every OUTPUTS_REFRESH_S while
-        an outputs screen is showing — called from the repeat thread's own
-        1s timeout branch, the same cadence _tick_repeat_line() uses for the
-        repeat screen's live position. self._screen/self._outputs are read
-        lock-free here: one stale tick is harmless, the same argument
-        _check_secondary_timeout() makes."""
+        """Ask the core to refetch the outputs list while an outputs screen
+        is showing — called from the repeat thread's own 1s timeout branch,
+        the same cadence _tick_repeat_line() uses for the repeat screen's
+        live position; the core holds the refresh interval. self._screen/
+        self._outputs are read lock-free here: one stale tick is harmless,
+        the same argument _check_secondary_timeout() makes."""
         if self._screen not in ("outputs", "output"):
             return
-        state = self._outputs
-        if state is None:
+        if self._outputs is None:
             return
-        now = time.monotonic()
-        if now - self._outputs_refresh_at < OUTPUTS_REFRESH_S:
-            return
-        self._outputs_refresh_at = now
-        enqueue_fetch(_OutputsTarget(state.appliance_id, state.ip, state.port))
+        self._sync_core_interest()
+        self._core.refresh_watched(time.monotonic())
+
+    def _flush_core_state(self) -> None:
+        """Carry the outputs and EQ screen states to the core before it is
+        asked to act on them: rows or readings set on this view's own state
+        replace the core's, and a screen state the core does not hold yet is
+        adopted. Never called with self._lock held (the core takes only its
+        own)."""
+        # The flags are cleared before the state is read, so a change made
+        # in between is seen now or flagged again.
+        outputs_dirty, self._core_outputs_dirty = self._core_outputs_dirty, False
+        eq_dirty, self._core_eq_dirty = self._core_eq_dirty, False
+        outputs, eq = self._outputs_view, self._eq_view
+        snapshot = self._core.snapshot()
+        if outputs is not None:
+            held = snapshot.outputs
+            if outputs_dirty or held is None or held.appliance_id != outputs.appliance_id:
+                self._core.adopt_outputs(
+                    outputs.appliance_id, outputs.rows, outputs.loaded, overwrite=outputs_dirty,
+                )
+        if eq is not None:
+            held = snapshot.eq
+            if eq_dirty or held is None or held.appliance_id != eq.appliance_id:
+                self._core.adopt_eq(
+                    eq.appliance_id, _eq_bands_of(eq), eq.loaded, overwrite=eq_dirty,
+                )
+
+    def _sync_core_interest(self) -> None:
+        """Make the core's record of what this view watches match the
+        screens it has up: the outputs list and the EQ page register as the
+        watcher "spi" while they are open (or requested, and so about to
+        open) and drop it when they close. The touch that asks for a screen
+        has already registered and fetched; this registration does not
+        fetch again. Never called with self._lock held."""
+        with self._interest_lock:
+            outputs, eq, request = self._outputs_view, self._eq_view, self._screen_request
+            if outputs is not None:
+                want_outputs = outputs.appliance_id
+            else:
+                want_outputs = self._watched_outputs_id if request == "outputs" else None
+            if eq is not None:
+                want_eq = eq.appliance_id
+            else:
+                want_eq = self._watched_eq_id if request == "eq" else None
+            if want_outputs != self._watched_outputs_id:
+                if self._watched_outputs_id is not None:
+                    self._core.watch_outputs(self._watched_outputs_id, "spi", False)
+                if want_outputs is not None:
+                    self._core.watch_outputs(want_outputs, "spi", True, fetch=False)
+                self._watched_outputs_id = want_outputs
+            if want_eq != self._watched_eq_id:
+                if self._watched_eq_id is not None:
+                    self._core.watch_eq(self._watched_eq_id, "spi", False)
+                if want_eq is not None:
+                    self._core.watch_eq(want_eq, "spi", True, fetch=False)
+                self._watched_eq_id = want_eq
 
     def _tick_controls_hidden(self) -> None:
         """Wake the repaint loop exactly when an artwork-tap hide window
@@ -4485,9 +4549,7 @@ class DialDisplay:
         """The bass or treble value *control* should currently show: the
         pending optimistic override's own slot for *control* when it has
         not expired and is not None, else the screen's own last-fetched
-        value (None until the first fetch lands for this appliance). The
-        _shown_output_level() shape, for the EQ page's pair instead of one
-        output's single level."""
+        value (None until the first fetch lands for this appliance)."""
         override = self._eq_optimistic
         if override is not None and override[2] > time.monotonic():
             value = override[0] if control == "bass" else override[1]
@@ -4540,49 +4602,40 @@ class DialDisplay:
         state = self._eq
         if state is None:
             return
-        shown = self._shown_eq(state, control)
-        if shown is None:
-            shown = 0
-        new = max(-EQ_LIMIT_DB, min(EQ_LIMIT_DB, shown + delta))
-        prev_bass = self._shown_eq(state, "bass")
-        prev_treble = self._shown_eq(state, "treble")
-        self._eq_optimistic = (
-            new if control == "bass" else prev_bass,
-            new if control == "treble" else prev_treble,
-            time.monotonic() + 2.0,
-        )
-        _enqueue_eq_set(
-            _EqTarget(state.appliance_id, state.ip, state.port), **{f"{control}_db": new},
-        )
+        self._flush_core_state()
+        self._core.step_eq(state.appliance_id, control, delta)
         self._overlay_signal.set()
 
     def on_eq_result(self, kind: str, appliance_id: str, status, body, request) -> None:
         """Worker-thread entry (dial_eq's start_eq_worker on_result
-        callback): fold a "fetch" result into self._eq under self._lock — a
-        "set" result is not applied here, the worker's own fetch-after-set
-        does that. Mirrors on_outputs_result(). Drops a result for another
-        appliance (the EQ page moved on, or closed, while the request was
-        in flight) and any malformed/failed body. Clears the optimistic
-        override once it has expired — the same _outputs_optimistic
-        discipline on_outputs_result() follows, so a fetch that raced a
-        still-fresh tap never flashes the pre-tap value back onto screen."""
+        callback): fold a "fetch" result into the core, then into the page's
+        own state under self._lock — a "set" result is not applied here, the
+        worker's own fetch-after-set does that. Mirrors on_outputs_result().
+        Drops a result for another appliance (the EQ page moved on, or
+        closed, while the request was in flight) and any malformed/failed
+        body. The core clears the optimistic override once it has expired —
+        the same discipline on_outputs_result() follows, so a fetch that
+        raced a still-fresh tap never flashes the pre-tap value back onto
+        screen."""
         if kind != "fetch":
             return
-        if not isinstance(body, dict) or not body.get("ok"):
+        state = self._eq_view
+        if state is None or state.appliance_id != appliance_id:
             return
-        bass, treble = body.get("bass_db"), body.get("treble_db")
-        if isinstance(bass, bool) or not isinstance(bass, int):
+        self._flush_core_state()
+        if not self._core.on_eq_result(kind, appliance_id, status, body, request):
             return
-        if isinstance(treble, bool) or not isinstance(treble, int):
-            return
+        held = self._core.snapshot().eq
         with self._lock:
-            state = self._eq
+            state = self._eq_view
             if state is None or state.appliance_id != appliance_id:
                 return
-            self._eq = dataclasses.replace(state, bass_db=bass, treble_db=treble, loaded=True)
-            override = self._eq_optimistic
-            if override is not None and override[2] <= time.monotonic():
-                self._eq_optimistic = None
+            if held is not None and held.appliance_id == appliance_id:
+                self._eq_view = dataclasses.replace(
+                    state, bass_db=eq_gain(held.bands, "bass"),
+                    treble_db=eq_gain(held.bands, "treble"),
+                    loaded=_eq_loaded(held),
+                )
         self._overlay_signal.set()
 
     # ---- Wi-Fi link: the idle icon and the No-WiFi page -------------------
@@ -4976,39 +5029,33 @@ class DialDisplay:
         here; repeat_store and auth_map each guard themselves with their
         own leaf lock).
 
-        An ok:true ack (status 200, body["ok"] truthy) folds optimistically
-        into the repeat store (repeat_store.apply_ack) and wakes the repeat
-        thread so the ring/buttons reflect it immediately. Every other
-        outcome — a 412, a 200 ok:false, or a transient failure (no
-        response, a timeout, or any other HTTP code) — never touches the
-        auth map's STATE, only its due-ness (force_due plus a poll
-        request), the same nudge a transient status-poll error gets
-        elsewhere. A known daemon rejection of "source_active" or
-        "no_recording" additionally clears the store record (the buffer is
-        gone, or a live source has started again — a stale ring/row would
-        otherwise linger until the next poll corrects it). Any outcome
-        other than ok:true also clears a pending focus for this appliance
-        (set_manual_focus_pending) — the replay did not start.
+        The core folds the result (see DialCore.on_repeat_result): an
+        ok:true ack goes into the repeat store and may open the
+        accepted-replay window; any other outcome is rejected, never
+        touches the auth map's STATE (only its due-ness), clears the store
+        record for a known daemon rejection of "source_active" or
+        "no_recording", and clears a pending focus for the appliance (the
+        replay did not start). This view then reacts to what it meant: a
+        poll at once for an accepted replay it follows (and for any
+        rejection, with a reconcile), the compact tier's close of the
+        repeat screen on the ack of its own Stop, and the replay timer.
         """
-        now = time.monotonic()
-        if status == 200 and isinstance(body, dict) and body.get("ok"):
-            repeat_store.apply_ack(appliance_id, body, now)
-            if body.get("state") == "replaying" and self._core.accept_replay(
-                appliance_id, now + ACCEPTED_REPLAY_GRACE_S,
-            ):
+        outcome = self._core.on_repeat_result(kind, appliance_id, status, body)
+        if outcome.ok:
+            if outcome.replay_accepted:
                 # A replay the dial is following has just been accepted:
                 # show it as playing until its advertisement arrives (see
                 # _with_accepted_replay()), and poll now rather than at the
                 # next tick.
                 self.request_poll()
-            if self._pending_repeat_stop_id == appliance_id:
+            if outcome.stop_acked:
                 # This ok ack is for the Stop this appliance's repeat_stop_
-                # tap() just sent (see that method) — on the compact tier,
-                # close the repeat screen back to the playing 2x2
-                # immediately, rather than waiting for it to time out or for
-                # the next poll to find the appliance not playing. Off
-                # compact the repeat screen simply stays, as today.
-                self._pending_repeat_stop_id = None
+                # tap() just sent — on the compact tier, close the repeat
+                # screen back to the playing 2x2 immediately, rather than
+                # waiting for it to time out or for the next poll to find
+                # the appliance not playing. Off compact the repeat screen
+                # simply stays, as today. A rejected/transient Stop leaves
+                # it too: only an ok ack pops it.
                 if (
                     self._compact_tier() and self._screen == "repeat"
                     and self._repeat_screen is not None
@@ -5018,21 +5065,9 @@ class DialDisplay:
             self._overlay_signal.set()
             return
 
-        if self._pending_repeat_stop_id == appliance_id:
-            # A rejected/transient Stop leaves the repeat screen as today —
-            # only an ok ack pops it.
-            self._pending_repeat_stop_id = None
-
-        auth_map.force_due(appliance_id)
         self._reconcile_due = True
         self.request_poll()
 
-        if status == 412 or (status == 200 and isinstance(body, dict)):
-            error = body.get("error") if isinstance(body, dict) else None
-            if error in ("source_active", "no_recording"):
-                repeat_store.clear(appliance_id)
-
-        self._core.drop_pending_focus(appliance_id)
         if self._replay_timer_id == appliance_id:
             # The replay did not start: nothing for the timer line to show.
             self._arm_replay_timer(None)
@@ -5050,30 +5085,33 @@ class DialDisplay:
         limit) never needs special-casing here, it simply shows up as the
         appliance's own truth on the very next fetch.
 
-        A "fetch" outcome folds the parsed row list into the outputs
-        snapshot in one assignment, under self._lock (a leaf-lock-free
-        section — this class's own lock is the only one taken here, exactly
-        as _clear_focus() takes it from the poll thread). A late result for
-        an appliance the screen has since moved on from is dropped. A
-        malformed/unreachable result (rows is None) leaves the last good
-        snapshot on screen. When the detail page is open and its output has
-        disappeared from the fresh rows (gone remote-in-use, or removed),
-        the screen is asked to fall back to the list.
+        A "fetch" outcome is folded by the core, and its rows (less any
+        output another appliance has taken) replace the screen's in one
+        assignment under self._lock. A late result for an appliance the
+        screen has since moved on from is dropped. A malformed/unreachable
+        result leaves the last good snapshot on screen. When the detail page
+        is open and its output has disappeared from the fresh rows (gone
+        remote-in-use, or removed), the screen is asked to fall back to the
+        list.
         """
         if kind != "fetch":
             return
-        rows = _parse_outputs_body(status, body)
+        state = self._outputs_view
+        if state is None or state.appliance_id != appliance_id:
+            return
+        self._flush_core_state()
+        if not self._core.on_outputs_result(kind, appliance_id, status, body, request):
+            return
+        held = self._core.snapshot().outputs
         with self._lock:
-            state = self._outputs
+            state = self._outputs_view
             if state is None or state.appliance_id != appliance_id:
                 return
-            if rows is None:
+            if held is None or held.appliance_id != appliance_id:
                 return
+            rows = _offerable(held.rows)
             page = _clamp_page(state.page, len(rows), self._rows_per_page())
-            self._outputs = dataclasses.replace(state, rows=rows, page=page, loaded=True)
-            optimistic = self._outputs_optimistic
-            if optimistic is not None and optimistic[3] <= time.monotonic():
-                self._outputs_optimistic = None
+            self._outputs_view = dataclasses.replace(state, rows=rows, page=page, loaded=True)
             detail = self._output_detail
             if (
                 detail is not None and self._screen == "output"

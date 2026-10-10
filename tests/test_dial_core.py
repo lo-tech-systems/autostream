@@ -760,3 +760,482 @@ class TestArtworkBytes:
         seq = core.snapshot().seq
         core.clear_artwork()
         assert core.snapshot().seq == seq
+
+
+# ---------------------------------------------------------------------------
+# Outputs and EQ: interest, state, overrides
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch  # noqa: E402
+
+from dial_core import RepeatOutcome  # noqa: E402
+from dial_core_state import ActionResult, EqBand, OutputRow, TransportRequest  # noqa: E402
+
+
+class _Clock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def _outputs_body(*rows):
+    return {"ok": True, "outputs": [
+        {"id": i, "name": n, "selected": s, "volume": v, "remote_in_use": u,
+         **({"remote_owner": o} if o else {})}
+        for (i, n, s, v, u, o) in rows
+    ]}
+
+
+_ROWS = (("1", "Bedroom", True, 40, False, ""), ("2", "Study", False, 0, False, ""))
+
+
+def _io_core(clock=None, *, dial_outputs=True, dial_eq=True, auth=AUTH_AUTHORIZED, focus=True):
+    core = _core(clock=clock)
+    core.set_roster([_entry(dial_outputs=dial_outputs, dial_eq=dial_eq, auth=auth)])
+    if focus:
+        core.set_field("reporting_id", AID)
+    return core
+
+
+class TestWatchOutputs:
+    def test_first_interest_for_the_focused_appliance_holds_state_and_fetches_once(self):
+        core = _io_core()
+        with patch("dial_core.enqueue_fetch") as fetch:
+            core.watch_outputs(AID, "spi", True)
+            core.watch_outputs(AID, "hd", True)
+        assert fetch.call_count == 1
+        target = fetch.call_args[0][0]
+        assert (target.appliance_id, target.ip, target.port) == (AID, "192.0.2.10", 80)
+        held = core.snapshot().outputs
+        assert held.appliance_id == AID and held.rows == () and held.loaded is False
+
+    def test_registering_without_a_fetch_still_holds_the_state(self):
+        core = _io_core()
+        with patch("dial_core.enqueue_fetch") as fetch:
+            core.watch_outputs(AID, "spi", True, fetch=False)
+        fetch.assert_not_called()
+        assert core.snapshot().outputs.appliance_id == AID
+
+    def test_interest_in_another_appliance_waits_for_it_to_be_focused(self):
+        core = _io_core()
+        core.set_roster([_entry(), _entry(appliance_id=BID, name="Study", dial_outputs=True)])
+        with patch("dial_core.enqueue_fetch") as fetch:
+            core.watch_outputs(BID, "hd", True)
+            assert fetch.call_count == 0 and core.snapshot().outputs is None
+            core.set_field("manual_id", BID)
+            core.refresh_watched(5000.0)
+        assert fetch.call_count == 1 and fetch.call_args[0][0].appliance_id == BID
+        assert core.snapshot().outputs.appliance_id == BID
+
+    def test_the_state_goes_with_the_last_watcher(self):
+        core = _io_core()
+        with patch("dial_core.enqueue_fetch"):
+            core.watch_outputs(AID, "spi", True)
+            core.watch_outputs(AID, "hd", True)
+            core.watch_outputs(AID, "spi", False)
+            assert core.snapshot().outputs is not None
+            core.watch_outputs(AID, "hd", False)
+        assert core.snapshot().outputs is None
+
+    def test_dropping_interest_that_was_never_registered_changes_nothing(self):
+        core = _io_core()
+        seq = core.snapshot().seq
+        core.watch_outputs(AID, "spi", False)
+        assert core.snapshot().seq == seq
+
+    def test_a_watcher_follows_one_appliance_at_a_time(self):
+        core = _io_core()
+        core.set_roster([_entry(), _entry(appliance_id=BID, name="Study", dial_outputs=True)])
+        with patch("dial_core.enqueue_fetch"):
+            core.watch_outputs(AID, "spi", True)
+            core.set_field("manual_id", BID)
+            core.watch_outputs(BID, "spi", True)
+        assert core.snapshot().outputs.appliance_id == BID
+
+    def test_the_list_is_asked_for_again_every_two_seconds(self):
+        core = _io_core()
+        with patch("dial_core.enqueue_fetch") as fetch:
+            core.watch_outputs(AID, "spi", True, fetch=False)
+            core.refresh_watched(1000.0)
+            assert fetch.call_count == 1                 # the first tick is due at once
+            core.refresh_watched(1001.99)
+            assert fetch.call_count == 1
+            core.refresh_watched(1002.01)
+            assert fetch.call_count == 2
+            core.refresh_watched(1003.99)
+            assert fetch.call_count == 2                 # the window restarts at the fetch
+
+    def test_nothing_is_asked_for_without_a_watcher(self):
+        core = _io_core()
+        with patch("dial_core.enqueue_fetch") as fetch:
+            core.refresh_watched(1000.0)
+        fetch.assert_not_called()
+
+
+class TestOutputsResult:
+    def _watching(self, clock=None):
+        core = _io_core(clock)
+        with patch("dial_core.enqueue_fetch"):
+            core.watch_outputs(AID, "spi", True)
+        return core
+
+    def test_a_fetch_replaces_the_rows_and_marks_them_loaded(self):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        clock.t = 1001.0
+        assert core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS))
+        held = core.snapshot().outputs
+        assert held.loaded is True and held.fetched_at == 1001.0
+        assert held.rows == (
+            OutputRow("1", "Bedroom", True, 40), OutputRow("2", "Study", False, 0),
+        )
+
+    def test_an_output_in_use_elsewhere_is_kept_and_marked(self):
+        core = self._watching()
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(
+            ("1", "Bedroom", True, 40, False, ""), ("2", "Study", False, 0, True, "Hall"),
+        ))
+        rows = core.snapshot().outputs.rows
+        assert [r.id for r in rows] == ["1", "2"]
+        assert (rows[0].remote_in_use, rows[0].remote_owner) == (False, None)
+        assert (rows[1].remote_in_use, rows[1].remote_owner) == (True, "Hall")
+
+    def test_a_set_result_is_not_applied(self):
+        core = self._watching()
+        assert not core.on_outputs_result("set", AID, 200, _outputs_body(*_ROWS))
+        assert core.snapshot().outputs.rows == ()
+
+    def test_a_late_result_for_another_appliance_is_dropped(self):
+        core = self._watching()
+        seq = core.snapshot().seq
+        assert not core.on_outputs_result("fetch", BID, 200, _outputs_body(*_ROWS))
+        assert core.snapshot().seq == seq and core.snapshot().outputs.rows == ()
+
+    def test_a_result_with_nothing_held_is_dropped(self):
+        core = _io_core()
+        assert not core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS))
+        assert core.snapshot().outputs is None
+
+    def test_a_malformed_or_failed_result_keeps_the_last_rows(self):
+        core = self._watching()
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS))
+        rows = core.snapshot().outputs.rows
+        assert not core.on_outputs_result("fetch", AID, 500, None)
+        assert not core.on_outputs_result("fetch", AID, 200, {"ok": True, "outputs": [{"id": "1"}]})
+        assert core.snapshot().outputs.rows == rows
+
+    def test_a_stale_tap_is_cleared_by_a_later_fetch_and_a_future_one_kept(self):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        core.set_outputs_override(("1", True, 40, 999.0))
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS))
+        assert core.outputs_override() is None
+        core.set_outputs_override(("1", True, 40, 1010.0))
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS))
+        assert core.outputs_override() == ("1", True, 40, 1010.0)
+        assert core.snapshot().outputs.optimistic == ("1", True, 40, 1010.0)
+
+
+class TestSetOutput:
+    def _loaded(self, clock=None, **kw):
+        core = _io_core(clock, **kw)
+        with patch("dial_core.enqueue_fetch"):
+            core.watch_outputs(AID, "spi", True)
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(
+            *_ROWS, ("3", "Hall", True, 20, True, "Den"),
+        ))
+        return core
+
+    def test_enabling_shows_at_once_and_sends_with_no_level(self):
+        clock = _Clock(1000.0)
+        core = self._loaded(clock)
+        with patch("dial_core.enqueue_set") as send:
+            result = core.set_output(AID, "2", selected=True)
+        assert result == ActionResult(True)
+        assert core.snapshot().outputs.optimistic == ("2", True, 0, 1000.0)
+        target, output_id = send.call_args[0]
+        assert (target.appliance_id, target.ip, output_id) == (AID, "192.0.2.10", "2")
+        assert send.call_args[1] == {"selected": True, "volume": None}
+
+    def test_a_level_is_sent_and_shown(self):
+        core = self._loaded(_Clock(1000.0))
+        with patch("dial_core.enqueue_set") as send:
+            core.set_output(AID, "1", selected=True, volume=55)
+        assert core.outputs_override() == ("1", True, 55, 1000.0)
+        assert send.call_args[1] == {"selected": True, "volume": 55}
+
+    def test_the_step_clamps_and_starts_from_the_tap_shown(self):
+        core = self._loaded(_Clock(1000.0))
+        with patch("dial_core.enqueue_set") as send:
+            assert core.step_output_volume(AID, "1", +70).accepted
+            assert send.call_args[1]["volume"] == 100
+            core.set_outputs_override(("1", True, 42, 1000.0))
+            core.step_output_volume(AID, "1", +2)
+            assert send.call_args[1]["volume"] == 44
+            core.step_output_volume(AID, "1", -99)
+            assert send.call_args[1]["volume"] == 0
+
+    def test_a_disabled_output_has_no_level_to_step(self):
+        core = self._loaded()
+        with patch("dial_core.enqueue_set") as send:
+            assert core.step_output_volume(AID, "2", +2) == ActionResult(False, "wrong_state")
+        send.assert_not_called()
+        assert core.outputs_override() is None
+
+    def test_an_output_taken_elsewhere_is_refused_locally(self):
+        core = self._loaded()
+        with patch("dial_core.enqueue_set") as send:
+            assert core.set_output(AID, "3", selected=False) == ActionResult(False, "wrong_state")
+            assert core.step_output_volume(AID, "3", +1) == ActionResult(False, "wrong_state")
+        send.assert_not_called()
+
+    def test_refusals_name_their_reason(self):
+        with patch("dial_core.enqueue_set") as send:
+            core = self._loaded()
+            assert core.set_output(BID, "1", selected=False) == ActionResult(False, "unknown_appliance")
+            assert core.set_output(AID, "9", selected=False) == ActionResult(False, "wrong_state")
+            assert core.set_output(AID, "1") == ActionResult(False, "wrong_state")
+            core.set_roster([_entry(dial_outputs=False)])
+            assert core.set_output(AID, "1", selected=False) == ActionResult(False, "no_capability")
+            core.set_roster([_entry(dial_outputs=True, auth=AUTH_UNAUTHORIZED)])
+            assert core.set_output(AID, "1", selected=False) == ActionResult(False, "unauthorized")
+        send.assert_not_called()
+
+    def test_the_tap_outlives_the_watchers(self):
+        core = self._loaded(_Clock(1000.0))
+        with patch("dial_core.enqueue_set"):
+            core.set_output(AID, "1", selected=False)
+        core.watch_outputs(AID, "spi", False)
+        assert core.snapshot().outputs is None
+        assert core.outputs_override() == ("1", False, 40, 1000.0)
+
+
+def _eq_body(bass, treble):
+    return {"ok": True, "bass_db": bass, "treble_db": treble}
+
+
+class TestEq:
+    def _watching(self, clock=None, version=0):
+        core = _io_core(clock)
+        if version:
+            core.set_roster([dataclasses.replace(_entry(dial_eq=True), dial_eq_version=version)])
+        with patch("dial_core._enqueue_eq_fetch"):
+            core.watch_eq(AID, "spi", True)
+        return core
+
+    def test_first_interest_fetches_once_and_holds_an_empty_state(self):
+        core = _io_core()
+        with patch("dial_core._enqueue_eq_fetch") as fetch:
+            core.watch_eq(AID, "spi", True)
+            core.watch_eq(AID, "hd", True)
+        assert fetch.call_count == 1 and fetch.call_args[0][0].appliance_id == AID
+        held = core.snapshot().eq
+        assert (held.appliance_id, held.bands, held.loaded, held.capability_version) == (AID, (), False, 1)
+
+    def test_the_capability_version_comes_from_the_roster(self):
+        assert self._watching(version=2).snapshot().eq.capability_version == 2
+
+    def test_the_last_watcher_leaving_drops_the_state(self):
+        core = self._watching()
+        core.watch_eq(AID, "spi", False)
+        assert core.snapshot().eq is None
+
+    def test_a_fetch_maps_bass_and_treble_to_two_bands(self):
+        core = self._watching()
+        assert core.on_eq_result("fetch", AID, 200, _eq_body(2, -3))
+        held = core.snapshot().eq
+        assert held.loaded is True
+        assert held.bands == (EqBand("bass", None, 2, -6, 6), EqBand("treble", None, -3, -6, 6))
+
+    def test_late_malformed_and_set_results_change_nothing(self):
+        core = self._watching()
+        seq = core.snapshot().seq
+        assert not core.on_eq_result("fetch", BID, 200, _eq_body(1, 1))
+        assert not core.on_eq_result("set", AID, 200, _eq_body(1, 1))
+        assert not core.on_eq_result("fetch", AID, 500, None)
+        assert not core.on_eq_result("fetch", AID, 200, {"ok": False})
+        assert not core.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": "2", "treble_db": 1})
+        assert not core.on_eq_result("fetch", AID, 200, {"ok": True, "bass_db": True, "treble_db": 1})
+        assert core.snapshot().seq == seq
+
+    def test_a_step_clamps_to_the_band_range_and_keeps_the_other_control(self):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        core.on_eq_result("fetch", AID, 200, _eq_body(1, -3))
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.step_eq(AID, "bass", +9).accepted
+        assert core.eq_override() == ((("bass", 6), ("treble", -3)), 1002.0)
+        assert core.snapshot().eq.optimistic == (("bass", 6), ("treble", -3))
+        assert core.snapshot().eq.optimistic_expires_at == 1002.0
+        assert send.call_args[1] == {"bass_db": 6}
+        assert send.call_args[0][0].appliance_id == AID
+
+    def test_a_step_before_the_first_reading_starts_from_zero(self):
+        core = self._watching(_Clock(1000.0))
+        with patch("dial_core._enqueue_eq_set"):
+            core.step_eq(AID, "treble", -2)
+        assert core.eq_override() == ((("treble", -2),), 1002.0)
+
+    def test_the_tap_window_ends_at_its_boundary(self):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        core.on_eq_result("fetch", AID, 200, _eq_body(0, 0))
+        with patch("dial_core._enqueue_eq_set"):
+            core.step_eq(AID, "bass", +2)
+            assert core.step_eq(AID, "bass", +1).accepted      # steps from the tap shown: 3
+        assert dict(core.eq_override()[0])["bass"] == 3
+        clock.t = 1001.99
+        core.on_eq_result("fetch", AID, 200, _eq_body(0, 0))
+        assert core.eq_override()[0] != ()                     # inside the window: kept
+        clock.t = 1002.01
+        core.on_eq_result("fetch", AID, 200, _eq_body(0, 0))
+        assert core.eq_override() == ((), 0.0)
+
+    def test_set_eq_sends_only_the_bands_given_and_shows_all(self):
+        core = self._watching(_Clock(1000.0))
+        core.on_eq_result("fetch", AID, 200, _eq_body(1, 2))
+        with patch("dial_core._enqueue_eq_set") as send:
+            core.set_eq(AID, {"treble": -4})
+        assert send.call_args[1] == {"treble_db": -4}
+        assert dict(core.eq_override()[0]) == {"bass": 1, "treble": -4}
+
+    def test_refusals_name_their_reason(self):
+        with patch("dial_core._enqueue_eq_set") as send:
+            core = self._watching()
+            assert core.set_eq(AID, {"peq1": 1}) == ActionResult(False, "no_capability")
+            assert core.set_eq(AID, {}) == ActionResult(False, "no_capability")
+            assert core.step_eq(AID, "peq3", 1) == ActionResult(False, "no_capability")
+            assert core.set_eq(BID, {"bass": 1}) == ActionResult(False, "unknown_appliance")
+            core.watch_eq(AID, "spi", False)
+            assert core.set_eq(AID, {"bass": 1}) == ActionResult(False, "not_polling")
+            core.set_roster([_entry(dial_eq=False)])
+            assert core.set_eq(AID, {"bass": 1}) == ActionResult(False, "no_capability")
+            core.set_roster([_entry(dial_eq=True, auth=AUTH_UNAUTHORIZED)])
+            assert core.step_eq(AID, "bass", 1) == ActionResult(False, "unauthorized")
+        send.assert_not_called()
+
+    def test_fetch_now_asks_whatever_the_interest(self):
+        core = _io_core()
+        with patch("dial_core._enqueue_eq_fetch") as eq_fetch, patch("dial_core.enqueue_fetch") as out_fetch:
+            assert core.fetch_eq(AID) and core.fetch_outputs(AID)
+            assert not core.fetch_eq(BID) and not core.fetch_outputs(BID)
+        assert eq_fetch.call_count == 1 and out_fetch.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Transport requests and the repeat worker's results
+# ---------------------------------------------------------------------------
+
+class TestTransport:
+    @pytest.fixture(autouse=True)
+    def _store(self):
+        from dial_repeat_store import repeat_store
+        repeat_store.clear(AID)
+        yield repeat_store
+        repeat_store.clear(AID)
+
+    def _core(self, clock=None):
+        core = _core(clock)
+        core.set_roster([_entry(repeat_capable=True)])
+        return core
+
+    def test_a_request_is_pending_until_the_worker_reports(self):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        core.begin_transport(AID, "seek")
+        assert core.snapshot().transport == TransportRequest(AID, "seek", 1000.0, "pending", 1000.0, None)
+
+    def test_an_ok_ack_marks_it_accepted(self, _store):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        _store.update(AID, _record("hold"))
+        core.begin_transport(AID, "seek")
+        clock.t = 1001.0
+        outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "replaying"})
+        assert outcome == RepeatOutcome(True, False, False)
+        assert core.snapshot().transport == TransportRequest(AID, "seek", 1000.0, "accepted", 1001.0, None)
+
+    def test_only_the_ack_of_a_stop_counts_as_its_own(self, _store):
+        core = self._core()
+        _store.update(AID, _record("replaying"))
+        core.begin_transport(AID, "stop")
+        first = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"})
+        again = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"})
+        assert first.stop_acked is True and again.stop_acked is False
+
+    def test_a_seek_ack_is_not_a_stop_ack(self, _store):
+        core = self._core()
+        _store.update(AID, _record("hold"))
+        core.begin_transport(AID, "seek")
+        assert core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "hold"}).stop_acked is False
+
+    def test_a_rejection_carries_the_daemon_error(self):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        core.begin_transport(AID, "seek")
+        clock.t = 1002.0
+        outcome = core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "fading_out"})
+        assert outcome == RepeatOutcome(False, False, False)
+        assert core.snapshot().transport == TransportRequest(
+            AID, "seek", 1000.0, "rejected", 1002.0, "fading_out",
+        )
+
+    def test_a_transient_failure_is_rejected_with_a_generic_error(self):
+        core = self._core()
+        core.begin_transport(AID, "arm")
+        core.on_repeat_result("arm", AID, None, None)
+        assert core.snapshot().transport.state == "rejected"
+        assert core.snapshot().transport.error == "unreachable"
+        core.begin_transport(AID, "arm")
+        core.on_repeat_result("arm", AID, 503, None)
+        assert core.snapshot().transport.error == "http_503"
+
+    def test_a_result_for_another_appliance_leaves_the_request_alone(self):
+        core = self._core()
+        core.begin_transport(AID, "seek")
+        core.on_repeat_result("transport", BID, 412, {"ok": False, "error": "x"})
+        assert core.snapshot().transport.state == "pending"
+
+    def test_the_next_request_replaces_a_settled_one(self):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        core.begin_transport(AID, "seek")
+        core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "x"})
+        clock.t = 1005.0
+        core.begin_transport(AID, "stop")
+        assert core.snapshot().transport == TransportRequest(AID, "stop", 1005.0, "pending", 1005.0, None)
+
+    def test_an_accepted_replay_of_the_followed_appliance_opens_the_window(self, _store):
+        clock = _Clock(1000.0)
+        core = self._core(clock)
+        core.set_focus(AID)
+        _store.update(AID, _record("hold"))
+        outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "replaying"})
+        assert outcome.replay_accepted is True
+        assert core.snapshot().focus.accepted_replay == (AID, 1020.0)
+
+    def test_an_ack_for_another_appliance_opens_no_window(self, _store):
+        core = self._core()
+        core.set_focus(BID)
+        outcome = core.on_repeat_result("transport", AID, 200, {"ok": True, "state": "replaying"})
+        assert outcome.replay_accepted is False
+        assert core.snapshot().focus.accepted_replay is None
+
+    def test_a_rejection_drops_a_pending_focus_and_clears_a_gone_buffer(self, _store):
+        core = self._core()
+        _store.update(AID, _record("hold"))
+        core.set_focus_pending(AID, "Kitchen", 1010.0)
+        core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "no_recording"})
+        assert core.snapshot().focus.pending is None and core.manual_focus_id() is None
+        record = _store.get(AID, 1.0)
+        assert record is None or not record.available
+
+    def test_a_rejection_nudges_the_auth_map_outside_the_core_lock(self):
+        core = self._core()
+        seen = []
+        with patch("dial_core.auth_map") as amap:
+            amap.force_due.side_effect = lambda *a: seen.append(core._lock.locked())
+            core.on_repeat_result("transport", AID, 412, {"ok": False, "error": "x"})
+        assert seen == [False]

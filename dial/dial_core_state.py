@@ -26,6 +26,21 @@ from dial_sdhealth import SdHealthView
 from dial_update_watch import UpdateView
 from dial_volume import select_volume_target
 
+# How often the outputs list is refetched while someone is watching it.
+OUTPUTS_REFRESH_S = 2.0
+
+# The EQ bass/treble range: both ends (the core's step and the appliance's
+# own apply_eq_fields) independently clamp to it.
+EQ_LIMIT_DB = 6
+
+# How long an EQ tap's value is shown ahead of the appliance's own reading.
+EQ_OPTIMISTIC_WINDOW_S = 2.0
+
+# How long a replay the appliance has just accepted may be shown as playing
+# before its own playing advertisement reaches the dial (normally a few
+# seconds).
+ACCEPTED_REPLAY_GRACE_S = 20.0
+
 
 # ---- row and now-playing types -------------------------------------------
 
@@ -186,6 +201,15 @@ class TransportRequest:
     state: str                # "pending" | "accepted" | "rejected"
     changed_at: float
     error: str | None         # daemon error string on rejection, else None
+
+
+@dataclass(frozen=True)
+class ActionResult:
+    """The outcome of a request made of the core: accepted means the request
+    was taken (a state change made or a send enqueued), not that the
+    appliance agreed. A refusal carries one of a closed set of reasons."""
+    accepted: bool
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -490,6 +514,7 @@ def with_accepted_replay(
         dial_outputs=entry.dial_outputs, dial_eq=entry.dial_eq,
         service_name=entry.service_name, playing_since=now,
         appliance_id=entry.appliance_id, auth=entry.auth,
+        dial_eq_version=getattr(entry, "dial_eq_version", 0),
     )], accepted
 
 
@@ -570,7 +595,7 @@ def appliance_states(roster: Iterable, repeats: dict | None = None) -> tuple:
             dial_eq=dial_eq,
             repeat_capable=bool(getattr(r, "repeat_capable", False)),
             dial_proto_version=getattr(r, "dial_proto_version", 0),
-            dial_eq_version=1 if dial_eq else 0,
+            dial_eq_version=getattr(r, "dial_eq_version", 0) or (1 if dial_eq else 0),
             dial_outputs_version=1 if dial_outputs else 0,
             status_error=None,
             master_volume=None,
@@ -581,6 +606,11 @@ def appliance_states(roster: Iterable, repeats: dict | None = None) -> tuple:
             webui_port=web_port,
         ))
     return tuple(out)
+
+
+def eq_gain(bands: Iterable, band_id: str) -> int | None:
+    """The gain of the band named *band_id*, or None when there is none."""
+    return next((b.gain_db for b in bands if b.id == band_id), None)
 
 
 def idle_affordance(roster: Iterable, held_ids) -> bool:
