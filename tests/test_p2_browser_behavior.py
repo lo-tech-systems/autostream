@@ -1662,6 +1662,107 @@ class TestDialCardHtmlStructure:
         body = src[fn_idx:next_fn]
         assert "layoutEl.value = ''" in body
 
+    # ── Screen settings (layout report notes) ───────────────────────────────
+
+    def test_layout_note_and_touch_warning_present_after_layout_row_before_touch_row(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        layout_idx = result.find("dial-screen-layout-row")
+        note_idx = result.find("dial-screen-layout-note")
+        warn_idx = result.find("dial-screen-touch-warning")
+        touch_idx = result.find("dial-screen-touch-row")
+        assert layout_idx >= 0 and note_idx >= 0 and warn_idx >= 0 and touch_idx >= 0
+        assert layout_idx < note_idx < warn_idx < touch_idx
+
+    def test_layout_note_and_touch_warning_hidden_by_default(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        for cls in ("dial-screen-layout-note", "dial-screen-touch-warning"):
+            idx = result.find(cls)
+            assert idx >= 0
+            tag = result[idx - 10:idx + 120]
+            assert "display:none" in tag
+
+    def test_layout_note_and_touch_warning_carry_ctl_row_class(self):
+        self._setup_stubs()
+        from autostream_webui_page_setup import _dial_card_html
+        result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
+        for cls in ("dial-screen-layout-note", "dial-screen-touch-warning"):
+            idx = result.find(cls)
+            tag = result[idx - 10:idx + 120]
+            assert "dial-screen-ctl-row" in tag
+
+    def test_dial_render_layout_notes_defined(self):
+        src = _setup_page_src()
+        assert "function dialRenderLayoutNotes(card, layout)" in src
+
+    def test_dial_load_screen_settings_calls_render_layout_notes_before_screen_loaded(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialLoadScreenSettings(card)")
+        next_fn = src.find("function dialFillLayoutSizes", fn_idx)
+        body = src[fn_idx:next_fn]
+        render_idx = body.find("dialRenderLayoutNotes(card, j.layout)")
+        loaded_idx = body.find("card.dataset.screenLoaded = '1'")
+        assert render_idx >= 0 and loaded_idx >= 0
+        assert render_idx < loaded_idx
+
+    def test_dial_save_screen_settings_success_path_calls_render_layout_notes(self):
+        src = _setup_page_src()
+        fn_idx = src.find("async function dialSaveScreenSettings(card, changedEl)")
+        next_fn = src.find("async function dialUpdateFirmware", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "dialRenderLayoutNotes(card, result.body ? result.body.layout : null)" in body
+
+    def test_tier_label_map_has_the_three_tiers(self):
+        src = _setup_page_src()
+        idx = src.find("_DIAL_TIER_LABEL")
+        assert idx >= 0
+        next_semi = src.find(";", idx)
+        decl = src[idx:next_semi]
+        assert "base: 'compact'" in decl
+        assert "rich: 'standard'" in decl
+        assert "large: 'large'" in decl
+
+    def test_layout_note_text_sentences_present_verbatim(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialLayoutNoteText(layout)")
+        assert fn_idx >= 0
+        next_fn = src.find("function dialTouchWarningText", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "'Renders at '" in body
+        assert "scaled to the " in body
+        assert "Preview only: fine detail is lost and touch targets are smaller than a fingertip." in body
+        assert "Preview only: shown enlarged." in body
+
+    def test_touch_warning_text_variants_present_verbatim(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialTouchWarningText(layout)")
+        assert fn_idx >= 0
+        next_fn = src.find("function dialRenderLayoutNotes", fn_idx)
+        body = src[fn_idx:next_fn]
+        assert "Controls on this screen are shorter than the recommended 6 mm." in body
+        assert "The chosen layout size overrides the automatic fallback to the compact layout." in body
+        assert "The compact layout is used automatically." in body
+
+    def test_render_layout_notes_hides_both_when_layout_missing(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialRenderLayoutNotes(card, layout)")
+        assert fn_idx >= 0
+        next_fn = src.find("\n        function ", fn_idx + 1)
+        body = src[fn_idx:next_fn]
+        assert "if (!layout || typeof layout !== 'object')" in body
+        assert body.count("style.display = 'none'") >= 2
+
+    def test_render_layout_notes_uses_text_content_not_inner_html(self):
+        src = _setup_page_src()
+        fn_idx = src.find("function dialRenderLayoutNotes(card, layout)")
+        next_fn = src.find("\n        function ", fn_idx + 1)
+        body = src[fn_idx:next_fn]
+        assert "textContent" in body
+        assert "innerHTML" not in body
+
     # ── General config (Mute all playing devices toggle) ───────────────────────
 
     def test_mute_all_toggle_present_in_card(self):

@@ -694,6 +694,8 @@ def _dial_card_html(
                     <span>Layout Size:</span>
                     <select class="dial-screen-layout" data-dial-action="save-screen" disabled></select>
                   </div>
+                  <p class="dial-screen-layout-note dial-screen-ctl-row" style="display:none;margin:0.25rem 0 0;font-size:0.85em;color:var(--color-text-secondary,#888);"></p>
+                  <p class="dial-screen-touch-warning dial-screen-ctl-row" style="display:none;margin:0.25rem 0 0;font-size:0.85em;color:var(--color-warning,#c98a00);"></p>
                   <div class="dial-screen-touch-row dial-screen-ctl-row" style="display:none;align-items:center;gap:0.5rem;margin-top:0.5rem;">
                     <span>Touch Panel:</span>
                     <select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>
@@ -4331,6 +4333,10 @@ def send_setup_page(
               delete card.dataset.layoutCaps;
               if (layoutRow) layoutRow.style.display = 'none';
             }}
+            // Live setup-card notes: what the screen settings above resolve
+            // to, from the dial's own report. Hidden entirely on an older
+            // dial that publishes no `layout`.
+            dialRenderLayoutNotes(card, j.layout);
             // Only now is it safe to save: the controls hold the dial's real
             // values, so a whole-object POST cannot reset an unread field.
             card.dataset.screenLoaded = '1';
@@ -4359,6 +4365,61 @@ def send_setup_page(
             layoutEl.appendChild(o);
           }});
           layoutEl.value = selected || '';
+        }}
+
+        // Human labels for the dial's content tiers. Fallback to the raw key
+        // so a tier this page does not know yet still reads as something.
+        var _DIAL_TIER_LABEL = {{ base: 'compact', rich: 'standard', large: 'large' }};
+
+        function dialLayoutNoteText(layout) {{
+          var tier = _DIAL_TIER_LABEL[layout.content_tier] || String(layout.content_tier);
+          var text = 'Renders at ' + layout.logical_width + 'x' + layout.logical_height
+            + ' (' + tier + ' layout)';
+          if (layout.resampled) {{
+            var down = layout.logical_width > layout.physical_width
+              || layout.logical_height > layout.physical_height;
+            text += ', scaled to the ' + layout.physical_width + 'x' + layout.physical_height + ' panel.';
+            text += down
+              ? ' Preview only: fine detail is lost and touch targets are smaller than a fingertip.'
+              : ' Preview only: shown enlarged.';
+          }} else {{
+            text += '.';
+          }}
+          return text;
+        }}
+
+        function dialTouchWarningText(layout) {{
+          if (!layout.touch_short) return '';
+          var text = 'Controls on this screen are shorter than the recommended 6 mm.';
+          text += layout.size_chosen
+            ? ' The chosen layout size overrides the automatic fallback to the compact layout.'
+            : ' The compact layout is used automatically.';
+          return text;
+        }}
+
+        // Renders (or hides) the two setup-card notes below the layout-size
+        // select from the screen-settings response's `layout` object -- the
+        // dial's own report of what the persisted settings resolve to (see
+        // dialLoadScreenSettings/dialSaveScreenSettings call sites below).
+        // Called with null/undefined on an older dial that publishes no
+        // `layout` at all, which simply hides both.
+        function dialRenderLayoutNotes(card, layout) {{
+          var noteEl = card.querySelector('.dial-screen-layout-note');
+          var warnEl = card.querySelector('.dial-screen-touch-warning');
+          if (!layout || typeof layout !== 'object') {{
+            if (noteEl) noteEl.style.display = 'none';
+            if (warnEl) warnEl.style.display = 'none';
+            return;
+          }}
+          if (noteEl) {{
+            noteEl.textContent = dialLayoutNoteText(layout);
+            noteEl.style.display = 'block';
+          }}
+          if (warnEl) {{
+            var warning = dialTouchWarningText(layout);
+            warnEl.textContent = warning;
+            warnEl.style.display = warning ? 'block' : 'none';
+          }}
         }}
 
         async function dialSaveScreenSettings(card, changedEl) {{
@@ -4451,6 +4512,7 @@ def send_setup_page(
                     result.body.screen ? result.body.screen.layout_size : null
                   );
                 }}
+                dialRenderLayoutNotes(card, result.body ? result.body.layout : null);
                 dialMsg(card, 'Saved', true); setTimeout(function(){{ dialMsg(card, '', true); }}, 2000);
                 dialSyncScreenControlsEnabled(card);
               }}
