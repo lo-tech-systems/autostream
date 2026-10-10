@@ -269,11 +269,23 @@ class OutputsEffect:
     token: float = 0.0
 
 
+def _number_of(request, key: str) -> float | None:
+    """The number a worker handed back under *key* in the request it answers,
+    or None when it did not."""
+    value = request.get(key) if isinstance(request, dict) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def _token_of(request) -> float | None:
     """The token a worker handed back with its reply, or None when it did
     not (such a reply resolves nothing)."""
-    token = request.get("token") if isinstance(request, dict) else None
-    return token if isinstance(token, (int, float)) and not isinstance(token, bool) else None
+    return _number_of(request, "token")
+
+
+def _started_at(request) -> float | None:
+    """The clock reading a fetch was requested at, or None when its worker
+    did not say (such a reading clears no tap)."""
+    return _number_of(request, "started_at")
 
 
 def _initial_state(dial_id: str) -> _CoreState:
@@ -777,7 +789,7 @@ class DialCore:
         entry = _roster_entry(self._state.roster, appliance_id)
         if entry is None:
             return False
-        enqueue_fetch(_OutputsTarget(appliance_id, entry.ip, entry.port))
+        enqueue_fetch(_OutputsTarget(appliance_id, entry.ip, entry.port), started_at=self._clock())
         return True
 
     def fetch_eq(self, appliance_id: str) -> bool:
@@ -1122,8 +1134,8 @@ class DialCore:
     def on_outputs_result(self, kind: str, appliance_id: str, status, body, request=None) -> bool:
         """Fold an outputs worker result: a fetch becomes the held rows (an
         output another appliance has taken among them, marked), and clears
-        the pending tap once it was stamped no later than now. A set result
-        resolves the pending output request (see `_fold_set_result`); the
+        the pending tap when the reading was requested after the tap. A set
+        result resolves the pending output request (see `_fold_set_result`); the
         worker's own reading after it is what updates the rows. A result for
         an appliance other than the one held, or one that is malformed or
         failed, changes nothing. True when the rows were replaced."""
@@ -1135,6 +1147,7 @@ class DialCore:
         if rows is None:
             return False
         now = self._clock()
+        started = _started_at(request)
 
         def mutate(state: _CoreState) -> "bool | None":
             held = state.outputs
@@ -1142,7 +1155,7 @@ class DialCore:
                 return False
             state.outputs = dataclasses.replace(held, rows=rows, loaded=True, fetched_at=now)
             override = state.outputs_optimistic
-            if override is not None and override[3] <= now:
+            if override is not None and started is not None and started > override[3]:
                 state.outputs_optimistic = None
         return self._changed(mutate)
 

@@ -110,7 +110,7 @@ class _OnePass(BaseException):
 def _run_worker_once(items):
     """Run the worker loop over *items* on this thread, then stop it. The
     shared queue and the worker threads other tests leave parked on it are
-    not touched."""
+    not touched. Returns the stand-in for the follow-up fetch it queues."""
     pending = list(items)
 
     class _Items:
@@ -119,11 +119,12 @@ def _run_worker_once(items):
                 raise _OnePass()
             return pending.pop(0)
 
-    with patch.object(do, "_queue", _Items()), patch.object(do, "enqueue_fetch"):
+    with patch.object(do, "_queue", _Items()), patch.object(do, "enqueue_fetch") as fetch:
         try:
             do._worker()
         except _OnePass:
             pass
+    return fetch
 
 
 def _drain_queue():
@@ -279,13 +280,13 @@ class TestSendOneOutcomes:
 # ---------------------------------------------------------------------------
 
 class TestEnqueue:
-    def test_enqueue_fetch_puts_kind_target_and_empty_payload(self):
+    def test_enqueue_fetch_puts_kind_target_and_the_stamp(self):
         target = _target()
-        enqueue_fetch(target)
+        enqueue_fetch(target, started_at=5.0)
         kind, put_target, payload = do._queue.get_nowait()
         assert kind == "fetch"
         assert put_target is target
-        assert payload == {}
+        assert payload == {"started_at": 5.0}
 
     def test_enqueue_set_puts_kind_target_and_body(self):
         target = _target()
@@ -312,23 +313,23 @@ class TestEnqueue:
         one — the periodic refresh tick and a post-set refetch must never
         stack up while the first is still sitting in the queue."""
         target = _target(appliance_id="p" * 20)
-        enqueue_fetch(target)
-        enqueue_fetch(target)
-        enqueue_fetch(target)
+        enqueue_fetch(target, started_at=5.0)
+        enqueue_fetch(target, started_at=5.0)
+        enqueue_fetch(target, started_at=5.0)
         assert do._queue.qsize() == 1
 
     def test_fetch_for_a_different_target_is_not_coalesced(self):
-        enqueue_fetch(_target(appliance_id="p" * 20))
-        enqueue_fetch(_target(appliance_id="q" * 20))
+        enqueue_fetch(_target(appliance_id="p" * 20), started_at=5.0)
+        enqueue_fetch(_target(appliance_id="q" * 20), started_at=5.0)
         assert do._queue.qsize() == 2
 
     def test_a_new_fetch_can_be_queued_once_the_pending_one_is_dequeued(self):
         target = _target(appliance_id="r" * 20)
-        enqueue_fetch(target)
+        enqueue_fetch(target, started_at=5.0)
         do._queue.get_nowait()  # simulates the worker picking it up
         with do._pending_fetch_lock:
             do._pending_fetch_ids.discard(target.appliance_id)
-        enqueue_fetch(target)
+        enqueue_fetch(target, started_at=5.0)
         assert do._queue.qsize() == 1
 
     def test_enqueue_set_adds_op_pin_and_pin_capable_only_when_given(self):
@@ -345,6 +346,13 @@ class TestEnqueue:
         enqueue_set(target, "1", selected=True, volume=None, token=2.0)
         assert do._queue.get_nowait()[2] == {"id": "1", "selected": True, "token": 2.0}
 
+    def test_a_coalesced_fetch_keeps_the_stamp_it_was_queued_with(self):
+        target = _target(appliance_id="s" * 20)
+        enqueue_fetch(target, started_at=5.0)
+        enqueue_fetch(target, started_at=9.0)
+        assert do._queue.qsize() == 1
+        assert do._queue.get_nowait()[2] == {"started_at": 5.0}
+
     def test_set_is_never_coalesced(self):
         target = _target()
         enqueue_set(target, "1", selected=True, volume=10, token=1.0)
@@ -357,6 +365,52 @@ class TestEnqueue:
 # ---------------------------------------------------------------------------
 
 class TestWorker:
+    def test_the_stamp_is_stripped_before_the_wire_and_given_to_the_callback(self):
+        seen = []
+
+        def on_result(kind, appliance_id, status, body, request):
+            seen.append((kind, request))
+
+        with patch.object(do, "_queue") as q:
+            enqueue_fetch(_target(appliance_id="i" * 20), started_at=12.5)
+        item = q.put.call_args[0][0]
+        patcher, instances = _mock_conn({"ok": True, "outputs": []})
+        with patcher:
+            saved = do._cfg, do._on_result
+            do._cfg, do._on_result = MagicMock(uuid="dial-uuid"), on_result
+            try:
+                _run_worker_once([item])
+            finally:
+                do._cfg, do._on_result = saved
+        assert json.loads(instances[0].request_called_with["body"]) == {"dial_id": "dial-uuid"}
+        assert seen == [("fetch", {"started_at": 12.5})]
+
+    def test_the_fetch_after_a_set_is_stamped_after_the_reply(self):
+        order = []
+
+        def on_result(kind, appliance_id, status, body, request):
+            order.append(("reply", None))
+
+        def stamp():
+            order.append(("clock", None))
+            return 77.0
+
+        with patch.object(do, "_queue") as q:
+            enqueue_set(_target(appliance_id="j" * 20), "1", selected=True, volume=None, token=1.0)
+        item = q.put.call_args[0][0]
+        patcher, _ = _mock_conn({"ok": True})
+        with patcher:
+            saved = do._cfg, do._on_result
+            do._cfg, do._on_result = MagicMock(uuid="dial-uuid"), on_result
+            try:
+                with patch.object(do, "_clock", stamp):
+                    fetch = _run_worker_once([item])
+            finally:
+                do._cfg, do._on_result = saved
+        fetch.assert_called_once()
+        assert fetch.call_args.kwargs == {"started_at": 77.0}
+        assert order == [("reply", None), ("clock", None)]
+
     def test_worker_sends_fetch_and_calls_on_result(self):
         results = []
         done = threading.Event()
@@ -369,7 +423,7 @@ class TestWorker:
         cfg = MagicMock(uuid="dial-uuid")
         with patcher:
             start_outputs_worker(cfg, on_result=on_result)
-            enqueue_fetch(_target(appliance_id="b" * 20))
+            enqueue_fetch(_target(appliance_id="b" * 20), started_at=5.0)
             assert done.wait(timeout=2.0)
 
         assert len(results) == 1
@@ -378,7 +432,7 @@ class TestWorker:
         assert appliance_id == "b" * 20
         assert status == 200
         assert body["ok"] is True
-        assert request == {}
+        assert request == {"started_at": 5.0}
 
     def test_worker_calls_on_result_for_set_then_enqueues_a_follow_up_fetch(self):
         results = []
@@ -480,8 +534,8 @@ class TestWorker:
         cfg = MagicMock(uuid="dial-uuid")
         with patcher:
             start_outputs_worker(cfg, on_result=on_result)
-            enqueue_fetch(_target(appliance_id="d" * 20))
-            enqueue_fetch(_target(appliance_id="e" * 20))
+            enqueue_fetch(_target(appliance_id="d" * 20), started_at=5.0)
+            enqueue_fetch(_target(appliance_id="e" * 20), started_at=5.0)
             assert both_done.wait(timeout=2.0)
 
         assert set(calls) == {"d" * 20, "e" * 20}
@@ -491,7 +545,7 @@ class TestWorker:
         cfg = MagicMock(uuid="dial-uuid")
         with patcher:
             start_outputs_worker(cfg, on_result=None)
-            enqueue_fetch(_target(appliance_id="f" * 20))
+            enqueue_fetch(_target(appliance_id="f" * 20), started_at=5.0)
             deadline = time.monotonic() + 2.0
             while not do._queue.empty() and time.monotonic() < deadline:
                 time.sleep(0.01)

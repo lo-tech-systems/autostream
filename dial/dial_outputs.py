@@ -31,6 +31,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 
 # Never blocks the worker beyond this — matches dial_repeat's own budget for
@@ -51,8 +52,9 @@ OUTPUTS_SET_TIMEOUT_S = 10.0
 _MAX_RESPONSE_BYTES = 64 * 1024
 
 # Keys a queued body carries that are never sent (the dial's own request
-# token) and keys the result callback is never told (the PIN).
-_NOT_SENT = ("token",)
+# token and the clock reading a fetch was requested at) and keys the result
+# callback is never told (the PIN).
+_NOT_SENT = ("token", "started_at")
 _NOT_REPORTED = ("pin",)
 
 _FETCH_PATH = "/api/dial/outputs"
@@ -69,7 +71,7 @@ class _OutputsTarget:
 # One queue, one worker thread, for both kinds of send — "fetch" (the list)
 # and "set" (enable/disable/volume for one output). Each item is
 # (kind, target, payload), where payload is the JSON body to send before
-# the dial's own id is added ({} for a fetch).
+# the dial's own id is added (just the stamp, for a fetch).
 _queue: "queue.SimpleQueue" = queue.SimpleQueue()
 
 # Fetch coalescing: the appliance ids with a "fetch" item currently sitting
@@ -82,6 +84,10 @@ _pending_fetch_ids: set = set()
 
 _cfg = None
 _on_result = None
+
+# The worker's clock, for the reading it requests after a set. The same
+# monotonic clock the core stamps a tap with.
+_clock = time.monotonic
 
 
 def start_outputs_worker(cfg, *, on_result=None) -> None:
@@ -99,16 +105,20 @@ def start_outputs_worker(cfg, *, on_result=None) -> None:
     threading.Thread(target=_worker, daemon=True, name="outputs-worker").start()
 
 
-def enqueue_fetch(target: "_OutputsTarget") -> None:
+def enqueue_fetch(target: "_OutputsTarget", *, started_at: float) -> None:
     """Enqueue an outputs-list refresh for *target*. Returns immediately —
     no I/O, no lock beyond the small pending-fetch set. Called from the
     touch thread and from the repaint thread's quiet-second refresh tick.
-    A fetch already queued for this appliance is not duplicated."""
+    *started_at* is the clock reading the refresh was asked for at: it is
+    handed back with the result, never sent, so a reading can be told from
+    one that began before a tap. A fetch already queued for this appliance
+    is not duplicated and keeps the stamp it was queued with, the earlier
+    one, so it clears fewer taps rather than more."""
     with _pending_fetch_lock:
         if target.appliance_id in _pending_fetch_ids:
             return
         _pending_fetch_ids.add(target.appliance_id)
-    _queue.put(("fetch", target, {}))
+    _queue.put(("fetch", target, {"started_at": started_at}))
 
 
 def enqueue_set(
@@ -193,4 +203,4 @@ def _worker() -> None:
         if kind == "set":
             # The screen reconciles from the appliance's own truth rather
             # than trusting this mutation's outcome, whatever it was.
-            enqueue_fetch(target)
+            enqueue_fetch(target, started_at=_clock())

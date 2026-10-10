@@ -371,9 +371,10 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "outputs_result":
         # ("outputs_result", appliance_id, status, body) -- feeds the
         # outputs worker's on_outputs_result callback directly, the same
-        # shape the worker itself calls it with after a fetch.
+        # shape the worker itself calls it with after a fetch, stamped with the
+        # scenario clock as the worker stamps the fetch it requests.
         _, aid, status, body = step
-        d.core.on_outputs_result("fetch", aid, status, body, {})
+        d.core.on_outputs_result("fetch", aid, status, body, {"started_at": ctx.clock.t})
         d._apply_pending_snapshot()
     elif kind == "outputs_set_result":
         # ("outputs_set_result", appliance_id, status, body) -- the reply to

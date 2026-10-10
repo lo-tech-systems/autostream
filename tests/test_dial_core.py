@@ -1138,12 +1138,61 @@ class TestOutputsResult:
         clock = _Clock(1000.0)
         core = self._watching(clock)
         core.set_outputs_override(("1", True, 40, 999.0))
-        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS))
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1000.0})
         assert core.outputs_override() is None
         core.set_outputs_override(("1", True, 40, 1010.0))
-        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS))
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1000.0})
         assert core.outputs_override() == ("1", True, 40, 1010.0)
         assert core.snapshot().outputs.optimistic == ("1", True, 40, 1010.0)
+
+    def test_a_fetch_requested_before_a_tap_leaves_it(self):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        clock.t = 1001.0
+        core.set_outputs_override(("1", True, 40, 1001.0))
+        clock.t = 1002.0
+        assert core.on_outputs_result(
+            "fetch", AID, 200, _outputs_body(("1", "Kitchen", False, 10, False, "")), {"started_at": 1000.0},
+        )
+        held = core.snapshot().outputs
+        assert held.rows[0].selected is False
+        assert core.outputs_override() == ("1", True, 40, 1001.0)
+        assert held.optimistic == ("1", True, 40, 1001.0)
+
+    def test_a_fetch_requested_after_a_tap_clears_it(self):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        core.set_outputs_override(("1", True, 40, 1001.0))
+        clock.t = 1002.0
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1001.5})
+        assert core.outputs_override() is None
+
+    def test_a_fetch_requested_at_the_instant_of_a_tap_leaves_it(self):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        core.set_outputs_override(("1", True, 40, 1001.0))
+        clock.t = 1002.0
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), {"started_at": 1001.0})
+        assert core.outputs_override() == ("1", True, 40, 1001.0)
+
+    @pytest.mark.parametrize("request_body", [None, {}, {"started_at": None}, {"started_at": "1001.5"}, {"started_at": True}])
+    def test_a_fetch_with_no_stamp_leaves_the_tap(self, request_body):
+        clock = _Clock(1000.0)
+        core = self._watching(clock)
+        core.set_outputs_override(("1", True, 40, 999.0))
+        clock.t = 1002.0
+        core.on_outputs_result("fetch", AID, 200, _outputs_body(*_ROWS), request_body)
+        assert core.outputs_override() == ("1", True, 40, 999.0)
+
+    def test_the_fetches_the_core_asks_for_are_stamped_with_its_clock(self):
+        clock = _Clock(1000.0)
+        core = _io_core(clock)
+        with patch("dial_core.enqueue_fetch") as fetch:
+            core.watch_outputs(AID, "spi", True, fetch=False)
+            clock.t = 1003.5
+            assert core.fetch_outputs(AID)
+            core.refresh_watched(1100.0)
+        assert [c.kwargs for c in fetch.call_args_list] == [{"started_at": 1003.5}] * 2
 
 
 class TestSetOutput:

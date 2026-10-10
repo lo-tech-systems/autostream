@@ -7077,7 +7077,7 @@ class TestOnOutputsResult:
     def test_stale_optimistic_override_cleared(self):
         display = self._outputs_display(loaded=True)
         display.core.set_outputs_override(("1", True, 40, time.monotonic() - 1.0))
-        on_outputs_result(display, "fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {})
+        on_outputs_result(display, "fetch", "a" * 20, 200, {"ok": True, "outputs": []}, {"started_at": time.monotonic()})
         assert display.core.outputs_override() is None
 
     def test_future_stamped_optimistic_override_kept(self):
