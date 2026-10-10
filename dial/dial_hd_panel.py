@@ -2,11 +2,11 @@
 
 The panel is asleep or awake. Asleep, the page draws a black shield (the
 state body reports it) and the first touch only wakes; where the display
-exposes a sysfs backlight the service also drives it to zero, and awake back
-to the configured brightness. The backlight is a sysfs one or, on an HDMI
-panel that answers the monitor control channel, a DDC one (see
-dial_hd_ddc.py); both have the same interface. With no backlight the
-page-only shield is all there is.
+exposes a backlight the service also drives it to zero (the backlight decides
+whether that also powers the panel down), and awake back to the configured
+brightness. The backlight is a sysfs one or, on an HDMI panel that answers the
+monitor control channel, a DDC one (see dial_hd_ddc.py); both have the same
+interface. With no backlight the page-only shield is all there is.
 
 The idle clock starts when nothing is playing and restarts on activity. After
 the configured sleep-after time the panel sleeps. Someone in the middle of

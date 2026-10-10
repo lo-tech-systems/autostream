@@ -929,6 +929,7 @@ class TestScreenSettingsGet:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
         assert set(result["data"]["runtime"].keys()) == _RUNTIME_KEYS
@@ -969,6 +970,7 @@ class TestScreenSettingsGet:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
         assert result["data"]["runtime"]["fitted"] is True
@@ -994,6 +996,7 @@ class TestScreenSettingsGet:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
 
@@ -1020,6 +1023,7 @@ class TestScreenSettingsGet:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
 
@@ -1046,6 +1050,7 @@ class TestScreenSettingsGet:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
 
@@ -1128,6 +1133,7 @@ class TestScreenSettingsGet:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
 
@@ -1226,6 +1232,7 @@ class TestScreenSettingsPost:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
         assert set(r["data"]["runtime"].keys()) == _RUNTIME_KEYS
@@ -1247,6 +1254,7 @@ class TestScreenSettingsPost:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
         assert r["save_calls"][0].display.rotate is True
@@ -1269,6 +1277,7 @@ class TestScreenSettingsPost:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
         assert r["save_calls"][0].display.screen_type == "st7789_240x240"
@@ -1292,6 +1301,7 @@ class TestScreenSettingsPost:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
         assert r["save_calls"][0].display.touch_type == "ft6206"
@@ -1314,6 +1324,7 @@ class TestScreenSettingsPost:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
             "surface": "spi",
         }
         assert r["save_calls"][0].display.always_show_controls is True
@@ -3116,6 +3127,47 @@ class TestSleepAfterAndBrightnessSettings:
         assert r["save_calls"] == []
 
 
+class TestPanelPowerOffSetting:
+    def test_get_reports_it(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, panel_power_off=True))
+        result = {}
+        handler_cls, _ = _make_handler_cls(cfg)
+        h = object.__new__(handler_cls)
+        h.path = "/screen/settings"
+        h.client_address = ("127.0.0.1", 1234)
+        h._send_json = lambda s, d: result.update(status=s, data=d)
+        h.do_GET()
+        assert result["data"]["screen"]["panel_power_off"] is True
+
+    def test_post_accepts_and_persists_it(self):
+        r = _call_handler(
+            "/screen/settings", body={"screen": {"fitted": True, "panel_power_off": True}},
+        )
+        assert r["status"] == 200
+        assert r["data"]["screen"]["panel_power_off"] is True
+        assert r["save_calls"][0].display.panel_power_off is True
+
+    def test_post_omitted_leaves_it_alone(self):
+        cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, panel_power_off=True))
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}}, cfg=cfg)
+        assert r["status"] == 200
+        assert r["data"]["screen"]["panel_power_off"] is True
+        assert r["save_calls"][0].display.panel_power_off is True
+
+    def test_post_omitted_on_a_default_dial_stays_off(self):
+        r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
+        assert r["data"]["screen"]["panel_power_off"] is False
+
+    @pytest.mark.parametrize("value", [1, 0, "true", None, [True]])
+    def test_post_wrong_type_is_refused(self, value):
+        r = _call_handler(
+            "/screen/settings", body={"screen": {"fitted": True, "panel_power_off": value}},
+        )
+        assert r["status"] == 400
+        assert r["data"]["error"] == "invalid_screen_settings"
+        assert r["save_calls"] == []
+
+
 def _bare_server(cfg=None) -> DialHTTPServer:
     server = DialHTTPServer.__new__(DialHTTPServer)
     server._cfg = cfg or DialConfig(uuid="x")
@@ -3139,7 +3191,7 @@ class TestScreenReport:
         assert set(_bare_server().screen_report()) == {
             "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
             "screen_size_inches", "layout_size", "volume_scope", "mute_scope",
-            "poll_interval_s", "sleep_after_s", "brightness", "surface",
+            "poll_interval_s", "sleep_after_s", "brightness", "panel_power_off", "surface",
         }
 
     def test_explicit_display_is_reported_instead_of_the_current_one(self):

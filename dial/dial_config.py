@@ -78,7 +78,11 @@ POLL_INTERVAL_DEFAULT_S = 6
 
 # Seconds of idleness before an HD panel sleeps (0 = never), and the panel
 # brightness percentage while awake. Only an HD (kiosk) surface acts on them;
-# they are stored and reported for every surface.
+# they are stored and reported for every surface. panel_power_off says whether
+# a sleeping HDMI panel is also powered down over its control channel. It is
+# off by default because some panels are left with image retention after being
+# powered down that way, so the default is to dim the backlight and leave the
+# panel powered.
 SLEEP_AFTER_CHOICES_S = (0, 60, 300, 900)
 SLEEP_AFTER_DEFAULT_S = 300
 BRIGHTNESS_MIN = 5
@@ -143,6 +147,8 @@ class DialDisplayConfig:
     # SLEEP_AFTER_CHOICES_S, 0 = never) and the awake brightness percentage.
     sleep_after_s: int = SLEEP_AFTER_DEFAULT_S
     brightness: int = BRIGHTNESS_DEFAULT
+    # HD surface only: power an HDMI panel down while asleep (see above).
+    panel_power_off: bool = False
 
     @property
     def effective_volume_scope(self) -> str:
@@ -233,6 +239,8 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     it must be a JSON integer equal to one of SLEEP_AFTER_CHOICES_S.
     `brightness` is optional (defaults to BRIGHTNESS_DEFAULT); if present it
     must be a JSON integer from BRIGHTNESS_MIN to BRIGHTNESS_MAX inclusive.
+    `panel_power_off` is optional (defaults to False); if present it must be a
+    JSON boolean.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
@@ -240,7 +248,7 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
     unknown = set(obj.keys()) - {
         "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
         "screen_size_inches", "layout_size", "volume_scope", "mute_scope",
-        "poll_interval_s", "sleep_after_s", "brightness",
+        "poll_interval_s", "sleep_after_s", "brightness", "panel_power_off",
     }
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
@@ -324,6 +332,9 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
             f"screen.brightness must be a whole number from "
             f"{BRIGHTNESS_MIN} to {BRIGHTNESS_MAX}"
         )
+    panel_power_off = obj.get("panel_power_off", False)
+    if not isinstance(panel_power_off, bool):
+        raise InvalidScreenSettings("screen.panel_power_off must be a boolean")
     return DialDisplayConfig(
         fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
         touch_type=touch_type, always_show_controls=always_show_controls,
@@ -331,6 +342,7 @@ def validate_screen_settings(obj: object) -> DialDisplayConfig:
         volume_scope=volume_scope, mute_scope=mute_scope,
         poll_interval_s=poll_interval_s,
         sleep_after_s=sleep_after_s, brightness=brightness,
+        panel_power_off=panel_power_off,
     )
 
 
@@ -515,6 +527,21 @@ def _resolve_persisted_brightness(value: object) -> int:
     return BRIGHTNESS_DEFAULT
 
 
+def _resolve_persisted_panel_power_off(value: object) -> bool:
+    """Resolve a persisted panel_power_off value, falling back to False with
+    a warning log for anything unusable, rather than raising. Missing (None)
+    silently means off."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    logging.warning(
+        "dial config: unusable persisted panel_power_off %r — falling back to False",
+        value,
+    )
+    return False
+
+
 def _read_env_file(path: Path) -> dict[str, str]:
     """Parse a KEY=VALUE env file without executing it."""
     data: dict[str, str] = {}
@@ -568,6 +595,7 @@ def load_config() -> DialConfig:
             poll_interval_s=_resolve_persisted_poll_interval(hw_display.get('poll_interval_s')),
             sleep_after_s=_resolve_persisted_sleep_after(hw_display.get('sleep_after_s')),
             brightness=_resolve_persisted_brightness(hw_display.get('brightness')),
+            panel_power_off=_resolve_persisted_panel_power_off(hw_display.get('panel_power_off')),
         )
 
     if SETTINGS_PATH.exists():
@@ -625,6 +653,9 @@ def load_config() -> DialConfig:
                 brightness=_resolve_persisted_brightness(
                     s_display.get('brightness', cfg.display.brightness)
                 ),
+                panel_power_off=_resolve_persisted_panel_power_off(
+                    s_display.get('panel_power_off', cfg.display.panel_power_off)
+                ),
             )
         elif legacy_mute_all_playing:
             # No display block at all in this settings file, but the legacy
@@ -675,6 +706,7 @@ def save_config(cfg: DialConfig) -> None:
             'poll_interval_s': cfg.display.poll_interval_s,
             'sleep_after_s': cfg.display.sleep_after_s,
             'brightness': cfg.display.brightness,
+            'panel_power_off': cfg.display.panel_power_off,
         },
     }
     with _save_lock:

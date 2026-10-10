@@ -32,6 +32,7 @@ from dial_http_server import (
     _announce_self,
 )
 from dial_appliance_fetch import start_appliance_fetch_worker
+from dial_appliance_fetch import start_appliance_fetch_worker
 from dial_eq import start_eq_worker
 from dial_info import current_ipv4, gather_dial_info
 from dial_led import DialLED
@@ -797,7 +798,10 @@ def main() -> None:
 
         hd_panel = HdPanel(
             hd_hub, settings=lambda: http_server.display_config,
-            backlight=detect_backlight() if kiosk_surface else None, inputs=panel_inputs,
+            backlight=(
+                detect_backlight(power_off_asleep=lambda: http_server.display_config.panel_power_off)
+                if kiosk_surface else None
+            ), inputs=panel_inputs,
             kiosk=kiosk_surface,
         )
         hd_server = HdServer(
@@ -900,6 +904,11 @@ def main() -> None:
     # client, entirely separate from every other worker above (see
     # dial_eq.py's module docstring). Routed like the outputs worker's.
     start_eq_worker(cfg, on_result=core.on_eq_result)
+
+    # The appliance self-description reader: its own thread, queue and HTTP
+    # client (see dial_appliance_fetch.py's module docstring). The core asks
+    # for capabilities as appliances appear and folds the replies.
+    start_appliance_fetch_worker(cfg, on_result=_on_appliance_fetch_result(core))
 
     # The appliance self-description reader: its own thread, queue and HTTP
     # client (see dial_appliance_fetch.py's module docstring). The core asks

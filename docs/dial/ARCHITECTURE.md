@@ -146,7 +146,10 @@ path, and sleep, wake and activity go to the panel.
 black shield and the first touch only wakes; where a sysfs backlight exists, or
 an HDMI panel answers DDC/CI, the panel also drives that backlight (the DDC one
 takes the wanted level and applies it on its own thread, keeping only the
-latest, so a caller never waits on the bus). The idle clock starts when nothing is playing and
+latest, so a caller never waits on the bus). Asleep is level 0: the DDC
+backlight dims the panel to its minimum and leaves it powered, and only powers
+it off when the dial's `panel_power_off` setting is on, read on its worker each
+time a level is applied so a change needs no restart. The idle clock starts when nothing is playing and
 restarts on activity. Playback starting, or a warning that interrupts, wakes
 the panel; an appliance warning, which never interrupts, does not. The panel
 never calls into the core.
@@ -168,7 +171,8 @@ adopted: the dial is a single-purpose appliance.
 snapshot is a lock-free reference read, so a request handler never holds a core
 or view lock while it reads or writes a socket. The hub's one condition and the
 panel's own small lock are never held while calling out. The DDC backlight's
-one condition guards only its wanted level and is never held across bus I/O.
+one condition guards only its wanted level and is never held across bus I/O;
+the `panel_power_off` reader runs on its worker, outside that condition.
 
 ## Locking rules
 

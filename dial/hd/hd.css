@@ -421,7 +421,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 }
 .sleep.on { opacity: 1; pointer-events: auto; transition-duration: 600ms; }
 .sleep.held { pointer-events: auto; }
-.sleep span { color: #2a3a4a; font-size: 0.87em; }
+.sleep span { color: var(--color-text-dim); font-size: 0.87em; }
 
 @media (prefers-reduced-motion: reduce) {
     .sheet, .eq, .scrim, .sleep, .progress-bar { transition: none; }

@@ -3,8 +3,13 @@
 Most HDMI panels have no sysfs backlight, but many answer the monitor control
 channel on the connector's DDC bus. This speaks that protocol straight through
 i2c-dev (stdlib only): VCP 0x10 sets the brightness and VCP 0xD6 switches the
-backlight off (standby) and on. The class has the interface HdPanel already
-uses for a sysfs backlight, so the panel needs no per-kind code.
+panel off (standby) and on. The class has the interface HdPanel already uses
+for a sysfs backlight, so the panel needs no per-kind code.
+
+Asleep (level 0) the panel is normally dimmed to its minimum and left
+powered. Powering it off is opt-in: some panels are left with image retention
+after being powered down this way, so it only happens when the user has
+asked for it, and that choice is read each time a level is applied.
 
 A DDC write takes tens of milliseconds plus the pauses the protocol demands,
 and a brightness drag sends many values, so nothing here blocks its caller:
@@ -13,7 +18,8 @@ latest one (a newer level replaces an older one that has not started yet).
 
 Locking: one condition guards the wanted level and the stop flag and is never
 held while talking to the bus; the bus is touched only by the worker thread
-(and by detect(), before the worker exists). The panel's own locks are never
+(and by detect(), before the worker exists). The power-off choice is read on
+the worker thread, outside that condition. The panel's own locks are never
 taken here.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -203,18 +209,23 @@ def connected_ddc_buses(drm_root: Path = DRM_ROOT, dev_root: Path = DEV_ROOT) ->
 
 class DdcBacklight(BacklightBase):
     """A panel's brightness and power over DDC/CI. *maximum* is the panel's
-    own brightness maximum and *power* says whether it has power control."""
+    own brightness maximum and *power* says whether it has power control.
+    *power_off_asleep* returns whether a sleeping panel is to be powered off
+    (default: never); it is called on the worker thread each time level 0 is
+    applied, so a changed setting needs no restart."""
 
     kind = "ddc"
 
     def __init__(
         self, link: DdcLink, maximum: int, power: bool, *,
+        power_off_asleep: Callable[[], bool] = lambda: False,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         super().__init__()
         self._link = link
         self._max = maximum
         self._power = power
+        self._power_off_asleep = power_off_asleep
         self._sleep = sleep
         self._cond = threading.Condition()
         self._target: "int | None" = None
@@ -231,6 +242,7 @@ class DdcBacklight(BacklightBase):
     def detect(
         cls, drm_root: Path = DRM_ROOT, dev_root: Path = DEV_ROOT, *,
         open_bus: "Callable[[Path], object]" = I2cBus,
+        power_off_asleep: Callable[[], bool] = lambda: False,
         sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
     ) -> "DdcBacklight | None":
         """A backlight on the first connected HDMI panel that reports a
@@ -241,7 +253,7 @@ class DdcBacklight(BacklightBase):
             for path in connected_ddc_buses(drm_root, dev_root):
                 if clock() - started > DETECT_BUDGET_S:
                     break
-                found = cls._probe(path, open_bus, sleep)
+                found = cls._probe(path, open_bus, power_off_asleep, sleep)
                 if found is not None:
                     return found
         except Exception:
@@ -249,7 +261,7 @@ class DdcBacklight(BacklightBase):
         return None
 
     @classmethod
-    def _probe(cls, path: Path, open_bus, sleep) -> "DdcBacklight | None":
+    def _probe(cls, path: Path, open_bus, power_off_asleep, sleep) -> "DdcBacklight | None":
         link = DdcLink(lambda: open_bus(path), sleep)
         maximum = cls._read_feature(link, VCP_BRIGHTNESS)
         if maximum is None or maximum[1] <= 0:
@@ -260,7 +272,7 @@ class DdcBacklight(BacklightBase):
             "HD panel: DDC backlight on %s (max %d, power control %s)",
             path, maximum[1], "yes" if power else "no",
         )
-        return cls(link, maximum[1], power, sleep=sleep)
+        return cls(link, maximum[1], power, power_off_asleep=power_off_asleep, sleep=sleep)
 
     @staticmethod
     def _read_feature(link: DdcLink, code: int) -> "tuple[int, int] | None":
@@ -276,8 +288,9 @@ class DdcBacklight(BacklightBase):
     # ---- the interface HdPanel uses ----------------------------------------
 
     def set_percent(self, percent: int) -> None:
-        """Record the wanted level (0 powers the panel down); returns at once.
-        Never raises."""
+        """Record the wanted level (0 is asleep: dimmed to the minimum, or
+        powered off if that has been asked for); returns at once. Never
+        raises."""
         percent = max(0, min(100, int(percent)))
         with self._cond:
             if self._stopping:
@@ -327,20 +340,18 @@ class DdcBacklight(BacklightBase):
             return self._target is not None
 
     def _apply(self, percent: int) -> None:
-        link = self._link
-        if percent == 0:
-            if self._power:
-                link.set_vcp(VCP_POWER, POWER_OFF)
-                self._on = False
-            else:
-                link.set_vcp(VCP_BRIGHTNESS, 0)
+        if percent == 0 and self._power and self._power_off_asleep():
+            self._link.set_vcp(VCP_POWER, POWER_OFF)
+            self._on = False
             return
+        # Any other level, including 0 when the panel stays powered, needs the
+        # panel on: a panel left off by an earlier setting is woken here.
         woke = self._power and self._ensure_on()
         value = scaled_level(percent, self._max)
         if woke:
             self._set_verified(value)
         else:
-            link.set_vcp(VCP_BRIGHTNESS, value)
+            self._link.set_vcp(VCP_BRIGHTNESS, value)
 
     def _ensure_on(self) -> bool:
         """Power the panel on if it is not known to be; True when this
@@ -381,7 +392,11 @@ class DdcBacklight(BacklightBase):
 
 
 def detect_backlight(
-    sysfs_root: Path = BACKLIGHT_ROOT, drm_root: Path = DRM_ROOT, dev_root: Path = DEV_ROOT,
+    sysfs_root: Path = BACKLIGHT_ROOT, drm_root: Path = DRM_ROOT, dev_root: Path = DEV_ROOT, *,
+    power_off_asleep: Callable[[], bool] = lambda: False,
 ) -> "BacklightBase | None":
-    """A writable sysfs backlight if there is one, else a DDC panel, else None."""
-    return Backlight.detect(sysfs_root) or DdcBacklight.detect(drm_root, dev_root)
+    """A writable sysfs backlight if there is one, else a DDC panel, else None.
+    *power_off_asleep* only matters to a DDC panel."""
+    return Backlight.detect(sysfs_root) or DdcBacklight.detect(
+        drm_root, dev_root, power_off_asleep=power_off_asleep,
+    )

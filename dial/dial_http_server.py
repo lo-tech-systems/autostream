@@ -517,6 +517,7 @@ class DialHTTPServer:
             'poll_interval_s': display.poll_interval_s,
             'sleep_after_s': display.sleep_after_s,
             'brightness': display.brightness,
+            'panel_power_off': display.panel_power_off,
             'surface': _profile_for(display).surface,
         }
 
@@ -537,7 +538,7 @@ class DialHTTPServer:
             # The appliance's screen form never sends these keys, so a
             # save from it keeps the configured values rather than
             # resetting them to the defaults.
-            for key in ('poll_interval_s', 'sleep_after_s', 'brightness'):
+            for key in ('poll_interval_s', 'sleep_after_s', 'brightness', 'panel_power_off'):
                 if key not in screen:
                     screen = {**screen, key: getattr(cfg.display, key)}
             # surface is reported from the profile, never set: drop it
@@ -634,12 +635,12 @@ class DialHTTPServer:
         logging.info(
             "screen settings updated: fitted=%s rotate=%s screen_type=%s bgr=%s "
             "touch_type=%s always_show_controls=%s screen_size_inches=%s layout_size=%s "
-            "poll_interval_s=%s sleep_after_s=%s brightness=%s",
+            "poll_interval_s=%s sleep_after_s=%s brightness=%s panel_power_off=%s",
             new_display.fitted, new_display.rotate, new_display.screen_type,
             new_display.bgr, new_display.touch_type, new_display.always_show_controls,
             new_display.screen_size_inches, new_display.layout_size,
             new_display.poll_interval_s, new_display.sleep_after_s,
-            new_display.brightness,
+            new_display.brightness, new_display.panel_power_off,
         )
         runtime['touch_type'] = self._touch_runtime
         # fitted/rotate/bgr/screen_type all apply live. touch_type

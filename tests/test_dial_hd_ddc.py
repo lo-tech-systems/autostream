@@ -409,15 +409,15 @@ class TestBrightnessAndPower:
         assert display.log == [("set", POWER, 1), ("set", BRIGHTNESS, 80)]
         assert ddc.WAKE_SETTLE_S in pauses.durations
 
-    def test_sleep_powers_the_panel_off(self):
-        backlight, display, _ = make()
+    def test_sleep_powers_the_panel_off_when_asked(self):
+        backlight, display, _ = make(power_off_asleep=lambda: True)
         backlight.set_percent(0)
         finish(backlight)
         assert display.log == [("set", POWER, ddc.POWER_OFF)]
         assert display.values[POWER][0] == 2
 
     def test_wake_powers_on_waits_then_verifies_the_brightness(self):
-        backlight, display, pauses = make()
+        backlight, display, pauses = make(power_off_asleep=lambda: True)
         backlight.set_percent(0)
         assert wait_for(lambda: len(display.log) == 1)
         backlight.set_percent(40)
@@ -494,7 +494,7 @@ class TestWorker:
         assert len(display.sets(BRIGHTNESS)) <= 2
 
     def test_a_sleep_posted_after_a_brightness_is_not_lost(self):
-        backlight, display, pauses = make()
+        backlight, display, pauses = make(power_off_asleep=lambda: True)
         pauses.gate = threading.Event()
         backlight.set_percent(40)
         assert pauses.entered.wait(3)
@@ -534,7 +534,7 @@ class TestWorker:
         assert backlight._thread is None and display.log == []
 
     def test_a_percent_out_of_range_is_clamped(self):
-        backlight, display, _ = make()
+        backlight, display, _ = make(power_off_asleep=lambda: True)
         backlight.set_percent(500)
         backlight.set_percent(-5)
         finish(backlight)
@@ -563,7 +563,7 @@ class TestClose:
         make()[0].close()
 
     def test_close_leaves_a_sleeping_panel_on_at_its_last_level(self):
-        backlight, display, _ = make()
+        backlight, display, _ = make(power_off_asleep=lambda: True)
         backlight.set_percent(65)
         backlight.set_percent(0)
         backlight.close()
@@ -661,6 +661,162 @@ class Hub:
         pass
 
 
+class Policy:
+    """The power-off choice, changeable while the backlight runs."""
+
+    def __init__(self, on=False):
+        self.on = on
+
+    def __call__(self):
+        return self.on
+
+
+class TestSleepPolicy:
+    def test_by_default_sleep_dims_and_never_powers_off(self):
+        backlight, display, _ = make()
+        backlight.set_percent(80)
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [80])
+        backlight.set_percent(0)
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [80, 0])
+        finish(backlight)
+        assert display.sets(POWER) == []
+        assert display.values[POWER][0] == 1
+
+    def test_by_default_wake_restores_the_brightness_without_a_power_on(self):
+        backlight, display, pauses = make()
+        backlight.set_percent(0)
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [0])
+        backlight.set_percent(65)
+        finish(backlight)
+        assert display.sets(BRIGHTNESS) == [0, 65]
+        assert display.sets(POWER) == []
+        assert ddc.WAKE_SETTLE_S not in pauses.durations
+
+    def test_a_backlight_built_without_a_policy_never_powers_off(self):
+        backlight, display, _ = make()
+        assert backlight._power_off_asleep() is False
+
+    def test_with_it_on_the_sequence_is_power_off_then_on(self):
+        backlight, display, _ = make(power_off_asleep=Policy(True))
+        backlight.set_percent(0)
+        assert wait_for(lambda: display.sets(POWER) == [ddc.POWER_OFF])
+        backlight.set_percent(40)
+        finish(backlight)
+        assert display.log == [("set", POWER, 4), ("set", POWER, 1), ("set", BRIGHTNESS, 40)]
+
+    def test_turned_on_while_asleep_powers_off_at_once(self):
+        policy = Policy(False)
+        backlight, display, _ = make(power_off_asleep=policy)
+        backlight.set_percent(0)
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [0])
+        assert display.sets(POWER) == []
+        policy.on = True
+        backlight.set_percent(0)             # what the panel sends when settings change
+        assert wait_for(lambda: display.values[POWER][0] == 2)
+        finish(backlight)
+        assert display.sets(POWER) == [ddc.POWER_OFF]
+
+    def test_turned_off_while_asleep_and_powered_off_powers_back_on_at_brightness_zero(self):
+        policy = Policy(True)
+        backlight, display, pauses = make(power_off_asleep=policy)
+        backlight.set_percent(0)
+        assert wait_for(lambda: display.values[POWER][0] == 2)
+        policy.on = False
+        backlight.set_percent(0)
+        finish(backlight)
+        assert display.values[POWER][0] == 1
+        assert display.log[-2:] == [("set", POWER, 1), ("set", BRIGHTNESS, 0)]
+        assert ddc.WAKE_SETTLE_S in pauses.durations
+
+    def test_toggled_while_awake_changes_nothing_visible(self):
+        policy = Policy(False)
+        backlight, display, _ = make(power_off_asleep=policy)
+        backlight.set_percent(70)
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [70])
+        for state in (True, False, True):
+            policy.on = state
+            backlight.set_percent(70)
+        finish(backlight)
+        assert display.sets(POWER) == []
+        assert set(display.sets(BRIGHTNESS)) == {70}
+        assert display.values[POWER][0] == 1
+
+    def test_the_choice_is_read_when_the_level_is_applied(self):
+        policy = Policy(False)
+        backlight, display, pauses = make(power_off_asleep=policy)
+        pauses.gate = threading.Event()
+        backlight.set_percent(40)
+        assert pauses.entered.wait(3)
+        backlight.set_percent(0)             # queued while the worker is busy
+        policy.on = True
+        pauses.gate.set()
+        finish(backlight)
+        assert display.log[-1] == ("set", POWER, ddc.POWER_OFF)
+
+    def test_a_panel_without_power_control_ignores_the_choice(self):
+        backlight, display, _ = make(power=False, power_off_asleep=Policy(True))
+        backlight.set_percent(0)
+        assert wait_for(lambda: len(display.log) == 1)
+        backlight.set_percent(60)
+        finish(backlight)
+        assert display.log == [("set", BRIGHTNESS, 0), ("set", BRIGHTNESS, 60)]
+
+    def test_start_up_powers_on_even_when_the_choice_is_on(self):
+        backlight, display, _ = make(power_off_asleep=Policy(True))
+        display.values[POWER][0] = 2
+        backlight.set_percent(80)
+        finish(backlight)
+        assert display.log == [("set", POWER, 1), ("set", BRIGHTNESS, 80)]
+
+    def test_close_leaves_a_dimmed_panel_lit(self):
+        backlight, display, _ = make()
+        backlight.set_percent(65)
+        backlight.set_percent(0)
+        backlight.close()
+        assert display.values[POWER][0] == 1
+        assert display.values[BRIGHTNESS][0] == 65
+
+    def test_close_powers_a_panel_left_off_back_on(self):
+        backlight, display, _ = make(power_off_asleep=Policy(True))
+        backlight.set_percent(65)
+        backlight.set_percent(0)
+        assert wait_for(lambda: display.values[POWER][0] == 2)
+        backlight.close()
+        assert display.values[POWER][0] == 1 and display.values[BRIGHTNESS][0] == 65
+
+    def test_the_caller_is_not_blocked_while_the_bus_is_busy(self):
+        backlight, display, pauses = make(power_off_asleep=Policy(True))
+        pauses.gate = threading.Event()
+        started = time.monotonic()
+        backlight.set_percent(50)
+        backlight.set_percent(0)
+        assert time.monotonic() - started < 0.5
+        pauses.gate.set()
+        finish(backlight)
+
+    def test_the_choice_is_not_read_under_the_condition(self):
+        held = []
+        backlight, display, _ = make(
+            power_off_asleep=lambda: held.append(backlight._cond._is_owned()) or False)
+        backlight.set_percent(0)
+        finish(backlight)
+        assert held and not any(held)
+
+    def test_detection_hands_the_choice_to_the_backlight(self, tree):
+        tree.add()
+        policy = Policy(True)
+        found = detect(tree, {"i2c-2": Display()}, power_off_asleep=policy)
+        assert found._power_off_asleep is policy
+
+    def test_detect_backlight_passes_it_to_the_ddc_kind(self, tree, tmp_path, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(
+            DdcBacklight, "detect", classmethod(lambda cls, *a, **k: seen.update(k)))
+        policy = Policy(True)
+        ddc.detect_backlight(tmp_path / "none", tree.drm, tree.dev, power_off_asleep=policy)
+        assert seen["power_off_asleep"] is policy
+
+
 class TestPanelDrivesDdc:
     def make(self, **kw):
         backlight, display, pauses = make(**kw)
@@ -680,7 +836,7 @@ class TestPanelDrivesDdc:
         assert display.log == [("set", POWER, 1), ("set", BRIGHTNESS, 80)]
 
     def test_sleep_and_wake_drive_power_and_brightness(self):
-        panel, backlight, display, _ = self.make()
+        panel, backlight, display, _ = self.make(power_off_asleep=lambda: True)
         panel.start()
         assert wait_for(lambda: display.sets(BRIGHTNESS) == [80])
         panel.sleep_now()
@@ -690,7 +846,7 @@ class TestPanelDrivesDdc:
         panel.stop()
 
     def test_a_changed_setting_is_shown_when_awake_and_held_back_when_asleep(self):
-        panel, backlight, display, settings = self.make()
+        panel, backlight, display, settings = self.make(power_off_asleep=lambda: True)
         settings.brightness = 30
         panel.apply_settings()
         assert wait_for(lambda: display.sets(BRIGHTNESS) == [30])
@@ -703,9 +859,36 @@ class TestPanelDrivesDdc:
         panel.stop()
 
     def test_stop_leaves_the_panel_on(self):
-        panel, backlight, display, _ = self.make()
+        panel, backlight, display, _ = self.make(power_off_asleep=lambda: True)
         panel.start()
         panel.sleep_now()
         panel.stop()
         assert display.values[POWER][0] == 1
         assert not backlight._thread.is_alive()
+
+    def test_by_default_sleep_dims_the_panel_and_leaves_it_powered(self):
+        panel, backlight, display, _ = self.make()
+        panel.start()
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [80])
+        panel.sleep_now()
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [80, 0])
+        panel.touch()
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [80, 0, 80])
+        panel.stop()
+        assert display.sets(POWER) == []
+
+    def test_the_setting_takes_effect_through_apply_settings_without_a_restart(self):
+        settings = SimpleNamespace(sleep_after_s=300, brightness=80, panel_power_off=False)
+        backlight, display, _ = make(power_off_asleep=lambda: settings.panel_power_off)
+        panel = HdPanel(Hub(), settings=lambda: settings, backlight=backlight)
+        panel.start()
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [80])
+        panel.sleep_now()
+        assert wait_for(lambda: display.sets(BRIGHTNESS) == [80, 0])
+        settings.panel_power_off = True
+        panel.apply_settings()
+        assert wait_for(lambda: display.values[POWER][0] == 2)
+        settings.panel_power_off = False
+        panel.apply_settings()
+        assert wait_for(lambda: display.values[POWER][0] == 1 and display.values[BRIGHTNESS][0] == 0)
+        panel.stop()

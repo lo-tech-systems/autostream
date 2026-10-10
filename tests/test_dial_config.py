@@ -639,6 +639,7 @@ class TestDisplaySettings:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
         }
 
     def test_missing_display_defaults_rotate_false(self, tmp_path):
@@ -686,6 +687,7 @@ class TestDisplaySettings:
             "poll_interval_s": 6,
             "sleep_after_s": 300,
             "brightness": 80,
+            "panel_power_off": False,
         }
 
 
@@ -1652,3 +1654,59 @@ class TestHdDevAccess:
             dc.HW_CONFIG_PATH = orig_hw
         assert data["hd_dev_access"] is True
         assert reloaded.hd_dev_access is True
+
+
+class TestPanelPowerOff:
+    def test_default_is_off(self):
+        assert DialDisplayConfig().panel_power_off is False
+        assert validate_screen_settings({"fitted": True}).panel_power_off is False
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_a_boolean_is_accepted(self, value):
+        result = validate_screen_settings({"fitted": True, "panel_power_off": value})
+        assert result.panel_power_off is value
+
+    @pytest.mark.parametrize("value", [1, 0, "true", "false", None, [True], 1.0])
+    def test_anything_but_a_boolean_is_rejected(self, value):
+        with pytest.raises(InvalidScreenSettings, match="panel_power_off"):
+            validate_screen_settings({"fitted": True, "panel_power_off": value})
+
+    def test_a_file_without_the_key_loads_as_off(self, tmp_path):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "sleep_after_s": 60, "brightness": 40})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.panel_power_off is False
+
+    @pytest.mark.parametrize("value", [1, "yes", 0, [True]])
+    def test_an_unusable_persisted_value_falls_back_to_off(self, tmp_path, value):
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        s = tmp_path / "settings.json"
+        _write_settings(s, display={"fitted": True, "panel_power_off": value})
+        with _redirect(tmp_path, hw_path=hw, settings_path=s):
+            cfg = load_config()
+        assert cfg.display.panel_power_off is False
+
+    def test_save_and_reload_round_trip(self, tmp_path):
+        s = tmp_path / "dial-settings.json"
+        hw = tmp_path / "hw.json"
+        _write_hw(hw)
+        orig_s, orig_hw = dc.SETTINGS_PATH, dc.HW_CONFIG_PATH
+        dc.SETTINGS_PATH = s
+        dc.HW_CONFIG_PATH = hw
+        try:
+            cfg = DialConfig(
+                uuid="hw-uuid-1234",
+                display=DialDisplayConfig(fitted=True, panel_power_off=True),
+            )
+            save_config(cfg)
+            data = json.loads(s.read_text())
+            reloaded = load_config()
+        finally:
+            dc.SETTINGS_PATH = orig_s
+            dc.HW_CONFIG_PATH = orig_hw
+        assert data["display"]["panel_power_off"] is True
+        assert reloaded.display.panel_power_off is True
