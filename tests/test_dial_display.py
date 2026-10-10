@@ -5690,7 +5690,10 @@ class TestSelectorAndSleepBackendLifecycle:
             display._check_secondary_timeout()
         assert display._screen == "main"
 
-        t0 = opened_at + SELECTOR_TIMEOUT_SECONDS + 1
+        # A whole second, so t0 + the sleep delay - t0 is exactly the delay:
+        # with an arbitrary float clock reading that difference can round
+        # to just under it and the threshold poll would not sleep.
+        t0 = float(math.ceil(opened_at + SELECTOR_TIMEOUT_SECONDS + 1))
         with patch("dial_display.time.monotonic", return_value=t0):
             display._poll_once()  # starts the idle countdown now the list is closed
         assert display._display_sleeping is False
@@ -7107,7 +7110,9 @@ class TestIdleFocusShownWhenNothingPlays:
         display.set_manual_focus(aid)
         with patch("dial_display.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
-            t0 = time.monotonic()
+            # A whole second, so the threshold poll lands exactly on the
+            # sleep delay rather than a rounding error short of it.
+            t0 = float(math.ceil(time.monotonic()))
             with patch("dial_display.time.monotonic", return_value=t0):
                 display._poll_once()
             assert display._display_sleeping is False

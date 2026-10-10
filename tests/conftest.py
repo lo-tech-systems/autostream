@@ -241,6 +241,17 @@ def _reset_webui_api_fail_counts():
 
 
 @pytest.fixture(autouse=True)
+def _reset_mute_state():
+    """Unmute and forget remembered levels after each test: the mute state is
+    process-wide, and a test that ends muted would otherwise turn a later
+    test's volume step into a restore of the remembered levels."""
+    yield
+    m = _mod("autostream_mute_state")
+    if m is not None:
+        m.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _reset_dial_repeat_store():
     """Clear the dial repeat store's module singleton after each test."""
     yield
