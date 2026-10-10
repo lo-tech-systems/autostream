@@ -121,6 +121,7 @@ from dial_touch_layout import (
     compact_layout_for,
     compact_picker_layout_for,
     idle_layout_for,
+    info_value_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -424,6 +425,18 @@ class OutputViewState:
     pressed: "TouchZone | None" = None
 
 
+@dataclass(frozen=True)
+class InfoValueView:
+    """Immutable snapshot of what the compact info page's drill-in should
+    show — the compose_info_value() counterpart to OutputViewState. The
+    manager reads the tapped field fresh from its own info state at every
+    paint (see DialDisplay._display_info_value_locked), so this carries
+    nothing but the two strings to draw."""
+
+    label: str   # the field's own name, drawn small in the top band
+    value: str   # the field's own value, drawn large, wrapped or shrunk to fit
+
+
 # Background sources for _new_frame(): where a frame's base image comes
 # from before anything is drawn on top of it.
 BG_BASE = "base"          # the caller's panel-sized image (artwork or logo)
@@ -443,6 +456,7 @@ BODY_COMPACT_CONTROLS = "compact_controls"  # the playing screen: dots/mute/minu
 BODY_COMPACT_LIST = "compact_list"          # the replay picker's two rows + more/cancel
 BODY_COMPACT_TOGGLE = "compact_toggle"      # the repeat screen's "Repeat Play" row + cancel
 BODY_COMPACT_REPLAY = "compact_replay"      # the repeat screen's time line + Restart/Stop
+BODY_INFO_VALUE = "info_value"              # the compact info page's own drill-in: label + wrapped value
 
 # Footer kinds — the bottom band's content, dispatched through
 # _FOOTER_RENDERERS.
@@ -687,6 +701,26 @@ class DialDisplayCompositor:
             metrics = metrics_for(width, height)
         return _compose_frame(
             None, width, height, _output_frame(state, width, height, metrics),
+            rotate=rotate, bgr=bgr, metrics=metrics,
+        )
+
+    def compose_info_value(
+        self, width: int, height: int, view: InfoValueView, *, rotate: bool, bgr: bool,
+        metrics: LayoutMetrics | None = None,
+    ):
+        """Build one display-ready frame for the compact info page's own
+        drill-in: a flat chassis background (no artwork here either,
+        matching the info list itself), the field name small in the top
+        band and its value large and centred below, wrapped or shrunk to
+        fit (see _body_info_value/_fit_value_lines). rotate/bgr are applied
+        last, in the same order every other compose*() call uses. Never
+        raises: a font or measuring failure degrades to nothing drawn for
+        that element, matching every other screen's discipline. metrics:
+        see compose()."""
+        if metrics is None:
+            metrics = metrics_for(width, height)
+        return _compose_frame(
+            None, width, height, Frame(BG_CHASSIS, body=Body(BODY_INFO_VALUE, label=view.label, line=view.value)),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -1035,6 +1069,85 @@ def _truncate_to_width(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -
         if measured is not None and measured[0] <= max_w:
             return candidate
     return ""
+
+
+def _fit_value_lines(
+    draw: ImageDraw.ImageDraw, text: str, sizes: "tuple[int, ...]", rect: "tuple[int, int, int, int]",
+) -> "tuple[tuple[str, ...], object]":
+    """Fit *text* into *rect* (the compact info page's own value area — see
+    InfoValueLayout.value) for the drill-in view: try each of *sizes* in
+    turn, largest first — greedy word-wrap measured by _text_size, a single
+    token wider than the area broken by character — and accept the first
+    size whose wrapped block (line count * 1.2 * font size) fits the rect's
+    height. When every size still overflows, the last size's lines are kept
+    up to however many fit and the final one is ellipsized with
+    _truncate_to_width, so something legible is always shown rather than
+    spilling past the rect. Returns ((), None) when no size in *sizes* has a
+    loadable font — the caller then draws nothing, the same
+    degrade-gracefully discipline every text helper in this module follows.
+    Pure: no state, no I/O beyond the *draw* measuring calls _text_size
+    already makes safely."""
+    max_w = rect[2] - rect[0]
+    max_h = rect[3] - rect[1]
+
+    def wrap(font) -> "tuple[str, ...]":
+        def fits(s: str) -> bool:
+            measured = _text_size(draw, s, font)
+            return measured is not None and measured[0] <= max_w
+
+        lines: list[str] = []
+        current = ""
+        for word in text.split():
+            candidate = f"{current} {word}".strip()
+            if fits(candidate):
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = ""
+            if fits(word):
+                current = word
+                continue
+            # word alone is wider than the area: break it by character.
+            chunk = ""
+            for ch in word:
+                piece = chunk + ch
+                if fits(piece) or not chunk:
+                    chunk = piece
+                else:
+                    lines.append(chunk)
+                    chunk = ch
+            current = chunk
+        if current:
+            lines.append(current)
+        return tuple(lines) if lines else (text,)
+
+    last_lines: "tuple[str, ...]" = ()
+    last_font = None
+    last_size = None
+    for size in sizes:
+        font = _load_font(size)
+        if font is None:
+            continue
+        lines = wrap(font)
+        last_lines, last_font, last_size = lines, font, size
+        line_h = size * 1.2
+        if line_h > 0 and len(lines) * line_h <= max_h:
+            return lines, font
+    if last_font is None:
+        return (), None
+    line_h = last_size * 1.2
+    max_lines = max(1, int(max_h // line_h)) if line_h > 0 else 1
+    kept = list(last_lines[:max_lines])
+    if kept:
+        # The dropped remainder (if any) is folded back into the last kept
+        # line before truncating it, so _truncate_to_width always has more
+        # than fits and the ellipsis actually appears — a lone kept line
+        # that already fit on its own would otherwise come back unchanged.
+        remainder = " ".join(last_lines[max_lines:])
+        tail = f"{kept[-1]} {remainder}".strip() if remainder else kept[-1]
+        kept[-1] = _truncate_to_width(draw, tail, last_font, max_w)
+    return tuple(kept), last_font
 
 
 def _draw_volume_cluster(
@@ -1752,21 +1865,26 @@ def _draw_compact_list_row(
     """One compact-picker row: the label centred in the cell's upper half,
     the secondary "m:ss" string (when it is a plain string — the compact
     picker never carries the appliance-selector's PLAY_GLYPH sentinel)
-    centred in the lower half. No halo: the whole compact frame is already
-    dimmed by Frame.dim_all, unlike the base tier's own artwork-backed
-    labels."""
+    centred in the lower half. A row with no secondary (the compact info
+    page's own names-only rows) has no lower half to share the cell with, so
+    its label is centred on the whole cell instead — the picker's own rows
+    always carry "m:ss", so their placement is unchanged. No halo: the whole
+    compact frame is already dimmed by Frame.dim_all, unlike the base
+    tier's own artwork-backed labels."""
     x0, y0, x1, y1 = cell
     mid = (y0 + y1) // 2
     upper = (x0, y0, x1, mid)
     lower = (x0, mid, x1, y1)
+    secondary = row[2] if len(row) > 2 else ""
+    has_secondary = isinstance(secondary, str) and bool(secondary)
+    label_rect = upper if has_secondary else cell
     draw = ImageDraw.Draw(img)
     max_w = x1 - x0 - 2 * pad
     label = row[0]
     if label and font is not None and max_w > 0:
         text = _truncate_to_width(draw, label, font, max_w)
-        _draw_label_centered(draw, upper, text, font)
-    secondary = row[2] if len(row) > 2 else ""
-    if isinstance(secondary, str) and secondary and font is not None and max_w > 0:
+        _draw_label_centered(draw, label_rect, text, font)
+    if has_secondary and font is not None and max_w > 0:
         text = _truncate_to_width(draw, secondary, font, max_w)
         _draw_label_centered(draw, lower, text, font)
 
@@ -1829,6 +1947,32 @@ def _body_compact_replay(img: Image.Image, metrics: LayoutMetrics, body: Body) -
     _draw_compact_dividers(img, c, metrics, vertical="full")
 
 
+def _body_info_value(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
+    """The compact info page's own drill-in: the field's name small in the
+    top label band, its value large and centred in the rect below —
+    word-wrapped (or, for one over-wide token, character-split) at
+    font_readout when it does not fit on one line, shrunk to font_body when
+    it still does not, and ellipsized as a last resort — see
+    _fit_value_lines(). Never raises: a missing font or a measuring failure
+    simply leaves that element undrawn, the same discipline every text
+    helper in this module follows."""
+    layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+    draw = ImageDraw.Draw(img)
+    _draw_label_centered(draw, layout.label, body.label, _load_font(metrics.font_body))
+    font_readout = _load_font(metrics.font_readout)
+    font_body = _load_font(metrics.font_body)
+    lines, font = _fit_value_lines(draw, body.line, (metrics.font_readout, metrics.font_body), layout.value)
+    if not lines or font is None:
+        return
+    size = metrics.font_readout if font is font_readout else metrics.font_body
+    line_h = size * 1.2
+    x0, y0, x1, y1 = layout.value
+    top = y0 + (y1 - y0 - len(lines) * line_h) / 2
+    for i, line in enumerate(lines):
+        row_rect = (x0, int(round(top + i * line_h)), x1, int(round(top + (i + 1) * line_h)))
+        _draw_label_centered(draw, row_rect, line, font)
+
+
 _BODY_RENDERERS = {
     BODY_NONE: _body_none,
     BODY_NOW_PLAYING: _body_now_playing,
@@ -1841,6 +1985,7 @@ _BODY_RENDERERS = {
     BODY_COMPACT_LIST: _body_compact_list,
     BODY_COMPACT_TOGGLE: _body_compact_toggle,
     BODY_COMPACT_REPLAY: _body_compact_replay,
+    BODY_INFO_VALUE: _body_info_value,
 }
 
 

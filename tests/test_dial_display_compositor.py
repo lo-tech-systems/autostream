@@ -37,6 +37,7 @@ from dial_display_compositor import (  # noqa: E402
     BODY_COMPACT_REPLAY,
     BODY_COMPACT_TOGGLE,
     BODY_IDLE_BADGE,
+    BODY_INFO_VALUE,
     BODY_LIST_ROWS,
     BODY_NONE,
     BODY_NOW_PLAYING,
@@ -61,6 +62,7 @@ from dial_display_compositor import (  # noqa: E402
     GLYPH_STOP,
     GLYPH_TWO_DOTS,
     Header,
+    InfoValueView,
     ListState,
     OutputViewState,
     PLAY_GLYPH,
@@ -84,7 +86,9 @@ from dial_display_compositor import (  # noqa: E402
     _compact_repeat_frame,
     _compact_small_glyph_box,
     _compose_frame,
+    _draw_compact_list_row,
     _draw_speaker_glyph,
+    _fit_value_lines,
     _glyph_tile,
     _halo_layer,
     _load_font,
@@ -94,6 +98,7 @@ from dial_display_compositor import (  # noqa: E402
     _reset_font_cache,
     _reset_render_caches,
     _scaled_px,
+    _text_size,
     _truncate_to_width,
     _zone_rect,
     format_mmss,
@@ -116,6 +121,7 @@ from dial_touch_layout import (  # noqa: E402
     compact_layout_for,
     compact_picker_layout_for,
     idle_layout_for,
+    info_value_layout_for,
     layout_for,
     list_layout_for,
     metrics_for,
@@ -379,6 +385,19 @@ class TestStatelessness:
         compositor.compose_list(160, 128, state, rotate=False, bgr=False)
         after = dict(vars(compositor))
         assert before == after == {}
+
+    def test_compose_info_value_holds_no_attributes_that_change_between_calls(self, compositor):
+        before = dict(vars(compositor))
+        view = InfoValueView(label="IPv4", value="10.0.0.5")
+        compositor.compose_info_value(240, 240, view, rotate=False, bgr=False)
+        after = dict(vars(compositor))
+        assert before == after == {}
+
+    def test_compose_info_value_same_inputs_produce_same_output(self, compositor):
+        view = InfoValueView(label="IPv4", value="10.0.0.5")
+        first = compositor.compose_info_value(240, 240, view, rotate=False, bgr=False)
+        second = compositor.compose_info_value(240, 240, view, rotate=False, bgr=False)
+        assert list(first.getdata()) == list(second.getdata())
 
 
 class TestOverlayInert:
@@ -3746,6 +3765,53 @@ class TestCompactPicker:
         assert list(with_defaults.getdata()) == list(with_explicit_defaults.getdata())
 
 
+class TestCompactListRowCentering:
+    """_draw_compact_list_row: a row with no secondary (the compact info
+    page's own names-only rows) has no lower half to share the cell with,
+    so its label centres on the whole cell instead; a row that carries one
+    (every picker row) keeps today's upper-half placement unchanged."""
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_names_only_row_centres_its_label_on_the_whole_cell(self, metrics):
+        cell = (0, 0, metrics.width, 100)
+        img = Image.new("RGB", (metrics.width, 100))
+        font = _load_font(metrics.font_body)
+        _draw_compact_list_row(img, cell, ("Dial name", False), font, metrics.pad)
+        lit_rows = [y for y in range(100) if any(min(img.getpixel((x, y))) > 200 for x in range(metrics.width))]
+        assert lit_rows
+        centre = (min(lit_rows) + max(lit_rows)) / 2
+        # Nearer the whole-cell centre (50) than the upper-half centre (25).
+        assert abs(centre - 50) < abs(centre - 25)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_row_with_secondary_still_spans_both_halves(self, metrics):
+        # Byte-identical regression guard for the picker's own rows: the
+        # label (upper half) and the secondary "m:ss" (lower half) are both
+        # still drawn, so lit rows span well past the cell's own centre in
+        # both directions — unlike the names-only case above, which only
+        # ever lights pixels around the single, shared centre.
+        cell = (0, 0, metrics.width, 100)
+        img = Image.new("RGB", (metrics.width, 100))
+        font = _load_font(metrics.font_body)
+        _draw_compact_list_row(img, cell, ("Kitchen", False, "1:23"), font, metrics.pad)
+        lit_rows = [y for y in range(100) if any(min(img.getpixel((x, y))) > 200 for x in range(metrics.width))]
+        assert lit_rows
+        assert min(lit_rows) < 25 and max(lit_rows) > 75
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_empty_secondary_string_is_treated_as_no_secondary(self, metrics):
+        # len(row) > 2 alone is not enough — an empty string secondary (as
+        # opposed to one simply absent) must still get the whole-cell
+        # placement, not the upper half.
+        cell = (0, 0, metrics.width, 100)
+        whole_cell = Image.new("RGB", (metrics.width, 100))
+        empty_secondary = Image.new("RGB", (metrics.width, 100))
+        font = _load_font(metrics.font_body)
+        _draw_compact_list_row(whole_cell, cell, ("Dial name", False), font, metrics.pad)
+        _draw_compact_list_row(empty_secondary, cell, ("Dial name", False, ""), font, metrics.pad)
+        assert list(whole_cell.getdata()) == list(empty_secondary.getdata())
+
+
 class TestInfoListVariant:
     """The read-only info page reuses compose_list()'s compact picker
     format under ListState.title/plain_background, and the rich/large
@@ -3792,6 +3858,19 @@ class TestInfoListVariant:
             assert list(result.crop(cell).getdata()) != list(empty.crop(cell).getdata())
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_compact_rows_are_names_only_and_still_draw(self, compositor, metrics):
+        # The real compact info page shape as of the drill-in: (label,
+        # False), no value — see _draw_compact_list_row's own whole-cell
+        # centring for a row with no secondary.
+        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
+        state = ListState(rows=(("Dial name", False), ("Firmware", False)), title="Info", plain_background=True)
+        blank = ListState(rows=(("", False), ("", False)), title="Info", plain_background=True)
+        result = compositor.compose_list(metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics)
+        empty = compositor.compose_list(metrics.width, metrics.height, blank, rotate=False, bgr=False, metrics=metrics)
+        for cell in (p.row0, p.row1):
+            assert list(result.crop(cell).getdata()) != list(empty.crop(cell).getdata())
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_no_row_is_ever_highlighted(self, compositor, metrics):
         p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         # The info page never marks a row current — the manager always
@@ -3829,6 +3908,187 @@ class TestInfoListVariant:
                 metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
             )
         assert result.size == (metrics.width, metrics.height)
+
+
+class TestFitValueLines:
+    """_fit_value_lines: the compact info page's own drill-in fit rule —
+    greedy word-wrap at the largest size, a single over-wide token split by
+    character, a smaller fallback size, and a final ellipsis — pure, and
+    never raising even with no usable font."""
+
+    @pytest.fixture
+    def draw(self):
+        from PIL import ImageDraw
+        return ImageDraw.Draw(Image.new("RGB", (240, 240)))
+
+    def test_single_line_fit(self, draw):
+        rect = (8, 32, 232, 240)
+        lines, font = _fit_value_lines(draw, "10.0.0.5", (28, 24), rect)
+        assert lines == ("10.0.0.5",)
+        assert font is not None
+
+    def test_word_wrap_across_multiple_lines(self, draw):
+        rect = (8, 32, 232, 240)
+        text = "My Really Long Home WiFi Network Name"
+        lines, font = _fit_value_lines(draw, text, (28, 24), rect)
+        assert len(lines) > 1
+        assert " ".join(lines) == text
+
+    def test_character_split_of_one_long_token(self, draw):
+        rect = (8, 32, 232, 240)
+        token = "x" * 60
+        lines, font = _fit_value_lines(draw, token, (28, 24), rect)
+        assert len(lines) > 1
+        assert "".join(lines) == token
+
+    def test_size_fallback_when_the_larger_size_does_not_fit(self, draw):
+        # A short, tight rect that only the smaller of the two sizes' line
+        # height can fit at all — the returned font must be the smaller one.
+        rect = (0, 0, 200, 20)
+        lines, font = _fit_value_lines(draw, "Hello", (40, 10), rect)
+        assert font is not None
+        assert font.size == 10
+
+    def test_ellipsis_when_nothing_fits(self, draw):
+        rect = (0, 0, 60, 20)
+        text = "A" * 200
+        lines, font = _fit_value_lines(draw, text, (28, 24), rect)
+        assert lines
+        assert lines[-1].endswith("...")
+        for line in lines:
+            measured = _text_size(draw, line, font)
+            assert measured is not None and measured[0] <= 60
+
+    def test_missing_font_returns_empty(self, draw):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            lines, font = _fit_value_lines(draw, "anything", (28, 24), (0, 0, 200, 200))
+        assert lines == ()
+        assert font is None
+
+    def test_is_pure(self, draw):
+        rect = (8, 32, 232, 240)
+        a = _fit_value_lines(draw, "10.0.0.5", (28, 24), rect)
+        b = _fit_value_lines(draw, "10.0.0.5", (28, 24), rect)
+        assert a == b
+
+
+class TestInfoValueView:
+    """compose_info_value()/_body_info_value(): the compact info page's own
+    drill-in — a flat chassis background, the field name small in the top
+    band, the value large and centred below, wrapped or shrunk to fit."""
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_background_is_flat_chassis(self, compositor, metrics):
+        from dial_display_compositor import _LIST_BG_RGB
+        result = compositor.compose_info_value(
+            metrics.width, metrics.height, InfoValueView(label="IPv4", value="10.0.0.5"),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert result.getpixel((1, 1)) == _LIST_BG_RGB
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_label_lands_in_the_label_band(self, compositor, metrics):
+        layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+        result = compositor.compose_info_value(
+            metrics.width, metrics.height, InfoValueView(label="IPv4", value="10.0.0.5"),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert _has_near_white_pixel(result.crop(layout.label))
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_value_lands_in_the_value_rect(self, compositor, metrics):
+        layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+        result = compositor.compose_info_value(
+            metrics.width, metrics.height, InfoValueView(label="IPv4", value="10.0.0.5"),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert _has_near_white_pixel(result.crop(layout.value))
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_value_is_horizontally_centred(self, compositor, metrics):
+        layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+        result = compositor.compose_info_value(
+            metrics.width, metrics.height, InfoValueView(label="IPv4", value="14.2 GB"),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        x0, y0, x1, y1 = layout.value
+        region = result.crop(layout.value)
+        lit_columns = [
+            x for x in range(region.width)
+            if any(min(region.getpixel((x, y))) > 200 for y in range(region.height))
+        ]
+        assert lit_columns
+        centre = (min(lit_columns) + max(lit_columns)) / 2
+        assert abs(centre - region.width / 2) <= 2
+
+    @pytest.mark.parametrize(
+        "metrics,value", [
+            (m, v) for m in (_COMPACT_240, _COMPACT_128)
+            for v in ("10.0.0.5", "0.6.0-beta.4")
+        ],
+    )
+    def test_shipped_ip_and_version_values_render_on_one_line_no_ellipsis(self, compositor, metrics, value):
+        layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+        result = compositor.compose_info_value(
+            metrics.width, metrics.height, InfoValueView(label="IPv4", value=value),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(Image.new("RGB", (metrics.width, metrics.height)))
+        font = _load_font(metrics.font_readout)
+        lines, used_font = _fit_value_lines(draw, value, (metrics.font_readout, metrics.font_body), layout.value)
+        assert lines == (value,)
+        assert used_font is font
+        assert result.size == (metrics.width, metrics.height)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_long_ssid_wraps_to_more_than_one_line_with_every_character_present(self, compositor, metrics):
+        layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+        ssid = "MyHomeNetworkWithALongNameHere12"
+        assert len(ssid) == 32
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(Image.new("RGB", (metrics.width, metrics.height)))
+        lines, font = _fit_value_lines(draw, ssid, (metrics.font_readout, metrics.font_body), layout.value)
+        assert font is not None
+        assert len(lines) > 1
+        assert "".join(lines) == ssid
+        result = compositor.compose_info_value(
+            metrics.width, metrics.height, InfoValueView(label="WiFi", value=ssid),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert result.size == (metrics.width, metrics.height)
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_absurd_value_ends_in_ellipsis_and_stays_inside_the_rect(self, compositor, metrics):
+        layout = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
+        value = "A" * 200
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(Image.new("RGB", (metrics.width, metrics.height)))
+        lines, font = _fit_value_lines(draw, value, (metrics.font_readout, metrics.font_body), layout.value)
+        assert lines
+        assert lines[-1].endswith("...")
+        max_w = layout.value[2] - layout.value[0]
+        for line in lines:
+            measured = _text_size(draw, line, font)
+            assert measured is not None and measured[0] <= max_w
+        # Never raises when actually composed, and stays panel-sized.
+        result = compositor.compose_info_value(
+            metrics.width, metrics.height, InfoValueView(label="Long", value=value),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert result.size == (metrics.width, metrics.height)
+
+    def test_never_raises_with_no_font(self, compositor):
+        metrics = _COMPACT_240
+        with patch("dial_display_compositor._load_font", return_value=None):
+            result = compositor.compose_info_value(
+                metrics.width, metrics.height, InfoValueView(label="IPv4", value="10.0.0.5"),
+                rotate=False, bgr=False, metrics=metrics,
+            )
+        assert result.size == (metrics.width, metrics.height)
+
+    def test_body_kind_is_dispatched_through_body_renderers(self):
+        assert BODY_INFO_VALUE in _BODY_RENDERERS
 
 
 class TestCompactRepeatEnable:
