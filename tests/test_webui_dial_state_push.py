@@ -846,3 +846,110 @@ class TestCallSites:
         calls = self._volume(
             5, outputs=[OutputInfo(id="a", name="a", selected=False, volume_percent=0)])
         assert [c[0] for c in calls] == ["send_json"]
+
+
+class TestRepeatAndLoopCallSites:
+    """The repeat acknowledgement hints after the cache and session state are
+    written and outside the cache lock; the coordinator's watches read the
+    cached repeat state and the identified track."""
+
+    @staticmethod
+    def _block():
+        return {
+            "enabled": True, "armed": True,
+            "recording": {"active": False, "seconds": 342.0, "origin_input": 1},
+            "replay": {"active": False, "fading_out": False,
+                       "position_seconds": 0.0, "duration_seconds": 0.0},
+        }
+
+    @staticmethod
+    def _ack(state="replaying", ok=True):
+        return {"type": "ack", "command": "repeat_seek", "ok": ok,
+                "state": state, "armed": True, "position_seconds": 5.0}
+
+    def _apply(self, ack, cached=True):
+        import autostream_core as core
+        seen = []
+
+        def notify(*kinds, **kw):
+            free = core._repeat_status_lock.acquire(blocking=False)
+            if free:
+                core._repeat_status_lock.release()
+            seen.append((kinds, kw, free,
+                         core.get_repeat_status()["replay"]["active"],
+                         core.get_session_state()["active"]))
+
+        core._set_repeat_status(self._block() if cached else None)
+        core._set_session_state(False, None)
+        try:
+            with patch("autostream_core._rearm_replay_identification"), \
+                 patch("autostream_core._announce_replay_playing"), \
+                 patch("autostream_core.notify_state_changed", side_effect=notify) as n:
+                result = core.apply_repeat_ack(ack)
+        finally:
+            core._set_repeat_status(None)
+            core._set_session_state(False, None)
+        return result, n, seen
+
+    def test_a_repeat_ack_hints_repeat_after_the_state_is_written(self):
+        ack = self._ack()
+        result, notify, seen = self._apply(ack)
+        assert result is ack
+        notify.assert_called_once_with("repeat")
+        kinds, kw, lock_free, replay_active, session_active = seen[0]
+        assert kinds == ("repeat",) and kw == {}
+        assert lock_free is True
+        assert replay_active is True
+        assert session_active is True
+
+    def test_a_failed_ack_does_not_hint(self):
+        _, notify, _ = self._apply(self._ack(ok=False))
+        notify.assert_not_called()
+
+    def test_an_ack_with_no_cached_status_does_not_hint(self):
+        _, notify, _ = self._apply(self._ack(), cached=False)
+        notify.assert_not_called()
+
+    def test_an_unknown_state_or_command_or_no_ack_does_not_hint(self):
+        for ack in (self._ack(state="bogus"),
+                    dict(self._ack(), command="repeat_dance"), None):
+            _, notify, _ = self._apply(ack)
+            notify.assert_not_called()
+
+    def test_the_loop_hints_once_after_the_announcement_sync(self):
+        import inspect
+        import autostream_core as core
+        src = inspect.getsource(core.run_autostream)
+        assert src.count("hint_dials_after_cycle(") == 1
+        hook = src.index("hint_dials_after_cycle(session_event, dial_hint_watches)")
+        assert src.index(
+            "_sync_playing_announcement(session_source is not None, version)") < hook
+        assert hook < src.index("_teardown_identification_after_replay_end(")
+        assert ('ChangeWatch("repeat", lambda: repeat_digest(get_repeat_status()))'
+                in src)
+        assert ('ChangeWatch("track", lambda: track_digest('
+                'get_active_track_identification_snapshot()))' in src)
+        assert (src.index("dial_hint_watches = (")
+                < src.index("\n    while not stop_flag.is_set():"))
+
+    def test_the_loops_digests_read_the_cached_state(self):
+        import autostream_core as core
+        rs = {"v": self._block()}
+        snap = {"v": _snap()}
+        with patch("autostream_core.get_repeat_status", side_effect=lambda: rs["v"]), \
+             patch("autostream_core.get_active_track_identification_snapshot",
+                   side_effect=lambda: snap["v"]), \
+             patch.object(dp, "notify_state_changed") as notify:
+            watches = (
+                dp.ChangeWatch("repeat", lambda: dp.repeat_digest(core.get_repeat_status())),
+                dp.ChangeWatch("track", lambda: dp.track_digest(
+                    core.get_active_track_identification_snapshot())),
+            )
+            for w in watches:
+                assert w.step() is False
+            rs["v"] = dict(self._block(), armed=False)
+            assert watches[0].step() is True
+            assert watches[1].step() is False
+            snap["v"] = _snap(title="Other")
+            assert watches[1].step() is True
+        assert [c.args for c in notify.call_args_list] == [("repeat",), ("track",)]

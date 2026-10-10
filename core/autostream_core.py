@@ -46,6 +46,13 @@ from autostream_config import (
     unconfigured,
 )
 from autostream_artwork import ArtworkMemoryCache
+from autostream_dial_push import (
+    ChangeWatch,
+    hint_dials_after_cycle,
+    notify_state_changed,
+    repeat_digest,
+    track_digest,
+)
 from autostream_bluetooth_client import (
     BluetoothClient,
     bluetooth_capture_label,
@@ -895,6 +902,8 @@ def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
         # view; hold/idle are left to its session_ended path so the OwnTone
         # stop and now-playing end are not skipped.
         _set_session_state(True, "replay")
+
+    notify_state_changed("repeat")
 
     if sought or started:
         _rearm_replay_identification(
@@ -5313,6 +5322,16 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     # reconnects and reloads -- see _carry_forward_hang_watchdog.
     owntone_hang_watchdog = _OwntoneHangWatchdog()
 
+    # What a dial shows that only this loop sees change: the daemon's repeat
+    # state and the identified track. Each is hinted when its digest moves
+    # between cycles. Like the hint's coalescer these are process memory, so
+    # a reload or a daemon reconnect compares the state before with the
+    # state after.
+    dial_hint_watches = (
+        ChangeWatch("repeat", lambda: repeat_digest(get_repeat_status())),
+        ChangeWatch("track", lambda: track_digest(get_active_track_identification_snapshot())),
+    )
+
     # Outer loop: runs once normally; repeats after a config reload.
     while not stop_flag.is_set():
         client = MonitorClient(socket_path)
@@ -5558,6 +5577,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # state (so repeat replay counts, not just live capture); the
                 # sync is idempotent and only touches avahi on a transition.
                 _sync_playing_announcement(session_source is not None, version)
+
+                hint_dials_after_cycle(session_event, dial_hint_watches)
 
                 # Reset the replay origin's identification only now that the
                 # session is marked inactive and the announcement withdrawn:
