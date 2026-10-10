@@ -943,9 +943,14 @@ def _draw_speaker_glyph(
     )
 
     if muted:
-        # Diagonal slash through the whole glyph footprint.
+        # Centred over the speaker body, not the glyph box: the body sits
+        # left of centre so the sound waves have room, and a slash centred
+        # on the box reads as trailing off to the right of it. Same length
+        # and angle as a box-centred slash, just shifted left so its own
+        # midpoint sits over the body's.
+        body_cx = (body_left + cone_tip_x) // 2
         draw.line(
-            [(cx - r, cy - r), (cx + r, cy + r)],
+            [(body_cx - r, cy - r), (body_cx + r, cy + r)],
             fill=color,
             width=stroke,
         )

@@ -2990,23 +2990,47 @@ class TestGlyphMuteTile:
 
     def test_tile_has_a_diagonal_slash_and_a_speaker_body(self):
         """The mute glyph is the muted speaker: a body (opaque pixels in the
-        left half) plus a diagonal slash running corner to corner of the
-        glyph's own (inset) box — distinct from the unmuted variant's
-        sound-wave arcs, which never form a straight diagonal like this."""
+        left half) plus a diagonal slash — distinct from the unmuted
+        variant's sound-wave arcs, which never form a straight diagonal like
+        this. The slash is centred on the speaker body, not on the glyph's
+        own box, so it runs shifted left of the box's own diagonal — see
+        _draw_speaker_glyph's muted branch."""
         w = h = 40
         tile = _glyph_tile(GLYPH_MUTE, (), w, h, 4)
         pixels = tile.load()
         left_half_opaque = any(pixels[x, 20][3] > 0 for x in range(4, 16))
         assert left_half_opaque
 
-        # The same box arithmetic _draw_mute_glyph uses, so this scans along
-        # the actual slash the glyph draws rather than a guessed position.
+        # The same box/body arithmetic _draw_mute_glyph/_draw_speaker_glyph
+        # use, so this scans along the actual (shifted) slash the glyph
+        # draws rather than a guessed position.
         side = round(min(w, h) * 0.56)
         cx, cy = w // 2, h // 2
         half = side // 2
-        x0, y0 = cx - half, cy - half
-        on_diagonal_opaque = any(pixels[x0 + i, y0 + i][3] > 0 for i in range(side))
+        x0, y0, x1, y1 = cx - half, cy - half, cx - half + side, cy - half + side
+        cxg, cyg = (x0 + x1) // 2, (y0 + y1) // 2
+        r = max(2, min(x1 - x0, y1 - y0) // 2 - 1)
+        body_w = max(2, r // 2)
+        body_left = cxg - r
+        cone_tip_x = body_left + body_w + r // 2
+        body_cx = (body_left + cone_tip_x) // 2
+
+        # The slash runs opaque along its own (shifted) diagonal, corner to
+        # corner of a box centred on body_cx rather than cxg.
+        on_diagonal_opaque = all(
+            pixels[body_cx - r + i, cyg - r + i][3] > 200 for i in range(2 * r + 1)
+        )
         assert on_diagonal_opaque
+
+        # Its own midpoint sits on the body's centre column, not the box's.
+        assert pixels[body_cx, cyg][3] > 200
+
+        # Nothing opaque to the right of the body's own centre plus its
+        # radius (a couple of pixels' margin for anti-aliasing at the tip) —
+        # the shift moves the whole slash left, it never reaches back out to
+        # the old box-centred position.
+        for x in range(body_cx + r + 2, w):
+            assert all(pixels[x, y][3] < 50 for y in range(h)), f"unexpected opacity at column {x}"
 
 
 # ---------------------------------------------------------------------------
