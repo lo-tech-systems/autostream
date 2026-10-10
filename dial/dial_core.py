@@ -61,7 +61,7 @@ from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
     DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
     ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
-    NowPlaying, OutputsState, outputs_tap, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
+    NowPlaying, OutputsState, input_label_from_record, outputs_tap, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
     appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
     eq_available, eq_gain, idle_affordance, outputs_available, reporting_for, resolve_focus,
     six_band, started_refused, validate_appliance_warnings, visible_targets, walk_order,
@@ -2551,6 +2551,7 @@ class DialCore:
         self.set_field("now_playing", (
             NowPlaying(
                 reporting_name, selected_artist, selected_title, master_volume, album=selected_album,
+                input_label=input_label_from_record(record),
                 # An idle focus reporting here (targets present elsewhere,
                 # but the shown appliance itself has nothing playing) is not
                 # playing, same as the empty-targets branch's own idle

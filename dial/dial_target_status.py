@@ -10,6 +10,9 @@ strict parse lives in dial_repeat_store.parse_repeat_object(), so an old
 appliance that omits the key, or a shape this dial does not understand yet,
 degrades to "no repeat state" rather than failing the whole status fetch.
 
+The optional `input` object (the input behind what is playing) is kept only
+when well formed and reads as None otherwise, with the same effect.
+
 fetch_target_status() is the single-target status protocol helper shared by
 enrich_targets() (concurrent, name-sorted list presentation) and the display
 manager (sequential, playing_since-ordered artwork source selection). Display
@@ -116,6 +119,28 @@ def _parse_appliance_id(data: dict) -> str | None:
     return None
 
 
+def _parse_input(data: dict) -> dict | None:
+    """The optional `input` object: the input behind what the appliance is
+    playing. Lenient like `repeat`: anything but a well-formed object reads
+    as None and never fails an otherwise-good 200 (an older appliance
+    omits the key; an idle one sends null)."""
+    raw = data.get("input")
+    if not isinstance(raw, dict):
+        return None
+    index = raw.get("index")
+    kind = raw.get("type")
+    label = raw.get("label")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 1:
+        return None
+    if not isinstance(label, str) or not label.strip():
+        return None
+    return {
+        "index": index,
+        "type": kind if isinstance(kind, str) else "",
+        "label": label.strip(),
+    }
+
+
 def _is_untyped_refusal(resp, raw: bytes) -> bool:
     """True for the earlier dialect's refusal: a JSON object body with no keys."""
     ct_header = resp.getheader("Content-Type") or ""
@@ -139,6 +164,7 @@ def _base_record(target: "PlayingTarget") -> dict:
         "muted": None,
         "track_id": None,
         "repeat": None,
+        "input": None,
         "status_error": None,
         "appliance_id": None,
     }
@@ -322,6 +348,7 @@ def fetch_target_status(
     record["muted"] = muted
     record["track_id"] = track_id
     record["repeat"] = raw_repeat if isinstance(raw_repeat, dict) else None
+    record["input"] = _parse_input(data)
     record["appliance_id"] = _parse_appliance_id(data)
     return record
 

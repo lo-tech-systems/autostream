@@ -1019,6 +1019,38 @@ class TestAwaitingTitle:
         assert cs.PLAYING_TEXT == "Playing"
 
 
+class TestTitleFallback:
+    def test_the_input_label_wins_while_a_title_is_awaited(self):
+        now_playing = cs.NowPlaying("Lounge", "", "", 42, input_label="CD")
+        assert cs.title_fallback(now_playing) == "CD"
+
+    def test_the_fixed_word_without_a_label(self):
+        assert cs.title_fallback(cs.NowPlaying("Lounge", "", "", 42)) == "Playing"
+
+    def test_empty_for_a_titled_track_even_with_a_label(self):
+        now_playing = cs.NowPlaying("Lounge", "", "Tunnel of Love", 42, input_label="CD")
+        assert cs.title_fallback(now_playing) == ""
+
+    def test_empty_when_not_playing(self):
+        now_playing = cs.NowPlaying("Lounge", "", "", 42, playing=False, input_label="CD")
+        assert cs.title_fallback(now_playing) == ""
+
+    def test_empty_for_nothing_held(self):
+        assert cs.title_fallback(None) == ""
+
+
+class TestInputLabelFromRecord:
+    def test_label_read_from_a_well_formed_input(self):
+        record = {"input": {"index": 1, "type": "cd", "label": "CD"}}
+        assert cs.input_label_from_record(record) == "CD"
+
+    @pytest.mark.parametrize("record", [
+        {"input": None}, {}, None, {"input": "CD"}, {"input": {"label": 3}},
+    ])
+    def test_empty_when_absent_or_malformed(self, record):
+        assert cs.input_label_from_record(record) == ""
+
+
 def test_six_band():
     assert [cs.six_band(v) for v in (0, 1, 2, 3)] == [False, False, True, True]
 

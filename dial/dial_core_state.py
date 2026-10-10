@@ -90,6 +90,7 @@ class NowPlaying:
     # appliance starting or stopping always triggers a repaint.
     playing: bool = True
     artwork_url: str = ""   # the selected track's artwork URL ("" = none)
+    input_label: str = ""   # the appliance's name for the input ("CD"); "" when it sent none
 
 
 # What stands in for a track the appliance has not named yet, on every view:
@@ -101,6 +102,22 @@ def awaiting_title(now_playing: "NowPlaying | None") -> bool:
     """Whether the appliance is playing but has not named the track yet (a
     track change just detected, or the first moments of playback)."""
     return now_playing is not None and now_playing.playing and not now_playing.title
+
+
+def title_fallback(now_playing: "NowPlaying | None") -> str:
+    """What stands in for the title while the appliance plays an unnamed
+    track: the input's label when the appliance sent one, else the fixed
+    word. Empty when nothing is awaited."""
+    if not awaiting_title(now_playing):
+        return ""
+    return now_playing.input_label or PLAYING_TEXT
+
+
+def input_label_from_record(record: dict | None) -> str:
+    """The input label carried by a status record, or "" when absent."""
+    value = record.get("input") if isinstance(record, dict) else None
+    label = value.get("label") if isinstance(value, dict) else ""
+    return label if isinstance(label, str) else ""
 
 
 @dataclass(frozen=True)

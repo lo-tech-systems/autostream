@@ -280,6 +280,25 @@ class TestNowPlayingAndSource:
         # The reporting target's master_volume (from _status_result's
         # default of 50) reaches observe_master_volume.
         mock_observe.assert_called_once_with(t.service_name, 50)
+    def test_input_label_carried_from_the_status_record(self):
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        result = {**_status_result(track_id=_track_id(state="pending")),
+                  "input": {"index": 1, "type": "cd", "label": "CD"}}
+        with patch("dial_core.fetch_target_status", return_value=result):
+            display._poll_once()
+        assert display.core.snapshot().now_playing.input_label == "CD"
+
+    def test_input_label_empty_when_the_record_lacks_it(self):
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        with patch("dial_core.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(state="pending"))):
+            display._poll_once()
+        assert display.core.snapshot().now_playing.input_label == ""
+
     def test_identified_target_without_album_gives_empty_string(self):
         t = _target()
         display, fb, gt = make_display(targets=[t])

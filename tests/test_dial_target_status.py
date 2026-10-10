@@ -234,7 +234,7 @@ class TestEnrichSuccess:
         for field in (
             "name", "ip", "port", "dial_api", "audio_status", "dial_status",
             "playing", "master_volume", "selected_output_count", "status_error",
-            "appliance_id", "muted",
+            "appliance_id", "muted", "input",
         ):
             assert field in r, f"Missing field: {field}"
 
@@ -797,6 +797,87 @@ class TestRepeatFieldPassthrough:
         with _mock_conn(body):
             via_enrich = enrich_targets([t], "dial-id")[0]
         assert direct["repeat"] == via_enrich["repeat"]
+
+
+class TestInputFieldPassthrough:
+    def test_absent_input_is_none_and_still_a_good_200(self):
+        t = _target()
+        with _mock_conn(_ok_response()):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["input"] is None
+
+    def test_null_input_is_none(self):
+        t = _target()
+        with _mock_conn({**_ok_response(), "input": None}):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["input"] is None
+
+    def test_valid_input_object_parsed(self):
+        t = _target()
+        body = {**_ok_response(), "input": {"index": 2, "type": "cd", "label": " CD "}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["input"] == {"index": 2, "type": "cd", "label": "CD"}
+
+    @pytest.mark.parametrize("raw", ["CD", 3, ["CD"], True])
+    def test_non_dict_input_is_none(self, raw):
+        t = _target()
+        with _mock_conn({**_ok_response(), "input": raw}):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["input"] is None
+
+    @pytest.mark.parametrize("label", [None, "", "   ", 7, ["CD"]])
+    def test_input_without_label_is_none(self, label):
+        t = _target()
+        body = {**_ok_response(), "input": {"index": 1, "type": "cd", "label": label}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["input"] is None
+
+    def test_input_with_missing_label_key_is_none(self):
+        t = _target()
+        body = {**_ok_response(), "input": {"index": 1, "type": "cd"}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["input"] is None
+
+    @pytest.mark.parametrize("index", ["1", True, 0, -1, 1.5, None])
+    def test_input_with_bad_index_is_none(self, index):
+        t = _target()
+        body = {**_ok_response(), "input": {"index": index, "type": "cd", "label": "CD"}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["input"] is None
+
+    def test_unknown_type_token_is_kept(self):
+        t = _target()
+        body = {**_ok_response(), "input": {"index": 1, "type": "tape", "label": "Tape"}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["input"] == {"index": 1, "type": "tape", "label": "Tape"}
+
+    def test_non_string_type_reads_as_empty(self):
+        t = _target()
+        body = {**_ok_response(), "input": {"index": 1, "type": 5, "label": "CD"}}
+        with _mock_conn(body):
+            record = fetch_target_status(t, "dial-id")
+        assert record["input"] == {"index": 1, "type": "", "label": "CD"}
+
+    def test_enrich_targets_agrees_with_fetch_target_status_on_input(self):
+        t = _target()
+        body = {**_ok_response(), "input": {"index": 1, "type": "line", "label": "Line"}}
+        with _mock_conn(body):
+            direct = fetch_target_status(t, "dial-id")
+        with _mock_conn(body):
+            via_enrich = enrich_targets([t], "dial-id")[0]
+        assert direct["input"] == via_enrich["input"]
 
 
 # ---------------------------------------------------------------------------

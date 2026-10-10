@@ -2243,6 +2243,18 @@ class TestArtistRowFallbackRichLarge:
             result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.artist == dd.PLAYING_ARTIST_TEXT
 
+    @pytest.mark.parametrize("tier", ["rich", "large"])
+    def test_playing_with_no_title_but_an_input_label_shows_the_label(self, tier):
+        content_tier = dd.CONTENT_RICH if tier == "rich" else dd.CONTENT_LARGE
+        display, fb, gt = make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display.core.set_field(
+                "now_playing", NowPlaying("svc", "", "", 50, playing=True, input_label="CD"))
+        with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=content_tier)):
+            result = display._effective_overlay_locked(OverlayState(visible=True))
+        assert result.artist == "CD"
+
     def test_playing_with_title_and_no_artist_stays_empty(self):
         display, fb, gt = make_display(targets=[])
         display.enable()

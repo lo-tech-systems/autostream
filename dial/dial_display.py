@@ -71,7 +71,7 @@ from dial_display_profiles import (
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
     DERIVED_EQ_IDS, PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
-    awaiting_title, dots_active,
+    awaiting_title, dots_active, title_fallback,
     eq_gain, selector_rows,
 )
 import dial_core_poll
@@ -2408,7 +2408,7 @@ class DialDisplay:
             if not now_playing.playing:
                 artist = IDLE_ARTIST_TEXT
             elif awaiting_title(now_playing):
-                artist = PLAYING_ARTIST_TEXT
+                artist = title_fallback(now_playing)
         title = now_playing.title if now_playing is not None else ""
         album = now_playing.album if now_playing is not None else ""
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
