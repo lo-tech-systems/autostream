@@ -171,12 +171,7 @@ deploy_admin
 deploy_avahi_template
 
 # ---- Deploy images ----------------------------------------------------------
-mkdir -p /opt/autostream/images
-install -m 0644 "$DEPLOY/images/autostream-dial-badge.png" /opt/autostream/images/
-install -m 0644 "$DEPLOY/images/favicon.ico"               /opt/autostream/images/
-install -m 0644 "$DEPLOY/images/favicon-16x16.png"         /opt/autostream/images/
-install -m 0644 "$DEPLOY/images/favicon-32x32.png"         /opt/autostream/images/
-install -m 0644 "$DEPLOY/images/autostream-logo-centred-dark.png" /opt/autostream/images/
+install_dial_images
 
 # ---- Deploy offline recovery pages ------------------------------------------
 mkdir -p /opt/autostream/nginx/offline

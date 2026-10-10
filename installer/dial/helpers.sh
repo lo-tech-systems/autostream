@@ -1285,6 +1285,25 @@ _admin_bin() {
     printf '%s\n' "${AUTOSTREAM_ADMIN_BIN:-$(_fs_root)/usr/local/libexec/autostream/autostream_admin}"
 }
 
+dial_image_names() {
+    # The images the dial installs under /opt/autostream/images, one per line:
+    # the single list behind both the install and the owned-file backup, so a
+    # file one of them knows about cannot be missing from the other.
+    printf '%s\n' autostream-dial-badge.png favicon.ico favicon-16x16.png \
+                  favicon-32x32.png autostream-logo-centred-dark.png \
+                  autostream-logo-replay-dark.png
+}
+
+install_dial_images() {
+    # Install every image from dial_image_names into the images directory.
+    local dir name
+    dir="$(_opt_dir)/images"
+    mkdir -p "${dir}"
+    for name in $(dial_image_names); do
+        install -m 0644 "$DEPLOY/images/${name}" "${dir}/"
+    done
+}
+
 install_code_tree() {
     # Install every code file the dial runs from /opt/autostream into DEST:
     # the shared core modules, the wifi_* siblings, the dial package, the
@@ -1675,8 +1694,7 @@ owned_files_list() {
                   /etc/logrotate.d/autostream-dial \
                   /etc/systemd/journald.conf.d/99-autostream-storage.conf \
                   /var/lib/autostream/install-state.env
-    for name in autostream-dial-badge.png favicon.ico favicon-16x16.png \
-                favicon-32x32.png autostream-logo-centred-dark.png; do
+    for name in $(dial_image_names); do
         printf '%s\n' "${opt}/images/${name}"
     done
     # Offline pages are listed from the incoming release so a page it adds

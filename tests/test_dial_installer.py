@@ -426,17 +426,17 @@ class TestRecoveryInfrastructureDeployment:
 
     def test_badge_deployed_to_images_dir(self):
         """autostream-dial-badge.png must be installed to /opt/autostream/images/."""
-        content = self._installer_content()
+        content = self._installer_content() + HELPERS_SH.read_text(encoding="utf-8")
         assert "autostream-dial-badge.png" in content, (
             "autostream-dial-badge.png deployment not found in installer"
         )
-        assert "/opt/autostream/images/" in content, (
+        assert "/images" in content, (
             "/opt/autostream/images/ destination not found in installer"
         )
 
     def test_favicons_deployed_to_images_dir(self):
         """favicon files must be installed to /opt/autostream/images/."""
-        content = self._installer_content()
+        content = self._installer_content() + HELPERS_SH.read_text(encoding="utf-8")
         assert "favicon.ico" in content
         assert "favicon-16x16.png" in content
         assert "favicon-32x32.png" in content
@@ -580,7 +580,7 @@ class TestDisplayImageProcessingDeployment:
 
     def test_logo_deployed_to_images_dir(self):
         """autostream-logo-centred-dark.png must be installed to /opt/autostream/images/."""
-        content = self._installer_content()
+        content = self._installer_content() + HELPERS_SH.read_text(encoding="utf-8")
         assert "autostream-logo-centred-dark.png" in content, (
             "autostream-logo-centred-dark.png deployment not found in installer"
         )

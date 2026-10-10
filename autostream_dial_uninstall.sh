@@ -61,6 +61,7 @@ systemctl unmask dnsmasq.service 2>/dev/null || true
 rm -f /etc/systemd/journald.conf.d/99-autostream-storage.conf
 systemctl restart systemd-journald 2>/dev/null || true
 rm -f /usr/local/sbin/sdmon
+rm -f /usr/local/bin/autostream-dial-control
 
 # Shared admin infrastructure — safe to remove on dial-only device
 rm -rf /usr/local/libexec/autostream
