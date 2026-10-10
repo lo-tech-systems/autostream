@@ -67,6 +67,7 @@ class PlayingTarget:
     audio_status:       bool  = False
     dial_status:        bool  = False
     dial_outputs:       bool  = False
+    dial_eq:            bool  = False
     service_name:       str   = ""
     playing_since:      float = 0.0
     appliance_id:       str   = ""
@@ -130,6 +131,7 @@ def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
         audio_status=(txt.get('audio_status') == 'v1'),
         dial_status=(txt.get('dial_status') == 'v1'),
         dial_outputs=(txt.get('dial_outputs') == 'v1'),
+        dial_eq=(txt.get('dial_eq') == 'v1'),
         service_name=svc_name,
         playing_since=playing_since,
         appliance_id=appliance_id,
@@ -274,6 +276,7 @@ class GeneralSighting:
     version: str
     repeat: bool          # repeat=v1
     dial_outputs: bool    # dial_outputs=v1
+    dial_eq: bool         # dial_eq=v1
 
 
 # Conflict-detection state for the general browser, keyed the same way as
@@ -324,6 +327,7 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
     version = txt.get("version", "")
     repeat = txt.get("repeat") == "v1"
     dial_outputs = txt.get("dial_outputs") == "v1"
+    dial_eq = txt.get("dial_eq") == "v1"
 
     with _general_lock:
         _general_svc[service_name] = (appliance_id, hostname)
@@ -343,6 +347,7 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
         version=version,
         repeat=repeat,
         dial_outputs=dial_outputs,
+        dial_eq=dial_eq,
     )
     return (appliance_id, sighting)
 
@@ -399,6 +404,7 @@ class RosterEntry:
     audio_status:   bool = False
     dial_status:    bool = True
     dial_outputs:   bool = False
+    dial_eq:        bool = False
     auth:           str = dial_auth.AUTH_UNKNOWN
 
 
@@ -451,6 +457,7 @@ def get_roster() -> list[RosterEntry]:
             audio_status=t.audio_status,
             dial_status=t.dial_status,
             dial_outputs=t.dial_outputs,
+            dial_eq=t.dial_eq,
         ))
     for aid, g in general.items():
         if aid in playing or aid in conflicts:
@@ -467,6 +474,7 @@ def get_roster() -> list[RosterEntry]:
             playing=False,
             repeat_capable=g.repeat,
             dial_outputs=g.dial_outputs,
+            dial_eq=g.dial_eq,
         ))
 
     roster.sort(key=lambda r: (

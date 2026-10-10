@@ -31,6 +31,7 @@ from dial_touch_layout import (  # noqa: E402
     FONT_BODY_MAX_PX,
     FONT_READOUT_MAX_PX,
     GEOMETRIES,
+    GEOMETRY_EQ,
     GEOMETRY_IDLE,
     GEOMETRY_INFO,
     GEOMETRY_INFO_VALUE,
@@ -49,12 +50,15 @@ from dial_touch_layout import (  # noqa: E402
     COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
     CompactPickerLayout,
+    EqBarLayout,
+    EqLayout,
     InfoValueLayout,
     TouchZone,
     ZoneRect,
     _dead_zone_margin,
     compact_layout_for,
     compact_picker_layout_for,
+    eq_layout_for,
     hit_test,
     idle_layout_for,
     idle_zone_at,
@@ -1953,6 +1957,171 @@ class TestInfoValueGeometry:
             la = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
             lb = info_value_layout_for(metrics.width, metrics.height, metrics=metrics)
             assert la == lb
+
+
+# ---------------------------------------------------------------------------
+# EQ page geometry (GEOMETRY_EQ / eq_layout_for): the shared top band over
+# two bar rows, each with a band-high square stepper at each end. Rich/large
+# only in practice (see DialDisplay._eq_available), but the function itself
+# is a pure geometry computation reachable at any size.
+# ---------------------------------------------------------------------------
+
+class TestEqLayout:
+    def test_pinned_geometry_at_320x240_rich(self):
+        metrics = _RICH_320x240
+        layout = eq_layout_for(320, 240, metrics=metrics)
+        assert layout.top_band == (0, 0, 320, 48)
+        assert layout.dots == (6, 0, 54, 48)
+        assert layout.bass.row == (6, 48, 314, 138)
+        assert layout.treble.row == (6, 150, 314, 240)
+        assert layout.bass.down == (6, 48, 54, 138)
+        assert layout.bass.up == (266, 48, 314, 138)
+        assert layout.bass.caption == (66, 48, 254, 93)
+        assert layout.bass.track == (66, 93, 254, 138)
+        assert (layout.bass.track_x0, layout.bass.track_x1) == (74, 246)
+        assert layout.bass.track_y == 115
+        assert layout.bass.centre_x == 160
+        assert layout.treble.down == (6, 150, 54, 240)
+        assert layout.treble.up == (266, 150, 314, 240)
+        assert layout.treble.caption == (66, 150, 254, 195)
+        assert layout.treble.track == (66, 195, 254, 240)
+        assert layout.treble.track_y == 217
+
+    def test_pinned_geometry_at_640x480_large(self):
+        metrics = _LARGE_640x480
+        layout = eq_layout_for(640, 480, metrics=metrics)
+        assert layout.top_band == (0, 0, 640, 95)
+        assert layout.dots == (11, 0, 106, 95)
+        assert layout.bass.row == (11, 95, 629, 276)
+        assert layout.treble.row == (11, 299, 629, 480)
+        assert layout.bass.down == (11, 95, 106, 276)
+        assert layout.bass.up == (534, 95, 629, 276)
+        assert layout.bass.caption == (128, 95, 512, 185)
+        assert layout.bass.track == (128, 185, 512, 276)
+        assert (layout.bass.track_x0, layout.bass.track_x1) == (143, 497)
+        assert layout.bass.track_y == 230
+        assert layout.bass.centre_x == 320
+        assert layout.treble.down == (11, 299, 106, 480)
+        assert layout.treble.up == (534, 299, 629, 480)
+        assert layout.treble.caption == (128, 299, 512, 389)
+        assert layout.treble.track == (128, 389, 512, 480)
+        assert layout.treble.track_y == 434
+
+    def test_top_band_fields_equal_layout_for(self):
+        for metrics in (_RICH_320x240, _LARGE_640x480):
+            main = layout_for(metrics.width, metrics.height, metrics=metrics)
+            eq = eq_layout_for(metrics.width, metrics.height, metrics=metrics)
+            assert eq.dots == main.dots
+            assert eq.name == main.name
+            assert eq.volume_cluster == main.volume_cluster
+            assert eq.top_band == main.top_band
+
+    def test_control_size_clears_the_touch_floor(self):
+        for metrics in (_RICH_320x240, _LARGE_640x480):
+            layout = eq_layout_for(metrics.width, metrics.height, metrics=metrics)
+            for bar in (layout.bass, layout.treble):
+                for rect in (bar.down, bar.up):
+                    assert rect[2] - rect[0] >= metrics.touch_min_px
+                    assert rect[3] - rect[1] >= metrics.touch_min_px
+
+    def test_is_pure(self):
+        for metrics in (_RICH_320x240, _LARGE_640x480):
+            a = eq_layout_for(metrics.width, metrics.height, metrics=metrics)
+            b = eq_layout_for(metrics.width, metrics.height, metrics=metrics)
+            assert a == b
+
+    def test_stays_pure_off_the_tier_it_is_actually_used_on(self):
+        """eq_layout_for has no idea what tier it is being used on — it is
+        never called off rich/large in the running dial (see
+        DialDisplay._eq_available), but the function itself does not raise
+        or vary at a smaller size."""
+        a = eq_layout_for(240, 240)
+        b = eq_layout_for(240, 240)
+        assert a == b
+
+
+class TestEqZoneTable:
+    def test_order_is_dots_name_outputs_then_bass_then_treble(self):
+        entries = zone_rects_for(GEOMETRY_EQ, 320, 240, metrics=_RICH_320x240)
+        assert [e.zone for e in entries] == [
+            TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
+            TouchZone.EQ_BASS_DOWN, TouchZone.EQ_BASS_UP,
+            TouchZone.EQ_TREBLE_DOWN, TouchZone.EQ_TREBLE_UP,
+        ]
+
+    def test_every_rect_is_a_layout_field(self):
+        layout = eq_layout_for(320, 240, metrics=_RICH_320x240)
+        by_zone = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_EQ, 320, 240, metrics=_RICH_320x240)}
+        assert by_zone[TouchZone.DOTS] == layout.dots
+        assert by_zone[TouchZone.NAME] == layout.name
+        assert by_zone[TouchZone.OUTPUTS] == layout.volume_cluster
+        assert by_zone[TouchZone.EQ_BASS_DOWN] == layout.bass.down
+        assert by_zone[TouchZone.EQ_BASS_UP] == layout.bass.up
+        assert by_zone[TouchZone.EQ_TREBLE_DOWN] == layout.treble.down
+        assert by_zone[TouchZone.EQ_TREBLE_UP] == layout.treble.up
+
+    def test_union_of_geometries_still_covers_every_eq_zone(self):
+        covered = set()
+        for geometry in GEOMETRIES:
+            covered.update(entry.zone for entry in zone_rects_for(geometry, 320, 240, metrics=_RICH_320x240))
+        assert {
+            TouchZone.EQ_BASS_DOWN, TouchZone.EQ_BASS_UP,
+            TouchZone.EQ_TREBLE_DOWN, TouchZone.EQ_TREBLE_UP,
+        } <= covered
+
+
+class TestEqHitTestExhaustive:
+    def test_every_pixel_matches_a_hand_written_reference(self):
+        metrics = _RICH_320x240
+        width, height = metrics.width, metrics.height
+        layout = eq_layout_for(width, height, metrics=metrics)
+
+        def reference(x, y):
+            for zone, (x0, y0, x1, y1) in (
+                (TouchZone.DOTS, layout.dots),
+                (TouchZone.NAME, layout.name),
+                (TouchZone.OUTPUTS, layout.volume_cluster),
+                (TouchZone.EQ_BASS_DOWN, layout.bass.down),
+                (TouchZone.EQ_BASS_UP, layout.bass.up),
+                (TouchZone.EQ_TREBLE_DOWN, layout.treble.down),
+                (TouchZone.EQ_TREBLE_UP, layout.treble.up),
+            ):
+                if x0 <= x < x1 and y0 <= y < y1:
+                    return zone
+            return None
+
+        for y in range(height):
+            for x in range(width):
+                hit = hit_test(GEOMETRY_EQ, x, y, width, height, metrics=metrics)
+                got = hit.zone if hit is not None else None
+                assert got == reference(x, y)
+
+    def test_captions_and_tracks_resolve_to_nothing(self):
+        metrics = _RICH_320x240
+        layout = eq_layout_for(320, 240, metrics=metrics)
+        for bar in (layout.bass, layout.treble):
+            for rect in (bar.caption, bar.track):
+                cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+                assert hit_test(GEOMETRY_EQ, cx, cy, 320, 240, metrics=metrics) is None
+
+    def test_dead_gap_between_bass_and_treble_resolves_to_nothing(self):
+        metrics = _RICH_320x240
+        layout = eq_layout_for(320, 240, metrics=metrics)
+        gap_y = (layout.bass.row[3] + layout.treble.row[1]) // 2
+        assert hit_test(GEOMETRY_EQ, layout.bass.centre_x, gap_y, 320, 240, metrics=metrics) is None
+
+    def test_pinned_control_centres_at_640x480(self):
+        metrics = _LARGE_640x480
+        layout = eq_layout_for(640, 480, metrics=metrics)
+        for zone, rect in (
+            (TouchZone.EQ_BASS_DOWN, layout.bass.down),
+            (TouchZone.EQ_BASS_UP, layout.bass.up),
+            (TouchZone.EQ_TREBLE_DOWN, layout.treble.down),
+            (TouchZone.EQ_TREBLE_UP, layout.treble.up),
+        ):
+            cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+            hit = hit_test(GEOMETRY_EQ, cx, cy, 640, 480, metrics=metrics)
+            assert hit is not None and hit.zone == zone
 
 
 # ---------------------------------------------------------------------------

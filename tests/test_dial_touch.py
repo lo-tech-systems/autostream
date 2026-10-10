@@ -2009,6 +2009,7 @@ class TestComplementRuleDerivation:
     def test_single_shot_zones_is_every_zone_except_up_and_down(self):
         assert _SINGLE_SHOT_ZONES == frozenset(TouchZone) - {
             TouchZone.UP, TouchZone.DOWN, TouchZone.OUTPUT_UP, TouchZone.OUTPUT_DOWN,
+            TouchZone.EQ_BASS_DOWN, TouchZone.EQ_BASS_UP, TouchZone.EQ_TREBLE_DOWN, TouchZone.EQ_TREBLE_UP,
         }
 
     def test_zone_tap_zones_is_every_zone_except_up_down_and_mute(self):

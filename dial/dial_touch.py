@@ -75,15 +75,16 @@ maps to GEOMETRY_LIST (the outputs list reuses the same list chassis as
 the selector/picker); "output" maps to GEOMETRY_OUTPUT (the per-output
 detail page); "info" maps to GEOMETRY_INFO (the idle screen's read-only
 info page — the list table with every row entry removed, so a row tap
-lands in no zone) — all held like the selector. The map is many-to-one on
-purpose: which surfaces share a geometry is a policy decision (reveal
+lands in no zone); "eq" maps to GEOMETRY_EQ (the EQ page, rich/large only)
+— all held like the selector. The map is many-to-one on purpose: which surfaces share a geometry is a policy decision (reveal
 timing, what a row tap does), never a geometric one —
 dial_touch_layout.py itself only ever describes its geometries, never a
 surface. Every zone any of these can arm (NAME/DOTS/OUTPUTS on the main
 geometry; LIST_ROW/LIST_BACK/LIST_DOWN/LIST_UP on the list geometry;
 DOTS/NAME/REPEAT_PLAY/REPEAT_START/REPEAT_STOP on the repeat geometry;
 OUTPUT_BACK/NAME/OUTPUT_TOGGLE/OUTPUT_UP/OUTPUT_DOWN on the output
-geometry; IDLE_REPLAY on the idle geometry) is single-shot — it flashes
+geometry; IDLE_REPLAY on the idle geometry; DOTS/NAME/OUTPUTS/EQ_BASS_DOWN/
+EQ_BASS_UP/EQ_TREBLE_DOWN/EQ_TREBLE_UP on the EQ geometry) is single-shot — it flashes
 once and never repeats, and its tap is reported as ACTION_ZONE_TAP for the
 caller to dispatch, EXCEPT the repeating zones (UP/DOWN's own fixed
 actions, and OUTPUT_UP/OUTPUT_DOWN, reported as repeated ACTION_ZONE_TAPs
@@ -117,6 +118,7 @@ from dataclasses import dataclass
 
 from dial_touch_filter import TouchEvent, TouchEventType
 from dial_touch_layout import (
+    GEOMETRY_EQ,
     GEOMETRY_IDLE,
     GEOMETRY_INFO,
     GEOMETRY_INFO_VALUE,
@@ -161,7 +163,10 @@ ACTION_ZONE_TAP = "zone-tap"
 # re-actuating them on a timer would be meaningless (a mute toggle, an
 # open/close/page of the selector, picking a row, opening/closing the
 # repeat screen, toggling an output, or tapping the idle affordance).
-_REPEATING_ZONES = frozenset((TouchZone.UP, TouchZone.DOWN, TouchZone.OUTPUT_UP, TouchZone.OUTPUT_DOWN))
+_REPEATING_ZONES = frozenset((
+    TouchZone.UP, TouchZone.DOWN, TouchZone.OUTPUT_UP, TouchZone.OUTPUT_DOWN,
+    TouchZone.EQ_BASS_DOWN, TouchZone.EQ_BASS_UP, TouchZone.EQ_TREBLE_DOWN, TouchZone.EQ_TREBLE_UP,
+))
 
 # Zones dispatched as their own fixed action kinds (volume up/down, mute
 # toggle). Every other zone is reported as ACTION_ZONE_TAP with the zone
@@ -213,6 +218,10 @@ SURFACE_INFO = "info"
 # VALUE) is a single whole-panel LIST_BACK entry, so any press anywhere
 # reports the same zone-tap back to the list.
 SURFACE_INFO_VALUE = "info_value"
+# The EQ page: rich/large only, reached via the page dots. Held like every
+# other secondary surface; hit-tests use the GEOMETRY_EQ table (DOTS/NAME/
+# OUTPUTS reused from the main geometry, plus the bass/treble bar steppers).
+SURFACE_EQ = "eq"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -230,6 +239,7 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_OUTPUT: GEOMETRY_OUTPUT,
     SURFACE_INFO: GEOMETRY_INFO,
     SURFACE_INFO_VALUE: GEOMETRY_INFO_VALUE,
+    SURFACE_EQ: GEOMETRY_EQ,
 }
 
 # The repeat screen's two surfaces, treated as one set by the repeat-close

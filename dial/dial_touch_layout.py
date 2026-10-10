@@ -398,6 +398,9 @@ class TouchZone(str, Enum):
     opens the read-only info list (see IdleLayout.info/GEOMETRY_INFO).
     ARTWORK: the main surface's inter-band strip (between the top and
     bottom bands); a tap hides the bands for a few seconds.
+    EQ_BASS_DOWN, EQ_BASS_UP, EQ_TREBLE_DOWN, EQ_TREBLE_UP: the EQ page's
+    own surface (plus DOTS/NAME/OUTPUTS, reused from the main surface) --
+    the bass and treble bars' own minus/plus steppers.
     """
 
     MUTE = "mute"
@@ -420,6 +423,10 @@ class TouchZone(str, Enum):
     OUTPUT_UP = "output_up"
     OUTPUT_DOWN = "output_down"
     ARTWORK = "artwork"
+    EQ_BASS_DOWN = "eq_bass_down"
+    EQ_BASS_UP = "eq_bass_up"
+    EQ_TREBLE_DOWN = "eq_treble_down"
+    EQ_TREBLE_UP = "eq_treble_up"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
@@ -451,9 +458,13 @@ GEOMETRY_INFO = "info"
 # returns to the list (close_list()'s existing back_to resolution already
 # does the rest). Tier-agnostic and pure like every table here.
 GEOMETRY_INFO_VALUE = "info_value"
+# The EQ page's own table: rich/large only (see eq_layout_for/DialDisplay.
+# _eq_available) -- DOTS/NAME/OUTPUTS reused from the main geometry, plus
+# the bass/treble bar steppers.
+GEOMETRY_EQ = "eq"
 GEOMETRIES = (
     GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
-    GEOMETRY_INFO, GEOMETRY_INFO_VALUE,
+    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ,
 )
 
 
@@ -640,6 +651,23 @@ def _output_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
     )
 
 
+def _eq_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_EQ: the top band's DOTS/NAME/OUTPUTS (reused from the main
+    surface, same rects layout_for() itself gives them) plus the bass and
+    treble bars' own minus/plus steppers. The caption/track area between
+    each bar's two controls is non-actuating -- there is no zone for it."""
+    layout = eq_layout_for(width, height, metrics=metrics)
+    return (
+        ZoneRect(TouchZone.DOTS, layout.dots),
+        ZoneRect(TouchZone.NAME, layout.name),
+        ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster),
+        ZoneRect(TouchZone.EQ_BASS_DOWN, layout.bass.down),
+        ZoneRect(TouchZone.EQ_BASS_UP, layout.bass.up),
+        ZoneRect(TouchZone.EQ_TREBLE_DOWN, layout.treble.down),
+        ZoneRect(TouchZone.EQ_TREBLE_UP, layout.treble.up),
+    )
+
+
 _GEOMETRY_BUILDERS = {
     GEOMETRY_MAIN: _main_zone_rects,
     GEOMETRY_LIST: _list_zone_rects,
@@ -649,6 +677,7 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_OUTPUT: _output_zone_rects,
     GEOMETRY_INFO: _info_zone_rects,
     GEOMETRY_INFO_VALUE: _info_value_zone_rects,
+    GEOMETRY_EQ: _eq_zone_rects,
 }
 
 
@@ -1193,6 +1222,71 @@ def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     layout; see dial_display_compositor.compose_repeat)."""
     hit = hit_test(GEOMETRY_REPEAT, x, y, width, height)
     return hit.zone if hit is not None else None
+
+
+@dataclass(frozen=True)
+class EqBarLayout:
+    """One bar row's geometry on the EQ page (bass or treble) — a
+    band-high square stepper at each end, a caption (label left, dB right)
+    in the upper half of the space between them, and a track (the dB scale
+    line and its marker) in the lower half."""
+
+    row: Rect        # the whole bar row
+    down: Rect       # "-" (== EQ_*_DOWN)
+    up: Rect         # "+" (== EQ_*_UP)
+    caption: Rect    # upper half between the controls: label left, dB right
+    track: Rect      # lower half between the controls: the track line and marker
+    track_x0: int
+    track_x1: int
+    track_y: int
+    centre_x: int
+
+
+@dataclass(frozen=True)
+class EqLayout:
+    """Full EQ-page geometry for one panel size — rich/large only. `dots`,
+    `name`, `volume_cluster` and `top_band` are exactly layout_for()'s own
+    rectangles (the shared top band this page reuses, unchanged); `bass`
+    and `treble` are the two bar rows filling the rest of the panel."""
+
+    dots: Rect
+    name: Rect
+    volume_cluster: Rect
+    top_band: Rect
+    bass: EqBarLayout
+    treble: EqBarLayout
+
+
+def eq_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> EqLayout:
+    """Compute the EQ page's geometry: the shared top band (reused from
+    layout_for(), unchanged) over two equal bar rows tiling the rest of the
+    panel (_split's own dead-zone gap falls between them). Each bar's own
+    controls are a band-high square at each end; the space between them
+    splits into an upper caption half and a lower track half."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    layout = layout_for(width, height, metrics=metrics)
+    m, band_h, pad = metrics.margin, metrics.band_h, metrics.pad
+    (a0, a1), (b0, b1) = _split(height - band_h, m, [1, 1])
+
+    def bar(y0: int, y1: int) -> EqBarLayout:
+        ctrl = band_h
+        down: Rect = (m, y0, m + ctrl, y1)
+        up: Rect = (width - m - ctrl, y0, width - m, y1)
+        inner_x0, inner_x1 = down[2] + 2 * m, up[0] - 2 * m
+        mid = (y0 + y1) // 2
+        return EqBarLayout(
+            row=(m, y0, width - m, y1), down=down, up=up,
+            caption=(inner_x0, y0, inner_x1, mid), track=(inner_x0, mid, inner_x1, y1),
+            track_x0=inner_x0 + pad, track_x1=inner_x1 - pad, track_y=(mid + y1) // 2,
+            centre_x=(inner_x0 + inner_x1) // 2,
+        )
+
+    return EqLayout(
+        dots=layout.dots, name=layout.name, volume_cluster=layout.volume_cluster,
+        top_band=layout.top_band,
+        bass=bar(band_h + a0, band_h + a1), treble=bar(band_h + b0, band_h + b1),
+    )
 
 
 def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> IdleLayout:
