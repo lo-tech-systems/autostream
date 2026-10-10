@@ -353,11 +353,12 @@ class TestJsContent:
 # Now Playing icon: three-way turntable / bluetooth / line-in selection
 # ---------------------------------------------------------------------------
 
-def _playback_snapshot_with_input(*, is_turntable=False, is_bluetooth=False):
+def _playback_snapshot_with_input(*, is_turntable=False, is_bluetooth=False, input_type=""):
     snap = _make_playback_snapshot()
     input_snap = MagicMock()
     input_snap.is_turntable = is_turntable
     input_snap.is_bluetooth = is_bluetooth
+    input_snap.input_type = input_type
     snap.inputs = {1: input_snap}
     return snap
 
@@ -404,3 +405,49 @@ class TestNowPlayingIconKind:
         html = _render_airplay_page(ti_snapshot=snap, playback_snapshot=playback)
         assert "Bluetooth" in html
         assert 'data-np-icon-key="svg:bluetooth"' in html
+
+    def test_cd_input_uses_cd_icon_and_label(self):
+        playback = _playback_snapshot_with_input(input_type="cd")
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(), playback_snapshot=playback,
+        )
+        assert 'data-np-icon-key="svg:cd"' in html
+        assert "Input 1 · CD" in html
+
+    def test_bluetooth_cd_keeps_bluetooth_icon_with_cd_label(self):
+        playback = _playback_snapshot_with_input(is_bluetooth=True, input_type="cd")
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(), playback_snapshot=playback,
+        )
+        assert 'data-np-icon-key="svg:bluetooth"' in html
+        assert "· CD" in html
+
+    def test_missing_type_falls_back_to_flags(self):
+        playback = _playback_snapshot_with_input(input_type="")
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(), playback_snapshot=playback,
+        )
+        assert 'data-np-icon-key="svg:line"' in html
+        assert "Line Level" in html
+
+    def test_turntable_type_in_progress_prefix(self):
+        playback = _playback_snapshot_with_input(input_type="turntable")
+        snap = TrackIdentificationSnapshot(
+            enabled=True, state=STATE_ANALYSING, status_text="Analysing",
+        )
+        html = _render_airplay_page(ti_snapshot=snap, playback_snapshot=playback)
+        assert "Turntable –" in html
+        assert "Vinyl –" not in html
+
+    def test_cd_icon_emitted_for_js(self):
+        html = _render_airplay_page(
+            ti_snapshot=disabled_snapshot(),
+            playback_snapshot=_playback_snapshot_with_input(),
+        )
+        assert "window.__ICON_CD=" in html
+
+
+@_skip
+class TestRemoteHomeCdIcon:
+    def test_remote_home_emits_cd_icon_for_js(self):
+        assert "window.__ICON_CD=" in _render_remote_home()

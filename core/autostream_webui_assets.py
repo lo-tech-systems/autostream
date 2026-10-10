@@ -1131,16 +1131,23 @@ HOME_CARDS_SCRIPT = """
     var inputSnap = inputs[String(activeIdx + 1)] || {};
     var isTurntable = !!inputSnap.is_turntable;
     var isBluetooth = !!inputSnap.is_bluetooth;
-    // Precedence: turntable wins over bluetooth-ness (mirrors the server's
-    // _default_nowplaying_title / _np_icon_kind derivation).
-    var iconKind = isTurntable ? 'turntable' : (isBluetooth ? 'bluetooth' : 'line');
+    var inputType = String(inputSnap.input_type || '');
+    var typeLabel = String(inputSnap.type_label || '');
+    // Precedence: turntable wins over bluetooth-ness, then the type picks
+    // the icon (mirrors the server's _np_icon_kind derivation). The words
+    // are the input's type label; an appliance that sends no type gets
+    // words derived from the flags instead.
+    var iconKind = isTurntable ? 'turntable' : (isBluetooth ? 'bluetooth' : (inputType === 'cd' ? 'cd' : 'line'));
     var iconSvgByKind = {
       turntable: window.__ICON_TURNTABLE,
       bluetooth: window.__ICON_BLUETOOTH,
+      cd: window.__ICON_CD,
       line: window.__ICON_LINE_LEVEL,
     };
-    var iconLabelByKind = { turntable: 'Vinyl', bluetooth: 'Bluetooth', line: 'Line In' };
-    var typeLabelByKind = { turntable: 'Turntable', bluetooth: 'Bluetooth', line: 'Line Level' };
+    var iconLabelByKind = { turntable: 'Vinyl', bluetooth: 'Bluetooth', cd: 'CD', line: 'Line In' };
+    var typeLabelByKind = { turntable: 'Turntable', bluetooth: 'Bluetooth', cd: 'CD', line: 'Line Level' };
+    var inputPrefix = typeLabel || iconLabelByKind[iconKind];
+    var inputTypeText = typeLabel || typeLabelByKind[iconKind];
     var label = String(activeLevel.label || ('Input ' + (activeIdx + 1)));
     var signalParts = [];
     if (window.__SHOW_INPUT_DETAIL) {
@@ -1187,7 +1194,6 @@ HOME_CARDS_SCRIPT = """
         }
       }
     } else if (tiEnabled) {
-      var inputPrefix = iconLabelByKind[iconKind];
       var suffix;
       if (tiState === 'error') { suffix = 'Track ID function not available'; }
       else if (tiState === 'not_found') { suffix = 'Unknown track'; }
@@ -1207,7 +1213,7 @@ HOME_CARDS_SCRIPT = """
         iconEl.classList.remove('np-icon-art');
       }
     } else {
-      if (nameEl) nameEl.textContent = label + ' · ' + typeLabelByKind[iconKind];
+      if (nameEl) nameEl.textContent = label + ' · ' + inputTypeText;
       if (signalEl) signalEl.textContent = signalParts.join(' · ');
       var svgKey2 = 'svg:' + iconKind;
       if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey2) {
@@ -1693,6 +1699,35 @@ ICON_TURNTABLE = (
     # Buttons
     '<circle cx="156" cy="178" r="8"/>'
     '<rect x="176" y="170" width="11" height="18" rx="5.5"/>'
+    '</svg>'
+)
+
+ICON_CD = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 206 206"'
+    ' fill="none" stroke="var(--color-accent)" stroke-width="3"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    # Front panel; its bottom edge sits behind the drawer
+    '<path d="M32.7 124 H6.5 a4 4 0 0 1 -4 -4 V27.5 a4 4 0 0 1 4 -4 H199.5 a4 4 0 0 1 4 4 V120 a4 4 0 0 1 -4 4 H175.2"/>'
+    # Display
+    '<rect x="18" y="50" width="92" height="22" rx="3"/>'
+    # Buttons
+    '<circle cx="153" cy="61" r="10"/>'
+    '<circle cx="181" cy="61" r="6"/>'
+    # Drawer slot
+    '<path d="M36.9 109.4 H31 V89.3 H174.3 V109.4 H171"/>'
+    # Drawer sides, widening towards the viewer
+    '<path d="M42.7 89.3 L22.6 159.5"/>'
+    '<path d="M165.1 89.3 L185.3 159.5"/>'
+    # Drawer front and handle
+    '<rect x="15.3" y="159.5" width="175.4" height="23" rx="3"/>'
+    '<rect x="82" y="168" width="41" height="6.5" rx="3.25"/>'
+    # Disc on the drawer, near edge behind the drawer front
+    '<path d="M137 159.5 A62.9 36.5 0 1 0 69 159.5"/>'
+    '<ellipse cx="103" cy="128.8" rx="21.2" ry="13.2"/>'
+    '<ellipse cx="103" cy="128.8" rx="5.1" ry="3.3"/>'
+    # Disc sheen
+    '<path d="M54.4 121.2 A50.3 29.2 0 0 1 85.8 101.4"/>'
+    '<path d="M66.6 123.1 A37.7 21.9 0 0 1 90.1 108.2"/>'
     '</svg>'
 )
 

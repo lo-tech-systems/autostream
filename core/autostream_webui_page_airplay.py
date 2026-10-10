@@ -22,6 +22,7 @@ from autostream_core import (
 )
 from autostream_player_service import get_setting, list_outputs
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
+from autostream_config import input_type_label, normalize_input_type
 from autostream_mute_state import is_muted as _appliance_is_muted
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname, reboot_system
@@ -35,6 +36,7 @@ from autostream_webui_assets import (
     COMMON_MODAL_CSS,
     HOME_CARDS_SCRIPT,
     ICON_BLUETOOTH,
+    ICON_CD,
     ICON_LINE_LEVEL,
     ICON_TURNTABLE,
     INFO_MODAL_HTML,
@@ -291,20 +293,30 @@ def send_airplay_page(
     _np_snap = playback_snapshot.inputs.get(_np_active_idx + 1)
     _np_is_turntable = bool(_np_snap.is_turntable) if _np_snap else False
     _np_is_bluetooth = bool(_np_snap.is_bluetooth) if _np_snap else False
-    # Precedence: turntable wins over bluetooth-ness (mirrors
-    # _default_nowplaying_title in autostream_core.py) -- a bluetooth
-    # turntable is still shown/labelled as a turntable.
+    _np_input_type = (
+        normalize_input_type(getattr(_np_snap, "input_type", ""), default="")
+        if _np_snap else ""
+    )
+    # Precedence: turntable wins over bluetooth-ness, then the type picks the
+    # icon -- a bluetooth turntable is still shown as a turntable.  The words
+    # are the input's type label; a snapshot with no type falls back to words
+    # derived from the flags.
     _np_icon_kind = (
         "turntable" if _np_is_turntable
         else "bluetooth" if _np_is_bluetooth
+        else "cd" if _np_input_type == "cd"
         else "line"
     )
     _np_label = str(_np_active_level.get("label", f"Input {_np_active_idx + 1}"))
-    _np_type_label = {
-        "turntable": "Turntable",
-        "bluetooth": "Bluetooth",
-        "line": "Line Level",
-    }[_np_icon_kind]
+    _np_type_label = (
+        input_type_label(_np_input_type) if _np_input_type
+        else {
+            "turntable": "Turntable",
+            "bluetooth": "Bluetooth",
+            "cd": "CD",
+            "line": "Line Level",
+        }[_np_icon_kind]
+    )
     _np_hz = float(_np_active_level.get("detected_hz", 0.0))
     _np_signal_parts = []
     if show_input_detail and _np_hz > 0:
@@ -314,6 +326,7 @@ def send_airplay_page(
     _np_icon_svg = {
         "turntable": ICON_TURNTABLE,
         "bluetooth": ICON_BLUETOOTH,
+        "cd": ICON_CD,
         "line": ICON_LINE_LEVEL,
     }[_np_icon_kind]
 
@@ -346,11 +359,15 @@ def send_airplay_page(
         _np_display_name = html.escape(_ti_title or "Unknown")
         _np_display_signal = html.escape(_ti_artist)
     elif _ti_enabled:
-        _input_prefix = {
-            "turntable": "Vinyl",
-            "bluetooth": "Bluetooth",
-            "line": "Line In",
-        }[_np_icon_kind]
+        _input_prefix = (
+            input_type_label(_np_input_type) if _np_input_type
+            else {
+                "turntable": "Vinyl",
+                "bluetooth": "Bluetooth",
+                "cd": "CD",
+                "line": "Line In",
+            }[_np_icon_kind]
+        )
         if _ti_state == "error":
             _np_display_name = html.escape(f"{_input_prefix} – Track ID function not available")
         elif _ti_state == "not_found":
@@ -454,6 +471,7 @@ def send_airplay_page(
         f"window.__VU_DELAY_MS={int(vu_delay_ms)};"
         f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
         f"window.__ICON_BLUETOOTH={json.dumps(ICON_BLUETOOTH)};"
+        f"window.__ICON_CD={json.dumps(ICON_CD)};"
         f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"window.__SELECTOR_CURRENT_ID='{html.escape(_local_id)}';"
@@ -820,6 +838,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__VU_DELAY_MS=2250;"
         f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
         f"window.__ICON_BLUETOOTH={json.dumps(ICON_BLUETOOTH)};"
+        f"window.__ICON_CD={json.dumps(ICON_CD)};"
         f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"window.__REMOTE_AID='{html.escape(appliance_id)}';"
