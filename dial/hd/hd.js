@@ -135,19 +135,18 @@
         replaying: { controls: TRANSPORT_REPLAY, usable: ["restart", "stop"], time: "position", dim: false },
         fading_out: { controls: TRANSPORT_REPLAY, usable: [], time: "position", dim: true }
     };
-    // The transport buttons: the action each sends, its spoken label and its
-    // icon as path data on a 24 unit square.
+    // The transport buttons: the action each sends, the kind of request the
+    // dial records for it, its spoken label and its icon as path data on a
+    // 24 unit square. Each is held down from the press until the appliance
+    // has answered.
     const REPLAY_BUTTONS = {
-        play: { action: "replay_start", label: "Play the recording", icon: "M8 5.5v13l11-6.5z" },
+        play: { action: "replay_start", kind: "seek", label: "Play the recording", icon: "M8 5.5v13l11-6.5z" },
         restart: {
-            action: "replay_restart", label: "Back to the start",
+            action: "replay_restart", kind: "seek", label: "Back to the start",
             icon: "M4 6h2.2v12H4zM13 6v12l-6-6zM20 6v12l-6-6z"
         },
-        stop: { action: "replay_stop", label: "Stop the replay", icon: "M6.5 6.5h11v11h-11z" }
+        stop: { action: "replay_stop", kind: "stop", label: "Stop the replay", icon: "M6.5 6.5h11v11h-11z" }
     };
-    // The buttons that start a replay: held down from the press until the
-    // appliance has answered.
-    const STARTING_BUTTONS = ["play", "restart"];
     const NO_TIME = "-:--";
     const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -299,7 +298,7 @@
         notice: null, viewing: null,
         activityAt: 0,
         focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
-        replayClock: null, stopHold: null, press: null, power: Object.assign({}, POWER_IDLE_UI), host: window.location.hostname,
+        replayClock: null, power: Object.assign({}, POWER_IDLE_UI), host: window.location.hostname,
         // The keypad's own buffer (the digits live nowhere else), the request
         // it was typed for, and the request the person turned away.
         pin: { forKey: null, digits: "", dismissedAt: null },
@@ -308,6 +307,81 @@
     const PIN_IDLE = { forKey: null, digits: "" };
     const pending = {};         // control key -> { value, deadline }
     const dragging = new Set();  // control keys under a finger
+
+    // The pressed transport button (play, back to the start or stop), held
+    // down from the press until a PRESS_RELEASES rule lets it go; only one
+    // at a time, though a Stop takes the place of a held play or restart.
+    // { state, id (the appliance), target (the button), from (the record's
+    // state at the press), token (the dial's identity for the request, once
+    // known), base (the timer position a Stop held), before (the dial's
+    // latest request at the press), serial (which press this is) }.
+    // "none": nothing is held. "sent": the request is out and its token is
+    // not known. "bound": the token is known. Each event leads from a state
+    // to the next in PRESS_NEXT; one it does not list changes nothing.
+    const PRESS_NEXT = {
+        none: { start: "sent" },
+        sent: { replace: "sent", token: "bound", lost: "none", release: "none" },
+        bound: { replace: "sent", token: "bound", lost: "none", release: "none" }
+    };
+    const PRESS_REPLACES = (held, target) => target === "stop" && held !== "stop";
+
+    const press = {
+        state: "none", id: null, target: null, from: null, token: null, base: null, before: null, serial: 0,
+
+        fire(event) {
+            const next = PRESS_NEXT[this.state][event];
+            if (!next) { return false; }
+            this.state = next;
+            return true;
+        },
+
+        current() {
+            return this.state === "none" ? null : this;
+        },
+
+        // The press's serial, or 0 when one is already held. *position* is
+        // where the timer stands, *before* the request the dial last showed.
+        start(target, appliance, position, before) {
+            const event = this.state === "none" ? "start" : PRESS_REPLACES(this.target, target) ? "replace" : "";
+            if (!this.fire(event)) { return 0; }
+            this.serial += 1;
+            Object.assign(this, {
+                id: appliance.id, target: target, from: appliance.repeat.state, token: null,
+                base: target === "stop" ? position : null, before: before
+            });
+            return this.serial;
+        },
+
+        // The answer to press *serial*'s request: its reply, or false when it
+        // was refused or lost. A reply with no token leaves the press to be
+        // bound to the first new request the state shows.
+        sent(serial, reply) {
+            if (serial !== this.serial) { return; }
+            if (!reply) {
+                this.fire("lost");
+            } else if (typeof reply.token === "number" && this.fire("token")) {
+                this.token = reply.token;
+            }
+        },
+
+        // Where a held Stop holds the timer for appliance *id*, or null.
+        heldStop(id) {
+            return this.state !== "none" && this.target === "stop" && this.id === id ? this.base : null;
+        },
+
+        // Looks at the state: binds a press that has no token to the
+        // request it shows, and lets the press go when a rule says so.
+        observe(ctx) {
+            if (this.state === "none") { return; }
+            if (this.token === null && ctx.t && ctx.t.requested_at !== this.before && this.fire("token")) {
+                this.token = ctx.t.requested_at;
+            }
+            const own = !!ctx.t && this.token !== null && ctx.t.requested_at === this.token;
+            if (PRESS_RELEASES.some((rule) => rule(Object.assign({ press: this, own: own }, ctx)))) {
+                this.fire("release");
+            }
+        }
+    };
 
     function setPending(key, value) {
         pending[key] = { value: value, deadline: Date.now() + CONFIG.pendingMs };
@@ -351,9 +425,7 @@
         return clock.base + gone + clock.slew * Math.min(gone, CONFIG.replaySlewS);
     }
 
-    // *holdFor* gives the position the timer was held at for an appliance
-    // whose Stop is awaiting an answer, or null.
-    function nextReplayClock(old, state, now, holdFor) {
+    function nextReplayClock(old, state, now) {
         const focus = state.appliances.find((a) => a.id === state.focus.appliance_id);
         const r = focus ? focus.repeat : null;
         const row = r ? REPLAY_ROWS[r.state] : null;
@@ -363,7 +435,7 @@
         if (r.state !== "replaying") {
             // Not moving any more: it stops where the page had it, which
             // is where Stop held it when that was pressed.
-            const pressed = holdFor ? holdFor(focus.id) : null;
+            const pressed = press.heldStop(focus.id);
             const base = pressed !== null ? pressed : held ? local : r.position_s;
             return { id: focus.id, base: base, at: now, slew: 0, running: false };
         }
@@ -498,33 +570,41 @@
 
     const timeText = (seconds) => (seconds === null ? NO_TIME : formatLength(seconds));
 
-    // A pressed play or restart button, { id, target, from, before,
-    // requestedAt }, is held down from the press until the first of these
-    // lets it go. Each reads the state alone, so the button can never stay
-    // down: the request is the dial's own, and it always ends accepted or
-    // rejected, with the appliance's next report to follow. Each rule gets
-    // { press, focus, offline, r (the appliance's record), t (the dial's
-    // latest replay request), own (t is this press's request) }.
+    // A pressed transport button (see *press*) is held down from the press
+    // until the first of these lets it go. Each reads the state alone, so
+    // the button can never stay down: the request is the dial's own, and it
+    // always ends accepted or rejected, with the appliance's next report to
+    // follow. Each rule gets { press, focus, offline, r (the appliance's
+    // record, when it has a replay row), t (the dial's latest request of the
+    // press's kind), own (t is this press's request) }.
     const PRESS_RELEASES = [
         // the appliance is no longer the one being followed, or the dial is gone
         (c) => c.offline || !c.focus || c.focus.id !== c.press.id,
         // the appliance stopped what it was replaying, or has no record
         (c) => !c.r || (c.press.from === "replaying" && c.r.state !== "replaying"),
         // another request has taken the press's place
-        (c) => c.press.requestedAt !== null && !c.own,
+        (c) => c.press.token !== null && !c.own,
         (c) => c.own && c.t.state === "rejected",
         // the appliance accepted it and has reported since
         (c) => c.own && c.t.state === "accepted" && c.r.observed_at >= c.t.changed_at
     ];
 
-    function pressHeld(press, focus, transport, offline) {
-        if (!press) { return false; }
-        const t = transport && transport.appliance_id === press.id && transport.kind === "seek" ? transport : null;
-        const context = {
-            press: press, focus: focus, offline: offline, r: focus ? focus.repeat : null, t: t,
-            own: !!t && t.requested_at === press.requestedAt
-        };
-        return !PRESS_RELEASES.some((rule) => rule(context));
+    // The appliance's record and its replay row, or null when the focus has
+    // no replay row to show.
+    function replayOf(focus) {
+        const r = focus && focus.capabilities.repeat ? focus.repeat : null;
+        const row = r && r.available ? REPLAY_ROWS[r.state] : null;
+        return row ? { r: r, row: row } : null;
+    }
+
+    // What PRESS_RELEASES reads, from the page's current state.
+    function pressContext() {
+        const s = ui.state;
+        const focus = s ? s.appliances.find((a) => a.id === s.focus.appliance_id) || null : null;
+        const t = s && s.transport && s.transport.appliance_id === press.id
+            && s.transport.kind === REPLAY_BUTTONS[press.target].kind ? s.transport : null;
+        const replay = replayOf(focus);
+        return { focus: focus, offline: ui.offline, r: replay ? replay.r : null, t: t };
     }
 
     // The replay row's controls for the focused appliance, from its record.
@@ -533,18 +613,18 @@
     //
     // A Stop that has been pressed holds the timer where it was and greys
     // the controls until the appliance stops replaying, the request is
-    // refused, or its time is up; the timer then goes by the state again.
-    function deriveReplay(focus, usable, local, transport) {
-        const r = focus && focus.capabilities.repeat ? focus.repeat : null;
-        const row = r && r.available ? REPLAY_ROWS[r.state] : null;
-        if (!row) { return { items: [], ticking: false, nextMs: 0, pressed: false }; }
-        const pressed = pressHeld(local.press, focus, transport, local.offline);
-        const running = r.state === "replaying";
-        const held = local.stopHold && local.stopHold.id === focus.id ? local.stopHold : null;
-        const stopping = settle("stop", running) !== running && !!held;
+    // refused or rejected, or another request takes its place; the timer
+    // then goes by the state again.
+    function deriveReplay(focus, usable, local) {
+        const replay = replayOf(focus);
+        if (!replay) { return { items: [], ticking: false, nextMs: 0 }; }
+        const r = replay.r;
+        const row = replay.row;
+        const pressed = !!local.press;
+        const stopping = pressed && local.press.target === "stop";
         const clock = local.replayClock && local.replayClock.id === focus.id ? local.replayClock : null;
         const length = r.duration_s > 0 ? r.duration_s : Infinity;
-        const at = stopping ? held.position : clock ? clockPosition(clock, local.now) : r.position_s;
+        const at = stopping ? local.press.base : clock ? clockPosition(clock, local.now) : r.position_s;
         const ended = at >= length;
         const position = ended ? length : Math.floor(at);
         const ticking = !!clock && clock.running && !ended && !stopping;
@@ -560,7 +640,6 @@
         return {
             items: items,
             ticking: ticking,
-            pressed: pressed,
             // How long until the position reaches its next whole second.
             nextMs: ticking
                 ? (Math.floor(at) + 1 - at) / clockRate(clock, local.now) * 1000 + CONFIG.replayTickLagMs : 0
@@ -755,7 +834,7 @@
                 ? DIM_FLOOR + (1 - DIM_FLOOR) * settle("brightness", panel.brightness) / BRIGHTNESS_MAX : null
         };
 
-        const replay = deriveReplay(focus, usable, local, s.transport);
+        const replay = deriveReplay(focus, usable, local);
         const eq = deriveEq(s, focus, usable, local);
         const modal = deriveModal(s, focus, local);
 
@@ -902,7 +981,7 @@
         node.type = "button";
         node.setAttribute("aria-label", REPLAY_BUTTONS[id].label);
         node.appendChild(makeIcon(REPLAY_BUTTONS[id].icon));
-        node.addEventListener("click", () => onReplayButton(id));
+        node.addEventListener("click", () => onPress(id));
         node._update = (item) => {
             node.disabled = !item.enabled;
             node.setAttribute("aria-busy", item.pushed ? "true" : "false");
@@ -1227,16 +1306,13 @@
     let replayTick = 0;
 
     function render() {
-        const view = () => derive(ui.state || EMPTY_STATE, Object.assign({ now: Date.now() }, ui));
+        // A held button ends with its reason, before the page is drawn.
+        press.observe(pressContext());
+        const view = () => derive(ui.state || EMPTY_STATE, Object.assign({ now: Date.now(), press: press.current() }, ui));
         ui.vm = view();
         // The dial's state takes over from the shut-down request the page sent.
         if (ui.power.sent && ui.state && POWER_TAKEN_OVER(ui.state.power, ui.power)) {
             ui.power = Object.assign({}, ui.power, { sent: false });
-            ui.vm = view();
-        }
-        // A held button ends with its reason, and is drawn once more without it.
-        if (ui.press && !ui.vm.replay.pressed) {
-            ui.press = null;
             ui.vm = view();
         }
         // A page-only selection ends when nothing shows it any more.
@@ -1525,70 +1601,22 @@
         post("repeat_arm", { appliance_id: focusId(), armed: armed }, ["arm"]);
     }
 
-    // The position the timer holds at after Stop is pressed on *id*, while
-    // the press is still waiting for the appliance; otherwise null.
-    function stopHeldAt(id) {
-        const p = pending.stop;
-        const h = ui.stopHold;
-        return p && h && h.id === id && Date.now() < p.deadline ? h.position : null;
-    }
-
-    function onStop() {
-        const id = focusId();
-        const a = ui.state.appliances.find((item) => item.id === id);
-        if (pending.stop || !a || !a.repeat) { return; }
-        ui.press = null;
-        const clock = ui.replayClock && ui.replayClock.id === id ? ui.replayClock : null;
-        ui.stopHold = { id: id, position: clock ? clockPosition(clock, Date.now()) : a.repeat.position_s };
-        setPending("stop", false);
-        render();
-        post(REPLAY_BUTTONS.stop.action, { appliance_id: id }, ["stop"]);
-    }
-
-    // Play and restart are held down from the press (see PRESS_RELEASES) and
-    // let go at once if the request does not go through. Only one at a time.
-    function onStart(id) {
-        if (ui.press) { return; }
+    // The transport buttons are held down from the press (see
+    // PRESS_RELEASES) and let go at once if the request does not go through.
+    function onPress(id) {
         const appliance = ui.state && ui.state.appliances.find((item) => item.id === focusId());
-        if (appliance && appliance.repeat) {
-            const t = ui.state.transport;
-            ui.press = {
-                id: appliance.id, target: id, from: appliance.repeat.state,
-                before: t ? t.requested_at : null, requestedAt: null
-            };
-            render();
-        }
-        post(REPLAY_BUTTONS[id].action, { appliance_id: focusId() }).then((reply) => {
-            if (!ui.press) { return; }
-            if (!reply) {
-                ui.press = null;
-                render();
-            } else if (typeof reply.token === "number") {
-                ui.press.requestedAt = reply.token;
-            }
+        if (!appliance || !appliance.repeat || !canAct()) { return; }
+        const clock = ui.replayClock && ui.replayClock.id === appliance.id ? ui.replayClock : null;
+        const position = clock ? clockPosition(clock, Date.now()) : appliance.repeat.position_s;
+        const serial = press.start(id, appliance, position, ui.state.transport ? ui.state.transport.requested_at : null);
+        if (!serial) { return; }
+        render();
+        post(REPLAY_BUTTONS[id].action, { appliance_id: appliance.id }).then((reply) => {
+            press.sent(serial, reply);
+            // A token alone is not news to draw: the state has yet to show
+            // the request it names.
+            if (!press.current()) { render(); }
         });
-    }
-
-    // A reply that carried no token leaves the press's own request to be the
-    // first new seek the state shows for it.
-    function adoptPress(state) {
-        const p = ui.press;
-        const t = state.transport;
-        if (p && p.requestedAt === null && t && t.appliance_id === p.id && t.kind === "seek" && t.requested_at !== p.before) {
-            p.requestedAt = t.requested_at;
-        }
-    }
-
-    function onReplayButton(id) {
-        if (id === "stop" && canAct()) {
-            onStop();
-            return;
-        }
-        if (STARTING_BUTTONS.indexOf(id) >= 0) {
-            onStart(id);
-            return;
-        }
-        post(REPLAY_BUTTONS[id].action, { appliance_id: focusId() });
     }
 
     function onEqGain(id, gain, final) {
@@ -1842,8 +1870,7 @@
             return;
         }
         ui.stateAt = Date.now();
-        ui.replayClock = nextReplayClock(ui.replayClock, ui.state, ui.stateAt, stopHeldAt);
-        adoptPress(ui.state);
+        ui.replayClock = nextReplayClock(ui.replayClock, ui.state, ui.stateAt);
         render();
     }
 

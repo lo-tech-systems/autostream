@@ -282,6 +282,41 @@ class TestStartButtonHeld:
         replay_button(page, STOP).click()
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
 
+    def test_a_reply_with_no_token_binds_the_press_to_the_first_new_request(self, page, hd):
+        start_held(page, hd)
+        rewind = replay_button(page, REWIND)
+        shown(page, hd, "T1", replay_state("T1", transport=seek("pending")))
+        expect(rewind).to_have_attribute(BUSY, "true")
+        # Another request now holds the place the press's own had.
+        shown(page, hd, "T2", replay_state("T2", transport=seek("pending", requested=NOW + 5)))
+        expect(rewind).to_have_attribute(BUSY, "false")
+
+    def test_a_token_that_arrives_after_a_state_has_the_last_word(self, page, hd):
+        held: list = []
+        page.route("**/api/v1/actions/replay_restart", lambda route: held.append(route))
+        hd.show(replay_state("T0", transport=EARLIER))
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("T0")
+        replay_button(page, REWIND).click()
+        # A state shows a request before the reply says which one is the press's.
+        shown(page, hd, "T1", replay_state("T1", transport=seek("pending", requested=NOW + 5)))
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
+        assert len(held) == 1
+        held[0].fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "token": NOW + 1}))
+        shown(page, hd, "T2", replay_state("T2", transport=seek("pending")))
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
+        shown(page, hd, "T3", replay_state(
+            "T3", transport=seek("accepted", changed=NOW + 2), observed=NOW + 2.5, position=0.0))
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
+
+    def test_stop_pressed_during_a_held_start_lets_the_start_go_and_sends_stop(self, page, hd):
+        seen_stop = answer(page, "replay_stop")
+        start_held(page, hd)
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
+        replay_button(page, STOP).click()
+        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
+        assert seen_stop == [{"appliance_id": LOUNGE}]
+
     def test_play_from_a_held_recording_is_held_too(self, page, hd):
         seen = answer(page, "replay_start")
         hd.show(replay_state("T0", transport=EARLIER, state="hold"))

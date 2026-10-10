@@ -32,7 +32,9 @@ if _PLAYWRIGHT_INSTALLED:
     from playwright.sync_api import expect
 
 import hd_scenarios as hs  # noqa: E402
-from dial_core_state import PIN_WINDOW_S, EqBand, EqState, FocusState, NowPlaying, OutputsState  # noqa: E402
+from dial_core_state import (  # noqa: E402
+    PIN_WINDOW_S, EqBand, EqState, FocusState, NowPlaying, OutputsState, TransportRequest,
+)
 
 LOUNGE, KITCHEN = hs.LOUNGE, hs.KITCHEN
 LOUNGE_STYLUS = f"appliance:{LOUNGE}:stylus_in1"
@@ -630,8 +632,11 @@ class TestStop:
         replay_button(page, STOP).click()
         page.clock.run_for(1000)
         assert timer_seconds(page) == shown
+        # The dial gives the request up: the timer is where the replay now is.
+        gave_up = TransportRequest(LOUNGE, "stop", hs.NOW + 50, "rejected", hs.NOW + 51, "unreachable")
+        hd.show(replaying_at(303.5, "T1").with_snapshot(transport=gave_up))
+        expect(page.locator("#title")).to_have_text("T1")
         page.clock.run_for(1500)
-        # The pending window is over: the timer is where the replay now is.
         expect(replay_button(page, STOP)).to_be_enabled()
         expect(replay_timer(page)).not_to_have_class(re.compile("frozen"))
         assert 2 <= timer_seconds(page) - shown <= 3
@@ -656,6 +661,41 @@ class TestStop:
         replay_button(page, STOP).click(force=True)
         page.clock.run_for(500)
         assert len(seen) == 1
+
+    def test_a_stop_is_let_go_by_the_state_that_answers_it(self, page, hd):
+        answer_stop(page, {"ok": True, "token": hs.NOW + 50})
+        running_at_five_minutes(page, hd)
+        replay_button(page, STOP).click()
+        expect(replay_button(page, STOP)).to_be_disabled()
+        pending = TransportRequest(LOUNGE, "stop", hs.NOW + 50, "pending", hs.NOW + 50, None)
+        hd.show(replaying_at(303.0, "T1").with_snapshot(transport=pending))
+        expect(page.locator("#title")).to_have_text("T1")
+        expect(replay_button(page, STOP)).to_be_disabled()
+        # Another request has taken its place.
+        other = TransportRequest(LOUNGE, "seek", hs.NOW + 60, "pending", hs.NOW + 60, None)
+        hd.show(replaying_at(304.0, "T2").with_snapshot(transport=other))
+        expect(page.locator("#title")).to_have_text("T2")
+        expect(replay_button(page, STOP)).to_be_enabled()
+
+    def test_a_stop_pressed_during_a_held_start_takes_its_place(self, page, hd):
+        held: list = []
+        page.route("**/api/v1/actions/replay_restart", lambda route: held.append(route))
+        seen = answer_stop(page)
+        running_at_five_minutes(page, hd)
+        replay_button(page, REWIND).click()
+        expect(replay_button(page, REWIND)).to_have_attribute("aria-busy", "true")
+        replay_button(page, STOP).click(force=True)
+        expect(replay_button(page, REWIND)).to_have_attribute("aria-busy", "false")
+        assert seen == [{"appliance_id": LOUNGE}]
+        # The start's late reply must not bind the Stop to its token.
+        assert len(held) == 1
+        held[0].fulfill(status=200, content_type="application/json",
+                        body=json.dumps({"ok": True, "token": hs.NOW + 5}))
+        page.clock.run_for(300)
+        pending = TransportRequest(LOUNGE, "stop", hs.NOW + 50, "pending", hs.NOW + 50, None)
+        hd.show(replaying_at(303.5, "T1").with_snapshot(transport=pending))
+        expect(page.locator("#title")).to_have_text("T1")
+        expect(replay_button(page, STOP)).to_be_disabled()
 
 
 # ---------------------------------------------------------------------------
