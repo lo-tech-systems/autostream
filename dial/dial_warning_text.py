@@ -204,8 +204,16 @@ APPLIANCE_WARNING_PRIORITY = {
     SEVERITY_CRITICAL: 12,
 }
 
-# The screen name and touch geometry one-cell appliance warnings share.
+# The screen name every appliance warning shares: one policy row and one
+# touch surface (the SD card warning's one-cell geometry), the page chosen by
+# the warning id the view requests with it.
 APPLIANCE_WARNING_SCREEN = "appliance_warning"
+
+# The cell of a notice (dismissal "none"): it puts the page away until the
+# appliance stops reporting the warning, and a fresh report shows it again.
+APPLIANCE_WARNING_OK_TEXT = "OK"
+# Who the page is attributed to when the roster has no name for the appliance.
+APPLIANCE_WARNING_SOURCE_FALLBACK = "Appliance"
 
 # How long a Dismiss holds, by the appliance's hint.
 APPLIANCE_WARNING_SNOOZE_S = {
@@ -224,20 +232,24 @@ def appliance_warning_key(appliance_id: str, warning_id: str) -> str:
 def appliance_warning_descriptor(appliance_id: str, warning: ApplianceWarning) -> WarningDescriptor:
     """The descriptor for one validated appliance warning. Its text is the
     warning's own (data, never a format template), a dismissal hint of
-    "none" makes it a notice with no Dismiss cell, and any other hint
-    picks the snooze length."""
-    buttons = () if warning.dismissal == DISMISS_NONE else (
-        WarningButton(TouchZone.SDHEALTH_DISMISS, NOWIFI_DISMISS_TEXT, ACTION_DISMISS),
-    )
+    "none" makes it a notice whose one cell reads OK and puts it away until
+    the appliance stops reporting it (never persisted), and any other hint
+    picks the snooze length of a persisted Dismiss."""
+    notice = warning.dismissal == DISMISS_NONE
+    buttons = (WarningButton(
+        TouchZone.SDHEALTH_DISMISS, APPLIANCE_WARNING_OK_TEXT if notice else NOWIFI_DISMISS_TEXT,
+        ACTION_DISMISS,
+    ),)
     message = warning.message
     return WarningDescriptor(
         id=appliance_warning_key(appliance_id, warning.id),
         priority=APPLIANCE_WARNING_PRIORITY.get(warning.severity, APPLIANCE_WARNING_PRIORITY[SEVERITY_INFO]),
         screen=APPLIANCE_WARNING_SCREEN, geometry=GEOMETRY_SDHEALTH,
         title=warning.title, message_for=lambda _severity: message,
-        buttons=buttons, persisted=True,
-        snooze_for=lambda _severity: APPLIANCE_WARNING_SNOOZE_S.get(
+        buttons=buttons, persisted=not notice,
+        snooze_for=None if notice else lambda _severity: APPLIANCE_WARNING_SNOOZE_S.get(
             warning.dismissal, APPLIANCE_WARNING_SNOOZE_S[DISMISS_DAY],
         ),
-        interrupting=False, source_name=warning.appliance_name,
+        interrupting=False,
+        source_name=warning.appliance_name or APPLIANCE_WARNING_SOURCE_FALLBACK,
     )

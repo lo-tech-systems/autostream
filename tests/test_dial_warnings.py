@@ -407,6 +407,34 @@ class TestRegistration:
         assert manager.descriptors() == () and manager.due() is None
         assert not manager.is_active("appliance:a1:stylus")
 
+    def test_a_run_time_incident_scoped_dismiss_holds_until_the_source_clears(self, tmp_path):
+        path = tmp_path / "w.json"
+        clock = _Clock()
+        manager = WarningManager([], WarningStore(str(path)), clock=clock.now)
+        key = "appliance:a1:notice"
+        manager.register(WarningDescriptor(**{**_ns("a1", "notice", persisted=False).__dict__, "snooze_for": None}))
+        manager.set_active(key)
+        manager.dismiss(key)
+        clock.t += 400 * 86400.0
+        assert manager.is_snoozed(key) and manager.due() is None
+        assert manager.runtime()[0][4] == float("inf")
+        manager.flush()
+        assert not path.exists() or json.loads(path.read_text()) == {}
+        manager.clear(key)
+        manager.set_active(key)
+        assert manager.due().id == key
+
+    def test_a_severity_refresh_on_a_registered_warning_keeps_its_snooze(self):
+        manager = WarningManager([], WarningStore(None))
+        key = "appliance:a1:stylus"
+        manager.register(_ns())
+        manager.set_active(key, "warning")
+        manager.dismiss(key)
+        manager.register(_ns())
+        manager.set_active(key, "critical")
+        assert manager.severity(key) == "critical"
+        assert manager.is_snoozed(key) and manager.due() is None
+
     def test_unregistering_an_unknown_id_is_harmless(self):
         manager = WarningManager([_hi()], WarningStore(None))
         manager.unregister("nope")

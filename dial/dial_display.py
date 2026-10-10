@@ -90,6 +90,7 @@ from dial_network import request_reboot as _request_reboot
 from dial_repeat_store import repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
 from dial_warning_text import (  # re-exported: the warning table and its text live there
+    APPLIANCE_WARNING_SCREEN,
     SDHEALTH_CRITICAL_SNOOZE_S,
     SDHEALTH_SNOOZE_S,
     UPDATE_FAILED_TEXT,
@@ -108,6 +109,7 @@ from dial_update_watch import (
 )
 from dial_touch_layout import (
     CONTENT_COMPACT,
+    GEOMETRY_SDHEALTH,
     CONTENT_LARGE,
     CONTENT_RICH,
     LayoutMetrics,
@@ -1119,6 +1121,11 @@ class DialDisplay:
         # The warning page on screen, if any (the one state attribute every
         # warning row in the policy table shares).
         self._warning_screen: "WarningScreenState | None" = None
+        # The warning an appliance-warning page request is for: the one
+        # shared screen row carries no id of its own, so _request_due_warning
+        # records the due warning's id here beside the screen request and
+        # the opener reads it.
+        self._requested_warning_id: "str | None" = None
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -3238,22 +3245,33 @@ class DialDisplay:
         self._screen = "output"
         return True
 
-    def _open_warning_locked(self, warning_id: str) -> bool:
+    def _open_warning_locked(self, warning_id: "str | None") -> bool:
         """Every warning row's opener (bound per row with functools.partial
         in the policy table): refuse while the dial is restarting (that
         screen must stay until the reboot lands or times out) and while a
         higher-priority warning is already up; otherwise open with a fresh
         clock. A page that is already showing this warning is reopened in
         place (same screen, fresh clock). An interrupting warning first
-        pops whatever secondary screen is up and wakes a sleeping panel."""
+        pops whatever secondary screen is up and wakes a sleeping panel.
+        The shared appliance-warning row binds None: it opens the warning
+        _request_due_warning recorded, and refuses one that has gone or is
+        no longer active."""
         if self._screen == "restarting":
             return False
-        desc = _WARNING_BY_ID[warning_id]
+        warnings = self._core.warnings
+        if warning_id is None:
+            warning_id = self._requested_warning_id
+            if warning_id is None or not warnings.is_active(warning_id):
+                return False
+        desc = warnings.descriptor(warning_id)
+        if desc is None:
+            return False
         showing = self._warning_screen
+        showing_desc = warnings.descriptor(showing.warning_id) if showing is not None else None
         if (
-            showing is not None and showing.warning_id != warning_id
-            and _WARNING_BY_ID[showing.warning_id].priority > desc.priority
-            and self._core.warnings.is_active(showing.warning_id)
+            showing_desc is not None and showing.warning_id != warning_id
+            and showing_desc.priority > desc.priority
+            and warnings.is_active(showing.warning_id)
         ):
             return False
         if desc.interrupting:
@@ -3824,7 +3842,13 @@ class DialDisplay:
         screen = self._warning_screen
         if screen is None:
             return
-        desc = _WARNING_BY_ID[screen.warning_id]
+        desc = self._core.warnings.descriptor(screen.warning_id)
+        if desc is None:
+            # The warning went while its page was up (an appliance stopped
+            # reporting it): close the page like a source clearing it.
+            self._screen_request = _policy(self._screen).back_to
+            self._overlay_signal.set()
+            return
         pressed = self._pressed[0] if self._pressed is not None else None
         severity = self._core.warnings.severity(desc.id)
         message = desc.message_for(severity) if desc.message_for is not None else ""
@@ -3833,7 +3857,7 @@ class DialDisplay:
         view = WarningView(
             title=title, message=message,
             buttons=tuple(b.label for b in desc.buttons), geometry=desc.geometry, pressed=pressed,
-            percent=percent,
+            percent=percent, source=desc.source_name,
         )
         metrics = self._metrics_locked()
         base = self._current_base_image
@@ -4146,9 +4170,16 @@ class DialDisplay:
     def _close_warning_request(self, warning_id: str) -> None:
         """Close the page of a warning whose incident has ended, or drop a
         pending request for it. Lock-free."""
-        screen = _WARNING_BY_ID[warning_id].screen
+        desc = self._core.warnings.descriptor(warning_id)
+        if desc is None:
+            return
+        screen = desc.screen
         if self._screen == screen:
-            self._screen_request = _policy(screen).back_to
+            # A screen row several warnings share (an appliance's) closes
+            # only for the warning it is showing.
+            showing = self._warning_screen
+            if showing is None or showing.warning_id == warning_id:
+                self._screen_request = _policy(screen).back_to
         elif self._screen_request == screen:
             self._screen_request = None
 
@@ -4182,9 +4213,7 @@ class DialDisplay:
         without self._lock: plain reads and one plain request write, the
         same writes the core's source effects make."""
         desc = self._core.warnings.due()
-        if desc is None or desc.id not in _WARNING_BY_ID:
-            # A warning with no page of its own (one an appliance supplies)
-            # is published to the core's other consumers only.
+        if desc is None:
             return
         if desc.interrupting:
             if self._screen in ("restarting", desc.screen) or self._screen_request == "restarting":
@@ -4193,6 +4222,7 @@ class DialDisplay:
                 return
         elif self._display_sleeping or self._screen != "main" or self._screen_request is not None:
             return
+        self._requested_warning_id = desc.id
         self._screen_request = desc.screen
         self._overlay_signal.set()
 
@@ -4261,7 +4291,7 @@ class DialDisplay:
         after the page closed, and run that button's action. Plain writes
         plus a repaint signal; no lock, no I/O on this thread."""
         showing = self._warning_screen
-        desc = _WARNING_BY_ID.get(showing.warning_id) if showing is not None else None
+        desc = self._core.warnings.descriptor(showing.warning_id) if showing is not None else None
         button = desc.button_for(zone) if desc is not None else None
         if button is None:
             owner = self._core.warnings.button_owner(zone)
@@ -4303,8 +4333,23 @@ class DialDisplay:
         _check_secondary_timeout() discipline. The core's housekeeping
         clears warnings that have been up for their auto_clear_after_s and
         writes the snoozes; what that did reaches this view as queued
-        effects (see _apply_pending_snapshot)."""
+        effects (see _apply_pending_snapshot). It also closes a
+        shared-row page (an appliance's) whose warning the appliance has
+        stopped reporting, which no source effect announces."""
+        self._close_gone_shared_page()
         self._request_due_warning()
+
+    def _close_gone_shared_page(self) -> None:
+        """Request main when the page of the shared appliance-warning row is
+        up for a warning that is no longer registered or active. Lock-free
+        plain reads and one plain request write."""
+        showing = self._warning_screen
+        if showing is None or self._screen != APPLIANCE_WARNING_SCREEN or self._screen_request is not None:
+            return
+        warnings = self._core.warnings
+        if warnings.descriptor(showing.warning_id) is None or not warnings.is_active(showing.warning_id):
+            self._screen_request = _policy(self._screen).back_to
+            self._overlay_signal.set()
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"
@@ -4852,7 +4897,9 @@ def _warning_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
     condition, or by Restart (which replaces it). No inactivity timeout:
     it is an alarm, not a menu, and stays until acted on or cleared.
     defers_sleep=False: the page sleeps with the normal idle timer like
-    the idle screen it sits over, and comes back on wake if still due."""
+    the idle screen it sits over, and comes back on wake if still due.
+    A descriptor with id None is the stand-in for a row several run-time
+    warnings share: its opener shows the warning last requested."""
     return ScreenPolicy(
         name=desc.screen, state_attr="_warning_screen", surface=(desc.screen, False, False, False),
         open=functools.partial(DialDisplay._open_warning_locked, warning_id=desc.id),
@@ -4863,7 +4910,14 @@ def _warning_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
     )
 
 
-for _desc in WARNING_DESCRIPTORS:
+# The one row every appliance warning shares (its geometry is the SD card
+# warning's one cell); which warning it shows is the id requested with it.
+_APPLIANCE_WARNING_ROW = WarningDescriptor(
+    id=None, priority=0, screen=APPLIANCE_WARNING_SCREEN, geometry=GEOMETRY_SDHEALTH,
+    title="", message_for=None, buttons=(), persisted=False, snooze_for=None,
+)
+
+for _desc in WARNING_DESCRIPTORS + (_APPLIANCE_WARNING_ROW,):
     SCREEN_POLICIES[_desc.screen] = _warning_policy_row(_desc)
 del _desc
 

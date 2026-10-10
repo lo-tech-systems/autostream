@@ -38,7 +38,7 @@ for _p in (_DIAL, _CORE):
 import dial_display as dd
 from dial_config import DialDisplayConfig
 from dial_core import FOCUS_PENDING_GRACE_S
-from dial_core_state import eq_gain
+from dial_core_state import ApplianceWarning, eq_gain
 from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget, RosterEntry
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
@@ -399,6 +399,15 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d._drain_effects()
     elif kind == "sdhealth_dismiss":
         d._run_warning_action(dd._WARNING_BY_ID["sdhealth"], dd.ACTION_DISMISS)
+    elif kind == "appliance_warnings":
+        # ("appliance_warnings", appliance_id, [(id, severity, title,
+        # message, dismissal), ...]) -- the validated set the appliance's
+        # warnings worker hands the core, replacing the appliance's last.
+        _, aid, rows = step
+        d.core.set_appliance_warnings(aid, tuple(ApplianceWarning(*row) for row in rows))
+    elif kind == "appliance_tap":
+        # A tap on the one cell of the page showing (Dismiss, or OK).
+        d.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
 
@@ -459,7 +468,20 @@ def _snapshot(ctx: _Ctx) -> dict:
     eq_gains = dict(eq_pairs)
     network = core_snap.network
 
+    # Present only once an appliance has registered a warning, so a scenario
+    # that never involves one records exactly the fields it always did.
+    appliance_rows = {
+        wid: [active, snoozed_until is not None]
+        for wid, active, _severity, _since, snoozed_until in d.core.warnings.runtime()
+        if wid.startswith("appliance:")
+    }
+    appliance_extra = {} if not appliance_rows else {
+        "appliance_warnings": appliance_rows,
+        "warning_page": d._warning_screen.warning_id if d._warning_screen is not None else None,
+    }
+
     return {
+        **appliance_extra,
         "screen": d._screen,
         "showing": d._showing,
         "screen_request": d._screen_request,
@@ -1777,6 +1799,72 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),               # sdhealth follows once nowifi is dismissed
     ])
 
+    # An appliance's warnings page below every warning of the dial's own:
+    # the SD card warning shows first, then the critical stylus warning (a
+    # week's snooze), then the belt warning (a day's). The day's snooze
+    # runs out and only the belt page returns.
+    aid = _aid("aw1")
+    lounge = _idle_row("Lounge", aid)
+    add("appliance_warning_pages_below_sdhealth", [
+        ("roster", [lounge]),
+        ("poll",),
+        ("repaint",),
+        ("appliance_warnings", aid, [
+            ("stylus_in1", "critical", "Technics stylus", "Needs changing now.", "week"),
+            ("belt_in1", "warning", "Drive belt", "Service due soon.", "day"),
+        ]),
+        ("sd_health_view", STATUS_VALID, 12),
+        ("repaint",),               # sdhealth first
+        ("sdhealth_dismiss",),
+        ("repaint",),
+        ("tick_warnings",),
+        ("repaint",),               # then the most severe appliance warning
+        ("appliance_tap",),
+        ("repaint",),
+        ("tick_warnings",),
+        ("repaint",),               # the next one follows the Dismiss
+        ("appliance_tap",),
+        ("repaint",),
+        ("tick_warnings",),
+        ("repaint",),               # nothing left
+        ("advance", 86401.0),
+        ("tick_warnings",),
+        ("repaint",),               # the day's snooze is over, the week's is not
+        ("appliance_tap",),
+        ("repaint",),
+    ])
+
+    # A notice (dismissal "none") has one OK cell that holds until the
+    # appliance stops reporting it: a long wait and the same report again
+    # bring nothing back, a fresh report after it was cleared does, and the
+    # appliance withdrawing it closes the open page.
+    aid = _aid("aw2")
+    kitchen = _idle_row("Kitchen", aid)
+    notice = [("fw", "info", "Firmware", "Updated to 2.0.", "none")]
+    add("appliance_warning_ok_holds_until_cleared", [
+        ("roster", [kitchen]),
+        ("poll",),
+        ("repaint",),
+        ("appliance_warnings", aid, notice),
+        ("tick_warnings",),
+        ("repaint",),               # the notice, one OK cell
+        ("appliance_tap",),
+        ("repaint",),               # OK: back to idle
+        ("advance", 30 * 86400.0),
+        ("tick_warnings",),
+        ("repaint",),
+        ("appliance_warnings", aid, notice),
+        ("tick_warnings",),
+        ("repaint",),               # unchanged report: still away
+        ("appliance_warnings", aid, []),
+        ("appliance_warnings", aid, notice),
+        ("tick_warnings",),
+        ("repaint",),               # a new incident shows again
+        ("appliance_warnings", aid, []),
+        ("tick_warnings",),
+        ("repaint",),               # withdrawn while up: the page closes
+    ])
+
     return scenarios
 
 
@@ -2513,10 +2601,15 @@ class TestPreCoreScenariosUnchanged:
     """Every scenario in the corpus, random walks included, is identical to
     the frozen copy taken before the core extraction began."""
 
+    # Scenarios recorded after the baseline was frozen: the only keys the
+    # golden file may hold beyond it.
+    _ADDED = {"appliance_warning_pages_below_sdhealth", "appliance_warning_ok_holds_until_cleared"}
+
     def test_every_scenario_is_unchanged(self):
         old = json.loads(PRE_CORE_GOLDEN_PATH.read_text(encoding="utf-8"))
         new = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
-        assert set(new) == set(old)
+        assert set(new) - set(old) == self._ADDED
+        assert set(old) <= set(new)
         for name, old_trace in old.items():
             assert new[name] == old_trace, f"{name!r} changed"
         assert len(old) >= 60

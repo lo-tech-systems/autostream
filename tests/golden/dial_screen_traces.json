@@ -1,4 +1,2223 @@
 {
+  "appliance_warning_ok_holds_until_cleared": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "appliance_warning",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw200000000000000000:fw"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": "main",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw200000000000000000:fw"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "appliance_warning",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw200000000000000000:fw": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw200000000000000000:fw"
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": "main",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    }
+  ],
+  "appliance_warning_pages_below_sdhealth": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "sdhealth",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "sdhealth",
+      "screen_request": null,
+      "sdhealth_open": true,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "sdhealth",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "sdhealth"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "sdhealth",
+      "screen_request": "main",
+      "sdhealth_open": true,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "sdhealth",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "sdhealth"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "appliance_warning",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          false
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw100000000000000000:stylus_in1"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": "main",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw100000000000000000:stylus_in1"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "appliance_warning",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw100000000000000000:belt_in1"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": "main",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw100000000000000000:belt_in1"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "appliance_warning",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          false
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw100000000000000000:belt_in1"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "appliance_warning",
+      "screen_request": "main",
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "appliance_warning",
+        false,
+        false,
+        false
+      ],
+      "warning_page": "appliance:aw100000000000000000:belt_in1"
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    }
+  ],
   "artwork_tap_hides_controls_then_expires": [
     {
       "bound_appliance_id": null,

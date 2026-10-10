@@ -7868,10 +7868,10 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_fourteen_screens(self):
+    def test_table_has_exactly_the_fifteen_screens(self):
         assert set(SCREEN_POLICIES) == {
             "main", "selector", "picker", "info", "info_value", "repeat", "eq", "outputs", "output",
-            "nowifi", "restarting", "sdhealth", "update", "update_result",
+            "nowifi", "restarting", "sdhealth", "update", "update_result", "appliance_warning",
         }
 
     def test_nowifi_and_restarting_rows(self):
@@ -10796,23 +10796,325 @@ class TestTapsCallTheCoreActions:
         action.assert_called_once_with()
 
 
-class TestApplianceWarningsAndTheView:
-    def test_a_due_appliance_warning_has_no_page_and_requests_none(self):
-        from dial_core_state import ApplianceWarning
-        display, fb, gt = _make_display(targets=[], roster=[_roster_entry(auth="authorized")])
+_APP_AID = "a" * 20
+
+
+def _app_warning(wid="stylus", severity="warning", title="Technics stylus",
+                 message="Needs changing soon.", dismissal="week"):
+    from dial_core_state import ApplianceWarning
+    return ApplianceWarning(wid, severity, title, message, dismissal)
+
+
+def _app_key(wid="stylus"):
+    from dial_warning_text import appliance_warning_key
+    return appliance_warning_key(_APP_AID, wid)
+
+
+class TestApplianceWarningPaging:
+    @pytest.fixture
+    def rig(self, tmp_path):
+        clock = _Clock(1_000_000.0)
+        display, fb, gt = _make_display(
+            targets=[], roster=[_roster_entry(auth="authorized", appliance_id=_APP_AID)],
+            warnings=WarningManager(
+                WARNING_DESCRIPTORS, WarningStore(str(tmp_path / "warnings.json")), clock=clock.now,
+            ),
+        )
         display.enable()
         display._poll_once()
         _fold(display)
-        aid = display._core.snapshot().appliances[0].appliance_id
-        warning = ApplianceWarning("stylus", "warning", "Replace stylus", "500 h", "day")
-        assert display._core.set_appliance_warnings(aid, (warning,)).accepted
-        assert display._core.snapshot().due_warning_id.startswith("appliance:")
-        display._request_due_warning(wake=True)
-        assert display._screen_request is None
+        display.clock = clock
+        display.fb = fb
+        display.snooze_file = tmp_path / "warnings.json"
+        return display
+
+    @staticmethod
+    def _set(display, *warnings):
+        assert display.core.set_appliance_warnings(_APP_AID, tuple(warnings)).accepted
+
+    @staticmethod
+    def _page(display):
         tick_warnings(display)
+        _fold(display)
+
+    @staticmethod
+    def _painted_view(display):
+        with patch.object(
+            display._compositor, "compose_warning", wraps=display._compositor.compose_warning,
+        ) as mock_compose:
+            with display._lock:
+                display._display_warning_locked()
+        return mock_compose.call_args.args[3]
+
+    @staticmethod
+    def _dismiss(display):
+        display.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
+        _fold(display)
+
+    def test_a_due_appliance_warning_opens_on_main_through_the_shared_row(self, rig):
+        display = rig
+        self._set(display, _app_warning())
+        assert display._screen_request is None            # the 1 s tick raises it, nothing else
+        tick_warnings(display)
+        assert display._screen_request == "appliance_warning"
+        _fold(display)
+        assert display._screen == "appliance_warning"
+        assert display._warning_screen.warning_id == _app_key()
+        assert display.touch_surface() == ("appliance_warning", False, False, False)
+
+    def test_the_page_shows_the_appliance_text_with_its_source_and_one_dismiss(self, rig):
+        display = rig
+        self._set(display, _app_warning(title="Technics stylus", message="Needs changing soon."))
+        self._page(display)
+        view = self._painted_view(display)
+        assert (view.title, view.message, view.source) == ("Technics stylus", "Needs changing soon.", "Kitchen")
+        assert view.buttons == ("Dismiss",) and view.geometry == "sdhealth"
+
+    def test_a_dial_warning_view_has_no_source(self, rig):
+        display = rig
+        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        assert self._painted_view(display).source == ""
+
+    def test_it_never_opens_over_a_list(self, rig):
+        display = rig
+        display._screen_request = "selector"
+        _fold(display)
+        self._set(display, _app_warning())
+        tick_warnings(display)
+        assert display._screen_request is None
+        _fold(display)
+        assert display._screen == "selector"
+        display._screen_request = "main"
+        _fold(display)
+        tick_warnings(display)
+        assert display._screen_request == "appliance_warning"
+
+    def test_it_never_wakes_a_sleeping_panel(self, rig):
+        display = rig
+        with display._lock:
+            display._sleep_locked()
+        self._set(display, _app_warning(severity="critical"))
+        display._request_due_warning(wake=True)
+        tick_warnings(display)
+        assert display._screen_request is None and display._display_sleeping
+        _fold(display)
+        assert display._display_sleeping and display._screen == "main"
+
+    def test_the_descriptor_is_never_interrupting(self, rig):
+        display = rig
+        self._set(display, _app_warning(severity="critical"))
+        assert display.core.warnings.descriptor(_app_key()).interrupting is False
+
+    def test_a_dial_warning_pages_before_an_appliance_one_and_after_it_the_appliance_one(self, rig):
+        display = rig
+        self._set(display, _app_warning(severity="critical"))
+        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        assert display._screen == "sdhealth"
+        self._dismiss(display)
+        assert display._screen == "main"
+        tick_warnings(display)
+        _fold(display)
+        assert display._screen == "appliance_warning"
+
+    def test_an_appliance_page_is_not_replaced_by_a_dial_warning_that_arrives_later(self, rig):
+        display = rig
+        self._set(display, _app_warning())
+        self._page(display)
+        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
+        assert display._screen_request is None
+        _fold(display)
+        assert display._screen == "appliance_warning"
+        self._dismiss(display)
+        tick_warnings(display)
+        _fold(display)
+        assert display._screen == "sdhealth"
+
+    def test_appliance_warnings_page_by_severity_one_dismiss_at_a_time(self, rig):
+        display = rig
+        self._set(
+            display, _app_warning("a", "info", "Info one"), _app_warning("c", "critical", "Critical one"),
+            _app_warning("b", "warning", "Warning one"),
+        )
+        shown = []
+        for _ in range(3):
+            self._page(display)
+            shown.append(display._warning_screen.warning_id)
+            self._dismiss(display)
+            assert display._screen == "main"
+        assert shown == [_app_key("c"), _app_key("b"), _app_key("a")]
+        self._page(display)
+        assert display._screen == "main"
+
+    def test_a_week_hint_snoozes_a_week_and_persists_under_the_namespaced_key(self, rig):
+        display = rig
+        self._set(display, _app_warning(dismissal="week"))
+        self._page(display)
+        self._dismiss(display)
+        assert display.core.warnings.is_snoozed(_app_key())
+        display.core.flush_warnings()
+        saved = json.loads(display.snooze_file.read_text())
+        assert saved == {f"appliance:{_APP_AID}:stylus": pytest.approx(display.clock.t + 7 * 86400.0)}
+
+    def test_a_day_hint_snoozes_a_day_and_the_page_returns_after_it(self, rig):
+        display = rig
+        self._set(display, _app_warning(dismissal="day"))
+        self._page(display)
+        self._dismiss(display)
+        display.core.flush_warnings()
+        assert json.loads(display.snooze_file.read_text())[_app_key()] == pytest.approx(
+            display.clock.t + 86400.0)
+        display.clock.t += 86399.0
+        self._page(display)
+        assert display._screen == "main"
+        display.clock.t += 2.0
+        self._page(display)
+        assert display._screen == "appliance_warning"
+
+    def test_a_none_hint_shows_an_ok_cell_that_holds_until_the_appliance_clears_it(self, rig):
+        display = rig
+        self._set(display, _app_warning("n", "info", "Firmware", "Updated.", dismissal="none"))
+        self._page(display)
+        assert self._painted_view(display).buttons == ("OK",)
+        self._dismiss(display)
+        assert display._screen == "main"
+        assert display.core.warnings.is_snoozed(_app_key("n"))
+        display.core.flush_warnings()
+        assert not display.snooze_file.exists() or _app_key("n") not in json.loads(display.snooze_file.read_text())
+        display.clock.t += 400 * 86400.0
+        self._page(display)
+        assert display._screen == "main"
+        self._set(display, _app_warning("n", "info", "Firmware", "Updated.", dismissal="none"))
+        self._page(display)
+        assert display._screen == "main"
+        self._set(display)                                     # the appliance stops reporting it
+        self._set(display, _app_warning("n", "info", "Firmware", "Updated.", dismissal="none"))
+        self._page(display)
+        assert display._screen == "appliance_warning"          # a new incident shows again
+
+    def test_escalation_keeps_a_snooze_so_the_page_stays_away(self, rig):
+        display = rig
+        self._set(display, _app_warning(severity="warning"))
+        self._page(display)
+        self._dismiss(display)
+        self._set(display, _app_warning(severity="critical"))
+        from dial_warning_text import APPLIANCE_WARNING_PRIORITY
+        assert display.core.warnings.descriptor(_app_key()).priority == APPLIANCE_WARNING_PRIORITY["critical"]
+        self._page(display)
+        assert display._screen == "main" and display._screen_request is None
+
+    def test_a_warning_the_appliance_stops_reporting_closes_its_open_page(self, rig):
+        display = rig
+        self._set(display, _app_warning())
+        self._page(display)
+        assert display._screen == "appliance_warning"
+        self._set(display)
+        tick_warnings(display)
+        assert display._screen_request == "main"
         _fold(display)
         assert display._screen == "main" and display._warning_screen is None
 
+    def test_one_gone_warning_leaves_the_page_of_another_up(self, rig):
+        display = rig
+        self._set(display, _app_warning("a", "critical", "One"), _app_warning("b", "info", "Two"))
+        self._page(display)
+        assert display._warning_screen.warning_id == _app_key("a")
+        self._set(display, _app_warning("a", "critical", "One"))
+        tick_warnings(display)
+        assert display._screen_request is None and display._screen == "appliance_warning"
+
+    def test_a_descriptor_gone_at_paint_time_closes_the_page_without_painting(self, rig):
+        display = rig
+        self._set(display, _app_warning())
+        self._page(display)
+        display.core.warnings.unregister(_app_key())
+        before = len(display.fb.displayed)
+        with display._lock:
+            display._display_warning_locked()
+        assert display._screen_request == "main"
+        assert len(display.fb.displayed) == before
+
+    def test_a_request_for_a_warning_that_went_before_it_opened_is_refused(self, rig):
+        display = rig
+        self._set(display, _app_warning())
+        tick_warnings(display)
+        assert display._screen_request == "appliance_warning"
+        self._set(display)
+        _fold(display)
+        assert display._screen == "main"
+
+    def test_the_tap_dismisses_the_warning_on_screen_not_the_first_row_with_that_zone(self, rig):
+        display = rig
+        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
+        _fold(display)
+        self._dismiss(display)
+        until = display.core.warnings._state["sdhealth"].dismissed_until
+        display.clock.t += 60.0
+        self._set(display, _app_warning())
+        self._page(display)
+        assert display._screen == "appliance_warning"
+        self._dismiss(display)
+        assert display.core.warnings.is_snoozed(_app_key())
+        assert display.core.warnings._state["sdhealth"].dismissed_until == until
+
+    def test_two_appliances_with_the_same_warning_id_page_separately(self, rig):
+        display = rig
+        other = "b" * 20
+        display.core.set_roster([
+            _roster_entry(auth="authorized", appliance_id=_APP_AID),
+            _roster_entry(name="Lounge", auth="authorized", appliance_id=other, ip="192.168.1.11"),
+        ])
+        self._set(display, _app_warning())
+        assert display.core.set_appliance_warnings(other, (_app_warning(),)).accepted
+        sources = []
+        for _ in range(2):
+            self._page(display)
+            assert display._screen == "appliance_warning"
+            sources.append(self._painted_view(display).source)
+            self._dismiss(display)
+        assert sorted(sources) == ["Kitchen", "Lounge"]
+        self._page(display)
+        assert display._screen == "main"
+
+
+_TIER_PANELS = {
+    "base_160x128": (160, 128, None),
+    "compact_128x128": (128, 128, 0.2021),
+    "compact_240x240": (240, 240, 0.0973),
+    "rich_320x240": (320, 240, 0.1778),
+}
+
+
+class TestApplianceWarningTouchZones:
+    def test_the_shared_row_uses_the_one_cell_geometry_on_the_touch_surface(self):
+        from dial_touch import _GEOMETRY_FOR_SURFACE
+        from dial_touch_layout import GEOMETRY_SDHEALTH
+        policy = SCREEN_POLICIES["appliance_warning"]
+        assert policy.state_attr == "_warning_screen" and policy.paint is DialDisplay._display_warning_locked
+        assert policy.open.keywords == {"warning_id": None}
+        assert policy.inactivity_timeout_s is None and policy.defers_sleep is False and policy.back_to == "main"
+        assert _GEOMETRY_FOR_SURFACE[policy.surface[0]] == GEOMETRY_SDHEALTH
+
+    @pytest.mark.parametrize("tier", sorted(_TIER_PANELS))
+    @pytest.mark.parametrize("dismissal", ["day", "week", "none"])
+    def test_the_cell_is_hit_in_the_bottom_row_and_the_message_row_is_dead(self, tier, dismissal):
+        from dial_touch_layout import hit_test, sdhealth_layout_for
+        from dial_warning_text import appliance_warning_descriptor
+        width, height, mm = _TIER_PANELS[tier]
+        metrics = metrics_for(width, height, mm)
+        desc = appliance_warning_descriptor(_APP_AID, _app_warning(dismissal=dismissal))
+        (button,) = desc.buttons
+        assert button.zone == TouchZone.SDHEALTH_DISMISS
+        layout = sdhealth_layout_for(width, height, metrics=metrics)
+        cx, cy = (layout.dismiss[0] + layout.dismiss[2]) // 2, (layout.dismiss[1] + layout.dismiss[3]) // 2
+        entry = hit_test(desc.geometry, cx, cy, width, height, metrics=metrics)
+        assert entry is not None and desc.button_for(entry.zone) is button
+        mx, my = (layout.message[0] + layout.message[2]) // 2, (layout.message[1] + layout.message[3]) // 2
+        assert hit_test(desc.geometry, mx, my, width, height, metrics=metrics) is None
+
+
+class TestApplianceWarningsAndTheView:
     def test_a_dial_warning_still_pages_while_an_appliance_one_waits(self):
         from dial_core_state import ApplianceWarning
         display, fb, gt = _make_display(targets=[], roster=[_roster_entry(auth="authorized")])

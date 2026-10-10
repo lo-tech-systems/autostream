@@ -6267,3 +6267,150 @@ class TestWarningGenericBody:
                 compositor, 160, 128, WarningView(title="Hi", geometry=GEOMETRY_NONE, percent=30),
             )
         assert frame.size == (160, 128)
+
+
+# ---------------------------------------------------------------------------
+# An attributed warning (an appliance's): the source line over the title over
+# the message, fitted to the card's message row on every tier because the
+# text is not the dial's own.
+# ---------------------------------------------------------------------------
+
+_APPLIANCE_TIERS = {
+    "compact_128x128": (128, 128, 0.2021),
+    "base_160x128": (160, 128, None),
+    "compact_240x240": (240, 240, 0.0973),
+    "rich_320x240": (320, 240, 0.1778),
+}
+# The longest text the protocol allows: a 40-character title and source and a
+# 120-character message of ordinary words, and the same lengths with no break
+# opportunity at all in the widest letters.
+_WORST_SOURCE = "autostream living room hi-fi cabinet left"[:40]
+_WORST_TITLE = "Technics SL-1200 MK7 stylus due soon, ok"[:40]
+_WORST_MESSAGE = (
+    "Needs changing soon (7.5 h remaining). Reset the counter in Service when the new stylus is fitted "
+    "and keep going now"
+)[:120]
+_UNBROKEN = ("S" * 40, "W" * 40, "M" * 120)
+_TYPICAL = ("Lounge", "Technics stylus", "Needs changing soon (7.5 h remaining). Reset in Service.")
+
+
+def _fit_plan(tier, source, title, message):
+    from PIL import ImageDraw
+    from dial_display_compositor import _plan_warning_text
+    width, height, mm = _APPLIANCE_TIERS[tier]
+    metrics = metrics_for(width, height, mm)
+    rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
+    body = Body(BODY_WARNING, title=title, line=message, buttons=("Dismiss",), source=source)
+    draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
+    return draw, rect, metrics, _plan_warning_text(draw, rect, body, metrics)
+
+
+class TestApplianceWarningText:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        yield
+        _reset_font_cache()
+
+    def test_a_view_has_no_source_by_default(self):
+        assert WarningView(title="x").source == "" and Body().source == ""
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    @pytest.mark.parametrize("texts", [
+        (_WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE), _UNBROKEN, _TYPICAL, ("Lounge", "Power supply", ""),
+    ], ids=["worst", "unbroken", "typical", "title_only"])
+    def test_every_line_fits_the_message_row_and_the_title_is_never_dropped(self, tier, texts):
+        draw, rect, metrics, plan = _fit_plan(tier, *texts)
+        max_w = rect[2] - rect[0] - 2 * metrics.pad
+        assert plan and plan[0][0]
+        assert sum(size * 1.2 for _, _, size, _ in plan) <= rect[3] - rect[1]
+        for text, font, _, _ in plan:
+            assert _text_size(draw, text, font)[0] <= max_w, text
+
+    @pytest.mark.parametrize("tier", ["compact_128x128", "compact_240x240", "rich_320x240"])
+    def test_the_longest_title_is_shown_whole_where_the_row_has_room(self, tier):
+        draw, rect, metrics, plan = _fit_plan(tier, _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
+        assert " ".join(text for text, *_ in plan[1:]).startswith(_WORST_TITLE)
+
+    def test_the_base_panel_shows_the_source_and_one_ellipsized_title_line_for_the_longest_title(self):
+        draw, rect, metrics, plan = _fit_plan("base_160x128", _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
+        assert len(plan) == 2
+        assert plan[0][0].endswith("...") and plan[1][0].endswith("...")
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_the_typical_title_and_source_show_whole_on_every_tier(self, tier):
+        draw, rect, metrics, plan = _fit_plan(tier, *_TYPICAL)
+        assert [text for text, *_ in plan[:2]] == ["Lounge", "Technics stylus"]
+
+    def test_a_message_gets_the_row_left_over_and_the_base_panel_has_none(self):
+        _, _, _, base = _fit_plan("base_160x128", *_TYPICAL)
+        assert len(base) == 2
+        for tier in ("compact_128x128", "compact_240x240", "rich_320x240"):
+            _, _, _, plan = _fit_plan(tier, *_TYPICAL)
+            assert len(plan) >= 3 and plan[2][0].startswith("Needs changing")
+
+    def test_the_message_shrinks_before_it_is_cut(self):
+        _, _, metrics, plan = _fit_plan("compact_128x128", *_TYPICAL)
+        assert plan[1][2] == metrics.font_body and plan[2][2] < metrics.font_body
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_a_short_title_alone_is_drawn_at_readout_size(self, tier):
+        _, _, metrics, plan = _fit_plan(tier, "Lounge", "Power supply", "")
+        assert [text for text, *_ in plan] == ["Lounge", "Power supply"]
+        assert plan[1][2] == metrics.font_readout
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    @pytest.mark.parametrize("texts", [(_WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE), _UNBROKEN, _TYPICAL],
+                             ids=["worst", "unbroken", "typical"])
+    def test_nothing_is_drawn_outside_the_message_row(self, compositor, tier, texts):
+        import dial_display_compositor as dcm
+        width, height, mm = _APPLIANCE_TIERS[tier]
+        metrics = metrics_for(width, height, mm)
+        rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
+        view = WarningView(title=texts[1], message=texts[2], buttons=("Dismiss",), source=texts[0])
+        base = Image.new("RGB", (width, height), (0, 0, 0))
+        with_text = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        with patch.object(dcm, "_plan_warning_text", return_value=[]):
+            without = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        box = _diff_bbox(with_text, without)
+        assert box is not None
+        assert rect[0] + metrics.pad <= box[0] and box[2] <= rect[2] - metrics.pad
+        assert rect[1] <= box[1] and box[3] <= rect[3]
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_the_source_line_is_drawn_above_the_title_and_dimmer(self, tier):
+        _, _, metrics, plan = _fit_plan(tier, *_TYPICAL)
+        assert plan[0][0] == "Lounge" and plan[0][2] < metrics.font_body
+        assert plan[0][3] != plan[1][3]
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_the_source_changes_the_frame_and_no_source_leaves_it_as_before(self, compositor, tier):
+        width, height, mm = _APPLIANCE_TIERS[tier]
+        metrics = metrics_for(width, height, mm)
+        view = WarningView(title="Power supply", buttons=("Dismiss",))
+        base = Image.new("RGB", (width, height), (0, 0, 0))
+        plain = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        sourced = compositor.compose_warning(
+            base, width, height, dataclasses.replace(view, source="Lounge"),
+            rotate=False, bgr=False, metrics=metrics,
+        )
+        assert plain.tobytes() != sourced.tobytes()
+
+    def test_a_font_failure_draws_no_text_and_still_returns_a_frame(self, compositor):
+        with patch("dial_display_compositor._load_font", return_value=None):
+            frame = compositor.compose_warning(
+                None, 160, 128, WarningView(title="Hi", buttons=("Dismiss",), source="Lounge"),
+                rotate=False, bgr=False,
+            )
+        assert frame.size == (160, 128)
+
+    def test_the_wrap_and_cap_helpers_keep_fit_value_lines_as_it_was(self):
+        from PIL import ImageDraw
+        from dial_display_compositor import _cap_lines, _wrap_words
+        draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        font = _load_font(13)
+        lines = _wrap_words(draw, "one two three four five six seven eight", font, 60)
+        assert len(lines) > 1 and " ".join(lines) == "one two three four five six seven eight"
+        capped = _cap_lines(draw, lines, 1, font, 60)
+        assert len(capped) == 1 and capped[0].endswith("...")
+        assert _cap_lines(draw, ("fits",), 1, font, 60) == ("fits",)

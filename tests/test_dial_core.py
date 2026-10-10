@@ -1734,13 +1734,54 @@ class TestApplianceWarningsFeed:
             _stylus(id="n", dismissal="none"),
         ))
         day, week, none = (appliance_warning_key(BID, w) for w in "dwn")
-        assert core.dismiss_warning(none) == ActionResult(False, "wrong_state")
+        assert [b.label for b in manager.descriptor(none).buttons] == ["OK"]
+        assert [b.label for b in manager.descriptor(day).buttons] == ["Dismiss"]
+        assert core.dismiss_warning(none) == ActionResult(True)
         core.dismiss_warning(day)
         core.dismiss_warning(week)
         wall.t += 86400.0 + 1
+        assert manager.is_snoozed(none)
         assert not manager.is_snoozed(day) and manager.is_snoozed(week)
         wall.t += 6 * 86400.0
         assert not manager.is_snoozed(week)
+        assert manager.is_snoozed(none)
+
+    def test_a_notice_is_put_away_until_the_appliance_stops_reporting_it(self):
+        core, manager, wall = _lounge_core()
+        key = appliance_warning_key(BID, "n")
+        core.set_appliance_warnings(BID, (_stylus(id="n", dismissal="none"),))
+        core.dismiss_warning(key)
+        wall.t += 365 * 86400.0
+        assert manager.is_snoozed(key) and core.snapshot().due_warning_id is None
+        core.set_appliance_warnings(BID, ())
+        core.set_appliance_warnings(BID, (_stylus(id="n", dismissal="none"),))
+        assert not manager.is_snoozed(key) and core.snapshot().due_warning_id == key
+
+    def test_a_notice_is_never_written_to_the_snooze_file(self, tmp_path):
+        path = tmp_path / "warnings.json"
+        core, manager, _ = _lounge_core(store_path=str(path))
+        core.set_appliance_warnings(BID, (
+            _stylus(id="n", dismissal="none"), _stylus(id="w", dismissal="week"),
+        ))
+        core.dismiss_warning(appliance_warning_key(BID, "n"))
+        core.dismiss_warning(appliance_warning_key(BID, "w"))
+        core.flush_warnings()
+        assert set(json.loads(path.read_text())) == {appliance_warning_key(BID, "w")}
+
+    def test_escalation_keeps_a_snooze_taken_at_the_lower_severity(self):
+        core, manager, wall = _lounge_core()
+        key = appliance_warning_key(BID, "stylus")
+        core.set_appliance_warnings(BID, (_stylus(severity="warning"),))
+        core.dismiss_warning(key)
+        core.set_appliance_warnings(BID, (_stylus(severity="critical"),))
+        assert manager.descriptor(key).priority == APPLIANCE_WARNING_PRIORITY["critical"]
+        assert manager.is_snoozed(key) and core.snapshot().due_warning_id is None
+
+    def test_an_appliance_with_no_roster_name_is_still_attributed(self):
+        core, manager, _ = _warning_core()
+        core.set_roster([_entry(AID, "")])
+        core.set_appliance_warnings(AID, (_stylus(),))
+        assert manager.descriptor(appliance_warning_key(AID, "stylus")).source_name == "Appliance"
 
     def test_a_replacement_set_ends_the_incidents_no_longer_present(self):
         core, manager, _ = _lounge_core()
@@ -1849,7 +1890,7 @@ class TestApplianceWarningsFeed:
         (w,) = _slot(core, BID).warnings
         assert w.title == "Replace stylus" and len(w.message) == 120 and w.severity == "critical"
 
-    def test_the_view_has_no_page_for_one_so_nothing_is_requested(self):
+    def test_an_appliance_warning_is_not_a_row_of_the_static_table(self):
         from dial_display import _WARNING_BY_ID
         core, manager, _ = _lounge_core()
         core.set_appliance_warnings(BID, (_stylus(),))

@@ -571,8 +571,11 @@ class WarningView:
     optional body-size message under it (empty prints the title alone,
     centred in the whole message row), the button labels left to right,
     the touch geometry whose cells they sit in (for the press wash), the
-    pressed cell, if any, and the optional progress percent (None draws no
-    bar; no buttons draws a notice with no cells)."""
+    pressed cell, if any, the optional progress percent (None draws no
+    bar; no buttons draws a notice with no cells) and the optional source
+    (who the warning is about: a non-empty one is drawn as a small line
+    above the title, and the page's text is then fitted to its message row
+    rather than drawn as one line each)."""
 
     title: str
     message: str = ""
@@ -580,6 +583,7 @@ class WarningView:
     geometry: str = GEOMETRY_SDHEALTH
     pressed: "TouchZone | None" = None
     percent: "int | None" = None
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -716,6 +720,7 @@ class Body:
     wifi_style: str = WIFI_SIGNAL # BODY_IDLE_BADGE: WIFI_SIGNAL / WIFI_GREY / WIFI_RED / WIFI_OFF — see the constants
     buttons: tuple[str, ...] = ()  # BODY_WARNING: button labels, left to right, one per layout cell
     percent: "int | None" = None   # BODY_WARNING: progress bar under the message (0..100), None for none
+    source: str = ""               # BODY_WARNING: small line above the title; non-empty fits the text to the row
 
 
 @dataclass(frozen=True)
@@ -1490,6 +1495,59 @@ def _truncate_to_width(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -
     return ""
 
 
+def _wrap_words(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> "tuple[str, ...]":
+    """Greedy word-wrap of *text* into lines no wider than *max_w* pixels in
+    *font* (measured by _text_size); a single token wider than *max_w* is
+    broken by character. Always returns at least one line (the text itself
+    when it has no words)."""
+    def fits(s: str) -> bool:
+        measured = _text_size(draw, s, font)
+        return measured is not None and measured[0] <= max_w
+
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        candidate = f"{current} {word}".strip()
+        if fits(candidate):
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+            current = ""
+        if fits(word):
+            current = word
+            continue
+        # word alone is wider than the area: break it by character.
+        chunk = ""
+        for ch in word:
+            piece = chunk + ch
+            if fits(piece) or not chunk:
+                chunk = piece
+            else:
+                lines.append(chunk)
+                chunk = ch
+        current = chunk
+    if current:
+        lines.append(current)
+    return tuple(lines) if lines else (text,)
+
+
+def _cap_lines(
+    draw: ImageDraw.ImageDraw, lines: "tuple[str, ...]", count: int, font, max_w: int,
+) -> "tuple[str, ...]":
+    """The first *count* of *lines*, the last one ellipsized with
+    _truncate_to_width. The dropped remainder (if any) is folded back into
+    the last kept line before truncating it, so _truncate_to_width always
+    has more than fits and the ellipsis actually appears; a lone kept line
+    that already fit on its own would otherwise come back unchanged."""
+    kept = list(lines[:count])
+    if kept:
+        remainder = " ".join(lines[count:])
+        tail = f"{kept[-1]} {remainder}".strip() if remainder else kept[-1]
+        kept[-1] = _truncate_to_width(draw, tail, font, max_w)
+    return tuple(kept)
+
+
 def _fit_value_lines(
     draw: ImageDraw.ImageDraw, text: str, sizes: "tuple[int, ...]", rect: "tuple[int, int, int, int]",
 ) -> "tuple[tuple[str, ...], object]":
@@ -1509,38 +1567,6 @@ def _fit_value_lines(
     max_w = rect[2] - rect[0]
     max_h = rect[3] - rect[1]
 
-    def wrap(font) -> "tuple[str, ...]":
-        def fits(s: str) -> bool:
-            measured = _text_size(draw, s, font)
-            return measured is not None and measured[0] <= max_w
-
-        lines: list[str] = []
-        current = ""
-        for word in text.split():
-            candidate = f"{current} {word}".strip()
-            if fits(candidate):
-                current = candidate
-                continue
-            if current:
-                lines.append(current)
-                current = ""
-            if fits(word):
-                current = word
-                continue
-            # word alone is wider than the area: break it by character.
-            chunk = ""
-            for ch in word:
-                piece = chunk + ch
-                if fits(piece) or not chunk:
-                    chunk = piece
-                else:
-                    lines.append(chunk)
-                    chunk = ch
-            current = chunk
-        if current:
-            lines.append(current)
-        return tuple(lines) if lines else (text,)
-
     last_lines: "tuple[str, ...]" = ()
     last_font = None
     last_size = None
@@ -1548,7 +1574,7 @@ def _fit_value_lines(
         font = _load_font(size)
         if font is None:
             continue
-        lines = wrap(font)
+        lines = _wrap_words(draw, text, font, max_w)
         last_lines, last_font, last_size = lines, font, size
         line_h = size * 1.2
         if line_h > 0 and len(lines) * line_h <= max_h:
@@ -1557,16 +1583,7 @@ def _fit_value_lines(
         return (), None
     line_h = last_size * 1.2
     max_lines = max(1, int(max_h // line_h)) if line_h > 0 else 1
-    kept = list(last_lines[:max_lines])
-    if kept:
-        # The dropped remainder (if any) is folded back into the last kept
-        # line before truncating it, so _truncate_to_width always has more
-        # than fits and the ellipsis actually appears — a lone kept line
-        # that already fit on its own would otherwise come back unchanged.
-        remainder = " ".join(last_lines[max_lines:])
-        tail = f"{kept[-1]} {remainder}".strip() if remainder else kept[-1]
-        kept[-1] = _truncate_to_width(draw, tail, last_font, max_w)
-    return tuple(kept), last_font
+    return _cap_lines(draw, last_lines, max_lines, last_font, max_w), last_font
 
 
 def _draw_volume_cluster(
@@ -2780,6 +2797,85 @@ def _body_eq_bars(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     )
 
 
+# The source line of a warning card is drawn at this fraction of the body
+# size (never below the floor), in the dimmed glyph colour.
+WARNING_SOURCE_FONT_FRACTION = 0.8
+WARNING_SOURCE_FONT_FLOOR_PX = 9
+
+
+def _plan_warning_text(
+    draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", body: Body, metrics: LayoutMetrics,
+) -> "list[tuple[str, object, int, tuple]]":
+    """Lay out an attributed warning's text in *rect* (the card's message
+    row) as (text, font, size, colour) lines, top to bottom. Text arrives
+    from outside, so it is fitted rather than assumed short: the source is
+    one line (ellipsized when too wide); the title is wrapped at readout
+    size, then body size; the message at body size, then at the source's
+    small size. The first combination that shows everything wins. When none
+    does, the title (body size) keeps as many lines as the row allows, the
+    last ellipsized, and the message (small size) gets the height that is
+    left, ellipsized, or is dropped when there is none. Returns [] when no
+    font loads. Pure: measuring calls only."""
+    pad = metrics.pad
+    max_w = rect[2] - rect[0] - 2 * pad
+    max_h = rect[3] - rect[1]
+    small_px = max(WARNING_SOURCE_FONT_FLOOR_PX, round(metrics.font_body * WARNING_SOURCE_FONT_FRACTION))
+    body_px = metrics.font_body
+    readout_px = metrics.font_readout
+    fonts = {px: _load_font(px) for px in (small_px, body_px, readout_px)}
+    if any(font is None for font in fonts.values()) or max_w <= 0:
+        return []
+
+    out: "list[tuple[str, object, int, tuple]]" = []
+    used = 0.0
+    source = _truncate_to_width(draw, body.source, fonts[small_px], max_w)
+    if source:
+        out.append((source, fonts[small_px], small_px, _DIMMED_GLYPH_RGB))
+        used += small_px * 1.2
+
+    def fitted(title_px: int, message_px: int):
+        title = _wrap_words(draw, body.title, fonts[title_px], max_w)
+        message = _wrap_words(draw, body.line, fonts[message_px], max_w) if body.line else ()
+        if used + (len(title) * title_px + len(message) * message_px) * 1.2 <= max_h:
+            return title, message
+        return None
+
+    chosen = None
+    for title_px, message_px in (
+        (readout_px, body_px), (readout_px, small_px), (body_px, body_px), (body_px, small_px),
+    ):
+        chosen = fitted(title_px, message_px)
+        if chosen is not None:
+            break
+    if chosen is not None:
+        title, message = chosen
+    else:
+        title_px, message_px = body_px, small_px
+        title = _wrap_words(draw, body.title, fonts[title_px], max_w)
+        message = _wrap_words(draw, body.line, fonts[message_px], max_w) if body.line else ()
+        title_n = min(len(title), max(1, int((max_h - used) // (title_px * 1.2))))
+        title = _cap_lines(draw, title, title_n, fonts[title_px], max_w)
+        message_n = int((max_h - used - title_n * title_px * 1.2) // (message_px * 1.2))
+        message = _cap_lines(draw, message, message_n, fonts[message_px], max_w) if message_n > 0 else ()
+    out.extend((line, fonts[title_px], title_px, _GLYPH_RGB) for line in title)
+    out.extend((line, fonts[message_px], message_px, _GLYPH_RGB) for line in message)
+    return out
+
+
+def _draw_fitted_warning_text(
+    draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", body: Body, metrics: LayoutMetrics,
+) -> None:
+    """Draw _plan_warning_text()'s lines, one centred row each, the block
+    centred vertically in *rect*."""
+    lines = _plan_warning_text(draw, rect, body, metrics)
+    x0, y0, x1, y1 = rect
+    top = y0 + (y1 - y0 - sum(size * 1.2 for _, _, size, _ in lines)) / 2
+    for text, font, size, color in lines:
+        row = (x0, int(round(top)), x1, int(round(top + size * 1.2)))
+        _draw_label_centered(draw, row, text, font, color)
+        top += size * 1.2
+
+
 def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """A warning page's content on every tier. With no message the title
     is centred in the whole message row at readout size; with one, the
@@ -2794,7 +2890,9 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     crosshair. With body.percent set, a progress bar takes the bottom
     quarter of the message row (a dimmed track from the card's inner left
     to right edge, a white fill to the percent) and the text is laid out
-    in the rest of the row."""
+    in the rest of the row. With body.source set, the row holds the source
+    over the title over the message, wrapped and shrunk to fit (see
+    _plan_warning_text)."""
     layout = warning_layout_for(metrics.width, metrics.height, buttons=len(body.buttons), metrics=metrics)
     draw = ImageDraw.Draw(img)
     readout_font = _load_font(metrics.font_readout)
@@ -2811,7 +2909,9 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
         if fill_x1 > x0:
             draw.rectangle([x0, bar_y0, fill_x1 - 1, bar_y0 + bar_h - 1], fill=_GLYPH_RGB)
         my1 -= zone
-    if body.line:
+    if body.source:
+        _draw_fitted_warning_text(draw, (mx0, my0, mx1, my1), body, metrics)
+    elif body.line:
         split = my0 + (my1 - my0) * 3 // 5
         _draw_label_centered(draw, (mx0, my0, mx1, split), body.title, readout_font)
         _draw_label_centered(draw, (mx0, split, mx1, my1), body.line, body_font)
@@ -3214,7 +3314,10 @@ def _warning_frame(view: WarningView, width: int, height: int, metrics: LayoutMe
         card=None if compact else layout.card,
         pressed=_warning_pressed_rects(view.geometry, view.pressed, width, height, metrics),
         header=None,
-        body=Body(BODY_WARNING, title=view.title, line=view.message, buttons=view.buttons, percent=view.percent),
+        body=Body(
+            BODY_WARNING, title=view.title, line=view.message, buttons=view.buttons, percent=view.percent,
+            source=view.source,
+        ),
         footer=Footer(FOOTER_NONE),
     )
 
