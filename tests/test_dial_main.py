@@ -198,7 +198,7 @@ class TestGeneralBrowserStartup:
 class TestRepeatWorkerStartup:
     """The repeat-transport worker (dial_repeat.py) starts unconditionally,
     like the volume worker — it has its own thread/queue/client and is
-    wired to the display's on_repeat_result callback."""
+    wired to the core's on_repeat_result callback."""
 
     def test_started_regardless_of_fitted(self):
         _ev, _stop, _http, _ctrl, _sg, _stg, start_repeat = _run_main_patched(
@@ -206,7 +206,7 @@ class TestRepeatWorkerStartup:
         )
         start_repeat.assert_called_once()
 
-    def test_on_result_wired_to_display(self):
+    def test_on_result_wired_to_the_core(self):
         _ev, _stop, _http, _ctrl, _sg, _stg, start_repeat = _run_main_patched(
             fitted=True, shutdown_event_setter=lambda ev: ev.set(),
         )
@@ -610,11 +610,11 @@ class TestDialFinalCleanup:
         assert display._core._thread is None or not display._core._thread.is_alive()
 
         # start_volume_worker must be wired with the single-targeting
-        # resolvers and the display's real request_repaint (a REAL
-        # DialDisplay, not the NoOp fallback, so it has that method).
+        # resolvers and the core's readout_changed (the core the display
+        # paints, which main() builds).
         _, vol_kwargs = mock_vol_worker.call_args
         assert callable(vol_kwargs["mute_targets_fn"])
-        assert vol_kwargs["on_readout_changed"] == display.request_repaint
+        assert vol_kwargs["on_readout_changed"] == display.core.readout_changed
 
         # DialHTTPServer must receive a get_rostered_ips callable — the
         # /auth-changed route uses it to verify a push's source IP against a
@@ -707,11 +707,10 @@ class TestDialFinalCleanup:
         _, kwargs = mock_http_cls.call_args
         assert isinstance(kwargs["display_status_provider"], NoOpDisplayStatusProvider)
 
-        # NoOpDisplayStatusProvider has no request_repaint() at all — the
-        # getattr(..., None) fallback in main() must produce None here, not
-        # raise, and volume must still be fully wired up regardless.
+        # The readout callback belongs to the core, which exists without a
+        # screen, so volume is fully wired up regardless.
         _, vol_kwargs = mock_vol_worker.call_args
-        assert vol_kwargs["on_readout_changed"] is None
+        assert vol_kwargs["on_readout_changed"].__name__ == "readout_changed"
         assert callable(vol_kwargs["mute_targets_fn"])
 
     def test_display_stack_import_failure_still_polls_through_the_core(self):
@@ -1658,12 +1657,12 @@ class TestBuildTouchSourceWiring:
     background thread) faked out."""
 
     @contextmanager
-    def _built(self, confirm_presence=None, shown_muted_value=False, step_percent=None):
+    def _built(self, confirm_presence=None, step_percent=None):
         """Construct via dial_main._build_touch_source() with the mocks
-        still active, yielding everything a test needs — the invoked
-        callbacks reference module globals (enqueue_delta etc.) resolved at
-        CALL time, not definition time, so the patches must still be in
-        effect when a test actually invokes a captured callback."""
+        still active, yielding everything a test needs — the volume and
+        mute calls are recorded on a mock core (its volume_step and
+        mute_toggle), and the patches must still be in effect when a test
+        actually invokes a captured callback."""
         import dial_main as dm
         from dial_config import DialDisplayConfig
 
@@ -1673,6 +1672,7 @@ class TestBuildTouchSourceWiring:
 
         display = MagicMock()
         display.noncomposited_generation = MagicMock(return_value=0)
+        core = MagicMock()
 
         captured = {}
 
@@ -1684,14 +1684,15 @@ class TestBuildTouchSourceWiring:
             return instance
 
         with patch("dial_touch_drivers.open_driver") as mock_open, \
-             patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
-             patch("dial_main.enqueue_delta") as mock_delta, \
-             patch("dial_main.enqueue_mute", return_value=True) as mock_mute, \
-             patch("dial_main.shown_muted", return_value=shown_muted_value):
+             patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source):
             result = dm._build_touch_source(
                 cfg, display, confirm_presence=confirm_presence, step_percent=step_percent,
+                core=core,
             )
-            yield cfg, display, result, captured, mock_open, mock_delta, mock_mute
+            yield (
+                cfg, display, result, captured, mock_open,
+                core.volume_step, core.mute_toggle,
+            )
 
     def test_driver_opened_for_configured_controller(self):
         with self._built() as (cfg, display, result, captured, mock_open, *_):
@@ -1718,23 +1719,24 @@ class TestBuildTouchSourceWiring:
                 is display.consume_repeat_close_reveal
             )
 
-    def test_volume_up_enqueues_step_percent_and_notifies_activity(self):
+    def test_volume_up_steps_by_step_percent_and_notifies_activity(self):
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_volume_up"]()
             mock_delta.assert_called_once_with(3)
             display.notify_touch_activity.assert_called_once()
 
-    def test_volume_down_enqueues_negative_step_percent(self):
+    def test_volume_down_steps_by_negative_step_percent(self):
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_volume_down"]()
             mock_delta.assert_called_once_with(-3)
             display.notify_touch_activity.assert_called_once()
 
     def test_volume_callbacks_enqueue_before_notifying(self):
-        """enqueue_delta() must run BEFORE notify_touch_activity() — the
-        reverse of the historical order — because notify_touch_activity()
-        sets the repaint signal, and the repaint must see the readout's
-        nudged pending value (see dial_volume.enqueue_delta())."""
+        """The core's volume_step() must run BEFORE notify_touch_activity()
+        — the reverse of the historical order — because
+        notify_touch_activity() sets the repaint signal, and the repaint
+        must see the readout's nudged pending value (see
+        dial_volume.enqueue_delta())."""
         call_order = []
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             mock_delta.side_effect = lambda *a, **kw: call_order.append("enqueue_delta")
@@ -1766,21 +1768,19 @@ class TestBuildTouchSourceWiring:
             captured["kwargs"]["on_volume_up"]()
             mock_delta.assert_called_once_with(cfg.step_percent)
 
-    def test_mute_toggle_enqueues_mute(self):
+    def test_mute_toggle_asks_the_core_to_toggle_mute(self):
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_mute_toggle"]()
             mock_mute.assert_called_once()
             display.notify_touch_activity.assert_called_once()
 
-    def test_mute_toggle_passes_the_display_reported_state_to_enqueue_mute(self):
-        """on_mute_toggle must read shown_muted() for the display's current
-        source and hand it straight to enqueue_mute() -- the dial infers
-        nothing of its own; enqueue_mute() flips whatever is passed in."""
-        display_mock_source = "svc-1"
-        with self._built(shown_muted_value=True) as (cfg, display, result, captured, _open, mock_delta, mock_mute):
-            display.current_source_service_name.return_value = display_mock_source
+    def test_mute_toggle_hands_the_decision_to_the_core_with_no_arguments(self):
+        """on_mute_toggle infers nothing of its own: which appliance, and
+        whether this is a fleet toggle, is the core's decision (the same one
+        the button's press makes)."""
+        with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_mute_toggle"]()
-            mock_mute.assert_called_once_with(True)
+            mock_mute.assert_called_once_with()
 
     def test_mute_toggle_reveals_the_overlay_without_publishing_muted(self):
         """The overlay is revealed with no muted field of its own -- the
@@ -1811,7 +1811,7 @@ class TestBuildTouchSourceWiring:
         compose time from the observation store (shown_muted()), never a
         belief kept here, so there is nothing for the touch side to read
         or publish about mute at reveal time."""
-        with self._built(shown_muted_value=True) as (cfg, display, result, captured, *_):
+        with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_reveal_overlay"]()
 
             state = display.set_overlay.call_args[0][0]
@@ -2643,43 +2643,44 @@ class TestMuteTargetsResolver:
 
 
 # ---------------------------------------------------------------------------
-# _build_mute_press_fn(): the one thing a mute push does, shared by the
-# touch MUTE zone and the physical button.
+# The one thing a mute push does, shared by the touch MUTE zone and the
+# physical button: DialCore.mute_toggle(), with the scope read live from the
+# HTTP server through the injected callable.
 # ---------------------------------------------------------------------------
 
-class TestBuildMutePressFn:
+def _core_with_mute_scope(scope, source="svc"):
+    from dial_core import DialCore
+
+    http_server = MagicMock()
+    http_server.effective_mute_scope = scope
+    core = DialCore("d" * 20, lambda: [])
+    core.set_mute_scope(lambda: http_server.effective_mute_scope)
+    core.current_source_service_name = MagicMock(return_value=source)
+    return core
+
+
+class TestMuteToggleDecision:
     def test_scope_current_enqueues_mute_with_the_flipped_reported_state(self):
-        import dial_main as dm
+        core = _core_with_mute_scope("current")
 
-        http_server = MagicMock()
-        http_server.effective_mute_scope = "current"
-        display = MagicMock(spec=["current_source_service_name"])
-        display.current_source_service_name = MagicMock(return_value="svc")
-
-        with patch.object(dm, "shown_muted", return_value=False) as mock_shown, \
-             patch.object(dm, "enqueue_mute") as mock_enqueue, \
-             patch.object(dm, "enqueue_mute_all") as mock_enqueue_all:
-            press = dm._build_mute_press_fn(display, http_server)
-            press()
+        with patch("dial_core.shown_muted", return_value=False) as mock_shown, \
+             patch("dial_core.enqueue_mute") as mock_enqueue, \
+             patch("dial_core.enqueue_mute_all") as mock_enqueue_all:
+            core.mute_toggle()
 
         mock_shown.assert_called_once_with("svc")
         mock_enqueue.assert_called_once_with(False)
         mock_enqueue_all.assert_not_called()
 
     def test_scope_all_enqueues_one_fleet_toggle_and_writes_nothing_to_the_store(self):
-        import dial_main as dm
         import dial_volume as dv
 
-        http_server = MagicMock()
-        http_server.effective_mute_scope = "all"
-        display = MagicMock(spec=["current_source_service_name"])
-        display.current_source_service_name = MagicMock(return_value="svc")
+        core = _core_with_mute_scope("all")
 
         dv.observe_mute_state("svc", False)
         try:
-            with patch.object(dm, "enqueue_mute") as mock_enqueue:
-                press = dm._build_mute_press_fn(display, http_server)
-                press()
+            with patch("dial_core.enqueue_mute") as mock_enqueue:
+                core.mute_toggle()
             mock_enqueue.assert_not_called()
             # The store is untouched -- the fleet action is decided later,
             # on the worker thread, not here.
@@ -2688,21 +2689,15 @@ class TestBuildMutePressFn:
         finally:
             dv.observe_mute_state(None, None)
 
-    def test_neither_scope_performs_network_io_or_touches_display_lock(self):
-        import dial_main as dm
-
+    def test_neither_scope_performs_network_io(self):
         for scope in ("current", "all"):
-            http_server = MagicMock()
-            http_server.effective_mute_scope = scope
-            display = MagicMock(spec=["current_source_service_name"])
-            display.current_source_service_name = MagicMock(return_value="svc")
-            press = dm._build_mute_press_fn(display, http_server)
+            core = _core_with_mute_scope(scope)
 
             def boom(*a, **kw):
-                raise AssertionError("mute press fn performed network I/O")
+                raise AssertionError("mute toggle performed network I/O")
 
             with patch("urllib.request.urlopen", side_effect=boom):
-                press()  # must not raise
+                core.mute_toggle()  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -3293,7 +3288,7 @@ class TestPresenceConfirmationWiring:
 
         captured = {}
 
-        def build_mock(cfg_arg, display_arg, confirm_presence=None, step_percent=None, mute_press=None):
+        def build_mock(cfg_arg, display_arg, confirm_presence=None, step_percent=None, core=None):
             captured["confirm_presence"] = confirm_presence
             return MagicMock()
 

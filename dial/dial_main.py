@@ -17,6 +17,7 @@ from typing import Callable
 
 from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_config
 from dial_control import DialControlServer
+from dial_core import create_dial_core
 from dial_http_server import (
     ADMIN_CMD,
     VERSION,
@@ -25,7 +26,7 @@ from dial_http_server import (
     _announce_self,
 )
 from dial_eq import start_eq_worker
-from dial_info import gather_dial_info
+from dial_info import current_ipv4, gather_dial_info
 from dial_led import DialLED
 from dial_mdns import (
     get_display_targets,
@@ -48,14 +49,7 @@ except ImportError:
 from dial_outputs import start_outputs_worker
 from dial_repeat import start_repeat_worker
 from dial_target_status import enrich_targets
-from dial_volume import (
-    enqueue_delta,
-    enqueue_mute,
-    enqueue_mute_all,
-    select_volume_target,
-    shown_muted,
-    start_volume_worker,
-)
+from dial_volume import select_volume_target, start_volume_worker
 
 
 # The dial's log file lives on the SD card. Warnings and errors are what a
@@ -263,10 +257,11 @@ def _clear_recovery_request() -> None:
 
 class _HeadlessDisplay(NoOpDisplayStatusProvider):
     """Stands in for the display when its stack will not load: there is no
-    screen, but the appliance model still polls, so auth pushes are probed,
-    volume and mute follow the appliance the dial reports from, and warnings
-    and the update watch keep running. The poll follows the fitted flag the
-    way a real display's does."""
+    screen, but the core still polls, so auth pushes are probed, volume and
+    mute follow the appliance the dial reports from, and warnings and the
+    update watch keep running. The poll follows the fitted flag the way a
+    real display's does. The core is built, started and stopped by the
+    caller."""
 
     def __init__(self, core, display_config) -> None:
         super().__init__()
@@ -282,32 +277,9 @@ class _HeadlessDisplay(NoOpDisplayStatusProvider):
     def notify_auth_changed(self, appliance_id: str) -> None:
         self.core.notify_auth_changed(appliance_id)
 
-    def current_source_service_name(self):
-        return self.core.current_source_service_name()
-
-    def focus_volume_target(self):
-        return self.core.focus_volume_target()
-
-    def start(self) -> None:
-        self.core.start()
-
-    def stop(self) -> None:
-        self.core.stop()
-
-
-def _headless_display(cfg) -> NoOpDisplayStatusProvider:
-    """The no-screen stand-in with its own appliance model, or the plain
-    no-op provider if even that will not build."""
-    try:
-        from dial_core import create_dial_core
-        return _HeadlessDisplay(create_dial_core(cfg, get_display_targets), cfg.display)
-    except Exception as e:
-        logging.warning("dial core: unavailable headless (%s) — dial will not poll", e)
-        return NoOpDisplayStatusProvider()
-
 
 def _build_volume_targets_fn(
-    display, get_targets=get_display_targets, *, scope_fn=None, get_all_targets=get_playing_targets,
+    core, get_targets=get_display_targets, *, scope_fn=None, get_all_targets=get_playing_targets,
 ):
     """Zero-arg resolver for the volume worker.
 
@@ -316,14 +288,13 @@ def _build_volume_targets_fn(
     appliance), every playing target with auth != "unauthorized" and an
     identity is returned, focus ignored: a fleet-wide twist has no single appliance to
     pin to. Otherwise (scope_fn absent or returning anything else) today's
-    single-target behaviour: a manual focus (playing or idle) the display is
-    showing, when it has one, else the display's artwork source, else the
+    single-target behaviour: a manual focus (playing or idle) the dial is
+    following, when it has one, else the core's artwork source, else the
     oldest playing target — as a list of zero or one target.
 
-    display may be any object — in particular NoOpDisplayStatusProvider,
-    which has neither accessor at all — a missing or raising accessor
-    degrades to the next step so a NoOp or broken display never blocks
-    volume (display failure must never affect volume control). get_targets
+    core may be any object with the two accessors; a missing or raising
+    accessor degrades to the next step so a broken core never blocks volume
+    (a failure elsewhere must never affect volume control). get_targets
     defaults to the real dial_mdns.get_display_targets, imported at module
     load time; tests override it directly for a fake target list. scope_fn,
     when supplied, is called fresh on every resolve (the live-read discipline
@@ -336,8 +307,8 @@ def _build_volume_targets_fn(
     whose auth is still "unknown" stay eligible — the encoder must be live
     from the first second, and only a definitive miss removes a row.
     """
-    getter = getattr(display, "current_source_service_name", None)
-    focus_getter = getattr(display, "focus_volume_target", None)
+    getter = getattr(core, "current_source_service_name", None)
+    focus_getter = getattr(core, "focus_volume_target", None)
 
     def resolve():
         if scope_fn is not None and scope_fn() == SCOPE_ALL:
@@ -376,27 +347,10 @@ def _build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=get_p
     return resolve
 
 
-def _build_mute_press_fn(display, http_server):
-    """The one thing a mute push does, shared by the touch MUTE zone and the
-    physical button: under broadcast scope "all", enqueue a fleet toggle
-    decided at dispatch (see dial_volume.enqueue_mute_all()); otherwise flip
-    what the bound appliance last reported, exactly as a screened dial always
-    has. Both branches are plain writes plus a queue put — no network, no
-    DialDisplay lock — so sharing this one function between the two press
-    entries does not change either one's lock-free-touch guarantee."""
-    getter = getattr(display, "current_source_service_name", lambda: None)
-
-    def press() -> None:
-        if http_server.effective_mute_scope == SCOPE_ALL:
-            enqueue_mute_all()
-        else:
-            enqueue_mute(shown_muted(getter()))
-    return press
-
-
-def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, mute_press=None):
+def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, core=None):
     """Construct and wire a TouchEventSource for cfg.display against the
-    already-built *display* manager.
+    already-built *display* manager and *core* (volume and mute go to the
+    core; the display's own core is used when none is given).
 
     Every import here is deferred to inside this function, exactly like
     dial_display.create_dial_display() is deferred inside main() — in
@@ -416,13 +370,9 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     the startup cfg.step_percent, unchanged from before this parameter
     existed.
 
-    mute_press, when supplied, is the zero-arg callable built by
-    _build_mute_press_fn(display, http_server) — main() passes the SAME
-    instance it also gives the physical button, so a touch tap and a button
-    press make identical scope decisions. When omitted (tests that construct
-    a touch source with no http_server), the MUTE zone falls back to the
-    plain scope-"current" behaviour this parameter replaces: read
-    shown_muted() for the display's current source and enqueue that.
+    The MUTE zone calls core.mute_toggle(), the same call the physical
+    button makes, so a touch tap and a button press make identical scope
+    decisions.
     """
     from dial_display_compositor import OverlayState
     from dial_display_profiles import get_profile, layout_context_for
@@ -442,9 +392,8 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     # overlay_live()). Together they cover every contact. confirm_presence is
     # optional so callers/tests that don't care about recovery can omit it.
     _confirm_presence = confirm_presence or (lambda: None)
-    _mute_press = mute_press or (
-        lambda: enqueue_mute(shown_muted(display.current_source_service_name()))
-    )
+    if core is None:
+        core = display.core
 
     controller = get_controller(cfg.display.touch_type)
     profile = get_profile(cfg.display.screen_type)
@@ -521,24 +470,24 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         display.set_pressed(zone, index)
 
     def on_volume_up() -> None:
-        # enqueue_delta() first, THEN notify_touch_activity() — the reverse
+        # The volume step first, THEN notify_touch_activity() — the reverse
         # of the order below until this feature: notify_touch_activity()
         # sets the repaint signal, and the repaint must see the nudged
         # pending readout value (see dial_volume.enqueue_delta()), not the
         # pre-press one.
         step = step_percent() if step_percent is not None else cfg.step_percent
-        enqueue_delta(step)
+        core.volume_step(step)
         display.notify_touch_activity()
 
     def on_volume_down() -> None:
         step = step_percent() if step_percent is not None else cfg.step_percent
-        enqueue_delta(-step)
+        core.volume_step(-step)
         display.notify_touch_activity()
 
     def on_mute_toggle() -> None:
         display.notify_touch_activity()
-        # mute_press() (see _build_mute_press_fn) is the same decision the
-        # physical button makes: under scope "current" it flips whatever the
+        # core.mute_toggle() is the same decision the physical button
+        # makes: under scope "current" it flips whatever the
         # reporting appliance last reported (read from the observation
         # store, never inferred or persisted here) and echoes the request
         # into that same store so the glyph updates on this frame; under
@@ -548,7 +497,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         # above. on_set_pressed_zone() always runs immediately before this
         # for the MUTE zone (see TouchStateMachine._arm) and already
         # recorded the press on the pressed channel.
-        _mute_press()
+        core.mute_toggle()
         display.set_overlay(OverlayState(visible=True))
 
     def on_zone_tap(zone, index) -> None:
@@ -663,6 +612,51 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     return touch_source
 
 
+def _build_inputs(core, http_server, view_hooks):
+    """The encoder, button and control-socket callbacks, as
+    (nudge_up, nudge_down, nudge_delta, on_press).
+
+    Each physical use first confirms presence for PIN recovery, then tells
+    every view hook which input it was ("volume" for a nudge, "mute" for the
+    button; a hook that raises never blocks the input), then asks the core
+    for the volume step or mute toggle. The nudges return the step they
+    asked for, which the control socket reports. A nudge of zero (control
+    socket only) does not confirm presence and tells no hook."""
+    def tell_views(kind: str) -> None:
+        for hook in view_hooks:
+            try:
+                hook(kind)
+            except Exception:
+                pass
+
+    def nudge_up() -> int:
+        http_server.confirm_volume()
+        tell_views("volume")
+        delta = http_server.step_percent
+        core.volume_step(delta)
+        return delta
+
+    def nudge_down() -> int:
+        http_server.confirm_volume()
+        tell_views("volume")
+        delta = -http_server.step_percent
+        core.volume_step(delta)
+        return delta
+
+    def nudge_delta(delta: int) -> int:
+        if delta != 0:
+            http_server.confirm_volume()
+        core.volume_step(delta)
+        return delta
+
+    def on_press() -> None:
+        http_server.confirm_volume()
+        tell_views("mute")
+        core.mute_toggle()
+
+    return nudge_up, nudge_down, nudge_delta, on_press
+
+
 def main() -> None:
     log_level = _configure_logging()
 
@@ -710,19 +704,25 @@ def main() -> None:
 
     _create_running_marker()
 
+    # The core is built first: it does no I/O and starts no thread here, and
+    # everything below that acts on appliances (the display, the workers,
+    # the inputs) is handed it. It is started further down, after the
+    # splash, and stopped in the finally block.
+    core = create_dial_core(cfg, get_display_targets)
+
     # The display is built and lit before anything else that costs time
     # (the update-timer reconcile and the announce verb both fork
     # subprocesses), so the panel shows "Starting..." as early as the
     # process can manage. Imported lazily so a Pillow/display-stack import
     # failure (e.g. an incomplete apt install) degrades to a screenless
-    # display whose appliance model still polls, rather than taking down the
+    # display, with the core still polling, rather than taking down the
     # whole service — volume control must not depend on Pillow.
     try:
         from dial_display import create_dial_display
-        display = create_dial_display(cfg, get_display_targets)
+        display = create_dial_display(cfg, core)
     except ImportError as e:
         logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
-        display = _headless_display(cfg)
+        display = _HeadlessDisplay(core, cfg.display)
     # The boot splash: opens the manager's one backend and paints
     # "Starting..." now, before any display thread exists; display.start()
     # below reuses that open and the first poll replaces the splash.
@@ -745,6 +745,15 @@ def main() -> None:
     )
     http_server.start()
 
+    # What the core publishes about this dial, and how far a mute reaches,
+    # read live from the HTTP server so a /configure or /screen/settings
+    # change applies without a restart. Set once the server exists, before
+    # the core thread starts.
+    core.set_mute_scope(lambda: http_server.effective_mute_scope)
+    core.set_volume_scope(lambda: http_server.effective_volume_scope)
+    core.set_identity(lambda: http_server.get_runtime_status()["name"], VERSION, cfg.port)
+    core.set_address_source(current_ipv4)
+
     if recovery_armed:
         http_server.begin_recovery_window()
 
@@ -762,8 +771,8 @@ def main() -> None:
     # Wired here, after the HTTP server exists (its get_runtime_status()
     # supplies the dial's live name) and before display.start() (so the
     # provider is in place before the repeat thread can ever open the info
-    # page). hasattr guards the NoOpDisplayStatusProvider fallback above,
-    # which has no screen and so no provider to set.
+    # page). hasattr guards the screenless fallback above, which has no
+    # screen and so no provider to set.
     if hasattr(display, "set_info_provider"):
         display.set_info_provider(
             lambda: gather_dial_info(
@@ -771,59 +780,54 @@ def main() -> None:
                 network=network_latest(), sd_health=dial_sdhealth.info_value(),
             )
         )
+    # The core's thread starts before the view's, so the first poll is not
+    # held up by the panel; what the core publishes in between is folded in
+    # by the view when it starts.
+    core.start()
     display.start()
 
     # Volume/mute broadcast scope (see dial_volume.py's module docstring):
-    # each addresses the display's single reporting-from target, unless the
+    # each addresses the core's single reporting-from target, unless the
     # dial's live effective scope is "all" (a screenless dial, or a screened
     # one whose choice says "all"), in which case it addresses every playing
-    # target instead. Both resolvers degrade gracefully for a
-    # NoOpDisplayStatusProvider (no current_source_service_name) and for a
-    # bare mock http_server in tests — see _build_volume_targets_fn/
-    # _build_mute_targets_fn.
+    # target instead. See _build_volume_targets_fn/_build_mute_targets_fn.
     volume_targets_fn = _build_volume_targets_fn(
-        display, scope_fn=lambda: http_server.effective_volume_scope,
+        core, scope_fn=lambda: http_server.effective_volume_scope,
     )
     start_volume_worker(
         cfg, volume_targets_fn, led,
         mute_targets_fn=_build_mute_targets_fn(http_server, volume_targets_fn),
-        on_readout_changed=getattr(display, "request_repaint", None),
+        on_readout_changed=core.readout_changed,
     )
-
-    # Shared by the touch MUTE zone and the physical button below, so both
-    # make the identical scope decision from the same live http_server state
-    # — see _build_mute_press_fn.
-    mute_press = _build_mute_press_fn(display, http_server)
 
     # The repeat-transport sender: its own thread, queue and HTTP client,
     # entirely separate from the volume worker above (see dial_repeat.py's
-    # module docstring for why). on_result degrades to a no-op for a
-    # NoOpDisplayStatusProvider (no on_repeat_result method).
-    start_repeat_worker(cfg, on_result=getattr(display, "on_repeat_result", None))
+    # module docstring for why). Its results go to the core, which queues
+    # what they mean for a screen.
+    start_repeat_worker(cfg, on_result=core.on_repeat_result)
 
     # The outputs list/mutation sender: its own thread, queue and HTTP
     # client, entirely separate from the volume and repeat workers above
-    # (see dial_outputs.py's module docstring). on_result degrades to a
-    # no-op for a NoOpDisplayStatusProvider (no on_outputs_result method).
-    start_outputs_worker(cfg, on_result=getattr(display, "on_outputs_result", None))
+    # (see dial_outputs.py's module docstring). A screen keeps its own page
+    # state beside the core's, so its callback (which folds the result into
+    # the core first) takes the results; with no screen they go to the core.
+    start_outputs_worker(
+        cfg, on_result=getattr(display, "on_outputs_result", core.on_outputs_result),
+    )
 
     # The EQ page's bass/treble sender: its own thread, queue and HTTP
     # client, entirely separate from every other worker above (see
-    # dial_eq.py's module docstring). on_result degrades to a no-op for a
-    # NoOpDisplayStatusProvider (no on_eq_result method).
-    start_eq_worker(cfg, on_result=getattr(display, "on_eq_result", None))
+    # dial_eq.py's module docstring). Routed like the outputs worker's.
+    start_eq_worker(cfg, on_result=getattr(display, "on_eq_result", core.on_eq_result))
 
     # The Wi-Fi link poller: its own thread, one loopback read of the local
     # watcher every 15 s (see dial_network.py's module docstring). Feeds the
-    # idle screen's status glyph and the No-WiFi page; on_view degrades to a
-    # no-op for a NoOpDisplayStatusProvider (no on_network_view method).
-    # The SD card health reader rides the same thread through on_tick,
-    # reading its files at most every ten minutes (see dial_sdhealth.py).
-    dial_sdhealth.start(on_view=getattr(display, "on_sd_health_view", None))
-    start_network_worker(
-        on_view=getattr(display, "on_network_view", None),
-        on_tick=dial_sdhealth.tick,
-    )
+    # core, which carries the link for the idle screen's status glyph and
+    # the No-WiFi page. The SD card health reader rides the same thread
+    # through on_tick, reading its files at most every ten minutes (see
+    # dial_sdhealth.py).
+    dial_sdhealth.start(on_view=core.on_sd_health_view)
+    start_network_worker(on_view=core.on_network_view, on_tick=dial_sdhealth.tick)
 
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch
@@ -849,8 +853,7 @@ def main() -> None:
         try:
             touch_source = _build_touch_source(
                 cfg, display, confirm_presence=http_server.confirm_volume,
-                step_percent=lambda: http_server.step_percent,
-                mute_press=mute_press,
+                step_percent=lambda: http_server.step_percent, core=core,
             )
             touch_source.start()
             touch_runtime = cfg.display.touch_type
@@ -862,35 +865,10 @@ def main() -> None:
 
     # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
 
-    def _pop_repeat_screen() -> None:
-        # A physical volume/mute nudge while the repeat screen is open
-        # returns to the volume readout on main — display.pop_secondary()
-        # is a lock-free flag write; a raising/missing display (e.g. the
-        # NoOp fallback) must never block the nudge itself.
-        try:
-            display.pop_secondary("repeat")
-        except Exception:
-            pass
-
-    def nudge_up() -> int:
-        http_server.confirm_volume()
-        _pop_repeat_screen()
-        delta = http_server.step_percent
-        enqueue_delta(delta)
-        return delta
-
-    def nudge_down() -> int:
-        http_server.confirm_volume()
-        _pop_repeat_screen()
-        delta = -http_server.step_percent
-        enqueue_delta(delta)
-        return delta
-
-    def nudge_delta(delta: int) -> int:
-        if delta != 0:
-            http_server.confirm_volume()
-        enqueue_delta(delta)
-        return delta
+    # A screen is told of each physical input so it can react (the repeat
+    # screen returns to the volume readout); a screenless dial has no hook.
+    view_hooks = [display.on_input] if hasattr(display, "on_input") else []
+    nudge_up, nudge_down, nudge_delta, on_press = _build_inputs(core, http_server, view_hooks)
 
     # ---- Local control socket ----
 
@@ -928,11 +906,6 @@ def main() -> None:
         elif setup_rotary_encoder is not None:
             encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
 
-        def on_press() -> None:
-            http_server.confirm_volume()
-            _pop_repeat_screen()
-            mute_press()
-
         button = None
         if cfg.sw_gpio is None:
             logging.info("button not configured; skipping")
@@ -945,9 +918,15 @@ def main() -> None:
         # neither must a dial whose touch stack raised above (touch_source
         # stays None on that path). See DialHTTPServer.set_can_confirm_presence.
         http_server.set_touch_source(touch_source)
-        http_server.set_can_confirm_presence(
-            encoder is not None or button is not None or touch_source is not None
-        )
+        inputs = []
+        if encoder is not None:
+            inputs.append("encoder")
+        if button is not None:
+            inputs.append("button")
+        if touch_source is not None:
+            inputs.append("touch:" + touch_runtime)
+        core.set_inputs(inputs)
+        http_server.set_can_confirm_presence(bool(inputs))
 
         while not shutdown_event.wait(5):
             targets = get_playing_targets()
@@ -961,6 +940,7 @@ def main() -> None:
         stop_general_browser()
         if touch_source is not None:
             touch_source.stop()
+        core.stop()
         display.stop()
         control_server.stop()
         http_server._server.shutdown()

@@ -918,7 +918,7 @@ class TestDialMainButtonCallback:
              patch("dial_main.start_playing_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.get_playing_targets", return_value=[]), \
-             patch("dial_main.enqueue_mute", side_effect=fake_enqueue_mute), \
+             patch("dial_core.enqueue_mute", side_effect=fake_enqueue_mute), \
              patch("autostream_rpi.setup_rotary_encoder", return_value=MagicMock(),
                    create=True), \
              patch("autostream_rpi.setup_button", side_effect=fake_setup_button,

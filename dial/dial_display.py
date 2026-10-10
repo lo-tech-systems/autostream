@@ -101,6 +101,7 @@ from dial_core_poll import (
 import dial_core_poll
 from dial_core import (
     DEFAULT_POLL_INTERVAL_S, FOCUS_PENDING_GRACE_S, RECONCILE_INTERVAL_S, DialCore, PollIO,
+    RepeatEffect,
 )
 from dial_mdns import PlayingTarget, appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
@@ -3090,6 +3091,12 @@ class DialDisplay:
         if self._screen == screen:
             self._request_back(screen)
 
+    def on_input(self, kind: str) -> None:
+        """A physical input ("volume" for the encoder, "mute" for the
+        button) was used. While the repeat screen is open it returns to the
+        volume readout on main. Lock-free."""
+        self.pop_secondary("repeat")
+
     def set_manual_focus_pending(self, appliance_id: str, service_name: str) -> None:
         """Pin the focus to *appliance_id* and mark it PENDING for
         FOCUS_PENDING_GRACE_S, as the core's start_replay() does for a
@@ -4554,7 +4561,8 @@ class DialDisplay:
         unknown (a failed read): nothing changes at all.
         Never raises."""
         try:
-            self._apply_source_effects(self._core.on_network_view(view))
+            self._core.on_network_view(view)
+            self._drain_effects()
         except Exception:
             logging.debug("dial display: on_network_view raised", exc_info=True)
 
@@ -4723,7 +4731,8 @@ class DialDisplay:
         clears, an open page closes on its own, and any snooze, including
         one saved across restarts, is forgotten. Never raises."""
         try:
-            self._apply_source_effects(self._core.on_sd_health_view(view))
+            self._core.on_sd_health_view(view)
+            self._drain_effects()
         except Exception:
             logging.debug("dial display: on_sd_health_view raised", exc_info=True)
 
@@ -4801,24 +4810,21 @@ class DialDisplay:
         )
 
     def on_repeat_result(self, kind: str, appliance_id: str, status: int | None, body) -> None:
-        """Callback for the repeat-transport worker (dial_repeat.py). Runs
-        on the WORKER thread — never the poll/repeat/touch threads — and
-        takes NO lock of this class's own (self._lock is never touched
-        here; repeat_store and auth_map each guard themselves with their
-        own leaf lock).
+        """Callback for the repeat-transport worker (dial_repeat.py), for a
+        caller that does not hand the worker's results to the core directly:
+        the core folds the result (see DialCore.on_repeat_result) and queues
+        what it meant, which this view then reacts to (see
+        _apply_repeat_outcome). Runs on the WORKER thread and takes NO lock
+        of this class's own (self._lock is never touched here; repeat_store
+        and auth_map each guard themselves with their own leaf lock)."""
+        self._core.on_repeat_result(kind, appliance_id, status, body)
+        self._drain_effects()
 
-        The core folds the result (see DialCore.on_repeat_result): an
-        ok:true ack goes into the repeat store and may open the
-        accepted-replay window; any other outcome is rejected, never
-        touches the auth map's STATE (only its due-ness), clears the store
-        record for a known daemon rejection of "source_active" or
-        "no_recording", and clears a pending focus for the appliance (the
-        replay did not start). This view then reacts to what it meant: a
-        poll at once for an accepted replay it follows (and for any
-        rejection, with a reconcile), the compact tier's close of the
-        repeat screen on the ack of its own Stop, and the replay timer.
-        """
-        outcome = self._core.on_repeat_result(kind, appliance_id, status, body)
+    def _apply_repeat_outcome(self, appliance_id: str, outcome) -> None:
+        """React to what a repeat transport result meant: a poll at once for
+        an accepted replay the dial follows (and for any rejection, with a
+        reconcile), the compact tier's close of the repeat screen on the ack
+        of its own Stop, and the replay timer. Lock-free."""
         if outcome.ok:
             if outcome.replay_accepted:
                 # A replay the dial is following has just been accepted:
@@ -4953,6 +4959,17 @@ class DialDisplay:
         self._core.poll_once()
         self._apply_pending_snapshot()
 
+    def _drain_effects(self) -> None:
+        """Turn what the core queued for this view (what its warning
+        sources, worker results and volume readouts mean for a screen) into
+        screen requests, oldest first. Each effect goes to exactly one
+        caller. Takes none of this class's locks."""
+        for effect in self._core.take_effects():
+            if isinstance(effect, RepeatEffect):
+                self._apply_repeat_outcome(effect.appliance_id, effect.outcome)
+            else:
+                self._apply_source_effects(effect)
+
     def _core_changed(self) -> None:
         """The core's subscriber callback. Only wakes the repaint thread to
         read the newest snapshot; never paints, never blocks."""
@@ -4966,8 +4983,7 @@ class DialDisplay:
         A snapshot nothing on screen depends on costs a comparison and
         paints nothing."""
         with self._apply_lock:
-            for effects in self._core.take_effects():
-                self._apply_source_effects(effects)
+            self._drain_effects()
             new = self._core.snapshot()
             prev = self._applied
             if new is prev:
@@ -5351,8 +5367,9 @@ def _adafruit_backend_factory_for_screen_type(screen_type: str):
     return lambda: AdafruitDisplayBackend(profile)
 
 
-def create_dial_display(cfg, get_display_targets) -> DialDisplay:
-    """Build the display manager for dial_main.py wiring.
+def create_dial_display(cfg, core) -> DialDisplay:
+    """Build the display manager for dial_main.py wiring, painting *core*
+    (built, started and stopped by the caller).
 
     Builds the backend factory from the configured profile (cfg.display.
     screen_type) at startup, falling back to the default profile if the key
@@ -5363,8 +5380,9 @@ def create_dial_display(cfg, get_display_targets) -> DialDisplay:
     """
     return DialDisplay(
         config=cfg.display,
-        get_display_targets=get_display_targets,
+        get_display_targets=None,
         dial_id=cfg.uuid,
         backend_factory=_adafruit_backend_factory_for_screen_type(cfg.display.screen_type),
         backend_factory_builder=_adafruit_backend_factory_for_screen_type,
+        core=core,
     )

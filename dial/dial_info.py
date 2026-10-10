@@ -121,6 +121,11 @@ def _ipv4() -> "str | None":
     return _ipv4_via_socket() or _ipv4_via_ip_command()
 
 
+def current_ipv4() -> str:
+    """The dial's own IPv4 address, or "" when it has none."""
+    return _ipv4() or ""
+
+
 def _nmcli_split(line: str) -> list:
     """Split one nmcli -t line on unescaped colons, unescaping `\\:`/`\\\\`
     as it goes — nmcli's terse output escapes a literal colon or backslash

@@ -53,6 +53,7 @@ from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, 
 from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
 from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for, repeat_layout_for
 import dial_core_poll
+from dial_core import DialCore
 import dial_display as dd
 import dial_display_compositor as dd_compositor
 from dial_core_state import artwork_key
@@ -2547,17 +2548,19 @@ class TestCreateDialDisplay:
         cfg = MagicMock()
         cfg.display = DialDisplayConfig(fitted=False)
         cfg.uuid = "abc123"
-        gt = MagicMock()
-        display = create_dial_display(cfg, gt)
+        core = DialCore("abc123", lambda: [])
+        display = create_dial_display(cfg, core)
         assert isinstance(display, DialDisplay)
         assert display._dial_id == "abc123"
         assert display._config is cfg.display
+        assert display.core is core
+        assert display._owns_core is False
 
     def test_factory_uses_noop_backend(self):
         cfg = MagicMock()
         cfg.display = DialDisplayConfig(fitted=True)
         cfg.uuid = "abc123"
-        display = create_dial_display(cfg, MagicMock())
+        display = create_dial_display(cfg, DialCore("abc123", lambda: []))
         display.enable()
         assert display.get_status()["backend"] == "noop"
 
@@ -12184,3 +12187,72 @@ class TestApplianceWarningsAndTheView:
             aid, (ApplianceWarning("stylus", "critical", "Replace stylus", "", "day"),))
         display._warning_active("sdhealth", severity=40)
         assert display._screen_request == "sdhealth"
+
+
+class TestRepeatResultsHandedStraightToTheCore:
+    """The service hands the repeat worker's results to the core, not to
+    this view: what they meant reaches the screen when the view next folds
+    in what the core has published."""
+
+    def test_the_compact_tier_closes_the_repeat_screen_on_its_own_stop_ack(self):
+        import dial_repeat_store as drs
+        aid = "6" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, gt = _make_compact_display(targets=[t], repeat_capable=True)
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", available=True))
+        display.toggle_repeat_screen()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+        drs.repeat_store.update(aid, drs.parse_repeat_object(
+            _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}),
+            time.monotonic(),
+        ))
+        with patch("dial_core.enqueue_transport"):
+            display.repeat_stop_tap()
+
+        display._core.on_repeat_result("transport", aid, 200, {"ok": True, "state": "hold"})
+        assert display._screen_request is None
+        display._apply_pending_snapshot()
+        assert display._screen_request == "main"
+
+    def test_a_rejected_replay_drops_the_replay_timer(self):
+        aid = "9" * 20
+        display, fb, gt = _make_display(targets=[])
+        display._arm_replay_timer(aid)
+        display._overlay_signal.clear()
+
+        display._core.on_repeat_result("transport", aid, 412, {"ok": False, "error": "fading_out"})
+        assert display._replay_timer_id == aid
+        display._apply_pending_snapshot()
+        assert display._replay_timer_id is None
+        assert display._overlay_signal.is_set()
+        assert display._core._reconcile_due is True
+
+    def test_an_accepted_replay_the_dial_follows_polls_at_once(self):
+        aid = "8" * 20
+        display, fb, gt = _make_display(targets=[])
+        display.request_poll = MagicMock()
+        with patch.object(display._core, "accept_replay", return_value=True):
+            display._core.on_repeat_result(
+                "transport", aid, 200,
+                {"ok": True, "state": "replaying", "armed": False, "position_seconds": 0.0},
+            )
+        display.request_poll.assert_not_called()
+        display._apply_pending_snapshot()
+        display.request_poll.assert_called_once()
+
+
+class TestOnInput:
+    def test_a_physical_input_returns_the_repeat_screen_to_main(self):
+        display, fb, gt = _make_display(targets=[])
+        display._screen = "repeat"
+        display.on_input("volume")
+        assert display._screen_request == "main"
+
+    def test_it_leaves_any_other_screen_alone(self):
+        display, fb, gt = _make_display(targets=[])
+        display._screen = "outputs"
+        display.on_input("mute")
+        assert display._screen_request is None

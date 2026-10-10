@@ -25,7 +25,8 @@ published as they are made; the snapshot that ends a tick carries a new
 is how a view tells a finished tick from the writes in between. A view
 reacts to the finished tick, never to a half-written one. What housekeeping
 does to the warning screens is queued for the view as `SourceEffects`
-(`take_effects`).
+(`take_effects`), as is what the worker callbacks (repeat results, network
+and SD health readings, volume readouts) mean for a screen.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -67,7 +68,7 @@ from dial_update_watch import (
 )
 from dial_volume import (
     enqueue_delta, enqueue_mute, enqueue_mute_all, forget_mute_states_except,
-    observe_master_volume, observe_mute_state, shown_muted,
+    observe_master_volume, observe_mute_state, shown_muted, shown_volume,
 )
 from dial_warning_text import WARNING_DESCRIPTORS, appliance_warning_descriptor, appliance_warning_key
 from dial_warnings import ACTION_DISMISS, WarningManager, WarningStore
@@ -81,6 +82,11 @@ DEFAULT_POLL_INTERVAL_S = 6
 RECONCILE_INTERVAL_S = 60
 # The housekeeping tick, and so the longest the core thread sleeps.
 HOUSEKEEPING_INTERVAL_S = 1.0
+# How often the dial's own address is read again.
+ADDRESS_REFRESH_S = 60.0
+# The most effects held for a view that is not draining them (none is
+# attached); the oldest are dropped past it.
+EFFECTS_BACKLOG_MAX = 256
 # How long a picker-started replay's manual focus is held pending while the
 # appliance has not yet reached the playing set (see the empty-targets
 # branch of the poll tick).
@@ -187,6 +193,14 @@ class SourceEffects:
     changes: tuple = ()
     restarting: bool = False
     signal: bool = True
+
+
+@dataclass(frozen=True)
+class RepeatEffect:
+    """A repeat transport result as queued for a view: the appliance it was
+    for and what it meant (see `RepeatOutcome`)."""
+    appliance_id: str
+    outcome: RepeatOutcome
 
 
 def _initial_state(dial_id: str) -> _CoreState:
@@ -304,6 +318,12 @@ class DialCore:
         self._focus_cleared = False
         self._idle_focus_found = False
         self._effects: list = []
+        # What the dial says about itself: read again on the housekeeping
+        # tick, and published only when one of them changed.
+        self._name_source: Callable[[], str] | None = None
+        self._volume_scope: Callable[[], str] | None = None
+        self._address_source: Callable[[], str] | None = None
+        self._address_at = 0.0
         self._sync_warnings_locked(self._state)
         self._snapshot = self._build_snapshot_locked()
 
@@ -1087,7 +1107,14 @@ class DialCore:
         200 with ok false, or no usable response) marks it rejected with the
         daemon's error string, only nudges the auth map's due-ness, clears
         the stored record when the daemon says the buffer is gone or a live
-        source is back, and drops a pending focus on that appliance."""
+        source is back, and drops a pending focus on that appliance. What it
+        meant is queued for a view as a `RepeatEffect` and returned. Takes
+        no lock beyond the core's own, for in-memory work."""
+        outcome = self._fold_repeat_result(appliance_id, status, body)
+        self._queue_effects(RepeatEffect(appliance_id, outcome))
+        return outcome
+
+    def _fold_repeat_result(self, appliance_id: str, status: int | None, body) -> RepeatOutcome:
         now = self._clock()
         if status == 200 and isinstance(body, dict) and body.get("ok"):
             repeat_store.apply_ack(appliance_id, body, now)
@@ -1201,7 +1228,8 @@ class DialCore:
         active unless the link has never been connected since the process
         started. Ignored (setup mode, reboot pending): the streak resets,
         the warning and the latch stay. Any other reading changes nothing
-        but the held view."""
+        but the held view. What it did to the warnings is queued for a view
+        and returned."""
         changes = []
 
         def mutate(state: _CoreState) -> "bool | None":
@@ -1224,12 +1252,13 @@ class DialCore:
                 changed = True
             return None if changed else False
         self._publish(mutate)
-        return SourceEffects(tuple(changes))
+        return self._queue_effects(SourceEffects(tuple(changes)))
 
     def on_sd_health_view(self, view) -> SourceEffects:
         """Fold an SD health reading: low (with hysteresis) starts or
         refreshes the warning with the percent as its severity; not low
-        ends the incident."""
+        ends the incident. What it did to the warnings is queued for a
+        view and returned."""
         changes = []
 
         def mutate(state: _CoreState) -> "bool | None":
@@ -1247,7 +1276,7 @@ class DialCore:
                 changed = True
             return None if changed else False
         self._publish(mutate)
-        return SourceEffects(tuple(changes))
+        return self._queue_effects(SourceEffects(tuple(changes)))
 
     def apply_update_view(self, view) -> SourceEffects:
         """Fold a software update reading. A run in progress raises the
@@ -1362,6 +1391,87 @@ class DialCore:
         live effective mute scope on every call, so a settings change
         applies to the next press."""
         self._mute_scope = scope
+
+    def set_volume_scope(self, scope: Callable[[], str]) -> None:
+        """Say how far a volume step reaches, for the dial's published
+        info: *scope* returns the live effective volume scope on every call.
+        The worker resolves its own targets, so this changes nothing a step
+        does."""
+        self._volume_scope = scope
+
+    def set_identity(self, name: Callable[[], str], version: str, port: int) -> None:
+        """Say who this dial is: *name* returns its live name on every call
+        (a settings change applies on the next tick), *version* and *port*
+        are fixed."""
+        self._name_source = name
+        self._publish(lambda state: self._replace_dial(state, version=version, port=port))
+        self._refresh_dial_info(self._clock())
+
+    def set_address_source(self, address: Callable[[], str]) -> None:
+        """Say how to read the dial's own address ("" when it has none):
+        called on the core thread every `ADDRESS_REFRESH_S`, never from
+        any other thread."""
+        self._address_source = address
+        self._address_at = 0.0
+
+    def set_inputs(self, inputs) -> None:
+        """Say which physical inputs are running (`"encoder"`, `"button"`,
+        `"touch:<type>"`), in the order given."""
+        inputs = tuple(inputs)
+        self._publish(lambda state: self._replace_dial(state, inputs=inputs))
+
+    @staticmethod
+    def _replace_dial(state: _CoreState, **fields) -> "bool | None":
+        """Apply *fields* to the published dial info; False when none of
+        them differs."""
+        dial = dataclasses.replace(state.dial, **fields)
+        if dial == state.dial:
+            return False
+        state.dial = dial
+
+    def _refresh_dial_info(self, now: float) -> None:
+        """Re-read the live name, the effective scopes and (every
+        `ADDRESS_REFRESH_S`) the address, and publish them when they
+        changed. A source that raises keeps the value held."""
+        fields = {}
+        for field, source in (
+            ("name", self._name_source), ("volume_scope", self._volume_scope),
+            ("mute_scope", self._mute_scope),
+        ):
+            if source is None:
+                continue
+            try:
+                value = source()
+            except Exception:
+                continue
+            if isinstance(value, str) and value:
+                fields[field] = value
+        if self._address_source is not None and now >= self._address_at:
+            self._address_at = now + ADDRESS_REFRESH_S
+            try:
+                address = self._address_source()
+            except Exception:
+                address = None
+            if isinstance(address, str):
+                fields["ip"] = address
+        if fields:
+            self._publish(lambda state: self._replace_dial(state, **fields))
+
+    def readout_changed(self) -> None:
+        """The volume worker has a new reading for the readout: publish it
+        with the service it belongs to, and queue a repaint for a view. Safe
+        from the worker thread; never raises into it."""
+        try:
+            service = self._snapshot.focus.source_service_name
+            readout = (service, shown_volume(service))
+
+            def mutate(state: _CoreState) -> None:
+                state.volume_readout = readout
+                self._effects.append(SourceEffects())
+                del self._effects[:-EFFECTS_BACKLOG_MAX]
+            self._publish(mutate)
+        except Exception:
+            logging.debug("dial core: readout_changed raised", exc_info=True)
 
     def _not_focused(self, appliance_id: str | None) -> ActionResult | None:
         """The refusal for an id-addressed master volume or mute request:
@@ -1495,6 +1605,16 @@ class DialCore:
         auth_map.force_due(appliance_id)
         self._poll_wake.set()
 
+    def _queue_effects(self, effects):
+        """Queue *effects* for a view and publish, so the view is woken to
+        take them. A queue nobody drains (no view is attached) keeps the
+        newest `EFFECTS_BACKLOG_MAX`. Returns *effects*."""
+        def mutate(state: _CoreState) -> None:
+            self._effects.append(effects)
+            del self._effects[:-EFFECTS_BACKLOG_MAX]
+        self._publish(mutate)
+        return effects
+
     def take_effects(self) -> list:
         """The `SourceEffects` the housekeeping has queued since the last
         call, oldest first: what the warning sources did that a view turns
@@ -1559,10 +1679,9 @@ class DialCore:
         to the warnings is queued for a view and the subscribers are told."""
         effects = self.tick_housekeeping(now)
         self.refresh_watched(now)
+        self._refresh_dial_info(now)
         if effects.changes or effects.restarting or effects.signal:
-            with self._lock:
-                self._effects.append(effects)
-            self._publish(lambda state: None)
+            self._queue_effects(effects)
 
     def _drain_push_probes(self) -> str:
         """Probe every appliance the push queue holds. Returns "probed"
