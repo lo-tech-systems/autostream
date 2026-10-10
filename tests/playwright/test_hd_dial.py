@@ -59,19 +59,25 @@ def hd_real():
     from hd_fake_core import FakeCore
     from hd_http_support import close_management_server, management_server
 
+    # Each test's page leaves its event stream open until the server next
+    # writes to it, so the client cap is lifted for the whole run.
+    saved_cap = hds.SSE_MAX_CLIENTS
+    hds.SSE_MAX_CLIENTS = 1000
+    muted = [False]
     core = FakeCore(hd_scenarios.SCENARIOS["playing_artwork"].snapshot)
     management = management_server()
     hub = ChangeHub(core)
     server = hds.HdServer(
         SimpleNamespace(), core, http_server=management, hub=hub, port=0,
-        muted_fn=lambda service: False,
+        muted_fn=lambda service: muted[0],
     )
     hub.start()
     server.start()
-    yield SimpleNamespace(core=core, server=server, hub=hub, url=f"http://127.0.0.1:{server.port}")
+    yield SimpleNamespace(core=core, server=server, hub=hub, muted=muted, url=f"http://127.0.0.1:{server.port}")
     server.stop()
     hub.stop()
     close_management_server(management)
+    hds.SSE_MAX_CLIENTS = saved_cap
 
 
 @pytest.fixture(scope="session")

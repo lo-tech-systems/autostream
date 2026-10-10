@@ -3,3 +3,175 @@ html, body {
     height: 100%;
     background: #000;
 }
+
+/* The HD page: the screen fills the viewport, is designed at 800x480 and
+   scales up by font size and row height; colours all come from the shared
+   theme. */
+body.hd {
+    background: var(--color-bg);
+    overflow: hidden;
+}
+* { box-sizing: border-box; }
+.screen {
+    --row-h: 56px;
+    --top-inset: 22px;
+    position: fixed; inset: 0; overflow: hidden;
+    background: var(--color-bg); color: var(--color-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "DejaVu Sans", Roboto, sans-serif;
+    font-size: 15px; user-select: none; -webkit-user-select: none;
+    touch-action: manipulation;
+}
+@media (min-width: 1000px) { .screen { font-size: 16.5px; --row-h: 60px; } }
+@media (min-width: 1200px) { .screen { font-size: 18px; --row-h: 64px; } }
+
+.main {
+    position: absolute; inset: 0;
+    display: grid; grid-template-columns: 40fr 60fr; grid-template-rows: minmax(0, 1fr);
+    padding: var(--top-inset) 14px 12px; gap: 14px;
+}
+
+/* Left column: appliances over speakers, scrolling as one */
+.left {
+    min-width: 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y;
+    display: flex; flex-direction: column; gap: 10px; padding-right: 2px;
+    scrollbar-width: none;
+}
+.left::-webkit-scrollbar { display: none; }
+.section-label {
+    font-size: 0.73em; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--color-text-dim); padding: 0 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.empty-note { color: var(--color-text-dim); font-size: 0.93em; padding: 6px 4px; }
+.empty-note[hidden] { display: none; }
+
+.appliances, .speakers { display: flex; flex-direction: column; gap: 6px; }
+.appliance {
+    display: flex; align-items: center; gap: 10px; min-height: var(--row-h); padding: 0 12px;
+    border-radius: 12px; border: 1px solid var(--color-border-card);
+    background: var(--color-surface-raised); cursor: pointer; text-align: left;
+    font: inherit; color: inherit; width: 100%; flex: none;
+}
+.appliance[aria-current="true"] { border-color: var(--color-accent); background: var(--color-surface-selected); }
+.appliance:active { background: var(--color-surface-pressed); }
+.appliance .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--color-control-off); }
+.appliance.lit .dot { background: var(--color-chip-on-text); box-shadow: 0 0 0 3px rgba(93, 206, 132, 0.18); }
+.appliance .name {
+    font-weight: 700; color: var(--color-text-strong); flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.appliance .state { font-size: 0.8em; color: var(--color-text-dim); white-space: nowrap; }
+.appliance.bad { opacity: 0.6; }
+.appliance.bad .state { color: var(--color-text-secondary); font-style: italic; }
+.appliance .badge {
+    font-size: 0.7em; font-weight: 700; white-space: nowrap; padding: 2px 8px; border-radius: 999px;
+    background: var(--color-chip-neutral-bg); color: var(--color-chip-neutral-text);
+}
+.appliance .badge:empty { display: none; }
+
+/* Speaker cards: the web UI's output card, sized for a finger */
+.speakers .output-card { margin: 0; padding: 9px 12px 8px; flex: none; }
+.speakers .output-card .output-card-head { min-height: 31px; }
+.speakers .output-card-name { font-size: 1em; }
+.speakers .output-card-in-use { cursor: default; }
+.speakers .output-card-in-use:hover { opacity: 0.7; }
+.hd .output-toggle { position: relative; padding: 12px 0 12px 14px; }
+.hd .output-toggle input { inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
+.hd .output-toggle input:disabled { cursor: default; }
+.hd .output-toggle input:disabled + .switch { opacity: 0.45; }
+.hd .output-toggle .switch { width: 52px; height: 31px; }
+.hd .output-toggle .switch::after { width: 26px; height: 26px; }
+.hd .output-toggle input:checked + .switch::after { transform: translateX(21px); }
+.level-row { display: grid; grid-template-columns: 1fr 2.4em; align-items: center; gap: 8px; margin-top: 2px; }
+.level-row[hidden] { display: none; }
+.level-num { font-variant-numeric: tabular-nums; font-size: 0.93em; color: var(--color-text-secondary); text-align: right; }
+
+/* Sliders (per speaker and master) */
+input.hslider {
+    -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 34px;
+    margin: 0; background: transparent; cursor: pointer; touch-action: pan-y;
+}
+input.hslider::-webkit-slider-runnable-track {
+    height: 8px; border-radius: 999px;
+    background: linear-gradient(90deg, var(--color-accent) var(--fill, 0%), var(--color-control-off) var(--fill, 0%));
+}
+input.hslider::-moz-range-track { height: 8px; border-radius: 999px; background: var(--color-control-off); }
+input.hslider::-moz-range-progress { height: 8px; border-radius: 999px; background: var(--color-accent); }
+input.hslider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 28px; height: 28px; margin-top: -10px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+input.hslider::-moz-range-thumb { width: 28px; height: 28px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4); }
+input.hslider:disabled { opacity: 0.4; cursor: default; }
+
+/* Right column: now playing */
+/* The right column is one centred group: the artwork frame, the replay row's
+   slot, the track row and the volume row, with small fixed gaps. The frame is
+   the largest square that fits (the height cap, the column width, or what is
+   left after the fixed rows), and the replay row's height is reserved while
+   it has content, so nothing can overlap. */
+.right {
+    --gap: 10px; --replay-h: 0px;
+    min-width: 0; min-height: 0; container-type: size;
+    display: flex; flex-direction: column; justify-content: center; gap: var(--gap);
+}
+.right:has(> .replay-row:not(:empty)) { --replay-h: calc(var(--row-h) + var(--gap)); }
+.art-frame {
+    --art: min(54vh, 100cqw, calc(100cqh - 2 * var(--row-h) - 3 * var(--gap) - var(--replay-h)));
+    flex: none; align-self: center; width: var(--art); height: var(--art);
+    padding: 7px; border-radius: 14px;
+    border: 1px solid var(--color-border-card); background: var(--color-surface-pane);
+}
+.art { width: 100%; height: 100%; object-fit: contain; border-radius: 8px; display: block; }
+.art.logo { padding: 8%; }
+.replay-row { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; min-height: var(--row-h); }
+.replay-row:empty { display: none; }
+.track-row { flex: none; display: flex; align-items: center; gap: 12px; min-width: 0; height: var(--row-h); }
+.track-text { min-width: 0; flex: 1; }
+.track-title { font-size: 1.27em; font-weight: 700; color: var(--color-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.3em; }
+.track-sub { font-size: 0.93em; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; min-height: 1.3em; }
+.icon-btn {
+    flex: none; width: var(--row-h); height: var(--row-h); border-radius: 14px; cursor: pointer; padding: 0;
+    border: 1px solid var(--color-border-card); background: var(--color-surface-raised);
+    color: var(--color-text); display: grid; place-items: center;
+}
+.icon-btn[hidden] { display: none; }
+.icon-btn:active { background: var(--color-surface-pressed); }
+.icon-btn:disabled { opacity: 0.4; cursor: default; }
+.icon-btn[aria-pressed="true"] { background: var(--color-status-danger); border-color: var(--color-status-danger); color: #fff; }
+.eq-knob { fill: var(--color-surface-raised); }
+.mute-slash { display: none; }
+.icon-btn[aria-pressed="true"] .mute-slash { display: inline; }
+.icon-btn[aria-pressed="true"] .mute-waves { display: none; }
+.volume-row { flex: none; display: grid; grid-template-columns: var(--row-h) 1fr 2.2em; align-items: center; gap: 12px; }
+.vol-num { font-size: 1.47em; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-text-strong); }
+.volume-row.muted .vol-num { color: var(--color-text-dim); text-decoration: line-through; }
+
+/* Connection bar and refusal toast */
+.offline-bar {
+    position: absolute; left: 0; right: 0; top: 0; height: var(--top-inset); z-index: 5;
+    display: none; align-items: center; justify-content: center;
+    background: var(--color-status-danger); color: #fff; font-size: 0.8em; font-weight: 700;
+}
+.screen.offline .offline-bar { display: flex; }
+.screen.offline .main { opacity: 0.6; }
+.toast {
+    position: absolute; left: 50%; bottom: 20px; z-index: 6; max-width: 80%;
+    transform: translateX(-50%); padding: 10px 18px; border-radius: 12px;
+    background: var(--color-surface-selected); color: var(--color-text-strong);
+    border: 1px solid var(--color-accent); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+    font-size: 0.93em; text-align: center; opacity: 0; pointer-events: none;
+    transition: opacity 160ms ease;
+}
+.toast.show { opacity: 1; }
+
+.portrait-note {
+    display: none; position: absolute; inset: 0; z-index: 9; place-items: center;
+    background: var(--color-bg); color: var(--color-text-secondary);
+}
+@media (orientation: portrait) { .portrait-note { display: grid; } }
+
+button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+    .toast, .output-card, .hd .output-toggle .switch, .hd .output-toggle .switch::after { transition: none; }
+}

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,8 +7,42 @@
 <link rel="stylesheet" href="/static/theme.css">
 <link rel="stylesheet" href="/static/hd.css">
 </head>
-<body>
-<main id="app"></main>
+<body class="hd">
+<main id="app" class="screen">
+<div class="main">
+<div class="left" id="left">
+<div class="section-label">Appliances</div>
+<div class="appliances" id="appliances"></div>
+<div class="empty-note" id="appliances-note" hidden></div>
+<div class="section-label" id="speakers-label">Speakers</div>
+<div class="speakers" id="speakers"></div>
+<div class="empty-note" id="speakers-note" hidden></div>
+</div>
+<div class="right" id="right">
+<div class="art-frame"><img class="art" id="art" src="/static/logo.png" alt="Artwork"></div>
+<div class="replay-row" id="replay-row"></div>
+<div class="track-row">
+<div class="track-text">
+<div class="track-title" id="title"></div>
+<div class="track-sub" id="sub"></div>
+</div>
+<button type="button" class="icon-btn" id="eq-open" aria-label="Open equaliser" hidden>
+<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 4v16M12 4v16M19 4v16"/><circle cx="5" cy="14" r="2.4" class="eq-knob"/><circle cx="12" cy="8" r="2.4" class="eq-knob"/><circle cx="19" cy="16" r="2.4" class="eq-knob"/></svg>
+</button>
+</div>
+<div class="volume-row" id="volume-row">
+<button type="button" class="icon-btn" id="mute" aria-pressed="false" aria-label="Mute">
+<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path class="mute-waves" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="mute-slash" d="M3 3l18 18"/></svg>
+</button>
+<input class="hslider" type="range" min="0" max="100" value="0" id="master" aria-label="Master volume" disabled>
+<div class="vol-num" id="master-num"></div>
+</div>
+</div>
+</div>
+<div class="offline-bar" id="offline" role="status"></div>
+<div class="toast" id="toast" role="status"></div>
+<div class="portrait-note">Turn the screen to landscape.</div>
+</main>
 <script src="/static/hd.js"></script>
 </body>
 </html>
