@@ -97,6 +97,12 @@ from dial_display_profiles import (
     layout_context_for,
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
+from dial_core_state import (
+    NowPlaying, OutputRow, PickerRow, SelectorRow, Selection, availability, choose_pin,
+    dots_active, eq_available, idle_affordance, outputs_available, picker_rows,
+    reporting_for, resolve_focus, selector_rows, started_refused, visible_targets,
+    walk_fallback, walk_order, walk_step, with_accepted_replay,
+)
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
@@ -691,38 +697,6 @@ PLAYING_ARTIST_TEXT = "Playing"
 
 
 @dataclass(frozen=True)
-class NowPlaying:
-    """Now-playing state for the overlay, as last observed by the poll
-    thread. Immutable — a changed poll result produces a new instance rather
-    than mutating this one, which is what makes the `!=` comparison in
-    _poll_once() a reliable "did anything worth repainting change" check.
-    """
-    service_name: str
-    artist: str
-    title: str          # track title, drawn on the title line above the artist
-    master_volume: int | None
-    album: str = ""     # album name, drawn above the title where the layout has room
-    # False for an idle or pending focus (an appliance is shown but nothing
-    # is actually playing under it) — see the rich/large artist-row fallback
-    # in _effective_overlay_locked. True (the default) for a real playback
-    # walk result; also feeds the `!=` change check above, so a focused
-    # appliance starting or stopping always triggers a repaint.
-    playing: bool = True
-
-
-@dataclass(frozen=True)
-class SelectorRow:
-    """One row of the appliance-selector screen — see SelectorState."""
-    appliance_id: str
-    label: str        # appliance_display_name(service_name)
-    current: bool     # this row is the focus (manual, else the reporting-from target)
-    playing: bool = False  # the appliance is playing now, live or replay
-    # False for an appliance confirmed to have refused this dial: listed but
-    # marked, never focused or controlled (see selector_pick).
-    authorized: bool = True
-
-
-@dataclass(frozen=True)
 class SelectorState:
     """Immutable snapshot of the appliance-selector screen's rows and
     paging, as last built by the poll thread (_refresh_selector_rows).
@@ -759,17 +733,6 @@ class RepeatScreenState:
     ip: str
     port: int
     opened_at: float
-
-
-@dataclass(frozen=True)
-class PickerRow:
-    """One row of the replay picker — see PickerState."""
-    appliance_id: str
-    service_name: str
-    ip: str
-    port: int
-    label: str        # appliance_display_name(service_name)
-    seconds: float     # recording_seconds — the held buffer's length
 
 
 @dataclass(frozen=True)
@@ -830,15 +793,6 @@ class InfoValueState:
     index: int
     opened_at: float
     hint: "tuple[str, str] | None" = None
-
-
-@dataclass(frozen=True)
-class OutputRow:
-    """One row of the outputs list, or the output shown on the detail page."""
-    id: str
-    name: str
-    selected: bool
-    volume: int          # 0..100, meaningful when selected
 
 
 @dataclass(frozen=True)
@@ -4117,19 +4071,7 @@ class DialDisplay:
         back to its first page every ~6s poll tick. It is reset to 0 only
         by a fresh open_selector() (see _apply_screen_requests_locked).
         """
-        focus_id = self._manual_focus_id
-        current_id = focus_id if focus_id is not None else reporting_id
-        rows = tuple(
-            SelectorRow(
-                appliance_id=r.appliance_id,
-                label=appliance_display_name(r.service_name),
-                current=(r.auth == AUTH_AUTHORIZED and r.appliance_id == current_id),
-                playing=(r.auth == AUTH_AUTHORIZED and r.playing),
-                authorized=(r.auth == AUTH_AUTHORIZED),
-            )
-            for r in roster
-            if r.appliance_id and r.auth in (AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)
-        )
+        rows = selector_rows(roster, self._manual_focus_id, reporting_id)
         with self._lock:
             prev = self._selector
             page, opened_at = self._carried_paging_locked(prev, len(rows))
@@ -4150,18 +4092,7 @@ class DialDisplay:
         authorized, repeat-capable appliance currently in Hold — the only
         daemon state the picker can start a replay from. The page is
         preserved across rebuilds the same way the selector's is."""
-        rows = tuple(
-            PickerRow(
-                appliance_id=r.appliance_id, service_name=r.service_name,
-                ip=r.ip, port=r.port,
-                label=appliance_display_name(r.service_name),
-                seconds=rec.recording_seconds,
-            )
-            for r in roster
-            for rec in [repeat_store.get(r.appliance_id, now)]
-            if rec is not None and rec.state == "hold"
-            and r.auth == AUTH_AUTHORIZED and r.repeat_capable
-        )
+        rows = picker_rows(roster, repeat_store.get, now)
         with self._lock:
             prev = self._picker
             page, opened_at = self._carried_paging_locked(prev, len(rows))
@@ -4177,11 +4108,7 @@ class DialDisplay:
         rostered, authorized, repeat-capable appliance is currently held (a
         retained recording with nothing else to show). A change signals
         the repeat thread so the affordance appears/disappears promptly."""
-        held = repeat_store.held_ids(now)
-        affordance = any(
-            r.appliance_id in held and r.auth == AUTH_AUTHORIZED and r.repeat_capable
-            for r in roster
-        )
+        affordance = idle_affordance(roster, repeat_store.held_ids(now))
         if affordance != self._idle_affordance:
             self._idle_affordance = affordance
             self._overlay_signal.set()
@@ -5296,14 +5223,6 @@ class DialDisplay:
     def manual_focus_id(self) -> str | None:
         return self._manual_focus_id
 
-    def _auth_not_unauthorized(self, appliance_id: str) -> bool:
-        """True unless dial_auth confirms appliance_id unauthorized. Used
-        only by the pending-focus grace window (set_manual_focus_pending):
-        during the gap the appliance is not rostered at all, so there is no
-        target row to read .auth from — this reads the auth map directly
-        instead."""
-        return auth_map.state(appliance_id) != AUTH_UNAUTHORIZED
-
     def _clear_focus(self, reason: str) -> None:
         """Poll thread only: drop the manual focus and any pending grace,
         and close the current screen when its policy says a focus clear
@@ -5324,7 +5243,7 @@ class DialDisplay:
         touch_surface() and _effective_overlay_locked()."""
         appliance_id = self._manual_focus_id or self._reporting_appliance_id
         rec = repeat_store.get(appliance_id, now) if appliance_id else None
-        self._dots_active = (rec is not None and rec.available) or self._eq_available
+        self._dots_active = dots_active(rec, self._eq_available)
 
     def _update_outputs_available(self) -> None:
         """Recompute whether the top-right OUTPUTS zone is currently live,
@@ -5333,12 +5252,7 @@ class DialDisplay:
         _update_dots_active(), one tick behind the same focus/reporting
         resolution."""
         appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        entry = next(
-            (r for r in self._last_roster if r.appliance_id == appliance_id), None,
-        ) if appliance_id else None
-        self._outputs_available = (
-            entry is not None and entry.dial_outputs and entry.auth != AUTH_UNAUTHORIZED
-        )
+        self._outputs_available = outputs_available(self._last_roster, appliance_id)
 
     def _update_eq_available(self) -> None:
         """Recompute whether the EQ page is available for the currently
@@ -5350,12 +5264,8 @@ class DialDisplay:
         _update_dots_active() each tick — the dots computation reads this
         result."""
         appliance_id = self._manual_focus_id or self._reporting_appliance_id
-        entry = next(
-            (r for r in self._last_roster if r.appliance_id == appliance_id), None,
-        ) if appliance_id else None
-        self._eq_available = (
-            entry is not None and entry.dial_eq and entry.auth != AUTH_UNAUTHORIZED
-            and not self._compact_tier()
+        self._eq_available = eq_available(
+            self._last_roster, appliance_id, self._compact_tier,
         )
 
     def _maybe_show_transition(self, previous_reporting_id: "str | None") -> None:
@@ -5412,31 +5322,13 @@ class DialDisplay:
         window); reads the roster published by the previous poll (the
         picker only offers rostered appliances)."""
         accepted = self._accepted_replay
-        if accepted is None:
-            return targets
-        appliance_id, until = accepted
-        rec = repeat_store.get(appliance_id, now)
-        if (
-            now >= until
-            or self._manual_focus_id != appliance_id
-            or any(t.appliance_id == appliance_id for t in targets)
-            or rec is None or not rec.available or rec.state not in ("replaying", "fading_out")
-        ):
-            self._accepted_replay = None
-            return targets
-        entry = next(
-            (r for r in self._last_roster if r.appliance_id == appliance_id and r.auth != AUTH_UNAUTHORIZED),
-            None,
+        rec = repeat_store.get(accepted[0], now) if accepted is not None else None
+        targets, new_accepted = with_accepted_replay(
+            accepted, targets, self._last_roster, self._manual_focus_id, rec, now,
         )
-        if entry is None:
-            return targets
-        return [*targets, PlayingTarget(
-            ip=entry.ip, port=entry.port, name=entry.name, dial_api=entry.dial_api,
-            audio_status=entry.audio_status, dial_status=entry.dial_status,
-            dial_outputs=entry.dial_outputs, dial_eq=entry.dial_eq,
-            service_name=entry.service_name, playing_since=now,
-            appliance_id=entry.appliance_id, auth=entry.auth,
-        )]
+        if new_accepted is not accepted:
+            self._accepted_replay = new_accepted
+        return targets
 
     def _poll_once(self) -> None:
         with self._lock:
@@ -5472,9 +5364,7 @@ class DialDisplay:
         # wakes, binds, reports or offers a volume target works from this
         # list; the raw list still feeds the selector (via the roster) so a
         # refused appliance stays listed.
-        visible_targets = [
-            t for t in targets if t.auth != AUTH_UNAUTHORIZED and t.appliance_id
-        ]
+        visible = visible_targets(targets)
         stopped_ids = self._prev_playing_ids - playing_ids
         if stopped_ids:
             self._reconcile_due = True
@@ -5484,13 +5374,10 @@ class DialDisplay:
         # to fix a refusal is to allow the dial in the appliance's web UI and
         # press play, and an appliance that pushes no auth change gives the
         # dial no other prompt to look again.
-        started_refused = [
-            t.appliance_id for t in targets
-            if t.appliance_id not in self._prev_playing_ids and t.auth == AUTH_UNAUTHORIZED
-        ]
-        for appliance_id in started_refused:
+        refused_ids = started_refused(targets, self._prev_playing_ids)
+        for appliance_id in refused_ids:
             auth_map.force_due(appliance_id)
-        if started_refused:
+        if refused_ids:
             self._reconcile_due = True
         # An appliance that has just started playing and has never answered
         # this dial (after a restart, say) is checked before anything below
@@ -5504,7 +5391,7 @@ class DialDisplay:
         # again.
         first_checks: dict[str, tuple[float, dict]] = {}
         if self._manual_focus_id is None and self._bound_appliance_id is None:
-            for t in visible_targets:
+            for t in visible:
                 if (
                     t.auth != AUTH_UNKNOWN or not t.dial_status
                     or t.appliance_id in self._prev_playing_ids
@@ -5518,8 +5405,8 @@ class DialDisplay:
                 if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED:
                     break
         if first_checks:
-            visible_targets = [
-                t for t in visible_targets if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED
+            visible = [
+                t for t in visible if auth_map.state(t.appliance_id) != AUTH_UNAUTHORIZED
             ]
         self._prev_playing_ids = playing_ids
         # The merged playing+idle roster — this is where general (idle)
@@ -5547,39 +5434,23 @@ class DialDisplay:
         # shows the appliance's name over the logo instead of the ordinary
         # idle screen.
         focus_id = self._manual_focus_id
-        pending = self._focus_pending
-        if pending is not None and (pending[0] != focus_id or now >= pending[2]):
-            self._focus_pending = None
-            pending = None
-        focus_entry = None      # the roster entry, playing or idle
-        focus_target = None     # the playing-set entry, when playing
-        if focus_id is not None:
-            focus_entry = next(
-                (r for r in roster if r.appliance_id == focus_id and r.auth != AUTH_UNAUTHORIZED),
-                None,
-            )
-            focus_target = next(
-                (t for t in visible_targets if t.appliance_id == focus_id),
-                None,
-            )
-            if focus_entry is None:
-                if pending is not None and self._auth_not_unauthorized(focus_id):
-                    pass  # grace: keep the focus, appliance not rostered yet
-                else:
-                    self._clear_focus("appliance gone or unauthorized")
-                    focus_entry = focus_target = None
-            elif focus_target is None and focus_id in stopped_ids:
-                self._clear_focus("appliance stopped playing")
-                focus_entry = None
-            elif focus_target is not None and pending is not None:
-                self._focus_pending = None  # sighted: converts to a normal focus
+        prev_pending = self._focus_pending
+        resolution = resolve_focus(
+            focus_id, prev_pending, roster, visible, stopped_ids, now, auth_map.state,
+        )
+        if resolution.pending is not prev_pending:
+            self._focus_pending = resolution.pending
+        if resolution.clear_reason is not None:
+            self._clear_focus(resolution.clear_reason)
+        focus_entry = resolution.focus_entry
+        focus_target = resolution.focus_target
 
         # An idle focus: a rostered focus with nothing playing under it.
         # The walk/artwork-selection path below runs only when this is
         # None; when it is set, one pinned status fetch replaces it (3.3),
         # and it is what the empty-targets branch shows in place of the
         # idle screen (5.2).
-        idle_focus = focus_entry if (focus_entry is not None and focus_target is None) else None
+        idle_focus = resolution.idle_focus
 
         # Any visible playing target counts as activity, including
         # status-erroring ones: the mDNS _autostream-playing._tcp presence
@@ -5589,7 +5460,7 @@ class DialDisplay:
         # or control it, so its playback must neither wake the panel nor
         # hold off idle sleep. (Unknown auth still counts: it is
         # controllable until a refusal says otherwise.)
-        if visible_targets:
+        if visible:
             woke = False
             with self._lock:
                 self._idle_started_at = None
@@ -5764,27 +5635,19 @@ class DialDisplay:
             # roster, or is confirmed unauthorized; whatever the unpinned
             # walk then reports becomes the new binding at the end of the
             # tick.
-            bound_target = None
-            if focus_id is None:
-                bid = self._bound_appliance_id
-                if bid is not None:
-                    bound_target = next(
-                        (t for t in visible_targets if t.appliance_id == bid),
-                        None,
-                    )
-                    if bound_target is None:
-                        self._bound_appliance_id = None
+            pin_target, bound_id = choose_pin(
+                focus_target, self._bound_appliance_id if focus_id is None else None, visible,
+            )
+            if focus_id is None and bound_id is None:
+                self._bound_appliance_id = None
 
             # With a focus (or, absent one, a binding), it is polled first
             # and pinned to unconditionally — the walk never falls through
             # to another appliance's artwork. With neither, today's
             # playing_since-ordered walk is unchanged.
-            pin_target = focus_target if focus_target is not None else bound_target
-            ordered = (
-                [pin_target] + [t for t in visible_targets if t is not pin_target]
-                if pin_target is not None else visible_targets
-            )
-            identified_without_art = None
+            ordered = walk_order(pin_target, visible)
+            fallback = None
+            selection = Selection()
             for target in ordered:
                 is_focus = pin_target is not None and target is pin_target
                 if target.auth == AUTH_UNAUTHORIZED:
@@ -5796,7 +5659,7 @@ class DialDisplay:
                         # No status to poll, but the screen still follows the
                         # pinned target for its name/label; there is simply
                         # no artwork.
-                        selected_service = target.service_name
+                        selection, fallback = walk_step(target, None, True, fallback)
                         break
                     continue
 
@@ -5826,50 +5689,26 @@ class DialDisplay:
                     is_focus = False
                     continue
 
-                if is_focus:
-                    # The pinned target is shown regardless of whether it
-                    # has identified artwork — never fall through to
-                    # another appliance's artwork while a focus or a
-                    # binding pins one.
-                    selected_service = target.service_name
-                    if not status_error:
-                        records[target.service_name] = result
-                        track_id = result.get("track_id")
-                        if track_id and track_id.get("state") == "identified":
-                            # A track identified without artwork still has
-                            # its title and artist to show, over the logo.
-                            selected_url = track_id.get("artwork_url") or None
-                            selected_artist = track_id.get("artist", "")
-                            selected_title = track_id.get("title", "")
-                            selected_album = track_id.get("album", "")
-                    break
-
-                if status_error:
+                if status_error and not is_focus:
                     logging.debug(
                         "dial display: target %s status_error=%s", target.service_name, status_error,
                     )
-                    continue
-
-                records[target.service_name] = result
-                track_id = result.get("track_id")
-                if track_id and track_id.get("state") == "identified" and track_id.get("artwork_url"):
-                    selected_url = track_id["artwork_url"]
-                    selected_service = target.service_name
-                    selected_artist = track_id.get("artist", "")
-                    selected_title = track_id.get("title", "")
-                    selected_album = track_id.get("album", "")
+                record = None if status_error else result
+                if record is not None:
+                    records[target.service_name] = record
+                # A pinned target is shown regardless of whether it has
+                # identified artwork — never fall through to another
+                # appliance's artwork while a focus or a binding pins one.
+                selection, fallback = walk_step(target, record, is_focus, fallback)
+                if selection is not None:
                     break
-                if track_id and track_id.get("state") == "identified" and identified_without_art is None:
-                    # Artwork still wins the walk, but the first target
-                    # identified without any is shown (title and artist
-                    # over the logo) when no target has artwork at all.
-                    identified_without_art = (target.service_name, track_id)
             else:
-                if identified_without_art is not None:
-                    selected_service, track_id = identified_without_art
-                    selected_artist = track_id.get("artist", "")
-                    selected_title = track_id.get("title", "")
-                    selected_album = track_id.get("album", "")
+                selection = walk_fallback(fallback)
+            selected_url = selection.url
+            selected_service = selection.service
+            selected_artist = selection.artist
+            selected_title = selection.title
+            selected_album = selection.album
 
         # Reporting-from target: the idle focus when one is pinned; else
         # the identified (or focused) source, else the oldest playing
@@ -5878,10 +5717,7 @@ class DialDisplay:
         # resolver's own filter (dial_main._build_volume_targets_fn) so the
         # poll and the worker can never disagree about who volume/mute
         # addresses.
-        if idle_focus is not None:
-            reporting = idle_focus
-        else:
-            reporting = select_volume_target(visible_targets, selected_service)
+        reporting = reporting_for(idle_focus, visible, selected_service)
         reporting_name = reporting.service_name if reporting is not None else None
         reporting_id = reporting.appliance_id if reporting is not None else None
         self._reporting_appliance_id = reporting_id
@@ -5908,7 +5744,7 @@ class DialDisplay:
         # Whether a service's status carries the flag at all decides how a
         # missing value is treated (see the store's comment block).
         reports_mute = {
-            t.service_name: getattr(t, "status_reports_mute", True) for t in visible_targets
+            t.service_name: getattr(t, "status_reports_mute", True) for t in visible
         }
         for walked_name, walked_record in records.items():
             if walked_name == reporting_name:
@@ -5922,7 +5758,7 @@ class DialDisplay:
             requested_at=status_sent_at.get(reporting_name, 0.0),
             status_reports_mute=reports_mute.get(reporting_name, True),
         )
-        forget_mute_states_except({t.service_name for t in visible_targets})
+        forget_mute_states_except({t.service_name for t in visible})
         if isinstance(master_volume, int) and not isinstance(master_volume, bool):
             observe_master_volume(reporting_name, master_volume)
         elif reporting_name is not None:
