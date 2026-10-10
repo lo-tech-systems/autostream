@@ -525,6 +525,14 @@ class TestNowPlayingDataclass:
     def test_same_album_is_equal(self):
         assert dd.NowPlaying("svc", "A", "T", 50, album="X") == dd.NowPlaying("svc", "A", "T", 50, album="X")
 
+    def test_playing_defaults_to_true(self):
+        assert dd.NowPlaying("svc", "A", "T", 50).playing is True
+
+    def test_playing_only_difference_is_unequal(self):
+        # What triggers a repaint on a focused appliance starting or
+        # stopping, even when every other field stays the same.
+        assert dd.NowPlaying("svc", "", "", 50, playing=False) != dd.NowPlaying("svc", "", "", 50, playing=True)
+
 
 # ---------------------------------------------------------------------------
 # Now-playing state and artwork-source exposure (A.4): the poll thread keeps
@@ -1937,6 +1945,63 @@ class TestEffectiveOverlayMerge:
         assert result.pressed is None
 
 
+class TestArtistRowFallbackRichLarge:
+    """Rich/large only: an idle or pending focus reads "Idle"; a playing
+    appliance with no identified title yet reads "Playing"; a real artist
+    (or a title with no artist) is left exactly as the poll reported it.
+    Base is unaffected -- its artist row stays byte-identical."""
+
+    @pytest.mark.parametrize("tier", ["rich", "large"])
+    def test_idle_or_pending_focus_shows_idle_text(self, tier):
+        content_tier = dd.CONTENT_RICH if tier == "rich" else dd.CONTENT_LARGE
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "", "", 50, playing=False)
+        with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=content_tier)):
+            result = display._effective_overlay_locked(OverlayState(visible=True))
+        assert result.artist == dd.IDLE_ARTIST_TEXT
+
+    @pytest.mark.parametrize("tier", ["rich", "large"])
+    def test_playing_with_no_title_shows_playing_text(self, tier):
+        content_tier = dd.CONTENT_RICH if tier == "rich" else dd.CONTENT_LARGE
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "", "", 50, playing=True)
+        with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=content_tier)):
+            result = display._effective_overlay_locked(OverlayState(visible=True))
+        assert result.artist == dd.PLAYING_ARTIST_TEXT
+
+    def test_playing_with_title_and_no_artist_stays_empty(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "", "Some Title", 50, playing=True)
+        with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=dd.CONTENT_RICH)):
+            result = display._effective_overlay_locked(OverlayState(visible=True))
+        assert result.artist == ""
+
+    def test_playing_with_title_and_artist_keeps_the_real_artist(self):
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "Real Artist", "Some Title", 50, playing=True)
+        with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=dd.CONTENT_LARGE)):
+            result = display._effective_overlay_locked(OverlayState(visible=True))
+        assert result.artist == "Real Artist"
+
+    def test_base_tier_artist_row_is_unaffected(self):
+        # _make_display defaults to the base (160x128) tier -- no patch
+        # needed, this is the tier's own natural resolution.
+        display, fb, gt = _make_display(targets=[])
+        display.enable()
+        with display._lock:
+            display._now_playing = dd.NowPlaying("svc", "", "", 50, playing=False)
+        result = display._effective_overlay_locked(OverlayState(visible=True))
+        assert result.artist == ""
+
+
 # ---------------------------------------------------------------------------
 # Touch overlay — leaf-locked snapshot, dedicated repaint executor, and the
 # non-composited-state notification for the touch side.
@@ -3112,7 +3177,7 @@ class TestManualFocus:
             display._poll_once()
 
         assert calls == ["Idle"]
-        assert display._now_playing == dd.NowPlaying("Idle", "", "", 50)
+        assert display._now_playing == dd.NowPlaying("Idle", "", "", 50, playing=False)
         assert display._reporting_appliance_id == aid_idle
         assert display._source_service_name == "Idle"
 

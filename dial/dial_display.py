@@ -79,7 +79,15 @@ from dial_outputs import _OutputsTarget, enqueue_fetch, enqueue_set
 from dial_repeat import _RepeatTarget, enqueue_arm, enqueue_transport
 from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_target_status import enrich_targets, fetch_target_status
-from dial_touch_layout import CONTENT_COMPACT, LayoutMetrics, TouchZone, list_layout_for, metrics_for
+from dial_touch_layout import (
+    CONTENT_COMPACT,
+    CONTENT_LARGE,
+    CONTENT_RICH,
+    LayoutMetrics,
+    TouchZone,
+    list_layout_for,
+    metrics_for,
+)
 from dial_volume import (
     forget_mute_states_except,
     observe_master_volume,
@@ -314,6 +322,15 @@ class DisplayRuntimeStatus:
         return dataclasses.asdict(self)
 
 
+# Rich/large artist-row fallback text (see _effective_overlay_locked): shown
+# in the artist line's own slot when the tier draws one but there is no real
+# artist to put there — an idle or pending focus, or a playing appliance
+# with no identified title yet. Compact draws no artist row at all, and base
+# keeps its own row unchanged, so neither constant is ever read there.
+IDLE_ARTIST_TEXT = "Idle"
+PLAYING_ARTIST_TEXT = "Playing"
+
+
 @dataclass(frozen=True)
 class NowPlaying:
     """Now-playing state for the overlay, as last observed by the poll
@@ -326,6 +343,12 @@ class NowPlaying:
     title: str          # track title, drawn on the title line above the artist
     master_volume: int | None
     album: str = ""     # album name, drawn above the title where the layout has room
+    # False for an idle or pending focus (an appliance is shown but nothing
+    # is actually playing under it) — see the rich/large artist-row fallback
+    # in _effective_overlay_locked. True (the default) for a real playback
+    # walk result; also feeds the `!=` change check above, so a focused
+    # appliance starting or stopping always triggers a repaint.
+    playing: bool = True
 
 
 @dataclass(frozen=True)
@@ -1761,6 +1784,18 @@ class DialDisplay:
             return snapshot
         now_playing = self._now_playing
         artist = now_playing.artist if now_playing is not None else ""
+        if now_playing is not None and self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE):
+            # Rich/large only: base keeps its artist row exactly as before,
+            # byte for byte, and compact never draws one at all. An idle or
+            # pending focus (nothing actually playing) reads as idle; a
+            # playing appliance with no identified title yet reads as
+            # playing rather than blank. Idle wins over the no-title check;
+            # a playing appliance with a real title keeps its artist
+            # whatever the artwork state.
+            if not now_playing.playing:
+                artist = IDLE_ARTIST_TEXT
+            elif not now_playing.title:
+                artist = PLAYING_ARTIST_TEXT
         title = now_playing.title if now_playing is not None else ""
         album = now_playing.album if now_playing is not None else ""
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
@@ -3411,7 +3446,7 @@ class DialDisplay:
                     master_volume = result.get("master_volume") if not result.get("status_error") else None
                     self._reporting_appliance_id = idle_focus.appliance_id
                     self._source_service_name = idle_focus.service_name
-                    self._now_playing = NowPlaying(idle_focus.service_name, "", "", master_volume)
+                    self._now_playing = NowPlaying(idle_focus.service_name, "", "", master_volume, playing=False)
                     self._update_dots_active(now)
                     self._update_outputs_available()
             if idle_focus is None:
@@ -3423,7 +3458,7 @@ class DialDisplay:
                     # affordance is suppressed too: _now_playing is not
                     # None here, see _render_logo_locked/_display_idle_locked).
                     pending = self._focus_pending
-                    self._now_playing = NowPlaying(pending[1], "", "", None)
+                    self._now_playing = NowPlaying(pending[1], "", "", None, playing=False)
                     self._reporting_appliance_id = pending[0]
                     self._update_dots_active(now)
                     self._update_outputs_available()
@@ -3617,7 +3652,17 @@ class DialDisplay:
         # during the artwork fetch already goes to the right target.
         self._source_service_name = selected_service
         new_now_playing = (
-            NowPlaying(reporting_name, selected_artist, selected_title, master_volume, album=selected_album)
+            NowPlaying(
+                reporting_name, selected_artist, selected_title, master_volume, album=selected_album,
+                # An idle focus reporting here (targets present elsewhere,
+                # but the shown appliance itself has nothing playing) is not
+                # playing, same as the empty-targets branch's own idle
+                # focus above — see the rich/large artist-row fallback in
+                # _effective_overlay_locked. Every other path that reaches
+                # here (an identified or not-yet-identified playing target)
+                # keeps the default True.
+                playing=idle_focus is None,
+            )
             if reporting_name is not None else None
         )
         changed = new_now_playing != self._now_playing
