@@ -1025,6 +1025,81 @@ class TestEq:
             core.watch_eq(AID, "spi", True)
         return core
 
+    def _six_band_body(self, **gains):
+        order = (("peq1", 40), ("peq2", 100), ("peq3", 300), ("peq4", 1000), ("peq5", 4000), ("peq6", 10000))
+        return {
+            "ok": True, "bass_db": 2, "treble_db": -1,
+            "bands": [
+                {"id": i, "frequency_hz": f, "type": "peak", "gain_db": gains.get(i, 0.0),
+                 "min_db": -12, "max_db": 12}
+                for i, f in order
+            ],
+        }
+
+    def test_a_six_band_fetch_holds_eight_bands(self):
+        core = self._watching(version=2)
+        assert core.on_eq_result("fetch", AID, 200, self._six_band_body(peq3=1.0))
+        held = core.snapshot().eq
+        assert [b.id for b in held.bands] == [
+            "peq1", "peq2", "peq3", "peq4", "peq5", "peq6", "bass", "treble"]
+        assert held.bands[2] == EqBand("peq3", 300, 1, -12, 12)
+
+    def test_a_capability_one_state_reads_only_bass_and_treble(self):
+        core = self._watching(version=1)
+        assert core.on_eq_result("fetch", AID, 200, self._six_band_body())
+        assert [b.id for b in core.snapshot().eq.bands] == ["bass", "treble"]
+
+    def test_a_malformed_six_band_reply_changes_nothing(self):
+        core = self._watching(version=2)
+        body = self._six_band_body()
+        body["bands"] = "x"
+        assert not core.on_eq_result("fetch", AID, 200, body)
+        assert core.snapshot().eq.loaded is False
+
+    def test_a_band_set_is_accepted_on_a_six_band_state(self):
+        core = self._watching(_Clock(1000.0), version=2)
+        core.on_eq_result("fetch", AID, 200, self._six_band_body())
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.set_eq(AID, {"peq3": 3}).accepted
+        assert send.call_args[0][1] == {"peq3": 3}
+        pairs = dict(core.eq_override()[0])
+        assert pairs["peq3"] == 3 and pairs["peq1"] == 0 and pairs["bass"] == 2 and pairs["treble"] == -1
+
+    def test_a_band_step_clamps_to_the_band_range(self):
+        core = self._watching(_Clock(1000.0), version=2)
+        core.on_eq_result("fetch", AID, 200, self._six_band_body(peq3=11.0))
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.step_eq(AID, "peq3", +5).accepted
+        assert send.call_args[0][1] == {"peq3": 12}
+
+    def test_a_band_set_is_refused_on_a_capability_one_state(self):
+        core = self._watching(_Clock(1000.0), version=1)
+        core.on_eq_result("fetch", AID, 200, _eq_body(1, 2))
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.set_eq(AID, {"peq3": 3}) == ActionResult(False, "no_capability")
+            assert core.step_eq(AID, "peq3", 1) == ActionResult(False, "no_capability")
+        assert not send.called
+
+    def test_an_unknown_band_is_refused_on_a_six_band_state(self):
+        core = self._watching(_Clock(1000.0), version=2)
+        core.on_eq_result("fetch", AID, 200, self._six_band_body())
+        assert core.set_eq(AID, {"peq9": 3}) == ActionResult(False, "no_capability")
+        assert core.set_eq(AID, {"peq3": 1, "peq9": 3}) == ActionResult(False, "no_capability")
+
+    def test_a_band_set_before_the_first_reading_is_refused(self):
+        core = self._watching(_Clock(1000.0), version=2)
+        assert core.set_eq(AID, {"peq3": 3}) == ActionResult(False, "no_capability")
+
+    def test_bass_steps_send_bass_db_on_a_six_band_appliance(self):
+        core = self._watching(_Clock(1000.0), version=2)
+        core.on_eq_result("fetch", AID, 200, self._six_band_body())
+        with patch("dial_core._enqueue_eq_set") as send:
+            assert core.step_eq(AID, "bass", +1).accepted
+        assert send.call_args[0][1] == {"bass": 3}
+        from dial_eq import _set_body
+        assert _set_body(send.call_args[0][1]) == {"bass_db": 3}
+
+
     def test_first_interest_fetches_once_and_holds_an_empty_state(self):
         core = _io_core()
         with patch("dial_core._enqueue_eq_fetch") as fetch:
@@ -1069,7 +1144,7 @@ class TestEq:
         assert core.eq_override() == ((("bass", 6), ("treble", -3)), 1002.0)
         assert core.snapshot().eq.optimistic == (("bass", 6), ("treble", -3))
         assert core.snapshot().eq.optimistic_expires_at == 1002.0
-        assert send.call_args[1] == {"bass_db": 6}
+        assert send.call_args[0][1] == {"bass": 6}
         assert send.call_args[0][0].appliance_id == AID
 
     def test_a_step_before_the_first_reading_starts_from_zero(self):
@@ -1098,7 +1173,7 @@ class TestEq:
         core.on_eq_result("fetch", AID, 200, _eq_body(1, 2))
         with patch("dial_core._enqueue_eq_set") as send:
             core.set_eq(AID, {"treble": -4})
-        assert send.call_args[1] == {"treble_db": -4}
+        assert send.call_args[0][1] == {"treble": -4}
         assert dict(core.eq_override()[0]) == {"bass": 1, "treble": -4}
 
     def test_refusals_name_their_reason(self):

@@ -46,7 +46,7 @@ def _roster_entry(
     name="Kitchen", ip="192.168.1.10", port=80,
     dial_status=True, appliance_id="a" * 20, auth="unknown",
     service_name=None, playing=False, repeat_capable=False, dial_outputs=False,
-    dial_eq=False,
+    dial_eq=False, dial_proto_version=0, version="",
 ) -> RosterEntry:
     """A merged-roster entry, for tests that need an idle (playing=False) or
     explicitly playing row without going through a PlayingTarget."""
@@ -54,7 +54,7 @@ def _roster_entry(
         appliance_id=appliance_id, service_name=service_name or name, name=name,
         ip=ip, port=port, playing=playing, repeat_capable=repeat_capable,
         dial_api=True, audio_status=True, dial_status=dial_status, dial_outputs=dial_outputs,
-        dial_eq=dial_eq, auth=auth,
+        dial_eq=dial_eq, auth=auth, dial_proto_version=dial_proto_version, version=version,
     )
 
 

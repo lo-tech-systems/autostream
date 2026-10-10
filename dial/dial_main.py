@@ -25,6 +25,7 @@ from dial_http_server import (
     NoOpDisplayStatusProvider,
     _announce_self,
 )
+from dial_appliance_fetch import start_appliance_fetch_worker
 from dial_eq import start_eq_worker
 from dial_info import current_ipv4, gather_dial_info
 from dial_led import DialLED
@@ -276,6 +277,15 @@ class _HeadlessDisplay(NoOpDisplayStatusProvider):
 
     def notify_auth_changed(self, appliance_id: str) -> None:
         self.core.notify_auth_changed(appliance_id)
+
+
+def _on_appliance_fetch_result(core):
+    """The appliance fetch worker's result callback: route each kind of read
+    to the core method that folds it."""
+    def on_result(kind, appliance_id, version, status, body):
+        if kind == "capabilities":
+            core.on_capabilities_result(appliance_id, version, status, body)
+    return on_result
 
 
 def _build_volume_targets_fn(
@@ -816,6 +826,11 @@ def main() -> None:
     # client, entirely separate from every other worker above (see
     # dial_eq.py's module docstring). Routed like the outputs worker's.
     start_eq_worker(cfg, on_result=core.on_eq_result)
+
+    # The appliance self-description reader: its own thread, queue and HTTP
+    # client (see dial_appliance_fetch.py's module docstring). The core asks
+    # for capabilities as appliances appear and folds the replies.
+    start_appliance_fetch_worker(cfg, on_result=_on_appliance_fetch_result(core))
 
     # The Wi-Fi link poller: its own thread, one loopback read of the local
     # watcher every 15 s (see dial_network.py's module docstring). Feeds the

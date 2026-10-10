@@ -497,6 +497,7 @@ class RosterEntry:
     auth:           str = dial_auth.AUTH_UNKNOWN
     dial_proto_version: int = 0
     dial_eq_version: int = 0
+    version: str = ""      # the advertised software version, "" when none is known
 
     @property
     def typed_refusals(self) -> bool:
@@ -560,6 +561,7 @@ def get_roster() -> list[RosterEntry]:
             dial_eq=t.dial_eq,
             dial_proto_version=t.dial_proto_version,
             dial_eq_version=t.dial_eq_version,
+            version=g.version if g else "",
         ))
     for aid, g in general.items():
         if aid in playing or aid in conflicts or g.legacy:
@@ -579,6 +581,7 @@ def get_roster() -> list[RosterEntry]:
             dial_eq=g.dial_eq,
             dial_proto_version=g.dial_proto_version,
             dial_eq_version=g.dial_eq_version,
+            version=g.version,
         ))
 
     roster.sort(key=lambda r: (

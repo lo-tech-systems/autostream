@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
+import re
 import sys
 import threading
 import time
@@ -34,6 +36,8 @@ from dial_auth import (
     OUTCOME_UNAUTHORIZED,
     auth_map,
 )
+import dial_capabilities
+from dial_capabilities import Capabilities, appliance_capabilities  # noqa: F401
 from dial_core_state import (
     EQ_LIMIT_DB, Artwork, EqBand, OutputRow, Selection, artwork_key, walk_fallback, walk_step,
 )
@@ -49,35 +53,9 @@ MAX_ARTWORK_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 # ---- capabilities -----------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Capabilities:
-    """What one appliance can do for the dial."""
-    status: bool            # serves the dial status endpoint
-    outputs: bool           # serves the outputs list and selection
-    eq: bool                # serves the EQ page
-    repeat: bool            # offers repeat/replay
-    typed_refusals: bool    # a refusal carries its own appliance id and a typed error
-    reports_mute: bool      # its status carries the mute flag
-
-
-def appliance_capabilities(target) -> Capabilities:
-    """The one place an appliance's capabilities are read from a roster or
-    playing entry. Today they come from the flags advertised over mDNS and
-    from the advertised protocol version; a capabilities endpoint keyed by
-    that version can replace the body without touching any caller. Missing
-    attributes (an entry type without the flag) read as the conservative
-    value the callers always used."""
-    return Capabilities(
-        status=bool(target.dial_status),
-        outputs=bool(getattr(target, "dial_outputs", False)),
-        eq=bool(getattr(target, "dial_eq", False)),
-        repeat=bool(getattr(target, "repeat_capable", False)),
-        typed_refusals=bool(getattr(target, "typed_refusals", True)),
-        reports_mute=bool(getattr(target, "status_reports_mute", True)),
-    )
-
+#
+# The switch point lives in dial_capabilities; it is re-exported here so the
+# poll's own steps and their callers read it from one place.
 
 # ---- applying a status reply to the leaf stores -----------------------------
 
@@ -349,6 +327,7 @@ def reconcile(
             # interpolate ahead of the truth by that much.
             apply_status_to_repeat(target.appliance_id, record, now_fn())
     repeat_store.prune({r.appliance_id for r in roster})
+    dial_capabilities.prune({r.appliance_id for r in roster})
 
 
 def drain_push_probes(
@@ -500,11 +479,61 @@ def parse_outputs_body(status, body) -> "tuple[OutputRow, ...] | None":
     return tuple(rows)
 
 
-def parse_eq_body(status, body) -> "tuple[EqBand, ...] | None":
-    """Validate a POST /api/dial/eq response body and map it to bands: the
-    two derived controls of the bass/treble capability, `"bass"` and
-    `"treble"`, each in the +-EQ_LIMIT_DB range with no centre frequency.
-    None on anything malformed or failed."""
+_DERIVED_EQ_IDS = ("bass", "treble")
+_EQ_BAND_ID_RE = re.compile(r"[a-z0-9_]{1,16}")
+_EQ_BANDS_MAX = 16
+
+
+def _whole_db(value) -> "int | None":
+    """*value* as whole dB (halves round up), or None when it is not a finite
+    number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return math.floor(value + 0.5)
+
+
+def _parse_eq_bands(entries) -> "tuple[EqBand, ...] | None":
+    """The appliance's own bands from the `bands` list of an EQ reply, in
+    order, or None when the list is malformed: at most _EQ_BANDS_MAX
+    objects, each with an id (lowercase letters, digits and underscores,
+    never one of the derived controls' ids), a positive integer centre
+    frequency, a finite gain and a finite range with its low end not above
+    its high end. A gain is rounded to whole dB and held within the range;
+    a repeated id is dropped."""
+    if not isinstance(entries, list) or len(entries) > _EQ_BANDS_MAX:
+        return None
+    out: list[EqBand] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        band_id = entry.get("id")
+        frequency = entry.get("frequency_hz")
+        if (
+            not isinstance(band_id, str) or _EQ_BAND_ID_RE.fullmatch(band_id) is None
+            or band_id in _DERIVED_EQ_IDS
+        ):
+            return None
+        if isinstance(frequency, bool) or not isinstance(frequency, int) or frequency <= 0:
+            return None
+        gain, low, high = (_whole_db(entry.get(k)) for k in ("gain_db", "min_db", "max_db"))
+        if gain is None or low is None or high is None or low > high:
+            return None
+        if band_id in seen:
+            continue
+        seen.add(band_id)
+        out.append(EqBand(band_id, frequency, max(low, min(high, gain)), low, high))
+    return tuple(out)
+
+
+def parse_eq_body(status, body, capability_version: int = 1) -> "tuple[EqBand, ...] | None":
+    """Validate a POST /api/dial/eq response body and map it to bands. The
+    bass/treble capability (version 1) gives the two derived controls,
+    `"bass"` and `"treble"`, each in the +-EQ_LIMIT_DB range with no centre
+    frequency. The six-band capability (version 2 or later) gives the
+    appliance's own bands, in the order it lists them, followed by the same
+    two derived controls, so a surface that knows only bass and treble is
+    unaffected. None on anything malformed or failed."""
     if status != 200 or not isinstance(body, dict) or not body.get("ok"):
         return None
     bass, treble = body.get("bass_db"), body.get("treble_db")
@@ -512,7 +541,11 @@ def parse_eq_body(status, body) -> "tuple[EqBand, ...] | None":
         return None
     if isinstance(treble, bool) or not isinstance(treble, int):
         return None
-    return (
+    derived = (
         EqBand("bass", None, bass, -EQ_LIMIT_DB, EQ_LIMIT_DB),
         EqBand("treble", None, treble, -EQ_LIMIT_DB, EQ_LIMIT_DB),
     )
+    if capability_version < 2:
+        return derived
+    bands = _parse_eq_bands(body.get("bands"))
+    return None if bands is None else bands + derived

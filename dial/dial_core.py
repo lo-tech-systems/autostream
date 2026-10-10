@@ -49,8 +49,12 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+import dial_capabilities
 import dial_core_poll
+from dial_appliance_fetch import _FetchTarget
+from dial_appliance_fetch import enqueue as _enqueue_appliance_fetch
 from dial_auth import AUTH_UNAUTHORIZED, auth_map
+from dial_capabilities import CAPABILITIES_ENDPOINT_PROTO, appliance_capabilities
 from dial_config import SCOPE_ALL
 from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
@@ -173,6 +177,26 @@ _SNAPSHOT_FIELDS = tuple(
 
 # The EQ bands the bass/treble capability exposes.
 _EQ_BAND_IDS = ("bass", "treble")
+
+# The name each request method gives a capability, read from an appliance's
+# Capabilities.
+_CAPABILITY_FLAGS = {
+    "dial_outputs": "outputs", "dial_eq": "eq", "repeat_capable": "repeat",
+    "dial_status": "status",
+}
+
+
+def _eq_band_ids(held) -> tuple:
+    """The band ids a set may name given the EQ state held: bass and treble
+    always, and the appliance's own bands once a six-band reading has
+    landed."""
+    if held is None or held.capability_version < 2:
+        return _EQ_BAND_IDS
+    return _EQ_BAND_IDS + tuple(b.id for b in held.bands if b.id not in _EQ_BAND_IDS)
+
+
+def _capability_flag(caps, capability: str) -> bool:
+    return bool(getattr(caps, _CAPABILITY_FLAGS.get(capability, capability)))
 
 
 @dataclass(frozen=True)
@@ -312,6 +336,10 @@ class DialCore:
         # the flags other threads set (`_poll_wake`, `_reconcile_due`) are
         # plain, lock-free writes.
         self._io = io if io is not None else PollIO()
+        # Each rostered appliance's capabilities as read through the switch
+        # point: read outside the lock (the registry's lock is a leaf) and
+        # swapped in whole, for the derivations that run under it.
+        self._capabilities: dict = {}
         self._eq_veto: Callable[[], bool] = lambda: False
         self._mute_scope: Callable[[], str] = lambda: ""
         self._idle_hold: Callable[[bool], bool] = lambda focus_cleared: False
@@ -472,12 +500,23 @@ class DialCore:
     def set_roster(self, roster: list) -> CoreSnapshot:
         """Store the merged roster and re-derive the appliance list. A
         roster equal to the one held publishes nothing."""
+        self._capabilities = self._read_capabilities(roster)
+
         def mutate(state: _CoreState) -> "bool | None":
             if roster == state.roster:
                 return False
             state.roster = roster
             state.appliances = self._derive_appliances_locked(state)
         return self._publish(mutate)
+
+    @staticmethod
+    def _read_capabilities(roster) -> dict:
+        """The capabilities of each appliance on *roster*, by id. Takes the
+        registry's lock, so never call it with the core lock held."""
+        return {
+            r.appliance_id: appliance_capabilities(r)
+            for r in roster if getattr(r, "appliance_id", "")
+        }
 
     def set_field(self, name: str, value) -> CoreSnapshot:
         """Store one value and publish: a focus field (`manual_id`,
@@ -664,7 +703,8 @@ class DialCore:
 
     def _new_eq_state(self, appliance_id: str) -> EqState:
         entry = _roster_entry(self._state.roster, appliance_id)
-        version = getattr(entry, "dial_eq_version", 0) or 1
+        caps = self._capabilities.get(appliance_id)
+        version = (caps.eq_version if caps is not None else getattr(entry, "dial_eq_version", 0)) or 1
         return EqState(appliance_id, version, (), False, (), 0.0)
 
     def fetch_outputs(self, appliance_id: str) -> bool:
@@ -861,7 +901,7 @@ class DialCore:
         entry = _roster_entry(self._state.roster, appliance_id)
         if entry is None:
             return ActionResult(False, "unknown_appliance")
-        if not getattr(entry, capability):
+        if not _capability_flag(appliance_capabilities(entry), capability):
             return ActionResult(False, "no_capability")
         if entry.auth == AUTH_UNAUTHORIZED:
             return ActionResult(False, "unauthorized")
@@ -930,23 +970,23 @@ class DialCore:
         refusal = self._refusal(appliance_id, "dial_eq")
         if refusal is not None:
             return refusal
-        if not gains or any(band_id not in _EQ_BAND_IDS for band_id in gains):
-            return ActionResult(False, "no_capability")
         held = self._snapshot.eq
-        if held is None or held.appliance_id != appliance_id:
+        if held is not None and held.appliance_id != appliance_id:
+            held = None
+        band_ids = _eq_band_ids(held)
+        if not gains or any(band_id not in band_ids for band_id in gains):
+            return ActionResult(False, "no_capability")
+        if held is None:
             return ActionResult(False, "not_polling")
         entry = _roster_entry(self._state.roster, appliance_id)
         now = self._clock()
         pairs = []
-        for band_id in _EQ_BAND_IDS:
+        for band_id in band_ids:
             value = gains[band_id] if band_id in gains else self._eq_shown(band_id, now)
             if value is not None:
                 pairs.append((band_id, value))
         self.set_eq_override(tuple(pairs), now + EQ_OPTIMISTIC_WINDOW_S)
-        _enqueue_eq_set(
-            _EqTarget(appliance_id, entry.ip, entry.port),
-            **{f"{band_id}_db": gain for band_id, gain in gains.items()},
-        )
+        _enqueue_eq_set(_EqTarget(appliance_id, entry.ip, entry.port), dict(gains))
         return ActionResult(True)
 
     def step_eq(self, appliance_id: str, band_id: str, delta: int) -> ActionResult:
@@ -956,10 +996,12 @@ class DialCore:
         refusal = self._refusal(appliance_id, "dial_eq")
         if refusal is not None:
             return refusal
-        if band_id not in _EQ_BAND_IDS:
-            return ActionResult(False, "no_capability")
         held = self._snapshot.eq
-        if held is None or held.appliance_id != appliance_id:
+        if held is not None and held.appliance_id != appliance_id:
+            held = None
+        if band_id not in _eq_band_ids(held):
+            return ActionResult(False, "no_capability")
+        if held is None:
             return ActionResult(False, "not_polling")
         band = next((b for b in held.bands if b.id == band_id), None)
         low, high = (band.min_db, band.max_db) if band is not None else (-EQ_LIMIT_DB, EQ_LIMIT_DB)
@@ -1001,7 +1043,10 @@ class DialCore:
         bands were replaced."""
         if kind != "fetch":
             return False
-        bands = dial_core_poll.parse_eq_body(status, body)
+        held = self._snapshot.eq
+        if held is None or held.appliance_id != appliance_id:
+            return False
+        bands = dial_core_poll.parse_eq_body(status, body, held.capability_version)
         if bands is None:
             return False
         now = self._clock()
@@ -1169,7 +1214,9 @@ class DialCore:
                     self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
             state.appliance_warnings = held
             self._sync_warnings_locked(state)
-        return appliance_states(state.roster, state.repeats, state.appliance_warnings)
+        return appliance_states(
+            state.roster, state.repeats, state.appliance_warnings, self._capabilities,
+        )
 
     def _sync_warnings_locked(self, state: _CoreState) -> bool:
         """Copy the warning manager's runtime state and due warning into
@@ -1401,7 +1448,9 @@ class DialCore:
             else:
                 held.pop(appliance_id, None)
             state.appliance_warnings = held
-            state.appliances = appliance_states(state.roster, state.repeats, held)
+            state.appliances = appliance_states(
+                state.roster, state.repeats, held, self._capabilities,
+            )
             self._sync_warnings_locked(state)
         self._publish(mutate)
         return outcome[0]
@@ -1700,9 +1749,61 @@ class DialCore:
         to the warnings is queued for a view and the subscribers are told."""
         effects = self.tick_housekeeping(now)
         self.refresh_watched(now)
+        self._refresh_capabilities(now)
         self._refresh_dial_info(now)
         if effects.changes or effects.restarting or effects.signal:
             self._queue_effects(effects)
+
+    def _refresh_capabilities(self, now: float) -> None:
+        """Ask for the capabilities of every rostered appliance of a
+        generation that serves them whose reply for its advertised version
+        is not held and not backing off. The worker coalesces repeats for
+        one appliance. No lock is held."""
+        for r in self._state.roster:
+            appliance_id = getattr(r, "appliance_id", "")
+            if not appliance_id or getattr(r, "dial_proto_version", 0) < CAPABILITIES_ENDPOINT_PROTO:
+                continue
+            version = getattr(r, "version", "")
+            if dial_capabilities.due(appliance_id, version, now):
+                _enqueue_appliance_fetch(
+                    "capabilities", _FetchTarget(appliance_id, r.ip, r.port, version),
+                )
+
+    def on_capabilities_result(
+        self, appliance_id: str, version: str, status, body,
+    ) -> bool:
+        """Fold a capabilities read: a valid reply is recorded for the
+        version it was asked for and the appliance list is derived again, so
+        what the appliance can now do shows; anything else starts (or
+        lengthens) the appliance's backoff. A reply for an appliance no
+        longer on the roster changes nothing. True when the appliance list
+        changed."""
+        if _roster_entry(self._state.roster, appliance_id) is None:
+            return False
+        now = self._clock()
+        capabilities = dial_capabilities.parse_capabilities_body(status, body, appliance_id)
+        if capabilities is None:
+            dial_capabilities.note_failure(appliance_id, now)
+            return False
+        dial_capabilities.record(appliance_id, version, capabilities, now)
+        self._capabilities = self._read_capabilities(self._state.roster)
+
+        def mutate(state: _CoreState) -> "bool | None":
+            changed = False
+            appliances = self._derive_appliances_locked(state)
+            if appliances != state.appliances:
+                state.appliances = appliances
+                changed = True
+            held = state.eq
+            caps = self._capabilities.get(appliance_id)
+            if (
+                held is not None and held.appliance_id == appliance_id and caps is not None
+                and caps.eq_version and held.capability_version != caps.eq_version
+            ):
+                state.eq = dataclasses.replace(held, capability_version=caps.eq_version)
+                changed = True
+            return None if changed else False
+        return self._changed(mutate)
 
     def _drain_push_probes(self) -> str:
         """Probe every appliance the push queue holds. Returns "probed"

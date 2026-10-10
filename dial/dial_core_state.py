@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
+from dial_capabilities import appliance_capabilities, txt_capabilities
 from dial_mdns import PlayingTarget, appliance_display_name
 from dial_network import NetworkView
 from dial_repeat_store import RepeatRecord
@@ -746,10 +747,15 @@ def webui_address(ip: str, port: int) -> tuple[str, str, int]:
 
 def appliance_states(
     roster: Iterable, repeats: dict | None = None, appliance_warnings: dict | None = None,
+    capabilities: dict | None = None,
 ) -> tuple:
     """One ApplianceState per roster entry, in roster order. *repeats* maps
     an appliance id to its repeat record, *appliance_warnings* to its
-    validated warnings. Entries are read defensively:
+    validated warnings. *capabilities* maps an appliance id to its
+    Capabilities as already read through the switch point, for a caller that
+    holds a lock the registry's must not be taken under (an id missing from
+    it reads from the entry's mDNS flags); without it each entry is read
+    through the switch point here. Entries are read defensively:
     anything an entry does not carry takes its neutral value. Fields fed by
     the status poll (error, volume, mute) are not known here and stay None."""
     repeats = repeats or {}
@@ -760,8 +766,10 @@ def appliance_states(
         service_name = getattr(r, "service_name", "") or ""
         ip = getattr(r, "ip", "") or ""
         port = getattr(r, "port", 0) or 0
-        dial_eq = bool(getattr(r, "dial_eq", False))
-        dial_outputs = bool(getattr(r, "dial_outputs", False))
+        if capabilities is None:
+            caps = appliance_capabilities(r)
+        else:
+            caps = capabilities.get(appliance_id) or txt_capabilities(r)
         scheme, host, web_port = webui_address(ip, port)
         out.append(ApplianceState(
             appliance_id=appliance_id,
@@ -773,12 +781,12 @@ def appliance_states(
             playing_since=0.0,
             auth=getattr(r, "auth", ""),
             dial_status=bool(getattr(r, "dial_status", False)),
-            dial_outputs=dial_outputs,
-            dial_eq=dial_eq,
-            repeat_capable=bool(getattr(r, "repeat_capable", False)),
+            dial_outputs=caps.outputs,
+            dial_eq=caps.eq,
+            repeat_capable=caps.repeat,
             dial_proto_version=getattr(r, "dial_proto_version", 0),
-            dial_eq_version=getattr(r, "dial_eq_version", 0) or (1 if dial_eq else 0),
-            dial_outputs_version=1 if dial_outputs else 0,
+            dial_eq_version=caps.eq_version,
+            dial_outputs_version=caps.outputs_version,
             status_error=None,
             master_volume=None,
             muted=None,
@@ -786,7 +794,7 @@ def appliance_states(
             webui_scheme=scheme,
             webui_host=host,
             webui_port=web_port,
-            supplies_warnings=bool(getattr(r, "dial_warnings", False)),
+            supplies_warnings=caps.warnings,
             warnings=appliance_warnings.get(appliance_id, ()),
         ))
     return tuple(out)
@@ -814,7 +822,10 @@ def _roster_entry(roster: Iterable, appliance_id: str | None):
 
 def outputs_available(roster: Iterable, focused_id: str | None) -> bool:
     entry = _roster_entry(roster, focused_id)
-    return entry is not None and entry.dial_outputs and entry.auth != AUTH_UNAUTHORIZED
+    return (
+        entry is not None and appliance_capabilities(entry).outputs
+        and entry.auth != AUTH_UNAUTHORIZED
+    )
 
 
 def eq_available(
@@ -825,7 +836,8 @@ def eq_available(
     *compact* may be a callable, read only when the other conditions hold."""
     entry = _roster_entry(roster, focused_id)
     return (
-        entry is not None and entry.dial_eq and entry.auth != AUTH_UNAUTHORIZED
+        entry is not None and appliance_capabilities(entry).eq
+        and entry.auth != AUTH_UNAUTHORIZED
         and not (compact() if callable(compact) else compact)
     )
 

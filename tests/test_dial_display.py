@@ -7519,8 +7519,8 @@ class TestEqStep:
         with patch("dial_core._enqueue_eq_set") as mock_set:
             display.eq_step("bass", +1)
         assert eq_optimistic(display)[0] == 1
-        target, kwargs = mock_set.call_args[0][0], mock_set.call_args[1]
-        assert kwargs == {"bass_db": 1}
+        target, gains = mock_set.call_args[0][0], mock_set.call_args[0][1]
+        assert gains == {"bass": 1}
 
     def test_steps_from_current_state_value(self):
         display = self._opened()
@@ -7543,7 +7543,7 @@ class TestEqStep:
         with patch("dial_core._enqueue_eq_set") as mock_set:
             display.eq_step("bass", +1)
         assert eq_optimistic(display)[0] == 6
-        assert mock_set.call_args[1]["bass_db"] == 6
+        assert mock_set.call_args[0][1]["bass"] == 6
 
     def test_clamps_at_minus_six(self):
         display = self._opened()
@@ -10631,7 +10631,7 @@ class TestEqHeldByTheCore:
         seed_eq(display, bass_db=1, treble_db=-3, loaded=True)
         with patch("dial_core._enqueue_eq_set") as send:
             display.eq_step("treble", -9)
-        assert send.call_args[1] == {"treble_db": -6}
+        assert send.call_args[0][1] == {"treble": -6}
         assert eq_optimistic(display)[:2] == (1, -6)
 
     def test_cycling_to_the_page_registers_interest_and_asks_once(self):

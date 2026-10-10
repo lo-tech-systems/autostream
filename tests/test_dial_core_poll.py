@@ -106,6 +106,13 @@ class TestCapabilities:
         assert caps.repeat and caps.outputs and caps.eq
         assert not caps.typed_refusals and not caps.reports_mute
 
+    def test_the_txt_path_carries_the_versions_the_flags_imply(self):
+        caps = cp.appliance_capabilities(
+            _entry(repeat_capable=True, dial_outputs=True, dial_eq=True, proto=2))
+        assert (caps.warnings, caps.eq_version, caps.outputs_version) == (False, 1, 1)
+        bare = cp.appliance_capabilities(_target(proto=2))
+        assert (bare.warnings, bare.eq_version, bare.outputs_version) == (False, 0, 0)
+
     def test_status_flag_off(self):
         assert cp.appliance_capabilities(_target(dial_status=False)).status is False
 
@@ -650,3 +657,88 @@ class TestParseEqBody:
     ])
     def test_anything_malformed_or_failed_is_dropped(self, status, body):
         assert cp.parse_eq_body(status, body) is None
+
+
+def _peq(band_id="peq3", frequency_hz=300, gain_db=1.0, min_db=-12, max_db=12, **extra):
+    band = {"id": band_id, "frequency_hz": frequency_hz, "type": "peak",
+            "gain_db": gain_db, "min_db": min_db, "max_db": max_db}
+    band.update(extra)
+    return band
+
+
+def _six_band_body(bands=None, bass=2, treble=-1):
+    return {"ok": True, "bass_db": bass, "treble_db": treble, "bands": bands if bands is not None else [
+        _peq("peq1", 40, 2.0), _peq("peq2", 100, 2.0), _peq("peq3", 300, 0.0),
+        _peq("peq4", 1000, 0.0), _peq("peq5", 4000, -0.5), _peq("peq6", 10000, -1.0),
+    ]}
+
+
+class TestParseEqBodySixBand:
+    def test_six_bands_then_the_two_derived_controls(self):
+        bands = cp.parse_eq_body(200, _six_band_body(), 2)
+        assert [b.id for b in bands] == ["peq1", "peq2", "peq3", "peq4", "peq5", "peq6", "bass", "treble"]
+        assert bands[0] == EqBand("peq1", 40, 2, -12, 12)
+        assert bands[4] == EqBand("peq5", 4000, 0, -12, 12)
+        assert bands[6:] == (EqBand("bass", None, 2, -6, 6), EqBand("treble", None, -1, -6, 6))
+
+    def test_gains_round_to_whole_dB(self):
+        gains = [(1.4, 1), (1.5, 2), (-0.5, 0), (-1.5, -1), (3, 3)]
+        bands = cp.parse_eq_body(
+            200, _six_band_body([_peq(f"peq{i}", gain_db=g) for i, (g, _) in enumerate(gains)]), 2)
+        assert [b.gain_db for b in bands[:5]] == [want for _, want in gains]
+
+    def test_gains_clamp_to_the_stated_range(self):
+        bands = cp.parse_eq_body(200, _six_band_body([
+            _peq("peq1", gain_db=40), _peq("peq2", gain_db=-40, min_db=-6, max_db=6),
+        ]), 2)
+        assert (bands[0].gain_db, bands[1].gain_db) == (12, -6)
+        assert (bands[1].min_db, bands[1].max_db) == (-6, 6)
+
+    def test_a_repeated_id_is_dropped(self):
+        bands = cp.parse_eq_body(200, _six_band_body([_peq("peq1", gain_db=1), _peq("peq1", gain_db=5)]), 2)
+        assert [(b.id, b.gain_db) for b in bands[:-2]] == [("peq1", 1)]
+
+    def test_an_empty_list_leaves_only_the_derived_controls(self):
+        bands = cp.parse_eq_body(200, _six_band_body([]), 2)
+        assert [b.id for b in bands] == ["bass", "treble"]
+
+    @pytest.mark.parametrize("bands", [
+        None, "x", {}, 5,
+        ["peq1"],
+        [_peq("bass")], [_peq("treble")],
+        [_peq("PEQ1")], [_peq("a-b")], [_peq("x" * 17)], [_peq("")], [_peq(None)],
+        [_peq(frequency_hz=0)], [_peq(frequency_hz=-5)], [_peq(frequency_hz=True)],
+        [_peq(frequency_hz=100.5)], [_peq(frequency_hz="100")],
+        [_peq(gain_db="1")], [_peq(gain_db=None)], [_peq(gain_db=True)],
+        [_peq(gain_db=float("nan"))], [_peq(gain_db=float("inf"))],
+        [_peq(min_db=None)], [_peq(max_db="12")], [_peq(min_db=6, max_db=-6)],
+        [_peq(f"p{i}") for i in range(17)],
+    ])
+    def test_a_malformed_list_is_transient(self, bands):
+        body = _six_band_body()
+        body["bands"] = bands
+        assert cp.parse_eq_body(200, body, 2) is None
+
+    def test_sixteen_bands_are_accepted(self):
+        bands = cp.parse_eq_body(200, _six_band_body([_peq(f"p{i}") for i in range(16)]), 2)
+        assert len(bands) == 18
+
+    def test_a_reply_without_bands_is_transient_at_version_two(self):
+        body = _six_band_body()
+        del body["bands"]
+        assert cp.parse_eq_body(200, body, 2) is None
+
+    def test_version_two_still_needs_the_derived_controls(self):
+        body = _six_band_body()
+        body["bass_db"] = "2"
+        assert cp.parse_eq_body(200, body, 2) is None
+
+    def test_capability_one_ignores_the_bands(self):
+        assert cp.parse_eq_body(200, _six_band_body(), 1) == (
+            EqBand("bass", None, 2, -6, 6), EqBand("treble", None, -1, -6, 6),
+        )
+        assert cp.parse_eq_body(200, _six_band_body(["junk"])) == cp.parse_eq_body(200, _six_band_body(), 1)
+
+    def test_a_failed_request_is_transient_at_version_two(self):
+        assert cp.parse_eq_body(500, _six_band_body(), 2) is None
+        assert cp.parse_eq_body(200, None, 2) is None

@@ -267,6 +267,44 @@ class TestEnqueue:
         _, _, payload = de._queue.get_nowait()
         assert payload == {"bass_db": 1, "treble_db": -1}
 
+    def test_enqueue_set_by_band_id_maps_the_two_controls_to_their_keys(self):
+        enqueue_set(_target(), {"bass": 3, "treble": -2})
+        _, _, payload = de._queue.get_nowait()
+        assert payload == {"bass_db": 3, "treble_db": -2}
+
+    def test_enqueue_set_sends_other_bands_in_a_bands_object(self):
+        enqueue_set(_target(), {"peq3": 2})
+        _, _, payload = de._queue.get_nowait()
+        assert payload == {"bands": {"peq3": 2}}
+
+    def test_enqueue_set_mixed(self):
+        enqueue_set(_target(), {"bass": 1, "peq3": 2, "peq6": -4})
+        _, _, payload = de._queue.get_nowait()
+        assert payload == {"bass_db": 1, "bands": {"peq3": 2, "peq6": -4}}
+
+    def test_enqueue_set_band_gains_are_whole_numbers(self):
+        enqueue_set(_target(), {"peq3": 2.0, "bass": 1.0})
+        _, _, payload = de._queue.get_nowait()
+        assert payload == {"bass_db": 1, "bands": {"peq3": 2}}
+        assert isinstance(payload["bands"]["peq3"], int) and isinstance(payload["bass_db"], int)
+
+    def test_the_keyword_form_and_the_dict_form_merge(self):
+        enqueue_set(_target(), {"peq3": 2}, treble_db=-1)
+        _, _, payload = de._queue.get_nowait()
+        assert payload == {"treble_db": -1, "bands": {"peq3": 2}}
+
+    def test_a_set_body_is_sent_with_the_dial_id(self):
+        de._cfg = MagicMock(uuid="dial-uuid")
+        try:
+            patcher, instances = _mock_conn({"ok": True})
+            with patcher:
+                _send_one("/api/dial/eq/set", _target(), {"bands": {"peq3": 2}})
+            assert json.loads(instances[0].request_called_with["body"]) == {
+                "bands": {"peq3": 2}, "dial_id": "dial-uuid",
+            }
+        finally:
+            de._cfg = None
+
     def test_enqueue_set_coerces_to_int(self):
         enqueue_set(_target(), bass_db=3.0)
         _, _, payload = de._queue.get_nowait()

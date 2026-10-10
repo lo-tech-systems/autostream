@@ -1,7 +1,7 @@
-"""dial_eq.py — bass/treble EQ sender for the EQ page, own thread.
+"""dial_eq.py — EQ sender for the EQ page, own thread.
 
-Sends the two EQ-page requests a touch can trigger — a read (bass/treble
-readback) and an absolute bass/treble set — to a single appliance over its
+Sends the two EQ-page requests a touch can trigger — a read (band
+readback) and an absolute band-gain set — to a single appliance over its
 own worker thread, queue and HTTP client, entirely separate from
 dial_outputs.py's worker (and from dial_volume.py's fan-out worker and
 dial_repeat.py's transport worker). A slow fetch or set here must never
@@ -96,18 +96,42 @@ def enqueue_fetch(target: "_EqTarget") -> None:
     _queue.put(("fetch", target, {}))
 
 
-def enqueue_set(target: "_EqTarget", *, bass_db: "int | None" = None, treble_db: "int | None" = None) -> None:
-    """Enqueue an absolute bass and/or treble value for *target*. Returns
-    immediately — same discipline as enqueue_fetch(). Called from the touch
-    thread. Only the given key is sent (an EQ_BASS_* tap sends bass_db
-    alone, an EQ_TREBLE_* tap sends treble_db alone) — the appliance leaves
-    an absent field's own band(s) untouched."""
+# The two controls the bass/treble capability sends under their own body
+# keys; every other band id travels in the "bands" object.
+_LEGACY_FIELDS = {"bass": "bass_db", "treble": "treble_db"}
+
+
+def _set_body(gains: dict) -> dict:
+    """The request body for absolute band gains (whole dB, by band id)."""
     body: dict = {}
+    bands: dict = {}
+    for band_id, gain in gains.items():
+        if band_id in _LEGACY_FIELDS:
+            body[_LEGACY_FIELDS[band_id]] = int(gain)
+        else:
+            bands[band_id] = int(gain)
+    if bands:
+        body["bands"] = bands
+    return body
+
+
+def enqueue_set(
+    target: "_EqTarget", gains: "dict | None" = None, *,
+    bass_db: "int | None" = None, treble_db: "int | None" = None,
+) -> None:
+    """Enqueue absolute band gains for *target*, by band id. Returns
+    immediately — same discipline as enqueue_fetch(). Called from the touch
+    thread. Only the given bands are sent (an EQ_BASS_* tap sends bass_db
+    alone, an EQ_TREBLE_* tap sends treble_db alone, a six-band appliance's
+    own bands go in "bands") — the appliance leaves an absent band
+    untouched. *bass_db* and *treble_db* are the same as *gains* entries
+    for "bass" and "treble"."""
+    merged = dict(gains or {})
     if bass_db is not None:
-        body["bass_db"] = int(bass_db)
+        merged["bass"] = bass_db
     if treble_db is not None:
-        body["treble_db"] = int(treble_db)
-    _queue.put(("set", target, body))
+        merged["treble"] = treble_db
+    _queue.put(("set", target, _set_body(merged)))
 
 
 def _send_one(path: str, target: "_EqTarget", body: dict) -> "tuple[int | None, dict | None]":
