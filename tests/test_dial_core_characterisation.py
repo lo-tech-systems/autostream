@@ -1,6 +1,6 @@
 """Characterisation tests for the dial display's poll ordering and focus
-handling, timing windows, warnings and artwork, written against DialDisplay as
-it stands so the same behaviour can be re-pointed at a different owner later.
+handling, timing windows, warnings and artwork, driven through a DialDisplay
+and its core together so they pin the behaviour whichever of the two owns it.
 
 Covers: a mute observation sent before a press never reverting the press,
 every walked target's mute being observed, the selected service being set
