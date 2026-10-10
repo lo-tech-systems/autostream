@@ -73,7 +73,7 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
+    DERIVED_EQ_IDS, PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
     awaiting_title, dots_active,
     eq_gain, selector_rows,
 )
@@ -744,7 +744,7 @@ def _output_list_row(row: "OutputRow") -> tuple:
 def _eq_loaded(eq: "EqState") -> bool:
     """Whether the EQ page has a reading it can draw: one has landed and it
     carries a band the page knows."""
-    return eq.loaded and any(b.id in ("bass", "treble") for b in eq.bands)
+    return eq.loaded and any(b.id in DERIVED_EQ_IDS for b in eq.bands)
 
 
 def _offerable(rows: "tuple[OutputRow, ...]") -> "tuple[OutputRow, ...]":

@@ -39,7 +39,8 @@ from dial_auth import (
 import dial_capabilities
 from dial_capabilities import Capabilities, appliance_capabilities  # noqa: F401
 from dial_core_state import (
-    EQ_LIMIT_DB, Artwork, EqBand, OutputRow, Selection, artwork_key, walk_fallback, walk_step,
+    DERIVED_EQ_IDS, EQ_LIMIT_DB, Artwork, EqBand, OutputRow, Selection, artwork_key, six_band,
+    walk_fallback, walk_step,
 )
 from dial_mdns import appliance_display_name
 from dial_repeat_store import parse_repeat_object, repeat_store
@@ -524,7 +525,6 @@ def reply_retry_after(body) -> int:
     return min(value, RETRY_AFTER_MAX_S)
 
 
-_DERIVED_EQ_IDS = ("bass", "treble")
 _EQ_BAND_ID_RE = re.compile(r"[a-z0-9_]{1,16}")
 _EQ_BANDS_MAX = 16
 
@@ -556,7 +556,7 @@ def _parse_eq_bands(entries) -> "tuple[EqBand, ...] | None":
         frequency = entry.get("frequency_hz")
         if (
             not isinstance(band_id, str) or _EQ_BAND_ID_RE.fullmatch(band_id) is None
-            or band_id in _DERIVED_EQ_IDS
+            or band_id in DERIVED_EQ_IDS
         ):
             return None
         if isinstance(frequency, bool) or not isinstance(frequency, int) or frequency <= 0:
@@ -590,7 +590,7 @@ def parse_eq_body(status, body, capability_version: int = 1) -> "tuple[EqBand, .
         EqBand("bass", None, bass, -EQ_LIMIT_DB, EQ_LIMIT_DB),
         EqBand("treble", None, treble, -EQ_LIMIT_DB, EQ_LIMIT_DB),
     )
-    if capability_version < 2:
+    if not six_band(capability_version):
         return derived
     bands = _parse_eq_bands(body.get("bands"))
     return None if bands is None else bands + derived

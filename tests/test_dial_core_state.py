@@ -992,3 +992,7 @@ class TestAwaitingTitle:
 
     def test_the_word_for_it_is_playing(self):
         assert cs.PLAYING_TEXT == "Playing"
+
+
+def test_six_band():
+    assert [cs.six_band(v) for v in (0, 1, 2, 3)] == [False, False, True, True]

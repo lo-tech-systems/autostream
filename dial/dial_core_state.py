@@ -40,6 +40,17 @@ EQ_LIMIT_DB = 6
 # How long an EQ tap's value is shown ahead of the appliance's own reading.
 EQ_OPTIMISTIC_WINDOW_S = 2.0
 
+# The two controls every EQ capability exposes; a six-band appliance lists its
+# own bands before them.
+DERIVED_EQ_IDS = ("bass", "treble")
+SIX_BAND_EQ_VERSION = 2
+
+
+def six_band(version: int) -> bool:
+    """Whether an EQ capability version lists six bands of its own."""
+    return version >= SIX_BAND_EQ_VERSION
+
+
 # How long a replay the appliance has just accepted may be shown as playing
 # before its own playing advertisement reaches the dial (normally a few
 # seconds).

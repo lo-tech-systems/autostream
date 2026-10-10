@@ -59,12 +59,12 @@ from dial_capabilities import CAPABILITIES_ENDPOINT_PROTO, appliance_capabilitie
 from dial_config import SCOPE_ALL
 from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
-    EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
+    DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
     ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
     NowPlaying, OutputsState, PIN_RE, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
     appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
     eq_available, eq_gain, idle_affordance, outputs_available, reporting_for, resolve_focus,
-    started_refused, validate_appliance_warnings, visible_targets, walk_order,
+    six_band, started_refused, validate_appliance_warnings, visible_targets, walk_order,
     with_accepted_replay,
 )
 from dial_eq import _EqTarget
@@ -193,9 +193,6 @@ _SNAPSHOT_FIELDS = tuple(
     f.name for f in dataclasses.fields(_CoreState) if f.name not in _PRIVATE_FIELDS
 )
 
-# The EQ bands the bass/treble capability exposes.
-_EQ_BAND_IDS = ("bass", "treble")
-
 # The name each request method gives a capability, read from an appliance's
 # Capabilities.
 _CAPABILITY_FLAGS = {
@@ -208,9 +205,9 @@ def _eq_band_ids(held) -> tuple:
     """The band ids a set may name given the EQ state held: bass and treble
     always, and the appliance's own bands once a six-band reading has
     landed."""
-    if held is None or held.capability_version < 2:
-        return _EQ_BAND_IDS
-    return _EQ_BAND_IDS + tuple(b.id for b in held.bands if b.id not in _EQ_BAND_IDS)
+    if held is None or not six_band(held.capability_version):
+        return DERIVED_EQ_IDS
+    return DERIVED_EQ_IDS + tuple(b.id for b in held.bands if b.id not in DERIVED_EQ_IDS)
 
 
 def _capability_flag(caps, capability: str) -> bool:
@@ -1102,10 +1099,10 @@ class DialCore:
         held = self._snapshot.eq
         if held is None or held.appliance_id != appliance_id:
             return ActionResult(False, "not_polling")
-        if held.capability_version < 2:
-            band_ids = _EQ_BAND_IDS
+        if not six_band(held.capability_version):
+            band_ids = DERIVED_EQ_IDS
         else:
-            band_ids = tuple(b.id for b in held.bands if b.id not in _EQ_BAND_IDS)
+            band_ids = tuple(b.id for b in held.bands if b.id not in DERIVED_EQ_IDS)
         return self.set_eq(appliance_id, {band_id: 0 for band_id in band_ids})
 
     # ---- worker results ----------------------------------------------------

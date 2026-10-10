@@ -22,7 +22,7 @@ import json
 from typing import Any, Iterable, Mapping
 
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
-from dial_core_state import PLAYING_TEXT, awaiting_pin, awaiting_title
+from dial_core_state import DERIVED_EQ_IDS, PLAYING_TEXT, awaiting_pin, awaiting_title, six_band
 from dial_warning_text import appliance_warning_key
 
 # The body's version. Bumped only for a change an older page could not read;
@@ -39,10 +39,6 @@ ARTWORK_PATH = "/api/v1/artwork/"
 # the logo has a fixed one for when nothing is held.
 BACKDROP_SUFFIX = "/backdrop"
 LOGO_BACKDROP_PATH = "/api/v1/logo/backdrop"
-
-# The ids the core keeps for the two derived EQ controls. On a six-band
-# appliance they are left out: the page draws the six real bands.
-DERIVED_EQ_IDS = ("bass", "treble")
 
 # The panel values shown before the panel service has said anything.
 DEFAULT_BRIGHTNESS = 80
@@ -260,7 +256,7 @@ def _eq_block(snapshot, now: float) -> dict | None:
     version = held.capability_version
     bands = []
     for band in held.bands:
-        if version >= 2 and band.id in DERIVED_EQ_IDS:
+        if six_band(version) and band.id in DERIVED_EQ_IDS:
             continue
         bands.append({
             "id": band.id,
