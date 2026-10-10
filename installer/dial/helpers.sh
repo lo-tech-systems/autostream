@@ -343,6 +343,218 @@ with os.fdopen(fd, 'w') as f:
     chown autostream:autostream /var/lib/autostream/dial-settings.json
 }
 
+# ---- HD dial (kiosk browser) -------------------------------------------------
+#
+# Everything below runs only when HD=true, which a fresh install gets from
+# --hd and an --update from detect_hd_install(). An SPI dial runs none of the
+# install steps; its only contact is retire_hd_kiosk(), which does nothing
+# unless an earlier HD install left state behind.
+KIOSK_USER="autostream-kiosk"
+KIOSK_HOME="/var/lib/autostream-kiosk"
+KIOSK_UNIT="autostream_dial_kiosk.service"
+
+_hd_marker() { printf '%s\n' "$(_state_dir)/hd-kiosk"; }
+
+detect_hd_install() {
+    # --update: decide whether this dial is an HD (kiosk) dial from the display
+    # profile it already runs, so an update keeps the kiosk set-up without any
+    # flag. The mutable settings file's screen_type wins over the hardware
+    # file's, as the dial's own config loader does. When the profile cannot be
+    # read at all the marker an earlier HD install left decides, so a damaged
+    # settings file never switches the kiosk off. Sets HD; never clears it.
+    local verdict
+    verdict="$(python3 - "$DEPLOY/dial" \
+        "$(_fs_root)/etc/autostream/autostream-dial.json" \
+        "$(_state_dir)/dial-settings.json" <<'PYEOF' 2>/dev/null || true
+import json, sys
+sys.path.insert(0, sys.argv[1])
+try:
+    from dial_display_profiles import DISPLAY_PROFILES
+except Exception:
+    print("unknown")
+    sys.exit(0)
+
+key = None
+for path in (sys.argv[2], sys.argv[3]):
+    try:
+        with open(path, encoding="utf-8") as f:
+            display = json.load(f).get("display")
+    except Exception:
+        continue
+    if isinstance(display, dict) and isinstance(display.get("screen_type"), str):
+        key = display["screen_type"]
+profile = DISPLAY_PROFILES.get(key) if key else None
+if profile is None:
+    print("unknown")
+else:
+    print("kiosk" if profile.surface == "kiosk" else "spi")
+PYEOF
+    )"
+    case "${verdict}" in
+        kiosk) HD=true ;;
+        spi) ;;
+        *) if [[ -e "$(_hd_marker)" ]]; then HD=true; fi ;;
+    esac
+}
+
+install_kiosk_packages() {
+    # cage is a single-window Wayland compositor, chromium the browser it
+    # runs. seatd gives cage a seat when logind is not handing it one.
+    apt_step apt-get install -y --no-install-recommends \
+        cage chromium fonts-dejavu-core seatd
+}
+
+create_kiosk_user() {
+    # The browser's own account: no login shell, a home that holds only its
+    # profile, and the groups it needs for the GPU and the touch panel. The
+    # dial service additionally joins video to drive the backlight.
+    if ! id "${KIOSK_USER}" &>/dev/null; then
+        useradd --system --create-home --home-dir "${KIOSK_HOME}" \
+            --shell /usr/sbin/nologin "${KIOSK_USER}"
+    fi
+    local grp
+    for grp in video input render; do
+        usermod -aG "${grp}" "${KIOSK_USER}" 2>/dev/null || true
+    done
+    usermod -aG video autostream 2>/dev/null || true
+    chown "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}"
+    chmod 0750 "${KIOSK_HOME}"
+}
+
+_boot_config_append() {
+    # Append LINE to config.txt where it applies to every board: plainly when
+    # the file has no section headers or its last header is [all], otherwise
+    # under a new [all] header, so the line can never land inside a trailing
+    # conditional section such as [pi4] or [cm4].
+    # Usage: _boot_config_append CONFIG_FILE LINE
+    local cfg="$1" line="$2" last
+    last="$(grep -E '^[[:space:]]*\[' "${cfg}" | tail -n 1 | tr -d '[:space:]' || true)"
+    {
+        if [[ -s "${cfg}" && -n "$(tail -c 1 "${cfg}")" ]]; then
+            printf '\n'
+        fi
+        if [[ -n "${last}" && "${last}" != "[all]" ]]; then
+            printf '[all]\n'
+        fi
+        printf '%s\n' "${line}"
+    } >> "${cfg}" \
+        || echo "WARNING: could not append ${line} to ${cfg} — set it manually" >&2
+}
+
+_boot_config_in_all() {
+    # Succeeds when a line matching the extended regex PATTERN sits in the
+    # unconditional part of config.txt (before any header, or under [all]).
+    # Usage: _boot_config_in_all CONFIG_FILE PATTERN
+    awk -v pat="$2" '
+        /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); cond = (s != "[all]") }
+        !cond && $0 ~ pat { found = 1 }
+        END { exit !found }' "$1"
+}
+
+write_boot_config_line() {
+    # Make the unconditional part of config.txt (before any section header, or
+    # under [all]) carry exactly one KEY=VALUE line for KEY: the first such
+    # line is rewritten and extra copies dropped, otherwise the line is
+    # appended where it applies to every board (see _boot_config_append). Lines
+    # inside conditional sections are left alone. For single-valued keys such
+    # as gpu_mem; overlays use ensure_boot_overlay. Non-fatal, like the other
+    # boot-config helpers.
+    # Usage: write_boot_config_line KEY VALUE [CONFIG_FILE]
+    local key="$1" value="$2" cfg="${3:-/boot/firmware/config.txt}"
+    local line="${key}=${value}" tmp
+    if [[ ! -f "${cfg}" ]]; then
+        echo "WARNING: ${cfg} not found — set ${line} in the boot config manually" >&2
+        return 0
+    fi
+    if _boot_config_in_all "${cfg}" "^[[:space:]]*${key}="; then
+        tmp="$(mktemp)"
+        awk -v pat="^[[:space:]]*${key}=" -v line="${line}" '
+            /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); cond = (s != "[all]") }
+            !cond && $0 ~ pat { if (!done) { print line; done = 1 } next }
+            { print }' "${cfg}" > "${tmp}" || { rm -f "${tmp}"; return 0; }
+        if ! cmp -s "${tmp}" "${cfg}"; then
+            cat "${tmp}" > "${cfg}" \
+                || echo "WARNING: could not rewrite ${key} in ${cfg}" >&2
+        fi
+        rm -f "${tmp}"
+        return 0
+    fi
+    _boot_config_append "${cfg}" "${line}"
+}
+
+ensure_boot_overlay() {
+    # Enable dtoverlay=NAME for every board unless an overlay of that name
+    # (with or without parameters) is already enabled in the unconditional part
+    # of config.txt; otherwise append it where it applies to every board.
+    # Usage: ensure_boot_overlay NAME [CONFIG_FILE]
+    local name="$1" cfg="${2:-/boot/firmware/config.txt}"
+    if [[ ! -f "${cfg}" ]]; then
+        echo "WARNING: ${cfg} not found — enable dtoverlay=${name} manually" >&2
+        return 0
+    fi
+    if _boot_config_in_all "${cfg}" "^[[:space:]]*dtoverlay=${name}([[:space:]]*$|,)"; then
+        return 0
+    fi
+    _boot_config_append "${cfg}" "dtoverlay=${name}"
+}
+
+configure_hd_boot() {
+    # The kiosk browser needs the KMS graphics driver and a GPU memory split
+    # large enough for it. A DSI panel's own overlay is left to the owner.
+    # Takes effect on the next boot.
+    local cfg="${1:-/boot/firmware/config.txt}"
+    ensure_boot_overlay vc4-kms-v3d "${cfg}"
+    write_boot_config_line gpu_mem 128 "${cfg}"
+}
+
+write_hd_display_config() {
+    # A fresh --hd install: the hardware file's display block selects the HD
+    # profile with no SPI panel and no touch driver, so the dial runs headless
+    # and serves the page. Keeps the file's owner and mode.
+    python3 - "$(_fs_root)/etc/autostream/autostream-dial.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    cfg = json.load(f)
+cfg['display'] = {'fitted': True, 'screen_type': 'hd_kiosk', 'touch_type': 'none'}
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+write_hd_marker() {
+    # The kiosk unit's start condition; see the unit's header.
+    install -m 0644 -o root -g root /dev/null "$(_hd_marker)"
+}
+
+deploy_kiosk_unit() {
+    # The unit is enabled, not started: the kiosk comes up on the reboot that
+    # ends every install and update. The udev rule is applied to a backlight
+    # already present so a fresh install needs no extra reboot for it.
+    local root
+    root="$(_fs_root)"
+    install -m 0644 -o root -g root "$DEPLOY/system/systemd/${KIOSK_UNIT}" \
+        "${root}/etc/systemd/system/${KIOSK_UNIT}"
+    install -D -m 0644 -o root -g root "$DEPLOY/system/udev/99-autostream-backlight.rules" \
+        "${root}/etc/udev/rules.d/99-autostream-backlight.rules"
+    udevadm control --reload 2>/dev/null || true
+    udevadm trigger --subsystem-match=backlight --action=add 2>/dev/null || true
+    systemctl daemon-reload
+    systemctl enable "${KIOSK_UNIT}"
+}
+
+retire_hd_kiosk() {
+    # An SPI dial that was once an HD dial (its profile was changed, then it
+    # updated): switch the kiosk off. Nothing happens on a dial that never was.
+    local root marker
+    root="$(_fs_root)"
+    marker="$(_hd_marker)"
+    if [[ -e "${marker}" || -e "${root}/etc/systemd/system/${KIOSK_UNIT}" ]]; then
+        systemctl disable --now "${KIOSK_UNIT}" 2>/dev/null || true
+        rm -f "${marker}"
+    fi
+}
+
 has_tty() {
     [[ -r /dev/tty && -w /dev/tty ]]
 }
@@ -373,6 +585,7 @@ WARNING:
 A full activity log will be written to ~/autostream_dial_install.log
 =============================================================================
 EOF
+    [[ "${HD:-false}" == true ]] && echo "HD dial: also installs the kiosk browser and its service."
 
     if has_tty; then
         local ans
@@ -574,6 +787,8 @@ network_state_phase() {
 }
 
 check_pi_model() {
+    # The Zero expectation is for the SPI dial; an HD dial runs on a larger Pi.
+    [[ "${HD:-false}" == true ]] && return 0
     local model
     model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)
     if [[ "$model" != *"Raspberry Pi Zero"* ]]; then
@@ -1057,6 +1272,12 @@ owned_files_list() {
     for name in reboot.cgi factory-reset.cgi update-status.cgi download-logs.cgi; do
         printf '%s\n' "${opt}/nginx/cgi/${name}"
     done
+    # An HD dial also owns its kiosk unit, backlight rule and start marker.
+    if [[ "${HD:-false}" == true ]]; then
+        printf '%s\n' "/etc/systemd/system/${KIOSK_UNIT}" \
+                      /etc/udev/rules.d/99-autostream-backlight.rules \
+                      /var/lib/autostream/hd-kiosk
+    fi
 }
 
 backup_owned_files() {

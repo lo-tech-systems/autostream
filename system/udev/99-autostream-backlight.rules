@@ -1,0 +1,11 @@
+# /etc/udev/rules.d/99-autostream-backlight.rules
+#
+# Lets the dial service (group video) set a panel's backlight through sysfs,
+# so an HD dial can switch its panel off when idle. A panel with no backlight
+# device is unaffected.
+#
+# This file is part of autostream dial.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+SUBSYSTEM=="backlight", ACTION=="add|change", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"

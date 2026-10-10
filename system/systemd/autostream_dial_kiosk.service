@@ -1,0 +1,37 @@
+# /etc/systemd/system/autostream_dial_kiosk.service
+#
+# Full-screen browser for an HD dial: cage (a single-window Wayland
+# compositor) runs Chromium on the page the dial serves on the loopback
+# interface. The unit only runs where the installer wrote the marker file
+# below, so it stays inert on an SPI dial even if it were enabled.
+#
+# This file is part of autostream dial.
+# Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+#
+
+[Unit]
+Description=autostream dial kiosk browser
+After=autostream_dial.service systemd-user-sessions.service getty@tty1.service
+Wants=autostream_dial.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/var/lib/autostream/hd-kiosk
+
+[Service]
+# An unprivileged user of its own keeps the browser away from the dial's
+# state files; the marker above is checked by systemd as root.
+User=autostream-kiosk
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autostream-dial-kiosk
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+# Wait for the page's server so the browser never paints a connection error.
+ExecStartPre=/bin/sh -c 'until curl -fsS http://127.0.0.1:7843/api/v1/state >/dev/null; do sleep 1; done'
+ExecStart=/usr/bin/cage -- /usr/bin/chromium --kiosk --ozone-platform=wayland --ignore-gpu-blocklist --enable-gpu-rasterization --noerrdialogs --disable-infobars --disable-pinch --overscroll-history-navigation=0 --no-first-run --disable-features=TranslateUI --disable-session-crashed-bubble --user-data-dir=/var/lib/autostream-kiosk/chromium http://127.0.0.1:7843/
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

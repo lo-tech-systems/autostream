@@ -19,6 +19,8 @@ systemctl disable --now \
     autostream_sdcardhealth_boot \
     2>/dev/null || true
 systemctl stop autostream_dial_dnsmasq 2>/dev/null || true
+# HD dial only; each step does nothing on an SPI dial.
+systemctl disable --now autostream_dial_kiosk 2>/dev/null || true
 
 rm -f /etc/systemd/system/autostream_dial.service
 rm -f /etc/systemd/system/autostream_dial_wifi_watcher.service
@@ -31,6 +33,7 @@ rm -f /etc/systemd/system/autostream_storage_guard.timer
 rm -f /etc/systemd/system/autostream_sdcardhealth.service
 rm -f /etc/systemd/system/autostream_sdcardhealth.timer
 rm -f /etc/systemd/system/autostream_sdcardhealth_boot.service
+rm -f /etc/systemd/system/autostream_dial_kiosk.service
 systemctl daemon-reload
 
 rm -f /etc/nginx/sites-enabled/autostream-dial
@@ -41,6 +44,8 @@ rm -f /etc/avahi/services/autostream-dial.service
 rm -f /etc/dnsmasq.d/autostream-dial-setup.conf
 rm -f /etc/sudoers.d/autostream_dial
 rm -f /etc/logrotate.d/autostream-dial
+rm -f /etc/udev/rules.d/99-autostream-backlight.rules
+udevadm control --reload 2>/dev/null || true
 
 # Restore system dnsmasq (masked during install)
 systemctl unmask dnsmasq.service 2>/dev/null || true
@@ -60,4 +65,6 @@ rm -rf /var/lib/autostream
 rm -f  /run/autostream/autostream-dial-setup.conf 2>/dev/null || true
 
 userdel autostream 2>/dev/null || true
+userdel autostream-kiosk 2>/dev/null || true
+rm -rf /var/lib/autostream-kiosk
 echo "autostream dial uninstalled."

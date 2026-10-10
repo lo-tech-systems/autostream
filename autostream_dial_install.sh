@@ -4,6 +4,7 @@
 # Usage:
 #   ./autostream_dial_install.sh           # fresh install
 #   ./autostream_dial_install.sh --update  # in-place update (run by autostream_dial_updater)
+#   ./autostream_dial_install.sh --hd      # fresh install of an HD (kiosk browser) dial
 #
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -14,7 +15,16 @@ DEPLOY="$SCRIPT_DIR"
 source "$DEPLOY/installer/dial/helpers.sh"
 
 UPDATE=false
-[[ "${1:-}" == "--update" ]] && UPDATE=true
+HD=false
+for _arg in "$@"; do
+    case "${_arg}" in
+        --update) UPDATE=true ;;
+        --hd) HD=true ;;
+    esac
+done
+# An HD dial is chosen at install time; an update reads the profile the dial
+# already runs (detect_hd_install) and ignores the flag.
+if $UPDATE; then HD=false; fi
 
 # AUTOSTREAM_RELEASE_TAG is injected by systemd-run --setenv on --update runs.
 # On fresh install it is typically unset; detect_install_version() falls back to "unknown".
@@ -78,6 +88,7 @@ if $UPDATE; then
     create_service_user
     create_dirs
     init_service_dirs
+    detect_hd_install
 fi
 
 # ---- Fresh-install only steps -----------------------------------------------
@@ -115,6 +126,11 @@ phase packages 10 "Installing packages..."
 install_recovery_packages
 install_image_packages
 install_display_hardware_packages
+# The kiosk browser and its account exist on an HD dial only.
+if $HD; then
+    install_kiosk_packages
+    create_kiosk_user
+fi
 install_venv_build_packages
 # The binary is always present so SD card health monitoring can be switched on
 # later from the appliance's Setup page without a rebuild; only the wrapper's
@@ -187,6 +203,9 @@ enable_spi0
 enable_spi1
 set_spidev_bufsiz
 enable_i2c
+if $HD; then
+    configure_hd_boot
+fi
 
 # ---- Boot-time trim (fresh install and --update) ----------------------------
 # One call on the unconditional path rather than inside the fresh-only block
@@ -204,6 +223,9 @@ if ! $UPDATE; then
     fi
     write_dial_hw_config "$DIAL_UUID"
     write_dial_settings
+    if $HD; then
+        write_hd_display_config
+    fi
 else
     # Parse without source — never execute env file contents.
     DIAL_UUID=$(grep '^DIAL_UUID=' \
@@ -238,6 +260,15 @@ systemctl enable --now autostream_storage_guard.timer
 # only by the wrapper's enable verb (from the Setup page) and its state is
 # left alone here so an update never switches monitoring on or off.
 systemctl enable autostream_sdcardhealth_boot.service
+
+# The kiosk unit is enabled on an HD dial only. Its start marker is what makes
+# it run, so a dial that stopped being an HD dial has it switched off here.
+if $HD; then
+    write_hd_marker
+    deploy_kiosk_unit
+else
+    retire_hd_kiosk
+fi
 
 # ---- nginx ------------------------------------------------------------------
 rm -f /etc/nginx/sites-enabled/default
