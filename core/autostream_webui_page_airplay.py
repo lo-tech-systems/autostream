@@ -79,7 +79,11 @@ _VU_STEREO_CSS = (
 # Shared extra_css for the two "Home page" renderers below (send_airplay_page,
 # send_remote_home_page) — built once at import time rather than reconstructed
 # identically inside each function on every request.
-_HOME_PAGE_EXTRA_CSS = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_VU_STEREO_CSS}\n{_NP_ART_CSS}"
+_PIN_MODAL_NOTE_CSS = (
+    "  #pinModal .modal-note{margin:.6rem 0 0 0;font-size:.95rem;color:var(--color-text-muted);}\n"
+    "  #pinModal .modal-note[hidden]{display:none;}"
+)
+_HOME_PAGE_EXTRA_CSS = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{_PIN_MODAL_NOTE_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_VU_STEREO_CSS}\n{_NP_ART_CSS}"
 
 
 _REMOTE_HOME_SCRIPT = """<script>
@@ -596,7 +600,8 @@ def send_airplay_page(
     <div class="hdr modal-hdr" id="pinModalTitle">Enter PIN</div>
     <div class="bd modal-bd">
       <p>Enter the PIN shown on your Apple TV (or other AirPlay device) to enable playback.</p>
-      <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" />
+      <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" pattern="[0-9]*" maxlength="8" />
+      <div id="pinModalNote" class="modal-note" hidden></div>
     </div>
     <div class="ft modal-ft">
       <button type="button" class="btn modal-btn modal-btn-secondary" id="pinModalCancel">Cancel</button>
@@ -840,7 +845,8 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     <div class="hdr modal-hdr" id="pinModalTitle">Enter PIN</div>
     <div class="bd modal-bd">
       <p>Enter the PIN shown on your Apple TV (or other AirPlay device) to enable playback.</p>
-      <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" />
+      <input id="pinModalInput" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" pattern="[0-9]*" maxlength="8" />
+      <div id="pinModalNote" class="modal-note" hidden></div>
     </div>
     <div class="ft modal-ft">
       <button type="button" class="btn modal-btn modal-btn-secondary" id="pinModalCancel">Cancel</button>

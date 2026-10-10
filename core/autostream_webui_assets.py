@@ -613,22 +613,34 @@ HOME_CARDS_SCRIPT = """
     }
   }
 
-  function showPinModal(outputName){
+  // Opens the PIN dialog and resolves with the digits entered, or null on
+  // Cancel/Escape. `note` is a line of text under the input (empty hides it).
+  // The input only accepts 4 to 8 digits and OK stays disabled until four
+  // have been typed.
+  function showPinModal(outputName, note){
     return new Promise((resolve) => {
       const m = document.getElementById('pinModal');
       const title = document.getElementById('pinModalTitle');
       const input = document.getElementById('pinModalInput');
       const btnOk = document.getElementById('pinModalOk');
       const btnCancel = document.getElementById('pinModalCancel');
+      const noteEl = document.getElementById('pinModalNote');
       if (!m || !input || !btnOk || !btnCancel) {
         // Fallback to native prompt if our modal is missing for any reason.
         const fallbackLabel = window.__PIN_PROMPT_FALLBACK || 'Enter PIN';
         const v = window.prompt(fallbackLabel + (outputName ? ' ('+outputName+')' : '') + ':', '');
-        resolve(v && String(v).trim() ? String(v).trim() : null);
+        const t = v ? String(v).trim() : '';
+        resolve(/^[0-9]{4,8}$/.test(t) ? t : null);
         return;
       }
       title.textContent = outputName ? ('Enter PIN for ' + outputName) : 'Enter PIN';
+      if (noteEl) {
+        noteEl.textContent = note || '';
+        noteEl.hidden = !note;
+      }
       input.value = '';
+      input.disabled = false;
+      btnOk.disabled = true;
       m.classList.add('show');
       // iOS: defer focus slightly so the keyboard reliably appears.
       setTimeout(() => { try { input.focus(); } catch (e) {} }, 60);
@@ -638,17 +650,71 @@ HOME_CARDS_SCRIPT = """
         btnOk.onclick = null;
         btnCancel.onclick = null;
         input.onkeydown = null;
+        input.oninput = null;
         resolve(val);
+      };
+      input.oninput = () => {
+        const digits = String(input.value || '').replace(/[^0-9]/g, '').slice(0, 8);
+        if (input.value !== digits) input.value = digits;
+        btnOk.disabled = digits.length < 4;
       };
       btnCancel.onclick = () => cleanup(null);
       btnOk.onclick = () => {
         const v = (input.value || '').trim();
-        cleanup(v ? v : null);
+        if (!/^[0-9]{4,8}$/.test(v)) return;
+        cleanup(v);
       };
       input.onkeydown = (ev) => {
-        if (ev.key === 'Enter') { ev.preventDefault(); btnOk.click(); }
+        if (ev.key === 'Enter') { ev.preventDefault(); if (!btnOk.disabled) btnOk.click(); }
         else if (ev.key === 'Escape') { ev.preventDefault(); btnCancel.click(); }
       };
+    });
+  }
+
+  // Shown after the appliance limits PIN attempts: the dialog stays open
+  // with the input and OK disabled and counts the seconds down. Resolves
+  // true when the wait is over, false if the user cancels.
+  function showPinWait(outputName, seconds){
+    return new Promise((resolve) => {
+      const m = document.getElementById('pinModal');
+      const title = document.getElementById('pinModalTitle');
+      const input = document.getElementById('pinModalInput');
+      const btnOk = document.getElementById('pinModalOk');
+      const btnCancel = document.getElementById('pinModalCancel');
+      const noteEl = document.getElementById('pinModalNote');
+      let left = Math.max(1, parseInt(seconds, 10) || 1);
+      if (!m || !input || !btnOk || !btnCancel) {
+        setTimeout(() => resolve(true), left * 1000);
+        return;
+      }
+      const label = () => 'Wait ' + left + (left === 1 ? ' second' : ' seconds') + ' before retry';
+      title.textContent = outputName ? ('Enter PIN for ' + outputName) : 'Enter PIN';
+      if (noteEl) { noteEl.textContent = label(); noteEl.hidden = false; }
+      input.value = '';
+      input.disabled = true;
+      btnOk.disabled = true;
+      m.classList.add('show');
+
+      let timer = null;
+      const onKey = (ev) => {
+        if (ev.key === 'Escape') { ev.preventDefault(); btnCancel.click(); }
+      };
+      const cleanup = (val) => {
+        if (timer !== null) { clearInterval(timer); timer = null; }
+        document.removeEventListener('keydown', onKey);
+        m.classList.remove('show');
+        btnOk.onclick = null;
+        btnCancel.onclick = null;
+        resolve(val);
+      };
+      btnOk.onclick = null;
+      btnCancel.onclick = () => cleanup(false);
+      document.addEventListener('keydown', onKey);
+      timer = setInterval(() => {
+        left -= 1;
+        if (left <= 0) { cleanup(true); return; }
+        if (noteEl) noteEl.textContent = label();
+      }, 1000);
     });
   }
 
@@ -744,7 +810,7 @@ HOME_CARDS_SCRIPT = """
     return j;
   }
 
-  async function postPinOnly(id, pin) {
+  async function postPairAndEnable(id, pin, volume) {
     const r = await fetch(window.__OUTPUT_URL || '/api/output', {
       method:'POST',
       credentials:'same-origin',
@@ -754,9 +820,11 @@ HOME_CARDS_SCRIPT = """
         'X-CSRF-Token':window.__CSRF||''
       },
       body:JSON.stringify({
-        op:'pin',
         id:id,
+        op:'pin',
         pin: String(pin||'').trim(),
+        selected: true,
+        volume: normalizeVolume(volume),
         csrf_token: window.__CSRF||''
       })
     });
@@ -767,68 +835,57 @@ HOME_CARDS_SCRIPT = """
     return j;
   }
 
-  // Runs the PIN-entry/verify/retry loop for one output. `c` is the
-  // checkbox element to keep in sync with the outcome, or null when there
-  // is no live checkbox (e.g. a poll-driven prompt for a card not being
-  // toggled by the user). Returns true once the output ends up enabled,
-  // false if the user cancelled or the retry ultimately failed.
+  // Runs the PIN-entry/retry loop for one output. Each attempt is one
+  // request that pairs the output and switches it on. `c` is the checkbox
+  // element to keep in sync with the outcome, or null when there is no live
+  // checkbox (e.g. a poll-driven prompt for a card not being toggled by the
+  // user). Returns true once the output ends up enabled, false if the user
+  // cancelled or the attempt failed. An appliance that only understands the
+  // pin-only request replies ok without enabling; the next poll then shows
+  // the output off and switching it on again needs no PIN.
   async function runPinFlow(id, nm, volume, c) {
+    const setOn = () => {
+      if (c) {
+        c.checked = true;
+        updateOutputStateVisual(String(id), true);
+      }
+    };
+    const setOff = () => {
+      if (c) {
+        c.checked = false;
+        updateOutputStateVisual(String(id), false);
+      }
+    };
     // Temporarily revert the toggle until fully enabled.
-    if (c) {
-      c.checked = false;
-      updateOutputStateVisual(String(id), false);
-    }
+    setOff();
 
+    let note = '';
     while (true) {
-      const pin = await showPinModal(nm || 'this speaker');
+      const pin = await showPinModal(nm || 'this speaker', note);
       if (!pin) return false; // user cancelled
 
-      let jpin = null;
+      let j = null;
       try {
-        jpin = await postPinOnly(id, pin);
+        j = await postPairAndEnable(id, pin, volume);
       } catch (e) {
         // treat as failure; keep disabled
-        if (c) {
-          c.checked = false;
-          updateOutputStateVisual(String(id), false);
-        }
+        setOff();
         return false;
       }
 
-      if (jpin && jpin.ok) {
-        // PIN accepted -> retry the original enable request (without pin)
-        try {
-          const jen = await postOutputUpdate(id, true, volume);
-          if (jen && jen.ok) {
-            if (c) {
-              c.checked = true;
-              updateOutputStateVisual(String(id), true);
-            }
-            return true;
-          }
-          // If it still asks for PIN, loop again.
-          if (jen && jen.pin_required) {
-            if (c) {
-              c.checked = false;
-              updateOutputStateVisual(String(id), false);
-            }
-            continue;
-          }
-        } catch (e) {
-          if (c) {
-            c.checked = false;
-            updateOutputStateVisual(String(id), false);
-          }
-        }
-        return false;
-      }
-
-      // Wrong PIN -> re-prompt
-      if (jpin && jpin.pin_invalid) {
+      if (j && j.ok) { setOn(); return true; }
+      if (j && j.pin_invalid) {
+        note = 'That PIN was not accepted. Try again.';
         continue;
       }
-
-      // Other error -> stop
+      if (j && j.error === 'rate_limited') {
+        const wait = Math.max(1, parseInt(j.retry_after_s, 10) || 1);
+        if (!(await showPinWait(nm || 'this speaker', wait))) return false;
+        note = '';
+        continue;
+      }
+      if (j && j.pin_required) { note = ''; continue; } // the device asked for a new code
+      setOff();
       return false;
     }
   }
@@ -840,6 +897,7 @@ HOME_CARDS_SCRIPT = """
   // prompt for, so the poll does not immediately re-open it every cycle;
   // it is cleared per-id once that output stops asking for a PIN, so a
   // later re-request (e.g. the device forgot pairing again) prompts again.
+  // A row claimed by a dial that can enter the PIN is left to it.
   async function maybePromptForPin(outputs) {
     if (!window.__PIN_DISMISSED) window.__PIN_DISMISSED = new Set();
     if (!window.__PENDING_OUTPUTS) window.__PENDING_OUTPUTS = new Set();
@@ -853,7 +911,8 @@ HOME_CARDS_SCRIPT = """
     const target = outputs.find(function(o) {
       const id = String(o.id);
       return !!o.pin_pending && !window.__PIN_DISMISSED.has(id) &&
-        !window.__PENDING_OUTPUTS.has(id);
+        !window.__PENDING_OUTPUTS.has(id) &&
+        !(o.pin_claim && o.pin_claim !== 'webui');
     });
     if (!target) return;
 
@@ -907,8 +966,8 @@ HOME_CARDS_SCRIPT = """
         return;
       }
 
-      // If OwnTone requires a PIN, prompt and do PIN-only verification.
-      // On wrong PIN (still 400), re-prompt; on success, retry the original enable.
+      // If OwnTone requires a PIN, prompt; each attempt pairs and enables in
+      // one request, and a wrong PIN re-prompts.
       if (selected && j && j.pin_required) {
         await runPinFlow(id, nm, volume, c);
       }

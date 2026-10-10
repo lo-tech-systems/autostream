@@ -54,9 +54,12 @@ showing:
 - When the output is on, a **Volume:** slider (0-100%) underneath.
 
 Turning an output on sends its current volume to the appliance immediately; toggling it off
-does the same. If the output requires a device PIN (for example a fresh Apple TV pairing), a
-PIN entry dialog appears automatically - enter the code shown on the device to complete the
-enable.
+does the same. If the output requires a device PIN (a fresh Apple TV pairing, for example), a
+PIN entry dialog appears: enter the code shown on the device and the speaker is paired and
+switched on in one go. A wrong code lets you try again; after several quick attempts the
+dialog asks you to wait a few seconds. If an HD dial asked for the speaker, the dial shows
+the keypad and this page waits for it. On an appliance running an older version the code is
+accepted but the speaker stays off; switch it on again and it plays.
 
 ### "In Use by \<name\>"
 

@@ -6,6 +6,7 @@ offset/mode forwarding) and handle_live_input_eq_update / handle_live_input_gain
 """
 from __future__ import annotations
 
+import inspect
 import json
 import math
 import sys
@@ -1779,3 +1780,40 @@ class TestOutputRequesterPassed:
             api.send_federation_output_json(
                 MagicMock(), MagicMock(), json.dumps({"id": "1", "selected": True}))
         assert mut.call_args.kwargs["requester"] == "webui"
+
+
+# ---------------------------------------------------------------------------
+# Home page PIN dialog (page script text)
+# ---------------------------------------------------------------------------
+
+class TestHomePinDialogScript:
+    def test_pin_flow_posts_one_pair_and_enable_request(self):
+        import autostream_webui_assets as assets
+        src = assets.HOME_CARDS_SCRIPT
+        assert "postPairAndEnable" in src
+        assert "selected: true" in src
+        assert "op:'pin'" in src
+        assert "postPinOnly" not in src
+        # The pin-only second request is gone: a good PIN is the last call.
+        flow = src[src.index("async function runPinFlow"):src.index("async function maybePromptForPin")]
+        assert "postOutputUpdate" not in flow
+
+    def test_poll_prompt_stands_down_for_a_foreign_claim(self):
+        import autostream_webui_assets as assets
+        src = assets.HOME_CARDS_SCRIPT
+        body = src[src.index("async function maybePromptForPin"):src.index("async function sendUpdate")]
+        assert "pin_claim" in body
+        assert "'webui'" in body
+
+    def test_pin_dialog_input_is_numeric_and_bounded(self):
+        import autostream_webui_page_airplay as page
+        src = inspect.getsource(page)
+        assert src.count('pattern="[0-9]*" maxlength="8"') == 2
+        assert 'id="pinModalNote"' in src
+
+    def test_rate_limited_reply_shows_the_wait(self):
+        import autostream_webui_assets as assets
+        src = assets.HOME_CARDS_SCRIPT
+        assert "rate_limited" in src
+        assert "retry_after_s" in src
+        assert "before retry" in src
