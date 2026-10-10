@@ -2385,8 +2385,9 @@ class TestReplaySeekRearm:
 # Replay end: identification torn down for the origin monitor
 #
 # A replay ending raises no capture-stop edge, so _on_capture_stopped() never
-# runs for it. _dispatch_session_event() tears the origin monitor's
-# identification down from the tracker's previous source instead.
+# runs for it. _teardown_identification_after_replay_end() tears the origin
+# monitor's identification down from the tracker's previous source instead,
+# after the poll loop has withdrawn the playing announcement.
 # ---------------------------------------------------------------------------
 
 class TestReplayEndTeardown:
@@ -2407,15 +2408,21 @@ class TestReplayEndTeardown:
     @staticmethod
     def _end(mon, prev_source="replay", event="session_ended", new_mon=None,
              new_source=None):
-        from autostream_core import _dispatch_session_event
+        from autostream_core import (
+            _dispatch_session_event,
+            _teardown_identification_after_replay_end,
+        )
         with patch.object(core, "_start_session_owntone"), \
              patch.object(core, "_stop_and_disable_owntone") as stop, \
              patch.object(core, "_session_nowplaying_end") as np_end, \
              patch.object(core, "_session_nowplaying_start"):
             _dispatch_session_event(
                 event, mon, new_mon, "http://owntone.invalid",
-                new_source=new_source, prev_source=prev_source,
+                new_source=new_source,
             )
+        _teardown_identification_after_replay_end(
+            event, prev_source, mon, new_mon,
+        )
         return stop, np_end
 
     def test_session_ended_from_replay_resets_origin_snapshot_to_waiting(self):
@@ -2513,6 +2520,49 @@ class TestReplayEndTeardown:
         assert origin._ti_generation == gen + 1
         assert origin._ti_next_attempt_reason == "initial"
         assert origin._ti_next_attempt > time.time() + 20
+
+    def test_dispatch_alone_does_not_tear_down_the_origin(self):
+        from autostream_core import _dispatch_session_event
+        mon = self._origin()
+        gen = mon._ti_generation
+        snap = mon._ti_snapshot
+        with patch.object(core, "_stop_and_disable_owntone"), \
+             patch.object(core, "_session_nowplaying_end"):
+            _dispatch_session_event(
+                "session_ended", mon, None, "http://owntone.invalid",
+            )
+        assert mon._ti_generation == gen
+        assert mon._ti_snapshot is snap
+
+    def test_teardown_function_gate(self):
+        from autostream_core import _teardown_identification_after_replay_end
+        mon = self._origin()
+        other = _make_monitor(input_index=2)
+        gen = mon._ti_generation
+        for event, prev_source, prev, new in (
+            (None, "replay", mon, None),
+            ("session_started", "replay", mon, None),
+            ("session_ended", "input1", mon, None),
+            ("session_ended", None, mon, None),
+            ("session_ended", "replay", None, None),
+            ("source_changed", "replay", mon, mon),
+        ):
+            _teardown_identification_after_replay_end(
+                event, prev_source, prev, new,
+            )
+            assert mon._ti_generation == gen
+        _teardown_identification_after_replay_end(
+            "source_changed", "replay", mon, other,
+        )
+        assert mon._ti_generation == gen + 1
+
+    def test_poll_loop_tears_down_after_session_state_and_announcement(self):
+        import inspect
+        src = inspect.getsource(core.run_autostream)
+        teardown = src.index("_teardown_identification_after_replay_end(")
+        assert teardown > src.index("_dispatch_session_event(")
+        assert teardown > src.index("_set_session_state(")
+        assert teardown > src.index("_sync_playing_announcement(")
 
     def test_teardown_takes_the_ti_state_lock(self):
         mon = self._origin()

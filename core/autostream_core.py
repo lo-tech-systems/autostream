@@ -1406,7 +1406,6 @@ def _dispatch_session_event(
     new_monitor: Optional["AudioMonitor"],
     owntone_base_url: str,
     new_source: Optional[str] = None,
-    prev_source: Optional[str] = None,
 ) -> None:
     """Apply the session-level side effects for one _SessionTracker event.
 
@@ -1431,22 +1430,10 @@ def _dispatch_session_event(
     session()'s docstring for both cases), so this is the one place that
     is guaranteed to run for either.
 
-    *prev_source* is the tracker's source before this update() call. When it
-    was "replay" and the replay has ended (session_ended) or handed over to a
-    different monitor (source_changed), the origin monitor's identification
-    is torn down: the replay end raises no capture-stop edge, and
-    _replay_origin is already false on that tick, so this is the only place
-    that can tell. A live source ending is torn down by _on_capture_stopped()
-    and is left alone here.
+    The replay-end identification teardown is deliberately not done here; see
+    _teardown_identification_after_replay_end(), which the poll loop calls
+    once the session state and playing announcement have been updated.
     """
-    if (
-        event in ("session_ended", "source_changed")
-        and prev_source == "replay"
-        and prev_monitor is not None
-        and prev_monitor is not new_monitor
-    ):
-        prev_monitor._teardown_identification_after_replay()
-
     if event == "session_started":
         _session_nowplaying_start(new_monitor)
         if new_monitor is not None:
@@ -1469,6 +1456,35 @@ def _dispatch_session_event(
         and new_monitor is not None
     ):
         new_monitor._arm_track_identification_for_session()
+
+
+def _teardown_identification_after_replay_end(
+    event: Optional[str],
+    prev_source: Optional[str],
+    prev_monitor: Optional["AudioMonitor"],
+    new_monitor: Optional["AudioMonitor"],
+) -> None:
+    """Tear down the replay origin monitor's identification when a replay ends.
+
+    *prev_source* is the tracker's source before the update() call that
+    produced *event*. When it was "replay" and the replay has ended
+    (session_ended) or handed over to a different monitor (source_changed),
+    the origin monitor's identification is torn down: the replay end raises
+    no capture-stop edge, and _replay_origin is already false on that tick,
+    so this is the only place that can tell. A live source ending is torn
+    down by _on_capture_stopped() and is left alone here.
+
+    The poll loop calls this after the session has been marked inactive and
+    the playing announcement withdrawn, so a client never sees the appliance
+    advertised as playing together with an already-reset identification.
+    """
+    if (
+        event in ("session_ended", "source_changed")
+        and prev_source == "replay"
+        and prev_monitor is not None
+        and prev_monitor is not new_monitor
+    ):
+        prev_monitor._teardown_identification_after_replay()
 
 
 # ── OwnTone-restart reconcile (mechanism 1) ─────────────────────────────────
@@ -3647,8 +3663,9 @@ class AudioMonitor:
     def _teardown_identification_after_replay(self) -> None:
         """Drop this monitor's identification state once its replay has ended.
 
-        Called on the coordinator thread from _dispatch_session_event() when
-        the session's previous source was "replay" and that source has gone
+        Called on the coordinator thread from
+        _teardown_identification_after_replay_end() when the session's
+        previous source was "replay" and that source has gone
         (session_ended) or moved to a different monitor (source_changed).
         A replay end produces no capturing edge, so _on_capture_stopped()
         never runs for it; without this the origin monitor would carry its
@@ -5435,7 +5452,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 _dispatch_session_event(
                     session_event, session_prev_monitor, session_new_monitor,
                     cfg.owntone.base_url, new_source=session_source,
-                    prev_source=session_prev_source,
                 )
                 _set_session_state(session_source is not None, session_source)
 
@@ -5443,6 +5459,15 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # state (so repeat replay counts, not just live capture); the
                 # sync is idempotent and only touches avahi on a transition.
                 _sync_playing_announcement(session_source is not None, version)
+
+                # Reset the replay origin's identification only now that the
+                # session is marked inactive and the announcement withdrawn:
+                # a client polling status must never see "advertised as
+                # playing" together with an already-reset identification.
+                _teardown_identification_after_replay_end(
+                    session_event, session_prev_source,
+                    session_prev_monitor, session_new_monitor,
+                )
 
                 # ── OwnTone-restart reconcile + hang watchdog ──────────────────
                 # Both run every cycle (not gated on started/stopped/session
