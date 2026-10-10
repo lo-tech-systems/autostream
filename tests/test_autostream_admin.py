@@ -338,7 +338,7 @@ class TestAvahiXmlEscaping:
         content = svc_file.read_text(encoding="utf-8")
         assert "id=" + args.id in content
 
-    def test_playing_service_advertises_dial_proto_v2_and_keeps_dial_api_v1(self, tmp_path):
+    def test_playing_service_advertises_dial_proto_v3_and_keeps_dial_api_v1(self, tmp_path):
         svc_dir = tmp_path / "avahi"
         svc_dir.mkdir()
         svc_file = svc_dir / "autostream-playing.service"
@@ -351,7 +351,7 @@ class TestAvahiXmlEscaping:
             assert m._write_playing_service(args) == 0
 
         records = [r.text for r in ET.parse(svc_file).getroot().iter("txt-record")]
-        assert "dial_proto=v2" in records
+        assert "dial_proto=v3" in records
         assert "dial_api=v1" in records
         assert "dial_status=v1" in records
         assert "audio_status=v1" in records
@@ -371,13 +371,13 @@ class TestAvahiXmlEscaping:
             assert m._write_playing_service(args) == 0
 
         records = [r.text for r in ET.parse(svc_file).getroot().iter("txt-record")]
-        assert "dial_proto=v2" in records
+        assert "dial_proto=v3" in records
         assert "dial_api=v1" in records
 
-    def test_playing_service_template_advertises_dial_proto_v2_and_keeps_dial_api_v1(self):
+    def test_playing_service_template_advertises_dial_proto_v3_and_keeps_dial_api_v1(self):
         template = Path(__file__).resolve().parent.parent / "system" / "avahi" / "autostream-playing.service"
         records = [r.text for r in ET.parse(template).getroot().iter("txt-record")]
-        assert "dial_proto=v2" in records
+        assert "dial_proto=v3" in records
         assert "dial_api=v1" in records
 
     def test_dial_service_template_advertises_dial_proto_v2(self):
@@ -385,8 +385,8 @@ class TestAvahiXmlEscaping:
         records = [r.text for r in ET.parse(template).getroot().iter("txt-record")]
         assert "dial_proto=v2" in records
 
-    def test_dial_proto_constant_is_v2(self):
-        assert m.DIAL_PROTO_VERSION == "v2"
+    def test_dial_proto_constant_is_v3(self):
+        assert m.DIAL_PROTO_VERSION == "v3"
 
     def test_playing_service_omits_id_when_absent(self, tmp_path):
         svc_dir = tmp_path / "avahi"
@@ -1187,7 +1187,7 @@ class TestApplianceService:
         assert "dial_status=v1" in content
         assert "repeat=v1" in content
 
-    def test_appliance_service_advertises_dial_proto_v2(self, tmp_path):
+    def test_appliance_service_advertises_dial_proto_v3(self, tmp_path):
         svc_dir = tmp_path / "avahi"
         svc_dir.mkdir()
         svc_file = svc_dir / "autostream.service"
@@ -1200,7 +1200,7 @@ class TestApplianceService:
             assert m._write_appliance_service(args) == 0
 
         records = [r.text for r in ET.parse(svc_file).getroot().iter("txt-record")]
-        assert "dial_proto=v2" in records
+        assert "dial_proto=v3" in records
         assert "dial_api=v1" in records
         assert "dial_status=v1" in records
         assert "id=" + args.id in records
@@ -2086,3 +2086,72 @@ class TestGetOwntoneMainpid:
     def test_unparseable_output_returns_none(self):
         with patch.object(m, "run_cmd", return_value=(0, "not-a-pid", "")):
             assert m._get_owntone_mainpid("/bin/systemctl") is None
+
+
+# ---------------------------------------------------------------------------
+# Frozen TXT records: the dial-facing keys never change beyond dial_proto and
+# version, so every earlier dial keeps reading the records it was built for.
+# ---------------------------------------------------------------------------
+
+_FROZEN_PLAYING_KEYS = (
+    "version", "dial_api", "dial_proto", "audio_status",
+    "dial_status", "dial_outputs", "dial_eq", "id",
+)
+_FROZEN_APPLIANCE_KEYS = (
+    "id", "ui", "federation", "version", "control", "dial_api",
+    "dial_proto", "dial_status", "dial_outputs", "dial_eq", "repeat",
+)
+_FROZEN_CAPABILITY_VALUES = {
+    "dial_api": "v1", "dial_status": "v1", "dial_outputs": "v1",
+    "dial_eq": "v1", "audio_status": "v1", "repeat": "v1",
+}
+
+
+class TestFrozenTxtRecords:
+    @staticmethod
+    def _txt(tmp_path, writer, attr):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "svc.service"
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+        args.control = "on"
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, attr, svc_file):
+            assert getattr(m, writer)(args) == 0
+        pairs = [r.text.split("=", 1) for r in ET.parse(svc_file).getroot().iter("txt-record")]
+        return [(k, v) for k, v in pairs]
+
+    def test_playing_service_keys_are_frozen(self, tmp_path):
+        txt = self._txt(tmp_path, "_write_playing_service", "_PLAYING_SERVICE")
+        assert tuple(k for k, _ in txt) == _FROZEN_PLAYING_KEYS
+        values = dict(txt)
+        assert values["dial_proto"] == "v3"
+        for key, value in _FROZEN_CAPABILITY_VALUES.items():
+            if key in values:
+                assert values[key] == value, key
+
+    def test_appliance_service_keys_are_frozen(self, tmp_path):
+        txt = self._txt(tmp_path, "_write_appliance_service", "_APPLIANCE_SERVICE")
+        assert tuple(k for k, _ in txt) == _FROZEN_APPLIANCE_KEYS
+        values = dict(txt)
+        assert values["dial_proto"] == "v3"
+        for key, value in _FROZEN_CAPABILITY_VALUES.items():
+            if key in values:
+                assert values[key] == value, key
+
+    def test_playing_template_keys_are_frozen(self):
+        template = Path(__file__).resolve().parent.parent / "system" / "avahi" / "autostream-playing.service"
+        keys = tuple(r.text.split("=", 1)[0] for r in ET.parse(template).getroot().iter("txt-record"))
+        assert keys == _FROZEN_PLAYING_KEYS
+
+    def test_txt_capability_keys_are_in_the_capability_table(self):
+        core = str(Path(__file__).resolve().parent.parent / "core")
+        if core not in sys.path:
+            sys.path.insert(0, core)
+        from autostream_dials import DIAL_CAPABILITIES
+        for key in set(_FROZEN_PLAYING_KEYS + _FROZEN_APPLIANCE_KEYS) & set(_FROZEN_CAPABILITY_VALUES):
+            if key == "dial_api":
+                continue
+            assert DIAL_CAPABILITIES.get(key, 0) >= 1, key

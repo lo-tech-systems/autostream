@@ -1,9 +1,10 @@
 """Home page "Dial updates required" banner and the Setup page dial card flag.
 
-A dial that is currently sighted but does not advertise dial_proto=v2 works
-in legacy mode; the Home banner invites the owner to update it and links to
-the Setup page's dial card, where each such dial is flagged "Needs update"
-beside its Update firmware button.  Only dials sighted now count.
+A dial that is currently sighted but advertises an older dial_proto than the
+appliance does works in an older dialect; the Home banner invites the owner to
+update it and links to the Setup page's dial card, where each such dial is
+flagged "Needs update" beside its Update firmware button.  Only dials sighted
+now count.
 """
 from __future__ import annotations
 
@@ -48,8 +49,8 @@ class TestBannerText:
         with _sightings():
             assert dials.build_dial_update_banner_text() == ""
 
-    def test_empty_when_all_sighted_dials_advertise_v2(self):
-        with _sightings(_sighting("a", "v2"), _sighting("b", "v2")):
+    def test_empty_when_all_sighted_dials_advertise_current_dialect(self):
+        with _sightings(_sighting("a", "v3"), _sighting("b", "v3")):
             assert dials.build_dial_update_banner_text() == ""
 
     def test_one_legacy_dial_gives_banner(self):
@@ -57,12 +58,20 @@ class TestBannerText:
             assert dials.build_dial_update_banner_text() == _BANNER
 
     def test_same_text_for_any_count(self):
-        with _sightings(_sighting("a", ""), _sighting("b", ""), _sighting("c", "v2")):
+        with _sightings(_sighting("a", ""), _sighting("b", ""), _sighting("c", "v3")):
             assert dials.build_dial_update_banner_text() == _BANNER
 
     def test_unknown_dialect_counts_as_needing_update(self):
         with _sightings(_sighting("a", "v1")):
             assert dials.build_dial_update_banner_text() == _BANNER
+
+    def test_v2_dial_against_v3_appliance_gives_banner(self):
+        with _sightings(_sighting("a", "v2")):
+            assert dials.build_dial_update_banner_text() == _BANNER
+
+    def test_dial_newer_than_the_appliance_gives_no_banner(self):
+        with _sightings(_sighting("a", "v4")):
+            assert dials.build_dial_update_banner_text() == ""
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +97,8 @@ class TestStatusPayload:
         with _sightings(_sighting("a", "")):
             assert _status_body()["dial_update_banner_text"] == _BANNER
 
-    def test_status_banner_text_empty_when_all_v2(self):
-        with _sightings(_sighting("a", "v2")):
+    def test_status_banner_text_empty_when_all_current(self):
+        with _sightings(_sighting("a", "v3")):
             assert _status_body()["dial_update_banner_text"] == ""
 
     def test_status_banner_text_empty_when_none_sighted(self):
@@ -128,8 +137,8 @@ class TestHomeState:
         with _sightings(_sighting("a", "")):
             assert _home_state(tmp_path)["warnings"]["dial_update"] == _BANNER
 
-    def test_warning_empty_when_all_v2(self, tmp_path):
-        with _sightings(_sighting("a", "v2")):
+    def test_warning_empty_when_all_current(self, tmp_path):
+        with _sightings(_sighting("a", "v3")):
             assert _home_state(tmp_path)["warnings"]["dial_update"] == ""
 
     def test_warning_empty_when_scanner_fails(self, tmp_path):
@@ -200,8 +209,8 @@ class TestHomePage:
         assert _BANNER_OPEN + "block;" in page
         assert f"{_BANNER}</a>" in page
 
-    def test_banner_hidden_when_all_v2(self):
-        with _sightings(_sighting("a", "v2")):
+    def test_banner_hidden_when_all_current(self):
+        with _sightings(_sighting("a", "v3")):
             page = _render_home()
         assert _BANNER_OPEN + "none;" in page
         assert f"{_BANNER}</a>" not in page
@@ -269,7 +278,7 @@ def _cards(sightings, entries):
 class TestDialCardsHtml:
     def test_only_legacy_dial_is_flagged(self):
         legacy = _sighting("legacy", "", version="1.0.0")
-        modern = _sighting("modern", "v2", version="1.0.0")
+        modern = _sighting("modern", "v3", version="1.0.0")
         cards_html, summary, _ = _cards([legacy, modern], [_Entry("legacy"), _Entry("modern")])
         cards = cards_html.split('<div class="dial-card"')
         legacy_card = next(c for c in cards if 'data-dial-uuid="legacy"' in c)
@@ -290,8 +299,8 @@ class TestDialCardsHtml:
         assert "dial-badge-update" not in cards_html
         assert "need update" not in summary
 
-    def test_summary_has_no_suffix_when_all_v2(self):
-        _, summary, _ = _cards([_sighting("a", "v2")], [_Entry("a")])
+    def test_summary_has_no_suffix_when_all_current(self):
+        _, summary, _ = _cards([_sighting("a", "v3")], [_Entry("a")])
         assert "need update" not in summary
 
 

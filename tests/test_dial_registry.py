@@ -387,8 +387,8 @@ class TestDialProto:
         s = dials._browser.get_snapshot().get("uuid-v3")
         assert s is not None and s.dial_proto == "v3"
 
-    def test_constant_is_v2(self):
-        assert dials.DIAL_PROTO_VERSION == "v2"
+    def test_constant_is_v3(self):
+        assert dials.DIAL_PROTO_VERSION == "v3"
 
     def test_dial_speaks_v2_true_for_sighted_v2(self):
         with patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto="v2")):
@@ -430,12 +430,13 @@ class TestDialProto:
         assert dials.sighting_needs_update(_sighting()) is True
         assert dials.sighting_needs_update(_sighting(dial_proto="v3")) is False
         assert dials.sighting_needs_update(_sighting(dial_proto="junk")) is True
-        assert dials.sighting_needs_update(_sighting(dial_proto="v2")) is False
+        assert dials.sighting_needs_update(_sighting(dial_proto="v2")) is True
+        assert dials.sighting_needs_update(_sighting(dial_proto="v4")) is False
 
-    def test_dials_needing_update_lists_only_non_v2(self):
+    def test_dials_needing_update_lists_only_below_current(self):
         sightings = [_sighting("a"), _sighting("b", "v2"), _sighting("c", "v3"), _sighting("d", "junk")]
         with patch("autostream_dials.get_all_sightings", return_value=sightings):
-            assert [s.uuid for s in dials.dials_needing_update()] == ["a", "d"]
+            assert [s.uuid for s in dials.dials_needing_update()] == ["a", "b", "d"]
 
     def test_dials_needing_update_empty_when_none_sighted(self):
         with patch("autostream_dials.get_all_sightings", return_value=[]):

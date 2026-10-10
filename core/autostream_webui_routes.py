@@ -1400,6 +1400,16 @@ register(
 
 register(
     Route(
+        path="/api/dial/capabilities",
+        methods=("GET",),
+        handler="send_dial_capabilities_json",
+        scheme="dial",
+        comment="Unauthenticated: discloses only what the mDNS records already broadcast.",
+    )
+)
+
+register(
+    Route(
         path="/api/dial/volume",
         methods=("POST",),
         handler="_route_post_dial_volume",

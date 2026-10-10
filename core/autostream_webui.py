@@ -65,6 +65,7 @@ from autostream_webui_state import WebUIState
 from autostream_webui_api import (
     run_updater,
     send_audio_status_json,
+    send_dial_capabilities_json,
     send_browser_api_error,
     send_dial_eq_post_json,
     send_dial_eq_set_post_json,

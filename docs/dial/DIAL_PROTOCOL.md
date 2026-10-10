@@ -22,7 +22,7 @@ Deleted when the last capture stops.
 |---|---|---|
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
-| `dial_proto` | `v2` | The appliance speaks the 0.7 dialect (see below). Absent on older appliances |
+| `dial_proto` | `v3` | The appliance speaks the third dialect (see below). Absent on older appliances; `v2` on 0.7 appliances |
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
@@ -36,12 +36,18 @@ instance (pre-dial support) and skips it.
 `dial_api=v1` without supporting `dial_status=v1`.
 
 `dial_proto` names the protocol dialect and is separate from `dial_api`, which stays `v1` so
-that older dials keep tracking and controlling the appliance. `dial_proto=v2` means the
-appliance sends typed refusals (`412` with `dial_not_authorized` and `appliance_id`) to a dial
-that itself advertises `dial_proto=v2`, reports `muted` in its status and volume replies, and
-carries `id` on the playing record. A dial that does not advertise `dial_proto=v2`, and a dial
-the appliance has not seen, gets the older bare `403 {}`. A consumer that sees no `dial_proto`
-treats the appliance as speaking the older dialect; an old dial ignores the key.
+that older dials keep tracking and controlling the appliance. `dial_proto=v2` or later means
+the appliance sends typed refusals (`412` with `dial_not_authorized` and `appliance_id`) to a
+dial that itself advertises `dial_proto=v2` or later, reports `muted` in its status and volume
+replies, and carries `id` on the playing record. A dial that does not advertise at least
+`dial_proto=v2`, and a dial the appliance has not seen, gets the older bare `403 {}`. A
+consumer that sees no `dial_proto` treats the appliance as speaking the older dialect; an old
+dial ignores the key. `dial_proto=v3` adds `GET /api/dial/capabilities` (section 2), which is
+the authoritative list of what the appliance supports.
+
+The capability keys in the TXT records are frozen at the values listed above. A later version
+of a capability, such as the six-band EQ (`dial_eq` version 2), is announced only by
+`GET /api/dial/capabilities`, so a dial that reads only the TXT records keeps working as before.
 
 `id` lets a dial correlate this appliance across an `ip:port` change (a DHCP lease renewal,
 a service re-register) without waiting for the next successful `POST /api/dial/status` -
@@ -70,8 +76,19 @@ Port: **7842** (dial HTTP server).
 `dial_proto` is how each side tells the other which dialect it speaks. It is advertised by
 appliances (on both appliance records) and by dials (on `_autostream-dial._tcp`).
 `dial_api=v1` and `dial_status=v1` stay on the wire unchanged, so nothing that worked before
-stops working. `v2` is the only value defined. Anything else, or no key at all, means the
-older dialect.
+stops working. The value is `v` followed by a generation number, and each generation includes
+everything the earlier ones mean, so a check is always "at least this generation". `v2` and
+`v3` are defined. Anything that is not `v` and digits, or no key at all, means the older
+dialect.
+
+What `v3` adds to `v2`, on an appliance:
+
+- **Capabilities endpoint.** `GET /api/dial/capabilities` exists and lists every capability
+  the appliance supports with its version. The TXT capability keys keep their `v1` values.
+- **Output owner.** `POST /api/dial/outputs` reports `remote_owner` for an output in use by
+  another appliance.
+- **Six-band EQ.** `POST /api/dial/eq` and `POST /api/dial/eq/set` carry `bands`; the
+  capabilities endpoint reports `dial_eq` as `2`.
 
 What `v2` means:
 
@@ -113,7 +130,9 @@ Legacy behaviour, when one side does not advertise `dial_proto=v2`:
   it still advertises `dial_api=v1`, and they ignore the extra fields in its replies. An
   unauthorized older dial is refused with the bare `403 {}`. The appliance's web UI shows
   "Dial updates required" on the Home page and flags the dial's card on the Setup page with
-  "Needs update" while the dial does not advertise `dial_proto=v2`.
+  "Needs update" while the dial advertises an older `dial_proto` generation than the
+  appliance does. A dial at `v2` against a `v3` appliance keeps working through the TXT
+  records and is flagged the same way.
 - **Capabilities with their own keys** (`dial_outputs`, `dial_eq`, `repeat`) are unaffected.
   An older appliance does not advertise them, so a dial does not offer the features.
 
@@ -135,7 +154,7 @@ currently playing - the repeat/replay picker's "idle focus".
 | `id` | 20 lowercase hex characters | This appliance's stable identity, same meaning as `id` on `_autostream-playing._tcp` |
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | Gates the sighting the same way as on `_autostream-playing._tcp` - an appliance without it is not tracked for the dial's roster |
-| `dial_proto` | `v2` | Same meaning as on `_autostream-playing._tcp` |
+| `dial_proto` | `v3` | Same meaning as on `_autostream-playing._tcp` |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
 | `dial_eq` | `v1` | `POST /api/dial/eq` and `POST /api/dial/eq/set` are available |
@@ -182,6 +201,44 @@ state. Added to `ALLOWLIST_PATHS` - no session or CSRF token required.
 
 Output IDs are not included. OwnTone assigns IDs locally per host (ALSA outputs get `"0"` on
 every device), making them unsuitable for cross-host comparison. Names are the stable identifier.
+
+---
+
+### `GET /api/dial/capabilities`
+
+Unauthenticated, read-only, no request body. Available when the appliance advertises
+`dial_proto=v3` or later. Added to `ALLOWLIST_PATHS` - no session or CSRF token required. It
+discloses only what the mDNS records already broadcast (identity, version and capability
+names with versions), so a dial can read it before it is authorized.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "appliance_id": "a1b2c3d4e5f6a7b8c9d0",
+  "version": "0.8.0",
+  "dial_proto": 3,
+  "capabilities": {
+    "dial_status": 1,
+    "dial_outputs": 1,
+    "dial_eq": 2,
+    "repeat": 1,
+    "audio_status": 1
+  }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `ok` | bool | Always `true` |
+| `appliance_id` | string\|null | The same identity as `id` in the mDNS records; `null` for an identity-less appliance |
+| `version` | string | The same value as `version` in the mDNS records |
+| `dial_proto` | integer | The generation number of the advertised `dial_proto` |
+| `capabilities` | object | Capability name to integer version. A name that is absent means the appliance does not support it |
+
+The capabilities are those listed in section 5. The list is fixed for a given software
+version, so it changes only when `version` changes. A client should ignore names it does not
+know. The reply is sent with `Cache-Control: no-store`.
 
 ---
 
@@ -1550,6 +1607,7 @@ Responses:
 | `dial_eq=v1` | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; bass/treble over the output EQ bands |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 | `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
+| `dial_proto=v3` | `GET /api/dial/capabilities` | Advertised by appliances (both records) in place of `v2`; each generation includes the earlier ones. The endpoint is the authoritative capability list, with the versions in the table above. In it, `dial_eq` is `2` (six-band `bands` on the EQ routes) while the TXT key stays `dial_eq=v1` |
 | `dial_proto=v2` | every dial route (typed refusals), status and volume replies (`muted`) | Advertised by appliances (both records) and by dials. Selects the refusal style, whether a dial relies on `muted`, and the dial's handling of an appliance without an `id` on its playing record; see **Protocol dialect** in section 1. `dial_api=v1` and `dial_status=v1` are unchanged alongside it |
 
 `POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same

@@ -100,6 +100,7 @@ ALLOWLIST_PATHS = {
     "/api/service/reset",
     "/api/service/config",
     "/api/audio/status",
+    "/api/dial/capabilities",
     "/api/appliances",
 }
 

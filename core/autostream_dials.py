@@ -31,9 +31,23 @@ DIALS_PATH = Path("/var/lib/autostream/dials.json")
 _DIALS_LOCK = threading.Lock()
 _SIGHTING_THROTTLE_SECS = 60
 
-# Protocol dialect a dial advertises as dial_proto in its TXT record. Kept
-# in step with the value the appliance advertises (autostream_admin).
-DIAL_PROTO_VERSION = "v2"
+# Protocol dialect the appliance advertises as dial_proto in its TXT records.
+# Kept in step with the value autostream_admin writes. A sighted dial whose
+# own dial_proto generation is below this is flagged for updating.
+DIAL_PROTO_VERSION = "v3"
+
+# Capabilities this appliance supports, name -> version, served by
+# GET /api/dial/capabilities. Only capabilities whose endpoints exist are
+# listed. The TXT records keep their original v1 values for older dials; this
+# table is where a newer version of a capability is announced. Every
+# capability key in the TXT records appears here.
+DIAL_CAPABILITIES: dict[str, int] = {
+    "dial_status": 1,
+    "dial_outputs": 1,
+    "dial_eq": 2,
+    "repeat": 1,
+    "audio_status": 1,
+}
 
 # Oldest protocol generation that gets the typed refusal and the other
 # current-dialect behaviour. Later generations include everything earlier ones
@@ -287,8 +301,9 @@ def dial_speaks_v2(uuid: str) -> bool:
 
 
 def sighting_needs_update(s: DialSighting) -> bool:
-    """True when the sighted dial does not advertise the current protocol dialect."""
-    return dial_proto_generation(s.dial_proto) < _MIN_DIAL_GENERATION
+    """True when the sighted dial advertises an older protocol generation than
+    this appliance does."""
+    return dial_proto_generation(s.dial_proto) < dial_proto_generation(DIAL_PROTO_VERSION)
 
 
 def dials_needing_update() -> list[DialSighting]:

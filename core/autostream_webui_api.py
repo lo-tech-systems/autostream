@@ -89,6 +89,8 @@ from autostream_rpi import get_appliance_id, is_high_performance_pi
 from autostream_dials import (
     AUTH_AUTHORIZED,
     AUTH_UNAVAILABLE,
+    DIAL_CAPABILITIES,
+    DIAL_PROTO_VERSION,
     dial_authorization,
     dial_speaks_v2,
 )
@@ -160,7 +162,12 @@ from autostream_sysutils import (
     set_system_hostname,
 )
 from urllib.parse import urlparse as _urlparse
-from autostream_webui_common import _config_snapshot, _fallback_input_snapshot, render_license_md
+from autostream_webui_common import (
+    _config_snapshot,
+    _fallback_input_snapshot,
+    get_app_version,
+    render_license_md,
+)
 from autostream_webui_service_schema import (
     _SERVICE_ITEMS,
     _card_display,
@@ -1267,6 +1274,22 @@ def send_dial_outputs_post_json(handler, state: WebUIState, json_obj: dict) -> N
         send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
         return
     send_json(handler, 200, {"ok": True, "outputs": outputs, "appliance_id": get_appliance_id()})
+
+
+def send_dial_capabilities_json(handler, state: WebUIState) -> None:
+    """GET /api/dial/capabilities — unauthenticated, read-only.
+
+    The capability list a dial reads before it is authorised, so it carries
+    only what the mDNS records already broadcast: identity, version, protocol
+    generation and the capability table. Static for a given software version.
+    """
+    send_json(handler, 200, {
+        "ok": True,
+        "appliance_id": get_appliance_id(),
+        "version": get_app_version(),
+        "dial_proto": int(DIAL_PROTO_VERSION[1:]),
+        "capabilities": dict(DIAL_CAPABILITIES),
+    })
 
 
 def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) -> None:

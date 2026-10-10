@@ -1369,7 +1369,7 @@ _APPLIANCE_ID_RE = _re.compile(r'^[0-9a-f]{20}$')
 
 # Dial protocol dialect advertised in the appliance TXT records (dial_proto).
 # Independent of dial_api, which stays v1 so older dials keep working.
-DIAL_PROTO_VERSION = "v2"
+DIAL_PROTO_VERSION = "v3"
 
 
 def _validate_dial_name(name: str) -> None:
