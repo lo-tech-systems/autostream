@@ -391,7 +391,7 @@ static void test_jitter_within_budget_no_false_step_and_true_step_detected()
     prime(est, t);
     feed_periods(est, 48000.0, 20.0, t, 4.0);
     CHECK(est.relock_count() == 0, "4 ms of read latency never steps an honest device");
-    CHECK(est.mismatch_rate() == 0, "4 ms of read latency raises no mismatch");
+    CHECK(est.mismatch_rate() == 0, "matching on never reports a mismatch");
     feed_periods(est, 48000.0, 0.2, t);
     CHECK(est.lock_state() == RateLockState::Locked, "locked after a clean window");
     CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 0.003 * 48000.0, "servo rate within 0.3 %");
@@ -420,12 +420,23 @@ static void test_a_late_read_costs_a_window_not_a_step()
     CHECK(est.relock_count() == 0, "no step on a late read");
     CHECK(est.mismatch_rate() == 0, "no mismatch on a late read");
 
-    feed_reads(est, 48000.0, 18, t);
+    // The late boundary also shortens the next window, which then measures
+    // fast and falls in no class.
+    feed_reads(est, 48000.0, 6, t);
+    CHECK(est.lock_state() == RateLockState::Acquiring, "the window after the late boundary is inconclusive");
+    CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "no step or mismatch there either");
+
+    feed_reads(est, 48000.0, 6, t);
     CHECK(est.lock_state() == RateLockState::Locked, "locked again on the next in-class window");
+    feed_reads(est, 48000.0, 6, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "and stays locked");
     CHECK(est.relock_count() == 0, "still no step");
     CHECK(est.mismatch_rate() == 0, "still no mismatch");
 }
 
+// The detector neither steps nor reports a mismatch across a stall.  No servo
+// window closes during the two shorter stalls, so the published rate is only
+// compared across the suspension, whose overlong servo window is rejected.
 static void test_stall_and_suspension_change_nothing()
 {
     RateEstimator est;
@@ -446,8 +457,6 @@ static void test_stall_and_suspension_change_nothing()
     feed_reads(est, 48000.0, 6, t);
     CHECK(est.lock_state() == RateLockState::Locked, "next in-class window locks again");
     CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "stall: no step, no mismatch");
-    CHECK_CLOSE(est.estimated_input_rate(), r0, 1.0, "stall: rate unchanged");
-    CHECK_CLOSE(est.src_ratio(), ratio0, 1e-9, "stall: ratio unchanged");
 
     // A 2 s stall: below the plausibility floor, discarded, state kept.
     feed_reads(est, 48000.0, 5, t);
@@ -455,7 +464,7 @@ static void test_stall_and_suspension_change_nothing()
     feed_reads(est, 48000.0, 1, t);
     CHECK(est.lock_state() == RateLockState::Locked, "discarded window leaves the lock state alone");
     CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "long stall: no step, no mismatch");
-    CHECK_CLOSE(est.estimated_input_rate(), r0, 1.0, "long stall: rate unchanged");
+    CHECK(est.nominal_rate() == 48000, "long stall: nominal unchanged");
 
     // A 60 s suspension.
     feed_reads(est, 48000.0, 5, t);
@@ -464,7 +473,7 @@ static void test_stall_and_suspension_change_nothing()
     CHECK(est.lock_state() == RateLockState::Locked, "suspension leaves the lock state alone");
     feed_reads(est, 48000.0, 24, t);
     CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "suspension: no step, no mismatch");
-    CHECK_CLOSE(est.estimated_input_rate(), r0, 1.0, "suspension: rate unchanged");
+    CHECK_CLOSE(est.estimated_input_rate(), r0, 1.0, "suspension: the servo rejects the overlong window");
     CHECK_CLOSE(est.src_ratio(), ratio0, 1e-9, "suspension: ratio unchanged");
 }
 
@@ -499,7 +508,7 @@ static void test_xrun_taints_the_window()
             small.feed(512, ts);
     }
     CHECK(small.relock_count() == 0, "marked losses never step");
-    CHECK(small.mismatch_rate() == 0, "marked losses raise no mismatch");
+    CHECK(small.mismatch_rate() == 0, "matching on never reports a mismatch");
     CHECK(small.nominal_rate() == 48000, "nominal unchanged by marked losses");
 }
 
@@ -544,7 +553,7 @@ static void test_rates_alternating_faster_than_the_lock_time_never_step()
         feed_periods(est, 48000.0, 0.2, t);
     }
     CHECK(est.relock_count() == 0, "rates alternating faster than the lock time never produce a run of three");
-    CHECK(est.mismatch_rate() == 0, "and raise no mismatch");
+    CHECK(est.mismatch_rate() == 0, "matching on never reports a mismatch");
 }
 
 // The other side of that boundary is intended: a rate held long enough to
@@ -581,7 +590,7 @@ static void test_rate_near_no_standard_never_steps()
         feed_periods(est, 46000.0, 3.0, t);
         CHECK(est.relock_count() == 0, "46 kHz is in no class: no step");
         CHECK(est.nominal_rate() == 48000, "nominal unchanged");
-        CHECK(est.mismatch_rate() == 0, "46 kHz raises no mismatch");
+        CHECK(est.mismatch_rate() == 0, "matching on never reports a mismatch");
         CHECK(est.lock_state() == RateLockState::Acquiring, "46 kHz is neither the nominal nor a standard rate");
         const double ratio = est.src_ratio();
         CHECK(ratio >= 1.0 && ratio <= 48000.0 / 46000.0 + 1e-9, "servo blends inside its band as before");
@@ -595,7 +604,7 @@ static void test_rate_near_no_standard_never_steps()
         feed_periods(est, 40000.0, 3.0, t);
         CHECK(est.relock_count() == 0, "40 kHz is in no class: no step");
         CHECK(est.nominal_rate() == 48000, "nominal unchanged");
-        CHECK(est.mismatch_rate() == 0, "40 kHz raises no mismatch");
+        CHECK(est.mismatch_rate() == 0, "matching on never reports a mismatch");
         CHECK(est.lock_state() == RateLockState::Acquiring, "40 kHz stays acquiring");
         CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "servo rejects every window");
     }
@@ -698,6 +707,138 @@ static void test_turning_matching_on_for_an_honest_device_does_not_step()
     CHECK(est.nominal_rate() == 48000, "nominal unchanged");
     CHECK_CLOSE(est.src_ratio(), ratio0, 1e-12, "ratio untouched");
     CHECK(est.lock_state() == RateLockState::Locked, "still locked");
+}
+
+// With matching off, read-timing jitter within the budget over a long run
+// never makes the detector report a mismatch.
+static void test_matching_off_jitter_never_reports_a_mismatch()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    double t = 0.0;
+    prime(est, t);
+    uint32_t seed = 1;
+    const int n = static_cast<int>(std::ceil(60.0 * 48000.0 / 1024));
+    bool ever_mismatch = false;
+    for (int i = 0; i < n; ++i)
+    {
+        t += 1024 / 48000.0;
+        est.feed(1024, t + jitter_ms(seed, 4.0) / 1000.0);
+        if (est.lock_state() == RateLockState::Mismatch || est.mismatch_rate() != 0)
+            ever_mismatch = true;
+    }
+    CHECK(!ever_mismatch, "4 ms of read latency never reports a mismatch with matching off");
+    CHECK(est.relock_count() == 0, "matching off never steps");
+    CHECK(est.lock_state() == RateLockState::Locked, "locked at the end of the run");
+}
+
+static void test_32khz_source_on_a_48khz_negotiation_steps_with_matching_on()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    const double fed = feed_until(est, 32000.0, 1.0, t, [&] { return est.relock_count() == 1; });
+    CHECK(fed >= 0.57 && fed <= 0.62, "the step lands after three windows of 32 kHz");
+    CHECK(est.nominal_rate() == 32000, "nominal is 32000");
+    CHECK_CLOSE(est.estimated_input_rate(), 32000.0, 1e-6, "rate published at the step");
+    CHECK_CLOSE(est.src_ratio(), 1.5, 1e-9, "ratio is output over 32 kHz");
+    CHECK(est.lock_state() == RateLockState::Locked, "locked after the step");
+    CHECK(est.mismatch_rate() == 0, "no mismatch with matching on");
+}
+
+// With matching off the reported rate follows the device to another standard
+// rate: the old report is kept until three windows agree on the new one.
+static void test_a_reported_mismatch_follows_the_device_to_another_rate()
+{
+    RateEstimator est;
+    double t = 0.0;
+    mismatch_asserted_at_44100(est, t);
+    CHECK(est.mismatch_rate() == 44100, "mismatch asserted at 44100");
+
+    feed_reads(est, 32000.0, 12, t);   // two windows at 32 kHz
+    CHECK(est.lock_state() == RateLockState::Mismatch, "the state stays Mismatch while the new rate is unconfirmed");
+    CHECK(est.mismatch_rate() == 44100, "and the old rate is still reported");
+
+    feed_reads(est, 32000.0, 6, t);    // the third
+    CHECK(est.lock_state() == RateLockState::Mismatch, "still Mismatch");
+    CHECK(est.mismatch_rate() == 32000, "the reported rate moves to 32000");
+    CHECK(est.relock_count() == 0, "matching off never steps");
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "ratio untouched");
+}
+
+// A seed that disagrees with the device is corrected when matching is on.
+static void test_a_wrong_seed_is_corrected_with_matching_on()
+{
+    RateEstimator est;
+    est.reset(48000, 48000, 44100);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    const double fed = feed_until(est, 48000.0, 1.0, t, [&] { return est.relock_count() == 1; });
+    CHECK(fed > 0.0 && fed <= 0.45, "the seed is corrected within the usual lock time");
+    CHECK(est.nominal_rate() == 48000, "nominal is 48000");
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "ratio is unity");
+    CHECK(est.lock_state() == RateLockState::Locked, "locked after the correction");
+}
+
+// Switching matching off well after a step: the run gathered at the stepped
+// rate is not carried over to the negotiated rate, so the mismatch comes back
+// only after a fresh run.
+static void test_turning_matching_off_later_waits_for_fresh_evidence()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_until(est, 44100.0, 1.0, t, [&] { return est.relock_count() == 1; });
+    feed_reads(est, 44100.0, 60, t);   // ten windows in the stepped rate's own class
+    CHECK(est.nominal_rate() == 44100 && est.lock_state() == RateLockState::Locked, "stepped and locked");
+
+    est.set_dynamic_rate_matching(false);
+    feed_reads(est, 44100.0, 6, t);    // the window that reverts
+    CHECK(est.nominal_rate() == 48000, "nominal back at the negotiated rate");
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "ratio back at unity");
+    CHECK(est.lock_state() == RateLockState::Acquiring, "acquiring on the reverting window");
+    CHECK(est.mismatch_rate() == 0, "no mismatch on the reverting window");
+
+    feed_reads(est, 44100.0, 6, t);
+    CHECK(est.lock_state() == RateLockState::Acquiring && est.mismatch_rate() == 0,
+          "still acquiring after two windows");
+
+    feed_reads(est, 44100.0, 6, t);
+    CHECK(est.lock_state() == RateLockState::Mismatch, "mismatch after three agreeing windows");
+    CHECK(est.mismatch_rate() == 44100, "reports 44100");
+    CHECK(est.nominal_rate() == 48000, "nominal stays at the negotiated rate");
+    CHECK(est.relock_count() == 1, "count still 1");
+}
+
+// Turning matching on while no run is saturated withdraws a reported
+// mismatch at once; the step follows when the evidence has been gathered.
+static void test_turning_matching_on_without_evidence_withdraws_the_mismatch()
+{
+    RateEstimator est;
+    double t = 0.0;
+    mismatch_asserted_at_44100(est, t);
+    est.mark_capture_loss();
+    feed_reads(est, 44100.0, 6, t);    // a discarded window empties the run
+    CHECK(est.lock_state() == RateLockState::Mismatch && est.mismatch_rate() == 44100,
+          "a discarded window leaves the report alone");
+
+    est.set_dynamic_rate_matching(true);
+    feed_reads(est, 44100.0, 6, t);
+    CHECK(est.lock_state() == RateLockState::Acquiring, "acquiring at once, not mismatch");
+    CHECK(est.mismatch_rate() == 0, "no mismatch with matching on");
+    CHECK(est.relock_count() == 0, "no step on one window");
+
+    feed_reads(est, 44100.0, 6, t);
+    CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "still gathering");
+    feed_reads(est, 44100.0, 6, t);
+    CHECK(est.relock_count() == 1, "the step follows after three windows");
+    CHECK(est.nominal_rate() == 44100, "nominal is 44100");
+    CHECK(est.lock_state() == RateLockState::Locked, "locked");
 }
 
 static void test_flag_accessor_reads_the_stored_value()
@@ -891,23 +1032,14 @@ static void test_stale_evidence_is_not_used_after_a_gap()
         CHECK(est.relock_count() == 0, "the overlong window is discarded, not used as evidence");
         CHECK(est.nominal_rate() == 48000, "no step on hour-old evidence");
 
-        double cleared_at = -1.0;
-        double since = 0.0;
-        bool stepped = false;
-        for (int i = 0; i < 36 && cleared_at < 0.0; ++i)
-        {
-            feed_reads(est, 48000.0, 1, t);
-            since += 1024 / 48000.0;
-            if (est.relock_count() != 0)
-                stepped = true;
-            if (i == 5)
-                CHECK(est.mismatch_rate() == 44100, "one clean window at the nominal does not clear");
-            if (est.mismatch_rate() == 0)
-                cleared_at = since;
-        }
-        CHECK(!stepped, "never stepped");
-        CHECK(cleared_at > 0.384 - 1e-6 && cleared_at < 0.512 + 1e-6, "clears after three clean windows");
-        CHECK(est.lock_state() == RateLockState::Locked, "locked");
+        // With matching on and nothing to step on, the stale report is
+        // withdrawn when the setting takes effect.
+        CHECK(est.mismatch_rate() == 0, "the old report is withdrawn");
+        CHECK(est.lock_state() == RateLockState::Acquiring, "acquiring until a clean window");
+        feed_reads(est, 48000.0, 6, t);
+        CHECK(est.relock_count() == 0, "never stepped");
+        CHECK(est.mismatch_rate() == 0, "still no mismatch");
+        CHECK(est.lock_state() == RateLockState::Locked, "locked after one clean window");
     }
     // The player comes back with the same 44.1 kHz source.
     {
@@ -1416,6 +1548,12 @@ int main()
     test_turning_matching_on_steps_from_existing_evidence();
     test_turning_matching_off_reverts_the_nominal();
     test_turning_matching_on_for_an_honest_device_does_not_step();
+    test_matching_off_jitter_never_reports_a_mismatch();
+    test_32khz_source_on_a_48khz_negotiation_steps_with_matching_on();
+    test_a_reported_mismatch_follows_the_device_to_another_rate();
+    test_a_wrong_seed_is_corrected_with_matching_on();
+    test_turning_matching_off_later_waits_for_fresh_evidence();
+    test_turning_matching_on_without_evidence_withdraws_the_mismatch();
     test_flag_accessor_reads_the_stored_value();
     test_seed_rate_is_used_and_negotiated_rate_reported();
     test_seed_zero_means_negotiated();

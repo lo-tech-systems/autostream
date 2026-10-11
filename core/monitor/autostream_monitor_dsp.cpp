@@ -397,6 +397,7 @@ RateEstimator::RateEstimator()
     , _rate_matching_applied(false)
     , _last_step_log_time(-1e9)
     , _last_mismatch_log_time(-1e9)
+    , _mismatch_warned(false)
     , _published_ratio(48000.0 / 48000.0)
     , _published_rate(48000.0)
     , _rate_matching_enabled(false)
@@ -426,6 +427,7 @@ void RateEstimator::reset(int negotiated_rate, int output_rate, int seed_rate, i
     _rate_matching_applied  = _rate_matching_enabled.load(std::memory_order_relaxed);
     _last_step_log_time     = -1e9;
     _last_mismatch_log_time = -1e9;
+    _mismatch_warned        = false;
 
     // Publish safe initial values so any thread that reads before the first
     // measurement window completes gets a sensible initial ratio.
@@ -583,8 +585,10 @@ void RateEstimator::close_detector_window(double now)
 
     if (discard)
     {
-        if (lost)
+        if (tainted)
             LOG_DEBUG("[input%d] Rate window discarded: xrun inside window", _input_index);
+        else if (lost)
+            LOG_DEBUG("[input%d] Rate window discarded: no time elapsed", _input_index);
         else
             LOG_DEBUG("[input%d] Rate window discarded: %.1f Hz over %.3f s",
                       _input_index, measured, elapsed);
@@ -627,10 +631,20 @@ void RateEstimator::close_detector_window(double now)
         // nominal for a full run, so one early read cannot hide it.
         if (_run_count < DETECT_AGREE_WINDOWS)
             return;
-        _published_mismatch_hz.store(0, std::memory_order_relaxed);
+        // State first, then the rate, so a reader that sees Mismatch also
+        // sees a non-zero rate.
         publish_lock(RateLockState::Locked);
-        LOG_INFO("[input%d] Capture rate mismatch cleared: delivering %d Hz again",
-                 _input_index, _input_rate);
+        _published_mismatch_hz.store(0, std::memory_order_relaxed);
+        // The cleared line is the partner of the warning: it is written only
+        // if the warning for this mismatch was, which keeps a flapping device
+        // to one of each per warning interval.  Logging formats, allocates and
+        // takes locks, which the capture thread should do rarely.
+        if (_mismatch_warned)
+        {
+            _mismatch_warned = false;
+            LOG_INFO("[input%d] Capture rate mismatch cleared: delivering %d Hz again",
+                     _input_index, _input_rate);
+        }
         return;
     }
 
@@ -679,13 +693,27 @@ void RateEstimator::apply_mode_change(bool enabled, double now)
         // The caller has already cleared the run if this window was
         // discarded, and the nominal's own run never qualifies.
         if (_run_class != 0 && _run_count >= DETECT_AGREE_WINDOWS && _run_class != _input_rate)
+        {
             step_to(_run_class, now);
+            return;
+        }
+
+        // Nothing to step on: a mismatch reported while matching was off is
+        // withdrawn at once rather than shown with matching on.  State first,
+        // then the rate.
+        if (_published_mismatch_hz.load(std::memory_order_relaxed) != 0)
+        {
+            publish_lock(RateLockState::Acquiring);
+            _published_mismatch_hz.store(0, std::memory_order_relaxed);
+            _mismatch_warned = false;
+        }
         return;
     }
 
     // Off: the nominal is the negotiated rate again.  The detector reasserts
     // a mismatch after a full run if it is still true.
     _published_mismatch_hz.store(0, std::memory_order_relaxed);
+    _mismatch_warned = false;
     if (_input_rate != _negotiated_rate)
     {
         LOG_INFO("[input%d] Dynamic Rate Matching off: nominal %d -> %d Hz (negotiated)",
@@ -695,6 +723,10 @@ void RateEstimator::apply_mode_change(bool enabled, double now)
         restart_servo(now);
         publish_ratio_and_rate();
         publish_lock(RateLockState::Acquiring);
+
+        // The run gathered against the old nominal says nothing about the
+        // negotiated rate: a mismatch is reported again only after a fresh run.
+        clear_run();
     }
 }
 
@@ -708,6 +740,7 @@ void RateEstimator::step_to(int new_nominal, double now)
     clear_run();
     publish_lock(RateLockState::Locked);
     _published_mismatch_hz.store(0, std::memory_order_relaxed);
+    _mismatch_warned = false;
     _relock_count.fetch_add(1, std::memory_order_relaxed);
 
     const double ratio = _published_ratio.load(std::memory_order_relaxed);
@@ -725,13 +758,18 @@ void RateEstimator::step_to(int new_nominal, double now)
 
 void RateEstimator::report_mismatch(int delivered, double now)
 {
+    // The rate first, then the state, so a reader that sees Mismatch also
+    // sees a non-zero rate.
+    const bool changed = _published_mismatch_hz.load(std::memory_order_relaxed) != delivered;
+    if (changed)
+        _published_mismatch_hz.store(delivered, std::memory_order_relaxed);
     publish_lock(RateLockState::Mismatch);
-    if (_published_mismatch_hz.load(std::memory_order_relaxed) == delivered)
+    if (!changed)
         return;
-    _published_mismatch_hz.store(delivered, std::memory_order_relaxed);
     if (now - _last_mismatch_log_time >= MISMATCH_LOG_INTERVAL_SECONDS)
     {
         _last_mismatch_log_time = now;
+        _mismatch_warned        = true;
         LOG_WARN("[input%d] Capture rate mismatch: device delivers %d Hz but was opened at %d Hz; "
                  "dynamic rate matching is off for this input",
                  _input_index, delivered, _negotiated_rate);

@@ -1356,8 +1356,11 @@ Per-input fields:
     agreed on a standard rate other than the negotiated one; it stays
     `"mismatch"` until three consecutive windows agree with the negotiated
     rate again
-  - may read `"mismatch"` with `dynamic_rate_matching` `true` for a few windows
-    after the setting is turned on
+  - always comes with a non-zero `rate_mismatch_hz`
+  - turning `dynamic_rate_matching` on withdraws a reported mismatch at once
+    (`"acquiring"` until the detector has gathered evidence); turning it off
+    after the detector had moved the rate in use shows `"acquiring"` until
+    three windows agree again
   - `"locked"` under `--test-pin-src-ratio`
 - `relock_count`
   - number of times the detector has moved the rate in use to a different

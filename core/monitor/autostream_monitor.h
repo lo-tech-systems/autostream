@@ -471,6 +471,7 @@ private:
     bool   _rate_matching_applied;  // the flag value the capture thread last acted on
     double _last_step_log_time;     // throttle for the step INFO line
     double _last_mismatch_log_time; // throttle for the mismatch WARN line
+    bool   _mismatch_warned;        // the WARN for the current mismatch was written; the cleared INFO follows only then
 
     // ── Published values (written by capture thread, read by any thread) ──────
     // After each completed measurement window, feed() atomically publishes the
