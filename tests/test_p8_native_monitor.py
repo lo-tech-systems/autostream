@@ -156,6 +156,12 @@ class TestControlProtocolSourceInspection:
     def test_configure_input_reads_input_type(self, dispatcher_src):
         assert 'json_get_string(json_command, "input_type")' in dispatcher_src
 
+    def test_configure_input_reads_dynamic_rate_matching_as_optional_bool(self, dispatcher_src):
+        assert (
+            'json_get_bool(json_command, "dynamic_rate_matching", false)'
+            in dispatcher_src
+        ), "an older coordinator that omits the field must get the option off"
+
     def test_track_change_seq_emitted_in_status_json(self, dispatcher_src):
         assert "track_change_seq" in dispatcher_src, (
             "autostream_monitor.cpp must include track_change_seq in the "
@@ -444,6 +450,66 @@ class TestCaptureLoopSourceInspection:
             "the rate estimator must be fed after the xrun skip and before "
             "the ring-full drop, so dropped periods are still counted"
         )
+
+    def test_xrun_marks_the_rate_window(self, capture_loop):
+        assert capture_loop.count("_rate_estimator.mark_capture_loss()") == 1
+        overrun = capture_loop.index("_capture_overruns.fetch_add")
+        mark = capture_loop.index("_rate_estimator.mark_capture_loss()")
+        feed = capture_loop.index("_rate_estimator.feed(")
+        assert overrun < mark < feed, (
+            "an xrun must mark the rate estimator's window before the next "
+            "period can be fed"
+        )
+
+
+class TestRateMatchingPlumbingSourceInspection:
+    """The per-input rate matching option reaches the estimator, and the
+    rate it reached is remembered across stop and start."""
+
+    @pytest.fixture(scope="class")
+    def io_src(self):
+        p = REPO_ROOT / "core" / "monitor" / "autostream_monitor_io.cpp"
+        if not p.exists():
+            pytest.skip(f"autostream_monitor_io.cpp not found at {p}")
+        return _read_source(p)
+
+    @staticmethod
+    def _span(src, begin_marker, end_marker):
+        begin = src.index(begin_marker)
+        return src[begin:src.index(end_marker, begin)]
+
+    def test_configure_stores_the_option_in_the_estimator(self, io_src):
+        body = self._span(io_src, "bool InputChannel::configure(",
+                          "void InputChannel::set_eq(")
+        assert body.count(
+            "_rate_estimator.set_dynamic_rate_matching(cfg.dynamic_rate_matching);") == 1
+
+    def test_start_seeds_the_estimator_once_from_the_remembered_rate(self, io_src):
+        body = self._span(io_src, "bool InputChannel::start(",
+                          "void InputChannel::stop()")
+        assert body.count("_rate_estimator.reset(") == 1
+        assert ("_rate_estimator.reset(_capture_rate_hz, "
+                "AudioMonitor::output_rate_hz(), seed_rate, _index);") in body
+        assert body.index("_capture_rate_hz = _alsa.actual_rate();") < \
+            body.index("_rate_estimator.reset(")
+        assert "_remembered_rate_hz" in body and "_remembered_device" in body
+        assert "cfg.dynamic_rate_matching && remembered_rate > 0" in body
+        assert "remembered_device == cfg.alsa_device" in body
+
+    def test_stop_remembers_the_nominal_after_the_join(self, io_src):
+        body = self._span(io_src, "void InputChannel::stop()",
+                          "void InputChannel::set_allow_capture(")
+        join = body.index("_process_thr.join();")
+        read = body.index("_rate_estimator.nominal_rate()")
+        assert join < read
+        assert "_remembered_rate_hz = nominal;" in body
+        assert "_remembered_device  = _config.alsa_device;" in body
+
+    def test_capture_thread_does_not_touch_the_memory(self, io_src):
+        body = self._span(io_src, "void InputChannel::capture_thread_func()",
+                          "void InputChannel::process_thread_func()")
+        assert "_remembered" not in body
+        assert "nominal_rate()" not in body
 
 
 # ---------------------------------------------------------------------------

@@ -182,6 +182,26 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
     _channels = channels;
 
     {
+        // Log the device's own rate range before constraining it.  An adapter
+        // that accepts any rate (wide range, every standard rate testable) is
+        // one that may deliver at the source's rate regardless of what is
+        // negotiated here; the RateEstimator's detector covers that case.
+        // Diagnostic only: a failure to read the range never fails open().
+        unsigned int dev_rate_min = 0, dev_rate_max = 0;
+        int          dir_min = 0,      dir_max = 0;
+        if (snd_pcm_hw_params_get_rate_min(hw_params, &dev_rate_min, &dir_min) == 0 &&
+            snd_pcm_hw_params_get_rate_max(hw_params, &dev_rate_max, &dir_max) == 0)
+        {
+            LOG_DEBUG("[alsa] '%s' capture rate range %u-%u Hz before constraint "
+                      "(32000:%s 44100:%s 48000:%s)",
+                      hw_device.c_str(), dev_rate_min, dev_rate_max,
+                      snd_pcm_hw_params_test_rate(_pcm, hw_params, 32000, 0) == 0 ? "yes" : "no",
+                      snd_pcm_hw_params_test_rate(_pcm, hw_params, 44100, 0) == 0 ? "yes" : "no",
+                      snd_pcm_hw_params_test_rate(_pcm, hw_params, 48000, 0) == 0 ? "yes" : "no");
+        }
+    }
+
+    {
         unsigned int rate_max = AUTO_CAPTURE_RATE_MAX_HZ;
         int          dir      = 0;
 
@@ -246,9 +266,16 @@ bool AlsaCapture::open(const std::string& hw_device, int channels)
         goto fail;
     }
 
-    LOG_INFO("[alsa] Opened '%s': selected=%d Hz, negotiated=%d Hz, %d ch, %s, period=%d frames",
-             hw_device.c_str(), selected_rate_hz, _actual_rate, channels,
-             _captured_s32 ? "S32_LE" : "S16_LE (fallback)", _period_frames);
+    {
+        // The ALSA buffer depth, logged beside the period size: together they
+        // show how long a stall in the source can last before it overruns.
+        snd_pcm_uframes_t buffer_frames = 0;
+        snd_pcm_hw_params_get_buffer_size(hw_params, &buffer_frames);
+        LOG_INFO("[alsa] Opened '%s': selected=%d Hz, negotiated=%d Hz, %d ch, %s, period=%d buffer=%lu frames",
+                 hw_device.c_str(), selected_rate_hz, _actual_rate, channels,
+                 _captured_s32 ? "S32_LE" : "S16_LE (fallback)", _period_frames,
+                 static_cast<unsigned long>(buffer_frames));
+    }
     return true;
 
 fail:
@@ -680,9 +707,14 @@ bool InputChannel::configure(const InputConfig& cfg)
         std::memory_order_relaxed);
     _activity_gated.store(input_type_activity_gated(cfg.input_type),
                           std::memory_order_relaxed);
-    LOG_INFO("[input%d] Configured device='%s', input_type='%s', silence_threshold=%.1f dBFS, silence_seconds=%d",
+    // Stored for a stopped and a running input alike; the capture thread
+    // acts on it at the next detector window, and start() reads it when it
+    // resets the estimator.
+    _rate_estimator.set_dynamic_rate_matching(cfg.dynamic_rate_matching);
+    LOG_INFO("[input%d] Configured device='%s', input_type='%s', silence_threshold=%.1f dBFS, silence_seconds=%d, dynamic_rate_matching=%s",
              _index, cfg.alsa_device.c_str(), cfg.input_type.c_str(),
-             cfg.silence_threshold_dbfs, cfg.silence_seconds);
+             cfg.silence_threshold_dbfs, cfg.silence_seconds,
+             cfg.dynamic_rate_matching ? "true" : "false");
     return true;
 }
 
@@ -715,6 +747,8 @@ bool InputChannel::start(std::string* error_out)
 
     // Read and validate configuration under the lock.
     InputConfig cfg;
+    int         remembered_rate = 0;
+    std::string remembered_device;
     {
         std::lock_guard<std::mutex> lock(_config_mutex);
         if (!_config_valid)
@@ -724,7 +758,9 @@ bool InputChannel::start(std::string* error_out)
                 *error_out = "input is not configured";
             return false;
         }
-        cfg = _config;
+        cfg               = _config;
+        remembered_rate   = _remembered_rate_hz;
+        remembered_device = _remembered_device;
     }
 
     // Open the ALSA device.
@@ -785,9 +821,16 @@ bool InputChannel::start(std::string* error_out)
 
     // Seed the rate estimator with the rate ALSA actually negotiated rather
     // than the nominal target rate. This keeps the first plausibility check in
-    // RateEstimator::feed() anchored to the real device rate.
-    _rate_estimator.reset(_alsa.actual_rate(), AudioMonitor::output_rate_hz());
+    // RateEstimator::feed() anchored to the real device rate.  With dynamic
+    // rate matching on, an input restarted on the same device (the watchdog's
+    // stop/start included) starts from the nominal it had reached, so a
+    // learned rate is not forgotten; with it off the seed is the negotiated
+    // rate, as it always was.
     _capture_rate_hz = _alsa.actual_rate();
+    int seed_rate = 0;
+    if (cfg.dynamic_rate_matching && remembered_rate > 0 && remembered_device == cfg.alsa_device)
+        seed_rate = remembered_rate;
+    _rate_estimator.reset(_capture_rate_hz, AudioMonitor::output_rate_hz(), seed_rate, _index);
 
     // Reset silence tracking and capture-thread private state.
     _activity_gate.reset();
@@ -873,8 +916,13 @@ bool InputChannel::start(std::string* error_out)
         return false;
     }
 
-    LOG_INFO("[input%d] Started on device '%s' at %d Hz (auto-selected <= %u Hz)",
-             _index, cfg.alsa_device.c_str(), _alsa.actual_rate(), AUTO_CAPTURE_RATE_MAX_HZ);
+    if (seed_rate != 0)
+        LOG_INFO("[input%d] Started on device '%s' at %d Hz (auto-selected <= %u Hz), seed %d Hz",
+                 _index, cfg.alsa_device.c_str(), _alsa.actual_rate(), AUTO_CAPTURE_RATE_MAX_HZ,
+                 seed_rate);
+    else
+        LOG_INFO("[input%d] Started on device '%s' at %d Hz (auto-selected <= %u Hz)",
+                 _index, cfg.alsa_device.c_str(), _alsa.actual_rate(), AUTO_CAPTURE_RATE_MAX_HZ);
     return true;
 }
 
@@ -905,6 +953,17 @@ void InputChannel::stop()
         _capture_thr.join();
     if (_process_thr.joinable())
         _process_thr.join();
+
+    // Remember the nominal the estimator reached and the device it was learned
+    // on.  nominal_rate() is a plain capture-thread field, safe to read now
+    // that the capture thread has been joined.  start() uses it only when
+    // dynamic rate matching is on and the device is unchanged.
+    {
+        int nominal = _rate_estimator.nominal_rate();
+        std::lock_guard<std::mutex> lock(_config_mutex);
+        _remembered_rate_hz = nominal;
+        _remembered_device  = _config.alsa_device;
+    }
 
     if (_src_state)
     {
@@ -1081,7 +1140,10 @@ void InputChannel::capture_thread_func()
         if (frames_read == 0)
         {
             // Recovered from xrun; skip this period to let the hardware re-sync.
+            // The number of frames the device dropped is unknown, so the rate
+            // detector must not trust the window this fell in.
             _capture_overruns.fetch_add(1, std::memory_order_relaxed);
+            _rate_estimator.mark_capture_loss();
             continue;
         }
 

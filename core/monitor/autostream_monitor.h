@@ -100,6 +100,7 @@ struct InputConfig
     float       track_change_silence_seconds = 1.25f;  // gap duration (s) that marks a track boundary [0.5, 5.0]
     int         minimum_playback_seconds     = 30;      // minimum playback hold, seconds; 0 disables [0, 300]
     std::string input_type;                 // "turntable", "cd" or "line"; empty when the coordinator sent none
+    bool        dynamic_rate_matching        = false;  // follow the delivered rate (see RateEstimator); off = fixed-rate behaviour
 };
 
 // Boundary for a coordinator that sends no input_type: a silence threshold
@@ -3162,7 +3163,8 @@ public:
     // If the channel is stopped: stores all fields.
     // If the channel is running: every field except alsa_device is applied
     //   immediately (silence_threshold_dbfs, silence_seconds,
-    //   track_change_silence_seconds, minimum_playback_seconds); changes to
+    //   track_change_silence_seconds, minimum_playback_seconds,
+    //   dynamic_rate_matching); changes to
     //   alsa_device are rejected (caller must stop the channel first).
     // Returns true on success, false if alsa_device was changed while running.
     bool configure(const InputConfig& cfg);
@@ -3497,6 +3499,13 @@ private:
     mutable std::mutex _config_mutex;
     InputConfig        _config;
     bool               _config_valid            = false;
+    // Last nominal rate the estimator reached on this input, and the ALSA
+    // device it was learned on.  Seeds the estimator on the next start() when
+    // dynamic_rate_matching is on and the device is the same, so the
+    // watchdog's stop/start after a read error does not forget a learned
+    // rate.  Guarded by _config_mutex; in memory only, lost with the process.
+    int                _remembered_rate_hz      = 0;
+    std::string        _remembered_device;
     // Float domain: linear amplitude threshold in [0.0, 1.0],
     // pre-computed from config.silence_threshold_dbfs. See
     // compute_peak_sample()'s comment and the silence_threshold_sample()
