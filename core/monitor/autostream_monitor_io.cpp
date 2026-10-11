@@ -1085,6 +1085,13 @@ void InputChannel::capture_thread_func()
             continue;
         }
 
+        // Feed the rate estimator now, while we know exactly how many frames
+        // the hardware delivered and at what wall-clock time -- before the
+        // ring-full check, so a period the process thread is too slow to
+        // take is still counted as delivered.
+        double now = get_monotonic_time();
+        _rate_estimator.feed(frames_read, now);
+
         size_t samples_to_write = static_cast<size_t>(frames_read) * 2;  // stereo
 
         // Check that there is space in the ring buffer.  If the process thread
@@ -1101,13 +1108,10 @@ void InputChannel::capture_thread_func()
             // read position.
             // Throttle the log to once every 5 seconds to avoid log spam
             // under sustained CPU load.
+            if (now - _ring_overflow_last_log_time >= 5.0)
             {
-                double now = get_monotonic_time();
-                if (now - _ring_overflow_last_log_time >= 5.0)
-                {
-                    LOG_WARN("[input%d] Ring buffer full; dropping periods", _index);
-                    _ring_overflow_last_log_time = now;
-                }
+                LOG_WARN("[input%d] Ring buffer full; dropping periods", _index);
+                _ring_overflow_last_log_time = now;
             }
             _capture_ring_drops.fetch_add(1, std::memory_order_relaxed);
             continue;
@@ -1120,10 +1124,6 @@ void InputChannel::capture_thread_func()
         // thread is between its availability check and its wait_for call, the
         // predicate will find enough data on the next evaluation.
         _ring_cv.notify_one();
-
-        // Feed the rate estimator now, while we know exactly how many frames
-        // the hardware delivered and at what wall-clock time.
-        _rate_estimator.feed(frames_read, get_monotonic_time());
     }
 }
 

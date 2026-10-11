@@ -416,6 +416,37 @@ class TestActivityGateSourceInspection:
 
 
 # ---------------------------------------------------------------------------
+# Source-inspection: capture loop ordering
+# ---------------------------------------------------------------------------
+
+class TestCaptureLoopSourceInspection:
+    """The rate estimator counts every period the hardware delivered."""
+
+    @pytest.fixture(scope="class")
+    def capture_loop(self):
+        p = REPO_ROOT / "core" / "monitor" / "autostream_monitor_io.cpp"
+        if not p.exists():
+            pytest.skip(f"autostream_monitor_io.cpp not found at {p}")
+        src = _read_source(p)
+        begin = src.index("void InputChannel::capture_thread_func()")
+        end = src.index("void InputChannel::process_thread_func()")
+        return src[begin:end]
+
+    def test_rate_estimator_fed_once(self, capture_loop):
+        n = capture_loop.count("_rate_estimator.feed(")
+        assert n == 1, f"expected one _rate_estimator.feed( call, found {n}"
+
+    def test_feed_precedes_ring_full_check(self, capture_loop):
+        feed = capture_loop.index("_rate_estimator.feed(")
+        overrun = capture_loop.index("_capture_overruns.fetch_add")
+        full = capture_loop.index("_ring_buf.write_available()")
+        assert overrun < feed < full, (
+            "the rate estimator must be fed after the xrun skip and before "
+            "the ring-full drop, so dropped periods are still counted"
+        )
+
+
+# ---------------------------------------------------------------------------
 # C++ build suite (Linux with g++ only)
 # ---------------------------------------------------------------------------
 
