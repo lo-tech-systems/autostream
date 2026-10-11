@@ -1705,6 +1705,7 @@ owned_files_list() {
                   /etc/sudoers.d/autostream_dial \
                   /etc/logrotate.d/autostream-dial \
                   /etc/systemd/journald.conf.d/99-autostream-storage.conf \
+                  /etc/systemd/coredump.conf.d/99-autostream-coredump.conf \
                   /var/lib/autostream/install-state.env
     for name in $(dial_image_names); do
         printf '%s\n' "${opt}/images/${name}"

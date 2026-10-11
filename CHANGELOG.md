@@ -33,10 +33,11 @@
   and each dial then asks for the state itself, so a dial that misses the
   notice catches up on its regular poll. Appliances and dials both need
   updating for this. Dials gain a `POST /state-changed` route.
-- improvement: the installer now caps the space core dumps may use, so a crash
-  or a crash loop cannot fill the SD card. Each dump is limited to 256 MB, all
-  dumps together to 96 MB, and older dumps are cleared to keep 512 MB of the
-  card free. Install and update put the setting in place.
+- improvement: the appliance and dial installers now cap the space core dumps
+  may use, so a crash or a crash loop cannot fill the SD card. Each dump is
+  limited to 256 MB, all dumps together to 256 MB, and older dumps are cleared
+  to keep 512 MB of the card free. Install and update put the setting in
+  place.
 - change: the HD dial's kiosk now runs WPE WebKit through its `cog` launcher,
   drawing straight to the display. It uses far less memory (about 140 MiB on a
   512 MB Pi 3 Model A+), so a 512 MB board is enough for an HD dial. The HD

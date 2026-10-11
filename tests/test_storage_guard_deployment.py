@@ -209,6 +209,11 @@ def test_coredump_dropin_bounds_storage():
         assert re.fullmatch(r"\d+M", settings[key]), key
 
 
+def test_coredump_total_holds_one_dump_of_the_largest_size_kept():
+    settings = _coredump_settings()
+    assert int(settings["MaxUse"][:-1]) >= int(settings["ExternalSizeMax"][:-1])
+
+
 def test_installer_installs_coredump_dropin():
     text = _installer()
     assert "system/coredump/99-autostream-coredump.conf" in text
@@ -217,6 +222,20 @@ def test_installer_installs_coredump_dropin():
 
 def test_uninstaller_removes_coredump_dropin():
     assert "/etc/systemd/coredump.conf.d/99-autostream-coredump.conf" in _uninstaller()
+
+
+def test_dial_installer_installs_coredump_dropin():
+    text = _dial_installer()
+    assert "system/coredump/99-autostream-coredump.conf" in text
+    assert "/etc/systemd/coredump.conf.d/99-autostream-coredump.conf" in text
+
+
+def test_dial_uninstaller_removes_coredump_dropin():
+    assert "/etc/systemd/coredump.conf.d/99-autostream-coredump.conf" in _dial_uninstaller()
+
+
+def test_dial_installer_owns_the_coredump_dropin():
+    assert "/etc/systemd/coredump.conf.d/99-autostream-coredump.conf" in _dial_helpers()
 
 
 # ── 4. NGINX access-log conf ──────────────────────────────────────────────────

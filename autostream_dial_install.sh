@@ -323,6 +323,12 @@ install -m 0644 -o root -g root "$DEPLOY/system/journald/99-autostream-storage.c
     /etc/systemd/journald.conf.d/99-autostream-storage.conf
 systemctl restart systemd-journald || echo "WARNING: systemctl restart systemd-journald failed" >&2
 
+# systemd-coredump storage bounds, shared with the appliance: cap how much
+# disk core dumps may use. Read on every dump, so nothing is restarted.
+mkdir -p /etc/systemd/coredump.conf.d
+install -m 0644 -o root -g root "$DEPLOY/system/coredump/99-autostream-coredump.conf" \
+    /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
+
 write_install_state "$DIAL_UUID"
 
 # ---- Initialize update-result.env on fresh install only ---------------------
