@@ -9,6 +9,7 @@ OwntoneMetadataPipePublisher to avoid filesystem/FIFO side-effects.
 """
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from dataclasses import replace
@@ -1429,3 +1430,471 @@ class TestReplayAckAnnouncement:
         src = inspect.getsource(core.run_autostream)
         assert "_playing_version = version" in src
         assert "_playing_version" in src.split("global", 1)[1].split("\n", 1)[0]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Rate Matching: the flag reaching the daemon
+# ---------------------------------------------------------------------------
+
+class TestRateMatchingFlagOnEveryPush:
+    def _acking_client(self):
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        return mock_client
+
+    def test_silence_seconds_update_carries_the_flag_the_monitor_holds(self):
+        _make_monitor(input_index=0, dynamic_rate_matching=True)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_silence_seconds(45)
+        assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is True
+
+    def test_threshold_update_carries_the_flag_the_monitor_holds(self):
+        _make_monitor(input_index=0, dynamic_rate_matching=True)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_silence_threshold_dbfs(0, -35.0)
+        assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is True
+
+    def test_input_type_update_carries_the_flag_the_monitor_holds(self):
+        _make_monitor(input_index=0, dynamic_rate_matching=True)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_input_type(0, "cd", -60.0)
+        assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is True
+
+    def test_flag_defaults_off_on_a_new_monitor(self):
+        assert _make_monitor(input_index=0).dynamic_rate_matching is False
+
+    def test_resync_sends_each_monitors_own_flag(self):
+        client = MagicMock(spec=MonitorClient)
+        for name in ("set_fifo", "set_log_level", "stop_input", "configure_input",
+                     "start_input", "set_allow_capture", "set_repeat_enabled"):
+            getattr(client, name).return_value = True
+        monitors = [
+            _make_monitor(input_index=1, dynamic_rate_matching=True),
+            _make_monitor(input_index=2, dynamic_rate_matching=False),
+        ]
+        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_core.apply_input_gain", return_value=True), \
+             patch("autostream_core.apply_input_eq", return_value=True), \
+             patch("autostream_core._apply_output_eq_config", return_value=True):
+            rf.return_value = MagicMock(ok=True, message="")
+            ok = core._resync_monitor_daemon(
+                client, monitors, "/tmp/test.fifo", "http://localhost:3689",
+                MagicMock(), repeat_enabled=False, repeat_codec="auto",
+            )
+        assert ok is True
+        sent = {c.args[0]: c.kwargs["dynamic_rate_matching"]
+                for c in client.configure_input.call_args_list}
+        assert sent == {1: True, 2: False}
+
+
+class TestConfigureInputCallSitesPassTheFlag:
+    def test_every_configure_input_call_names_the_keyword(self):
+        import ast
+
+        source = (REPO_ROOT / "core" / "autostream_core.py").read_text(encoding="utf-8")
+        calls = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "configure_input"
+        ]
+        # Five sites today; fewer would mean this test no longer finds them.
+        assert len(calls) >= 5
+        missing = [
+            node.lineno for node in calls
+            if "dynamic_rate_matching" not in {kw.arg for kw in node.keywords}
+        ]
+        assert missing == [], f"configure_input calls without the flag at lines {missing}"
+
+
+class TestUpdateLiveDynamicRateMatching:
+    def _acking_client(self):
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        return mock_client
+
+    def test_returns_true_with_no_matching_monitor(self):
+        assert core.update_live_dynamic_rate_matching(0, True) is True
+
+    def test_pushes_the_new_value_for_the_matching_monitor_only(self):
+        _make_monitor(input_index=1)
+        _make_monitor(input_index=2)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_dynamic_rate_matching(2, True)
+        assert result is True
+        assert mock_client.configure_input.call_count == 1
+        args, kwargs = mock_client.configure_input.call_args
+        assert args[0] == 2
+        assert kwargs["dynamic_rate_matching"] is True
+
+    def test_other_values_go_out_unchanged(self):
+        _make_monitor(input_index=1, input_type="cd", silence_threshold_dbfs=-61.0)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_dynamic_rate_matching(1, True)
+        args, kwargs = mock_client.configure_input.call_args
+        assert kwargs["input_type"] == "cd"
+        assert args[2] == -61.0
+
+    def test_attribute_is_set_before_the_push(self):
+        mon = _make_monitor(input_index=1)
+        seen = []
+
+        def record(*args, **kwargs):
+            seen.append(mon.dynamic_rate_matching)
+            return True
+
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.side_effect = record
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_dynamic_rate_matching(1, True)
+        assert seen == [True]
+
+    def test_turning_it_off_pushes_false(self):
+        mon = _make_monitor(input_index=1, dynamic_rate_matching=True)
+        mock_client = self._acking_client()
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            core.update_live_dynamic_rate_matching(1, False)
+        assert mon.dynamic_rate_matching is False
+        assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is False
+
+    def test_every_attempt_failing_returns_false_and_keeps_the_value(self):
+        mon = _make_monitor(input_index=1)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = False
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_dynamic_rate_matching(1, True)
+        assert result is False
+        assert mock_client.configure_input.call_count == core.LIVE_PUSH_ATTEMPTS
+        assert mon.dynamic_rate_matching is True
+
+    def test_no_daemon_returns_false_and_keeps_the_value(self):
+        mon = _make_monitor(input_index=1)
+        with patch.object(core, "_connected_monitor", _fake_connected(None)):
+            result = core.update_live_dynamic_rate_matching(1, True)
+        assert result is False
+        assert mon.dynamic_rate_matching is True
+
+    def test_second_attempt_succeeding_returns_true(self):
+        _make_monitor(input_index=1)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.side_effect = [False, True]
+        with patch.object(core, "_connected_monitor", _fake_connected(mock_client)):
+            result = core.update_live_dynamic_rate_matching(1, True)
+        assert result is True
+        assert mock_client.configure_input.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Rate Matching: status ingest
+# ---------------------------------------------------------------------------
+
+def _rate_records(caplog):
+    return [r for r in caplog.records if "delivering" in r.getMessage()]
+
+
+class TestIngestRateStatus:
+    def test_the_five_fields_are_ingested(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({
+            "started": True, "negotiated_hz": 48000, "rate_lock": "locked",
+            "relock_count": 2, "rate_mismatch_hz": 0, "dynamic_rate_matching": True,
+        })
+        assert mon.negotiated_hz == 48000
+        assert mon.rate_lock == "locked"
+        assert mon.relock_count == 2
+        assert mon.rate_mismatch_hz == 0
+        assert mon.monitor_dynamic_rate_matching is True
+
+    def test_an_older_monitor_with_none_of_the_keys_gets_the_defaults(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"level_dbfs": -20.0, "started": True})
+        assert mon.negotiated_hz == 0
+        assert mon.rate_lock == "locked"
+        assert mon.relock_count == 0
+        assert mon.rate_mismatch_hz == 0
+        assert mon.monitor_dynamic_rate_matching is None
+
+    def test_a_non_bool_support_value_reads_as_unsupported(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"dynamic_rate_matching": "yes"})
+        assert mon.monitor_dynamic_rate_matching is None
+
+    def test_support_flag_false_still_counts_as_support(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"dynamic_rate_matching": False})
+        assert mon.monitor_dynamic_rate_matching is False
+
+    def test_mismatch_logs_a_warning_naming_input_and_both_rates(self, caplog):
+        mon = _make_monitor(input_index=1)
+        with caplog.at_level(logging.DEBUG):
+            mon._ingest_status({
+                "started": True, "negotiated_hz": 48000,
+                "rate_lock": "mismatch", "rate_mismatch_hz": 44100,
+            })
+        recs = _rate_records(caplog)
+        assert len(recs) == 1
+        assert recs[0].levelno == logging.WARNING
+        assert recs[0].getMessage() == (
+            "Input 1 is delivering 44100 Hz but was opened at 48000 Hz; "
+            "Dynamic Rate Matching is off for this input."
+        )
+        assert mon.rate_mismatch_hz == 44100
+
+    def test_a_steady_mismatch_logs_once(self, caplog):
+        mon = _make_monitor(input_index=1)
+        entry = {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100}
+        with caplog.at_level(logging.DEBUG):
+            mon._ingest_status(entry)
+            mon._ingest_status(entry)
+            mon._ingest_status(entry)
+        assert len(_rate_records(caplog)) == 1
+
+    def test_clearing_logs_info(self, caplog):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100})
+        with caplog.at_level(logging.DEBUG):
+            mon._ingest_status({"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 0})
+        cleared = [r for r in caplog.records if "mismatch cleared" in r.getMessage()]
+        assert len(cleared) == 1
+        assert cleared[0].levelno == logging.INFO
+        assert cleared[0].getMessage() == "Input 1 sample rate mismatch cleared."
+        assert mon.rate_mismatch_hz == 0
+
+    def test_second_assert_inside_the_throttle_logs_at_info(self, caplog):
+        mon = _make_monitor(input_index=1)
+        up = {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100}
+        down = {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 0}
+        window = AudioMonitor.RATE_MISMATCH_LOG_THROTTLE_SECONDS
+        with caplog.at_level(logging.DEBUG):
+            with patch("autostream_core.time.time", return_value=1000.0):
+                mon._ingest_status(up)
+                mon._ingest_status(down)
+            with patch("autostream_core.time.time", return_value=1000.0 + window - 1):
+                mon._ingest_status(up)
+        levels = [r.levelno for r in _rate_records(caplog)]
+        assert levels == [logging.WARNING, logging.INFO]
+
+    def test_assert_after_the_throttle_warns_again(self, caplog):
+        mon = _make_monitor(input_index=1)
+        up = {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100}
+        down = {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 0}
+        window = AudioMonitor.RATE_MISMATCH_LOG_THROTTLE_SECONDS
+        with caplog.at_level(logging.DEBUG):
+            with patch("autostream_core.time.time", return_value=1000.0):
+                mon._ingest_status(up)
+                mon._ingest_status(down)
+            with patch("autostream_core.time.time", return_value=1000.0 + window):
+                mon._ingest_status(up)
+        levels = [r.levelno for r in _rate_records(caplog)]
+        assert levels == [logging.WARNING, logging.WARNING]
+
+    def test_the_owntone_throttle_timer_does_not_silence_the_warning(self, caplog):
+        mon = _make_monitor(input_index=1)
+        mon._owntone_last_log = 1000.0
+        with caplog.at_level(logging.DEBUG), \
+             patch("autostream_core.time.time", return_value=1000.0):
+            mon._ingest_status(
+                {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100}
+            )
+        assert [r.levelno for r in _rate_records(caplog)] == [logging.WARNING]
+
+    def test_each_input_has_its_own_warning_timer(self, caplog):
+        first = _make_monitor(input_index=1)
+        second = _make_monitor(input_index=2)
+        entry = {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100}
+        with caplog.at_level(logging.DEBUG), \
+             patch("autostream_core.time.time", return_value=1000.0):
+            first._ingest_status(entry)
+            second._ingest_status(entry)
+        assert [r.levelno for r in _rate_records(caplog)] == [logging.WARNING, logging.WARNING]
+
+    def test_mismatch_follows_the_rate_not_the_lock_string(self, caplog):
+        mon = _make_monitor(input_index=1)
+        with caplog.at_level(logging.DEBUG):
+            mon._ingest_status({
+                "started": True, "negotiated_hz": 48000,
+                "rate_lock": "mismatch", "rate_mismatch_hz": 0,
+            })
+        assert mon.rate_mismatch_hz == 0
+        assert _rate_records(caplog) == []
+        mon._ingest_status({
+            "started": True, "negotiated_hz": 48000,
+            "rate_lock": "locked", "rate_mismatch_hz": 44100,
+        })
+        assert mon.rate_mismatch_hz == 44100
+
+    def test_a_mismatch_on_a_stopped_input_is_not_recorded(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": False, "negotiated_hz": 0, "rate_mismatch_hz": 44100})
+        assert mon.rate_mismatch_hz == 0
+
+    def test_a_rate_step_logs_info(self, caplog):
+        mon = _make_monitor(input_index=1)
+        with caplog.at_level(logging.DEBUG):
+            mon._ingest_status({
+                "started": True, "negotiated_hz": 48000, "detected_hz": 44100.0,
+                "relock_count": 1, "dynamic_rate_matching": True,
+            })
+        steps = [r for r in caplog.records if "capture rate step" in r.getMessage()]
+        assert len(steps) == 1
+        assert steps[0].levelno == logging.INFO
+        assert steps[0].getMessage() == (
+            "Input 1 capture rate step #1: now 44100.0 Hz (negotiated 48000 Hz)"
+        )
+        assert mon.relock_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Rate Matching: levels, banner text and the Setup note
+# ---------------------------------------------------------------------------
+
+class TestRateKeysInMonitorLevels:
+    def test_new_keys_carry_the_monitors_values(self):
+        mon = _make_monitor(input_index=1, dynamic_rate_matching=True)
+        mon._ingest_status({
+            "started": True, "negotiated_hz": 48000, "detected_hz": 44100.4,
+            "rate_lock": "locked", "relock_count": 1, "rate_mismatch_hz": 0,
+            "dynamic_rate_matching": True,
+        })
+        level = core.get_monitor_levels_dbfs()[0]
+        assert level["detected_khz"] == "44.1 kHz"
+        assert level["negotiated_hz"] == 48000
+        assert level["rate_lock"] == "locked"
+        assert level["relock_count"] == 1
+        assert level["rate_mismatch_hz"] == 0
+        assert level["rate_mismatch_khz"] == ""
+        assert level["dynamic_rate_matching"] is True
+        assert level["monitor_supports_rate_matching"] is True
+
+    def test_mismatch_rate_is_shown_in_khz(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100})
+        level = core.get_monitor_levels_dbfs()[0]
+        assert level["rate_mismatch_hz"] == 44100
+        assert level["rate_mismatch_khz"] == "44.1 kHz"
+
+    def test_an_older_monitor_is_marked_unsupported(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": True})
+        level = core.get_monitor_levels_dbfs()[0]
+        assert level["monitor_supports_rate_matching"] is False
+        assert level["rate_lock"] == "locked"
+
+    def test_existing_keys_are_kept(self):
+        _make_monitor(input_index=1)
+        level = core.get_monitor_levels_dbfs()[0]
+        for key in ("index", "label", "dbfs", "detected_hz", "is_above_threshold", "vu_history"):
+            assert key in level
+
+
+class TestFormatKhz:
+    @pytest.mark.parametrize("hz, text", [
+        (44100, "44.1 kHz"),
+        (48000, "48 kHz"),
+        (32000, "32 kHz"),
+        (88200, "88.2 kHz"),
+        (48003.2, "48 kHz"),
+        (44097.3, "44.1 kHz"),
+        (0, ""),
+        (-1, ""),
+        (float("nan"), ""),
+        (float("inf"), ""),
+        (None, ""),
+        ("x", ""),
+    ])
+    def test_formatting(self, hz, text):
+        assert core.format_khz(hz) == text
+
+
+class TestSampleRateBanner:
+    _TEXT = "Sample Rate Mismatch: Please enable Dynamic Rate Matching"
+
+    def test_no_monitors_gives_no_text(self):
+        assert core.sample_rate_warning_text() == ""
+        assert core.sample_rate_mismatch_input() == 0
+
+    def test_a_reported_mismatch_gives_the_fixed_text(self):
+        mon = _make_monitor(input_index=1)
+        mon.rate_mismatch_hz = 44100
+        assert core.sample_rate_warning_text() == self._TEXT
+        assert core.sample_rate_warning_text() == core.SAMPLE_RATE_MISMATCH_BANNER_TEXT
+        assert core.sample_rate_mismatch_input() == 1
+
+    def test_no_reported_mismatch_gives_no_text_whatever_the_local_flag(self):
+        for flag in (False, True):
+            _make_monitor(input_index=int(flag) + 1, dynamic_rate_matching=flag)
+        assert core.sample_rate_warning_text() == ""
+
+    def test_banner_stays_while_the_monitor_reports_it_after_the_flag_is_set(self):
+        # The flag is set locally before the push; a failed push must not
+        # hide the banner.
+        mon = _make_monitor(input_index=1)
+        mon.rate_mismatch_hz = 44100
+        mon.dynamic_rate_matching = True
+        assert core.sample_rate_warning_text() == self._TEXT
+
+    def test_banner_follows_the_rate_not_the_lock_string(self):
+        mon = _make_monitor(input_index=1)
+        mon.rate_lock = "mismatch"
+        assert core.sample_rate_warning_text() == ""
+        mon.rate_lock = "locked"
+        mon.rate_mismatch_hz = 44100
+        assert core.sample_rate_warning_text() == self._TEXT
+
+    def test_two_mismatched_inputs_give_one_string(self):
+        for i in (1, 2):
+            _make_monitor(input_index=i).rate_mismatch_hz = 44100
+        assert core.sample_rate_warning_text() == self._TEXT
+
+    def test_lowest_numbered_mismatched_input_wins(self):
+        _make_monitor(input_index=2).rate_mismatch_hz = 44100
+        first = _make_monitor(input_index=1)
+        assert core.sample_rate_mismatch_input() == 2
+        first.rate_mismatch_hz = 32000
+        assert core.sample_rate_mismatch_input() == 1
+
+
+class TestRateMatchingNoteText:
+    def test_no_monitor_for_the_index_gives_the_default(self):
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT
+
+    def test_flag_on_with_an_older_monitor_says_it_needs_updating(self):
+        _make_monitor(input_index=1, dynamic_rate_matching=True)
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_MONITOR_OLD
+
+    def test_flag_on_with_a_supporting_monitor_gives_the_default(self):
+        mon = _make_monitor(input_index=1, dynamic_rate_matching=True)
+        mon.monitor_dynamic_rate_matching = True
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT
+
+    def test_flag_off_with_a_mismatch_describes_it(self):
+        mon = _make_monitor(input_index=1)
+        mon.rate_mismatch_hz = 44100
+        mon.negotiated_hz = 48000
+        assert core.rate_matching_note_text(1) == (
+            "This input is delivering 44.1 kHz but the device was opened at "
+            "48 kHz. Turn this on to follow the source."
+        )
+
+    def test_flag_on_with_a_mismatch_still_reported_gives_the_default(self):
+        mon = _make_monitor(input_index=1, dynamic_rate_matching=True)
+        mon.monitor_dynamic_rate_matching = True
+        mon.rate_mismatch_hz = 44100
+        mon.negotiated_hz = 48000
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT
+
+    def test_flag_off_with_no_mismatch_gives_the_default(self):
+        _make_monitor(input_index=1)
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT
+
+    def test_the_other_inputs_monitor_is_not_consulted(self):
+        other = _make_monitor(input_index=2)
+        other.rate_mismatch_hz = 44100
+        other.negotiated_hz = 48000
+        _make_monitor(input_index=1)
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT

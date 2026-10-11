@@ -437,6 +437,34 @@ class TestBuildHomeStateLocal:
                     "warnings", "outputs", "vu_delay_ms"):
             assert key in result, f"Missing key: {key}"
 
+    def test_warnings_carry_the_sample_rate_banner_text(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        patches = self._patch_home(cfg_path)
+        with patches[0], patches[1], patches[2], patches[3], \
+             patches[4], patches[5], patches[6], \
+             patch("autostream_appliance_models.sample_rate_warning_text",
+                   return_value="banner text"):
+            result = models.build_home_state(str(cfg_path))
+        assert result["warnings"]["sample_rate"] == "banner text"
+
+    def test_sample_rate_warning_is_empty_with_no_mismatch(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        patches = self._patch_home(cfg_path)
+        with patches[0], patches[1], patches[2], patches[3], \
+             patches[4], patches[5], patches[6]:
+            result = models.build_home_state(str(cfg_path))
+        assert result["warnings"]["sample_rate"] == ""
+
+    def test_failure_path_has_an_empty_sample_rate_warning(self, tmp_path):
+        cfg_path = _make_config_file(tmp_path)
+        with patch("autostream_appliance_models.locked_load_config",
+                   side_effect=OSError("read error")), \
+             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
+             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
+             patch("autostream_appliance_models.get_app_version", return_value=""):
+            result = models.build_home_state(str(cfg_path))
+        assert result["warnings"]["sample_rate"] == ""
+
     def test_vu_delay_ms_from_owntone_setting(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         patches = self._patch_home(cfg_path, vu_ms=350)

@@ -1154,6 +1154,7 @@ def update_live_silence_seconds(
                     monitor.track_change_silence_seconds,
                     monitor.minimum_playback_seconds,
                     input_type=monitor.input_type,
+                    dynamic_rate_matching=monitor.dynamic_rate_matching,
                 ):
                     logging.warning(
                         "Live silence timeout update failed for input %d.",
@@ -1198,6 +1199,7 @@ def _push_input_config_with_retry(
                     monitor.track_change_silence_seconds,
                     monitor.minimum_playback_seconds,
                     input_type=monitor.input_type,
+                    dynamic_rate_matching=monitor.dynamic_rate_matching,
                 ):
                     return True
         except Exception as e:
@@ -1298,6 +1300,30 @@ def update_live_input_type(
         )
     request_nowplaying_republish()
 
+    return _push_input_config_with_retry(target, socket_path=socket_path)
+
+
+def update_live_dynamic_rate_matching(
+    input_index: int,
+    enabled: bool,
+    *,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply a live Dynamic Rate Matching change to one input's running monitor.
+
+    The monitor's attribute is updated first, so the value survives a failed
+    push and goes out with the next reconnect resync. Returns True when the
+    input has no running monitor or the daemon acknowledged the push, False
+    when every push attempt failed.
+    """
+    with _monitors_lock:
+        target = next(
+            (m for m in all_monitors if m.input_index == input_index), None
+        )
+    if target is None:
+        return True
+
+    target.dynamic_rate_matching = bool(enabled)
     return _push_input_config_with_retry(target, socket_path=socket_path)
 
 
@@ -2366,10 +2392,88 @@ def get_monitor_levels_dbfs() -> list[dict]:
             "label": f"Input {mon.input_index}",
             "dbfs": round(mon.poll_peak_dbfs, 1),
             "detected_hz": round(mon.detected_hz, 1),
+            "detected_khz": format_khz(mon.detected_hz),
+            "negotiated_hz": mon.negotiated_hz,
+            "rate_lock": mon.rate_lock,
+            "relock_count": mon.relock_count,
+            "rate_mismatch_hz": mon.rate_mismatch_hz,
+            "rate_mismatch_khz": format_khz(mon.rate_mismatch_hz),
+            "dynamic_rate_matching": mon.dynamic_rate_matching,
+            "monitor_supports_rate_matching": mon.monitor_dynamic_rate_matching is not None,
             "is_above_threshold": not mon.is_silent,
             "vu_history": mon.vu_history,
         })
     return levels
+
+
+def format_khz(hz: float) -> str:
+    """'44.1 kHz' / '48 kHz': one decimal, trimmed when the rounded value is
+    whole; '' for a non-positive or non-finite value."""
+    try:
+        khz = round(float(hz) / 1000.0, 1)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(khz) or khz <= 0:
+        return ""
+    return f"{int(khz)} kHz" if khz == int(khz) else f"{khz:.1f} kHz"
+
+
+SAMPLE_RATE_MISMATCH_BANNER_TEXT = "Sample Rate Mismatch: Please enable Dynamic Rate Matching"
+
+
+def sample_rate_mismatch_input() -> int:
+    """Index (1 or 2) of the lowest-numbered input whose monitor reports a
+    different standard rate than it was opened at, or 0 when there is none.
+    The daemon reports a mismatch only while its own Dynamic Rate Matching
+    flag is off, so this needs no test of the coordinator's copy of the flag:
+    after a successful push the daemon steps and clears the report within a
+    window, and after a failed push the report (and the banner) correctly
+    stays."""
+    with _monitors_lock:
+        snapshot = sorted(all_monitors, key=lambda m: m.input_index)
+    for mon in snapshot:
+        if mon.rate_mismatch_hz > 0:
+            return mon.input_index
+    return 0
+
+
+def sample_rate_warning_text() -> str:
+    """Home-page banner text: the fixed SAMPLE_RATE_MISMATCH_BANNER_TEXT
+    while any monitor reports a mismatch, else ''. The text names neither
+    the input nor the rates; the banner's link identifies the input."""
+    return SAMPLE_RATE_MISMATCH_BANNER_TEXT if sample_rate_mismatch_input() else ""
+
+
+RATE_MATCHING_NOTE_DEFAULT = (
+    "Follows the sample rate of the source. Turn on for an optical (S/PDIF) "
+    "adapter fed by a CD or DVD player."
+)
+RATE_MATCHING_NOTE_MONITOR_OLD = (
+    "The audio monitor on this appliance needs updating before this setting "
+    "takes effect."
+)
+
+
+def rate_matching_note_text(input_index: int) -> str:
+    """Help text under the Setup card's Dynamic Rate Matching switch for one
+    input, from the coordinator's view of that input's monitor. The flag
+    tested is the coordinator's copy, which the live callback sets before
+    the push, so the note follows the switch whether or not the push
+    succeeded; the mismatch itself comes from the daemon's report, so it
+    clears only once the daemon has stepped."""
+    with _monitors_lock:
+        mon = next((m for m in all_monitors if m.input_index == input_index), None)
+    if mon is None:
+        return RATE_MATCHING_NOTE_DEFAULT
+    if mon.dynamic_rate_matching and mon.monitor_dynamic_rate_matching is None:
+        return RATE_MATCHING_NOTE_MONITOR_OLD
+    if not mon.dynamic_rate_matching and mon.rate_mismatch_hz > 0:
+        return (
+            f"This input is delivering {format_khz(mon.rate_mismatch_hz)} but the "
+            f"device was opened at {format_khz(mon.negotiated_hz)}. Turn this on "
+            f"to follow the source."
+        )
+    return RATE_MATCHING_NOTE_DEFAULT
 
 
 def get_monitor_socket_path() -> str:
@@ -2937,6 +3041,7 @@ class MonitorClient:
         track_change_silence_seconds: float = 1.25,
         minimum_playback_seconds: int = 30,
         input_type: Optional[str] = None,
+        dynamic_rate_matching: bool = False,
     ) -> bool:
         cmd = {
             "type": "configure_input",
@@ -2946,6 +3051,10 @@ class MonitorClient:
             "silence_seconds": silence_seconds,
             "track_change_silence_seconds": track_change_silence_seconds,
             "minimum_playback_seconds": minimum_playback_seconds,
+            # Always sent, as a JSON literal: the daemon replaces the input's
+            # whole stored configuration on every call, so an omitted flag
+            # would switch the option off.
+            "dynamic_rate_matching": bool(dynamic_rate_matching),
         }
         # The daemon's reader has no notion of null; an unnamed type is an
         # absent key.
@@ -3193,6 +3302,9 @@ class AudioMonitor:
 
     OWNTONE_RETRY_SECONDS = 10.0
     OWNTONE_LOG_THROTTLE_SECONDS = 60.0
+    # The mismatch WARNING has its own timer so no other message can
+    # silence it; the value matches the monitor's own mismatch log interval.
+    RATE_MISMATCH_LOG_THROTTLE_SECONDS = 60.0
 
     def __init__(
         self,
@@ -3214,11 +3326,13 @@ class AudioMonitor:
         eq_8khz_db: float = 0.0,
         is_turntable: bool = False,
         input_type: str = INPUT_TYPE_DEFAULT,
+        dynamic_rate_matching: bool = False,
     ) -> None:
         self.input_index = input_index
         self.input_device = input_device
         self.is_turntable = is_turntable
         self.input_type = normalize_input_type(input_type)
+        self.dynamic_rate_matching = bool(dynamic_rate_matching)
         self.silence_threshold_dbfs = silence_threshold_dbfs
         self.silence_seconds = silence_seconds
         self.track_change_silence_seconds = track_change_silence_seconds
@@ -3268,6 +3382,14 @@ class AudioMonitor:
         self.level_dbfs: float = -90.0
         self.poll_peak_dbfs: float = -90.0
         self.detected_hz: float = 0.0
+        self.negotiated_hz: int = 0
+        self.rate_lock: str = "locked"
+        self.relock_count: int = 0
+        self.rate_mismatch_hz: int = 0
+        # None until a status poll says: an older monitor never reports the
+        # key, which is how the Setup card knows the setting cannot take effect.
+        self.monitor_dynamic_rate_matching: Optional[bool] = None
+        self._rate_mismatch_last_warning: float = 0.0
         self.is_silent: bool = True
         self.is_capturing: bool = False
         # Set each poll cycle from the coordinator's _replay_origin_input():
@@ -3321,6 +3443,56 @@ class AudioMonitor:
             return float("inf")
         return time.time() - self._last_active_time
 
+    def _ingest_rate_status(self, status_entry: dict) -> None:
+        """Take the sample-rate fields from a get_status() entry.
+
+        An older monitor reports none of them, so each falls back to a
+        value that leaves the Home page as it was: locked, no mismatch, and
+        no sign that the monitor supports Dynamic Rate Matching. A mismatch
+        counts only while the input is started and the rate is non-zero;
+        the rate, not the lock string, is what the banner and the log follow.
+        """
+        started = bool(status_entry.get("started", True))
+        self.negotiated_hz = int(status_entry.get("negotiated_hz", 0) or 0)
+        self.rate_lock = str(status_entry.get("rate_lock", "locked") or "locked")
+        raw_supported = status_entry.get("dynamic_rate_matching")
+        self.monitor_dynamic_rate_matching = (
+            raw_supported if isinstance(raw_supported, bool) else None
+        )
+
+        new_mismatch = int(status_entry.get("rate_mismatch_hz", 0) or 0) if started else 0
+        if new_mismatch != self.rate_mismatch_hz:
+            if new_mismatch:
+                # The WARNING is limited to one a minute per input by its own
+                # timer; a transition inside that period logs at INFO.
+                now = time.time()
+                level = (
+                    logging.WARNING
+                    if now - self._rate_mismatch_last_warning
+                    >= self.RATE_MISMATCH_LOG_THROTTLE_SECONDS
+                    else logging.INFO
+                )
+                if level == logging.WARNING:
+                    self._rate_mismatch_last_warning = now
+                logging.log(
+                    level,
+                    "Input %d is delivering %d Hz but was opened at %d Hz; "
+                    "Dynamic Rate Matching is off for this input.",
+                    self.input_index, new_mismatch, self.negotiated_hz,
+                )
+            else:
+                logging.info("Input %d sample rate mismatch cleared.", self.input_index)
+            self.rate_mismatch_hz = new_mismatch
+
+        new_relocks = int(status_entry.get("relock_count", 0) or 0)
+        if new_relocks != self.relock_count:
+            if new_relocks:
+                logging.info(
+                    "Input %d capture rate step #%d: now %.1f Hz (negotiated %d Hz)",
+                    self.input_index, new_relocks, self.detected_hz, self.negotiated_hz,
+                )
+            self.relock_count = new_relocks
+
     def _ingest_status(self, status_entry: dict, replay_origin: bool = False) -> str:
         """Update fields from a get_status() entry without firing callbacks.
 
@@ -3352,6 +3524,7 @@ class AudioMonitor:
         self.detected_hz     = float(status_entry.get("detected_hz", 0.0))
         self.is_silent       = bool(status_entry.get("silent", True))
         self.is_capturing    = bool(status_entry.get("capturing", False))
+        self._ingest_rate_status(status_entry)
         self._replay_origin  = bool(replay_origin)
         raw_tcs = status_entry.get("track_change_seq")
         if isinstance(raw_tcs, int) and raw_tcs >= 0:
@@ -4687,6 +4860,7 @@ def _resync_monitor_daemon(
             m.track_change_silence_seconds,
             m.minimum_playback_seconds,
             input_type=m.input_type,
+            dynamic_rate_matching=m.dynamic_rate_matching,
         ):
             logging.warning(
                 "configure_input(%d, %r) failed after reconnect; will retry full resync.",
@@ -4829,6 +5003,7 @@ def _configure_startup_monitors(
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio1.input_type,
+            dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
         ):
             logging.warning(
                 "configure_input(1, %r) failed during startup; will retry.",
@@ -4874,6 +5049,7 @@ def _configure_startup_monitors(
             eq_8khz_db=cfg.audio1.eq_8khz_db,
             is_turntable=cfg.audio1.is_turntable,
             input_type=cfg.audio1.input_type,
+            dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
         ))
 
     if (
@@ -4891,6 +5067,7 @@ def _configure_startup_monitors(
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio2.input_type,
+            dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
         ):
             logging.error(
                 "configure_input(2, %r) failed; skipping second input.",
@@ -4938,6 +5115,7 @@ def _configure_startup_monitors(
                 eq_8khz_db=cfg.audio2.eq_8khz_db,
                 is_turntable=cfg.audio2.is_turntable,
                 input_type=cfg.audio2.input_type,
+                dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
             ))
 
     if len(monitors) > 1:

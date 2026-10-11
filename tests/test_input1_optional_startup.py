@@ -74,6 +74,7 @@ class TestInput1DisabledStartup:
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio2.input_type,
+            dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
         )
 
     def test_zero_inputs_returns_empty_list_not_none(self):
@@ -107,4 +108,22 @@ class TestInput1DisabledStartup:
             cfg.track_identification.track_change_silence_seconds,
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio1.input_type,
+            dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
         )
+
+
+class TestStartupCarriesRateMatching:
+    def test_each_input_is_configured_with_its_own_setting(self):
+        from autostream_core import _configure_startup_monitors
+        cfg = _cfg({
+            "audio1": {"capture_device": "hw:0,0", "dynamic_rate_matching": True},
+            "audio2": {"enabled": True, "capture_device": "hw:1,0"},
+            "owntone": {"output_name": "Kitchen"},
+        })
+        client = _mock_client()
+        monitors = _configure_startup_monitors(client, cfg, "/tmp/autostream.fifo")
+
+        sent = {c.args[0]: c.kwargs["dynamic_rate_matching"]
+                for c in client.configure_input.call_args_list}
+        assert sent == {1: True, 2: False}
+        assert [m.dynamic_rate_matching for m in monitors] == [True, False]

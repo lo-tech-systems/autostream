@@ -316,6 +316,7 @@ class TestConfigureInput:
         assert cmd["silence_seconds"] == 5
         assert cmd["track_change_silence_seconds"] == pytest.approx(1.25)
         assert cmd["minimum_playback_seconds"] == 30
+        assert cmd["dynamic_rate_matching"] is False
 
     def test_sends_custom_track_change_silence_seconds(self):
         payload = {"ok": True}
@@ -371,6 +372,25 @@ class TestConfigureInput:
     def test_normalises_input_type_case_and_space(self):
         cmd = self._sent_cmd(input_type="  CD ")
         assert cmd["input_type"] == "cd"
+
+    def _sent_raw(self, **kwargs):
+        sock = FakeSocket((json.dumps({"ok": True}) + "\n").encode())
+        c = _client(sock)
+        c.configure_input(0, "hw:1,0", -50.0, 5, **kwargs)
+        return b"".join(sock.sent)
+
+    def test_sends_rate_matching_as_json_true_literal(self):
+        raw = self._sent_raw(dynamic_rate_matching=True)
+        assert b'"dynamic_rate_matching": true' in raw or b'"dynamic_rate_matching":true' in raw
+
+    def test_sends_rate_matching_as_json_false_literal_by_default(self):
+        raw = self._sent_raw()
+        assert b'"dynamic_rate_matching": false' in raw or b'"dynamic_rate_matching":false' in raw
+
+    @pytest.mark.parametrize("value", [None, 0, 1, "yes", ""])
+    def test_rate_matching_is_always_a_real_bool(self, value):
+        cmd = self._sent_cmd(dynamic_rate_matching=value)
+        assert cmd["dynamic_rate_matching"] is bool(value)
 
 
 # ---------------------------------------------------------------------------
