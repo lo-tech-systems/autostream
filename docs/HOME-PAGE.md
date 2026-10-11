@@ -22,7 +22,8 @@ track's title, artist and artwork once a match is found. Track identification is
 setting, not per input. While identification is in progress the card shows the current stage:
 "Waiting for audio" before analysis starts, then "Analysing" while a sample is being checked.
 The periodic re-check of a track that is already identified runs in the background: the card keeps
-showing the track until the re-check returns.
+showing the track while it runs, and keeps it if the re-check finds nothing or fails; only a detected
+track change, a new session or a replay seek clears it.
 If nothing is found it shows "Unknown track"; if the identification service itself is
 unavailable it shows "Track ID function not available". This works the same way during
 [repeat playback](#repeat-play): identification keeps tracking the replayed recording, not

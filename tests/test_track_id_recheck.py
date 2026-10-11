@@ -8,7 +8,10 @@ analysing state.
 """
 from __future__ import annotations
 
+import dataclasses
+import logging
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +34,9 @@ from track_id.models import (
     STATE_NOT_FOUND,
     STATE_WAITING,
     TrackArtwork,
+    TrackIDProviderUnreachableError,
+    TrackIDRateLimitedError,
+    TrackIDUpstreamRejectionError,
     TrackIdentificationResult,
 )
 
@@ -53,6 +59,9 @@ OTHER_TRACK = TrackIdentificationResult(
     provider="test_provider", confidence=0.9,
 )
 NO_MATCH = TrackIdentificationResult(matched=False, provider="test_provider")
+CONFIG_ERROR = TrackIdentificationResult(
+    matched=False, provider="test_provider", is_configuration_error=True,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -178,24 +187,19 @@ class TestRecheckKeepsTheTrackOnShow:
             artwork=OTHER_COVER,
         ))
 
-    def test_a_recheck_that_finds_nothing_follows_the_not_found_rule(self, rig):
+    def test_a_recheck_that_finds_nothing_keeps_the_track(self, rig):
         rig.dispatch()
-        assert _shown(rig.snapshot()) == IDENTIFIED_TRACK
         rig.svc.identify.return_value = NO_MATCH
         rig.finish()
-        snap = rig.snapshot()
-        assert snap.state == STATE_NOT_FOUND
-        assert snap.title == ""
+        assert _shown(rig.snapshot()) == IDENTIFIED_TRACK
         assert rig.mon._ti_next_attempt_reason == "no_match"
 
-    def test_a_failed_recheck_follows_the_error_rule(self, rig):
+    def test_a_failed_recheck_keeps_the_track(self, rig):
         rig.dispatch()
-        assert _shown(rig.snapshot()) == IDENTIFIED_TRACK
         rig.svc.identify.side_effect = RuntimeError("provider down")
         rig.finish()
-        snap = rig.snapshot()
-        assert snap.state == STATE_ERROR
-        assert snap.title == ""
+        assert _shown(rig.snapshot()) == IDENTIFIED_TRACK
+        assert rig.mon._ti_next_attempt_reason == "error"
 
     def test_a_failed_recheck_leaves_the_receiver_on_the_last_track(self, rig):
         rig.dispatch()
@@ -299,3 +303,186 @@ class TestReadersDuringARecheck:
         pub.publish_refresh.assert_not_called()
         pub.publish_start.assert_not_called()
         assert rig.mon._current_nowplaying.artwork == COVER
+
+
+def _failure_kinds():
+    from autostream_config import (
+        TRACK_ID_ERROR_RETRY_SECONDS,
+        TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS,
+        TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS,
+    )
+    # (id, result or exception, scheduling reason tag, delay in seconds)
+    return [
+        ("no_match", NO_MATCH, "no_match", 30),
+        ("configuration_error", CONFIG_ERROR, "error", TRACK_ID_ERROR_RETRY_SECONDS),
+        ("worker_error", RuntimeError("boom"), "error", TRACK_ID_ERROR_RETRY_SECONDS),
+        ("rate_limit", TrackIDRateLimitedError("limited"), "rate_limit",
+         TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS),
+        ("upstream_rejection", TrackIDUpstreamRejectionError(403), "upstream_rejection",
+         TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS),
+        ("provider_unreachable", TrackIDProviderUnreachableError("down"),
+         "provider_unreachable", TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS),
+    ]
+
+
+KINDS = _failure_kinds()
+KIND_IDS = [k[0] for k in KINDS]
+
+
+def _make_fail(rig, outcome) -> None:
+    if isinstance(outcome, Exception):
+        rig.svc.identify.side_effect = outcome
+    else:
+        rig.svc.identify.return_value = outcome
+
+
+@pytest.mark.parametrize("kind", KINDS, ids=KIND_IDS)
+class TestFailedRecheckKeepsTheTrack:
+
+    def test_every_failure_kind_keeps_the_published_track(self, rig, kind):
+        _, outcome, _, _ = kind
+        rig.dispatch()
+        _make_fail(rig, outcome)
+        rig.finish()
+        snap = rig.snapshot()
+        assert _shown(snap) == IDENTIFIED_TRACK
+        assert snap.confidence == 0.9
+        assert snap.error == ""
+
+    def test_retry_scheduling_is_unchanged(self, rig, kind):
+        _, outcome, tag, delay = kind
+        rig.dispatch()
+        _make_fail(rig, outcome)
+        before = time.time()
+        rig.finish()
+        assert rig.mon._ti_next_attempt_reason == tag
+        assert before + delay - 1 <= rig.mon._ti_next_attempt <= time.time() + delay + 1
+
+    def test_the_snapshot_points_at_the_scheduled_retry(self, rig, kind):
+        _, outcome, tag, _ = kind
+        rig.dispatch()
+        _make_fail(rig, outcome)
+        rig.finish()
+        snap = rig.snapshot()
+        assert snap.next_attempt_at == rig.mon._ti_next_attempt
+        assert snap.next_attempt_reason == tag
+
+    def test_the_dial_reply_and_digest_keep_the_track(self, rig, kind):
+        _, outcome, _, _ = kind
+        before = track_digest(rig.snapshot())
+        rig.dispatch()
+        _make_fail(rig, outcome)
+        rig.finish()
+        reply = _dial_track_id_dict()
+        assert (reply["state"], reply["title"], reply["artwork_url"]) == (
+            STATE_IDENTIFIED, "Blue in Green", ART_URL,
+        )
+        assert track_digest(rig.snapshot()) == before
+
+    def test_the_receiver_is_sent_nothing(self, rig, kind):
+        _, outcome, _, _ = kind
+        rig.dispatch()
+        _make_fail(rig, outcome)
+        rig.finish()
+        rig.mon._nowplaying_publisher.publish_refresh.assert_not_called()
+        rig.mon._nowplaying_publisher.publish_start.assert_not_called()
+
+    def test_a_failure_for_a_superseded_attempt_leaves_the_new_state_alone(self, rig, kind):
+        _, outcome, _, _ = kind
+        rig.dispatch()
+        rig.mon._on_possible_track_change(1)
+        rig.mon._nowplaying_publisher.reset_mock()
+        _make_fail(rig, outcome)
+        rig.finish()
+        snap = rig.snapshot()
+        assert snap.state == STATE_WAITING
+        assert snap.title == ""
+        rig.mon._nowplaying_publisher.publish_refresh.assert_not_called()
+        rig.dispatch()
+        assert rig.snapshot().state == STATE_ANALYSING
+
+    def test_a_failure_when_no_track_was_held_gives_the_old_rule(self, rig, kind):
+        _, outcome, _, _ = kind
+        rig.mon._on_possible_track_change(1)  # nothing held: the next attempt is a first one
+        rig.dispatch()
+        assert rig.snapshot().state == STATE_ANALYSING
+        _make_fail(rig, outcome)
+        rig.finish()
+        snap = rig.snapshot()
+        expected = STATE_NOT_FOUND if outcome is NO_MATCH else STATE_ERROR
+        assert snap.state == expected
+        assert snap.title == ""
+
+
+class TestFailedRecheckAftermath:
+
+    def test_a_success_after_failures_updates_the_timestamps(self, rig):
+        rig.mon._ti_snapshot = dataclasses.replace(
+            rig.mon._ti_snapshot, updated_at=1.0, last_attempt_at=1.0,
+        )
+        rig.dispatch()
+        rig.svc.identify.return_value = NO_MATCH
+        rig.finish()
+        rig.dispatch()
+        rig.svc.identify.return_value = TRACK
+        rig.finish()
+        snap = rig.snapshot()
+        assert _shown(snap) == IDENTIFIED_TRACK
+        assert snap.updated_at > 1.0
+        assert snap.next_attempt_reason == "match"
+
+    def test_a_different_track_after_failures_replaces_the_held_one(self, rig):
+        rig.dispatch()
+        rig.svc.identify.return_value = NO_MATCH
+        rig.finish()
+        rig.dispatch()
+        rig.svc.identify.return_value = OTHER_TRACK
+        rig.finish()
+        assert _shown(rig.snapshot()) == (
+            STATE_IDENTIFIED, "Giant Steps", "John Coltrane", "Giant Steps", OTHER_ART_URL,
+        )
+
+    def test_the_snapshot_shows_no_next_attempt_while_a_recheck_is_in_flight(self, rig):
+        rig.dispatch()
+        snap = rig.snapshot()
+        assert (snap.next_attempt_at, snap.next_attempt_reason) == (None, "")
+        assert _shown(snap) == IDENTIFIED_TRACK
+
+    def test_the_status_api_and_home_page_keep_the_track_through_a_failed_recheck(self, rig):
+        from test_track_id_home_render import _render_airplay_page
+        rig.dispatch()
+        rig.svc.identify.return_value = NO_MATCH
+        rig.finish()
+        public = rig.snapshot().to_public_dict()
+        assert (public["state"], public["title"], public["artwork_url"]) == (
+            STATE_IDENTIFIED, "Blue in Green", ART_URL,
+        )
+        html = _render_airplay_page(ti_snapshot=rig.snapshot())
+        assert "Blue in Green" in html and ART_URL in html
+
+    def test_a_failed_recheck_is_still_logged_as_before(self, rig, caplog):
+        rig.dispatch()
+        rig.svc.identify.side_effect = TrackIDRateLimitedError("limited")
+        with caplog.at_level(logging.DEBUG):
+            rig.finish()
+        assert any(
+            r.levelno == logging.WARNING and "rate limited; backing off" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_a_capture_stop_during_a_failing_recheck_is_not_overwritten(self, rig):
+        rig.dispatch()
+        rig.mon._on_capture_stopped(rig.client)
+        rig.svc.identify.return_value = NO_MATCH
+        rig.finish()
+        assert rig.snapshot().state == STATE_WAITING
+
+    def test_keeping_the_held_track_loses_to_a_track_change_that_lands_first(self, rig):
+        """The race between the worker's own generation check and its publish:
+        the change wins, so the held track is not put back over the reset."""
+        mon = rig.mon
+        rig.dispatch()
+        held, gen, token = mon._ti_snapshot, mon._ti_generation, mon._ti_inflight_token
+        mon._on_possible_track_change(1)
+        mon._keep_held_track(held, gen, token, time.time())
+        assert rig.snapshot().state == STATE_WAITING

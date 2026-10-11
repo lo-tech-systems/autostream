@@ -3,8 +3,8 @@
 ## Unreleased
 
 - fix: the title and cover no longer drop out on a dial or the Home page every few
-  minutes while the appliance re-checks a track it has already identified. A new
-  track still clears the old one at once.
+  minutes while a playing track is re-checked, including when the re-check finds
+  nothing. A new track still clears the old one at once.
 - improvement: the HD dial's pull-down and equaliser page now close by themselves
   after a minute without a touch, and when the screen goes to sleep, so the dial
   is back on the playing screen. They stay open while a finger is held on a
