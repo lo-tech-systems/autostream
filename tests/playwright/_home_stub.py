@@ -33,7 +33,7 @@ STATUS_POLLS: list = []
 REMOTE_HOME: dict = {}
 REMOTE_HOME_POLLS: list = []
 
-_BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update")
+_BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update", "sample_rate")
 
 
 def _parsed_config(show_input_detail: bool) -> MagicMock:
@@ -68,9 +68,11 @@ def render_home(
 ) -> bytes:
     """Render the Home page as the server would.
 
-    ``banners`` maps a banner name (stylus, belt, bearing, dial_update) to
-    the text the server renders into it; names left out render empty.
-    ``levels`` is what the input levels lookup returns.
+    ``banners`` maps a banner name (stylus, belt, bearing, dial_update,
+    sample_rate) to the text the server renders into it; names left out
+    render empty. ``levels`` is what the input levels lookup returns; the
+    sample rate banner links to the lowest-numbered level that reports a
+    mismatch.
     """
     banners = dict(banners or {})
     unknown = set(banners) - set(_BANNER_KEYS)
@@ -86,6 +88,12 @@ def render_home(
     auth.get_csrf_token.return_value = "t"
     state = MagicMock()
     state.config_path = "dummy.ini"
+
+    mismatching = [
+        int(lv["index"]) for lv in (levels or [])
+        if lv.get("rate_mismatch_hz", 0) and "index" in lv
+    ]
+    mismatch_input = min(mismatching) if mismatching else 0
 
     snap = MagicMock()
     snap.inputs = {}
@@ -107,6 +115,10 @@ def render_home(
             patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=snap),
             patch("autostream_webui_page_airplay._dial_update_banner_text",
                   return_value=banners.get("dial_update", "")),
+            patch("autostream_webui_page_airplay.sample_rate_warning_text",
+                  return_value=banners.get("sample_rate", "")),
+            patch("autostream_webui_page_airplay.sample_rate_mismatch_input",
+                  return_value=mismatch_input),
             patch("autostream_webui_page_airplay.list_outputs",
                   return_value=MagicMock(ok=False, outputs=[])),
             patch("autostream_webui_page_airplay.get_setting",

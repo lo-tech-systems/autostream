@@ -1127,6 +1127,7 @@ HOME_CARDS_SCRIPT = """
         }
         activeLevel = originLevel || levels[originIdx] || {
           index: originInput, label: 'Input ' + originInput, dbfs: -90, detected_hz: 0, is_above_threshold: false,
+          rate_lock: 'locked', detected_khz: '', rate_mismatch_khz: '',
         };
         activeIdx = originIdx;
         usingReplayOrigin = true;
@@ -1161,10 +1162,17 @@ HOME_CARDS_SCRIPT = """
     var label = String(activeLevel.label || ('Input ' + inputNum));
     var signalParts = [];
     if (window.__SHOW_INPUT_DETAIL) {
-      var hz = Number(activeLevel.detected_hz || 0);
-      if (Number.isFinite(hz) && hz > 0) {
+      var rateLock = String(activeLevel.rate_lock || 'locked');
+      var mismatchKhz = String(activeLevel.rate_mismatch_khz || '');
+      var detectedKhz = String(activeLevel.detected_khz || '');
+      if (rateLock === 'mismatch' && mismatchKhz) {
+        signalParts.push('Mismatch');
+        signalParts.push(mismatchKhz);
+      } else if (rateLock === 'acquiring') {
+        signalParts.push('Acquiring');
+      } else if (detectedKhz) {
         signalParts.push('Locked');
-        signalParts.push(Math.round(hz / 1000) + ' kHz');
+        signalParts.push(detectedKhz);
       }
     }
     var nameEl = document.getElementById('np-name');

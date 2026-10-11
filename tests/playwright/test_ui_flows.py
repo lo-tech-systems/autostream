@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -658,3 +659,22 @@ class TestInputTypeAndSensitivity:
         expect(page.locator("#panel-input1")).to_be_visible()
 
 
+
+
+@_requires_browser
+class TestInputDeepLinks:
+    """The hash the Home page sample rate banner links to opens that input's card."""
+
+    @pytest.mark.parametrize("n, other", [(1, 2), (2, 1)])
+    def test_the_hash_opens_that_inputs_card(
+        self, page: "Page", base_url: str, n: int, other: int
+    ):
+        page.goto(f"{base_url}/setup#input{n}")
+        expect(page.locator(f"#panel-input{n}")).to_be_visible()
+        expect(page.locator(f"#panel-input{n}")).to_have_class(
+            re.compile(r"\bactive\b")
+        )
+        expect(page.locator(f"#audio{n}_dynamic_rate_matching")).to_be_attached()
+        expect(page.locator(f"#panel-input{other}")).not_to_have_class(
+            re.compile(r"\bactive\b")
+        )

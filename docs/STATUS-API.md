@@ -25,6 +25,8 @@ No PIN or CSRF token is required to read this endpoint.
   "playback_banner_text": "",
   "belt_banner_text": "",
   "bearing_banner_text": "",
+  "dial_update_banner_text": "",
+  "sample_rate_banner_text": "",
   "track_identification": { ... },
   "session": { "active": true, "source": "input1" },
   "repeat": { ... },
@@ -40,9 +42,11 @@ Top-level fields, briefly (this endpoint's full shape beyond
 | `playing` | bool. Whether a playback session is currently active. Derived from `session.active`, falling back to a raw capture check if the session tracker is unavailable. |
 | `status_text` | string. Home-page headline text for the overall playing/waiting state. Unrelated to `track_identification.status_text` below. |
 | `status_class` | string. `"playing"` or `"waiting"`, a CSS-style hook for the same state. |
-| `input_levels` | array. Per-input level/detection data. Each item has `index` (the input number), `label`, `dbfs` (the largest raw peak over the last poll window, before gain and EQ), `detected_hz`, `is_above_threshold` (debounced over the silence timeout) and `vu_history`. |
+| `input_levels` | array. Per-input level/detection data. Each item has `index` (the input number), `label`, `dbfs` (the largest raw peak over the last poll window, before gain and EQ), `detected_hz`, `is_above_threshold` (debounced over the silence timeout) and `vu_history`. It also carries the sample rate fields: `detected_khz` (`detected_hz` as text such as `"44.1 kHz"`, empty when there is no rate), `negotiated_hz` (the rate the capture device was opened at, 0 while the input is not running), `rate_lock` (`"acquiring"`, `"locked"` or `"mismatch"`), `relock_count` (how many times the monitor has stepped the capture rate since the input started), `rate_mismatch_hz` and `rate_mismatch_khz` (the standard rate the device is delivering when it is not the one it was opened at and Dynamic Rate Matching is off, otherwise 0 and empty), `dynamic_rate_matching` (whether the setting is on for the input) and `monitor_supports_rate_matching` (false when the monitor is too old to report these fields; the sample rate fields then keep their defaults). |
 | `playback` | object. Current playback snapshot (speaker, volume, etc). Each entry in `inputs` carries `input_type` (`turntable`, `cd` or `line`) and `type_label` (the matching display name). |
 | `playback_banner_text`, `belt_banner_text`, `bearing_banner_text` | strings. Maintenance-tracking banner text (stylus, drive belt, main bearing), empty when nothing to show. |
+| `dial_update_banner_text` | string. Text of the Home page "dial updates required" banner, empty when no dial needs an update. |
+| `sample_rate_banner_text` | string. Text of the Home page sample rate banner, `"Sample Rate Mismatch: Please enable Dynamic Rate Matching"` while any input delivers a different standard sample rate than it was opened at with Dynamic Rate Matching off, empty otherwise. The text never names the input; the page links the banner to the first input in `input_levels` whose `rate_mismatch_hz` is above zero. |
 | `track_identification` | object. See below. |
 | `session` | object. Always present. `{"active": bool, "source": string or null}`; `source` names the actively-sourcing input (e.g. `"input1"`) or `"replay"` during a repeat replay. |
 | `repeat` | object. Present only when the monitor daemon reports repeat/replay status; omitted entirely on older daemon builds. |

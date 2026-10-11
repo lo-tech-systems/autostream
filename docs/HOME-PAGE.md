@@ -30,7 +30,7 @@ just live input.
 
 When **Display Input Detail** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), the card also shows:
 
-- A "Locked · NN kHz" line once the input has locked to a sample rate.
+- A `Locked · 44.1 kHz` line once the input has locked to a sample rate, `Acquiring` while it is working one out, or `Mismatch · 44.1 kHz` when the input delivers a different rate than it was opened at and Dynamic Rate Matching is off. A device that delivers a rate other than 32, 44.1 or 48 kHz shows `Acquiring` for as long as it does so (the sound is still corrected; only the label cannot name the rate).
 - A stereo VU meter (left/right level bars).
 
 Both are hidden when this setting is off.
@@ -93,6 +93,9 @@ handled.
   up in Setup, or enable Bluetooth."
 - Service reminder banners (stylus, belt, bearing wear) can appear above the outputs list; they
   link through to the Service page.
+- A "Sample Rate Mismatch: Please enable Dynamic Rate Matching" banner appears while an input
+  delivers a different sample rate than it was opened at and Dynamic Rate Matching is off for
+  that input. Tapping it opens that input on the Setup page.
 
 ## See also
 

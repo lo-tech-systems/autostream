@@ -17,8 +17,11 @@ from typing import Optional
 from autostream_appliance_models import _dial_update_banner_text, build_output_list
 from autostream_appliances import get_all_appliances
 from autostream_core import (
+    format_khz,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
+    sample_rate_mismatch_input,
+    sample_rate_warning_text,
 )
 from autostream_player_service import get_setting, list_outputs
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
@@ -275,6 +278,8 @@ def send_airplay_page(
     belt_banner_text = playback_snapshot.belt_banner_text or ""
     bearing_banner_text = playback_snapshot.bearing_banner_text or ""
     dial_update_banner_text = _dial_update_banner_text()
+    sample_rate_banner_text = sample_rate_warning_text()
+    sample_rate_input_index = sample_rate_mismatch_input() or 1
     hostname_label = _display_hostname_label()
 
     # Determine the active input for the initial Now Playing card render.
@@ -325,11 +330,17 @@ def send_airplay_page(
             "line": "Line Level",
         }[_np_icon_kind]
     )
-    _np_hz = float(_np_active_level.get("detected_hz", 0.0))
+    _np_rate_lock = str(_np_active_level.get("rate_lock", "locked"))
+    _np_khz_text = str(_np_active_level.get("detected_khz", ""))
+    _np_mismatch_khz = format_khz(float(_np_active_level.get("rate_mismatch_hz", 0) or 0))
     _np_signal_parts = []
-    if show_input_detail and _np_hz > 0:
-        _np_signal_parts.append("Locked")
-        _np_signal_parts.append(f"{_np_hz / 1000:.0f} kHz")
+    if show_input_detail:
+        if _np_rate_lock == "mismatch" and _np_mismatch_khz:
+            _np_signal_parts += ["Mismatch", _np_mismatch_khz]
+        elif _np_rate_lock == "acquiring":
+            _np_signal_parts.append("Acquiring")
+        elif _np_khz_text:
+            _np_signal_parts += ["Locked", _np_khz_text]
     _np_signal = " \u00b7 ".join(_np_signal_parts)
     _np_icon_svg = {
         "turntable": ICON_TURNTABLE,
@@ -507,13 +518,25 @@ def send_airplay_page(
         function onStatusPollData(d) {{
           renderNowPlayingCard(d);
           updateRepeatButton(d);
-          ['stylus', 'belt', 'bearing', 'dial_update'].forEach(function(item) {{
+          ['stylus', 'belt', 'bearing', 'dial_update', 'sample_rate'].forEach(function(item) {{
             var el = document.getElementById(item.replace('_', '-') + '-warning-banner');
             if (!el) return;
             var key = item === 'stylus' ? 'playback_banner_text' : item + '_banner_text';
             var txt = String((d && d[key]) || '').trim();
             el.style.display = txt ? 'block' : 'none';
             el.textContent = txt;
+            if (item === 'sample_rate' && txt) {{
+              // The link follows the input that is mismatching.
+              var idx = 0;
+              var lv = (d && Array.isArray(d.input_levels)) ? d.input_levels : [];
+              for (var i = 0; i < lv.length; i++) {{
+                if (lv[i] && Number(lv[i].rate_mismatch_hz) > 0) {{
+                  var n = Number.isFinite(Number(lv[i].index)) ? Number(lv[i].index) : i + 1;
+                  if (idx === 0 || n < idx) idx = n;
+                }}
+              }}
+              el.href = '/setup#input' + (idx || 1);
+            }}
           }});
         }}
         function onOutputsPollData(j) {{
@@ -758,6 +781,10 @@ def send_airplay_page(
         f" style='display:{'none' if not dial_update_banner_text else 'block'};"
         f"margin:0.35rem 0 0.35rem;{_warn_style_base}'>"
         f"{html.escape(dial_update_banner_text)}</a>"
+        + f"<a id='sample-rate-warning-banner' href='/setup#input{sample_rate_input_index}'"
+        f" style='display:{'none' if not sample_rate_banner_text else 'block'};"
+        f"margin:0.35rem 0 0.35rem;{_warn_style_base}'>"
+        f"{html.escape(sample_rate_banner_text)}</a>"
         + (f"<p style='color:var(--color-status-danger);'>{html.escape(error)}</p>" if error else "")
         + _placeholder_html
         + A2HS_PROMPT_HTML

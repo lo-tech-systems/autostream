@@ -115,6 +115,7 @@ from autostream_core import (
     get_session_state,
     rate_matching_note_text,
     request_config_reload,
+    sample_rate_warning_text,
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
@@ -430,6 +431,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
             "belt": playback.belt_banner_text or "",
             "bearing": playback.bearing_banner_text or "",
             "dial_update": _dial_update_banner_text(),
+            "sample_rate": sample_rate_warning_text(),
         }
         try:
             from autostream_core import get_active_track_identification_snapshot
@@ -457,6 +459,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         "belt_banner_text": warnings.get("belt"),
         "bearing_banner_text": warnings.get("bearing"),
         "dial_update_banner_text": warnings.get("dial_update") or "",
+        "sample_rate_banner_text": warnings.get("sample_rate") or "",
         "track_identification": ti_dict,
         # Always present (unlike "repeat" below): the session tracker runs
         # regardless of whether the repeat feature/block exists at all.

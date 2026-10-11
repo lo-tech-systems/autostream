@@ -8,9 +8,14 @@ renderer and poll, covered by a separate class.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
 import _home_stub as stub
 from _home_stub import render_home, render_remote_home, start_server
+
+sys.path.insert(0, str(stub.REPO_ROOT / "core"))
+from autostream_core import SAMPLE_RATE_MISMATCH_BANNER_TEXT  # noqa: E402
 
 try:
     from playwright.sync_api import Page, expect  # type: ignore[attr-defined]
@@ -34,6 +39,8 @@ _BANNERS = {
                 "Bearing service is due"),
     "dial_update": ("dial-update-warning-banner", "/setup#dials", "dial_update_banner_text",
                     "A dial needs an update"),
+    "sample_rate": ("sample-rate-warning-banner", "/setup#input1", "sample_rate_banner_text",
+                    "Sample Rate Mismatch: Please enable Dynamic Rate Matching"),
 }
 _NAMES = list(_BANNERS)
 
@@ -180,6 +187,184 @@ class TestHomeBanners:
         expect(page.locator(_id("stylus"))).to_be_visible(timeout=4000)
 
 
+def _levels(*mismatching: int, matching: bool = False) -> list:
+    """Two input level entries; the numbered inputs report a mismatch."""
+    return [
+        {
+            "index": n,
+            "label": f"Input {n}",
+            "rate_lock": "mismatch" if n in mismatching else "locked",
+            "rate_mismatch_hz": 44100 if n in mismatching else 0,
+            "dynamic_rate_matching": matching,
+        }
+        for n in (1, 2)
+    ]
+
+
+def _sample_rate_status(*mismatching: int) -> dict:
+    status = _empty_status()
+    status["sample_rate_banner_text"] = SAMPLE_RATE_MISMATCH_BANNER_TEXT
+    status["input_levels"] = _levels(*mismatching)
+    return status
+
+
+@_requires_browser
+class TestSampleRateBanner:
+    def test_the_text_is_the_agreed_string(self, page: "Page", home_url: str):
+        assert SAMPLE_RATE_MISMATCH_BANNER_TEXT == (
+            "Sample Rate Mismatch: Please enable Dynamic Rate Matching"
+        )
+        stub.set_page(render_home())
+        stub.STATUS.update(_sample_rate_status(1))
+        _open(page, home_url)
+        expect(page.locator(_id("sample_rate"))).to_have_text(
+            SAMPLE_RATE_MISMATCH_BANNER_TEXT, timeout=4000
+        )
+
+    def test_it_is_shown_on_first_render_and_links_to_the_mismatching_input(
+        self, page: "Page", home_url: str
+    ):
+        stub.set_page(render_home(
+            banners={"sample_rate": SAMPLE_RATE_MISMATCH_BANNER_TEXT},
+            levels=_levels(2),
+        ))
+        stub.STATUS.update(_sample_rate_status(2))
+        _open(page, home_url)
+        _after_polls(page, 2)
+        banner = page.locator(_id("sample_rate"))
+        expect(banner).to_be_visible()
+        expect(banner).to_have_text(SAMPLE_RATE_MISMATCH_BANNER_TEXT)
+        expect(banner).to_have_attribute("href", "/setup#input2")
+
+    def test_the_link_follows_the_mismatching_input_without_a_reload(
+        self, page: "Page", home_url: str
+    ):
+        stub.set_page(render_home())
+        stub.STATUS.update(_sample_rate_status(2))
+        _open(page, home_url)
+        banner = page.locator(_id("sample_rate"))
+        expect(banner).to_have_attribute("href", "/setup#input2", timeout=4000)
+        stub.STATUS["input_levels"] = _levels(1, 2)
+        expect(banner).to_have_attribute("href", "/setup#input1", timeout=4000)
+        stub.STATUS["input_levels"] = _levels(2)
+        expect(banner).to_have_attribute("href", "/setup#input2", timeout=4000)
+        expect(banner).to_be_visible()
+
+    def test_the_link_moves_from_input_1_to_input_2(self, page: "Page", home_url: str):
+        stub.set_page(render_home())
+        stub.STATUS.update(_sample_rate_status(1))
+        _open(page, home_url)
+        banner = page.locator(_id("sample_rate"))
+        expect(banner).to_have_attribute("href", "/setup#input1", timeout=4000)
+        stub.STATUS["input_levels"] = _levels(2)
+        expect(banner).to_have_attribute("href", "/setup#input2", timeout=4000)
+
+    def test_clicking_it_goes_to_the_mismatching_inputs_setup_card(
+        self, page: "Page", home_url: str
+    ):
+        stub.set_page(render_home())
+        stub.STATUS.update(_sample_rate_status(2))
+        _open(page, home_url)
+        banner = page.locator(_id("sample_rate"))
+        expect(banner).to_have_attribute("href", "/setup#input2", timeout=4000)
+        banner.click()
+        page.wait_for_url("**/setup#input2")
+
+    def test_it_is_hidden_once_the_setting_has_taken_effect(
+        self, page: "Page", home_url: str
+    ):
+        stub.set_page(render_home(
+            banners={"sample_rate": SAMPLE_RATE_MISMATCH_BANNER_TEXT},
+            levels=_levels(1),
+        ))
+        stub.STATUS.update(_empty_status())
+        stub.STATUS["input_levels"] = _levels(matching=True)
+        _open(page, home_url)
+        _after_polls(page, 1)
+        expect(page.locator(_id("sample_rate"))).to_be_hidden()
+        expect(page.locator(_id("sample_rate"))).to_have_text("")
+
+    def test_an_older_monitor_shows_no_banner_and_breaks_nothing(
+        self, page: "Page", home_url: str
+    ):
+        errors: list = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        stub.set_page(render_home())
+        stub.STATUS.update({
+            "ok": True,
+            "playback_banner_text": _text("stylus"),
+            "belt_banner_text": "",
+            "bearing_banner_text": "",
+            "dial_update_banner_text": "",
+            "input_levels": [
+                {"index": 1, "label": "Input 1", "dbfs": -40.0, "detected_hz": 48000.0,
+                 "is_above_threshold": True},
+            ],
+        })
+        _open(page, home_url)
+        expect(page.locator(_id("stylus"))).to_be_visible(timeout=4000)
+        _after_polls(page, 2)
+        expect(page.locator(_id("sample_rate"))).to_be_hidden()
+        assert not errors, f"JavaScript errors: {errors}"
+
+
+def _level(**rate) -> dict:
+    level = {"index": 1, "label": "Input 1", "dbfs": -30.0, "detected_hz": 0.0,
+             "is_above_threshold": True}
+    level.update(rate)
+    return level
+
+
+_LOCKED_48 = {"rate_lock": "locked", "detected_hz": 48000.0, "detected_khz": "48 kHz"}
+_MISMATCH_44 = {"rate_lock": "mismatch", "detected_hz": 48000.0, "detected_khz": "48 kHz",
+                "rate_mismatch_hz": 44100, "rate_mismatch_khz": "44.1 kHz"}
+
+
+@_requires_browser
+class TestInputCardRateText:
+    """The rate line on the Now Playing card, shown only with input detail on."""
+
+    @pytest.mark.parametrize("rate, text", [
+        (_LOCKED_48, "Locked · 48 kHz"),
+        ({"rate_lock": "locked", "detected_hz": 44100.0, "detected_khz": "44.1 kHz"},
+         "Locked · 44.1 kHz"),
+        ({"rate_lock": "acquiring", "detected_hz": 0.0, "detected_khz": ""}, "Acquiring"),
+        (_MISMATCH_44, "Mismatch · 44.1 kHz"),
+        # An older monitor reports none of the rate keys.
+        ({"detected_hz": 48000.0, "detected_khz": "48 kHz"}, "Locked · 48 kHz"),
+        ({"detected_hz": 0.0, "detected_khz": ""}, ""),
+    ])
+    def test_the_text_is_the_same_on_first_render_and_after_a_poll(
+        self, page: "Page", home_url: str, rate: dict, text: str
+    ):
+        stub.set_page(render_home(levels=[_level(**rate)], show_input_detail=True))
+        _open(page, home_url)
+        expect(page.locator("#np-signal")).to_have_text(text)
+        stub.STATUS.update(_empty_status())
+        stub.STATUS["input_levels"] = [_level(**rate)]
+        _after_polls(page, 2)
+        expect(page.locator("#np-signal")).to_have_text(text)
+
+    def test_the_text_follows_the_poll(self, page: "Page", home_url: str):
+        stub.set_page(render_home(levels=[_level(**_LOCKED_48)], show_input_detail=True))
+        stub.STATUS.update(_empty_status())
+        stub.STATUS["input_levels"] = [_level(**_LOCKED_48)]
+        _open(page, home_url)
+        expect(page.locator("#np-signal")).to_have_text("Locked · 48 kHz")
+        stub.STATUS["input_levels"] = [_level(**_MISMATCH_44)]
+        expect(page.locator("#np-signal")).to_have_text(
+            "Mismatch · 44.1 kHz", timeout=4000
+        )
+
+    def test_no_text_without_input_detail(self, page: "Page", home_url: str):
+        stub.set_page(render_home(levels=[_level(**_LOCKED_48)]))
+        stub.STATUS.update(_empty_status())
+        stub.STATUS["input_levels"] = [_level(**_LOCKED_48)]
+        _open(page, home_url)
+        _after_polls(page, 2)
+        expect(page.locator("#np-signal")).to_have_text("")
+
+
 _REMOTE_NAMES = ["stylus", "belt", "bearing"]
 
 
@@ -247,3 +432,22 @@ class TestRemoteHomeBanners:
             expect(page.locator(_id(name))).to_have_count(1)
         expect(page.locator("#dial-update-warning-banner")).to_have_count(0)
         expect(page.locator("#sample-rate-warning-banner")).to_have_count(0)
+
+    def test_a_sample_rate_warning_in_the_payload_is_ignored(
+        self, page: "Page", remote_home_url: str
+    ):
+        errors: list = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        stub.set_page(render_remote_home())
+        warnings = {n: _text(n) for n in _REMOTE_NAMES}
+        warnings["sample_rate"] = SAMPLE_RATE_MISMATCH_BANNER_TEXT
+        stub.REMOTE_HOME.update(_remote_home(warnings))
+        page.goto(f"{remote_home_url}/")
+        expect(page.locator(_id("stylus"))).to_be_visible(timeout=4000)
+        for _ in range(100):
+            if len(stub.REMOTE_HOME_POLLS) >= 2:
+                break
+            page.wait_for_timeout(100)
+        expect(page.locator("#sample-rate-warning-banner")).to_have_count(0)
+        expect(page.get_by_text(SAMPLE_RATE_MISMATCH_BANNER_TEXT)).to_have_count(0)
+        assert not errors, f"JavaScript errors: {errors}"
