@@ -127,6 +127,8 @@ _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
     "audio2.input_type",
     "audio1.silence_threshold",
     "audio2.silence_threshold",
+    "audio1.dynamic_rate_matching",
+    "audio2.dynamic_rate_matching",
     "track_identification.enabled",
     "track_identification.analysis_lead_in_seconds",
     "track_identification.refresh_seconds",

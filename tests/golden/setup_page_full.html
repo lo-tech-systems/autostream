@@ -1482,9 +1482,11 @@
           if ((id === 'input1' || id === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }
-        // Deep link from the Home page dial-update banner.
+        // Deep links from the Home page banners (dial update, sample rate).
         window.addEventListener('DOMContentLoaded', function() {
           if (location.hash === '#dials') openPanel('dials');
+          if (location.hash === '#input1') openPanel('input1');
+          if (location.hash === '#input2') openPanel('input2');
         });
         function _repeatCodecLabel(codec) {
           if (!codec) return '';
@@ -4041,6 +4043,8 @@
             const item = inputs.find(function(x){ return x && x.index === i; });
             _inputLevelLast[i] = (item && typeof item.dbfs === 'number') ? item.dbfs : NaN;
             _applyInputLevelMark(i);
+            const note = document.getElementById('audio' + i + '_rate_matching_note');
+            if (note && item && typeof item.rate_matching_note === 'string') note.textContent = item.rate_matching_note;
           });
         }
         var _inputLevelPoller = Poller({

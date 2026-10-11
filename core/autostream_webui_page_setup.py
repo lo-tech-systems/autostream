@@ -41,6 +41,7 @@ except ImportError:
         return []
 
 from autostream_core import (
+    rate_matching_note_text,
     update_live_owntone_runtime,
     update_playback_input_config,
 )
@@ -999,6 +1000,8 @@ def _setup_input_card_html(
         settings_wrap_id = f"{prefix}_settings"
         input_type = normalize_input_type(getattr(parsed_input, "input_type", "line"))
         threshold = float(parsed_input.silence_threshold_dbfs)
+        rate_matching = bool(getattr(parsed_input, "dynamic_rate_matching", False))
+        rate_matching_note = html.escape(rate_matching_note_text(input_index))
         type_options = "".join(
             f'<option value="{t}"{" selected" if t == input_type else ""}>{INPUT_TYPE_LABELS[t]}</option>'
             for t in INPUT_TYPES
@@ -1048,6 +1051,16 @@ def _setup_input_card_html(
             </div>
             <div class="helptext" style="text-align:left;">
               Level: <span id="{prefix}_level_val">no level</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
+              <label class="output-toggle" style="margin:0;">
+                <input type="checkbox" id="{prefix}_dynamic_rate_matching" {'checked' if rate_matching else ''} onchange="if(liveEnabled) settingsSaveField('audio{input_index}.dynamic_rate_matching', this.checked);">
+                <span class="switch"></span>
+              </label>
+              <span>Dynamic Rate Matching</span>
+            </div>
+            <div id="{prefix}_rate_matching_note" class="helptext" style="text-align:left;">
+              {rate_matching_note}
             </div>
           {settings_close}
         """
@@ -2901,6 +2914,8 @@ def send_setup_page(
             const item = inputs.find(function(x){{ return x && x.index === i; }});
             _inputLevelLast[i] = (item && typeof item.dbfs === 'number') ? item.dbfs : NaN;
             _applyInputLevelMark(i);
+            const note = document.getElementById('audio' + i + '_rate_matching_note');
+            if (note && item && typeof item.rate_matching_note === 'string') note.textContent = item.rate_matching_note;
           }});
         }}
         var _inputLevelPoller = Poller({{
@@ -3656,9 +3671,11 @@ def send_setup_page(
           if ((id === 'input1' || id === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }}
-        // Deep link from the Home page dial-update banner.
+        // Deep links from the Home page banners (dial update, sample rate).
         window.addEventListener('DOMContentLoaded', function() {{
           if (location.hash === '#dials') openPanel('dials');
+          if (location.hash === '#input1') openPanel('input1');
+          if (location.hash === '#input2') openPanel('input2');
         }});
         function _repeatCodecLabel(codec) {{
           if (!codec) return '';

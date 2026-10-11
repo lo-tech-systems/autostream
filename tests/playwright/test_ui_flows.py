@@ -183,6 +183,32 @@ _STUB_HTML_BYTES: bytes = b""
 # the stub server can answer the browser's lazy per-card fetch.
 _STUB_CARD_JSON: dict = {}
 
+_RATE_MATCHING_NOTE_STUB = "Stub note for input {index}."
+
+
+def _stub_levels_reply() -> dict:
+    """The /api/inputs/levels reply the stub serves; a test edits it between polls."""
+    return {
+        "ok": True,
+        "connected": True,
+        "inputs": [
+            {"index": 1, "enabled": True, "running": True, "dbfs": -52.0,
+             "rate_matching_note": _RATE_MATCHING_NOTE_STUB.format(index=1),
+             "dynamic_rate_matching": False, "rate_mismatch_hz": 0,
+             "negotiated_hz": 48000, "monitor_supports_rate_matching": True},
+            {"index": 2, "enabled": False, "running": False, "dbfs": None,
+             "rate_matching_note": _RATE_MATCHING_NOTE_STUB.format(index=2),
+             "dynamic_rate_matching": False, "rate_mismatch_hz": 0,
+             "negotiated_hz": 0, "monitor_supports_rate_matching": False},
+        ],
+    }
+
+
+# Mutable stub state, reset by a fixture before each test that uses it.
+_STUB_LEVELS: dict = _stub_levels_reply()
+# Bodies of the JSON POSTs the stub has received, oldest first.
+_STUB_POSTS: list = []
+
 
 class _StubHandler(BaseHTTPRequestHandler):
     """Serve production-rendered HTML for page requests and JSON stubs for /api/."""
@@ -218,14 +244,7 @@ class _StubHandler(BaseHTTPRequestHandler):
             body = _STUB_CARD_JSON.get(key, b'{"ok": false, "error": "unknown_card"}')
             ct = "application/json"
         elif self.path.startswith("/api/inputs/levels"):
-            body = json.dumps({
-                "ok": True,
-                "connected": True,
-                "inputs": [
-                    {"index": 1, "enabled": True, "running": True, "dbfs": -52.0},
-                    {"index": 2, "enabled": False, "running": False, "dbfs": None},
-                ],
-            }).encode("utf-8")
+            body = json.dumps(_STUB_LEVELS).encode("utf-8")
             ct = "application/json"
         elif self.path.startswith("/api/"):
             # Return a catch-all JSON response so the real page's XHR polling
@@ -238,6 +257,23 @@ class _StubHandler(BaseHTTPRequestHandler):
             ct = "text/html; charset=utf-8"
         self.send_response(200)
         self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        """Record the JSON body and answer as the settings route does on success."""
+        length = int(self.headers.get("Content-Length", "0"))
+        posted = json.loads(self.rfile.read(length) or b"{}")
+        _STUB_POSTS.append(posted)
+        body = json.dumps({
+            "ok": True,
+            "field": posted.get("field"),
+            "value": posted.get("value"),
+            "live": True,
+        }).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -534,6 +570,12 @@ class TestPanelScopedPolling:
 
 @_requires_browser
 class TestInputTypeAndSensitivity:
+    @pytest.fixture(autouse=True)
+    def _fresh_stub_state(self):
+        _STUB_LEVELS.clear()
+        _STUB_LEVELS.update(_stub_levels_reply())
+        _STUB_POSTS.clear()
+
     def _open_input1(self, page: "Page", base_url: str) -> None:
         page.goto(f"{base_url}/setup")
         _open_setup_panel(page, "Input 1")
@@ -588,5 +630,31 @@ class TestInputTypeAndSensitivity:
         _open_setup_panel(page, "Input 2")
         expect(page.locator("#panel-input2")).to_be_visible()
         expect(page.locator("#audio2_level_val")).to_have_text("no level")
+
+    def test_rate_matching_switch_saves_through_the_settings_route(
+        self, page: "Page", base_url: str
+    ):
+        if os.environ.get("AUTOSTREAM_URL"):
+            pytest.skip("posts a setting to the stub; not for a real appliance")
+        self._open_input1(page, base_url)
+        switch = page.locator("#audio1_dynamic_rate_matching")
+        expect(switch).to_be_attached()
+        assert not switch.is_checked()
+        page.locator("#panel-input1 label.output-toggle:has(#audio1_dynamic_rate_matching)").click()
+        expect(page.locator("#autosave-status")).to_have_text("Saved")
+        assert switch.is_checked()
+        assert _STUB_POSTS == [{"field": "audio1.dynamic_rate_matching", "value": True}]
+
+    def test_rate_matching_note_follows_the_levels_reply_without_a_reload(
+        self, page: "Page", base_url: str
+    ):
+        if os.environ.get("AUTOSTREAM_URL"):
+            pytest.skip("edits the stub's levels reply; not for a real appliance")
+        self._open_input1(page, base_url)
+        note = page.locator("#audio1_rate_matching_note")
+        expect(note).to_have_text("Stub note for input 1.", timeout=3000)
+        _STUB_LEVELS["inputs"][0]["rate_matching_note"] = "Changed while the card was open."
+        expect(note).to_have_text("Changed while the card was open.", timeout=3000)
+        expect(page.locator("#panel-input1")).to_be_visible()
 
 

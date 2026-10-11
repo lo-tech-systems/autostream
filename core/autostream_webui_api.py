@@ -113,6 +113,7 @@ from autostream_core import (
     get_playback_snapshot,
     get_repeat_status,
     get_session_state,
+    rate_matching_note_text,
     request_config_reload,
     reset_input_belt,
     reset_input_bearing,
@@ -126,6 +127,7 @@ from autostream_core import (
     set_live_repeat_armed,
     set_live_repeat_armed_ack,
     set_live_repeat_enabled,
+    update_live_dynamic_rate_matching,
     update_live_input_type,
     update_live_owntone_runtime,
     update_live_silence_seconds,
@@ -489,7 +491,9 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
     Reads only the coordinator's cache of the last daemon poll, so it
     never waits on OwnTone or the daemon. One entry per input, in index
     order; dbfs is null for an input with no running monitor and for
-    every input while the daemon is disconnected.
+    every input while the daemon is disconnected. Each entry also carries
+    the note shown under the card's Dynamic Rate Matching switch and the
+    values that note is worked out from.
     """
     enabled = {1: False, 2: False}
     if state is not None:
@@ -511,6 +515,13 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
             "enabled": enabled[index],
             "running": lv is not None,
             "dbfs": float(lv["dbfs"]) if (lv is not None and connected) else None,
+            "rate_matching_note": rate_matching_note_text(index),
+            "dynamic_rate_matching": bool(lv.get("dynamic_rate_matching", False)) if lv is not None else False,
+            "rate_mismatch_hz": int(lv.get("rate_mismatch_hz", 0)) if lv is not None else 0,
+            "negotiated_hz": int(lv.get("negotiated_hz", 0)) if lv is not None else 0,
+            "monitor_supports_rate_matching": (
+                bool(lv.get("monitor_supports_rate_matching", False)) if lv is not None else False
+            ),
         })
     send_json(handler, 200, {"ok": True, "connected": connected, "inputs": inputs})
 
@@ -2314,6 +2325,14 @@ def _live_silence_threshold_2(state: object, value: object) -> bool:
     return update_live_silence_threshold_dbfs(2, float(value))
 
 
+def _live_dynamic_rate_matching_1(state: object, value: object) -> bool:
+    return update_live_dynamic_rate_matching(1, bool(value))
+
+
+def _live_dynamic_rate_matching_2(state: object, value: object) -> bool:
+    return update_live_dynamic_rate_matching(2, bool(value))
+
+
 def _live_track_id(state: object, value: object) -> bool:
     _debounce_track_id_rebuild(state)
     return True
@@ -2398,6 +2417,9 @@ _SETTINGS_FIELDS: dict = {
     # Sensitivity in whole dB (live: daemon push, never a reload)
     "audio1.silence_threshold":                 _reg_settings_field("audio1.silence_threshold", "audio1", "silence_threshold", _validate_silence_threshold_dbfs, _live_silence_threshold_1, live_class=LiveClass.LIVE),
     "audio2.silence_threshold":                 _reg_settings_field("audio2.silence_threshold", "audio2", "silence_threshold", _validate_silence_threshold_dbfs, _live_silence_threshold_2, live_class=LiveClass.LIVE),
+    # Dynamic Rate Matching (live: daemon push, never a reload)
+    "audio1.dynamic_rate_matching":             _reg_settings_field("audio1.dynamic_rate_matching", "audio1", "dynamic_rate_matching", _validate_bool, _live_dynamic_rate_matching_1, live_class=LiveClass.LIVE),
+    "audio2.dynamic_rate_matching":             _reg_settings_field("audio2.dynamic_rate_matching", "audio2", "dynamic_rate_matching", _validate_bool, _live_dynamic_rate_matching_2, live_class=LiveClass.LIVE),
     # Track identification (live: track-ID rebuild debounce)
     "track_identification.enabled":             _reg_settings_field("track_identification.enabled", "track_identification", "enabled", _validate_bool, _live_track_id, live_class=LiveClass.RELOAD),
     "track_identification.analysis_lead_in_seconds": _reg_settings_field("track_identification.analysis_lead_in_seconds", "track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id, form_coerce=normalize_track_id_analysis_lead_in_seconds, live_class=LiveClass.RELOAD),

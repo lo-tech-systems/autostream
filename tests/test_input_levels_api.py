@@ -40,10 +40,15 @@ def _level(index: int, dbfs: float) -> dict:
         "detected_hz": 0.0,
         "is_above_threshold": False,
         "vu_history": [],
+        "dynamic_rate_matching": False,
+        "rate_mismatch_hz": 0,
+        "negotiated_hz": 48000,
+        "monitor_supports_rate_matching": True,
     }
 
 
-def _call(levels=None, connected=True, config=None, levels_error=None, config_error=None):
+def _call(levels=None, connected=True, config=None, levels_error=None, config_error=None,
+          note=lambda index: f"note {index}"):
     if config is None:
         config = MagicMock(audio1_enabled=True, audio2_enabled=False)
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
@@ -59,6 +64,8 @@ def _call(levels=None, connected=True, config=None, levels_error=None, config_er
         else patch("autostream_webui_api._config_snapshot", return_value=config)
     )
     with levels_patch, config_patch, patch(
+        "autostream_webui_api.rate_matching_note_text", side_effect=note,
+    ), patch(
         "autostream_webui_api.get_monitor_runtime_info",
         return_value=MagicMock(connected=connected),
     ):
@@ -72,10 +79,55 @@ def test_two_running_inputs():
     assert code == 200
     assert body["ok"] is True
     assert body["connected"] is True
+    rate_fields = {
+        "dynamic_rate_matching": False,
+        "rate_mismatch_hz": 0,
+        "negotiated_hz": 48000,
+        "monitor_supports_rate_matching": True,
+    }
     assert body["inputs"] == [
-        {"index": 1, "enabled": True, "running": True, "dbfs": -52.34},
-        {"index": 2, "enabled": True, "running": True, "dbfs": -61.0},
+        {"index": 1, "enabled": True, "running": True, "dbfs": -52.34,
+         "rate_matching_note": "note 1", **rate_fields},
+        {"index": 2, "enabled": True, "running": True, "dbfs": -61.0,
+         "rate_matching_note": "note 2", **rate_fields},
     ]
+
+
+def test_rate_fields_are_the_monitors_reported_values():
+    level = _level(1, -40.0)
+    level.update(dynamic_rate_matching=True, rate_mismatch_hz=44100,
+                 negotiated_hz=48000, monitor_supports_rate_matching=False)
+    code, body = _call(levels=[level])
+    first = body["inputs"][0]
+    assert first["dynamic_rate_matching"] is True
+    assert first["rate_mismatch_hz"] == 44100
+    assert first["negotiated_hz"] == 48000
+    assert first["monitor_supports_rate_matching"] is False
+
+
+def test_input_without_a_running_monitor_gets_empty_rate_fields_and_the_note():
+    code, body = _call(levels=[_level(1, -40.0)])
+    second = body["inputs"][1]
+    assert second["running"] is False
+    assert second["dynamic_rate_matching"] is False
+    assert second["rate_mismatch_hz"] == 0
+    assert second["negotiated_hz"] == 0
+    assert second["monitor_supports_rate_matching"] is False
+    assert second["rate_matching_note"] == "note 2"
+
+
+def test_the_note_is_asked_for_once_per_input():
+    asked = []
+    def note(index):
+        asked.append(index)
+        return "x"
+    _call(levels=[_level(1, -40.0)], note=note)
+    assert asked == [1, 2]
+
+
+def test_levels_failure_still_carries_the_notes():
+    code, body = _call(levels_error=RuntimeError("monitors unavailable"))
+    assert [item["rate_matching_note"] for item in body["inputs"]] == ["note 1", "note 2"]
 
 
 def test_disabled_input_reports_no_level():

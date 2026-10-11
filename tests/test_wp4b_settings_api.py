@@ -177,6 +177,10 @@ class TestSettingsFieldsWp4bPresent:
         assert "audio1.turntable" not in _SETTINGS_FIELDS
         assert "audio2.turntable" not in _SETTINGS_FIELDS
 
+    def test_dynamic_rate_matching_fields(self):
+        for f in ("audio1.dynamic_rate_matching", "audio2.dynamic_rate_matching"):
+            assert f in _SETTINGS_FIELDS
+
     def test_track_id_fields(self):
         for f in (
             "track_identification.enabled",
@@ -191,6 +195,7 @@ class TestSettingsFieldsWp4bPresent:
             "audio1.capture_device", "audio2.capture_device",
             "audio2.enabled", "audio1.input_type", "audio2.input_type",
             "audio1.silence_threshold", "audio2.silence_threshold",
+            "audio1.dynamic_rate_matching", "audio2.dynamic_rate_matching",
             "track_identification.enabled",
             "track_identification.analysis_lead_in_seconds",
             "track_identification.refresh_seconds",
@@ -476,6 +481,97 @@ class TestSilenceThresholdRow:
         state, store = _make_state(str(tmp_path))
         code, resp = _post_resp(state, "audio1.silence_threshold", -50)
         assert resp["live"] is True
+
+
+# ── Dynamic Rate Matching row ─────────────────────────────────────────────────
+
+class TestDynamicRateMatchingRow:
+    def test_stored_under_the_input_section(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.dynamic_rate_matching", True)
+        assert resp["ok"] is True
+        assert resp["value"] is True
+        assert store.snapshot().audio1.dynamic_rate_matching is True
+        assert store.snapshot().audio2.dynamic_rate_matching is False
+
+    def test_turning_it_off_is_stored(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _post_resp(state, "audio2.dynamic_rate_matching", True)
+        _post_resp(state, "audio2.dynamic_rate_matching", False)
+        assert store.snapshot().audio2.dynamic_rate_matching is False
+
+    def test_live_push_carries_the_flag_and_leaves_the_rest(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1, input_type="cd", silence_threshold_dbfs=-55.0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)), \
+             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_webui_api.request_config_reload") as m_rel:
+            code, resp = _post_resp(state, "audio1.dynamic_rate_matching", True)
+        assert resp["live"] is True
+        mock_client.configure_input.assert_called_once()
+        pushed = mock_client.configure_input.call_args
+        assert pushed.args[0] == 1
+        assert pushed.args[2] == pytest.approx(-55.0)
+        assert pushed.kwargs["input_type"] == "cd"
+        assert pushed.kwargs["dynamic_rate_matching"] is True
+        m_deb.assert_not_called()
+        m_rel.assert_not_called()
+
+    def test_push_failure_is_reported_and_the_monitor_keeps_the_value(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        mon = _make_live_monitor(1)
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+             patch("autostream_core.LIVE_PUSH_RETRY_GAP_SECONDS", 0), \
+             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_webui_api.request_config_reload") as m_rel:
+            code, resp = _post_resp(state, "audio1.dynamic_rate_matching", True)
+        assert resp["ok"] is True
+        assert resp["live"] is False
+        assert "live_error" in resp
+        m_deb.assert_not_called()
+        m_rel.assert_not_called()
+        assert mon.dynamic_rate_matching is True
+        assert store.snapshot().audio1.dynamic_rate_matching is True
+
+    def test_input_2_is_pushed_to_input_2(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(2)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)):
+            code, resp = _post_resp(state, "audio2.dynamic_rate_matching", True)
+        assert resp["live"] is True
+        pushed = mock_client.configure_input.call_args
+        assert pushed.args[0] == 2
+        assert pushed.kwargs["dynamic_rate_matching"] is True
+        assert store.snapshot().audio1.dynamic_rate_matching is False
+
+    def test_no_running_monitor_is_still_live(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.dynamic_rate_matching", True)
+        assert resp["live"] is True
+
+    def test_non_boolean_values_are_rejected(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        for bad in ("true", 1, 0, None):
+            code, resp = _post_resp(state, "audio1.dynamic_rate_matching", bad)
+            assert code == 400
+            assert "Value must be true or false" in resp["error"]
+        assert store.snapshot().audio1.dynamic_rate_matching is False
+
+    def test_a_later_type_change_still_sends_the_flag(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)):
+            _post_resp(state, "audio1.dynamic_rate_matching", True)
+            _post_resp(state, "audio1.silence_threshold", -50)
+            _post_resp(state, "audio1.input_type", "cd")
+        for pushed in mock_client.configure_input.call_args_list:
+            assert pushed.kwargs["dynamic_rate_matching"] is True
 
 
 # ── Coordinator reload debounce ───────────────────────────────────────────────
