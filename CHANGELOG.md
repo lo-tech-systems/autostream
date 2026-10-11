@@ -136,6 +136,9 @@
   numbers.
 - fix: a dial whose saved poll interval is unusable now uses the default
   instead of stopping its poll loop.
+- fix: the Dial name row in a dial's info (on the HD page and the small screen)
+  now shows the dial's UUID while the dial has no name, as the web UI does,
+  instead of "-".
 - change: the dial's code is split into a core that tracks the appliances and
   views that draw the screen, so the small screen and the HD page share one
   model. No change to what the small screen does.

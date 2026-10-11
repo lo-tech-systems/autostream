@@ -276,7 +276,7 @@ def _disk_free() -> "str | None":
     return f"{int(mb)} MB"
 
 
-def gather_dial_info(name: str, version: str, network=None, sd_health=None) -> "tuple[tuple[str, str], ...]":
+def gather_dial_info(name: str, version: str, network=None, sd_health=None, uuid: str = "") -> "tuple[tuple[str, str], ...]":
     """(label, value) pairs in display order — the info page's own content,
     gathered fresh on every open. Every source is guarded separately (a
     single bad source degrades only its own field to "-"), and the whole
@@ -297,7 +297,11 @@ def gather_dial_info(name: str, version: str, network=None, sd_health=None) -> "
 
     *sd_health* is the already formatted SD health value (a plain string,
     or None for "-"); the caller formats it so this module keeps no
-    dependency on the reader."""
+    dependency on the reader.
+
+    *uuid* is the dial's own identifier: the Dial name row shows it while
+    the dial has no name, the same string the dial advertises as its name
+    and the appliance lists it by."""
     try:
         try:
             ipv4 = _ipv4() or _BLANK
@@ -312,7 +316,7 @@ def gather_dial_info(name: str, version: str, network=None, sd_health=None) -> "
         except Exception:
             disk = _BLANK
         return (
-            (INFO_LABELS[0], (name or "").strip() or _BLANK),
+            (INFO_LABELS[0], (name or "").strip() or (uuid or "").strip() or _BLANK),
             (INFO_LABELS[1], version or _BLANK),
             (INFO_LABELS[2], ipv4),
             (INFO_LABELS[3], wifi[0]),

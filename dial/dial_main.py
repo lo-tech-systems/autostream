@@ -812,7 +812,7 @@ def main() -> None:
             cfg, core, http_server=http_server, panel=hd_panel, hub=hd_hub, port=cfg.hd_port,
             info_fn=lambda: gather_dial_info(
                 http_server.get_runtime_status()["name"], VERSION,
-                network=network_latest(), sd_health=dial_sdhealth.info_value(),
+                network=network_latest(), sd_health=dial_sdhealth.info_value(), uuid=cfg.uuid,
             ),
         )
         hd_hub.start()
@@ -871,7 +871,7 @@ def main() -> None:
         display.set_info_provider(
             lambda: gather_dial_info(
                 http_server.get_runtime_status()["name"], VERSION,
-                network=network_latest(), sd_health=dial_sdhealth.info_value(),
+                network=network_latest(), sd_health=dial_sdhealth.info_value(), uuid=cfg.uuid,
             )
         )
     # The core's thread starts before the view's, so the first poll is not

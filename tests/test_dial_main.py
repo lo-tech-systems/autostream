@@ -2835,7 +2835,7 @@ class TestInfoProviderWiring:
              patch("dial_main.dial_sdhealth.info_value", return_value="87% Good"):
             rows = display._get_info_rows()
         mock_gather.assert_called_once_with(
-            "Kitchen Dial", dm.VERSION, network="sentinel-view", sd_health="87% Good",
+            "Kitchen Dial", dm.VERSION, network="sentinel-view", sd_health="87% Good", uuid="info-wiring-uuid",
         )
         assert rows == (("Dial name", "Kitchen Dial"),)
 

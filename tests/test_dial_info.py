@@ -80,6 +80,23 @@ class TestGatherShape:
         assert dict(rows)["Dial name"] == _BLANK
         assert dict(rows)["Firmware"] == _BLANK
 
+    def test_an_unnamed_dial_shows_its_uuid_in_the_name_row(self):
+        for unnamed in ("", "   ", None):
+            with self._patched():
+                rows = gather_dial_info(unnamed, "1.0", uuid="0123456789abcdef")
+            assert dict(rows)["Dial name"] == "0123456789abcdef"
+
+    def test_a_named_dial_shows_its_name_not_its_uuid(self):
+        with self._patched():
+            rows = gather_dial_info("Kitchen Dial", "1.0", uuid="0123456789abcdef")
+        assert dict(rows)["Dial name"] == "Kitchen Dial"
+
+    def test_no_name_and_no_uuid_shows_a_dash(self):
+        for uuid in ("", "  ", None):
+            with self._patched():
+                rows = gather_dial_info("", "1.0", uuid=uuid)
+            assert dict(rows)["Dial name"] == _BLANK
+
     def test_name_is_stripped(self):
         with self._patched():
             rows = gather_dial_info("  Kitchen Dial  ", "1.0")

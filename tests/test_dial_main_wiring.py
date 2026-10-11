@@ -437,3 +437,17 @@ class TestBuildInputs:
         assert delta(0) == 0
         calls.confirm.assert_not_called()
         core.volume_step.assert_called_with(0)
+
+
+def test_the_hd_info_page_is_given_the_dials_uuid_to_show_for_an_unnamed_dial():
+    import dial_main as dm
+
+    captured = _run_core_wiring()
+    info_fn = captured["hd_class"].call_args.kwargs["info_fn"]
+    with patch("dial_main.gather_dial_info", return_value=()) as mock_gather, \
+         patch("dial_main.network_latest", return_value=None), \
+         patch("dial_main.dial_sdhealth.info_value", return_value=None):
+        info_fn()
+    mock_gather.assert_called_once_with(
+        "Kitchen Dial", dm.VERSION, network=None, sd_health=None, uuid="test-uuid",
+    )
