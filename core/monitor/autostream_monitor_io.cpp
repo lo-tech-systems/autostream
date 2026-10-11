@@ -831,6 +831,10 @@ bool InputChannel::start(std::string* error_out)
     if (cfg.dynamic_rate_matching && remembered_rate > 0 && remembered_device == cfg.alsa_device)
         seed_rate = remembered_rate;
     _rate_estimator.reset(_capture_rate_hz, AudioMonitor::output_rate_hz(), seed_rate, _index);
+    {
+        std::lock_guard<std::mutex> lock(_status_mutex);
+        _status.negotiated_hz = _capture_rate_hz;
+    }
 
     // Reset silence tracking and capture-thread private state.
     _activity_gate.reset();
@@ -986,6 +990,7 @@ void InputChannel::stop()
         _status.is_silent       = true;
         _status.is_capturing    = false;
         _status.detected_hz     = 0.0;
+        _status.negotiated_hz   = 0;
         _status.track_change_seq = 0;
     }
 
@@ -1023,6 +1028,23 @@ InputChannelStatus InputChannel::get_status() const
     s.effective_peak_dbfs    = linear_to_dbfs(_session_effective_peak_linear.load(std::memory_order_relaxed));
     s.is_started             = _started.load(std::memory_order_relaxed);
     s.is_running             = _running.load(std::memory_order_relaxed);
+
+    // The rate-lock fields come from the estimator's atomics, which keep their
+    // last values after stop(), so they are reported only while started.  Only
+    // the estimator's atomic accessors are used here; its other rate accessors
+    // read plain capture-thread fields.
+    if (s.is_started)
+    {
+        s.rate_lock             = static_cast<int>(_rate_estimator.lock_state());
+        s.rate_mismatch_hz      = _rate_estimator.mismatch_rate();
+        s.relock_count          = _rate_estimator.relock_count();
+        s.dynamic_rate_matching = _rate_estimator.dynamic_rate_matching();
+    }
+    else
+    {
+        // Also covers a start() that failed after recording the rate.
+        s.negotiated_hz = 0;
+    }
     return s;
 }
 

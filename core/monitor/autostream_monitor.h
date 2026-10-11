@@ -928,7 +928,17 @@ struct InputChannelStatus
     bool   is_silent              = true;
     bool   is_capturing           = false;
     double detected_hz            = 0.0;
-    float  raw_peak_dbfs          = -90.0f;  // maximum raw dBFS seen this capture session
+
+    // Rate lock. negotiated_hz is set by start() and cleared by stop();
+    // the other four are filled in by get_status() from the estimator's
+    // atomics, and all five read as zero/false while the input is not started.
+    int      negotiated_hz          = 0;       // rate ALSA accepted in open()
+    int      rate_lock              = 0;       // RateLockState as int
+    int      rate_mismatch_hz       = 0;       // delivered standard rate while dynamic_rate_matching is off, else 0
+    uint32_t relock_count           = 0;       // detector steps since start
+    bool     dynamic_rate_matching  = false;   // the flag as the estimator holds it
+
+    float  raw_peak_dbfs         = -90.0f;  // maximum raw dBFS seen this capture session
     float  effective_peak_dbfs    = -90.0f;  // maximum dBFS after pre-amp and EQ this session
 
     // Thread lifecycle state -- used by the Python controller to detect

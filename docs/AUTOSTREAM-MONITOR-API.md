@@ -142,7 +142,8 @@ Request:
   "silence_seconds":30,
   "track_change_silence_seconds":1.25,
   "minimum_playback_seconds":30,
-  "input_type":"turntable"
+  "input_type":"turntable",
+  "dynamic_rate_matching":false
 }
 ```
 
@@ -184,12 +185,21 @@ Request fields:
     and treated as not a turntable
   - if absent, the threshold-based choice described under "Interrupt
     probation" below applies, for older coordinators
+- `dynamic_rate_matching`
+  - follow the rate the device actually delivers (see `rate_lock` in
+    `get_status`); when `false` the input is treated as delivering the rate it
+    negotiated, and a different delivered rate is only reported
+  - JSON `true` or `false`, optional; default if omitted: `false`; any other
+    form reads as `false`
+  - send it on every `configure_input`, because the call replaces the whole
+    stored configuration
 
 Important behavior:
 
 - if the input is stopped, all fields are applied
 - if the input is already running, every field except `device` is
-  runtime-tunable, including `minimum_playback_seconds`
+  runtime-tunable, including `minimum_playback_seconds` and
+  `dynamic_rate_matching`
 - changing `device` while running is rejected; the caller must stop the input
   first
 
@@ -1132,6 +1142,11 @@ Success response:
       "silent":false,
       "capturing":true,
       "detected_hz":44097.3,
+      "negotiated_hz":48000,
+      "rate_lock":"locked",
+      "relock_count":0,
+      "rate_mismatch_hz":0,
+      "dynamic_rate_matching":false,
       "raw_peak_dbfs":-12.3,
       "effective_peak_dbfs":-9.1,
       "started":true,
@@ -1322,7 +1337,47 @@ Per-input fields:
 - `capturing`
   - whether this input is presently allowed and active for capture-to-FIFO
 - `detected_hz`
-  - estimated real input sample rate
+  - the input sample rate the resampler is currently using, corrected for
+    clock drift; `0` when the input is not started
+  - while `rate_mismatch_hz` is non-zero it is still close to `negotiated_hz`,
+    not to the rate the device delivers, because `dynamic_rate_matching` is off
+- `negotiated_hz`
+  - the rate ALSA accepted when the input was opened; constant for the life of
+    a start
+  - `0` when the input is not started
+- `rate_lock`
+  - one of `"acquiring"`, `"locked"`, `"mismatch"`
+  - `"locked"`: the last plausible measurement window agreed with the rate in
+    use and no mismatch is reported
+  - `"acquiring"`: no window has been measured yet since start, or the windows
+    disagree without a conclusion; always reported while the input is not
+    started
+  - `"mismatch"`: `dynamic_rate_matching` is off and three consecutive windows
+    agreed on a standard rate other than the negotiated one; it stays
+    `"mismatch"` until three consecutive windows agree with the negotiated
+    rate again
+  - may read `"mismatch"` with `dynamic_rate_matching` `true` for a few windows
+    after the setting is turned on
+  - `"locked"` under `--test-pin-src-ratio`
+- `relock_count`
+  - number of times the detector has moved the rate in use to a different
+    standard rate since the input started; `0` on restart and while not started
+  - not changed by a discarded window, by a mismatch, or by
+    `dynamic_rate_matching` being turned off; with the setting off from the
+    start it stays `0`
+- `rate_mismatch_hz`
+  - the standard rate the device is delivering while `dynamic_rate_matching` is
+    off, or `0`
+  - cleared when the device has delivered the negotiated rate for three
+    consecutive windows, when `dynamic_rate_matching` is turned on, and on
+    restart
+- `dynamic_rate_matching`
+  - the value `configure_input` last stored for this input; `false` when the
+    input is not started
+  - the detector may take up to one measurement window to act on a change
+  - the five rate fields above (`negotiated_hz`, `rate_lock`, `relock_count`,
+    `rate_mismatch_hz`, `dynamic_rate_matching`) are absent on older monitor
+    builds; Python defaults a missing field
 - `raw_peak_dbfs`
   - session raw peak since input start
 - `effective_peak_dbfs`

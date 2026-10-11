@@ -108,6 +108,8 @@ for higher-level orchestration, UI, settings, and playback-backend control.
   - implement the parametric EQ system
 - `RateEstimator`
   - estimates the real capture rate so long-running playback stays in sync
+  - and, per input and on request, re-locks in one step when a device
+    delivers at a different standard rate than it negotiated
 
 ## Runtime Model
 
@@ -336,7 +338,10 @@ supported solely for autostream-dial, which does not include
 `std::atomic<double>::is_always_lock_free == 1` and the linked binary
 carries no `libatomic` dependency. If a 32-bit monitor target is ever
 reintroduced, switch these fields to integer atomics
-(`std::atomic<int64_t>` milliseconds).
+(`std::atomic<int64_t>` milliseconds). The estimator's rate-lock state, its
+mismatch rate and step count, and the dynamic rate matching flag are
+`std::atomic<int>`, `std::atomic<uint32_t>` and `std::atomic<bool>`, which are
+lock-free on every supported target.
 
 ## Source Of Truth
 

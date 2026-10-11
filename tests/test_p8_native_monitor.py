@@ -512,6 +512,86 @@ class TestRateMatchingPlumbingSourceInspection:
         assert "nominal_rate()" not in body
 
 
+RATE_STATUS_KEYS = (
+    "negotiated_hz",
+    "rate_lock",
+    "relock_count",
+    "rate_mismatch_hz",
+    "dynamic_rate_matching",
+)
+
+
+class TestRateStatusSourceInspection:
+    """Each input's status reports the rate lock, from the right place."""
+
+    @pytest.fixture(scope="class")
+    def io_src(self):
+        p = REPO_ROOT / "core" / "monitor" / "autostream_monitor_io.cpp"
+        if not p.exists():
+            pytest.skip(f"autostream_monitor_io.cpp not found at {p}")
+        return _read_source(p)
+
+    @pytest.fixture(scope="class")
+    def mon_src(self):
+        p = REPO_ROOT / "core" / "monitor" / "autostream_monitor.cpp"
+        if not p.exists():
+            pytest.skip(f"autostream_monitor.cpp not found at {p}")
+        return _read_source(p)
+
+    @staticmethod
+    def _span(src, begin_marker, end_marker):
+        begin = src.index(begin_marker)
+        return src[begin:src.index(end_marker, begin)]
+
+    def test_json_carries_the_keys_after_detected_hz(self, mon_src):
+        body = self._span(mon_src, "std::string AudioMonitor::api_get_status()",
+                          "// ── Validation helpers")
+        positions = [body.index(f'\\"{key}\\":') for key in RATE_STATUS_KEYS]
+        assert positions == sorted(positions)
+        assert body.index('\\"detected_hz\\":') < positions[0]
+        assert positions[-1] < body.index('\\"raw_peak_dbfs\\":')
+
+    def test_lock_state_is_named_in_the_json(self, mon_src):
+        for name in ("acquiring", "locked", "mismatch"):
+            assert f'return "{name}";' in mon_src
+
+    def test_start_records_the_negotiated_rate(self, io_src):
+        body = self._span(io_src, "bool InputChannel::start(",
+                          "void InputChannel::stop()")
+        assert body.count("_status.negotiated_hz = _capture_rate_hz;") == 1
+        assert body.index("_rate_estimator.reset(") < \
+            body.index("_status.negotiated_hz = _capture_rate_hz;") < \
+            body.index("_started.store(true);")
+
+    def test_stop_clears_the_negotiated_rate(self, io_src):
+        body = self._span(io_src, "void InputChannel::stop()",
+                          "void InputChannel::set_allow_capture(")
+        assert "_status.negotiated_hz   = 0;" in body
+
+    def test_get_status_reads_only_the_atomic_accessors(self, io_src):
+        body = self._span(io_src, "InputChannelStatus InputChannel::get_status() const",
+                          "float InputChannel::compute_peak_sample(")
+        for accessor in ("lock_state()", "mismatch_rate()", "relock_count()",
+                         "dynamic_rate_matching()"):
+            assert f"_rate_estimator.{accessor}" in body
+        assert "nominal_rate()" not in body
+        assert "negotiated_rate()" not in body
+        assert "if (s.is_started)" in body
+
+    def test_process_thread_snapshot_is_not_widened(self, io_src):
+        body = self._span(io_src, "void InputChannel::process_thread_func()",
+                          "// ── InputChannel::close_elapsed_vu_bins")
+        for key in ("rate_lock", "rate_mismatch_hz", "relock_count",
+                    "negotiated_hz"):
+            assert key not in body
+
+    def test_api_doc_describes_the_fields(self):
+        text = _read_source(REPO_ROOT / "docs" / "AUTOSTREAM-MONITOR-API.md")
+        for key in RATE_STATUS_KEYS:
+            assert f"- `{key}`" in text, f"the API doc does not describe {key}"
+            assert f'"{key}":' in text, f"the API doc has no example of {key}"
+
+
 # ---------------------------------------------------------------------------
 # C++ build suite (Linux with g++ only)
 # ---------------------------------------------------------------------------

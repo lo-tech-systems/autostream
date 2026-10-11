@@ -1152,6 +1152,19 @@ bool AudioMonitor::stop_input_with_teardown(int i)
 }
 
 
+// Name of a RateLockState (passed as its int value) for the status JSON.
+static const char* rate_lock_name(int state)
+{
+    switch (static_cast<RateLockState>(state))
+    {
+        case RateLockState::Acquiring: return "acquiring";
+        case RateLockState::Locked:    return "locked";
+        case RateLockState::Mismatch:  return "mismatch";
+    }
+    return "acquiring";   // unreachable; keeps -Wreturn-type happy on all compilers
+}
+
+
 // ── api_get_status ────────────────────────────────────────────────────────────
 //
 // Returns a JSON status snapshot for all inputs and top-level daemon metadata.
@@ -1288,6 +1301,11 @@ std::string AudioMonitor::api_get_status()
             << "\"silent\":"              << (s.is_silent    ? "true" : "false") << ","
             << "\"capturing\":"           << (s.is_capturing ? "true" : "false") << ","
             << "\"detected_hz\":"         << s.detected_hz           << ","
+            << "\"negotiated_hz\":"       << s.negotiated_hz         << ","
+            << "\"rate_lock\":\""         << rate_lock_name(s.rate_lock) << "\","
+            << "\"relock_count\":"        << s.relock_count          << ","
+            << "\"rate_mismatch_hz\":"    << s.rate_mismatch_hz      << ","
+            << "\"dynamic_rate_matching\":" << (s.dynamic_rate_matching ? "true" : "false") << ","
             << "\"raw_peak_dbfs\":"       << s.raw_peak_dbfs         << ","
             << "\"effective_peak_dbfs\":" << s.effective_peak_dbfs   << ","
             << "\"started\":"             << (s.is_started   ? "true" : "false") << ","
