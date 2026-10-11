@@ -827,6 +827,10 @@ bool InputChannel::start(std::string* error_out)
     // learned rate is not forgotten; with it off the seed is the negotiated
     // rate, as it always was.
     _capture_rate_hz = _alsa.actual_rate();
+    {
+        std::lock_guard<std::mutex> lock(_config_mutex);
+        _opened_device = cfg.alsa_device;
+    }
     int seed_rate = 0;
     if (cfg.dynamic_rate_matching && remembered_rate > 0 && remembered_device == cfg.alsa_device)
         seed_rate = remembered_rate;
@@ -959,14 +963,16 @@ void InputChannel::stop()
         _process_thr.join();
 
     // Remember the nominal the estimator reached and the device it was learned
-    // on.  nominal_rate() is a plain capture-thread field, safe to read now
-    // that the capture thread has been joined.  start() uses it only when
-    // dynamic rate matching is on and the device is unchanged.
+    // on.  The device is the one start() opened, not _config.alsa_device,
+    // which configure() can change once the capture thread has died and
+    // before this stop().  nominal_rate() is a plain capture-thread field,
+    // safe to read now that the capture thread has been joined.  start() uses
+    // it only when dynamic rate matching is on and the device is unchanged.
     {
         int nominal = _rate_estimator.nominal_rate();
         std::lock_guard<std::mutex> lock(_config_mutex);
         _remembered_rate_hz = nominal;
-        _remembered_device  = _config.alsa_device;
+        _remembered_device  = _opened_device;
     }
 
     if (_src_state)

@@ -1159,6 +1159,201 @@ static void test_matching_off_published_values_equal_the_servo_alone()
 }
 
 // ---------------------------------------------------------------------------
+// Two inputs at different rates.  Each input owns its estimator, so one
+// input's rate, flag, lock state and steps never show in the other.  The two
+// capture threads read in wall-clock order, so the helper feeds whichever
+// device is due next.
+// ---------------------------------------------------------------------------
+
+struct SimInput
+{
+    RateEstimator est;
+    double        hw_rate = 48000.0;   // the rate the device really delivers
+    double        t       = 0.0;
+    int           period  = 1024;
+};
+
+static void start_input(SimInput& in, int negotiated, int output, int index,
+                        double hw_rate, bool matching)
+{
+    in.hw_rate = hw_rate;
+    in.est.reset(negotiated, output, 0, index);
+    in.est.set_dynamic_rate_matching(matching);
+    prime(in.est, in.t, in.period);
+}
+
+static void run_two(SimInput& a, SimInput& b, double seconds)
+{
+    const double end = std::max(a.t, b.t) + seconds;
+    while (a.t < end || b.t < end)
+    {
+        SimInput& in = (a.t <= b.t) ? a : b;
+        in.t += in.period / in.hw_rate;
+        in.est.feed(in.period, in.t);
+    }
+}
+
+static void test_two_honest_inputs_at_different_native_rates_lock_without_mismatch()
+{
+    SimInput a, b;
+    start_input(a, 44100, 48000, 1, 44100.0, false);
+    start_input(b, 48000, 48000, 2, 48000.0, false);
+    run_two(a, b, 30.0);
+    CHECK(a.est.lock_state() == RateLockState::Locked, "input 1 locks at its own 44100");
+    CHECK(b.est.lock_state() == RateLockState::Locked, "input 2 locks at its own 48000");
+    CHECK(a.est.mismatch_rate() == 0 && b.est.mismatch_rate() == 0, "neither input reports a mismatch");
+    CHECK(a.est.relock_count() == 0 && b.est.relock_count() == 0, "neither input steps");
+    CHECK_CLOSE(a.est.src_ratio(), 48000.0 / 44100.0, 1e-3, "input 1 ratio is output over 44100");
+    CHECK_CLOSE(b.est.src_ratio(), 1.0, 1e-3, "input 2 ratio is unity");
+}
+
+static void test_a_step_on_one_input_leaves_an_honest_input_untouched()
+{
+    SimInput a, b;
+    start_input(a, 48000, 48000, 1, 44100.0, true);
+    start_input(b, 48000, 48000, 2, 48000.0, false);
+    run_two(a, b, 2.0);
+    CHECK(a.est.relock_count() == 1, "input 1 steps exactly once");
+    CHECK(a.est.nominal_rate() == 44100, "input 1 nominal is 44100");
+    CHECK(a.est.negotiated_rate() == 48000, "input 1 negotiated rate is kept");
+    CHECK(b.est.relock_count() == 0, "input 2 does not step");
+    CHECK(b.est.nominal_rate() == 48000, "input 2 nominal is untouched");
+    CHECK(b.est.lock_state() == RateLockState::Locked && b.est.mismatch_rate() == 0,
+          "input 2 stays locked with no mismatch");
+    CHECK(a.est.dynamic_rate_matching() && !b.est.dynamic_rate_matching(), "the flag is per input");
+    run_two(a, b, 30.0);
+    CHECK_CLOSE(a.est.src_ratio(), 48000.0 / 44100.0, 2e-3, "input 1 ratio settles near output over 44100");
+    CHECK_CLOSE(b.est.src_ratio(), 1.0, 1e-3, "input 2 ratio stays at unity");
+    CHECK(b.est.relock_count() == 0, "input 2 still has not stepped");
+}
+
+static void test_enabling_matching_on_one_input_steps_it_on_its_own_evidence()
+{
+    SimInput a, b;
+    start_input(a, 48000, 48000, 1, 44100.0, true);
+    start_input(b, 48000, 48000, 2, 32000.0, false);
+    run_two(a, b, 3.0);
+    CHECK(a.est.relock_count() == 1 && a.est.mismatch_rate() == 0, "input 1 stepped with no mismatch");
+    CHECK(b.est.lock_state() == RateLockState::Mismatch, "input 2 reports a mismatch");
+    CHECK(b.est.mismatch_rate() == 32000, "input 2 reports 32000");
+    CHECK(b.est.relock_count() == 0 && b.est.nominal_rate() == 48000, "input 2 has not stepped");
+    CHECK_CLOSE(b.est.src_ratio(), 1.0, 1e-9, "input 2 ratio is untouched");
+
+    const uint32_t relocks_before = a.est.relock_count();
+    b.est.set_dynamic_rate_matching(true);
+    run_two(a, b, 0.5);
+    CHECK(b.est.relock_count() == 1 && b.est.nominal_rate() == 32000, "input 2 steps to 32000 once enabled");
+    CHECK_CLOSE(b.est.src_ratio(), 1.5, 2e-2, "input 2 ratio is about output over 32000");
+    CHECK(a.est.relock_count() == relocks_before, "input 1 relock count is unchanged by input 2's step");
+    CHECK(a.est.nominal_rate() == 44100, "input 1 nominal is unchanged by input 2's step");
+}
+
+static void test_both_inputs_step_to_their_own_rates()
+{
+    SimInput a, b;
+    start_input(a, 48000, 48000, 1, 44100.0, true);
+    start_input(b, 48000, 48000, 2, 32000.0, true);
+    run_two(a, b, 20.0);
+    CHECK(a.est.nominal_rate() == 44100 && a.est.relock_count() == 1, "input 1 steps once to 44100");
+    CHECK(b.est.nominal_rate() == 32000 && b.est.relock_count() == 1, "input 2 steps once to 32000");
+    CHECK_CLOSE(a.est.src_ratio(), 48000.0 / 44100.0, 2e-3, "input 1 ratio is output over 44100");
+    CHECK_CLOSE(b.est.src_ratio(), 1.5, 3e-3, "input 2 ratio is output over 32000");
+}
+
+// The daemon's compatible mode: the output rate is passed to reset().
+static void test_both_inputs_step_to_their_own_rates_with_a_44100_output()
+{
+    SimInput a, b;
+    start_input(a, 48000, 44100, 1, 44100.0, true);
+    start_input(b, 48000, 44100, 2, 32000.0, true);
+    run_two(a, b, 20.0);
+    CHECK(a.est.nominal_rate() == 44100 && a.est.relock_count() == 1, "input 1 steps once to 44100");
+    CHECK_CLOSE(a.est.src_ratio(), 1.0, 2e-3, "input 1 converts at unity on a 44100 output");
+    CHECK(b.est.nominal_rate() == 32000 && b.est.relock_count() == 1, "input 2 steps once to 32000");
+    CHECK_CLOSE(b.est.src_ratio(), 44100.0 / 32000.0, 3e-3, "input 2 ratio is output over 32000");
+    CHECK(a.est.mismatch_rate() == 0 && b.est.mismatch_rate() == 0, "no mismatch on either input");
+}
+
+// Two converters alternating at the two highest ratios the detector can now
+// reach: a 32 kHz nominal at the top of the servo band, on a 48000 and on a
+// 44100 output.  Each block is MAX_FRAMES input frames and each call may
+// produce at most MAX_SRC_OUTPUT frames, the sizes InputChannel::
+// resample_block() uses (private constants, mirrored here).  resample_block()
+// needs a running channel, so this makes the same src_process() calls
+// directly.
+static void test_two_resamplers_at_the_widest_ratios_stay_within_the_output_bound()
+{
+    constexpr int MAX_FRAMES     = 2048;
+    constexpr int MAX_SRC_OUTPUT = 4096;
+    constexpr int BLOCKS         = 200;
+    const double  band           = 1.0 - 0.05;   // the servo's BAND_FRACTION
+    const double  ratios[2]      = {(48000.0 / 32000.0) / band, (44100.0 / 32000.0) / band};
+
+    int err_a = 0, err_b = 0;
+    SRC_STATE* state[2] = {src_new(SRC_SINC_FASTEST, 2, &err_a), src_new(SRC_SINC_FASTEST, 2, &err_b)};
+    CHECK(state[0] != nullptr && state[1] != nullptr, "both converters are created");
+    if (!state[0] || !state[1])
+    {
+        if (state[0]) src_delete(state[0]);
+        if (state[1]) src_delete(state[1]);
+        return;
+    }
+
+    std::vector<float> in(static_cast<size_t>(MAX_FRAMES) * 2);
+    std::vector<float> out(static_cast<size_t>(MAX_SRC_OUTPUT) * 2);
+    for (int i = 0; i < MAX_FRAMES; ++i)
+    {
+        in[2 * i]     = std::sin(i * 0.01f);
+        in[2 * i + 1] = std::cos(i * 0.013f);
+    }
+
+    long total_out[2]  = {0, 0};
+    long calls[2]      = {0, 0};
+    long largest_chunk = 0;
+    bool errored       = false;
+    for (int blk = 0; blk < BLOCKS && !errored; ++blk)
+    {
+        for (int which = 0; which < 2 && !errored; ++which)
+        {
+            const float* p = in.data();
+            int left       = MAX_FRAMES;
+            while (left > 0)
+            {
+                SRC_DATA d{};
+                d.data_in       = p;
+                d.input_frames  = left;
+                d.data_out      = out.data();
+                d.output_frames = MAX_SRC_OUTPUT;
+                d.src_ratio     = ratios[which];
+                d.end_of_input  = 0;
+                if (src_process(state[which], &d) != 0 ||
+                    (d.input_frames_used == 0 && d.output_frames_gen == 0))
+                {
+                    errored = true;
+                    break;
+                }
+                p += d.input_frames_used * 2;
+                left -= static_cast<int>(d.input_frames_used);
+                largest_chunk = std::max<long>(largest_chunk, d.output_frames_gen);
+                total_out[which] += d.output_frames_gen;
+                ++calls[which];
+            }
+        }
+    }
+    src_delete(state[0]);
+    src_delete(state[1]);
+
+    CHECK(!errored, "neither converter errors or stalls");
+    CHECK(largest_chunk <= MAX_SRC_OUTPUT, "the largest chunk is within MAX_SRC_OUTPUT");
+    CHECK(calls[0] == BLOCKS && calls[1] == BLOCKS, "each block is consumed in a single call");
+    for (int i = 0; i < 2; ++i)
+    {
+        const double expected = static_cast<double>(BLOCKS) * MAX_FRAMES * ratios[i];
+        CHECK_CLOSE(total_out[i], expected, 0.01 * expected, "total frames out match the ratio");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // OutputProcessor: basic gain state
 // ---------------------------------------------------------------------------
 
@@ -1565,6 +1760,14 @@ int main()
     test_low_negotiated_rate_locks();
     test_stale_evidence_is_not_used_after_a_gap();
     test_matching_off_published_values_equal_the_servo_alone();
+
+    // RateEstimator, two inputs at different rates
+    test_two_honest_inputs_at_different_native_rates_lock_without_mismatch();
+    test_a_step_on_one_input_leaves_an_honest_input_untouched();
+    test_enabling_matching_on_one_input_steps_it_on_its_own_evidence();
+    test_both_inputs_step_to_their_own_rates();
+    test_both_inputs_step_to_their_own_rates_with_a_44100_output();
+    test_two_resamplers_at_the_widest_ratios_stay_within_the_output_bound();
 
     // OutputProcessor
     test_output_processor_initial_gain_state();

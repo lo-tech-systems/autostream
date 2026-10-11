@@ -3517,6 +3517,10 @@ private:
     // rate.  Guarded by _config_mutex; in memory only, lost with the process.
     int                _remembered_rate_hz      = 0;
     std::string        _remembered_device;
+    // The device string start() opened, which is what the remembered rate is
+    // filed under (_config.alsa_device may have changed since).  Written by
+    // start() and read by stop(), both under _config_mutex.
+    std::string        _opened_device;
     // Float domain: linear amplitude threshold in [0.0, 1.0],
     // pre-computed from config.silence_threshold_dbfs. See
     // compute_peak_sample()'s comment and the silence_threshold_sample()

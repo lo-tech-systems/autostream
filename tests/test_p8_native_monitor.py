@@ -503,7 +503,13 @@ class TestRateMatchingPlumbingSourceInspection:
         read = body.index("_rate_estimator.nominal_rate()")
         assert join < read
         assert "_remembered_rate_hz = nominal;" in body
-        assert "_remembered_device  = _config.alsa_device;" in body
+        assert "_remembered_device  = _opened_device;" in body
+
+    def test_start_records_the_device_it_opened(self, io_src):
+        body = self._span(io_src, "bool InputChannel::start(",
+                          "void InputChannel::stop()")
+        assert body.count("_opened_device = cfg.alsa_device;") == 1
+        assert body.count("_capture_rate_hz = _alsa.actual_rate();") == 1
 
     def test_capture_thread_does_not_touch_the_memory(self, io_src):
         body = self._span(io_src, "void InputChannel::capture_thread_func()",

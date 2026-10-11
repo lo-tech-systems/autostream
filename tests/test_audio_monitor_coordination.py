@@ -1920,3 +1920,22 @@ class TestRateMatchingNoteText:
         other.negotiated_hz = 48000
         _make_monitor(input_index=1)
         assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT
+
+    def test_two_inputs_at_different_rates_report_a_mismatch_for_the_right_one(self):
+        first = _make_monitor(input_index=1)
+        second = _make_monitor(input_index=2)
+        first._ingest_status({"started": True, "negotiated_hz": 44100, "rate_mismatch_hz": 0})
+        second._ingest_status({"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 0})
+        assert core.sample_rate_warning_text() == ""
+        assert core.sample_rate_mismatch_input() == 0
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT
+        assert core.rate_matching_note_text(2) == core.RATE_MATCHING_NOTE_DEFAULT
+
+        second._ingest_status({"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100})
+        assert core.sample_rate_warning_text() == core.SAMPLE_RATE_MISMATCH_BANNER_TEXT
+        assert core.sample_rate_mismatch_input() == 2
+        assert core.rate_matching_note_text(1) == core.RATE_MATCHING_NOTE_DEFAULT
+        assert core.rate_matching_note_text(2) == (
+            "This input is delivering 44.1 kHz but the device was opened at "
+            "48 kHz. Turn this on to follow the source."
+        )
