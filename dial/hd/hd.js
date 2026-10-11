@@ -8,6 +8,7 @@ import {
 import { setText, els } from "./hd-dom.js";
 import { toast, get } from "./hd-requests.js";
 import { paint } from "./hd-paint.js";
+import { watchPanels } from "./hd-actions.js";
 import { derive, replayOf, isLoopbackHost } from "./hd-derive.js";
 import { ui, PIN_IDLE, press, nextReplayClock, hooks } from "./hd-state.js";
 
@@ -61,6 +62,7 @@ function render() {
     // whole second, so the timer steps evenly whenever states arrive.
     clearTimeout(replayTick);
     replayTick = ui.vm.replay.ticking ? setTimeout(render, ui.vm.replay.nextMs) : 0;
+    watchPanels();
 }
 
 // ---- The event stream -----------------------------------------------

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- improvement: the HD dial's pull-down and equaliser page now close by themselves
+  after a minute without a touch, and when the screen goes to sleep, so the dial
+  is back on the playing screen. They stay open while a finger is held on a
+  slider, and while a card is showing over them.
 - new: each input now has a type, Turntable, CD or Line, chosen on its card in
   Setup (and for Input 1 at first boot) in place of the Turntable switch. The
   type names the input on the Home card, which shows a CD icon for a CD input,

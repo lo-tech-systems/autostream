@@ -6,7 +6,7 @@
 import { CONFIG, POWER_IDLE_UI, REPLAY_ROWS } from "./hd-tables.js";
 
 // Set by the page's entry once render exists; what asks for a redraw calls this.
-export const hooks = { render: () => {} };
+export const hooks = { render: () => {}, touched: () => {} };
 
 // ---- State, optimistic values ----------------------------------------
 
@@ -16,6 +16,9 @@ export const ui = {
     eqOpen: false, eqFor: null, sheetOpen: false, info: null, infoBusy: false,
     notice: null, viewing: null,
     activityAt: 0,
+    // The idle clock for the open panels: its timer, the fingers now held
+    // on a followed drag, and whether the last look at the state was asleep.
+    panelTimer: 0, fingers: 0, wasAsleep: false,
     focusShown: null, listScrolledAt: { appliances: 0, speakers: 0 }, autoScrollUntil: 0,
     replayClock: null, power: Object.assign({}, POWER_IDLE_UI), host: window.location.hostname,
     // The keypad's own buffer (the digits live nowhere else), the request

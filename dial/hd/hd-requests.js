@@ -3,7 +3,7 @@
 
 import { CONFIG, REFUSALS, FALLBACK_REFUSAL, OFFLINE_REFUSAL, ACTION_PREFIX, ENDPOINTS } from "./hd-tables.js";
 import { setText, els } from "./hd-dom.js";
-import { dragging, rollBack } from "./hd-state.js";
+import { ui, dragging, rollBack, hooks } from "./hd-state.js";
 
 // ---- Requests -------------------------------------------------------
 
@@ -115,8 +115,12 @@ export function forgetLane(key) {
 // survives the finger leaving the element it started on. Only that pointer
 // counts (a second finger can neither steer nor end it), and a cancel ends
 // it like a lift. move may be null; end gets the event that ended it.
+// A followed pointer is a finger held down: the open panels' idle clock
+// restarts when it lifts, and does not run while it is held.
 export function followPointer(start, move, end) {
     const id = start.pointerId;
+    ui.fingers += 1;
+    hooks.touched();
     const onMove = (event) => {
         if (event.pointerId === id && move) { move(event); }
     };
@@ -125,7 +129,9 @@ export function followPointer(start, move, end) {
         document.removeEventListener("pointermove", onMove);
         document.removeEventListener("pointerup", onEnd);
         document.removeEventListener("pointercancel", onEnd);
+        ui.fingers -= 1;
         end(event);
+        hooks.touched();
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onEnd);

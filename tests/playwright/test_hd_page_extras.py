@@ -1251,6 +1251,171 @@ class TestPullDown:
 
 
 # ---------------------------------------------------------------------------
+# The pull-down and the equaliser close when left alone
+# ---------------------------------------------------------------------------
+
+IDLE_MS = 60_000
+
+
+def open_panel(page, which):
+    """Open the pull-down or the equaliser by a click."""
+    if which == "sheet":
+        open_sheet(page)
+    else:
+        open_eq(page)
+
+
+def panel_selector(which):
+    return "#sheet" if which == "sheet" else "#eq"
+
+
+def open_with_clock(page, hd, which):
+    page.clock.install()
+    open_page(page, hd)
+    open_panel(page, which)
+
+
+@pytest.mark.engines
+class TestPanelsCloseWhenIdle:
+    @pytest.mark.parametrize("which", ["sheet", "eq"])
+    def test_a_panel_closes_after_a_minute_without_a_touch(self, page, hd, which):
+        hd.show(hs.SCENARIOS["eq_six"])
+        open_with_clock(page, hd, which)
+        page.clock.run_for(IDLE_MS - 1000)
+        expect(page.locator(panel_selector(which))).to_be_visible()
+        page.clock.run_for(2000)
+        expect(page.locator(panel_selector(which))).to_be_hidden()
+
+    def test_closing_the_pull_down_by_the_timer_leaves_the_handle_ready(self, page, hd):
+        open_with_clock(page, hd, "sheet")
+        page.clock.run_for(IDLE_MS + 1000)
+        expect(page.locator("#handle")).to_have_attribute("aria-expanded", "false")
+        open_sheet(page)
+        expect(page.locator("#handle")).to_have_attribute("aria-expanded", "true")
+
+    @pytest.mark.parametrize("which", ["sheet", "eq"])
+    def test_a_touch_part_way_restarts_the_clock(self, page, hd, which):
+        hd.show(hs.SCENARIOS["eq_six"])
+        open_with_clock(page, hd, which)
+        page.clock.run_for(40_000)
+        page.locator(".eq-title" if which == "eq" else "#sleep-after button[aria-pressed=true]").click()
+        page.clock.run_for(30_000)                      # past the first deadline
+        expect(page.locator(panel_selector(which))).to_be_visible()
+        page.clock.run_for(40_000)                      # more than a minute from the touch
+        expect(page.locator(panel_selector(which))).to_be_hidden()
+
+    def test_working_a_slider_by_key_or_wheel_restarts_the_clock(self, page, hd):
+        hd.show(hs.SCENARIOS["eq_six"])
+        open_with_clock(page, hd, "eq")
+        page.locator("#eq-bands input").first.focus()
+        page.clock.run_for(40_000)
+        page.keyboard.press("ArrowUp")
+        page.clock.run_for(30_000)
+        expect(page.locator("#eq")).to_be_visible()
+        page.mouse.move(400, 200)
+        page.clock.run_for(20_000)
+        page.mouse.wheel(0, 10)
+        page.clock.run_for(30_000)
+        expect(page.locator("#eq")).to_be_visible()
+        page.clock.run_for(40_000)
+        expect(page.locator("#eq")).to_be_hidden()
+
+    def test_a_key_press_on_the_handle_opens_the_pull_down_and_keys_keep_it_open(self, page, hd):
+        page.clock.install()
+        open_page(page, hd)
+        page.locator("#handle").focus()
+        page.keyboard.press("Enter")
+        expect(page.locator("#sheet")).to_be_visible()
+        page.clock.run_for(40_000)
+        page.keyboard.press("Tab")
+        page.clock.run_for(30_000)
+        expect(page.locator("#sheet")).to_be_visible()
+        page.clock.run_for(40_000)
+        expect(page.locator("#sheet")).to_be_hidden()
+
+    @pytest.mark.parametrize("which", ["sheet", "eq"])
+    def test_a_slider_still_being_dragged_keeps_the_panel_open(self, page, hd, which):
+        hd.show(hs.SCENARIOS["eq_six"])
+        open_with_clock(page, hd, which)
+        slider = "#brightness" if which == "sheet" else "#eq-bands .eq-band >> nth=0 >> input"
+        x, y = centre(page, slider)
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x, y + 6)
+        page.clock.run_for(50_000)
+        page.mouse.move(x, y - 6)
+        page.clock.run_for(IDLE_MS * 2)                 # then held still for two minutes
+        expect(page.locator(panel_selector(which))).to_be_visible()
+        page.mouse.up()
+        page.clock.run_for(IDLE_MS - 2000)
+        expect(page.locator(panel_selector(which))).to_be_visible()
+        page.clock.run_for(3000)
+        expect(page.locator(panel_selector(which))).to_be_hidden()
+
+    def test_the_shut_down_card_is_not_cancelled_and_counting_resumes_when_it_goes(self, page, hd):
+        open_with_clock(page, hd, "sheet")
+        page.locator("#power").click()
+        expect(modal_card(page)).to_be_visible()
+        page.clock.run_for(IDLE_MS * 2)
+        expect(modal_card(page)).to_be_visible()
+        expect(page.locator("#sheet")).to_be_visible()
+        page.locator("#card-buttons button", has_text="Cancel").click()
+        expect(modal_card(page)).to_be_hidden()
+        page.clock.run_for(IDLE_MS - 2000)
+        expect(page.locator("#sheet")).to_be_visible()
+        page.clock.run_for(3000)
+        expect(page.locator("#sheet")).to_be_hidden()
+
+    def test_the_keypad_is_not_closed_and_the_equaliser_waits_under_it(self, page, hd):
+        hd.show(hs.SCENARIOS["eq_six"])
+        open_with_clock(page, hd, "eq")
+        hd.show(hs.SCENARIOS["pin_required"].with_snapshot(eq=hs.SCENARIOS["eq_six"].snapshot.eq))
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        page.clock.run_for(IDLE_MS + 10_000)
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#eq")).to_be_visible()
+        page.locator("#card-buttons button", has_text="Cancel").click()
+        expect(page.locator(PIN_CARD)).to_be_hidden()
+        page.clock.run_for(IDLE_MS + 1000)
+        expect(page.locator("#eq")).to_be_hidden()
+
+    def test_a_new_state_does_not_restart_the_clock_or_reopen_a_closed_panel(self, page, hd):
+        hd.show(hs.SCENARIOS["eq_six"])
+        open_with_clock(page, hd, "sheet")
+        page.clock.run_for(40_000)
+        hd.show(hs.SCENARIOS["eq_six"])
+        page.clock.run_for(22_000)
+        expect(page.locator("#sheet")).to_be_hidden()
+        hd.show(hs.SCENARIOS["eq_six"])
+        page.clock.run_for(5000)
+        expect(page.locator("#sheet")).to_be_hidden()
+        expect(page.locator("#eq")).to_be_hidden()
+
+    @pytest.mark.parametrize("which", ["sheet", "eq"])
+    def test_both_panels_close_when_the_screen_goes_to_sleep(self, page, hd, which):
+        hd.show(hs.SCENARIOS["eq_six"])
+        open_with_clock(page, hd, which)
+        base = hs.SCENARIOS["eq_six"]
+        hd.show(dataclasses.replace(base, panel={**base.panel, "asleep": True}))
+        expect(page.locator("#sleep")).to_have_class(re.compile("on"))
+        expect(page.locator("#sheet")).to_be_hidden()
+        expect(page.locator("#eq")).to_be_hidden()
+        hd.show(base)                                   # it wakes to the playing screen
+        expect(page.locator("#sleep")).not_to_have_class(re.compile("on"))
+        expect(page.locator("#sheet")).to_be_hidden()
+        expect(page.locator("#eq")).to_be_hidden()
+
+    def test_nothing_is_sent_when_no_panel_is_open(self, page, hd):
+        sent = watch_posts(page)
+        page.clock.install()
+        open_page(page, hd)
+        page.clock.run_for(IDLE_MS * 3)
+        page.wait_for_timeout(200)
+        assert only(sent) == []
+        assert page.evaluate("() => document.getElementById('handle').getAttribute('aria-expanded')") == "false"
+
+
+# ---------------------------------------------------------------------------
 # Warning and notice cards
 # ---------------------------------------------------------------------------
 

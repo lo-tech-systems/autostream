@@ -15,6 +15,7 @@ export const CONFIG = {
     tickMs: 1000,
     toastMs: 3000,
     activityGapMs: 5000,        // at most one panel activity report in this time
+    panelIdleCloseMs: 60000,    // the pull-down and the equaliser close after this long with no touch
     infoMaxAgeMs: 10000,        // the dial details are fetched again after this
     tapMovePx: 6,               // a press that moves less than this is a tap
     wakeGuardMs: 400,           // the shield lets go this long after the waking finger lifts, if no click came

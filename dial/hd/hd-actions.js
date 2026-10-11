@@ -294,3 +294,47 @@ document.addEventListener("pointerdown", () => {
         post("panel_activity", {}, [], true);
     }
 }, true);
+
+// ---- The open panels' idle clock ---------------------------------------
+
+// The pull-down and the equaliser close by themselves after
+// CONFIG.panelIdleCloseMs with no touch. One timer, set only while a panel
+// is open, and not while a finger is held or a card is up (the clock starts
+// again when the card goes). Drawing again never restarts it.
+const panelsOpen = () => ui.sheetOpen || ui.eqOpen;
+
+function closePanels() {
+    ui.panelTimer = 0;
+    if (ui.sheetOpen) { setSheet(false); }
+    if (ui.eqOpen) { setEqOpen(false); }
+}
+
+function armPanelClock(restart) {
+    const wanted = panelsOpen() && !ui.fingers && !(ui.vm && ui.vm.modal);
+    if (!wanted) {
+        clearTimeout(ui.panelTimer);
+        ui.panelTimer = 0;
+    } else if (restart || !ui.panelTimer) {
+        clearTimeout(ui.panelTimer);
+        ui.panelTimer = setTimeout(closePanels, CONFIG.panelIdleCloseMs);
+    }
+}
+
+// Called after every draw: sees to the timer for what is open now, and
+// closes both panels when the screen has just gone to sleep.
+export function watchPanels() {
+    const asleep = !!(ui.vm && ui.vm.asleep);
+    const fell = asleep && !ui.wasAsleep;
+    ui.wasAsleep = asleep;
+    if (fell) { closePanels(); }
+    armPanelClock(false);
+}
+
+hooks.touched = () => armPanelClock(true);
+
+// Any way of working a panel counts: a touch or mouse press, a drag, a
+// key, a slider change, a click (a keyboard press on a button is one) and
+// the wheel.
+["pointerdown", "keydown", "input", "change", "click", "wheel"].forEach((type) => {
+    document.addEventListener(type, hooks.touched, { capture: true, passive: true });
+});

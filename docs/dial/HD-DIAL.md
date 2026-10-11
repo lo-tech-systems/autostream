@@ -189,7 +189,8 @@ If the followed appliance supports it, an equaliser icon sits beside the track
 line. It opens the equaliser page for that appliance: sliders for each band
 (two, Bass and Treble, on an older appliance; six on a newer one), a live
 graph of the resulting response, and **Reset** to put every band back to flat.
-Tap the back arrow to return.
+Tap the back arrow to return. The page closes by itself after a minute
+without a touch, and when the screen goes to sleep.
 
 ### Pull-down settings and information
 
@@ -202,7 +203,8 @@ Pull the handle at the top of the screen down (or tap it) to open a sheet:
   and signal, free disk space and, where monitoring is on, SD card health.
 - A **power button** at the top right, which shuts the dial down.
 
-Changes apply at once and are saved by the dial.
+Changes apply at once and are saved by the dial. The sheet closes
+by itself after a minute without a touch, and when the screen goes to sleep.
 
 To shut the dial down, press the power button. The dial asks **Shut down?**;
 choose **Shut down** to go ahead or **Cancel** to leave things as they are.
