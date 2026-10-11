@@ -1943,15 +1943,24 @@ class DialCore:
             self._warnings_pending.add(appliance_id)
         self._poll_wake.set()
 
-    def notify_state_changed(self, appliance_id: str, changed: tuple = ()) -> None:
+    def notify_state_changed(self, appliance_id: str, changed: tuple = (), *,
+                             wake: bool = True) -> None:
         """Record that *appliance_id* pushed a state change: queue the id with
         what it said changed and wake the core thread, which asks the
         appliance for its status on the tick that follows and refetches the
-        outputs or EQ it is watching for it. No I/O; any thread."""
+        outputs or EQ it is watching for it. No I/O; any thread.
+
+        With wake=False the kinds are queued for the next tick without asking
+        for one, as for a push the rate limit would not wake the core for. If
+        nothing else is queued (no tick is yet due for an earlier push, or it
+        has already taken them) the core is woken anyway, so what was queued
+        never waits for the regular poll."""
         kinds = set(changed) or {"any"}
         with self._push_lock:
+            idle = not self._state_pending
             self._state_pending.setdefault(appliance_id, set()).update(kinds)
-        self._poll_wake.set()
+        if wake or idle:
+            self._poll_wake.set()
 
     def _queue_effects(self, effects):
         """Queue *effects* for a view and publish, so the view is woken to

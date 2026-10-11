@@ -86,7 +86,11 @@ intermediate ones).
 pushes from an appliance: `/auth-changed`, `/warnings-changed` and
 `/state-changed`. Each is checked against the appliance's current sighting,
 only queues the appliance id (a state push also carries what it said changed)
-and wakes the core thread; nothing is fetched on the HTTP thread. The core's
+and wakes the core thread; nothing is fetched on the HTTP thread. The rate
+limiter on the state route decides only whether the core is woken: a state
+push from the appliance's sighted address always has its kinds queued, so
+hints a busy sender delivers close together are not lost, and the core is
+woken anyway when no tick is already due to take them. The core's
 reaction is a poll, so the push brings the next status request forward and the
 poll is still the truth. A state push also asks again for the speakers list
 or the equaliser when the dial is watching that appliance and the kinds the

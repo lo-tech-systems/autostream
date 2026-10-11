@@ -196,6 +196,10 @@ class _PushRoute(NamedTuple):
     notify: str             # the display-provider method the appliance id is handed to
     limiter: str            # which of _PUSH_LIMITS paces it
     carries_changed: bool   # whether the body's `changed` list is passed on
+    limit_wakes_only: bool = False
+    # True: the source check comes first and the limiter then decides only
+    # whether the push wakes the core (`wake=` on the notify method); what the
+    # push said is handed over either way. False: a limited push is dropped.
 
 
 # The routes an appliance pushes a change to. All share one body check and one
@@ -203,7 +207,7 @@ class _PushRoute(NamedTuple):
 _PUSH_ROUTES = {
     '/auth-changed':     _PushRoute('notify_auth_changed', 'slow', False),
     '/warnings-changed': _PushRoute('notify_warnings_changed', 'slow', False),
-    '/state-changed':    _PushRoute('notify_state_changed', 'fast', True),
+    '/state-changed':    _PushRoute('notify_state_changed', 'fast', True, True),
 }
 
 # (per source IP, per appliance id) seconds between accepted pushes. The
@@ -1057,7 +1061,8 @@ class DialHTTPServer:
                 the id (and, for a state push, the kinds of change it named)
                 to the display provider's method for the route, which queues
                 it; it never fetches inline here on the single-threaded
-                server.
+                server. A state push the limiter refuses is still handed over
+                (so its kinds are not lost), with wake=False.
                 """
                 body = self._read_body()
                 if body is None:
@@ -1081,7 +1086,8 @@ class DialHTTPServer:
                 self._send_json(202, {'ok': True})
 
                 ip = self.client_address[0]
-                if not dial_server._push_limiters[route.limiter].allow(
+                limiter = dial_server._push_limiters[route.limiter]
+                if not route.limit_wakes_only and not limiter.allow(
                         ip, appliance_id, time.monotonic()):
                     return
                 rostered = dial_server._rostered_ips()
@@ -1091,6 +1097,10 @@ class DialHTTPServer:
                         self.path, appliance_id, ip,
                     )
                     return
+                # Only a sender that matches a sighting reaches the limiter
+                # here, so another host cannot use an id to use up its window.
+                wake = (not route.limit_wakes_only
+                        or limiter.allow(ip, appliance_id, time.monotonic()))
                 notify = getattr(dial_server._display_status, route.notify, None)
                 if notify is not None:
                     try:
@@ -1099,7 +1109,7 @@ class DialHTTPServer:
                             changed = tuple(
                                 c for c in raw[:_CHANGED_MAX] if isinstance(c, str) and c
                             ) if isinstance(raw, list) else ()
-                            notify(appliance_id, changed)
+                            notify(appliance_id, changed, wake=wake)
                         else:
                             notify(appliance_id)
                     except Exception as e:

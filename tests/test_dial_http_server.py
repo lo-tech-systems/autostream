@@ -2845,6 +2845,7 @@ class _BothNotifyingProvider(NoOpDisplayStatusProvider):
         self.auth: list = []
         self.warnings: list = []
         self.state: list = []
+        self.state_woken: list = []
         self.state_changed: list = []
 
     def notify_auth_changed(self, appliance_id: str) -> None:
@@ -2853,9 +2854,11 @@ class _BothNotifyingProvider(NoOpDisplayStatusProvider):
     def notify_warnings_changed(self, appliance_id: str) -> None:
         self.warnings.append(appliance_id)
 
-    def notify_state_changed(self, appliance_id: str, changed=()) -> None:
+    def notify_state_changed(self, appliance_id: str, changed=(), *, wake: bool = True) -> None:
         self.state.append(appliance_id)
         self.state_changed.append(changed)
+        if wake:
+            self.state_woken.append(appliance_id)
 
 
 class _RaisingWarningsProvider(NoOpDisplayStatusProvider):
@@ -2864,7 +2867,7 @@ class _RaisingWarningsProvider(NoOpDisplayStatusProvider):
 
 
 class _RaisingStateProvider(NoOpDisplayStatusProvider):
-    def notify_state_changed(self, appliance_id: str, changed=()) -> None:
+    def notify_state_changed(self, appliance_id: str, changed=(), *, wake: bool = True) -> None:
         raise RuntimeError("boom")
 
 
@@ -2880,7 +2883,7 @@ class TestPushRoutesTable:
         assert dhs._PUSH_ROUTES == {
             "/auth-changed": dhs._PushRoute("notify_auth_changed", "slow", False),
             "/warnings-changed": dhs._PushRoute("notify_warnings_changed", "slow", False),
-            "/state-changed": dhs._PushRoute("notify_state_changed", "fast", True),
+            "/state-changed": dhs._PushRoute("notify_state_changed", "fast", True, True),
         }
 
     def test_the_slow_limiter_keeps_its_intervals_and_the_fast_one_is_shorter(self):
@@ -2938,10 +2941,21 @@ class _PushRoute(NamedTuple):
                  id="auth_changed"),
     pytest.param(_PushRoute("/warnings-changed", "warnings", _RaisingWarningsProvider),
                  id="warnings_changed"),
-    pytest.param(_PushRoute("/state-changed", "state", _RaisingStateProvider),
+    pytest.param(_PushRoute("/state-changed", "state_woken", _RaisingStateProvider),
                  id="state_changed"),
 ])
 def push_route(request):
+    return request.param
+
+
+@pytest.fixture(params=[
+    pytest.param(_PushRoute("/auth-changed", "auth", _RaisingNotifyDisplayStatusProvider),
+                 id="auth_changed"),
+    pytest.param(_PushRoute("/warnings-changed", "warnings", _RaisingWarningsProvider),
+                 id="warnings_changed"),
+])
+def limited_first_route(request):
+    """The routes whose limiter drops a push before the sighting is looked up."""
     return request.param
 
 
@@ -3087,12 +3101,12 @@ class TestPushRouteBehaviour:
         assert set(statuses) == {202}
         assert push_route.notified(server) == [_AID]
 
-    def test_the_limiter_runs_before_the_sighting_lookup(self, push_route, frozen_push_clock):
+    def test_the_limiter_runs_before_the_sighting_lookup(self, limited_first_route, frozen_push_clock):
         calls = []
         server = _warnings_server()
         server._get_rostered_ips = lambda: calls.append(1) or {_AID: "127.0.0.1"}
         for _ in range(5):
-            _call_handler(push_route.path, body={"appliance_id": _AID}, setup_server=server)
+            _call_handler(limited_first_route.path, body={"appliance_id": _AID}, setup_server=server)
         assert len(calls) == 1
 
     def test_an_oversized_body_returns_413(self, push_route):
@@ -3153,6 +3167,46 @@ class TestStatePush:
                           setup_server=server)
         assert (r["status"], r["data"]["error"]) == (400, "invalid_appliance_id")
         assert server._display_status.state == []
+
+    def test_two_state_pushes_inside_the_window_both_keep_their_kinds_and_wake_once(
+            self, frozen_push_clock):
+        server = _warnings_server()
+        for kind in ("eq", "volume"):
+            _call_handler("/state-changed", body={"appliance_id": _AID, "changed": [kind]},
+                          setup_server=server)
+        provider = server._display_status
+        assert provider.state_changed == [("eq",), ("volume",)]
+        assert provider.state_woken == [_AID]
+
+    def test_a_refused_state_push_from_another_address_records_nothing_and_spares_the_window(
+            self, frozen_push_clock):
+        server = _warnings_server({_AID: "10.0.0.1"})
+        r = _call_handler("/state-changed", body={"appliance_id": _AID, "changed": ["eq"]},
+                          setup_server=server, client_ip="10.0.0.9")
+        assert r["status"] == 202
+        assert server._display_status.state_changed == []
+        limiter = server._push_limiters["fast"]
+        assert _AID not in limiter._by_id and "10.0.0.9" not in limiter._by_ip
+        _call_handler("/state-changed", body={"appliance_id": _AID, "changed": ["mute"]},
+                      setup_server=server, client_ip="10.0.0.1")
+        assert server._display_status.state_woken == [_AID]
+
+    def test_state_pushes_for_an_unrostered_appliance_record_nothing(self, frozen_push_clock):
+        server = _warnings_server({})
+        for _ in range(3):
+            _call_handler("/state-changed", body={"appliance_id": _AID, "changed": ["eq"]},
+                          setup_server=server)
+        assert server._display_status.state_changed == []
+
+    def test_the_older_routes_drop_a_refused_push_and_are_called_with_the_id_alone(
+            self, limited_first_route, frozen_push_clock):
+        server = _warnings_server()
+        server._display_status = MagicMock()
+        for _ in range(3):
+            _call_handler(limited_first_route.path, body={"appliance_id": _AID},
+                          setup_server=server)
+        hook = getattr(server._display_status, dhs._PUSH_ROUTES[limited_first_route.path].notify)
+        hook.assert_called_once_with(_AID)
 
     def test_the_fast_limiter_refuses_inside_its_window_and_allows_after_it(self):
         limiter = dhs._PushLimiter(*dhs._PUSH_LIMITS["fast"])

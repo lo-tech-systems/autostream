@@ -706,6 +706,21 @@ class TestPollSettings:
         core.notify_state_changed("b" * 20, ())
         assert core._state_pending == {"a" * 20: {"any"}, "b" * 20: {"any"}}
 
+    def test_a_state_push_without_a_wake_queues_its_kinds_and_does_not_wake_while_an_earlier_one_is_queued(self):
+        core, gt = _make()
+        core.notify_state_changed("a" * 20, ("mute",))
+        core._poll_wake.clear()
+        core.notify_state_changed("a" * 20, ("eq",), wake=False)
+        assert not core._poll_wake.is_set()
+        assert core._state_pending == {"a" * 20: {"mute", "eq"}}
+
+    def test_a_state_push_without_a_wake_still_wakes_the_loop_when_nothing_else_is_queued(self):
+        core, gt = _make()
+        core._poll_wake.clear()
+        core.notify_state_changed("a" * 20, ("eq",), wake=False)
+        assert core._poll_wake.is_set()
+        assert core._state_pending == {"a" * 20: {"eq"}}
+
     def test_state_pushes_for_one_appliance_merge_their_kinds(self):
         core, gt = _make()
         core.notify_state_changed("a" * 20, ("mute",))
@@ -1186,6 +1201,36 @@ class TestDrainStatePushes:
             core.notify_state_changed(self.AID, ("volume",))
             core._drain_state_pushes()
         assert held == [(False, False)]
+
+    def test_a_hint_that_did_not_wake_the_core_is_refetched_on_the_tick_of_the_one_before(self):
+        core = self._watching()
+        with patch("dial_core.enqueue_fetch") as outputs, patch("dial_core._enqueue_eq_fetch") as eq:
+            core.notify_state_changed(self.AID, ("volume",))
+            core.notify_state_changed(self.AID, ("eq",), wake=False)
+            core._drain_state_pushes()
+        assert outputs.call_count == 1 and eq.call_count == 1
+
+    def test_the_thread_refetches_a_kind_whose_hint_did_not_wake_it_once_the_tick_before_has_drained(self):
+        core = self._watching()
+        core.set_poll_interval(60)
+        outputs_asked, eq_asked = [], []
+        with patch.object(core, "poll_once"), patch.object(core, "refresh_watched"), \
+                patch("dial_core.enqueue_fetch", side_effect=lambda t, **k: outputs_asked.append(t.appliance_id)), \
+                patch("dial_core._enqueue_eq_fetch", side_effect=lambda t, **k: eq_asked.append(t.appliance_id)):
+            core.start()
+            try:
+                time.sleep(0.05)
+                core.notify_state_changed(self.AID, ("mute",))
+                deadline = time.monotonic() + 3.0
+                while not outputs_asked and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                core.notify_state_changed(self.AID, ("eq",), wake=False)
+                deadline = time.monotonic() + 3.0
+                while not eq_asked and time.monotonic() < deadline:
+                    time.sleep(0.005)
+            finally:
+                core.stop()
+        assert (outputs_asked, eq_asked) == ([self.AID], [self.AID])
 
     def test_the_thread_refetches_the_watched_speakers_when_a_hint_arrives(self):
         core = self._watching()

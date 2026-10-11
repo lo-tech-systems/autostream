@@ -1208,8 +1208,10 @@ sighting the dial currently has of that `appliance_id`.
 
 **Rate limiting.** This route has its own limit, apart from the other two push routes: at most
 one accepted push per source IP every 0.2 seconds, and per `appliance_id` every 0.2 seconds. A
-push outside the limit is still answered `202` but not acted on. The appliance already holds
-its own sending to a few a second, so the limit only guards against a sender that does not.
+push outside the limit is still answered `202`; when its source matches a sighting the dial
+still takes note of what it named, but only brings the next poll forward when none is already due. The appliance
+already holds its own sending to a few a second, so the limit only guards against a sender that
+does not.
 
 **What the dial does.** It asks the appliance for its status at once, and refetches the
 speakers or the equaliser it is currently showing for that appliance when `changed` says they
