@@ -168,6 +168,57 @@ def test_journald_dropin_retention():
     assert "MaxRetentionSec=" in text
 
 
+# ── 3b. coredump drop-in ───────────────────────────────────────────────────────
+
+_COREDUMP_DROPIN = "system/coredump/99-autostream-coredump.conf"
+# Keys coredump.conf accepts for storage limits; systemd silently ignores
+# anything else, so the drop-in must not carry other keys.
+_COREDUMP_VALID_KEYS = {
+    "Storage", "Compress", "ProcessSizeMax", "ExternalSizeMax",
+    "JournalSizeMax", "MaxUse", "KeepFree",
+}
+
+
+def _coredump_settings() -> dict[str, str]:
+    settings = {}
+    for ln in _read(_COREDUMP_DROPIN).splitlines():
+        ln = ln.strip()
+        if ln and not ln.startswith("#") and "=" in ln:
+            key, _, value = ln.partition("=")
+            settings[key.strip()] = value.strip()
+    return settings
+
+
+def test_coredump_dropin_exists():
+    assert (REPO / _COREDUMP_DROPIN).is_file()
+
+
+def test_coredump_dropin_coredump_section():
+    assert "[Coredump]" in _read(_COREDUMP_DROPIN)
+
+
+def test_coredump_dropin_uses_only_valid_keys():
+    assert set(_coredump_settings()) <= _COREDUMP_VALID_KEYS
+
+
+def test_coredump_dropin_bounds_storage():
+    settings = _coredump_settings()
+    assert settings["Storage"] == "external"
+    assert settings["Compress"] == "yes"
+    for key in ("MaxUse", "KeepFree", "ProcessSizeMax", "ExternalSizeMax"):
+        assert re.fullmatch(r"\d+M", settings[key]), key
+
+
+def test_installer_installs_coredump_dropin():
+    text = _installer()
+    assert "system/coredump/99-autostream-coredump.conf" in text
+    assert "/etc/systemd/coredump.conf.d/99-autostream-coredump.conf" in text
+
+
+def test_uninstaller_removes_coredump_dropin():
+    assert "/etc/systemd/coredump.conf.d/99-autostream-coredump.conf" in _uninstaller()
+
+
 # ── 4. NGINX access-log conf ──────────────────────────────────────────────────
 
 def test_nginx_access_log_conf_exists():

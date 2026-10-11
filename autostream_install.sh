@@ -1045,6 +1045,13 @@ configure_phase() {
   rm -f /var/lib/autostream/journald-persistent.applied
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
 
+  # systemd-coredump storage bounds: cap how much disk core dumps may use so a
+  # crash cannot fill the SD card. Applied per-dump by systemd-coredump, so no
+  # service restart is required.
+  mkdir -p /etc/systemd/coredump.conf.d
+  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/coredump/99-autostream-coredump.conf" \
+    /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
+
   # logind drop-in: suppress power-key events so USB enumeration cannot shut down the appliance
   mkdir -p /etc/systemd/logind.conf.d
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/logind/90-autostream-ignore-power-key.conf" \
