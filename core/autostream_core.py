@@ -4140,16 +4140,28 @@ class AudioMonitor:
                 self.input_index, duration_s, self._ti_next_attempt_reason,
             )
 
-            from track_id.models import STATE_ANALYSING, state_status_text, TrackIdentificationSnapshot
-            self._ti_snapshot = TrackIdentificationSnapshot(
-                enabled=True,
-                state=STATE_ANALYSING,
-                status_text=state_status_text(STATE_ANALYSING),
-                input_index=self.input_index,
-                provider=svc.provider_id,
-                updated_at=now,
-                last_attempt_at=now,
+            from track_id.models import (
+                STATE_ANALYSING, STATE_IDENTIFIED, state_status_text,
+                TrackIdentificationSnapshot,
             )
+            # A snapshot still identified here means this is the periodic
+            # re-check of a track that is playing: a track change, a new
+            # session and a seek all replace the snapshot with a waiting one
+            # first. Keep publishing the identified track while the attempt
+            # runs (the in-flight flag stops a second attempt), so a dial, the
+            # Home page or a receiver reading it never loses the title and
+            # cover; the worker publishes the outcome. Any other attempt
+            # shows the analysing state.
+            if self._ti_snapshot.state != STATE_IDENTIFIED:
+                self._ti_snapshot = TrackIdentificationSnapshot(
+                    enabled=True,
+                    state=STATE_ANALYSING,
+                    status_text=state_status_text(STATE_ANALYSING),
+                    input_index=self.input_index,
+                    provider=svc.provider_id,
+                    updated_at=now,
+                    last_attempt_at=now,
+                )
             worker_token = object()
             self._ti_inflight = True
             self._ti_inflight_token = worker_token

@@ -133,7 +133,7 @@ or API keys.
 |---|---|---|
 | `disabled` | `""` | Track identification is off in Setup. |
 | `waiting_for_audio` | `"Waiting for audio"` | Enabled and armed, but the analysis lead-in/snapshot window has not yet elapsed or no attempt has completed. |
-| `analysing` | `"Analysing"` | An identification attempt is currently in flight. |
+| `analysing` | `"Analysing"` | An identification attempt is currently in flight and no track is identified yet (a new session or a track change). The periodic re-check of an identified track does not use this state: `identified` and its track fields are reported until the re-check returns. |
 | `identified` | `"Track identified"` | The most recent attempt matched; `title`/`artist`/`album`/`artwork_url` are populated. |
 | `not_found` | `"Listening"` | The most recent attempt completed with no match. |
 | `error` | `"Identification unavailable"` | The most recent attempt failed (provider/network/configuration error). |
