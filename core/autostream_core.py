@@ -2454,15 +2454,10 @@ RATE_MATCHING_NOTE_MONITOR_OLD = (
 )
 
 
-def rate_matching_note_text(input_index: int) -> str:
-    """Help text under the Setup card's Dynamic Rate Matching switch for one
-    input, from the coordinator's view of that input's monitor. The flag
-    tested is the coordinator's copy, which the live callback sets before
-    the push, so the note follows the switch whether or not the push
-    succeeded; the mismatch itself comes from the daemon's report, so it
-    clears only once the daemon has stepped."""
-    with _monitors_lock:
-        mon = next((m for m in all_monitors if m.input_index == input_index), None)
+SAMPLE_RATE_TEXT_NOT_RUNNING = "Sample rate: not running"
+
+
+def _rate_matching_note_for(mon: Optional["AudioMonitor"]) -> str:
     if mon is None:
         return RATE_MATCHING_NOTE_DEFAULT
     if mon.dynamic_rate_matching and mon.monitor_dynamic_rate_matching is None:
@@ -2474,6 +2469,67 @@ def rate_matching_note_text(input_index: int) -> str:
             f"to follow the source."
         )
     return RATE_MATCHING_NOTE_DEFAULT
+
+
+def _sample_rate_text_for(mon: Optional["AudioMonitor"], connected: bool) -> str:
+    if mon is None or not connected or not mon.rate_lock:
+        return SAMPLE_RATE_TEXT_NOT_RUNNING
+    # A non-breaking space keeps each rate with its unit when the line wraps
+    # on a narrow screen; format_khz itself keeps its plain space.
+    def keep_unit(text: str) -> str:
+        return text.replace(" ", "\u00a0")
+
+    opened = format_khz(mon.negotiated_hz)
+    if mon.rate_mismatch_hz > 0 and opened:
+        return (
+            f"Sample rate: {keep_unit(opened)} (source is sending "
+            f"{keep_unit(format_khz(mon.rate_mismatch_hz))})"
+        )
+    if mon.rate_lock == "acquiring":
+        return "Sample rate: checking"
+    running = format_khz(mon.detected_hz)
+    if not running:
+        return SAMPLE_RATE_TEXT_NOT_RUNNING
+    # Compared as text so a device that opens at 47999 Hz still reads as
+    # 48 kHz and is not taken for a rate step.
+    if opened and opened != running:
+        return (
+            f"Sample rate: {keep_unit(running)} "
+            f"(device opened at {keep_unit(opened)})"
+        )
+    return f"Sample rate: {keep_unit(running)}"
+
+
+def input_rate_texts(input_index: int) -> tuple[str, str]:
+    """The two rate texts on one input's Setup card, as (Dynamic Rate
+    Matching note, sample rate readout). Both come from a single lookup of
+    the input's monitor, so they cannot disagree with each other."""
+    with _monitors_lock:
+        mon = next((m for m in all_monitors if m.input_index == input_index), None)
+    connected = bool(get_monitor_runtime_info().connected)
+    return _rate_matching_note_for(mon), _sample_rate_text_for(mon, connected)
+
+
+def rate_matching_note_text(input_index: int) -> str:
+    """Help text under the Setup card's Dynamic Rate Matching switch for one
+    input, from the coordinator's view of that input's monitor. The flag
+    tested is the coordinator's copy, which the live callback sets before
+    the push, so the note follows the switch whether or not the push
+    succeeded; the mismatch itself comes from the daemon's report, so it
+    clears only once the daemon has stepped."""
+    return input_rate_texts(input_index)[0]
+
+
+def sample_rate_text(input_index: int) -> str:
+    """The Setup card's sample rate readout for one input: the rate it is
+    running at, with the rate the device was opened at when the detector has
+    stepped away from it, or the rate the source is sending while a mismatch
+    is reported. 'Sample rate: checking' while the rate is still being worked
+    out; 'Sample rate: not running' when the input is not running or the
+    audio monitor is not connected. An older monitor that reports no rate
+    lock or opened rate gives the detected rate alone, or 'not running' when
+    there is none."""
+    return input_rate_texts(input_index)[1]
 
 
 def get_monitor_socket_path() -> str:

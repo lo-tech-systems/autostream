@@ -1939,3 +1939,110 @@ class TestRateMatchingNoteText:
             "This input is delivering 44.1 kHz but the device was opened at "
             "48 kHz. Turn this on to follow the source."
         )
+
+
+class TestSampleRateText:
+    @pytest.fixture(autouse=True)
+    def _connected(self):
+        info = core.MonitorRuntimeInfo(
+            monitor_build="test", log_level="info", connected=True, last_seen_at=0.0,
+        )
+        with patch.object(core, "get_monitor_runtime_info", return_value=info):
+            yield
+
+    @staticmethod
+    def _running(index=1, **fields):
+        mon = _make_monitor(input_index=index)
+        mon.monitor_dynamic_rate_matching = True
+        mon.negotiated_hz = 48000
+        mon.detected_hz = 48000.0
+        mon.rate_lock = "locked"
+        for name, value in fields.items():
+            setattr(mon, name, value)
+        return mon
+
+    def test_locked_at_the_opened_rate(self):
+        self._running()
+        assert core.sample_rate_text(1) == "Sample rate: 48\u00a0kHz"
+
+    def test_locked_after_the_detector_stepped(self):
+        self._running(detected_hz=44100.4, relock_count=1)
+        assert core.sample_rate_text(1) == "Sample rate: 44.1\u00a0kHz (device opened at 48\u00a0kHz)"
+
+    def test_a_device_that_opens_at_47999_reads_as_48_khz(self):
+        self._running(negotiated_hz=47999, detected_hz=48000.0)
+        assert core.sample_rate_text(1) == "Sample rate: 48\u00a0kHz"
+        self._running(negotiated_hz=48000, detected_hz=47999.2)
+        assert core.sample_rate_text(1) == "Sample rate: 48\u00a0kHz"
+
+    def test_still_working_it_out(self):
+        self._running(rate_lock="acquiring", detected_hz=0.0)
+        assert core.sample_rate_text(1) == "Sample rate: checking"
+
+    def test_mismatch_with_the_option_off(self):
+        self._running(rate_lock="mismatch", detected_hz=44100.0, rate_mismatch_hz=44100)
+        assert core.sample_rate_text(1) == (
+            "Sample rate: 48\u00a0kHz (source is sending 44.1\u00a0kHz)"
+        )
+
+    def test_mismatch_follows_the_rate_not_the_lock_string(self):
+        mon = self._running(rate_lock="locked", detected_hz=48000.0, rate_mismatch_hz=44100)
+        assert core.sample_rate_text(1) == (
+            "Sample rate: 48\u00a0kHz (source is sending 44.1\u00a0kHz)"
+        )
+        mon.rate_lock = "mismatch"
+        mon.rate_mismatch_hz = 0
+        assert core.sample_rate_text(1) == "Sample rate: 48\u00a0kHz"
+
+    def test_no_monitor_for_the_input_is_not_running(self):
+        assert core.sample_rate_text(1) == "Sample rate: not running"
+
+    def test_an_input_that_is_not_started_is_not_running(self):
+        mon = self._running()
+        mon._ingest_status({"started": False, "rate_lock": "locked", "negotiated_hz": 48000})
+        assert mon.rate_lock == ""
+        assert core.sample_rate_text(1) == "Sample rate: not running"
+
+    def test_a_disconnected_monitor_is_not_running(self):
+        self._running()
+        info = core.MonitorRuntimeInfo(
+            monitor_build="test", log_level="info", connected=False, last_seen_at=0.0,
+        )
+        with patch.object(core, "get_monitor_runtime_info", return_value=info):
+            assert core.sample_rate_text(1) == "Sample rate: not running"
+
+    def test_an_older_monitor_with_a_detected_rate_gives_the_rate_alone(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": True, "detected_hz": 44100.0})
+        assert mon.monitor_dynamic_rate_matching is None
+        assert core.sample_rate_text(1) == "Sample rate: 44.1\u00a0kHz"
+
+    def test_an_older_monitor_with_no_detected_rate_is_not_running(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": True})
+        assert core.sample_rate_text(1) == "Sample rate: not running"
+
+    def test_each_input_reads_its_own_monitor(self):
+        self._running(1)
+        self._running(2, detected_hz=44100.0)
+        assert core.sample_rate_text(1) == "Sample rate: 48\u00a0kHz"
+        assert core.sample_rate_text(2) == "Sample rate: 44.1\u00a0kHz (device opened at 48\u00a0kHz)"
+
+    def test_both_texts_come_from_one_monitor_lookup(self):
+        self._running(rate_lock="mismatch", detected_hz=44100.0, rate_mismatch_hz=44100)
+        note, rate = core.input_rate_texts(1)
+        assert note == core.rate_matching_note_text(1)
+        assert rate == core.sample_rate_text(1)
+        assert "44.1 kHz" in note and "44.1\u00a0kHz" in rate
+
+    def test_each_rate_in_the_line_stays_with_its_unit(self):
+        self._running(rate_lock="mismatch", detected_hz=44100.0, rate_mismatch_hz=44100)
+        text = core.sample_rate_text(1)
+        assert text.count("kHz") == 2
+        assert " kHz" not in text
+        assert text.count("\u00a0kHz") == 2
+        self._running(2, detected_hz=44100.0)
+        stepped = core.sample_rate_text(2)
+        assert stepped.count("\u00a0kHz") == 2 and " kHz" not in stepped
+        # The note keeps the plain space.
+        assert "44.1 kHz" in core.rate_matching_note_text(1)

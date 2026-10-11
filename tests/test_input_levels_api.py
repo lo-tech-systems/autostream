@@ -48,7 +48,7 @@ def _level(index: int, dbfs: float) -> dict:
 
 
 def _call(levels=None, connected=True, config=None, levels_error=None, config_error=None,
-          note=lambda index: f"note {index}"):
+          note=lambda index: f"note {index}", rate=lambda index: f"rate {index}"):
     if config is None:
         config = MagicMock(audio1_enabled=True, audio2_enabled=False)
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
@@ -64,7 +64,8 @@ def _call(levels=None, connected=True, config=None, levels_error=None, config_er
         else patch("autostream_webui_api._config_snapshot", return_value=config)
     )
     with levels_patch, config_patch, patch(
-        "autostream_webui_api.rate_matching_note_text", side_effect=note,
+        "autostream_webui_api.input_rate_texts",
+        side_effect=lambda index: (note(index), rate(index)),
     ), patch(
         "autostream_webui_api.get_monitor_runtime_info",
         return_value=MagicMock(connected=connected),
@@ -87,9 +88,9 @@ def test_two_running_inputs():
     }
     assert body["inputs"] == [
         {"index": 1, "enabled": True, "running": True, "dbfs": -52.34,
-         "rate_matching_note": "note 1", **rate_fields},
+         "sample_rate_text": "rate 1", "rate_matching_note": "note 1", **rate_fields},
         {"index": 2, "enabled": True, "running": True, "dbfs": -61.0,
-         "rate_matching_note": "note 2", **rate_fields},
+         "sample_rate_text": "rate 2", "rate_matching_note": "note 2", **rate_fields},
     ]
 
 
@@ -114,9 +115,27 @@ def test_input_without_a_running_monitor_gets_empty_rate_fields_and_the_note():
     assert second["negotiated_hz"] == 0
     assert second["monitor_supports_rate_matching"] is False
     assert second["rate_matching_note"] == "note 2"
+    assert second["sample_rate_text"] == "rate 2"
 
 
-def test_the_note_is_asked_for_once_per_input():
+def test_a_non_breaking_space_in_the_text_survives_the_json_reply():
+    handler = _make_handler()
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    with patch("autostream_webui_api.get_monitor_levels_dbfs", return_value=[_level(1, -40.0)]), \
+         patch("autostream_webui_api._config_snapshot",
+               return_value=MagicMock(audio1_enabled=True, audio2_enabled=False)), \
+         patch("autostream_webui_api.input_rate_texts",
+               side_effect=lambda index: ("note", "Sample rate: 48 kHz")), \
+         patch("autostream_webui_api.get_monitor_runtime_info",
+               return_value=MagicMock(connected=True)):
+        send_input_levels_json(handler, state)
+    raw = handler.wfile.getvalue().decode("ascii")
+    assert "&nbsp;" not in raw
+    assert "48\\u00a0kHz" in raw
+    assert json.loads(raw)["inputs"][0]["sample_rate_text"] == "Sample rate: 48 kHz"
+
+
+def test_the_rate_texts_are_asked_for_once_per_input():
     asked = []
     def note(index):
         asked.append(index)
@@ -127,6 +146,7 @@ def test_the_note_is_asked_for_once_per_input():
 
 def test_levels_failure_still_carries_the_notes():
     code, body = _call(levels_error=RuntimeError("monitors unavailable"))
+    assert [item["sample_rate_text"] for item in body["inputs"]] == ["rate 1", "rate 2"]
     assert [item["rate_matching_note"] for item in body["inputs"]] == ["note 1", "note 2"]
 
 

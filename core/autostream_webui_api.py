@@ -113,7 +113,7 @@ from autostream_core import (
     get_playback_snapshot,
     get_repeat_status,
     get_session_state,
-    rate_matching_note_text,
+    input_rate_texts,
     request_config_reload,
     sample_rate_warning_text,
     reset_input_belt,
@@ -513,12 +513,14 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
     inputs = []
     for index in (1, 2):
         lv = by_index.get(index)
+        note_text, rate_text = input_rate_texts(index)
         inputs.append({
             "index": index,
             "enabled": enabled[index],
             "running": lv is not None,
             "dbfs": float(lv["dbfs"]) if (lv is not None and connected) else None,
-            "rate_matching_note": rate_matching_note_text(index),
+            "sample_rate_text": rate_text,
+            "rate_matching_note": note_text,
             "dynamic_rate_matching": bool(lv.get("dynamic_rate_matching", False)) if lv is not None else False,
             "rate_mismatch_hz": int(lv.get("rate_mismatch_hz", 0)) if lv is not None else 0,
             "negotiated_hz": int(lv.get("negotiated_hz", 0)) if lv is not None else 0,

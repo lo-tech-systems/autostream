@@ -4043,6 +4043,8 @@
             const item = inputs.find(function(x){ return x && x.index === i; });
             _inputLevelLast[i] = (item && typeof item.dbfs === 'number') ? item.dbfs : NaN;
             _applyInputLevelMark(i);
+            const rate = document.getElementById('audio' + i + '_sample_rate');
+            if (rate && item && typeof item.sample_rate_text === 'string') rate.textContent = item.sample_rate_text;
             const note = document.getElementById('audio' + i + '_rate_matching_note');
             if (note && item && typeof item.rate_matching_note === 'string') note.textContent = item.rate_matching_note;
           });

@@ -67,12 +67,14 @@ OwnTone or the monitor. Needs a signed-in session, like the Setup page.
   "inputs": [
     {
       "index": 1, "enabled": true, "running": true, "dbfs": -52.3,
+      "sample_rate_text": "Sample rate: 48 kHz",
       "rate_matching_note": "Follows the sample rate of the source. Turn on for an optical (S/PDIF) adapter fed by a CD or DVD player.",
       "dynamic_rate_matching": false, "rate_mismatch_hz": 0,
       "negotiated_hz": 48000, "monitor_supports_rate_matching": true
     },
     {
       "index": 2, "enabled": false, "running": false, "dbfs": null,
+      "sample_rate_text": "Sample rate: not running",
       "rate_matching_note": "Follows the sample rate of the source. Turn on for an optical (S/PDIF) adapter fed by a CD or DVD player.",
       "dynamic_rate_matching": false, "rate_mismatch_hz": 0,
       "negotiated_hz": 0, "monitor_supports_rate_matching": false
@@ -88,6 +90,7 @@ OwnTone or the monitor. Needs a signed-in session, like the Setup page.
 | `enabled` | bool. Whether the input is enabled in the saved settings. |
 | `running` | bool. Whether the input has a running monitor. A disabled input, or one that failed to start, is not running. |
 | `dbfs` | number or null. The largest raw peak over the last poll window, before gain and EQ, which is the value compared with the silence threshold. |
+| `sample_rate_text` | string. The line the Setup card shows under its Level readout, for example `Sample rate: 48 kHz`. It reads `Sample rate: 44.1 kHz (device opened at 48 kHz)` when the monitor has stepped to a rate other than the one the device was opened at, `Sample rate: checking` while the rate is still being worked out, and `Sample rate: 48 kHz (source is sending 44.1 kHz)` while `rate_mismatch_hz` is above zero. It reads `Sample rate: not running` for an input that is not running and for every input while the monitor is disconnected. An older monitor that reports no rate lock gives the detected rate alone, or `not running` when there is none. |
 | `rate_matching_note` | string. The help text the Setup card shows under its Dynamic Rate Matching switch, worked out from the values below. |
 | `dynamic_rate_matching` | bool. Whether Dynamic Rate Matching is on for the input, as the coordinator holds it. `false` for an input that is not running. |
 | `rate_mismatch_hz` | integer. The sample rate the input is delivering when that differs from the rate it was opened at and Dynamic Rate Matching has not followed it, otherwise 0. |

@@ -28,8 +28,10 @@
   `dynamic_rate_matching`, and each input's status gains `negotiated_hz`,
   `rate_lock`, `relock_count`, `rate_mismatch_hz` and `dynamic_rate_matching`.
   `/api/status` gains `sample_rate_banner_text`, and `GET /api/inputs/levels`
-  gains `rate_matching_note`, `dynamic_rate_matching`, `rate_mismatch_hz`,
-  `negotiated_hz` and `monitor_supports_rate_matching`. Appliances need the
+  gains `rate_matching_note`, `sample_rate_text`, `dynamic_rate_matching`,
+  `rate_mismatch_hz`, `negotiated_hz` and `monitor_supports_rate_matching`.
+  The card also shows the sample rate the input is running at, with whether it
+  has settled, in a live line under the Level readout. Appliances need the
   new monitor for the switch to take effect.
 - new: each input now has a type, Turntable, CD or Line, chosen on its card in
   Setup (and for Input 1 at first boot) in place of the Turntable switch. The

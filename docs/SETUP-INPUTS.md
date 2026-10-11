@@ -56,6 +56,8 @@ Choosing Turntable moves the slider to -45 dB, and choosing CD or Line moves it 
 
 Below the slider, the **Level** readout shows the input's current peak level in dB, refreshed about once a second while the card is open. It reads **no level** when there is nothing to show, and adds **(above threshold)** when the level is at or above the slider's value, meaning it would count as sound. The level is measured before Gain and Equaliser, so those settings don't move it. Changes to the slider are applied at once and never interrupt playback.
 
+Under the Level readout, a **Sample rate** line shows the rate the input is running at, for example **Sample rate: 48 kHz**, and it updates as you watch. It reads **checking** for a moment while autostream works the rate out, and **not running** when the input is not running. If autostream has moved to a different rate than the one the device was opened at, it adds that in brackets, for example **Sample rate: 44.1 kHz (device opened at 48 kHz)**. While Dynamic Rate Matching is off and the source is sending a different rate, it reads, for example, **Sample rate: 48 kHz (source is sending 44.1 kHz)**.
+
 If a very quiet passage after a long silence doesn't restart playback on a Turntable or Line input, it may need to get a little louder first. Move the Sensitivity slider to the left.
 
 The **Silence detection** timeout itself (how long the input has to stay quiet before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).

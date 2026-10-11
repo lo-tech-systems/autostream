@@ -41,7 +41,7 @@ except ImportError:
         return []
 
 from autostream_core import (
-    rate_matching_note_text,
+    input_rate_texts,
     update_live_owntone_runtime,
     update_playback_input_config,
 )
@@ -1001,7 +1001,9 @@ def _setup_input_card_html(
         input_type = normalize_input_type(getattr(parsed_input, "input_type", "line"))
         threshold = float(parsed_input.silence_threshold_dbfs)
         rate_matching = bool(getattr(parsed_input, "dynamic_rate_matching", False))
-        rate_matching_note = html.escape(rate_matching_note_text(input_index))
+        rate_matching_note_raw, sample_rate_line_raw = input_rate_texts(input_index)
+        rate_matching_note = html.escape(rate_matching_note_raw)
+        sample_rate_line = html.escape(sample_rate_line_raw)
         type_options = "".join(
             f'<option value="{t}"{" selected" if t == input_type else ""}>{INPUT_TYPE_LABELS[t]}</option>'
             for t in INPUT_TYPES
@@ -1051,6 +1053,9 @@ def _setup_input_card_html(
             </div>
             <div class="helptext" style="text-align:left;">
               Level: <span id="{prefix}_level_val">no level</span>
+            </div>
+            <div id="{prefix}_sample_rate" class="helptext" style="text-align:left;">
+              {sample_rate_line}
             </div>
             <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
               <label class="output-toggle" style="margin:0;">
@@ -2914,6 +2919,8 @@ def send_setup_page(
             const item = inputs.find(function(x){{ return x && x.index === i; }});
             _inputLevelLast[i] = (item && typeof item.dbfs === 'number') ? item.dbfs : NaN;
             _applyInputLevelMark(i);
+            const rate = document.getElementById('audio' + i + '_sample_rate');
+            if (rate && item && typeof item.sample_rate_text === 'string') rate.textContent = item.sample_rate_text;
             const note = document.getElementById('audio' + i + '_rate_matching_note');
             if (note && item && typeof item.rate_matching_note === 'string') note.textContent = item.rate_matching_note;
           }});

@@ -194,10 +194,12 @@ def _stub_levels_reply() -> dict:
         "connected": True,
         "inputs": [
             {"index": 1, "enabled": True, "running": True, "dbfs": -52.0,
+             "sample_rate_text": "Sample rate: 48\u00a0kHz",
              "rate_matching_note": _RATE_MATCHING_NOTE_STUB.format(index=1),
              "dynamic_rate_matching": False, "rate_mismatch_hz": 0,
              "negotiated_hz": 48000, "monitor_supports_rate_matching": True},
             {"index": 2, "enabled": False, "running": False, "dbfs": None,
+             "sample_rate_text": "Sample rate: not running",
              "rate_matching_note": _RATE_MATCHING_NOTE_STUB.format(index=2),
              "dynamic_rate_matching": False, "rate_mismatch_hz": 0,
              "negotiated_hz": 0, "monitor_supports_rate_matching": False},
@@ -656,6 +658,22 @@ class TestInputTypeAndSensitivity:
         expect(note).to_have_text("Stub note for input 1.", timeout=3000)
         _STUB_LEVELS["inputs"][0]["rate_matching_note"] = "Changed while the card was open."
         expect(note).to_have_text("Changed while the card was open.", timeout=3000)
+        expect(page.locator("#panel-input1")).to_be_visible()
+
+    def test_sample_rate_line_follows_the_levels_reply_without_a_reload(
+        self, page: "Page", base_url: str
+    ):
+        if os.environ.get("AUTOSTREAM_URL"):
+            pytest.skip("edits the stub's levels reply; not for a real appliance")
+        self._open_input1(page, base_url)
+        line = page.locator("#audio1_sample_rate")
+        expect(line).to_have_text("Sample rate: 48\u00a0kHz", timeout=3000)
+        _STUB_LEVELS["inputs"][0]["sample_rate_text"] = (
+            "Sample rate: 44.1\u00a0kHz (device opened at 48\u00a0kHz)"
+        )
+        expect(line).to_have_text(
+            "Sample rate: 44.1\u00a0kHz (device opened at 48\u00a0kHz)", timeout=3000
+        )
         expect(page.locator("#panel-input1")).to_be_visible()
 
 
