@@ -60,6 +60,24 @@ If a very quiet passage after a long silence doesn't restart playback on a Turnt
 
 The **Silence detection** timeout itself (how long the input has to stay quiet before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
 
+### Dynamic Rate Matching
+
+Some optical (S/PDIF) USB adapters send audio at the sample rate of whatever is plugged into them, whatever rate autostream asked for. A CD player sends 44.1 kHz and a DVD player sends 48 kHz. When the two don't agree, the music plays at the wrong speed and pitch. A CD heard through an adapter that autostream opened at 48 kHz plays about 8 percent slow, and sounds low.
+
+The **Dynamic Rate Matching** switch fixes that. It is the last item on each input's card, under the **Level** readout, and it is off by default. With it on, autostream finds out what rate the source is really sending, within about half a second of the audio arriving, and follows it. If the source changes rate later, for example when you swap a CD for a DVD, autostream follows that too.
+
+You will usually find out you need it from the [Home page](HOME-PAGE.md). While an input is delivering a different rate than autostream expects and the switch is off, a banner reads **Sample Rate Mismatch: Please enable Dynamic Rate Matching**. Tap it to open that input's card on this page. The note under the switch then says which rate is arriving, for example "This input is delivering 44.1 kHz but the device was opened at 48 kHz." Turn the switch on, and the banner goes away once autostream has settled on the new rate.
+
+A few things worth knowing:
+
+* Changing the switch takes effect straight away and never interrupts playback. If autostream cannot reach its audio service at that moment, the page shows **Saved (could not apply live)** and the change takes effect once the audio service reconnects.
+* For roughly the first half second after a source changes rate, the music still plays at the old rate before autostream corrects it. You may hear a brief off-pitch start. That short stretch is also kept in recordings made for repeat playback.
+* autostream remembers the rate it found while the same input device stays selected, including when the input stops and starts again, so after the first time the music should start at the right pitch. It forgets the rate if you change the device or the audio service restarts.
+* It recognises sources at 32, 44.1 and 48 kHz. A source at any other rate is not corrected, and if you have **Display Input Detail** on, the input's card on the Home page shows **Acquiring** for as long as it does.
+* If you connect a CD player through an optical adapter, also set the input's **Input type** to CD. See [Input type](#input-type).
+
+[Owner: this has not been tried on real adapters yet, so the page does not name any. Add a line about USB sound cards and Bluetooth sources not needing the switch only if you want one.]
+
 ### Gain and Equaliser
 
 Once an input is enabled, a second card appears underneath it with:

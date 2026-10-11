@@ -6,6 +6,28 @@
   after a minute without a touch, and when the screen goes to sleep, so the dial
   is back on the playing screen. They stay open while a finger is held on a
   slider, and while a card is showing over them.
+- new: each input has a Dynamic Rate Matching switch on its Setup card, last,
+  under the Level readout, off by default. Some optical (S/PDIF) USB adapters
+  deliver audio at the rate of the source whatever rate the device was opened
+  at, so a 44.1 kHz CD through a device opened at 48 kHz plays about 8 percent
+  slow and low. With the switch on, autostream finds the real rate (32, 44.1 or
+  48 kHz) within about half a second and follows it, including when the source
+  changes rate later, and remembers it while the same device stays selected.
+  The first half second after a rate change still plays at the old rate, and
+  that stretch stays in repeat recordings. The switch applies at once and never
+  interrupts playback. With it off, an input delivering a different rate raises
+  a Home page banner reading "Sample Rate Mismatch: Please enable Dynamic Rate
+  Matching", which opens that input's card, and the note under the switch says
+  what rate is arriving. The Home card's input detail line gains Acquiring and
+  Mismatch beside Locked. The estimate of an input's rate now also counts audio
+  dropped when the Pi is overloaded. Existing installs are unchanged until the
+  switch is turned on. The monitor's `configure_input` gains
+  `dynamic_rate_matching`, and each input's status gains `negotiated_hz`,
+  `rate_lock`, `relock_count`, `rate_mismatch_hz` and `dynamic_rate_matching`.
+  `/api/status` gains `sample_rate_banner_text`, and `GET /api/inputs/levels`
+  gains `rate_matching_note`, `dynamic_rate_matching`, `rate_mismatch_hz`,
+  `negotiated_hz` and `monitor_supports_rate_matching`. Appliances need the
+  new monitor for the switch to take effect.
 - new: each input now has a type, Turntable, CD or Line, chosen on its card in
   Setup (and for Input 1 at first boot) in place of the Turntable switch. The
   type names the input on the Home card, which shows a CD icon for a CD input,

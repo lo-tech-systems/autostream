@@ -199,6 +199,22 @@ Each input has an **Input type** and a **Sensitivity** setting under [Setup: Inp
 
 ---
 
+### Audio from an optical adapter plays slow and low, or fast and high
+
+Music from a CD or DVD player connected through an optical (S/PDIF) USB adapter sounds off pitch, a little slow and low or a little fast and high. A CD can play about 8 percent slow, for example.
+
+Some of these adapters deliver audio at the rate of the source plugged into them (44.1 kHz for a CD, 48 kHz for a DVD), whatever rate autostream asked them for. When the two differ, the speed and pitch are wrong.
+
+The [Home page](HOME-PAGE.md) shows the message **Sample Rate Mismatch: Please enable Dynamic Rate Matching** while this is happening. Tap the message to open the input that needs it. The note under the switch says which rate is arriving.
+
+To fix it, go to [Setup: Inputs](SETUP-INPUTS.md#dynamic-rate-matching), open that input's card and turn on **Dynamic Rate Matching**. It takes effect straight away and does not interrupt playback. autostream finds the real rate within about half a second and follows it, including if the source changes rate later.
+
+* **The message does not go away after turning it on.** Give it a moment. If it stays, the source may be sending a rate autostream does not recognise. Only 32, 44.1 and 48 kHz are handled, and a source at any other rate is not corrected.
+* **The music is right after the first half second, but starts slightly off pitch.** That is the short stretch before autostream has caught the new rate. It should not repeat once autostream has found the rate for that device, because it remembers it.
+* **A CD player on an optical adapter.** Also set the input's **Input type** to CD. See [Input type](SETUP-INPUTS.md#input-type).
+
+---
+
 ### Reinstalling from the console
 
 If Factory Reset is not enough, or if an update has left the appliance in a bad state, recover from the console instead.
