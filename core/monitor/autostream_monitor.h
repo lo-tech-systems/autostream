@@ -389,14 +389,34 @@ private:
 // rationale there); written once by main() before any thread starts.
 extern bool g_test_pin_src_ratio;
 
+// What the rate detector currently believes about the device.
+enum class RateLockState : int
+{
+    Acquiring = 0,   // the last plausible detector window was not in the nominal's class, or none yet
+    Locked    = 1,   // the last plausible detector window agreed with the nominal
+    Mismatch  = 2,   // matching is off and enough windows agree on a different standard rate
+};
+
 class RateEstimator
 {
 public:
     RateEstimator();
 
-    // Reset state and set the reference input and output rates.
-    // Call this from the capture thread each time capture starts on a device.
-    void reset(int input_rate, int output_rate);
+    // Reset state and set the reference rates.  negotiated_rate is what ALSA
+    // opened the device at; it is never stepped.  seed_rate is the nominal to
+    // start from, and 0 means "use negotiated_rate".  input_index (1 or 2) is
+    // only used in log lines.  Call this before the capture thread starts,
+    // each time capture starts on a device.
+    void reset(int negotiated_rate, int output_rate, int seed_rate = 0, int input_index = 0);
+
+    // Any thread.  Dynamic rate matching on lets the detector move the
+    // nominal to the standard rate the device really delivers; off, the
+    // detector only reports.  Takes effect at the next detector window close.
+    void set_dynamic_rate_matching(bool on);
+
+    // Capture thread only: a recovered xrun lost an unknown number of frames
+    // inside the current detector window, so that window is not evidence.
+    void mark_capture_loss();
 
     // Call this from the capture thread each time n_frames new frames arrive.
     // wall_time should be the current monotonic clock time in seconds.
@@ -412,10 +432,26 @@ public:
     // Safe to call from any thread.  Reads an atomic -- no lock taken.
     double estimated_input_rate() const;
 
+    // Any thread, relaxed loads.  dynamic_rate_matching() returns what
+    // set_dynamic_rate_matching() last stored, which can lead the value the
+    // capture thread has acted on by at most one detector window.
+    RateLockState lock_state() const;
+    int           mismatch_rate() const;     // 0, or the standard rate the device delivers while matching is off
+    uint32_t      relock_count() const;      // steps of the nominal since reset()
+    bool          dynamic_rate_matching() const;
+
+    // Plain reads of capture-thread fields: valid only before the capture
+    // thread is spawned, after it is joined, and in tests.
+    int nominal_rate() const;
+    int negotiated_rate() const;
+
 private:
     // ── Capture-thread-only state ─────────────────────────────────────────────
     // These fields are read and written exclusively by the capture thread via
     // feed() and reset().  No synchronisation is needed for them.
+
+    // Current nominal: seeded by reset(), stepped by the detector when dynamic
+    // rate matching is on, put back to _negotiated_rate when it is turned off.
     int    _input_rate;
     int    _output_rate;
     double _smoothed_rate;
@@ -423,6 +459,17 @@ private:
     long   _window_frame_count;
     bool   _initialised;
     int    _adjustment_count;   // number of windows completed; used to ramp window duration
+
+    int    _negotiated_rate;        // what ALSA negotiated; never stepped
+    int    _input_index;            // 1 or 2, for log lines; 0 in tests
+    double _detect_start_time;      // detector window start (monotonic seconds)
+    long   _detect_frames;          // frames delivered in the current detector window
+    bool   _detect_tainted;         // an ALSA xrun fell inside the current detector window
+    int    _run_class;              // class of the current run: a standard rate or the nominal; 0 = none
+    int    _run_count;              // consecutive plausible windows in _run_class, saturates at DETECT_AGREE_WINDOWS
+    bool   _rate_matching_applied;  // the flag value the capture thread last acted on
+    double _last_step_log_time;     // throttle for the step INFO line
+    double _last_mismatch_log_time; // throttle for the mismatch WARN line
 
     // ── Published values (written by capture thread, read by any thread) ──────
     // After each completed measurement window, feed() atomically publishes the
@@ -438,6 +485,15 @@ private:
     std::atomic<double> _published_ratio;   // output_rate / smoothed_rate
     std::atomic<double> _published_rate;    // smoothed_rate (Hz)
 
+    // Cross-thread detector values.  The flag is written by the control
+    // thread and read by the capture thread once per detector window; the
+    // other three are written by the capture thread and read by status.
+    // Relaxed everywhere, like the published ratio and rate.
+    std::atomic<bool>     _rate_matching_enabled;
+    std::atomic<int>      _published_lock_state;    // RateLockState as int
+    std::atomic<int>      _published_mismatch_hz;   // 0, or the rate the device delivers
+    std::atomic<uint32_t> _relock_count;
+
     // Maximum (steady-state) measurement window.  At startup the window is
     // ramped from 1 second up to this value over the first WINDOW_SECONDS
     // completed windows (i.e. windows of 1 s, 2 s, … 10 s).  This lets the
@@ -448,6 +504,55 @@ private:
     // IIR smoothing factor.  0.15 means each new measurement contributes 15%
     // of the new estimate and 85% carries over from the previous estimate.
     static constexpr double ALPHA = 0.15;
+
+    // A servo measurement is blended only when within this fraction of the
+    // current nominal.
+    static constexpr double BAND_FRACTION = 0.05;
+
+    // Rate detector.  Independent of the servo above: it closes a window on
+    // the first read that brings the delivered frame count to at least
+    // DETECT_WINDOW_FRAMES, so the frame count is exact and only the elapsed
+    // time carries error.  Defined in frames so the duration does not depend
+    // on the ALSA period size.
+    static constexpr long   DETECT_WINDOW_FRAMES = 6144;
+
+    // Consecutive plausible windows in one class needed to act on it, and to
+    // clear a reported mismatch.
+    static constexpr int    DETECT_AGREE_WINDOWS = 3;
+
+    // A window is in a standard rate's class when within this fraction of it.
+    // Narrower than BAND_FRACTION, so after a step the servo always finds the
+    // true rate in band.
+    static constexpr double CLASS_HALF_WIDTH = 0.035;
+
+    // A window measuring below this took far longer than any real device
+    // needs (a stall or data resuming after a gap) and is discarded.  The
+    // floor actually applied is the lower of this and half the nominal, so a
+    // device that negotiated a very low rate can still lock.
+    static constexpr double DETECT_MIN_PLAUSIBLE_HZ = 16000.0;
+
+    static constexpr std::array<int, 3> STANDARD_RATES = {32000, 44100, 48000};
+
+    // A step is logged at INFO at most this often per input; others at DEBUG.
+    static constexpr double STEP_LOG_INTERVAL_SECONDS = 10.0;
+
+    // The mismatch WARN is written at most this often per input.
+    static constexpr double MISMATCH_LOG_INTERVAL_SECONDS = 60.0;
+
+    // The servo window: measures over a ramping window, blends in-band
+    // measurements and republishes.
+    void update_servo_window(double wall_time);
+    void restart_servo(double now);
+    void publish_ratio_and_rate();
+
+    // The detector window.
+    void close_detector_window(double now);
+    void apply_mode_change(bool enabled, double now);
+    void step_to(int new_nominal, double now);
+    void report_mismatch(int delivered, double now);
+    int  classify(double measured) const;
+    void clear_run();
+    void publish_lock(RateLockState s);
 };
 
 

@@ -13,6 +13,9 @@
 //   - A zero-state filter produces 0 for an all-zero input.
 //   - EqChain publishes new bands atomically and returns them via get_bands().
 //   - RateEstimator: initial src_ratio equals output/input; updates after feed().
+//   - RateEstimator rate detector: steps to the standard rate a device really
+//     delivers (flag on), reports it (flag off), and ignores jitter, stalls,
+//     xruns and gaps.
 //
 // Build (on Linux, from repo root):
 //   g++ -std=c++17 -O2 -I core/monitor \
@@ -245,10 +248,782 @@ static void test_rate_estimator_feed_updates_after_full_window()
 
     // After a full window the estimated rate should be close to 48000.
     double rate = est.estimated_input_rate();
-    CHECK(rate > 47000.0 && rate < 49000.0, "rate estimate in plausible range after full window");
+    CHECK_CLOSE(rate, 48000.0, 1.0, "rate estimate matches the true rate after full window");
 
     double ratio = est.src_ratio();
-    CHECK(ratio > 0.9 && ratio < 1.1, "src_ratio in plausible range after full window");
+    CHECK_CLOSE(ratio, 1.0, 1e-4, "src_ratio is unity after full window at the nominal rate");
+
+    CHECK(est.relock_count() == 0, "an honest device never steps");
+    CHECK(est.lock_state() == RateLockState::Locked, "an honest device is locked");
+    CHECK(est.mismatch_rate() == 0, "an honest device reports no mismatch");
+}
+
+
+// ---------------------------------------------------------------------------
+// RateEstimator: rate detector
+// ---------------------------------------------------------------------------
+
+// Deterministic jitter source (no shared random state between tests).
+static double jitter_ms(uint32_t& s, double max_ms)
+{
+    s = s * 1664525u + 1013904223u;
+    return max_ms * static_cast<double>(s >> 8) / 16777216.0;
+}
+
+// Feed `seconds` of audio at `rate_hz` in `period`-frame reads.  `t` is the
+// hardware clock (advances exactly period / rate_hz per read); the time given
+// to feed() is t plus a non-negative latency of up to `max_jitter_ms`, drawn
+// fresh per read, which is how read-return timing behaves.
+static void feed_periods(RateEstimator& est, double rate_hz, double seconds, double& t,
+                         double max_jitter_ms = 0.0, int period = 1024, uint32_t seed = 1)
+{
+    const int n = static_cast<int>(std::ceil(seconds * rate_hz / period));
+    for (int i = 0; i < n; ++i)
+    {
+        t += period / rate_hz;
+        est.feed(period, t + jitter_ms(seed, max_jitter_ms) / 1000.0);
+    }
+}
+
+// Feed an exact number of reads.  With 1024-frame reads a detector window is
+// six reads, so multiples of six keep a test aligned to window boundaries.
+static void feed_reads(RateEstimator& est, double rate_hz, int reads, double& t, int period = 1024)
+{
+    for (int i = 0; i < reads; ++i)
+    {
+        t += period / rate_hz;
+        est.feed(period, t);
+    }
+}
+
+// Feed reads until `done()` holds after a read, for at most `max_seconds`.
+// Returns the seconds fed when it first held, or -1.0 if it never did.
+template <class Done>
+static double feed_until(RateEstimator& est, double rate_hz, double max_seconds, double& t,
+                         Done done, int period = 1024, double max_jitter_ms = 0.0,
+                         uint32_t seed = 1)
+{
+    const int n = static_cast<int>(std::ceil(max_seconds * rate_hz / period));
+    double fed = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        t += period / rate_hz;
+        fed += period / rate_hz;
+        est.feed(period, t + jitter_ms(seed, max_jitter_ms) / 1000.0);
+        if (done())
+            return fed;
+    }
+    return -1.0;
+}
+
+// The first feed() only starts the windows.
+static void prime(RateEstimator& est, double& t, int period = 1024) { est.feed(period, t); }
+
+// 90 reads at 44100 (about 2.1 s, a multiple of six) with matching off: the
+// detector has reported the mismatch and its run is saturated at 44100.
+static void mismatch_asserted_at_44100(RateEstimator& est, double& t)
+{
+    est.reset(48000, 48000);
+    prime(est, t);
+    feed_reads(est, 44100.0, 90, t);
+}
+
+static void test_step_to_44100_on_48000_with_matching_on()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+
+    feed_periods(est, 44100.0, 0.30, t);
+    CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 1.0, "no step before three windows agree");
+    CHECK(est.relock_count() == 0, "no premature step");
+
+    const double fed = feed_until(est, 44100.0, 0.40, t, [&] { return est.relock_count() == 1; });
+    CHECK(fed > 0.0, "the step arrives");
+    CHECK(t > 0.417 && t < 0.558, "the step lands between three and four windows of 44.1 kHz");
+
+    CHECK_CLOSE(est.estimated_input_rate(), 44100.0, 1e-6, "nominal moved to 44100 (no servo window yet)");
+    CHECK_CLOSE(est.src_ratio(), 48000.0 / 44100.0, 1e-6, "ratio published at the step");
+    CHECK(est.lock_state() == RateLockState::Locked, "locked after the step");
+    CHECK(est.relock_count() == 1, "one step");
+    CHECK(est.mismatch_rate() == 0, "no mismatch with matching on");
+    CHECK(est.nominal_rate() == 44100, "nominal is 44100");
+    CHECK(est.negotiated_rate() == 48000, "negotiated rate is never stepped");
+}
+
+static void test_step_to_44100_with_compatible_output()
+{
+    RateEstimator est;
+    est.reset(48000, 44100);
+    est.set_dynamic_rate_matching(true);
+    CHECK_CLOSE(est.src_ratio(), 0.91875, 1e-6, "initial ratio is output over negotiated");
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 44100.0, 1.0, t);
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-3, "ratio is unity once the nominal is 44100");
+    CHECK_CLOSE(est.estimated_input_rate(), 44100.0, 0.005 * 44100.0, "rate within 0.5 % of 44100");
+    CHECK(est.relock_count() == 1, "one step");
+}
+
+static void test_drift_is_tracked_without_a_step()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 48048.0, 60.0, t);   // 0.1 % high
+    CHECK(est.relock_count() == 0, "drift inside the nominal's class is not a step");
+    CHECK(est.lock_state() == RateLockState::Locked, "drifting device stays locked");
+    const double rate = est.estimated_input_rate();
+    CHECK(rate > 48030.0 && rate < 48050.0, "servo converges on the drifting rate");
+    CHECK_CLOSE(est.src_ratio(), 48000.0 / rate, 1e-6, "ratio follows the servo rate");
+}
+
+static void test_jitter_within_budget_no_false_step_and_true_step_detected()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 48000.0, 20.0, t, 4.0);
+    CHECK(est.relock_count() == 0, "4 ms of read latency never steps an honest device");
+    CHECK(est.mismatch_rate() == 0, "4 ms of read latency raises no mismatch");
+    feed_periods(est, 48000.0, 0.2, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "locked after a clean window");
+    CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 0.003 * 48000.0, "servo rate within 0.3 %");
+
+    const double fed = feed_until(est, 44100.0, 1.0, t, [&] { return est.relock_count() == 1; },
+                                  1024, 4.0);
+    CHECK(fed > 0.0 && fed < 0.70, "a real change is still detected through the same jitter");
+    CHECK(est.nominal_rate() == 44100, "nominal moved to 44100");
+}
+
+static void test_a_late_read_costs_a_window_not_a_step()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_reads(est, 48000.0, 96, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "locked before the late read");
+
+    // The read that ends the next window reports 8 ms late.
+    feed_reads(est, 48000.0, 5, t);
+    t += 1024 / 48000.0;
+    est.feed(1024, t + 0.008);
+    CHECK(est.lock_state() == RateLockState::Acquiring, "the window with the late boundary is not confirmation");
+    CHECK(est.relock_count() == 0, "no step on a late read");
+    CHECK(est.mismatch_rate() == 0, "no mismatch on a late read");
+
+    feed_reads(est, 48000.0, 18, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "locked again on the next in-class window");
+    CHECK(est.relock_count() == 0, "still no step");
+    CHECK(est.mismatch_rate() == 0, "still no mismatch");
+}
+
+static void test_stall_and_suspension_change_nothing()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_reads(est, 48000.0, 564, t);           // about 12 s
+    const double r0     = est.estimated_input_rate();
+    const double ratio0 = est.src_ratio();
+
+    // A 0.2 s stall inside a window: 18.7 kHz is plausible but in no class,
+    // so that window is inconclusive.
+    feed_reads(est, 48000.0, 5, t);
+    t += 0.2;
+    feed_reads(est, 48000.0, 1, t);
+    CHECK(est.lock_state() == RateLockState::Acquiring, "stalled window is inconclusive");
+    feed_reads(est, 48000.0, 6, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "next in-class window locks again");
+    CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "stall: no step, no mismatch");
+    CHECK_CLOSE(est.estimated_input_rate(), r0, 1.0, "stall: rate unchanged");
+    CHECK_CLOSE(est.src_ratio(), ratio0, 1e-9, "stall: ratio unchanged");
+
+    // A 2 s stall: below the plausibility floor, discarded, state kept.
+    feed_reads(est, 48000.0, 5, t);
+    t += 2.0;
+    feed_reads(est, 48000.0, 1, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "discarded window leaves the lock state alone");
+    CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "long stall: no step, no mismatch");
+    CHECK_CLOSE(est.estimated_input_rate(), r0, 1.0, "long stall: rate unchanged");
+
+    // A 60 s suspension.
+    feed_reads(est, 48000.0, 5, t);
+    t += 60.0;
+    feed_reads(est, 48000.0, 1, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "suspension leaves the lock state alone");
+    feed_reads(est, 48000.0, 24, t);
+    CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "suspension: no step, no mismatch");
+    CHECK_CLOSE(est.estimated_input_rate(), r0, 1.0, "suspension: rate unchanged");
+    CHECK_CLOSE(est.src_ratio(), ratio0, 1e-9, "suspension: ratio unchanged");
+}
+
+static void test_xrun_taints_the_window()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 44100.0, 0.1, t);
+    est.mark_capture_loss();
+    feed_periods(est, 44100.0, 0.1, t);
+    CHECK(est.relock_count() == 0, "the tainted window does not count");
+    const double fed = feed_until(est, 44100.0, 0.6, t, [&] { return est.relock_count() == 1; });
+    CHECK(fed > 0.0 && t < 0.2 + 0.60, "the step still arrives, one window late");
+
+    // At a 512-frame period a window has twelve reads; a lost period inside
+    // each window would read as 44308 Hz.  Marking the loss keeps it from
+    // counting as evidence.
+    RateEstimator small;
+    small.reset(48000, 48000);
+    small.set_dynamic_rate_matching(true);
+    double ts = 0.0;
+    prime(small, ts, 512);
+    for (int slot = 1; slot < 280; ++slot)
+    {
+        ts += 512 / 48000.0;
+        if (slot % 13 == 0)
+            small.mark_capture_loss();
+        else
+            small.feed(512, ts);
+    }
+    CHECK(small.relock_count() == 0, "marked losses never step");
+    CHECK(small.mismatch_rate() == 0, "marked losses raise no mismatch");
+    CHECK(small.nominal_rate() == 48000, "nominal unchanged by marked losses");
+}
+
+static void test_midsession_switch_both_ways()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 44100.0, 120.4, t);
+    CHECK(est.relock_count() == 1, "stepped to 44100 once");
+
+    double fed = feed_until(est, 48000.0, 1.0, t, [&] { return est.nominal_rate() == 48000; });
+    CHECK(fed > 0.0 && fed <= 0.56, "back to 48000 within 0.56 s");
+    CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 1e-6, "published rate is the new standard rate at the step");
+    CHECK(est.relock_count() == 2, "second step");
+
+    feed_periods(est, 48000.0, 20.0, t);
+    fed = feed_until(est, 44100.0, 1.0, t, [&] { return est.nominal_rate() == 44100; });
+    CHECK(fed > 0.0 && fed <= 0.56, "and to 44100 again within 0.56 s");
+    CHECK_CLOSE(est.estimated_input_rate(), 44100.0, 1e-6, "published rate is the new standard rate at the step");
+    CHECK(est.relock_count() == 3, "third step");
+}
+
+// Rates that alternate faster than the lock time never step.  A window whose
+// reads are mostly one rate still measures inside that rate's class, with up
+// to a third of its reads from the other rate (2 of 6 at a 1024-frame
+// period, 44.1 against 48 kHz).  Three consecutive in-class windows therefore
+// need about 14 reads of one rate in a row at a 1024-frame period, roughly
+// 0.33 s; 9-read segments (0.2 s) cannot supply them.
+static void test_rates_alternating_faster_than_the_lock_time_never_step()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    for (int i = 0; i < 25; ++i)
+    {
+        feed_periods(est, 44100.0, 0.2, t);
+        feed_periods(est, 48000.0, 0.2, t);
+    }
+    CHECK(est.relock_count() == 0, "rates alternating faster than the lock time never produce a run of three");
+    CHECK(est.mismatch_rate() == 0, "and raise no mismatch");
+}
+
+// The other side of that boundary is intended: a rate held long enough to
+// fill three in-class windows earns a step, even when the same rate came and
+// went before.  With 0.33 s segments (15 reads at 44.1 kHz, 16 at 48 kHz, 1024-frame
+// period) the nominal follows the rate back and forth about every two
+// seconds rather than on every cycle.
+static void test_a_rate_held_long_enough_steps_even_when_it_alternates()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    for (int i = 0; i < 16; ++i)
+    {
+        feed_periods(est, 44100.0, 0.33, t);
+        feed_periods(est, 48000.0, 0.33, t);
+    }
+    CHECK(est.relock_count() >= 1, "a rate held for three windows earns a step");
+    CHECK(est.relock_count() <= 8, "the nominal does not flip on every cycle");
+    CHECK(est.nominal_rate() == 44100 || est.nominal_rate() == 48000, "the nominal is always a standard rate");
+    CHECK(est.mismatch_rate() == 0, "matching on never reports a mismatch");
+}
+
+static void test_rate_near_no_standard_never_steps()
+{
+    {
+        RateEstimator est;
+        est.reset(48000, 48000);
+        est.set_dynamic_rate_matching(true);
+        double t = 0.0;
+        prime(est, t);
+        feed_periods(est, 46000.0, 3.0, t);
+        CHECK(est.relock_count() == 0, "46 kHz is in no class: no step");
+        CHECK(est.nominal_rate() == 48000, "nominal unchanged");
+        CHECK(est.mismatch_rate() == 0, "46 kHz raises no mismatch");
+        CHECK(est.lock_state() == RateLockState::Acquiring, "46 kHz is neither the nominal nor a standard rate");
+        const double ratio = est.src_ratio();
+        CHECK(ratio >= 1.0 && ratio <= 48000.0 / 46000.0 + 1e-9, "servo blends inside its band as before");
+    }
+    {
+        RateEstimator est;
+        est.reset(48000, 48000);
+        est.set_dynamic_rate_matching(true);
+        double t = 0.0;
+        prime(est, t);
+        feed_periods(est, 40000.0, 3.0, t);
+        CHECK(est.relock_count() == 0, "40 kHz is in no class: no step");
+        CHECK(est.nominal_rate() == 48000, "nominal unchanged");
+        CHECK(est.mismatch_rate() == 0, "40 kHz raises no mismatch");
+        CHECK(est.lock_state() == RateLockState::Acquiring, "40 kHz stays acquiring");
+        CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "servo rejects every window");
+    }
+}
+
+static void test_matching_off_publishes_todays_values_and_reports_mismatch()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    double t = 0.0;
+    prime(est, t);
+    const double seen = feed_until(est, 44100.0, 1.0, t, [&] { return est.mismatch_rate() != 0; });
+    CHECK(seen > 0.417 && seen < 0.558, "mismatch appears after three windows");
+    feed_periods(est, 44100.0, 6.0, t);
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "ratio is untouched with matching off");
+    CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 1e-9, "rate is untouched with matching off");
+    CHECK(est.relock_count() == 0, "matching off never steps");
+    CHECK(est.lock_state() == RateLockState::Mismatch, "state is Mismatch");
+    CHECK(est.mismatch_rate() == 44100, "mismatch reports the delivered rate");
+}
+
+static void test_mismatch_clears_only_after_three_nominal_windows()
+{
+    RateEstimator est;
+    double t = 0.0;
+    mismatch_asserted_at_44100(est, t);
+    CHECK(est.mismatch_rate() == 44100, "mismatch asserted");
+
+    feed_reads(est, 48000.0, 6, t);   // one window at the nominal
+    CHECK(est.mismatch_rate() == 44100, "one window at the nominal does not clear");
+    CHECK(est.lock_state() == RateLockState::Mismatch, "and the state stays Mismatch");
+
+    feed_reads(est, 44100.0, 12, t);  // the 44100 run starts again
+    CHECK(est.mismatch_rate() == 44100, "still asserted");
+    CHECK(est.lock_state() == RateLockState::Mismatch, "still Mismatch");
+
+    double cleared_at = -1.0;
+    double since = 0.0;
+    for (int i = 0; i < 36 && cleared_at < 0.0; ++i)
+    {
+        feed_reads(est, 48000.0, 1, t);
+        since += 1024 / 48000.0;
+        if (est.mismatch_rate() == 0)
+            cleared_at = since;
+    }
+    CHECK(cleared_at > 0.384 - 1e-6 && cleared_at < 0.512 + 1e-6, "clears after three windows at the nominal, not before");
+    CHECK(est.lock_state() == RateLockState::Locked, "Locked once cleared");
+    CHECK(est.relock_count() == 0, "clearing is not a step");
+}
+
+static void test_turning_matching_on_steps_from_existing_evidence()
+{
+    RateEstimator est;
+    double t = 0.0;
+    mismatch_asserted_at_44100(est, t);
+    est.set_dynamic_rate_matching(true);
+    feed_periods(est, 44100.0, 0.15, t);
+    CHECK(est.relock_count() == 1, "steps within one window of the toggle");
+    CHECK(est.nominal_rate() == 44100, "nominal is 44100");
+    CHECK(est.mismatch_rate() == 0, "mismatch cleared by the step");
+    CHECK(est.lock_state() == RateLockState::Locked, "locked");
+}
+
+static void test_turning_matching_off_reverts_the_nominal()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_until(est, 44100.0, 1.0, t, [&] { return est.relock_count() == 1; });
+
+    est.set_dynamic_rate_matching(false);
+    feed_periods(est, 44100.0, 0.15, t);
+    CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 1e-6, "nominal back at the negotiated rate");
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "ratio back at unity");
+    CHECK(est.relock_count() == 1, "the count survives the flag being turned off");
+    CHECK(est.mismatch_rate() == 0, "no mismatch yet");
+    CHECK(est.lock_state() == RateLockState::Acquiring, "acquiring after the revert");
+    CHECK(!est.dynamic_rate_matching(), "flag reads off");
+
+    feed_periods(est, 44100.0, 0.5, t);
+    CHECK(est.lock_state() == RateLockState::Mismatch, "mismatch re-asserted after three windows");
+    CHECK(est.mismatch_rate() == 44100, "reports 44100");
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "ratio stays at unity");
+    CHECK(est.relock_count() == 1, "count still 1");
+}
+
+static void test_turning_matching_on_for_an_honest_device_does_not_step()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    double t = 0.0;
+    prime(est, t);
+    feed_reads(est, 48000.0, 36, t);        // a saturated run in the nominal's class
+    const double ratio0 = est.src_ratio();
+    est.set_dynamic_rate_matching(true);
+    feed_reads(est, 48000.0, 12, t);
+    CHECK(est.relock_count() == 0, "the nominal's own run is not a step");
+    CHECK(est.nominal_rate() == 48000, "nominal unchanged");
+    CHECK_CLOSE(est.src_ratio(), ratio0, 1e-12, "ratio untouched");
+    CHECK(est.lock_state() == RateLockState::Locked, "still locked");
+}
+
+static void test_flag_accessor_reads_the_stored_value()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    CHECK(!est.dynamic_rate_matching(), "off by default");
+    est.set_dynamic_rate_matching(true);
+    CHECK(est.dynamic_rate_matching(), "reads the stored value before any window closes");
+    est.reset(48000, 48000);
+    CHECK(est.dynamic_rate_matching(), "reset keeps the stored flag");
+}
+
+static void test_seed_rate_is_used_and_negotiated_rate_reported()
+{
+    RateEstimator est;
+    est.reset(48000, 48000, 44100);
+    est.set_dynamic_rate_matching(true);
+    CHECK_CLOSE(est.src_ratio(), 48000.0 / 44100.0, 1e-6, "ratio from the seed");
+    CHECK_CLOSE(est.estimated_input_rate(), 44100.0, 1e-9, "rate is the seed");
+    CHECK(est.nominal_rate() == 44100, "nominal is the seed");
+    CHECK(est.negotiated_rate() == 48000, "negotiated rate kept");
+    CHECK(est.lock_state() == RateLockState::Acquiring, "acquiring before any window");
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 44100.0, 0.3, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "locked on the seeded rate");
+    CHECK(est.relock_count() == 0, "no step needed");
+}
+
+static void test_seed_zero_means_negotiated()
+{
+    RateEstimator a;
+    a.reset(48000, 48000, 0);
+    RateEstimator b;
+    b.reset(48000, 48000);
+    CHECK_CLOSE(a.src_ratio(), 1.0, 1e-9, "explicit zero seed gives unity");
+    CHECK_CLOSE(b.src_ratio(), 1.0, 1e-9, "defaulted seed gives unity");
+    CHECK(a.nominal_rate() == 48000 && b.nominal_rate() == 48000, "nominal is the negotiated rate");
+}
+
+static void test_reset_clears_detector_state()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_until(est, 44100.0, 1.0, t, [&] { return est.relock_count() == 1; });
+
+    est.reset(48000, 48000);
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-9, "ratio back at unity");
+    CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 1e-9, "rate back at the negotiated rate");
+    CHECK(est.lock_state() == RateLockState::Acquiring, "acquiring");
+    CHECK(est.relock_count() == 0, "count cleared");
+    CHECK(est.mismatch_rate() == 0, "mismatch cleared");
+    CHECK(est.nominal_rate() == 48000, "nominal cleared");
+
+    prime(est, t);
+    feed_periods(est, 48000.0, 0.2, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "locks again from a clean start");
+}
+
+static void test_period_size_does_not_change_detection()
+{
+    const int periods[3] = {512, 2048, 1000};
+    for (int period : periods)
+    {
+        RateEstimator est;
+        est.reset(48000, 48000);
+        est.set_dynamic_rate_matching(true);
+        double t = 0.0;
+        prime(est, t, period);
+        const double fed = feed_until(est, 44100.0, 1.0, t, [&] { return est.relock_count() == 1; }, period);
+        const double limit = 0.56 + (period == 2048 ? 2048 / 44100.0 : 0.0);
+        CHECK(fed > 0.0 && fed <= limit, "steps within the same time whatever the period");
+        CHECK(est.nominal_rate() == 44100, "nominal is exactly 44100");
+    }
+}
+
+static void test_acquiring_then_locked_for_an_honest_device()
+{
+    RateEstimator est;
+    est.reset(48000, 48000);
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 48000.0, 0.1, t);
+    CHECK(est.lock_state() == RateLockState::Acquiring, "no window yet");
+    feed_periods(est, 48000.0, 0.1, t);
+    CHECK(est.lock_state() == RateLockState::Locked, "locked after the first window");
+    CHECK(est.relock_count() == 0, "no step");
+}
+
+static void test_test_pin_disables_measurement_and_reports_locked()
+{
+    g_test_pin_src_ratio = true;
+    RateEstimator est;
+    est.reset(48000, 48000);
+    est.set_dynamic_rate_matching(true);
+    double t = 0.0;
+    prime(est, t);
+    feed_periods(est, 44100.0, 1.0, t);
+    CHECK_CLOSE(est.src_ratio(), 1.0, 1e-12, "pinned ratio");
+    CHECK_CLOSE(est.estimated_input_rate(), 48000.0, 1e-12, "pinned rate");
+    CHECK(est.relock_count() == 0, "pinned: no step");
+    CHECK(est.lock_state() == RateLockState::Locked, "pinned: reported locked");
+    CHECK(est.mismatch_rate() == 0, "pinned: no mismatch");
+    g_test_pin_src_ratio = false;
+}
+
+static void test_uncounted_drops_step_only_at_small_periods()
+{
+    // 512-frame reads, every thirteenth hardware read missing: each window
+    // spans thirteen periods of time for twelve reads of frames, 44308 Hz.
+    {
+        RateEstimator est;
+        est.reset(48000, 48000);
+        est.set_dynamic_rate_matching(true);
+        double t = 0.0;
+        prime(est, t, 512);
+        for (int slot = 1; slot < 280; ++slot)
+        {
+            t += 512 / 48000.0;
+            if (slot % 13 != 0)
+                est.feed(512, t);
+        }
+        CHECK(est.relock_count() == 1, "uncounted drops at a small period look like 44.1 kHz");
+        CHECK(est.nominal_rate() == 44100, "and step the nominal");
+    }
+    // 1024-frame reads, every seventh missing: 41143 Hz, in no class.
+    for (int flag = 0; flag < 2; ++flag)
+    {
+        RateEstimator est;
+        est.reset(48000, 48000);
+        est.set_dynamic_rate_matching(flag == 1);
+        double t = 0.0;
+        prime(est, t);
+        bool ever_mismatch = false;
+        for (int slot = 1; slot < 160; ++slot)
+        {
+            t += 1024 / 48000.0;
+            if (slot % 7 != 0)
+                est.feed(1024, t);
+            if (est.lock_state() == RateLockState::Mismatch)
+                ever_mismatch = true;
+        }
+        CHECK(est.relock_count() == 0, "at the default period a drop reads as no class: no step");
+        CHECK(est.nominal_rate() == 48000, "nominal unchanged");
+        CHECK(est.mismatch_rate() == 0 && !ever_mismatch, "and no mismatch");
+        CHECK(est.lock_state() == RateLockState::Acquiring, "lock only delayed");
+    }
+}
+
+static void test_low_negotiated_rate_locks()
+{
+    {
+        RateEstimator est;
+        est.reset(16000, 48000);
+        est.set_dynamic_rate_matching(true);
+        double t = 0.0;
+        prime(est, t);
+        feed_periods(est, 16000.0, 2.0, t, 2.0);
+        CHECK(est.lock_state() == RateLockState::Locked, "a 16 kHz device locks");
+        CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "no step, no mismatch");
+        CHECK(est.nominal_rate() == 16000, "nominal unchanged");
+    }
+    {
+        RateEstimator est;
+        est.reset(8000, 48000);
+        est.set_dynamic_rate_matching(true);
+        double t = 0.0;
+        prime(est, t);
+        feed_periods(est, 8000.0, 3.0, t, 2.0);
+        CHECK(est.lock_state() == RateLockState::Locked, "an 8 kHz device locks");
+        CHECK(est.relock_count() == 0 && est.mismatch_rate() == 0, "no step, no mismatch");
+        CHECK(est.nominal_rate() == 8000, "nominal unchanged");
+    }
+}
+
+static void test_stale_evidence_is_not_used_after_a_gap()
+{
+    // The player comes back with a 48 kHz source.
+    {
+        RateEstimator est;
+        double t = 0.0;
+        mismatch_asserted_at_44100(est, t);
+        feed_reads(est, 44100.0, 3, t);           // part of a window
+        t += 3600.0;                              // an hour with nothing delivered
+        est.set_dynamic_rate_matching(true);
+        feed_reads(est, 44100.0, 3, t);           // closes the overlong window
+        CHECK(est.relock_count() == 0, "the overlong window is discarded, not used as evidence");
+        CHECK(est.nominal_rate() == 48000, "no step on hour-old evidence");
+
+        double cleared_at = -1.0;
+        double since = 0.0;
+        bool stepped = false;
+        for (int i = 0; i < 36 && cleared_at < 0.0; ++i)
+        {
+            feed_reads(est, 48000.0, 1, t);
+            since += 1024 / 48000.0;
+            if (est.relock_count() != 0)
+                stepped = true;
+            if (i == 5)
+                CHECK(est.mismatch_rate() == 44100, "one clean window at the nominal does not clear");
+            if (est.mismatch_rate() == 0)
+                cleared_at = since;
+        }
+        CHECK(!stepped, "never stepped");
+        CHECK(cleared_at > 0.384 - 1e-6 && cleared_at < 0.512 + 1e-6, "clears after three clean windows");
+        CHECK(est.lock_state() == RateLockState::Locked, "locked");
+    }
+    // The player comes back with the same 44.1 kHz source.
+    {
+        RateEstimator est;
+        double t = 0.0;
+        mismatch_asserted_at_44100(est, t);
+        feed_reads(est, 44100.0, 3, t);
+        t += 3600.0;
+        est.set_dynamic_rate_matching(true);
+        feed_reads(est, 44100.0, 3, t);
+        CHECK(est.relock_count() == 0, "no step at the discarded window");
+        double stepped_at = -1.0;
+        double since = 0.0;
+        for (int i = 0; i < 36 && stepped_at < 0.0; ++i)
+        {
+            feed_reads(est, 44100.0, 1, t);
+            since += 1024 / 44100.0;
+            if (est.relock_count() == 1)
+                stepped_at = since;
+        }
+        CHECK(stepped_at > 0.417 && stepped_at < 0.558, "the evidence is gathered again before the step");
+        CHECK(est.nominal_rate() == 44100, "nominal is 44100");
+    }
+}
+
+// The servo as it was before the detector existed, kept here as the
+// reference for "matching off changes nothing the servo publishes".
+struct ReferenceServo
+{
+    int    input_rate = 48000;
+    int    output_rate = 48000;
+    double smoothed = 48000.0;
+    double window_start = 0.0;
+    long   frames = 0;
+    bool   initialised = false;
+    int    adjustments = 0;
+    double ratio = 1.0;
+    double rate = 48000.0;
+
+    void reset(int in, int out)
+    {
+        input_rate = in;
+        output_rate = out;
+        smoothed = in;
+        window_start = 0.0;
+        frames = 0;
+        initialised = false;
+        adjustments = 0;
+        ratio = static_cast<double>(out) / static_cast<double>(in);
+        rate = static_cast<double>(in);
+    }
+
+    void feed(int n, double now)
+    {
+        if (!initialised)
+        {
+            window_start = now;
+            frames = 0;
+            initialised = true;
+            return;
+        }
+        frames += n;
+        double current = std::min(static_cast<double>(adjustments + 1), 10.0);
+        double elapsed = now - window_start;
+        if (elapsed < current)
+            return;
+        double measured = static_cast<double>(frames) / elapsed;
+        double deviation = std::abs(measured - static_cast<double>(input_rate))
+                           / static_cast<double>(input_rate);
+        if (deviation < 0.05)
+            smoothed = 0.15 * measured + (1.0 - 0.15) * smoothed;
+        if (adjustments < 10)
+            ++adjustments;
+        window_start = now;
+        frames = 0;
+        ratio = (smoothed > 0.0) ? static_cast<double>(output_rate) / smoothed : 1.0;
+        rate = smoothed;
+    }
+};
+
+static void test_matching_off_published_values_equal_the_servo_alone()
+{
+    struct Phase { double rate; double seconds; double stall; };
+    const Phase phases[] = {
+        {48000.0, 30.0, 0.0},     // honest
+        {48048.0, 40.0, 0.0},     // drifting
+        {48000.0, 5.0, 0.2},      // a stall
+        {44100.0, 25.0, 0.0},     // delivering another standard rate
+        {46000.0, 15.0, 0.0},     // in no class
+        {48000.0, 5.0, 60.0},     // a long suspension
+        {47000.0, 20.0, 0.0},
+    };
+    RateEstimator est;
+    ReferenceServo ref;
+    est.reset(48000, 48000);
+    ref.reset(48000, 48000);
+    double t = 0.0;
+    uint32_t seed = 7;
+    est.feed(1024, t);
+    ref.feed(1024, t);
+    long differing = 0;
+    for (const Phase& p : phases)
+    {
+        t += p.stall;
+        const int n = static_cast<int>(std::ceil(p.seconds * p.rate / 1024));
+        for (int i = 0; i < n; ++i)
+        {
+            t += 1024 / p.rate;
+            const double now = t + jitter_ms(seed, 3.0) / 1000.0;
+            est.feed(1024, now);
+            ref.feed(1024, now);
+            if (est.src_ratio() != ref.ratio || est.estimated_input_rate() != ref.rate)
+                ++differing;
+        }
+    }
+    CHECK(differing == 0, "with matching off the published ratio and rate are bit-identical to the servo alone");
 }
 
 // ---------------------------------------------------------------------------
@@ -623,6 +1398,35 @@ int main()
     test_rate_estimator_initial_ratio();
     test_rate_estimator_initial_estimated_rate();
     test_rate_estimator_feed_updates_after_full_window();
+
+    // RateEstimator rate detector
+    test_step_to_44100_on_48000_with_matching_on();
+    test_step_to_44100_with_compatible_output();
+    test_drift_is_tracked_without_a_step();
+    test_jitter_within_budget_no_false_step_and_true_step_detected();
+    test_a_late_read_costs_a_window_not_a_step();
+    test_stall_and_suspension_change_nothing();
+    test_xrun_taints_the_window();
+    test_midsession_switch_both_ways();
+    test_rates_alternating_faster_than_the_lock_time_never_step();
+    test_a_rate_held_long_enough_steps_even_when_it_alternates();
+    test_rate_near_no_standard_never_steps();
+    test_matching_off_publishes_todays_values_and_reports_mismatch();
+    test_mismatch_clears_only_after_three_nominal_windows();
+    test_turning_matching_on_steps_from_existing_evidence();
+    test_turning_matching_off_reverts_the_nominal();
+    test_turning_matching_on_for_an_honest_device_does_not_step();
+    test_flag_accessor_reads_the_stored_value();
+    test_seed_rate_is_used_and_negotiated_rate_reported();
+    test_seed_zero_means_negotiated();
+    test_reset_clears_detector_state();
+    test_period_size_does_not_change_detection();
+    test_acquiring_then_locked_for_an_honest_device();
+    test_test_pin_disables_measurement_and_reports_locked();
+    test_uncounted_drops_step_only_at_small_periods();
+    test_low_negotiated_rate_locks();
+    test_stale_evidence_is_not_used_after_a_gap();
+    test_matching_off_published_values_equal_the_servo_alone();
 
     // OutputProcessor
     test_output_processor_initial_gain_state();

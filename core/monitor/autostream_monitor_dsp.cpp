@@ -387,29 +387,55 @@ RateEstimator::RateEstimator()
     , _window_frame_count(0)
     , _initialised(false)
     , _adjustment_count(0)
+    , _negotiated_rate(48000)
+    , _input_index(0)
+    , _detect_start_time(0.0)
+    , _detect_frames(0)
+    , _detect_tainted(false)
+    , _run_class(0)
+    , _run_count(0)
+    , _rate_matching_applied(false)
+    , _last_step_log_time(-1e9)
+    , _last_mismatch_log_time(-1e9)
     , _published_ratio(48000.0 / 48000.0)
     , _published_rate(48000.0)
+    , _rate_matching_enabled(false)
+    , _published_lock_state(static_cast<int>(RateLockState::Acquiring))
+    , _published_mismatch_hz(0)
+    , _relock_count(0)
 {
 }
 
-void RateEstimator::reset(int input_rate, int output_rate)
+void RateEstimator::reset(int negotiated_rate, int output_rate, int seed_rate, int input_index)
 {
-    // Called from the capture thread only — plain writes to capture-only fields.
-    _input_rate         = input_rate;
+    // Called before the capture thread starts — plain writes to capture-only fields.
+    _negotiated_rate    = negotiated_rate;
+    _input_index        = input_index;
+    _input_rate         = (seed_rate > 0) ? seed_rate : negotiated_rate;
     _output_rate        = output_rate;
-    _smoothed_rate      = static_cast<double>(input_rate);
+    _smoothed_rate      = static_cast<double>(_input_rate);
     _window_start_time  = 0.0;
     _window_frame_count = 0;
     _initialised        = false;
     _adjustment_count   = 0;
 
+    _detect_start_time = 0.0;
+    _detect_frames     = 0;
+    _detect_tainted    = false;
+    clear_run();
+    _rate_matching_applied  = _rate_matching_enabled.load(std::memory_order_relaxed);
+    _last_step_log_time     = -1e9;
+    _last_mismatch_log_time = -1e9;
+
     // Publish safe initial values so any thread that reads before the first
     // measurement window completes gets a sensible initial ratio.
-    double initial_ratio = (input_rate > 0)
-                           ? static_cast<double>(output_rate) / static_cast<double>(input_rate)
-                           : 1.0;
-    _published_ratio.store(initial_ratio, std::memory_order_relaxed);
-    _published_rate.store(static_cast<double>(input_rate), std::memory_order_relaxed);
+    publish_ratio_and_rate();
+    _published_mismatch_hz.store(0, std::memory_order_relaxed);
+    _relock_count.store(0, std::memory_order_relaxed);
+
+    // Under the test pin feed() never measures; report the pinned nominal as
+    // locked rather than leaving status at "acquiring" for a whole golden run.
+    publish_lock(g_test_pin_src_ratio ? RateLockState::Locked : RateLockState::Acquiring);
 }
 
 // Test-only (--test-pin-src-ratio, gated behind --test-hooks): when set,
@@ -426,8 +452,9 @@ bool g_test_pin_src_ratio = false;
 void RateEstimator::feed(int n_frames, double wall_time)
 {
     // This method is called only from the capture thread.
-    // All reads and writes to _smoothed_rate, _window_* and _initialised are
-    // safe without locks.  Only the final atomic stores cross thread boundaries.
+    // All reads and writes to the plain fields are safe without locks.  Only
+    // the atomic stores, and the one atomic load in close_detector_window(),
+    // cross thread boundaries.
 
     // Test-only determinism pin: leave the reset()-published nominal ratio in
     // place and do no measurement at all (see g_test_pin_src_ratio above).
@@ -438,12 +465,26 @@ void RateEstimator::feed(int n_frames, double wall_time)
     {
         _window_start_time  = wall_time;
         _window_frame_count = 0;
+        _detect_start_time  = wall_time;
+        _detect_frames      = 0;
+        _detect_tainted     = false;
         _initialised        = true;
         return;
     }
 
     _window_frame_count += n_frames;
+    _detect_frames      += n_frames;
 
+    // Detector first: a step restarts the servo window, so the servo never
+    // blends a measurement that straddles the step.
+    if (_detect_frames >= DETECT_WINDOW_FRAMES)
+        close_detector_window(wall_time);
+
+    update_servo_window(wall_time);
+}
+
+void RateEstimator::update_servo_window(double wall_time)
+{
     // Ramp the window duration from 1 s up to WINDOW_SECONDS over the first
     // WINDOW_SECONDS completed windows (i.e. 1 s, 2 s, … 10 s).  This lets
     // the first SRC ratio correction arrive after just one second rather than
@@ -465,7 +506,7 @@ void RateEstimator::feed(int n_frames, double wall_time)
     // very large).
     double deviation = std::abs(measured_rate - static_cast<double>(_input_rate))
                        / static_cast<double>(_input_rate);
-    if (deviation < 0.05)  // within ±5% of nominal
+    if (deviation < BAND_FRACTION)  // within ±5% of nominal
     {
         _smoothed_rate = ALPHA * measured_rate + (1.0 - ALPHA) * _smoothed_rate;
     }
@@ -481,11 +522,220 @@ void RateEstimator::feed(int n_frames, double wall_time)
     // Publish the updated values so other threads can read them safely.
     // memory_order_relaxed is sufficient: there is no ordering dependency
     // between these two stores and any other shared state.
+    publish_ratio_and_rate();
+}
+
+void RateEstimator::restart_servo(double now)
+{
+    _adjustment_count   = 0;
+    _window_start_time  = now;
+    _window_frame_count = 0;
+}
+
+void RateEstimator::publish_ratio_and_rate()
+{
     double new_ratio = (_smoothed_rate > 0.0)
                        ? static_cast<double>(_output_rate) / _smoothed_rate
                        : 1.0;
     _published_ratio.store(new_ratio,      std::memory_order_relaxed);
     _published_rate.store(_smoothed_rate,  std::memory_order_relaxed);
+}
+
+void RateEstimator::set_dynamic_rate_matching(bool on)
+{
+    _rate_matching_enabled.store(on, std::memory_order_relaxed);
+}
+
+void RateEstimator::mark_capture_loss()
+{
+    _detect_tainted = true;
+}
+
+void RateEstimator::close_detector_window(double now)
+{
+    const double elapsed = now - _detect_start_time;
+    const long   frames  = _detect_frames;
+    const bool   tainted = _detect_tainted;
+    _detect_start_time = now;
+    _detect_frames     = 0;
+    _detect_tainted    = false;
+
+    // Decide first whether this window is evidence at all, and drop any
+    // pending run if it is not, before a mode change is applied.  A read that
+    // blocked for a long gap closes an overlong window; a run gathered before
+    // the gap must not survive it, or turning matching on during the gap
+    // would step on stale evidence.  A discarded window leaves the lock state
+    // alone: a stalled device has not changed rate as far as we know, and an
+    // xrun lost an unknown number of frames.
+    const double measured = (elapsed > 0.0) ? static_cast<double>(frames) / elapsed : 0.0;
+    const bool   lost     = tainted || elapsed <= 0.0;
+    const bool   slow     = !lost && measured < std::min(DETECT_MIN_PLAUSIBLE_HZ,
+                                                         0.5 * static_cast<double>(_input_rate));
+    const bool   discard  = lost || slow;
+    if (discard)
+        clear_run();
+
+    // The flag is read once per window.  After a discard the run is empty, so
+    // turning matching on cannot step; turning it off reverts regardless.
+    const bool enabled = _rate_matching_enabled.load(std::memory_order_relaxed);
+    if (enabled != _rate_matching_applied)
+        apply_mode_change(enabled, now);
+
+    if (discard)
+    {
+        if (lost)
+            LOG_DEBUG("[input%d] Rate window discarded: xrun inside window", _input_index);
+        else
+            LOG_DEBUG("[input%d] Rate window discarded: %.1f Hz over %.3f s",
+                      _input_index, measured, elapsed);
+        return;
+    }
+
+    // Classify.  The nominal's class is tested first and against the nominal
+    // itself, not the table, so a non-standard nominal still confirms.  Every
+    // plausible window then belongs to exactly one run: the nominal's,
+    // another standard rate's, or none.
+    const double nominal = static_cast<double>(_input_rate);
+    const int cls = (std::fabs(measured - nominal) / nominal <= CLASS_HALF_WIDTH)
+                    ? _input_rate
+                    : classify(measured);
+
+    if (cls == 0 || cls != _run_class)
+    {
+        _run_class = cls;
+        _run_count = (cls == 0) ? 0 : 1;
+        if (cls != 0 && cls != _input_rate)
+            LOG_DEBUG("[input%d] Rate class candidate: %d Hz (measured %.1f Hz, nominal %d Hz)",
+                      _input_index, cls, measured, _input_rate);
+    }
+    else if (_run_count < DETECT_AGREE_WINDOWS)
+    {
+        ++_run_count;
+    }
+
+    const bool mismatch_asserted =
+        _published_mismatch_hz.load(std::memory_order_relaxed) != 0;
+
+    if (cls == _input_rate)
+    {
+        if (!mismatch_asserted)
+        {
+            publish_lock(RateLockState::Locked);   // any other run was a spike or a straddle
+            return;
+        }
+        // A reported mismatch is held until the device has delivered the
+        // nominal for a full run, so one early read cannot hide it.
+        if (_run_count < DETECT_AGREE_WINDOWS)
+            return;
+        _published_mismatch_hz.store(0, std::memory_order_relaxed);
+        publish_lock(RateLockState::Locked);
+        LOG_INFO("[input%d] Capture rate mismatch cleared: delivering %d Hz again",
+                 _input_index, _input_rate);
+        return;
+    }
+
+    if (cls == 0 || _run_count < DETECT_AGREE_WINDOWS)
+    {
+        // Evidence pending or inconclusive; an asserted mismatch is kept.
+        if (!mismatch_asserted)
+            publish_lock(RateLockState::Acquiring);
+        return;
+    }
+
+    // DETECT_AGREE_WINDOWS consecutive windows in one standard class that is
+    // not the nominal.
+    if (enabled)
+        step_to(cls, now);
+    else
+        report_mismatch(cls, now);
+}
+
+int RateEstimator::classify(double measured) const
+{
+    for (int rate : STANDARD_RATES)
+        if (std::fabs(measured - rate) / rate <= CLASS_HALF_WIDTH)
+            return rate;
+    return 0;
+}
+
+void RateEstimator::clear_run()
+{
+    _run_class = 0;
+    _run_count = 0;
+}
+
+void RateEstimator::publish_lock(RateLockState s)
+{
+    _published_lock_state.store(static_cast<int>(s), std::memory_order_relaxed);
+}
+
+void RateEstimator::apply_mode_change(bool enabled, double now)
+{
+    _rate_matching_applied = enabled;
+    if (enabled)
+    {
+        // Act on evidence already gathered while observing, so turning the
+        // setting on in answer to a mismatch report fixes the audio at once.
+        // The caller has already cleared the run if this window was
+        // discarded, and the nominal's own run never qualifies.
+        if (_run_class != 0 && _run_count >= DETECT_AGREE_WINDOWS && _run_class != _input_rate)
+            step_to(_run_class, now);
+        return;
+    }
+
+    // Off: the nominal is the negotiated rate again.  The detector reasserts
+    // a mismatch after a full run if it is still true.
+    _published_mismatch_hz.store(0, std::memory_order_relaxed);
+    if (_input_rate != _negotiated_rate)
+    {
+        LOG_INFO("[input%d] Dynamic Rate Matching off: nominal %d -> %d Hz (negotiated)",
+                 _input_index, _input_rate, _negotiated_rate);
+        _input_rate    = _negotiated_rate;
+        _smoothed_rate = static_cast<double>(_negotiated_rate);
+        restart_servo(now);
+        publish_ratio_and_rate();
+        publish_lock(RateLockState::Acquiring);
+    }
+}
+
+void RateEstimator::step_to(int new_nominal, double now)
+{
+    const int old_nominal = _input_rate;
+    _input_rate    = new_nominal;
+    _smoothed_rate = static_cast<double>(new_nominal);
+    restart_servo(now);
+    publish_ratio_and_rate();
+    clear_run();
+    publish_lock(RateLockState::Locked);
+    _published_mismatch_hz.store(0, std::memory_order_relaxed);
+    _relock_count.fetch_add(1, std::memory_order_relaxed);
+
+    const double ratio = _published_ratio.load(std::memory_order_relaxed);
+    if (now - _last_step_log_time >= STEP_LOG_INTERVAL_SECONDS)
+    {
+        _last_step_log_time = now;
+        LOG_INFO("[input%d] Capture rate step: nominal %d -> %d Hz (negotiated %d Hz, ratio %.6f, step #%u)",
+                 _input_index, old_nominal, new_nominal, _negotiated_rate, ratio,
+                 _relock_count.load(std::memory_order_relaxed));
+    }
+    else
+        LOG_DEBUG("[input%d] Capture rate step: nominal %d -> %d Hz (ratio %.6f)",
+                  _input_index, old_nominal, new_nominal, ratio);
+}
+
+void RateEstimator::report_mismatch(int delivered, double now)
+{
+    publish_lock(RateLockState::Mismatch);
+    if (_published_mismatch_hz.load(std::memory_order_relaxed) == delivered)
+        return;
+    _published_mismatch_hz.store(delivered, std::memory_order_relaxed);
+    if (now - _last_mismatch_log_time >= MISMATCH_LOG_INTERVAL_SECONDS)
+    {
+        _last_mismatch_log_time = now;
+        LOG_WARN("[input%d] Capture rate mismatch: device delivers %d Hz but was opened at %d Hz; "
+                 "dynamic rate matching is off for this input",
+                 _input_index, delivered, _negotiated_rate);
+    }
 }
 
 double RateEstimator::src_ratio() const
@@ -496,4 +746,34 @@ double RateEstimator::src_ratio() const
 double RateEstimator::estimated_input_rate() const
 {
     return _published_rate.load(std::memory_order_relaxed);
+}
+
+RateLockState RateEstimator::lock_state() const
+{
+    return static_cast<RateLockState>(_published_lock_state.load(std::memory_order_relaxed));
+}
+
+int RateEstimator::mismatch_rate() const
+{
+    return _published_mismatch_hz.load(std::memory_order_relaxed);
+}
+
+uint32_t RateEstimator::relock_count() const
+{
+    return _relock_count.load(std::memory_order_relaxed);
+}
+
+bool RateEstimator::dynamic_rate_matching() const
+{
+    return _rate_matching_enabled.load(std::memory_order_relaxed);
+}
+
+int RateEstimator::nominal_rate() const
+{
+    return _input_rate;
+}
+
+int RateEstimator::negotiated_rate() const
+{
+    return _negotiated_rate;
 }
