@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- new: each input now has a type, Turntable, CD or Line, chosen on its card in
+  Setup (and for Input 1 at first boot) in place of the Turntable switch. The
+  type names the input on the Home card, which shows a CD icon for a CD input,
+  and is the default title while a track has none. An appliance that names the
+  input behind what is playing now sends that name to dials, so a dial shows it
+  where it used to show "Playing" for an untitled track. Dials and appliances
+  both need updating for this. An input that was set as a turntable becomes
+  Turntable on update and every other input becomes Line, so a CD player on an
+  existing input stays on Line until you set it to CD.
+- new: each input has a Sensitivity slider on its Setup card, from -70 dB to
+  -30 dB, with a live Level readout beside it that updates about once a second
+  while the card is open. The slider and the type apply at once and never
+  interrupt playback. Choosing Turntable moves the slider to -45 dB and
+  choosing CD or Line to -60 dB, but only when that changes the preset. A
+  stored sensitivity is kept on update; one outside the slider's range is
+  brought back inside it. The Setup page gains a levels-only route,
+  `GET /api/inputs/levels`.
+- improvement: a click, pop or knock on a cable no longer starts a session or
+  wakes the speakers. A Turntable or Line input now needs a short run of sound
+  above the sensitivity level, a few hundredths of a second added up within one
+  second and not necessarily unbroken, before playback starts. A CD input
+  still starts on the first sound.
+- fix: with only the second input enabled, the Home card named the first
+  input's type and icon. It now matches the level to its own input.
+- new: dials follow changes made elsewhere. A change to the speakers, volume,
+  mute, repeat, the track shown or the equaliser bands, made on one dial or in
+  the appliance's web page, now shows on the other dials within a second or so
+  instead of on their next poll. Appliances tell dials a change has happened
+  and each dial then asks for the state itself, so a dial that misses the
+  notice catches up on its regular poll. Appliances and dials both need
+  updating for this. Dials gain a `POST /state-changed` route.
 - improvement: the installer now caps the space core dumps may use, so a crash
   or a crash loop cannot fill the SD card. Each dump is limited to 256 MB, all
   dumps together to 96 MB, and older dumps are cleared to keep 512 MB of the
