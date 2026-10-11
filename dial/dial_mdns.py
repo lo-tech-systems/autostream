@@ -189,6 +189,10 @@ def _parse_playing_event(parts: list, txt: dict) -> tuple | None:
 # record appears. It may only signal (set an event); it never blocks.
 _playing_add_listener: Optional[Callable[[], None]] = None
 
+# The same for when a playing record goes away (the appliance stopped playing,
+# or its record expired), so a poll can show it at once.
+_playing_remove_listener: Optional[Callable[[], None]] = None
+
 
 def _on_target_add(svc_name: str, target: PlayingTarget) -> None:
     global _had_targets
@@ -219,6 +223,9 @@ def _on_target_remove(svc_name: str, target: PlayingTarget | None) -> None:
         global _had_targets
         _had_targets = False
         logging.info("no playing targets — encoder gated")
+    listener = _playing_remove_listener
+    if listener is not None:
+        listener()
 
 
 _browser: MdnsBrowser = MdnsBrowser(
@@ -356,19 +363,23 @@ def appliance_display_name(service_name: str) -> str:
 def start_playing_browser(
     shutdown_event: "threading.Event | None" = None,
     on_add: Optional[Callable[[], None]] = None,
+    on_remove: Optional[Callable[[], None]] = None,
 ) -> None:
     """Start the background mDNS browser for _autostream-playing._tcp.  Idempotent.
-    *on_add* is called, with no arguments, each time a playing record appears;
-    it runs on the browser's reader thread and must only signal."""
-    global _playing_add_listener
+    *on_add* is called, with no arguments, each time a playing record appears,
+    and *on_remove* each time one goes away; they run on the browser's reader
+    thread and must only signal."""
+    global _playing_add_listener, _playing_remove_listener
     _playing_add_listener = on_add
+    _playing_remove_listener = on_remove
     _browser.start(shutdown_event=shutdown_event)
 
 
 def stop_playing_browser() -> None:
     """Stop the background mDNS browser for _autostream-playing._tcp.  Idempotent."""
-    global _playing_add_listener
+    global _playing_add_listener, _playing_remove_listener
     _playing_add_listener = None
+    _playing_remove_listener = None
     _browser.stop()
 
 

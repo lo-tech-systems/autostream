@@ -459,6 +459,78 @@ class TestPlayingAddListener:
         assert seen == [(False, False, threading.current_thread())]
 
 
+class TestPlayingRemoveListener:
+    def setup_method(self):
+        _clear()
+        dm._playing_add_listener = None
+        dm._playing_remove_listener = None
+
+    def teardown_method(self):
+        dm._playing_add_listener = None
+        dm._playing_remove_listener = None
+
+    def _start(self, on_remove):
+        from unittest.mock import patch
+        with patch.object(dm._browser, "start"):
+            dm.start_playing_browser(on_remove=on_remove)
+
+    def test_a_removed_record_calls_the_listener_once(self):
+        calls = []
+        self._start(lambda: calls.append(1))
+        dm._browser._handle_line(_av_add())
+        dm._browser._handle_line(_av_remove())
+        assert calls == [1]
+
+    def test_an_add_does_not_call_the_remove_listener(self):
+        calls = []
+        self._start(lambda: calls.append(1))
+        dm._browser._handle_line(_av_add())
+        assert calls == []
+
+    def test_a_record_still_present_on_another_interface_does_not_call_it(self):
+        calls = []
+        self._start(lambda: calls.append(1))
+        dm._browser._handle_line(_av_add(iface="eth0", ip="192.168.1.10"))
+        dm._browser._handle_line(_av_add(iface="wlan0", ip="192.168.1.10"))
+        dm._browser._handle_line(_av_remove(iface="eth0"))
+        assert calls == []
+        dm._browser._handle_line(_av_remove(iface="wlan0"))
+        assert calls == [1]
+
+    def test_the_listener_runs_after_the_target_is_gone_from_the_playing_set(self):
+        seen = []
+        self._start(lambda: seen.append(list(dm.get_playing_targets())))
+        dm._browser._handle_line(_av_add())
+        dm._browser._handle_line(_av_remove())
+        assert seen == [[]]
+
+    def test_a_listener_that_raises_does_not_stop_the_browser(self):
+        def boom():
+            raise RuntimeError("boom")
+
+        self._start(boom)
+        dm._browser._handle_line(_av_add(name="One", ip="192.168.1.10"))
+        dm._browser._handle_line(_av_add(name="Two", ip="192.168.1.11"))
+        dm._browser._handle_line(_av_remove(name="One"))
+        assert len(dm.get_playing_targets()) == 1
+
+    def test_stop_clears_the_listener(self):
+        from unittest.mock import patch
+        calls = []
+        self._start(lambda: calls.append(1))
+        with patch.object(dm._browser, "stop"):
+            dm.stop_playing_browser()
+        dm._browser._handle_line(_av_add())
+        dm._browser._handle_line(_av_remove())
+        assert calls == []
+
+    def test_starting_without_a_remove_listener_leaves_removal_silent(self):
+        self._start(None)
+        dm._browser._handle_line(_av_add())
+        dm._browser._handle_line(_av_remove())
+        assert dm.get_playing_targets() == []
+
+
 class TestPlayingBrowserWrappers:
     def test_start_playing_browser_forwards_shutdown_event(self):
         """start_playing_browser() passes shutdown_event to the underlying browser."""

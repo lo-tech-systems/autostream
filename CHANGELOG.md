@@ -33,6 +33,9 @@
   and each dial then asks for the state itself, so a dial that misses the
   notice catches up on its regular poll. Appliances and dials both need
   updating for this. Dials gain a `POST /state-changed` route.
+- fix: a dial now shows that playback has stopped within a second or so. It
+  used to keep showing the appliance as playing until its next regular poll,
+  up to a few seconds after the sound had gone.
 - improvement: the appliance and dial installers now cap the space core dumps
   may use, so a crash or a crash loop cannot fill the SD card. Each dump is
   limited to 256 MB, all dumps together to 256 MB, and older dumps are cleared

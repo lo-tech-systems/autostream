@@ -161,6 +161,11 @@ class TestCoreWiring:
         kwargs = captured["playing_browser"].call_args.kwargs
         assert kwargs["on_add"] == captured["core"].request_poll
 
+    def test_the_playing_browser_wakes_the_core_when_a_record_goes_away(self):
+        captured = _run_core_wiring()
+        kwargs = captured["playing_browser"].call_args.kwargs
+        assert kwargs["on_remove"] == captured["core"].request_poll
+
     def test_the_outputs_and_eq_results_go_straight_to_the_core(self):
         captured = _run_core_wiring()
         core = captured["core"]

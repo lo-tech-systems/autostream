@@ -474,6 +474,20 @@ class TestReconcileOnPlayingSetShrink:
         rp.assert_not_called()
 
 
+    def test_a_poll_after_the_playing_record_goes_away_clears_the_playing_state(self):
+        aid = "a" * 20
+        display, fb, gt = make_display(targets=[_target(appliance_id=aid)])
+        display.enable()
+        with patch("dial_core.fetch_target_status",
+                   return_value=_status_result(appliance_id=aid)):
+            display._poll_once()
+        playing = display.core.snapshot().now_playing
+        assert playing is not None and playing.playing
+        gt.return_value = []
+        display._poll_once()
+        gone = display.core.snapshot().now_playing
+        assert gone is None or not gone.playing
+
 # ---------------------------------------------------------------------------
 # _refresh_idle_affordance: the idle screen's own "should I draw the
 # affordance" computation.
