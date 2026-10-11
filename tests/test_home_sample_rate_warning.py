@@ -291,6 +291,15 @@ class TestSignalText:
         page = _render_home([_level(rate_lock="acquiring")], show_input_detail=True)
         assert _signal(page) == "Acquiring"
 
+    def test_a_stopped_input_shows_no_rate_line(self):
+        page = _render_home([_level(rate_lock="")], show_input_detail=True)
+        assert _signal(page) == ""
+
+    def test_a_stopped_input_shows_no_rate_line_even_with_a_stale_rate(self):
+        page = _render_home([_level(rate_lock="", detected_hz=44100.0,
+                                    detected_khz="44.1 kHz")], show_input_detail=True)
+        assert _signal(page) == ""
+
     def test_mismatch_shows_the_delivered_rate(self):
         page = _render_home([_level(rate_lock="mismatch", detected_hz=48000.0,
                                     detected_khz="48 kHz", rate_mismatch_hz=44100,
@@ -310,6 +319,7 @@ class TestSignalText:
         for rate in (
             {"rate_lock": "locked", "detected_khz": "48 kHz"},
             {"rate_lock": "acquiring"},
+            {"rate_lock": ""},
             {"rate_lock": "mismatch", "rate_mismatch_hz": 44100,
              "rate_mismatch_khz": "44.1 kHz"},
         ):
@@ -321,3 +331,4 @@ class TestSignalText:
         assert "activeLevel.rate_mismatch_khz" in page
         assert "activeLevel.detected_khz" in page
         assert "activeLevel.rate_lock" in page
+        assert "rateLock && detectedKhz" in page

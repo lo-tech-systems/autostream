@@ -3448,13 +3448,18 @@ class AudioMonitor:
 
         An older monitor reports none of them, so each falls back to a
         value that leaves the Home page as it was: locked, no mismatch, and
-        no sign that the monitor supports Dynamic Rate Matching. A mismatch
+        no sign that the monitor supports Dynamic Rate Matching. An input that
+        is not started has no rate lock to report, so a monitor that reports
+        one for it is read as reporting none (an empty string). A mismatch
         counts only while the input is started and the rate is non-zero;
         the rate, not the lock string, is what the banner and the log follow.
         """
         started = bool(status_entry.get("started", True))
         self.negotiated_hz = int(status_entry.get("negotiated_hz", 0) or 0)
-        self.rate_lock = str(status_entry.get("rate_lock", "locked") or "locked")
+        if "rate_lock" in status_entry and not started:
+            self.rate_lock = ""
+        else:
+            self.rate_lock = str(status_entry.get("rate_lock", "locked") or "locked")
         raw_supported = status_entry.get("dynamic_rate_matching")
         self.monitor_dynamic_rate_matching = (
             raw_supported if isinstance(raw_supported, bool) else None

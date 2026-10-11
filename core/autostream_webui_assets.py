@@ -1162,7 +1162,7 @@ HOME_CARDS_SCRIPT = """
     var label = String(activeLevel.label || ('Input ' + inputNum));
     var signalParts = [];
     if (window.__SHOW_INPUT_DETAIL) {
-      var rateLock = String(activeLevel.rate_lock || 'locked');
+      var rateLock = activeLevel.rate_lock == null ? 'locked' : String(activeLevel.rate_lock);
       var mismatchKhz = String(activeLevel.rate_mismatch_khz || '');
       var detectedKhz = String(activeLevel.detected_khz || '');
       if (rateLock === 'mismatch' && mismatchKhz) {
@@ -1170,7 +1170,7 @@ HOME_CARDS_SCRIPT = """
         signalParts.push(mismatchKhz);
       } else if (rateLock === 'acquiring') {
         signalParts.push('Acquiring');
-      } else if (detectedKhz) {
+      } else if (rateLock && detectedKhz) {
         signalParts.push('Locked');
         signalParts.push(detectedKhz);
       }

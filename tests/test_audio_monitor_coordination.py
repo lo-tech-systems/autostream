@@ -1619,6 +1619,22 @@ class TestIngestRateStatus:
         assert mon.rate_mismatch_hz == 0
         assert mon.monitor_dynamic_rate_matching is None
 
+    def test_a_stopped_input_has_no_rate_lock(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": False, "negotiated_hz": 0, "rate_lock": "acquiring"})
+        assert mon.rate_lock == ""
+
+    def test_a_started_input_keeps_the_rate_lock_it_reports(self):
+        mon = _make_monitor(input_index=1)
+        for lock in ("acquiring", "locked", "mismatch"):
+            mon._ingest_status({"started": True, "negotiated_hz": 48000, "rate_lock": lock})
+            assert mon.rate_lock == lock
+
+    def test_an_older_monitor_stopped_input_keeps_the_default_lock(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": False})
+        assert mon.rate_lock == "locked"
+
     def test_a_non_bool_support_value_reads_as_unsupported(self):
         mon = _make_monitor(input_index=1)
         mon._ingest_status({"dynamic_rate_matching": "yes"})
@@ -1777,6 +1793,12 @@ class TestRateKeysInMonitorLevels:
         level = core.get_monitor_levels_dbfs()[0]
         assert level["rate_mismatch_hz"] == 44100
         assert level["rate_mismatch_khz"] == "44.1 kHz"
+
+    def test_a_stopped_input_carries_an_empty_rate_lock(self):
+        mon = _make_monitor(input_index=1)
+        mon._ingest_status({"started": False, "rate_lock": "acquiring"})
+        level = core.get_monitor_levels_dbfs()[0]
+        assert level["rate_lock"] == ""
 
     def test_an_older_monitor_is_marked_unsupported(self):
         mon = _make_monitor(input_index=1)

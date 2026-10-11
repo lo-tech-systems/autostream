@@ -31,6 +31,7 @@ just live input.
 When **Display Input Detail** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), the card also shows:
 
 - A `Locked · 44.1 kHz` line once the input has locked to a sample rate, `Acquiring` while it is working one out, or `Mismatch · 44.1 kHz` when the input delivers a different rate than it was opened at and Dynamic Rate Matching is off. A device that delivers a rate other than 32, 44.1 or 48 kHz shows `Acquiring` for as long as it does so (the sound is still corrected; only the label cannot name the rate).
+- Nothing for an input that is not running; the rate line appears once the input starts.
 - A stereo VU meter (left/right level bars).
 
 Both are hidden when this setting is off.

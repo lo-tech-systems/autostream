@@ -329,6 +329,9 @@ class TestInputCardRateText:
         ({"rate_lock": "locked", "detected_hz": 44100.0, "detected_khz": "44.1 kHz"},
          "Locked · 44.1 kHz"),
         ({"rate_lock": "acquiring", "detected_hz": 0.0, "detected_khz": ""}, "Acquiring"),
+        # A stopped input has no rate lock to report.
+        ({"rate_lock": "", "detected_hz": 44100.0, "detected_khz": "44.1 kHz"}, ""),
+        ({"rate_lock": "", "detected_hz": 0.0, "detected_khz": ""}, ""),
         (_MISMATCH_44, "Mismatch · 44.1 kHz"),
         # An older monitor reports none of the rate keys.
         ({"detected_hz": 48000.0, "detected_khz": "48 kHz"}, "Locked · 48 kHz"),

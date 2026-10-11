@@ -339,7 +339,7 @@ def send_airplay_page(
             _np_signal_parts += ["Mismatch", _np_mismatch_khz]
         elif _np_rate_lock == "acquiring":
             _np_signal_parts.append("Acquiring")
-        elif _np_khz_text:
+        elif _np_rate_lock and _np_khz_text:
             _np_signal_parts += ["Locked", _np_khz_text]
     _np_signal = " \u00b7 ".join(_np_signal_parts)
     _np_icon_svg = {
