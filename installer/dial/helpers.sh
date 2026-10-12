@@ -33,6 +33,10 @@ source "${BASH_SOURCE[0]%/*}/../lib/state_files.sh"
 # shellcheck source=../lib/update_state.sh
 source "${BASH_SOURCE[0]%/*}/../lib/update_state.sh"
 
+# Finishing the install log: waits for the process that writes it.
+# shellcheck source=../lib/output_log.sh
+source "${BASH_SOURCE[0]%/*}/../lib/output_log.sh"
+
 # Handing a fresh install over to a system service when it is started from a
 # login session.
 # shellcheck source=../lib/handover.sh

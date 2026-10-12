@@ -1128,7 +1128,7 @@ class TestInstallerLogging:
 
     def test_installer_text_no_longer_redirects_the_log_half_way_through(self):
         text = INSTALLER.read_text(encoding="utf-8")
-        assert text.count("exec > >(tee") == 1
+        assert text.count("exec > >(exec tee") == 1
         assert "tee -a \"${LOGFILES[@]}\"" in text
 
 

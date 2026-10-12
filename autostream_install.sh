@@ -621,6 +621,7 @@ on_exit() {
   # on EXIT).
   rm -f "${UPDATING_FLAG_FILE}" || true
   if [[ ${PROMPT_REBOOT_ON_EXIT} -ne 1 ]]; then
+    finish_output_log
     exit "${exit_code}"
   fi
   if [[ ${exit_code} -eq 0 ]]; then
@@ -629,7 +630,7 @@ on_exit() {
       echo
       tty_read "Reboot now to complete setup? (Y/N) " rb || true
       case "${rb:-N}" in
-        Y|y) info "Rebooting..."; reboot ;;
+        Y|y) info "Rebooting..."; finish_output_log; reboot ;;
         *)   info "Reboot skipped. It's recommended to reboot soon." ;;
       esac
     else
@@ -637,6 +638,8 @@ on_exit() {
       info "Please reboot the device when convenient."
     fi
   fi
+  # Last, so everything above is in the log before the process ends.
+  finish_output_log
 }
 trap on_exit EXIT
 

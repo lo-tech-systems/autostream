@@ -50,7 +50,7 @@ offer_reboot() {
         echo ""
         tty_read "Reboot now to complete setup? (Y/N) " _rb || true
         case "${_rb:-N}" in
-            Y|y) echo "Rebooting..."; reboot ;;
+            Y|y) echo "Rebooting..."; finish_output_log; reboot ;;
             *) echo "Reboot skipped. Please reboot the device when convenient." ;;
         esac
     else
@@ -100,7 +100,13 @@ else
         LOGFILES+=("$INSTALL_LOG")
     fi
 fi
-exec > >(tee -a "${LOGFILES[@]}") 2>&1
+# finish_output_log (the exit trap, and before a reboot) waits for tee, so the
+# last lines are in the files before the process, and the unit it may run in,
+# ends.
+save_terminal_output
+exec > >(exec tee -a "${LOGFILES[@]}") 2>&1
+# shellcheck disable=SC2034  # read by finish_output_log
+OUTPUT_LOG_TEE_PID=$!
 echo "=== autostream dial install $(date -Iseconds) ==="
 
 # ---- Flock: serialise concurrent installer invocations ----------------------
@@ -132,6 +138,7 @@ trap '_exit_rc=$?
     if [[ "$_install_success" != true ]] && $UPDATE; then
         abort_update || true
     fi
+    finish_output_log
     exit $_exit_rc' EXIT
 
 # ---- OS version check (fresh install and update) ----------------------------
