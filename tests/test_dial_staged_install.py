@@ -61,7 +61,14 @@ def _lock_sha() -> str:
 # host name resolves. Anything else goes to the real command.
 HEALTHY_IP = (
     '#!/bin/bash\n[[ "$*" == *route* ]] && { echo "default via 192.0.2.1 dev eth0"; exit 0; }\n'
+    '[[ "$*" == *"addr show"* ]] && { echo "2: eth0 inet 192.0.2.5/24 scope global eth0"; exit 0; }\n'
+    '[[ "$*" == *"link show"* ]] && { echo "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP>"; exit 0; }\n'
     'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec ip "$@"\n'
+)
+# A test connection to a host succeeds; any other use of timeout is the real one.
+HEALTHY_TIMEOUT = (
+    '#!/bin/bash\n[[ "$2" == bash && "$4" == */dev/tcp/* ]] && exit 0\n'
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec timeout "$@"\n'
 )
 HEALTHY_GETENT = (
     '#!/bin/bash\n[[ "$1" == hosts ]] && { echo "192.0.2.10 $2"; exit 0; }\n'
@@ -97,6 +104,7 @@ class Env:
         self.fake_script(self.admin, RECORDER)
         self.fake("ip", HEALTHY_IP)
         self.fake("getent", HEALTHY_GETENT)
+        self.fake("timeout", HEALTHY_TIMEOUT)
 
     def fake(self, name: str, text: str) -> None:
         self.fake_script(self.bin / name, text)

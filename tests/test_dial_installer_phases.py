@@ -36,7 +36,14 @@ INSTALLER = REPO_ROOT / "autostream_dial_install.sh"
 # A usable network, whatever the machine running the tests has.
 HEALTHY_IP = (
     '#!/bin/bash\n[[ "$*" == *route* ]] && { echo "default via 192.0.2.1 dev eth0"; exit 0; }\n'
+    '[[ "$*" == *"addr show"* ]] && { echo "2: eth0 inet 192.0.2.5/24 scope global eth0"; exit 0; }\n'
+    '[[ "$*" == *"link show"* ]] && { echo "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP>"; exit 0; }\n'
     'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec ip "$@"\n'
+)
+# A test connection to a host succeeds; any other use of timeout is the real one.
+HEALTHY_TIMEOUT = (
+    '#!/bin/bash\n[[ "$2" == bash && "$4" == */dev/tcp/* ]] && exit 0\n'
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec timeout "$@"\n'
 )
 HEALTHY_GETENT = (
     '#!/bin/bash\n[[ "$1" == hosts ]] && { echo "192.0.2.10 $2"; exit 0; }\n'
@@ -59,7 +66,8 @@ def _bash(tmp_path: Path, body: str, *, bin_dir: Path | None = None,
     safe.mkdir(exist_ok=True)
     (safe / "dpkg").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
     (safe / "dpkg").chmod(0o755)
-    for name, text in (("ip", HEALTHY_IP), ("getent", HEALTHY_GETENT)):
+    for name, text in (("ip", HEALTHY_IP), ("getent", HEALTHY_GETENT),
+                       ("timeout", HEALTHY_TIMEOUT)):
         (safe / name).write_text(text, encoding="utf-8", newline="\n")
         (safe / name).chmod(0o755)
     env["PATH"] = safe.as_posix() + os.pathsep + env.get("PATH", "")
@@ -300,7 +308,7 @@ class TestSystemUpgrade:
         assert r.returncode == 0, r.stderr
         lines = log.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 3
-        assert lines[0].endswith("|update")
+        assert lines[0].endswith("|update -o APT::Update::Error-Mode=any")
         assert lines[1] == "l|noninteractive|upgrade -y"
         assert lines[2].endswith("|autoclean -y")
 

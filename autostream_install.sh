@@ -937,7 +937,7 @@ bootstrap_phase() {
   recover_interrupted_packages
 
   info "Updating apt metadata"
-  network_step env DEBIAN_FRONTEND=noninteractive apt-get update
+  network_step env DEBIAN_FRONTEND=noninteractive apt-get update -o APT::Update::Error-Mode=any
 
   apt_install curl gpg ca-certificates
 
@@ -982,7 +982,7 @@ system_upgrade_phase() {
   # retry; finish the interrupted package run first.
   recover_interrupted_packages
   info "Updating apt metadata"
-  network_step env DEBIAN_FRONTEND=noninteractive apt-get update
+  network_step env DEBIAN_FRONTEND=noninteractive apt-get update -o APT::Update::Error-Mode=any
   write_update_result "in_progress" "Upgrading system packages (this may take several minutes)..." 22
   info "Upgrading installed system packages"
   network_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y

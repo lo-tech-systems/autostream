@@ -39,7 +39,7 @@ fetch_owntone_apt_repo_files() {
 configure_owntone_apt_repo() {
   info "Configuring OwnTone APT repository"
   network_step --host raw.githubusercontent.com fetch_owntone_apt_repo_files
-  network_step env DEBIAN_FRONTEND=noninteractive apt-get update
+  network_step env DEBIAN_FRONTEND=noninteractive apt-get update -o APT::Update::Error-Mode=any
 }
 
 remove_owntone_apt_repo() {
@@ -54,7 +54,7 @@ remove_owntone_apt_repo() {
   fi
   if [[ ${removed} -eq 1 ]]; then
     info "Removed OwnTone APT repository configuration"
-    network_step env DEBIAN_FRONTEND=noninteractive apt-get update
+    network_step env DEBIAN_FRONTEND=noninteractive apt-get update -o APT::Update::Error-Mode=any
   fi
 }
 

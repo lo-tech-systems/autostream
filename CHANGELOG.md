@@ -80,7 +80,7 @@
   it now checks every few seconds for up to a minute and reconnects as soon as
   the adapter is back.
 - fix: an update no longer fails when a system package upgrade briefly drops the
-  Wi-Fi. The dial and appliance installers now wait up to three minutes for the
+  Wi-Fi. The dial and appliance installers now wait up to nine minutes for the
   network to come back before each step that downloads, and run a step again
   once if it failed because the network was gone. After a final failure the log
   says the network was not available. An unattended run that fails also no longer

@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
+from _wifi_fixtures import watcher  # noqa: E402,F401  (a fixture, used by name)
 from test_dial_staged_install import (  # noqa: E402
     Env, REPO_ROOT, bash_capable, posix_only,
 )
@@ -33,13 +34,35 @@ DIAL_HELPERS = REPO_ROOT / "installer" / "dial" / "helpers.sh"
 # left before the state turns "up" (absent: never); $NET/noroute removes the
 # default route; every sleep and lookup is appended to a file.
 FAKE_IP = r"""#!/bin/bash
+case "$*" in
+    *"addr show"*)
+        [[ -e "$NET/noaddr" ]] && exit 0
+        echo "2: ${NET_DEV:-eth0} inet 192.0.2.5/24 scope global ${NET_DEV:-eth0}"; exit 0 ;;
+    *"link show"*)
+        if [[ -e "$NET/nocarrier" ]]; then
+            echo "2: ${NET_DEV:-eth0}: <NO-CARRIER,BROADCAST,MULTICAST,UP> state DOWN"
+        else
+            echo "2: ${NET_DEV:-eth0}: <BROADCAST,MULTICAST,UP,LOWER_UP> state UP"
+        fi
+        exit 0 ;;
+esac
 [[ "$*" == *"-6"* ]] && exit 0
 [[ -e "$NET/noroute" ]] && exit 0
 echo "default via 192.0.2.1 dev ${NET_DEV:-eth0}"
 """
-FAKE_GETENT = r"""#!/bin/bash
-echo "$2" >> "$NET/lookups"
-[[ "$(cat "$NET/state")" == up ]] || exit 2
+# A connection test: `timeout N bash -c SCRIPT HOST`. It succeeds only while the
+# network is up and, when $NET/reachable names a host, only for that host.
+FAKE_TIMEOUT = r"""#!/bin/bash
+if [[ "$2" == bash && "$4" == */dev/tcp/* ]]; then
+    echo "$5" >> "$NET/lookups"
+    [[ "$(cat "$NET/state")" == up ]] || exit 1
+    [[ -e "$NET/reachable" && "$(cat "$NET/reachable")" != "$5" ]] && exit 1
+    exit 0
+fi
+PATH=/usr/sbin:/usr/bin:/sbin:/bin exec timeout "$@"
+"""
+# A resolver that still answers from its cache while the link is down.
+FAKE_CACHED_GETENT = r"""#!/bin/bash
 echo "192.0.2.10 $2"
 """
 FAKE_SLEEP = r"""#!/bin/bash
@@ -72,6 +95,17 @@ esac
 """
 
 
+def _default(name: str) -> int:
+    r = subprocess.run(["bash", "-c", f'source "{APT_SH.as_posix()}"; echo "${{{name}}}"'],
+                       capture_output=True, text=True, timeout=30)
+    return int(r.stdout.strip())
+
+
+BUDGET = _default("NETWORK_WAIT_BUDGET")
+INTERVAL = _default("NETWORK_WAIT_INTERVAL")
+WAITS = BUDGET // INTERVAL
+
+
 class Net:
     """A scratch bin directory of fake commands and the state they share."""
 
@@ -83,7 +117,7 @@ class Net:
         (self.dir / "state").write_text("up" if up else "down", encoding="utf-8")
         if back_after is not None:
             (self.dir / "back_after").write_text(str(back_after), encoding="utf-8")
-        for name, text in (("ip", FAKE_IP), ("getent", FAKE_GETENT),
+        for name, text in (("ip", FAKE_IP), ("timeout", FAKE_TIMEOUT),
                            ("sleep", FAKE_SLEEP), ("step", FAKE_STEP)):
             Env.fake_script(self.bin / name, text)
         (tmp_path / "etc-apt").mkdir()
@@ -141,9 +175,9 @@ class TestNetworkWait:
         net = Net(tmp_path, up=False)
         r = net.run("network_wait || echo GAVE-UP")
         assert "GAVE-UP" in r.stdout
-        assert net.sleeps() == ["sleep 5"] * 36
-        assert r.stdout.count("waiting up to 180s") == 1
-        assert r.stderr.count("did not return within 180s") == 1
+        assert net.sleeps() == ["sleep 5"] * WAITS
+        assert r.stdout.count(f"waiting up to {BUDGET}s") == 1
+        assert r.stderr.count(f"did not return within {BUDGET}s") == 1
 
     def test_the_budget_and_interval_are_named_and_overridable(self, tmp_path):
         net = Net(tmp_path, up=False)
@@ -154,7 +188,7 @@ class TestNetworkWait:
     def test_a_second_wait_on_a_network_that_is_still_down_does_not_wait_again(self, tmp_path):
         net = Net(tmp_path, up=False)
         net.run("network_wait || true; network_wait || true")
-        assert len(net.sleeps()) == 36
+        assert len(net.sleeps()) == WAITS
 
     def test_a_default_route_is_needed_even_when_names_resolve(self, tmp_path):
         net = Net(tmp_path)
@@ -162,10 +196,46 @@ class TestNetworkWait:
         r = net.run("network_usable && echo USABLE || echo NOT-USABLE")
         assert "NOT-USABLE" in r.stdout
 
-    def test_names_must_resolve_even_with_a_default_route(self, tmp_path):
+    def test_a_connection_must_open_even_with_a_default_route(self, tmp_path):
         net = Net(tmp_path, up=False)
         r = net.run("network_usable && echo USABLE || echo NOT-USABLE")
         assert "NOT-USABLE" in r.stdout
+
+    def test_a_warm_resolver_cache_does_not_make_an_offline_device_usable(self, tmp_path):
+        net = Net(tmp_path, up=False)
+        Env.fake_script(net.bin / "getent", FAKE_CACHED_GETENT)
+        r = net.run("network_usable && echo USABLE || echo NOT-USABLE")
+        assert "NOT-USABLE" in r.stdout
+        assert net.lookups() != []
+
+    def test_the_wait_goes_on_for_an_offline_device_with_a_warm_cache(self, tmp_path):
+        net = Net(tmp_path, up=False, back_after=3)
+        Env.fake_script(net.bin / "getent", FAKE_CACHED_GETENT)
+        r = net.run("network_wait")
+        assert r.returncode == 0, r.stderr
+        assert net.sleeps() == ["sleep 5"] * 3
+
+    def test_an_interface_without_a_carrier_is_not_usable(self, tmp_path):
+        net = Net(tmp_path)
+        (net.dir / "nocarrier").write_text("", encoding="utf-8")
+        r = net.run("network_usable && echo USABLE || echo NOT-USABLE")
+        assert "NOT-USABLE" in r.stdout
+
+    def test_an_interface_without_an_address_is_not_usable(self, tmp_path):
+        net = Net(tmp_path)
+        (net.dir / "noaddr").write_text("", encoding="utf-8")
+        r = net.run("network_usable && echo USABLE || echo NOT-USABLE")
+        assert "NOT-USABLE" in r.stdout
+
+    def test_the_connection_is_opened_with_a_bound_on_how_long_it_may_take(self, tmp_path):
+        net = Net(tmp_path)
+        Env.fake_script(net.bin / "timeout",
+                        '#!/bin/bash\necho "$1" >> "$NET/bounds"\n'
+                        '[[ "$2" == bash ]] && exit 0\nexit 1\n')
+        r = net.run("network_usable && echo USABLE")
+        assert "USABLE" in r.stdout
+        bound = (net.dir / "bounds").read_text(encoding="utf-8").split()[0]
+        assert 0 < int(bound) <= 10
 
     def test_a_wired_only_device_passes_without_any_wifi_tool(self, tmp_path):
         net = Net(tmp_path)
@@ -197,10 +267,10 @@ class TestNetworkWait:
 
     def test_one_resolving_host_is_enough(self, tmp_path):
         net = Net(tmp_path)
-        Env.fake_script(net.bin / "getent",
-                        '#!/bin/bash\n[[ "$2" == good.example ]] && echo "192.0.2.1 $2"\n')
+        (net.dir / "reachable").write_text("good.example", encoding="utf-8")
         r = net.run("network_usable bad.example good.example && echo USABLE")
         assert "USABLE" in r.stdout
+        assert net.lookups() == ["bad.example", "good.example"]
 
 
 @bash_capable
@@ -229,13 +299,13 @@ class TestNetworkStep:
         # The step ran once after the wait gave up; it succeeded, so no message.
         assert r.returncode == 0, r.stderr
         assert "network was not available, so" not in r.stderr
-        assert net.events() == ["sleep 5"] * 36 + ["run 1"]
+        assert net.events() == ["sleep 5"] * WAITS + ["run 1"]
 
     def test_a_failing_step_on_a_dead_network_fails_once_with_the_network_message(self, tmp_path):
         net = Net(tmp_path, up=False)
         r = net.run("network_step step", STEP_MODE="resolve_always")
         assert r.returncode == 100
-        assert net.events() == ["sleep 5"] * 36 + ["run 1"]
+        assert net.events() == ["sleep 5"] * WAITS + ["run 1"]
         assert "the network was not available, so this step failed: step" in r.stderr
 
     def test_a_network_that_drops_and_never_returns_is_bounded_and_not_retried(self, net):
@@ -243,7 +313,7 @@ class TestNetworkStep:
         # DOWN_FOR=0 writes a back_after of 0, which the fake never counts down.
         assert r.returncode == 100
         assert net.runs() == 1
-        assert len([e for e in net.events() if e.startswith("sleep")]) == 36
+        assert len([e for e in net.events() if e.startswith("sleep")]) == WAITS
         assert "the network was not available" in r.stderr
 
     def test_a_failure_that_is_not_the_networks_is_returned_at_once(self, net):
@@ -270,7 +340,7 @@ class TestNetworkStep:
         net = Net(tmp_path, up=False)
         net.run("network_step step || true; network_step step || true; network_step step || true",
                 STEP_MODE="resolve_always")
-        assert len(net.sleeps()) == 36
+        assert len(net.sleeps()) == WAITS
         assert net.runs() == 3
 
 
@@ -317,7 +387,7 @@ class TestDialAptStep:
     def _env(self, tmp_path: Path, **kw) -> tuple[Env, Net]:
         env = Env(tmp_path)
         net = Net(tmp_path, **kw)
-        for name in ("ip", "getent", "sleep"):
+        for name in ("ip", "timeout", "sleep"):
             env.fake(name, (net.bin / name).read_text(encoding="utf-8"))
         env.fake("apt-get", FAKE_STEP)
         return env, net
@@ -454,3 +524,110 @@ def test_both_installers_share_the_one_wait_function_text():
         assert "lib/apt.sh" in path.read_text(encoding="utf-8").replace("${INSTALLER_LIB}", "lib")
     assert "network_step" in DIAL_HELPERS.read_text(encoding="utf-8")
     assert "network_step" in APPLIANCE_HELPERS.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# A refresh of the package lists that fails is a failure
+# ---------------------------------------------------------------------------
+
+# apt-get as it behaves: a list refresh that cannot fetch exits 0 unless it is
+# asked to treat any fetch failure as an error. The first refresh cannot fetch;
+# the network comes back after two waits.
+FAKE_UPDATING_APT = r"""#!/bin/bash
+echo "apt-get $*" >> "$NET/events"
+if [[ "$1" == update ]]; then
+    n=$(cat "$NET/runs" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$NET/runs"
+    if (( n == 1 )); then
+        echo down > "$NET/state"; echo 2 > "$NET/back_after"
+        if [[ "$*" == *"APT::Update::Error-Mode=any"* ]]; then
+            echo "E: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease" >&2
+            echo "E: Some index files failed to download." >&2
+            exit 100
+        fi
+        echo "W: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease" >&2
+        echo "W: Some index files failed to download. They have been ignored, or old ones used instead." >&2
+    fi
+fi
+exit 0
+"""
+
+UPDATE_OPTION = "APT::Update::Error-Mode=any"
+
+
+@bash_capable
+class TestAFailedListRefreshIsRetried:
+    def _env(self, tmp_path: Path) -> tuple[Env, Net]:
+        env = Env(tmp_path)
+        net = Net(tmp_path)
+        for name in ("ip", "timeout", "sleep"):
+            env.fake(name, (net.bin / name).read_text(encoding="utf-8"))
+        env.fake("apt-get", FAKE_UPDATING_APT)
+        return env, net
+
+    def test_the_dial_refresh_fails_the_step_and_is_retried_when_the_fetch_fails(
+            self, tmp_path):
+        env, net = self._env(tmp_path)
+        r = env.run("refresh_package_lists", NET=net.dir.as_posix())
+        assert r.returncode == 0, r.stderr
+        assert net.runs() == 2
+        updates = [e for e in net.events() if e.startswith("apt-get update")]
+        assert len(updates) == 2 and all(UPDATE_OPTION in u for u in updates)
+
+    def test_the_appliance_refresh_is_retried_the_same_way(self, tmp_path):
+        net = Net(tmp_path)
+        Env.fake_script(net.bin / "apt-get", FAKE_UPDATING_APT)
+        func_text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
+        body = func_text[func_text.index("system_upgrade_phase() {"):]
+        body = body[:body.index("\n}\n") + 3]
+        update_line = next(ln for ln in body.splitlines()
+                           if "apt-get update" in ln and not ln.lstrip().startswith("#")).strip()
+        r = net.run(update_line)
+        assert r.returncode == 0, r.stderr
+        assert net.runs() == 2
+
+    def test_without_the_option_the_same_failure_would_go_unnoticed(self, tmp_path):
+        # Pins what the option is for: apt exits 0 and the stale lists are used.
+        net = Net(tmp_path)
+        Env.fake_script(net.bin / "apt-get", FAKE_UPDATING_APT)
+        r = net.run("network_step apt-get update")
+        assert r.returncode == 0
+        assert net.runs() == 1
+
+    def test_every_list_refresh_in_the_installers_carries_the_option(self):
+        seen = 0
+        for path in (APPLIANCE_INSTALLER, DIAL_HELPERS, APPLIANCE_HELPERS,
+                     REPO_ROOT / "installer" / "lib" / "owntone.sh",
+                     REPO_ROOT / "installer" / "lib" / "vibra.sh",
+                     REPO_ROOT / "installer" / "lib" / "bluetooth.sh"):
+            for line, _func in _logical_lines(path):
+                if re.search(r"apt-get update\b", line) and not line.lstrip().startswith(
+                        ("echo ", "info ", "warn ", "error ")) and "assert" not in line:
+                    seen += 1
+                    assert UPDATE_OPTION in line, (path.name, line.strip())
+        assert seen >= 5
+
+
+# ---------------------------------------------------------------------------
+# The wait is long enough for the Wi-Fi watcher to bring a link back
+# ---------------------------------------------------------------------------
+
+def test_the_budget_covers_one_full_cycle_of_the_wifi_watchers_reconnects(watcher):
+    # A link that stays down is reconnected after GW_DOWN_RECONNECT_AFTER and
+    # then every RECONNECT_ATTEMPT_INTERVAL; the watcher looks every
+    # NETWORK_MONITOR_INTERVAL, and a reconnect itself can take up to
+    # DEVICE_WAIT_MAX.
+    cycle = (watcher.GW_DOWN_RECONNECT_AFTER + watcher.RECONNECT_ATTEMPT_INTERVAL
+             + watcher.NETWORK_MONITOR_INTERVAL + watcher.wifi_policy.DEVICE_WAIT_MAX)
+    assert BUDGET >= cycle
+
+
+def test_the_budget_stays_well_inside_the_time_a_silent_installer_is_given_up_on():
+    # The admin treats an update whose log has been silent for 30 minutes as hung.
+    assert BUDGET + 60 < 30 * 60
+
+
+def test_the_worst_case_for_an_offline_device_is_one_budget_across_all_steps(tmp_path):
+    net = Net(tmp_path, up=False)
+    net.run("for i in 1 2 3 4 5; do network_step step || true; done", STEP_MODE="resolve_always")
+    assert len(net.sleeps()) == WAITS
+    assert net.runs() == 5

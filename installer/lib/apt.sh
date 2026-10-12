@@ -77,11 +77,16 @@ apt_remove_guarded() {
 # service, NetworkManager, radio firmware or a driver drops the link for a
 # while. The steps that download must not fail just because that happened a
 # moment ago. Budget: a link that has lost its radio is normally back within
-# seconds once the Wi-Fi watcher reconnects it, but a slow access point or a
-# congested band can take a minute or two, so a step waits up to three
-# minutes, checking every five seconds. Overridable in the environment.
-: "${NETWORK_WAIT_BUDGET:=180}"
+# seconds once the Wi-Fi watcher reconnects it, but a link that stays down is
+# reconnected by the watcher only after five minutes and then every two, so a
+# step waits long enough to cover one full cycle of that: nine minutes,
+# checking every five seconds. A device that is truly offline waits once, for
+# this long, and every step after that fails at once. Overridable in the
+# environment.
+: "${NETWORK_WAIT_BUDGET:=540}"
 : "${NETWORK_WAIT_INTERVAL:=5}"
+# Longest a test connection to a host may take.
+: "${NETWORK_CONNECT_TIMEOUT:=5}"
 # Where the package sources are read from (a test points it elsewhere).
 : "${NETWORK_APT_ETC:=/etc/apt}"
 # Used when the configured sources name no host that can be resolved.
@@ -108,17 +113,43 @@ network_apt_hosts() {
     | sort -u | head -n 4
 }
 
+network_interface_ready() {
+  # True when the interface has a carrier and a global address.
+  local dev="$1" link
+  link="$(ip -o link show dev "${dev}" 2>/dev/null)" || true
+  [[ "${link}" != *NO-CARRIER* ]] || return 1
+  [[ -n "$(ip -o addr show dev "${dev}" scope global 2>/dev/null)" ]]
+}
+
+network_connect() {
+  # True when a TCP connection to HOST can be opened now, on the https port or
+  # else the http one. The name is resolved as part of the connection, so an
+  # answer left in a resolver's cache while the link is down does not count.
+  timeout "${NETWORK_CONNECT_TIMEOUT}" bash -c \
+    'true 3<>"/dev/tcp/$0/443" || true 3<>"/dev/tcp/$0/80"' "$1" >/dev/null 2>&1
+}
+
 network_usable() {
-  # True when a download can be expected to work: a default route exists and a
-  # host the next step needs resolves. The hosts are the arguments; with none,
-  # the ones apt is configured to use, or else the Debian and Raspberry Pi
-  # archives. One resolving host is enough, so a single dead mirror does not
-  # hold the install up. Nothing here depends on the kind of link, so a device
-  # on a cable passes the same way.
-  local hosts=("$@") host
+  # True when a download can be expected to work now: a default route exists,
+  # the interface it leaves by has a carrier and an address, and a connection
+  # can be opened to a host the next step needs. The hosts are the arguments;
+  # with none, the ones apt is configured to use, or else the Debian and
+  # Raspberry Pi archives. One reachable host is enough, so a single dead
+  # mirror does not hold the install up. Nothing here depends on the kind of
+  # link, so a device on a cable passes the same way.
+  local hosts=("$@") host dev ready=0
   if command -v ip >/dev/null 2>&1; then
-    [[ -n "$(ip -o route show default 2>/dev/null)" ||
-       -n "$(ip -o -6 route show default 2>/dev/null)" ]] || return 1
+    local routes
+    routes="$(ip -o route show default 2>/dev/null; ip -o -6 route show default 2>/dev/null)"
+    [[ -n "${routes}" ]] || return 1
+    while read -r dev; do
+      [[ -n "${dev}" ]] || continue
+      if network_interface_ready "${dev}"; then
+        ready=1
+        break
+      fi
+    done < <(grep -oE ' dev [^ ]+' <<< "${routes}" | awk '{print $2}' | sort -u)
+    (( ready )) || return 1
   fi
   if (( ${#hosts[@]} == 0 )); then
     mapfile -t hosts < <(network_apt_hosts)
@@ -127,7 +158,7 @@ network_usable() {
     fi
   fi
   for host in "${hosts[@]}"; do
-    if timeout 10 getent hosts "${host}" >/dev/null 2>&1; then
+    if network_connect "${host}"; then
       return 0
     fi
   done

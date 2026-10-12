@@ -122,7 +122,7 @@ In-app updates can take a long time. A full update may take up to **15 minutes**
 
 Micro-SD card speed has a big impact, so slower cards can make updates feel stalled even when they are still working.
 
-If the system upgrade briefly drops the Wi-Fi, the update waits up to three minutes for the network to return and then repeats the step that needed it, so a short interruption does not fail the update. An update that gives up says in its log that the network was not available.
+If the system upgrade briefly drops the Wi-Fi, the update waits up to nine minutes for the network to return and then repeats the step that needed it, so a short interruption does not fail the update. An update that gives up says in its log that the network was not available.
 
 **Audio stops while an update runs.** Before overwriting anything, the updater stops `autostream_monitor`, `autostream_bluetooth`, `owntone`, `vibra-mini` and the `autostream` coordinator, so playback and outputs go away for the duration. The Wi-Fi watcher, nginx, NetworkManager and ssh are deliberately left running, so the appliance stays on the network and reachable throughout.
 

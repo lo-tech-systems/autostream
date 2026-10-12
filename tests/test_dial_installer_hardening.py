@@ -186,6 +186,9 @@ class TestApplianceUninstallerSharesTheHandback:
 # Package lists are refreshed before a fresh install installs anything
 # ---------------------------------------------------------------------------
 
+UPDATE_CALL = "apt-get update -o APT::Update::Error-Mode=any"
+
+
 def _apt_script(env: Env, *, update_rc: int = 0, update_text: str = "") -> None:
     """A fake apt-get that records its calls and fails 'update' on demand."""
     env.fake("apt-get", (
@@ -200,7 +203,7 @@ class TestRefreshPackageLists:
         _apt_script(env)
         r = env.run("refresh_package_lists", update="false")
         assert r.returncode == 0, r.stderr
-        assert env.calls() == ["apt-get update"]
+        assert env.calls() == [UPDATE_CALL]
 
     def test_a_failed_refresh_stops_a_set_e_script_with_a_clear_message(self, env):
         _apt_script(env, update_rc=100, update_text="E: Failed to fetch http://x/Packages  404")
@@ -217,13 +220,13 @@ class TestRefreshPackageLists:
         ))
         r = env.run("refresh_package_lists", update="false")
         assert r.returncode == 0, r.stderr
-        assert [c for c in env.calls() if c.startswith("apt-get")] == ["apt-get update"] * 2
+        assert [c for c in env.calls() if c.startswith("apt-get")] == [UPDATE_CALL] * 2
 
     def test_an_update_refreshes_the_lists_exactly_once(self, env):
         _apt_script(env)
         r = env.run("system_upgrade")
         assert r.returncode == 0, r.stderr
-        assert [c for c in env.calls() if c == "apt-get update"] == ["apt-get update"]
+        assert [c for c in env.calls() if c == UPDATE_CALL] == [UPDATE_CALL]
 
 
 def _dry_names(tmp_path: Path, **kw) -> list[str]:
@@ -428,7 +431,7 @@ class TestRecoverInterruptedPackages:
         env.run("system_upgrade", RECOVERED=(env.tmp / "rec").as_posix())
         calls = [c for c in env.calls() if c.startswith(("dpkg", "apt-get"))]
         assert calls[0].startswith("dpkg --configure -a")
-        assert calls[1] == "apt-get update"
+        assert calls[1] == UPDATE_CALL
 
     def test_a_fresh_install_recovers_before_the_lists_are_refreshed(self, tmp_path):
         names = _dry_names(tmp_path, update=False)
@@ -455,7 +458,7 @@ class TestApplianceRecoversInterruptedPackages:
         assert r.returncode == 0, r.stderr
         calls = [c for c in env.calls() if c.startswith(("dpkg", "apt-get"))]
         assert calls[0].startswith("dpkg --configure -a")
-        assert calls[1:] == ["apt-get update", "apt-get upgrade -y"]
+        assert calls[1:] == [UPDATE_CALL, "apt-get upgrade -y"]
 
     def test_install_text_recovers_before_the_first_apt_command(self):
         func = _function_text(APPLIANCE_INSTALLER, "bootstrap_phase")
