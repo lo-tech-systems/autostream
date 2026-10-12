@@ -1135,6 +1135,7 @@ class TestApplianceInstallLogIsNotTruncated:
         log = tmp_path / "autostream_install.log"
         log.write_text("[INFO] first run\n[ERROR] it failed\n", encoding="utf-8")
         script = (
+            f'source "{REPO_ROOT}/installer/lib/state_files.sh"\n'
             f'source "{REPO_ROOT}/installer/lib/helpers.sh"\n'
             f'LOGFILE="{log}" SCRIPT_NAME=autostream_install.sh ORIG_USER=pi ORIG_HOME=/home/pi\n'
             "init_logging\n"
@@ -1148,6 +1149,7 @@ class TestApplianceInstallLogIsNotTruncated:
     def test_a_missing_log_is_created(self, tmp_path):
         log = tmp_path / "sub" / "autostream_install.log"
         script = (
+            f'source "{REPO_ROOT}/installer/lib/state_files.sh"\n'
             f'source "{REPO_ROOT}/installer/lib/helpers.sh"\n'
             f'LOGFILE="{log}" SCRIPT_NAME=autostream_install.sh ORIG_USER=pi ORIG_HOME=/home/pi\n'
             "init_logging\n"

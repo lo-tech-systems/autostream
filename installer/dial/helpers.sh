@@ -1253,7 +1253,7 @@ PYEOF
 
 write_hd_marker() {
     # The kiosk unit's start condition; see the unit's header.
-    install -m 0644 -o root -g root /dev/null "$(_hd_marker)"
+    write_state_file "$(_hd_marker)" 0644 root:root < /dev/null
 }
 
 deploy_kiosk_unit() {
@@ -2186,7 +2186,7 @@ restore_owned_files() {
     # recorded ABSENT, then make systemd and nginx pick the restored files up.
     # Best effort: one failed copy does not stop the rest.
     # Usage: restore_owned_files [BACKUP_DIR]
-    local dir root state path
+    local dir root state path saved
     dir="${1:-${BACKUP_DIR:-$(_update_dir)/update-prev}}"
     root="$(_fs_root)"
     [[ -f "${dir}/MANIFEST" ]] || return 0
@@ -2195,8 +2195,18 @@ restore_owned_files() {
         case "${state}" in
             PRESENT)
                 mkdir -p "$(dirname "${root}${path}")" || true
-                cp -a --remove-destination "${dir}/files${path}" "${root}${path}" \
-                    || echo "WARNING: could not restore ${path}" >&2
+                saved="${dir}/files${path}"
+                if [[ "${root}${path}" == "${root}/var/lib/autostream/"* \
+                      && -f "${saved}" && ! -L "${saved}" ]]; then
+                    # In the service account's directory: written beside the
+                    # old file and renamed over it, never by name.
+                    write_state_file "${root}${path}" "$(stat -c '%a' -- "${saved}")" \
+                        "$(stat -c '%u:%g' -- "${saved}")" < "${saved}" \
+                        || echo "WARNING: could not restore ${path}" >&2
+                else
+                    cp -a --remove-destination "${saved}" "${root}${path}" \
+                        || echo "WARNING: could not restore ${path}" >&2
+                fi
                 ;;
             ABSENT)
                 rm -f "${root}${path}" || true

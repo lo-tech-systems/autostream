@@ -76,3 +76,15 @@ read_state_value() {
   done <<< "${content}"
   return 0
 }
+
+# read_state_file_owned: as read_state_file, but only for a file owned by whoever
+# runs this. A stamp root wrote and later trusts has root as its owner; one the
+# service account made or truncated in its own directory does not, and reads as
+# absent.
+# Usage: content="$(read_state_file_owned FILE)" || ...
+read_state_file_owned() {
+  local file="$1"
+  [[ -f "${file}" && ! -L "${file}" \
+     && "$(stat -c '%u' -- "${file}" 2>/dev/null)" == "$(id -u)" ]] || return 1
+  read_state_file "${file}"
+}

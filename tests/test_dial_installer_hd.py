@@ -472,10 +472,13 @@ class TestHdConfigAndAccount:
 
     def test_marker_is_an_empty_root_owned_file_in_the_state_directory(self, tmp_path):
         env = Env(tmp_path)
-        env.fake("install", RECORDER)
+        env.fake("chown", RECORDER)
         r = _run(env, "write_hd_marker")
         assert r.returncode == 0, r.stderr
-        assert env.calls() == [f"install -m 0644 -o root -g root /dev/null {env.state}/hd-kiosk"]
+        marker = env.state / "hd-kiosk"
+        assert marker.is_file() and marker.read_text(encoding="utf-8") == ""
+        assert marker.stat().st_mode & 0o777 == 0o644
+        assert [c.split()[1] for c in env.calls() if c.startswith("chown")] == ["root:root"]
 
     def test_unit_and_rule_are_installed_then_enabled_not_started(self, tmp_path):
         env = Env(tmp_path)

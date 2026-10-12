@@ -87,15 +87,19 @@ vibra_mini_stamp_reports_pinned_version() {
   # writes on a successful build, cross-checked against the installed binary
   # still actually being present (so a stamp left behind by a since-removed
   # install can't produce a false skip). Any read failure -- no stamp, no
-  # binary -- is treated as "not matching".
+  # binary -- is treated as "not matching". The stamp is in a directory the
+  # service account owns, so it counts only if it is a regular file reached
+  # without following a link, owned by root, and holds a version string.
   local stamped
-  stamped="$(cat "${VIBRA_VERSION_STAMP}" 2>/dev/null)" || return 1
+  stamped="$(read_state_file_owned "${VIBRA_VERSION_STAMP}")" || return 1
+  [[ "${stamped}" =~ ^v?[0-9][0-9A-Za-z.+-]{0,31}$ ]] || return 1
   [[ "${stamped}" == "${VIBRA_VERSION}" && -x "${VIBRA_INSTALL_PREFIX}/bin/vibra-mini" ]]
 }
 
 write_vibra_version_stamp() {
   mkdir -p "$(dirname "${VIBRA_VERSION_STAMP}")" 2>/dev/null || true
-  printf '%s' "${VIBRA_VERSION}" > "${VIBRA_VERSION_STAMP}" 2>/dev/null || true
+  printf '%s' "${VIBRA_VERSION}" \
+    | write_state_file "${VIBRA_VERSION_STAMP}" 0644 root:root 2>/dev/null || true
 }
 
 build_and_install_vibra_from_source() {

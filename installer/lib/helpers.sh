@@ -19,9 +19,18 @@ init_logging() {
   # Appended to, not truncated: the log of an earlier run (a failed update
   # that is about to be retried, say) must survive the next one. In
   # ${APP_LOG_DIR} logrotate keeps it bounded.
-  [[ -e "${LOGFILE}" ]] || : > "${LOGFILE}"
-  chmod 0644 "${LOGFILE}" || true
-  exec > >(tee -a "${LOGFILE}") 2>&1
+  # The directory can belong to the service account, which can put a link at
+  # the log's name. A log that is a link or not a regular file is not written,
+  # and the output goes to the journal alone; a missing one is made beside its
+  # name and renamed into place; and the file is opened for appending without
+  # following a link, so one put there after the check is refused too.
+  if [[ -L "${LOGFILE}" || ( -e "${LOGFILE}" && ! -f "${LOGFILE}" ) ]]; then
+    echo "[WARN] ${LOGFILE} is a link or not a regular file; not writing the install log there" >&2
+  elif [[ -e "${LOGFILE}" ]] || write_state_file "${LOGFILE}" 0644 < /dev/null; then
+    exec > >(tee -p >(dd of="${LOGFILE}" oflag=append,nofollow conv=notrunc status=none 2>/dev/null)) 2>&1
+  else
+    echo "[WARN] could not create ${LOGFILE}; not writing the install log there" >&2
+  fi
   echo "[INFO] ${SCRIPT_NAME} starting at $(date -Is)"
   echo "[INFO] Running as: $(id -un) (uid=$(id -u)); original user: ${ORIG_USER}; original home: ${ORIG_HOME}"
   echo "[INFO] Log file: ${LOGFILE}"

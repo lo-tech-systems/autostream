@@ -190,6 +190,8 @@ set -euo pipefail
 info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*"; }}
+source "{REPO_ROOT.as_posix()}/installer/lib/state_files.sh"
+chown() {{ :; }}
 source "{self.VIBRA_SH.as_posix()}"
 VIBRA_SOCKET_PATH="{sock_path}"
 VIBRA_VERSION_STAMP="{Path(stamp_path).as_posix()}"
@@ -298,6 +300,8 @@ set -euo pipefail
 info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*"; }}
+source "{REPO_ROOT.as_posix()}/installer/lib/state_files.sh"
+chown() {{ :; }}
 source "{self.VIBRA_SH.as_posix()}"
 VIBRA_VERSION_STAMP="{stamp_path.as_posix()}"
 VIBRA_INSTALL_PREFIX="{install_prefix.as_posix()}"
@@ -416,6 +420,8 @@ git() {{
 }}
 autoreconf() {{ :; }}
 make() {{ echo "MAKE_CALLED $*"; }}
+source "{REPO_ROOT.as_posix()}/installer/lib/state_files.sh"
+chown() {{ :; }}
 source "{self.OWNTONE_SH.as_posix()}"
 OWNTONE_MINI_VERSION_STAMP="{Path(stamp_path).as_posix()}"
 OWNTONE_MINI_BINARY="{binary_path.as_posix()}"
