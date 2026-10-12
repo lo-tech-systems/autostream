@@ -16,6 +16,10 @@ source "${BASH_SOURCE[0]%/*}/../lib/apt.sh"
 # install_swap_limit, shared with the appliance installer.
 # shellcheck source=../lib/swap.sh
 source "${BASH_SOURCE[0]%/*}/../lib/swap.sh"
+# Wi-Fi power saving, swap behaviour, unneeded packages and the power key,
+# shared with the appliance installer.
+# shellcheck source=../lib/system_tuning.sh
+source "${BASH_SOURCE[0]%/*}/../lib/system_tuning.sh"
 
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
@@ -1884,6 +1888,10 @@ owned_files_list() {
                   /etc/systemd/journald.conf.d/99-autostream-storage.conf \
                   /etc/systemd/coredump.conf.d/99-autostream-coredump.conf \
                   /etc/rpi/swap.conf.d/99-autostream-swap.conf \
+                  /etc/NetworkManager/dispatcher.d/99-wlan-fix \
+                  /etc/NetworkManager/conf.d/wifi-powersave.conf \
+                  /etc/sysctl.d/90-autostream-swappiness.conf \
+                  /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf \
                   /var/lib/autostream/install-state.env
     for name in $(dial_image_names); do
         printf '%s\n' "${opt}/images/${name}"

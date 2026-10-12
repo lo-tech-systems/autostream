@@ -92,6 +92,14 @@ rm -f /etc/systemd/journald.conf.d/99-autostream-storage.conf
 rm -f /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
 rm -f /etc/rpi/swap.conf.d/99-autostream-swap.conf
 systemctl restart systemd-journald 2>/dev/null || true
+
+# Wi-Fi power saving and the power key, as the appliance uninstaller takes them
+# back. The swappiness setting, the masked zram writeback timer and the removed
+# modemmanager and udisks2 packages are left as they are, also as there.
+rm -f /etc/NetworkManager/dispatcher.d/99-wlan-fix
+rm -f /etc/NetworkManager/conf.d/wifi-powersave.conf
+rm -f /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
+systemctl restart systemd-logind 2>/dev/null || true
 rm -f /usr/local/sbin/sdmon
 rm -f /usr/local/bin/autostream-dial-control
 

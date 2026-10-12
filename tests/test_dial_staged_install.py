@@ -596,6 +596,7 @@ class TestReboot:
 # ---------------------------------------------------------------------------
 
 SHARED_LIBS = (REPO_ROOT / "installer" / "lib" / "sudoers.sh",
+               REPO_ROOT / "installer" / "lib" / "system_tuning.sh",
                REPO_ROOT / "installer" / "lib" / "swap.sh",
                REPO_ROOT / "installer" / "lib" / "apt.sh")
 

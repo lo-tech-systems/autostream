@@ -938,11 +938,16 @@ class TestNetworkManagerConfig:
 
     def test_installer_installs_networkmanager_files_root_owned(self):
         text = INSTALL_SH.read_text(encoding="utf-8")
+        # The dispatcher and the power-save drop-in are installed by the library
+        # the dial installer shares; the appliance calls it. Both are
+        # root-owned when the installer runs as root, which it always does.
+        lib = (REPO_ROOT / "installer" / "lib" / "system_tuning.sh").read_text(encoding="utf-8")
+        assert 'install_wifi_power_save_off "${AUTOSTREAM_DIR}/system"' in text
         assert re.search(
-            r"install\s+-m\s+0755\s+-o\s+root\s+-g\s+root\s+\\\n"
-            r'\s+"\$\{AUTOSTREAM_DIR\}/system/NetworkManager/99-wlan-fix"\s+\\\n'
-            r"\s+/etc/NetworkManager/dispatcher\.d/99-wlan-fix",
-            text,
+            r"install\s+-m\s+0755\s+\$\{own\[@\]\+\"\$\{own\[@\]\}\"\}\s+"
+            r'"\$\{sys\}/NetworkManager/99-wlan-fix"\s+\\\n'
+            r'\s+"\$\{root\}/etc/NetworkManager/dispatcher\.d/99-wlan-fix"',
+            lib,
         ), "99-wlan-fix must be installed root-owned and executable"
         assert re.search(
             r"install\s+-m\s+0644\s+-o\s+root\s+-g\s+root\s+\\\n"
@@ -951,11 +956,12 @@ class TestNetworkManagerConfig:
             text,
         ), "mdns.conf must be installed root-owned"
         assert re.search(
-            r"install\s+-m\s+0644\s+-o\s+root\s+-g\s+root\s+\\\n"
-            r'\s+"\$\{AUTOSTREAM_DIR\}/system/NetworkManager/wifi-powersave\.conf"\s+\\\n'
-            r"\s+/etc/NetworkManager/conf\.d/wifi-powersave\.conf",
-            text,
+            r"install\s+-m\s+0644\s+\$\{own\[@\]\+\"\$\{own\[@\]\}\"\}\s+"
+            r'"\$\{sys\}/NetworkManager/wifi-powersave\.conf"\s+\\\n'
+            r'\s+"\$\{root\}/etc/NetworkManager/conf\.d/wifi-powersave\.conf"',
+            lib,
         ), "wifi-powersave.conf must be installed root-owned"
+        assert '-o root -g root' in lib and '_root_owner_args' in lib
 
 
 # ---------------------------------------------------------------------------

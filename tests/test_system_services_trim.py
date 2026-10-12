@@ -33,6 +33,7 @@ bash_capable = pytest.mark.skipif(
 )
 
 INSTALL_SH = REPO_ROOT / "autostream_install.sh"
+TUNING_LIB = REPO_ROOT / "installer" / "lib" / "system_tuning.sh"
 
 
 def _src(path: Path = INSTALL_SH) -> str:
@@ -131,6 +132,7 @@ set -uo pipefail
 info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
+source "{TUNING_LIB.as_posix()}"
 {func_src_local}
 remove_unneeded_system_services
 echo "EXIT:$?"
@@ -265,10 +267,14 @@ class TestConfigurePhaseWiring:
         )
 
     def test_apt_remove_guarded_by_dpkg_presence_check(self):
-        func_src = _extract_function(self._src(), "remove_unneeded_system_services")
+        # The package removal lives in the library the dial installer shares;
+        # the appliance function calls it.
+        func_src = _extract_function(_src(TUNING_LIB), "remove_unneeded_packages")
         assert "dpkg -s" in func_src
         assert "apt-get remove -y" in func_src
         assert "DEBIAN_FRONTEND=noninteractive" in func_src
+        assert "remove_unneeded_packages" in _extract_function(
+            self._src(), "remove_unneeded_system_services")
 
     def test_cloud_init_flag_path_matches_official_kill_switch(self):
         func_src = _extract_function(self._src(), "remove_unneeded_system_services")

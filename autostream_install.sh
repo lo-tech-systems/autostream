@@ -71,6 +71,8 @@ source "${INSTALLER_LIB}/apt.sh"
 source "${INSTALLER_LIB}/sudoers.sh"
 # shellcheck source=installer/lib/swap.sh
 source "${INSTALLER_LIB}/swap.sh"
+# shellcheck source=installer/lib/system_tuning.sh
+source "${INSTALLER_LIB}/system_tuning.sh"
 # shellcheck source=installer/lib/owntone.sh
 source "${INSTALLER_LIB}/owntone.sh"
 # shellcheck source=installer/lib/vibra.sh
@@ -1073,10 +1075,8 @@ configure_phase() {
   install_swap_limit "${AUTOSTREAM_DIR}/system/rpi-swap/99-autostream-swap.conf"
 
   # logind drop-in: suppress power-key events so USB enumeration cannot shut down the appliance
-  mkdir -p /etc/systemd/logind.conf.d
-  install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/logind/90-autostream-ignore-power-key.conf" \
-    /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
-  systemctl restart systemd-logind || warn "systemctl restart systemd-logind failed"
+  # (installer/lib/system_tuning.sh)
+  ignore_power_key "${AUTOSTREAM_DIR}/system"
 
   # logrotate
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/logrotate/autostream" /etc/logrotate.d/autostream
@@ -1094,22 +1094,18 @@ configure_phase() {
   rm -f /etc/dnsmasq.d/autostream-setup.conf
   systemctl disable dnsmasq || true
 
-  # NetworkManager
-  install -m 0755 -o root -g root \
-      "${AUTOSTREAM_DIR}/system/NetworkManager/99-wlan-fix" \
-      /etc/NetworkManager/dispatcher.d/99-wlan-fix
+  # NetworkManager: Wi-Fi power saving off (the wifi-powersave.conf drop-in and
+  # the 99-wlan-fix dispatcher, installer/lib/system_tuning.sh), then mDNS.
+  install_wifi_power_save_off "${AUTOSTREAM_DIR}/system"
   install -m 0644 -o root -g root \
       "${AUTOSTREAM_DIR}/system/NetworkManager/mdns.conf" \
       /etc/NetworkManager/conf.d/mdns.conf
-  install -m 0644 -o root -g root \
-      "${AUTOSTREAM_DIR}/system/NetworkManager/wifi-powersave.conf" \
-      /etc/NetworkManager/conf.d/wifi-powersave.conf
 
   # cloud-init
   configure_cloud_init
 
   # Memory/swap tuning
-  tune_memory_behaviour
+  tune_memory_behaviour "${SWAPPINESS_SYSCTL_CONF}"
 
   # Unneeded system services / boot-time tax
   remove_unneeded_system_services
@@ -1247,38 +1243,6 @@ configure_cloud_init() {
   fi
 }
 
-# tune_memory_behaviour: converge the appliance's swap/zram tuning on every
-# install and update. Best-effort only -- tuning must never fail an install.
-#
-# - Masks rpi-zram-writeback.timer: on this small-RAM, swap-heavy appliance
-#   the timer pushes compressed zram pages out to microSD, trading sustained
-#   card wear for no benefit. `systemctl mask --now` both stops it if active
-#   and masks it; masking a unit that is not installed still succeeds and
-#   the mask persists, so a package that later installs the timer comes up
-#   masked rather than active.
-# - Drops /etc/sysctl.d/90-autostream-swappiness.conf setting
-#   vm.swappiness=20, so zram is used as a spike absorber rather than a
-#   working-set host, and applies it immediately with `sysctl -p`.
-tune_memory_behaviour() {
-  info "Tuning memory/swap behaviour for the appliance"
-
-  systemctl mask --now rpi-zram-writeback.timer || \
-    warn "Could not mask rpi-zram-writeback.timer; continuing."
-
-  local conf="${SWAPPINESS_SYSCTL_CONF}"
-  local tmp
-  tmp="$(mktemp)"
-  cat > "${tmp}" <<'EOF'
-# zram is a spike absorber, not a working-set host, on this small-RAM
-# realtime-audio appliance.
-vm.swappiness=20
-EOF
-  install -m 0644 -o root -g root "${tmp}" "${conf}"
-  rm -f "${tmp}"
-
-  sysctl -p "${conf}" || warn "sysctl -p ${conf} failed to apply; will take effect on next boot."
-}
-
 # remove_unneeded_system_services: converge every install and update on a
 # minimal package set and trim a fixed per-boot cost, matching what a
 # dedicated audio appliance actually needs.
@@ -1305,16 +1269,8 @@ EOF
 remove_unneeded_system_services() {
   info "Removing unneeded system services"
 
-  local pkg
-  for pkg in modemmanager udisks2; do
-    if dpkg -s "${pkg}" >/dev/null 2>&1; then
-      info "Removing package: ${pkg}"
-      DEBIAN_FRONTEND=noninteractive apt-get remove -y "${pkg}" || \
-        warn "apt-get remove -y ${pkg} failed; continuing."
-    else
-      info "Package '${pkg}' already absent; skipping."
-    fi
-  done
+  # modemmanager and udisks2 (installer/lib/system_tuning.sh)
+  remove_unneeded_packages
 
   if dpkg -s cloud-init >/dev/null 2>&1; then
     info "Disabling cloud-init per-boot runs"

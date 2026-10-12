@@ -1,6 +1,7 @@
 """Memory/swap tuning — installer-level tests.
 
-Scope: tune_memory_behaviour() in autostream_install.sh, which masks
+Scope: tune_memory_behaviour() in installer/lib/system_tuning.sh (shared with the
+dial installer), called from autostream_install.sh, which masks
 rpi-zram-writeback.timer and drops a vm.swappiness sysctl override so every
 appliance converges on the same swap/zram tuning on fresh install and update.
 Static/text-level checks plus functional bash round-trips (bash -c sourcing
@@ -31,6 +32,7 @@ bash_capable = pytest.mark.skipif(
 )
 
 INSTALL_SH = REPO_ROOT / "autostream_install.sh"
+TUNING_LIB = REPO_ROOT / "installer" / "lib" / "system_tuning.sh"
 
 
 def _src(path: Path = INSTALL_SH) -> str:
@@ -94,7 +96,7 @@ def _run_tune_memory_behaviour(tmp_path, *, mask_fail: bool = False, sysctl_fail
     sysctl_calls_file = tmp_path / "sysctl_calls"
     sysctl_calls_file.write_text("", encoding="utf-8")
 
-    func_src = _extract_function(_src(), "tune_memory_behaviour")
+    func_src = _extract_function(_src(TUNING_LIB), "tune_memory_behaviour")
     script = f'''
 set -uo pipefail
 info() {{ echo "INFO: $*"; }}
@@ -102,7 +104,7 @@ warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 SWAPPINESS_SYSCTL_CONF="{conf_path.as_posix()}"
 {func_src}
-tune_memory_behaviour
+tune_memory_behaviour "$SWAPPINESS_SYSCTL_CONF"
 echo "EXIT:$?"
 '''
     env = dict(os.environ)
@@ -159,7 +161,7 @@ class TestTuneMemoryBehaviour:
         # unprivileged test runner), so this is a source-level check that the
         # right install invocation is used, mirroring the mode assertions on
         # the other root-owned drop-ins configure_phase installs.
-        func_src = _extract_function(_src(), "tune_memory_behaviour")
+        func_src = _extract_function(_src(TUNING_LIB), "tune_memory_behaviour")
         assert 'install -m 0644 -o root -g root "${tmp}" "${conf}"' in func_src
 
     @bash_capable
@@ -199,7 +201,7 @@ class TestConfigurePhaseWiring:
         return _src()
 
     def test_tune_memory_behaviour_function_present(self):
-        assert "tune_memory_behaviour()" in self._src()
+        assert "tune_memory_behaviour()" in _src(TUNING_LIB)
 
     def test_configure_phase_calls_tune_memory_behaviour(self):
         src = self._src()

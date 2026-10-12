@@ -179,14 +179,24 @@ The dial runs the same storage-care routines as the main appliance:
 ## What the installer changes on the system
 
 Besides its own software, the dial installer, on a fresh install and on every
-update, puts these operating-system settings in place. The uninstaller takes
-back the ones marked as removed.
+update, puts these operating-system settings in place. The last column says what
+the uninstaller does with each.
 
 | Setting | Effect | Uninstall |
 |---|---|---|
 | `/etc/rpi/swap.conf.d/99-autostream-swap.conf` | Limits the swap file to 512 MiB. Raspberry Pi OS otherwise makes the file as large as the board's RAM, up to 2 GiB, on the SD card. Only written when the system has the `rpi-swap` package, which Raspberry Pi OS Trixie does. The limit applies when swap is set up at boot, so it takes effect after a reboot; a larger file that already exists is expected to be replaced then [not yet confirmed on a device]. The zram swap settings are left as they are. | Removed |
 | `/etc/systemd/journald.conf.d/99-autostream-storage.conf` | Keeps the system log in memory, with size and retention limits. | Removed |
 | `/etc/systemd/coredump.conf.d/99-autostream-coredump.conf` | Limits the space core dumps can use, if `systemd-coredump` is installed. | Removed |
+| `/etc/NetworkManager/conf.d/wifi-powersave.conf` and `/etc/NetworkManager/dispatcher.d/99-wlan-fix` | Turn Wi-Fi power saving off, as on the appliance, so the dial is quick to receive what the appliance sends it. The dispatcher script switches power saving off on each wireless interface as it comes up, and sets the transmit power of the built-in radio. Take effect after a reboot. | Removed |
+| `/etc/sysctl.d/90-autostream-swappiness.conf` | Sets `vm.swappiness=20`, so compressed memory (zram) absorbs spikes instead of holding the working set. | Left in place |
+| `rpi-zram-writeback.timer` | Masked. The timer writes compressed memory pages out to the SD card, which is wear for no benefit here. | Left masked |
+| `modemmanager` and `udisks2` packages | Removed if present. A dial has no modem and no removable-storage workflow. | Not reinstalled |
+| `/etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf` | Sets `HandlePowerKey=ignore`, so a spurious power-key event (USB devices can cause one as they enumerate) cannot shut an unattended dial down. A power button, if one is fitted, no longer powers the dial off. | Removed |
+
+The boot configuration is a separate matter: the installer does not set
+`gpu_mem` on a dial, so a display can be switched on later without reinstalling,
+and it does not install the hardware watchdog service or the appliance's audio
+and Bluetooth settings.
 
 ## Recovery pages
 

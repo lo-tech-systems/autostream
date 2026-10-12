@@ -2,7 +2,8 @@
 
 Verifies that:
 - the drop-in file contains HandlePowerKey=ignore;
-- the installer deploys it to /etc/systemd/logind.conf.d/;
+- the installer deploys it to /etc/systemd/logind.conf.d/ (through the library the
+  appliance and dial installers share);
 - the uninstaller removes it.
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ from pathlib import Path
 
 REPO_ROOT   = Path(__file__).parent.parent
 DROP_IN     = REPO_ROOT / "system" / "logind" / "90-autostream-ignore-power-key.conf"
-INSTALLER   = REPO_ROOT / "autostream_install.sh"
+INSTALLER   = REPO_ROOT / "installer" / "lib" / "system_tuning.sh"
 UNINSTALLER = REPO_ROOT / "autostream_uninstall.sh"
 
 DEST = "/etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf"
@@ -29,7 +30,7 @@ def test_installer_deploys_drop_in():
     """The installer must copy the drop-in to /etc/systemd/logind.conf.d/."""
     text = INSTALLER.read_text(encoding="utf-8")
     assert DEST in text, (
-        f"autostream_install.sh does not reference '{DEST}'; "
+        f"installer/lib/system_tuning.sh does not reference '{DEST}'; "
         "the logind power-key drop-in will not be installed"
     )
 

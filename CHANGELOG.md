@@ -8,6 +8,14 @@
   in place and uninstall removes it; it applies at the next reboot, when a larger
   existing file is expected to be replaced [not yet confirmed on a device]. The
   zram swap settings are left alone.
+- improvement: the dial installer now applies the same base system tuning as the
+  appliance installer, on a fresh install and on update, for SPI and HD dials:
+  Wi-Fi power saving is turned off (a dial with it on can be slow to receive what
+  the appliance sends it), swappiness is lowered and the zram writeback timer is
+  masked, the unused `modemmanager` and `udisks2` packages are removed, and the
+  power key is ignored. The dial uninstaller takes back the Wi-Fi and power key
+  files, as the appliance uninstaller does. The Wi-Fi change takes effect after
+  a reboot. The dial's display memory setting is left as it is.
 - improvement: the dial and appliance installers now delete the downloaded package
   files (`apt-get clean`) once an install or update has succeeded, freeing space
   on a small SD card; before, a fresh install never cleaned them and an update

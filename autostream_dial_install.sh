@@ -20,6 +20,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY="$SCRIPT_DIR"
 source "$DEPLOY/installer/dial/helpers.sh"
+# The libraries shared with the appliance installer report through info and warn.
+info() { echo "$*"; }
+warn() { echo "WARNING: $*" >&2; }
 
 UPDATE=false
 HD=false
@@ -236,6 +239,17 @@ configure_plymouth
 # must gain the faster boot on their next --update without a re-image — the
 # same reasoning as install_recovery_packages/install_image_packages.
 disable_cloud_init
+
+# ---- Base system tuning (fresh install and --update) ------------------------
+# The same OS settings the appliance installer applies, on every dial (SPI and
+# HD) and, like the step above, unconditional so a dial installed before this
+# existed gains them on its next --update. Wi-Fi power saving off keeps the dial
+# quick to receive what the appliance pushes to it. gpu_mem is deliberately left
+# as the system has it, so a display can be enabled later without a reinstall.
+install_wifi_power_save_off "$DEPLOY/system"
+tune_memory_behaviour
+remove_unneeded_packages
+ignore_power_key "$DEPLOY/system"
 
 # ---- Identity and config handling -------------------------------------------
 if ! $UPDATE; then
