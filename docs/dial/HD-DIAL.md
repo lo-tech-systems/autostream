@@ -43,7 +43,7 @@ the picture instead and the panel's own backlight stays on.
 Run the dial installer with the `--hd` flag on a fresh install:
 
 ```
-./autostream_dial_install.sh --hd
+sudo ./autostream_dial_install.sh --hd
 ```
 
 On top of the normal dial install this:
