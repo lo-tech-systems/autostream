@@ -1510,7 +1510,13 @@ install_venv_build_packages() {
 #                    path; `venv` is a symlink to the active one. The first
 #                    update of an older install finds a real `venv` directory.
 #
-# Under /var/lib/autostream:
+# Under /var/lib/autostream-update, which only root can write (the service
+# account owns /var/lib/autostream and could replace anything the boot step
+# is about to act on if it were kept there):
+#   update-in-progress  marker written when the update starts, holding the
+#                    release tag. The boot step acts on the hand-off below, or
+#                    retries an interrupted run, only while it is there. It is
+#                    removed once the update has a final result.
 #   update-prev/     backup of every file this installer owns outside the tree
 #     MANIFEST       one line per path, tab separated: PRESENT or ABSENT, then
 #                    the absolute path. ABSENT means the file did not exist
@@ -1530,7 +1536,6 @@ install_venv_build_packages() {
 #                    0 otherwise. When VENV is `venv` (a real directory kept
 #                    because its requirements are unchanged) there is
 #                    nothing to switch.
-#     BACKUP_DIR     the update-prev directory above
 #
 # AUTOSTREAM_FS_ROOT prefixes every path (tests use a scratch root);
 # AUTOSTREAM_OPT_DIR, AUTOSTREAM_STATE_DIR and AUTOSTREAM_UPDATE_DIR override the
@@ -2003,7 +2008,7 @@ backup_owned_files() {
     # into place last.
     local root dir path
     root="$(_fs_root)"
-    BACKUP_DIR="$(_state_dir)/update-prev"
+    BACKUP_DIR="$(_update_dir)/update-prev"
     dir="${BACKUP_DIR}"
     BACKUP_TAKEN=false
     rm -rf "${dir}"
@@ -2029,7 +2034,7 @@ restore_owned_files() {
     # Best effort: one failed copy does not stop the rest.
     # Usage: restore_owned_files [BACKUP_DIR]
     local dir root state path
-    dir="${1:-${BACKUP_DIR:-$(_state_dir)/update-prev}}"
+    dir="${1:-${BACKUP_DIR:-$(_update_dir)/update-prev}}"
     root="$(_fs_root)"
     [[ -f "${dir}/MANIFEST" ]] || return 0
     while IFS=$'\t' read -r state path; do
@@ -2058,7 +2063,7 @@ write_update_swap() {
     local file tmp previous
     previous="$(_update_result_value PREVIOUS_TAG)"
     previous="${previous:-${PREVIOUS_RELEASE_TAG:-}}"
-    file="$(_state_dir)/update-swap.env"
+    file="$(_update_dir)/update-swap.env"
     tmp="${file}.tmp.$$"
     {
         printf 'PHASE=staged\n'
@@ -2067,11 +2072,23 @@ write_update_swap() {
         printf 'VENV=%s\n' "${NEW_VENV:-}"
         printf 'PREVIOUS_VENV=%s\n' "${PREVIOUS_VENV:-}"
         printf 'VENV_MIGRATE=%s\n' "${VENV_MIGRATE:-0}"
-        printf 'BACKUP_DIR=%s\n' "${BACKUP_DIR:-}"
     } > "${tmp}"
     chmod 0644 "${tmp}"
     mv -f "${tmp}" "${file}"
     UPDATE_STAGED=true
+}
+
+mark_update_in_progress() {
+    # Record, where only root can write, that this update is under way. The
+    # boot step retries an interrupted run, or completes a hand-off, only while
+    # this is there. Written for any release tag; removed by abort_update and
+    # by the boot step once the update has a final result.
+    printf '%s\n' "${AUTOSTREAM_RELEASE_TAG:-unknown}" \
+        | write_state_file "$(_update_dir)/update-in-progress" 0600
+}
+
+clear_update_in_progress() {
+    rm -f -- "$(_update_dir)/update-in-progress" || true
 }
 
 abort_update() {
@@ -2093,6 +2110,7 @@ abort_update() {
         restore_owned_files || true
     fi
     write_update_result "failure" "$(update_failure_message)" 0 PHASE=failed || true
+    clear_update_in_progress
 }
 
 schedule_update_reboot() {

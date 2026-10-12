@@ -75,6 +75,23 @@ def _http_get(url: str, ua: str, timeout: int = 20) -> Tuple[int, bytes]:
         return getattr(resp, "status", 200), resp.read()
 
 
+def _parse_env_text(text: str) -> dict[str, str]:
+    """Parse KEY=VALUE lines: blank lines, comments and lines without '=' are
+    skipped and a value in matching quotes loses them."""
+    data: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        data[key] = value
+    return data
+
+
 def _read_env_file(path: Path) -> dict[str, str]:
     """Parse a KEY=VALUE env file; returns an empty dict if the file is absent.
 
@@ -83,22 +100,10 @@ def _read_env_file(path: Path) -> dict[str, str]:
     unprivileged account owns is not steered to some other file.  A file that
     fails those rules reads as absent.
     """
-    data: dict[str, str] = {}
     try:
-        text = read_file_if_trusted(path, None, max_bytes=1 << 20)
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
-            data[key] = value
+        return _parse_env_text(read_file_if_trusted(path, None, max_bytes=1 << 20))
     except (OSError, ValueError):
-        pass
-    return data
+        return {}
 
 
 def _version_key(v: str) -> Tuple[int, int, int, int, int, int, str]:

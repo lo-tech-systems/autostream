@@ -26,6 +26,10 @@ COMMANDS
              - otherwise an interrupted run (STATUS=in_progress left by a
                power loss or unexpected exit) is retried from the staged
                installer, up to MAX_ATTEMPTS in all, then marked failed.
+           It acts only on what root left in /var/lib/autostream-update, and
+           only while the marker root wrote there says an update is in flight.
+           Anything else, or anything there that does not check out, leaves
+           the running release alone and records the update as not applied.
            Never invoked from cmd_apply.
 
   recover  Alias of boot.
@@ -74,8 +78,14 @@ SWAP HAND-OFF
 The installer stages a release without touching the live code tree
 (/opt/autostream/.next with a MANIFEST of MODE<TAB>OWNER<TAB>PATH lines, a
 versioned venv.<tag> directory, and a backup of every owned file in
-update-prev) and writes update-swap.env.  PHASE in that file is this
-module's own state machine:
+update-prev) and writes update-swap.env.  The backup, the swap file, the
+staged release and the in-progress marker all live in /var/lib/autostream-update,
+which only root can write; /var/lib/autostream belongs to the service account,
+which could otherwise replace any of them between the staging and the boot.
+Values read back from the swap file are checked first (a virtualenv is a
+plain name beside the code tree, a tag is a version) and the backup is
+restored only to paths the installer owns.
+PHASE in the swap file is this module's own state machine:
 
   staged     written by the installer; boot performs the swap
   swapped    the swap is complete; verify has been scheduled
@@ -93,6 +103,8 @@ import fcntl
 import json
 import logging
 import os
+import re
+import secrets
 import shutil
 import socket
 import stat
@@ -111,25 +123,33 @@ if _HERE not in sys.path:
 from autostream_update_support import (
     FLOCK_BIN,
     _find_systemd_run, _github_latest_release, _is_pre_boot,
-    _normalise_update_channel, _read_env_file, _run, _semver_re, _version_key,
-    is_active_transient_unit, schedule_locked_installer, stage_release,
-    write_file_safely,
+    _normalise_update_channel, _parse_env_text, _read_env_file, _run,
+    _semver_re, _version_key,
+    clear_update_in_progress, is_active_transient_unit,
+    mark_update_in_progress, read_file_if_trusted, read_update_in_progress,
+    schedule_locked_installer, stage_release, trusted_state_dir,
+    valid_release_tag, write_file_safely,
 )
 
 # ---- Paths / constants -------------------------------------------------------
 
 # Roots the boot step works under.  Each can be redirected (tests use a
 # scratch tree): FS_ROOT prefixes the absolute paths of the owned-file backup,
-# OPT_DIR is the code tree, STATE_DIR holds the result, swap and backup files.
+# OPT_DIR is the code tree, STATE_DIR holds the result file the dial reads and
+# UPDATE_DIR, which only root can write, holds the staged release, the swap
+# hand-off, the backup and the in-progress marker.
 FS_ROOT        = os.environ.get("AUTOSTREAM_FS_ROOT", "").rstrip("/")
 OPT_DIR        = Path(os.environ.get("AUTOSTREAM_OPT_DIR", FS_ROOT + "/opt/autostream"))
 LOG_PATH       = Path("/var/log/autostream/dial-update.log")
 STATE_DIR      = Path(os.environ.get("AUTOSTREAM_STATE_DIR", FS_ROOT + "/var/lib/autostream"))
+UPDATE_DIR     = Path(os.environ.get("AUTOSTREAM_UPDATE_DIR", FS_ROOT + "/var/lib/autostream-update"))
+# The user the update directory must belong to: root outside the tests.
+UPDATE_STATE_UID = 0
 CONFIG_PATH    = Path("/etc/autostream/autostream-dial.json")
 LOCK_PATH      = Path("/run/autostream-dial-update.lock")
 APMODE_FLAG    = Path("/tmp/autostream-dial-apmode")
 UPDATING_FLAG  = Path("/tmp/autostream-dial-updating")
-STAGING_DIR    = STATE_DIR / "update-staging"
+STAGING_DIR    = UPDATE_DIR / "staging"
 
 # Boot-level attempt budget: the original run plus three retries, mirroring
 # the appliance update retry.
@@ -267,7 +287,9 @@ def _read_installed_tag() -> str:
         env = _read_env_file(state_file)
         v = str(env.get("AUTOSTREAM_RELEASE_TAG") or "").strip()
         if v:
-            return v
+            # The file is in a directory the service account owns, so a tag
+            # that is not a version reads as unknown.
+            return v if valid_release_tag(v) else "unknown"
     except Exception as e:
         _log(f"read_installed_tag: {e}")
         return "unknown"
@@ -468,10 +490,14 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         installer = None
         for stage_try in (1, 2):
             try:
+                staging = _staging_dir()
+                # No marker may outlive the tree it was written for.
+                clear_update_in_progress(staging)
                 installer = stage_release(
-                    tarball_url, tag, STAGING_DIR,
+                    tarball_url, tag, staging,
                     "autostream_dial_install.sh", [], UA,
                 )
+                mark_update_in_progress(staging, tag)
                 _log(f"apply: staged release at {installer.parent}")
                 break
             except Exception as e:
@@ -521,6 +547,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
                                     phase="failed")
                 _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")
                 UPDATING_FLAG.unlink(missing_ok=True)
+                clear_update_in_progress(STAGING_DIR)
                 return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
 
             _log(f"apply: installer scheduled as {unit_name} tag={tag}")
@@ -539,6 +566,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
                 UPDATING_FLAG.unlink(missing_ok=True)
             except OSError:
                 pass
+            clear_update_in_progress(STAGING_DIR)
             return {"ok": False, "error": "Unexpected scheduling error", "details": str(e)}
 
     finally:
@@ -587,21 +615,74 @@ def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
     write_file_safely(path, content, mode)
 
 
+def _staging_dir() -> Path:
+    """The staging directory, once the directory that holds it is proven
+    root-only (and made, with that owner and mode, if it is not there)."""
+    trusted_state_dir(STAGING_DIR.parent, UPDATE_STATE_UID, create=True)
+    return STAGING_DIR
+
+
 def _swap_file() -> Path:
-    return STATE_DIR / "update-swap.env"
+    return UPDATE_DIR / "update-swap.env"
 
 
-def _backup_dir(swap: Dict[str, str]) -> Path:
-    named = str(swap.get("BACKUP_DIR") or "").strip()
-    return Path(named) if named else STATE_DIR / "update-prev"
+def _backup_dir(swap: Optional[Dict[str, str]] = None) -> Path:
+    """Where the owned-file backup is: a fixed place, never a path named in
+    the hand-off file."""
+    return UPDATE_DIR / "update-prev"
+
+
+# A virtualenv is a plain directory name beside the code tree: `venv` or
+# `venv.<something>`, never a path.  `venv.tmp` is the name of the temporary
+# link the switch is made through.
+_VENV_NAME_RE = re.compile(r"^venv(?:\.[A-Za-z0-9_-][A-Za-z0-9._-]*)?$")
+
+
+def _venv_name_ok(name: str) -> bool:
+    return bool(_VENV_NAME_RE.match(name)) and ".." not in name and name != "venv.tmp"
+
+
+def _tag_ok(tag: str) -> bool:
+    return tag in ("", "unknown") or valid_release_tag(tag)
+
+
+def _swap_problem(swap: Dict[str, str]) -> str:
+    """Why the hand-off dict cannot be acted on, or "" when it can.
+
+    The phase is not checked: one this step does not know is treated as a swap
+    that never reached its verdict, which is rolled back.
+    """
+    for key in ("TAG", "PREVIOUS_TAG"):
+        if not _tag_ok(str(swap.get(key, "")).strip()):
+            return f"{key} is not a release version"
+    for key in ("VENV", "PREVIOUS_VENV"):
+        name = str(swap.get(key, "")).strip()
+        if name and not _venv_name_ok(name):
+            return f"{key} is not a virtualenv name"
+    if str(swap.get("VENV_MIGRATE", "")).strip() not in ("", "0", "1"):
+        return "VENV_MIGRATE is not 0 or 1"
+    return ""
 
 
 def _read_swap() -> Optional[Dict[str, str]]:
-    """The hand-off file as a dict, or None when there is no swap pending."""
+    """The hand-off file as a dict, or None when there is no swap pending.
+
+    The file is read only from the root-only directory, as a regular file
+    reached without following a link and owned by root, and its values are
+    checked.  Raises ValueError for a file that is there but cannot be
+    trusted, so a caller never mistakes it for "no swap".
+    """
     path = _swap_file()
-    if not path.exists():
+    try:
+        text = read_file_if_trusted(
+            path, UPDATE_STATE_UID, check_directory=True, max_bytes=1 << 16)
+    except FileNotFoundError:
         return None
-    return _read_env_file(path)
+    swap = _parse_env_text(text)
+    problem = _swap_problem(swap)
+    if problem:
+        raise ValueError(f"the hand-off file is not usable: {problem}")
+    return swap
 
 
 def _set_swap_phase(swap: Dict[str, str], phase: str) -> None:
@@ -845,28 +926,105 @@ def _under_root(path: str) -> Path:
 
 
 def _copy_preserving(src: Path, dst: Path) -> None:
-    """Copy *src* over *dst* keeping mode, owner and symlinks (cp -a)."""
+    """Copy *src* over *dst* keeping mode, owner and symlinks (cp -a).
+
+    Some of the files restored are in directories the service account owns, so
+    the copy goes to a new file with an unpredictable name, created so that
+    nothing can already be there, and is renamed over the target.
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(f".{dst.name}.restore")
-    _remove_quietly(tmp)
     if src.is_symlink():
+        tmp = dst.with_name(f".{dst.name}.{secrets.token_hex(8)}.restore")
         os.symlink(os.readlink(str(src)), str(tmp))
-    else:
-        shutil.copy2(str(src), str(tmp))
         try:
-            st = src.stat()
-            os.chown(str(tmp), st.st_uid, st.st_gid)
-        except (OSError, AttributeError):
-            pass
-    os.replace(str(tmp), str(dst))
+            os.replace(str(tmp), str(dst))
+        except BaseException:
+            _remove_quietly(tmp)
+            raise
+        return
+    st = src.stat()
+    owner = None
+    if hasattr(os, "chown"):
+        owner = (st.st_uid, st.st_gid)
+    try:
+        write_file_safely(dst, src.read_bytes(), stat.S_IMODE(st.st_mode), owner)
+    except PermissionError:
+        # Not allowed to hand the file to its owner (not running as root).
+        write_file_safely(dst, src.read_bytes(), stat.S_IMODE(st.st_mode))
+
+
+# The files the installer owns outside the code tree and the virtualenv: the
+# list installer/dial/helpers.sh builds (owned_files_list), and the only paths
+# a restore may touch.  The backup is read back from a directory only root can
+# write, but what it names is still checked against what the installer owns,
+# so a damaged or tampered manifest cannot send a copy anywhere else.
+_LIBEXEC = "/usr/local/libexec/autostream/"
+_OWNED_FILES = frozenset(
+    [_LIBEXEC + n for n in (
+        "autostream_admin", "autostream_dial_updater", "autostream_update_support.py",
+        "autostream_storage_guard", "autostream_sdcardhealth",
+    )]
+    + ["/etc/systemd/system/" + n for n in (
+        "autostream_dial.service", "autostream_dial_wifi_watcher.service",
+        "autostream_dial_dnsmasq.service", "autostream_dial_updater.service",
+        "autostream_dial_updater.timer", "autostream_dial_update_recover.service",
+        "autostream_storage_guard.service", "autostream_storage_guard.timer",
+        "autostream_sdcardhealth.service", "autostream_sdcardhealth.timer",
+        "autostream_sdcardhealth_boot.service", "autostream_dial_kiosk.service",
+    )]
+    + [
+        "/usr/local/bin/autostream-dial-control",
+        "/etc/nginx/sites-available/autostream-dial",
+        "/etc/nginx/sites-enabled/autostream-dial",
+        "/usr/local/share/autostream/avahi/autostream-dial.service",
+        "/etc/avahi/services/autostream-dial.service",
+        "/usr/local/share/autostream/dnsmasq/autostream-dial-setup.conf",
+        "/etc/sudoers.d/autostream_dial",
+        "/etc/logrotate.d/autostream-dial",
+        "/etc/systemd/journald.conf.d/99-autostream-storage.conf",
+        "/etc/systemd/coredump.conf.d/99-autostream-coredump.conf",
+        "/etc/rpi/swap.conf.d/99-autostream-swap.conf",
+        "/etc/NetworkManager/dispatcher.d/99-wlan-fix",
+        "/etc/NetworkManager/conf.d/wifi-powersave.conf",
+        "/etc/sysctl.d/90-autostream-swappiness.conf",
+        "/etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf",
+        "/etc/udev/rules.d/99-autostream-backlight.rules",
+        "/etc/modules-load.d/autostream-dial-i2c.conf",
+        "/var/lib/autostream/install-state.env",
+        "/var/lib/autostream/hd-kiosk",
+    ]
+)
+# Directories whose files the release names (images, offline pages, CGI
+# scripts), each with the suffix those files must end in (None: any).
+_OWNED_DIRS = (
+    ("/opt/autostream/images/", None),
+    ("/opt/autostream/nginx/offline/", ".html"),
+    ("/opt/autostream/nginx/cgi/", ".cgi"),
+)
+
+
+def _owned_path(path: str) -> bool:
+    """True when *path* is a file the installer owns outside the code tree."""
+    if not path.startswith("/") or os.path.normpath(path) != path or "\x00" in path:
+        return False
+    if path in _OWNED_FILES:
+        return True
+    for prefix, suffix in _OWNED_DIRS:
+        if path.startswith(prefix):
+            name = path[len(prefix):]
+            if name and "/" not in name and not name.startswith(".") \
+                    and (suffix is None or name.endswith(suffix)):
+                return True
+    return False
 
 
 def _restore_owned_files(backup: Path) -> None:
     """Python twin of the installer's restore_owned_files.
 
     Puts back every PRESENT path from the backup, removes every ABSENT one,
-    then has systemd and nginx pick the restored files up.  Best effort: one
-    failed copy does not stop the rest.  Repeating it is harmless.
+    then has systemd and nginx pick the restored files up.  Only the paths the
+    installer owns are touched.  Best effort: one failed copy does not stop
+    the rest.  Repeating it is harmless.
     """
     manifest = backup / "MANIFEST"
     if not manifest.is_file():
@@ -874,6 +1032,9 @@ def _restore_owned_files(backup: Path) -> None:
     for line in manifest.read_text(encoding="utf-8").splitlines():
         state, _, path = line.partition("\t")
         if not path or not path.startswith("/"):
+            continue
+        if not _owned_path(path):
+            _log(f"restore: {path} is not a file the installer owns; skipped")
             continue
         target = _under_root(path)
         try:
@@ -1058,7 +1219,11 @@ def _health_check(tag: str) -> Tuple[str, str]:
 
 def cmd_verify() -> Dict[str, Any]:
     """Health-check the swapped release; record success or roll back."""
-    swap = _read_swap()
+    try:
+        swap = _read_swap()
+    except ValueError as e:
+        _log(f"verify: {e}")
+        return {"ok": False, "error": str(e)}
     if swap is None:
         return {"ok": True, "verified": False}
     phase = swap.get("PHASE", "")
@@ -1102,6 +1267,8 @@ def _finish_success(swap: Dict[str, str]) -> Dict[str, Any]:
     _remove_quietly(OPT_DIR / ".prev.done")
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(_swap_file())
+    # Last, so a power cut before this repeats the cleanup.
+    clear_update_in_progress(STAGING_DIR)
     _log(f"update to {tag or 'new release'} verified")
     _clean_package_cache()
     return {"ok": True, "verified": True}
@@ -1151,6 +1318,7 @@ def _rollback(swap: Dict[str, str], stop_services: bool) -> Dict[str, Any]:
     _remove_quietly(_backup_dir(swap))
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(_swap_file())
+    clear_update_in_progress(STAGING_DIR)
     _sync()
     _log(f"rolled back: {message}")
     _reboot()
@@ -1172,7 +1340,11 @@ def _reboot() -> None:
 
 def cmd_rollback() -> Dict[str, Any]:
     """Roll back a swapped release now (a direct invocation)."""
-    swap = _read_swap()
+    try:
+        swap = _read_swap()
+    except ValueError as e:
+        _log(f"rollback: {e}")
+        return {"ok": False, "error": str(e)}
     if swap is None:
         return {"ok": True, "rolled_back": False}
     return _rollback(swap, stop_services=True)
@@ -1258,9 +1430,13 @@ def _retry_interrupted(env: Dict[str, str]) -> Dict[str, Any]:
     tag = _clean_tag(env.get("TAG", ""))
     previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
     attempt = max(1, _int_value(env.get("ATTEMPT"), 1))
-    installer = _find_staged_installer()
-    backup = STATE_DIR / "update-prev"
-    if (backup / "MANIFEST").is_file():
+    # Only an update root staged is retried, and only from what root left in
+    # its own directory; the result file alone, which the service account can
+    # also write, never selects what runs.
+    staged = read_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
+    installer = _find_staged_installer() if staged is not None else None
+    backup = _backup_dir()
+    if staged is not None and (backup / "MANIFEST").is_file():
         # The configure step had started: put the owned files back first.
         _restore_owned_files(backup)
         _remove_quietly(backup)
@@ -1277,6 +1453,7 @@ def _retry_interrupted(env: Dict[str, str]) -> Dict[str, Any]:
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(OPT_DIR / ".next")
     _remove_quietly(STAGING_DIR)
+    clear_update_in_progress(STAGING_DIR)
     _log(f"boot: {message}")
     return {"ok": True}
 
@@ -1287,7 +1464,9 @@ def _schedule_retry(env: Dict[str, str], installer: Path, tag: str, attempt: int
         release_tag = (STAGING_DIR / "release_tag").read_text(encoding="utf-8").strip()
     except OSError:
         pass
-    release_tag = release_tag or tag or "unknown"
+    if not valid_release_tag(release_tag):
+        release_tag = ""
+    release_tag = release_tag or (tag if valid_release_tag(tag) else "") or "unknown"
     previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
 
     def fail(message: str) -> Dict[str, Any]:
@@ -1296,6 +1475,7 @@ def _schedule_retry(env: Dict[str, str], installer: Path, tag: str, attempt: int
             tag=tag or None, previous_tag=previous or None,
         )
         _remove_quietly(UPDATING_FLAG)
+        clear_update_in_progress(STAGING_DIR)
         return {"ok": False, "error": message}
 
     systemd_run = _find_systemd_run()
@@ -1339,14 +1519,51 @@ def _schedule_retry(env: Dict[str, str], installer: Path, tag: str, attempt: int
     return {"ok": True, "retry": attempt}
 
 
+def _leave_alone(reason: str) -> None:
+    """The hand-off state cannot be acted on.  Change nothing on the system:
+    say why in the log and, if the result file still says an update is under
+    way, record that it was not applied."""
+    _log(f"boot: {reason}; leaving the running release alone")
+    env = _read_env_file(STATE_DIR / "update-result.env")
+    if env.get("STATUS", "").lower() == "in_progress":
+        tag = _clean_tag(env.get("TAG", ""))
+        previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
+        write_update_result(
+            "failure", f"{_subject(tag)} was not applied - {_kept(previous)}",
+            percent=0, phase="failed", tag=tag or None, previous_tag=previous or None,
+        )
+    _remove_quietly(UPDATING_FLAG)
+
+
 def cmd_boot() -> Dict[str, Any]:
     """Early-boot step, run before the dial services start.
 
     A pending swap file decides everything: staged is swapped in; a swap that
     never reached its verdict is rolled back.  Without one, an interrupted
     update run is retried or failed; anything else is left alone.
+
+    The hand-off is trusted only where root alone can write it, and only while
+    the marker root wrote with it is there.  A directory that is not root's, a
+    hand-off that does not check out, or one with no marker changes nothing.
     """
-    swap = _read_swap()
+    swap = None
+    problem = ""
+    try:
+        trusted_state_dir(UPDATE_DIR, UPDATE_STATE_UID)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        problem = f"the update directory cannot be trusted ({e})"
+    else:
+        try:
+            swap = _read_swap()
+        except ValueError as e:
+            problem = str(e)
+        if swap is not None and read_update_in_progress(STAGING_DIR, UPDATE_STATE_UID) is None:
+            problem = "a hand-off is waiting but root left no record of staging an update"
+            swap = None
+    if problem:
+        _leave_alone(problem)
     if swap is not None:
         phase = swap.get("PHASE", "")
         if phase == SWAP_STAGED:

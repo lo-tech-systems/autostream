@@ -632,7 +632,7 @@ class TestRetireAndOwnedFiles:
         marker = env.put("var/lib/autostream/hd-kiosk", "")
         r = _run(env, "HD=true; backup_owned_files")
         assert r.returncode == 0, r.stderr
-        manifest = (env.state / "update-prev" / "MANIFEST").read_text(encoding="utf-8")
+        manifest = (env.upd / "update-prev" / "MANIFEST").read_text(encoding="utf-8")
         assert "PRESENT\t/etc/systemd/system/autostream_dial_kiosk.service" in manifest
         assert "PRESENT\t/var/lib/autostream/hd-kiosk" in manifest
         assert "ABSENT\t/etc/udev/rules.d/99-autostream-backlight.rules" in manifest

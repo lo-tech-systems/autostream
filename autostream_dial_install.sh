@@ -108,6 +108,8 @@ if $UPDATE; then
     create_dirs
     init_service_dirs
     detect_hd_install
+    # The boot step acts on this update's hand-off only while this is there.
+    mark_update_in_progress
 fi
 
 # ---- Fresh-install only steps -----------------------------------------------

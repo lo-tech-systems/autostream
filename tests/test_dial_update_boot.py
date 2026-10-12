@@ -102,14 +102,16 @@ class World:
         self.root = tmp_path
         self.opt = tmp_path / "opt"
         self.state = tmp_path / "state"
+        self.upd = tmp_path / "upd"
         self.fs = tmp_path / "fs"
         for d in (self.opt, self.state, self.fs):
             d.mkdir()
+        self.upd.mkdir(exist_ok=True, mode=0o700)
 
     # -- paths --
     @property
     def swap_file(self) -> Path:
-        return self.state / "update-swap.env"
+        return self.upd / "update-swap.env"
 
     @property
     def result_file(self) -> Path:
@@ -117,7 +119,11 @@ class World:
 
     @property
     def backup(self) -> Path:
-        return self.state / "update-prev"
+        return self.upd / "update-prev"
+
+    def mark(self) -> None:
+        """The record the installer leaves when an update starts."""
+        _asu.mark_update_in_progress(self.mod.STAGING_DIR, TAG)
 
     # -- builders --
     def write_tree(self, base: Path, files: dict[str, str]) -> None:
@@ -153,9 +159,9 @@ class World:
         (self.opt / new_name / "marker").write_text("new-venv", encoding="utf-8")
         # owned files: the update has already replaced them
         self.write_tree(self.fs, {
-            "etc/foo.conf": "new conf",
-            "etc/added.conf": "added by the update",
-            "etc/link.conf": "now a regular file",
+            "etc/systemd/system/autostream_dial.service": "new conf",
+            "etc/systemd/system/autostream_dial_updater.timer": "added by the update",
+            "etc/systemd/system/autostream_dial_updater.service": "now a regular file",
         })
         if configure_started:
             self.write_backup()
@@ -165,29 +171,29 @@ class World:
             f"PREVIOUS_TAG={PREV}\n"
             f"VENV={new_name}\n"
             f"PREVIOUS_VENV={old_name}\n"
-            f"VENV_MIGRATE={1 if migrate else 0}\n"
-            f"BACKUP_DIR={self.backup}\n",
+            f"VENV_MIGRATE={1 if migrate else 0}\n",
             encoding="utf-8",
         )
+        self.mark()
         self.mod.write_update_result(
             "in_progress", "Restarting...", percent=96, phase="reboot",
             tag=TAG, previous_tag=PREV, attempt=1, max_attempts=4,
         )
 
     def write_backup(self) -> None:
-        files = self.backup / "files" / "etc"
+        files = self.backup / "files" / "etc" / "systemd" / "system"
         files.mkdir(parents=True)
-        (files / "foo.conf").write_text("old conf", encoding="utf-8")
-        os.symlink("foo.conf", files / "link.conf")
+        (files / "autostream_dial.service").write_text("old conf", encoding="utf-8")
+        os.symlink("autostream_dial.service", files / "autostream_dial_updater.service")
         (self.backup / "MANIFEST").write_text(
-            "PRESENT\t/etc/foo.conf\n"
-            "PRESENT\t/etc/link.conf\n"
-            "ABSENT\t/etc/added.conf\n",
+            "PRESENT\t/etc/systemd/system/autostream_dial.service\n"
+            "PRESENT\t/etc/systemd/system/autostream_dial_updater.service\n"
+            "ABSENT\t/etc/systemd/system/autostream_dial_updater.timer\n",
             encoding="utf-8",
         )
 
     def build_interrupted(self, attempt: int = 1, installer: bool = True,
-                          backup: bool = False) -> None:
+                          backup: bool = False, marker: bool = True) -> None:
         """An update run cut short before it staged anything for the swap."""
         self.mod.write_update_result(
             "in_progress", "Installing...", percent=45, phase="python",
@@ -200,9 +206,11 @@ class World:
             script = staging / "src" / "autostream-1.3.0" / "autostream_dial_install.sh"
             script.write_text("#!/bin/sh\n", encoding="utf-8")
             os.chmod(script, 0o755)
-        self.write_tree(self.fs, {"etc/foo.conf": "half-written conf"})
+        self.write_tree(self.fs, {"etc/systemd/system/autostream_dial.service": "half-written conf"})
         if backup:
             self.write_backup()
+        if marker:
+            self.mark()
 
     # -- inspection --
     def swap(self) -> dict[str, str]:
@@ -250,9 +258,11 @@ def swapped_tree(first_update: bool) -> dict[str, str]:
 def mod(tmp_path):
     m = load_supervisor_script("autostream_dial_updater", f"dial_boot_{abs(hash(str(tmp_path)))}")
     m.STATE_DIR = tmp_path / "state"
+    m.UPDATE_DIR = tmp_path / "upd"
+    m.UPDATE_DIR.mkdir(exist_ok=True, mode=0o700)
     m.OPT_DIR = tmp_path / "opt"
     m.FS_ROOT = str(tmp_path / "fs")
-    m.STAGING_DIR = m.STATE_DIR / "update-staging"
+    m.STAGING_DIR = m.UPDATE_DIR / "staging"
     m.LOG_PATH = tmp_path / "dial-update.log"
     m.LOCK_PATH = tmp_path / "dial-update.lock"
     m.UPDATING_FLAG = tmp_path / "autostream-dial-updating"
@@ -446,7 +456,7 @@ class TestBootSwap:
             assert world.venv_marker() == "old-venv"
             assert not world.swap_file.exists()
             assert world.result()["PHASE"] == "rolled_back"
-            assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
+            assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "old conf"
 
 
 # ---------------------------------------------------------------------------
@@ -495,10 +505,10 @@ class TestBootRollback:
         assert world.venv_target() == f"venv.{PREV}"
         assert world.venv_marker() == "old-venv"
         assert not (world.opt / f"venv.{TAG}").exists()
-        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
-        assert not (world.fs / "etc" / "added.conf").exists()
-        link = world.fs / "etc" / "link.conf"
-        assert link.is_symlink() and os.readlink(link) == "foo.conf"
+        assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "old conf"
+        assert not (world.fs / "etc" / "systemd" / "system" / "autostream_dial_updater.timer").exists()
+        link = world.fs / "etc" / "systemd" / "system" / "autostream_dial_updater.service"
+        assert link.is_symlink() and os.readlink(link) == "autostream_dial.service"
         env = world.result()
         assert env["STATUS"] == "failure"
         assert env["PHASE"] == "rolled_back"
@@ -586,8 +596,8 @@ class TestBootRollback:
         assert world.live_files() == OLD_TREE
         assert world.venv_marker() == "old-venv"
         assert world.venv_target() == f"venv.{PREV}"
-        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
-        assert not (world.fs / "etc" / "added.conf").exists()
+        assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "old conf"
+        assert not (world.fs / "etc" / "systemd" / "system" / "autostream_dial_updater.timer").exists()
         assert world.result()["PHASE"] == "rolled_back"
         assert not world.swap_file.exists()
         assert (world.opt / ".manifest").read_text(encoding="utf-8") == \
@@ -599,8 +609,9 @@ class TestBootRollback:
         # A swap file left behind after the work completed (cut before removal).
         world.swap_file.write_text(
             f"PHASE=rollback\nTAG={TAG}\nPREVIOUS_TAG={PREV}\n"
-            f"VENV=venv.{TAG}\nPREVIOUS_VENV=venv.{PREV}\nVENV_MIGRATE=1\n"
-            f"BACKUP_DIR={world.backup}\n", encoding="utf-8")
+            f"VENV=venv.{TAG}\nPREVIOUS_VENV=venv.{PREV}\nVENV_MIGRATE=1\n",
+            encoding="utf-8")
+        world.mark()
         mod.cmd_boot()
         assert world.live_files() == OLD_TREE
         assert world.venv_marker() == "old-venv"
@@ -806,10 +817,10 @@ class TestInterruptedRun:
     def test_boot_retry_restores_backup_set_when_configure_had_started(
             self, world, mod, system):
         world.build_interrupted(attempt=1, backup=True)
-        (world.fs / "etc" / "added.conf").write_text("added", encoding="utf-8")
+        (world.fs / "etc" / "systemd" / "system" / "autostream_dial_updater.timer").write_text("added", encoding="utf-8")
         mod.cmd_boot()
-        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
-        assert not (world.fs / "etc" / "added.conf").exists()
+        assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "old conf"
+        assert not (world.fs / "etc" / "systemd" / "system" / "autostream_dial_updater.timer").exists()
         assert not world.backup.exists()
         assert ["systemctl", "daemon-reload"] in system.calls
         assert len(system.retries_scheduled()) == 1
@@ -817,7 +828,7 @@ class TestInterruptedRun:
     def test_boot_retry_leaves_owned_files_alone_without_a_backup(self, world, mod):
         world.build_interrupted(attempt=1, backup=False)
         mod.cmd_boot()
-        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "half-written conf"
+        assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "half-written conf"
 
     def test_attempt_cap_marks_failure_and_keeps_previous(self, world, mod, system):
         world.build_interrupted(attempt=4, backup=True)
@@ -825,7 +836,7 @@ class TestInterruptedRun:
         env = world.result()
         assert env["STATUS"] == "failure"
         assert env["MESSAGE"] == f"Update to {TAG} failed after 4 attempts - {PREV} kept"
-        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
+        assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "old conf"
         assert system.retries_scheduled() == []
 
     def test_in_progress_without_staged_installer_marks_failure(self, world, mod, system):
@@ -836,7 +847,7 @@ class TestInterruptedRun:
         assert env["PHASE"] == "failed"
         assert env["MESSAGE"] == (
             f"Update to {TAG} was interrupted and recovery files are unavailable - {PREV} kept")
-        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
+        assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "old conf"
         assert not mod.UPDATING_FLAG.exists()
         assert system.retries_scheduled() == []
 
@@ -1184,7 +1195,7 @@ class TestVerifyHd:
         mod.cmd_verify()
         assert world.live_files() == OLD_TREE
         assert world.venv_marker() == "old-venv"
-        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
+        assert (world.fs / "etc" / "systemd" / "system" / "autostream_dial.service").read_text(encoding="utf-8") == "old conf"
 
     # -- no panel attached --
 

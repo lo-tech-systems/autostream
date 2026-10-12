@@ -356,7 +356,8 @@ class TestCrossUpdaterSchemaConsistency:
     # ------------------------------------------------------------------
     # Execute the real shell write_update_result() function
     # Requires bash (skipped on Windows where bash cannot handle the path).
-    # The function uses `install -o root` — stub it with a portable cp wrapper.
+    # The function writes through write_state_file, which sets the owner to
+    # root — stub it with a portable wrapper that only writes the content.
     # ------------------------------------------------------------------
 
     def _run_real_shell_writer(self, tmp_path: Path, status: str, message: str, percent: int) -> Path:
@@ -374,9 +375,9 @@ class TestCrossUpdaterSchemaConsistency:
             f"STAMP_DIR={shlex.quote(str(tmp_path))}\n"
             f"UPDATE_RESULT_FILE={shlex.quote(str(result_file))}\n"
             "UPDATE_RUN_AT='2026-01-01T00:00:00+00:00'\n"
-            # Portable install stub: copy second-to-last arg → last arg.
-            # Initialise _p/_l to '' so set -u does not fire on the first iteration.
-            "install() { local _p='' _l=''; for _a; do _p=$_l; _l=$_a; done; cp -- \"$_p\" \"$_l\"; }\n"
+            f"UPDATE_IN_PROGRESS_FILE={shlex.quote(str(tmp_path / 'update-in-progress'))}\n"
+            # Portable stub: the content arrives on standard input.
+            "write_state_file() { cat > \"$1\"; }\n"
             f"{func_src}\n"
             f"write_update_result {shlex.quote(status)} {shlex.quote(message)} {percent}\n",
             encoding="utf-8",

@@ -428,7 +428,8 @@ class TestInstallerWritesAndReads:
 
     def test_only_a_final_result_clears_the_in_progress_marker(self, env):
         upd = env.root / "var" / "lib" / "autostream-update"
-        upd.mkdir(parents=True, mode=0o700)
+        upd.mkdir(parents=True, exist_ok=True)
+        upd.chmod(0o700)
         marker = upd / "update-in-progress"
         marker.write_text("1.3.0\n")
         r = _installer_run(env, ["write_update_result"],
@@ -448,7 +449,8 @@ class TestInstallerWritesAndReads:
 
     def test_only_units_the_installer_stops_are_started_again(self, env):
         upd = env.root / "var" / "lib" / "autostream-update"
-        upd.mkdir(parents=True, mode=0o700)
+        upd.mkdir(parents=True, exist_ok=True)
+        upd.chmod(0o700)
         (upd / "update-stopped-services.env").write_text(
             "owntone\n--now\nsshd\nautostream\nnetworking.service\n", encoding="utf-8")
         env.fake("systemctl", '#!/bin/bash\necho "systemctl $*" >> "$TRACE"\n')
@@ -535,7 +537,7 @@ class TestBootstrapStaging:
         elsewhere = env.tmp / "theirs"
         elsewhere.mkdir(mode=0o755)
         upd = env.root / "var" / "lib" / "autostream-update"
-        upd.parent.mkdir(parents=True, exist_ok=True)
+        upd.rmdir()
         upd.symlink_to(elsewhere)
         _, r = self._prepare(env)
         assert r.returncode == 0, r.stderr

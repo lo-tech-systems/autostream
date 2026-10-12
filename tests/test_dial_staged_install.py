@@ -64,15 +64,19 @@ class Env:
         self.root = tmp_path / "root"
         self.opt = self.root / "opt" / "autostream"
         self.state = self.root / "var" / "lib" / "autostream"
+        # The directory only root can write, which the installer made earlier.
+        self.upd = self.root / "var" / "lib" / "autostream-update"
         self.opt.mkdir(parents=True)
         self.state.mkdir(parents=True)
+        self.upd.mkdir(parents=True)
+        self.upd.chmod(0o700)
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         self.trace = tmp_path / "trace.log"
         self.trace.touch()
         self.result = self.state / "update-result.env"
         self.install_state = self.state / "install-state.env"
-        self.swap = self.state / "update-swap.env"
+        self.swap = self.upd / "update-swap.env"
         self.admin = tmp_path / "admin"
         self.fake("python3", FAKE_PYTHON3)
         for name in ("systemctl", "nginx", "sleep", "dpkg"):
@@ -419,8 +423,9 @@ class TestOwnedFiles:
         env.put("opt/autostream/images/favicon.ico", "icon v1")
         r = env.run("backup_owned_files")
         assert r.returncode == 0, r.stderr
-        prev = env.state / "update-prev"
+        prev = env.upd / "update-prev"
         assert stat.S_IMODE(prev.stat().st_mode) == 0o700
+        assert not (env.state / "update-prev").exists()
         assert not (prev / "MANIFEST.tmp").exists()
         rows = [ln.split("\t") for ln in (prev / "MANIFEST").read_text().splitlines()]
         states = {path: state for state, path in rows}
@@ -493,15 +498,14 @@ class TestSwapFile:
     def test_swap_file_carries_the_contract_keys(self, env):
         r = env.run(
             'PREVIOUS_RELEASE_TAG=1.2.0; NEW_VENV=venv.1.3.0; PREVIOUS_VENV=venv.1.2.0\n'
-            'VENV_MIGRATE=0; BACKUP_DIR=/var/lib/autostream/update-prev\nwrite_update_swap')
+            'VENV_MIGRATE=0\nwrite_update_swap')
         assert r.returncode == 0, r.stderr
         assert env.swap.read_text(encoding="utf-8").splitlines() == [
             "PHASE=staged", "TAG=1.3.0", "PREVIOUS_TAG=1.2.0", "VENV=venv.1.3.0",
             "PREVIOUS_VENV=venv.1.2.0", "VENV_MIGRATE=0",
-            "BACKUP_DIR=/var/lib/autostream/update-prev",
         ]
         assert stat.S_IMODE(env.swap.stat().st_mode) == 0o644
-        assert list(env.state.glob("update-swap.env.tmp.*")) == []
+        assert list(env.upd.glob("update-swap.env.tmp.*")) == []
 
     def test_previous_tag_prefers_the_result_file(self, env):
         env.result.write_text("STATUS=in_progress\nPREVIOUS_TAG=1.1.0\n", encoding="utf-8")
