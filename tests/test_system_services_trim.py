@@ -34,6 +34,7 @@ bash_capable = pytest.mark.skipif(
 
 INSTALL_SH = REPO_ROOT / "autostream_install.sh"
 TUNING_LIB = REPO_ROOT / "installer" / "lib" / "system_tuning.sh"
+APT_LIB = REPO_ROOT / "installer" / "lib" / "apt.sh"
 
 
 def _src(path: Path = INSTALL_SH) -> str:
@@ -132,6 +133,7 @@ set -uo pipefail
 info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
+source "{APT_LIB.as_posix()}"
 source "{TUNING_LIB.as_posix()}"
 {func_src_local}
 remove_unneeded_system_services
@@ -271,8 +273,7 @@ class TestConfigurePhaseWiring:
         # the appliance function calls it.
         func_src = _extract_function(_src(TUNING_LIB), "remove_unneeded_packages")
         assert "dpkg -s" in func_src
-        assert "apt-get remove -y" in func_src
-        assert "DEBIAN_FRONTEND=noninteractive" in func_src
+        assert "apt_remove_guarded remove" in func_src
         assert "remove_unneeded_packages" in _extract_function(
             self._src(), "remove_unneeded_system_services")
 

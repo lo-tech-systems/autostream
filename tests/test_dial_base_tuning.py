@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from test_dial_staged_install import Env, REPO_ROOT, bash_capable, HELPERS, INSTALLER  # noqa: E402
 
 LIB = REPO_ROOT / "installer" / "lib" / "system_tuning.sh"
+APT_LIB = REPO_ROOT / "installer" / "lib" / "apt.sh"
 SYSTEM = REPO_ROOT / "system"
 APPLIANCE_INSTALLER = REPO_ROOT / "autostream_install.sh"
 APPLIANCE_UNINSTALLER = REPO_ROOT / "autostream_uninstall.sh"
@@ -63,7 +64,8 @@ def env(tmp_path):
 
 
 def _lib(env: Env, body: str, **extra: str):
-    return env.run(f'{SHIM}source "{LIB.as_posix()}"\n{body}', **extra)
+    return env.run(f'{SHIM}source "{APT_LIB.as_posix()}"\nsource "{LIB.as_posix()}"\n{body}',
+                   **extra)
 
 
 # ---------------------------------------------------------------------------

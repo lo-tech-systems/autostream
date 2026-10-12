@@ -34,6 +34,44 @@ clean_package_cache() {
   return 0
 }
 
+apt_remove_guarded() {
+  # Remove or purge the named packages only if apt says nothing else would go
+  # with them. A package can have a dependant nobody expected (an operating
+  # system update can add one), and removing it would take that with it; this
+  # asks apt first with a simulation and, when the simulation lists any
+  # package that was not named, or cannot be run, warns and removes nothing.
+  # Returns 1 for a removal refused or failed, 0 otherwise (also when there is
+  # nothing to remove).
+  # Usage: apt_remove_guarded remove|purge PACKAGE...
+  local action="$1" simulation line name pkg listed
+  local -a extra=()
+  shift
+  (( $# )) || return 0
+  if ! simulation="$(LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -s "${action}" -y "$@" 2>&1)"; then
+    echo "WARNING: could not check what apt-get ${action} $* would remove; leaving it installed" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    case "${line}" in
+      Remv\ *|Purg\ *)
+        name="${line#* }"
+        name="${name%% *}"
+        name="${name%%:*}"
+        listed=0
+        for pkg in "$@"; do
+          [[ "${pkg}" == "${name}" ]] && listed=1
+        done
+        (( listed )) || extra+=("${name}")
+        ;;
+    esac
+  done <<< "${simulation}"
+  if (( ${#extra[@]} )); then
+    echo "WARNING: apt-get ${action} $* would also remove ${extra[*]}; leaving it installed" >&2
+    return 1
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get "${action}" -y "$@"
+}
+
 # ---- Waiting for the network ---------------------------------------------------
 # An update can restart networking itself: upgrading the Wi-Fi authentication
 # service, NetworkManager, radio firmware or a driver drops the link for a

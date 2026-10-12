@@ -78,13 +78,15 @@ remove_unneeded_packages() {
   # presence check -- an unguarded `apt-get remove` on a package apt has never
   # seen exits non-zero and would abort the install under `set -e`, so the check
   # makes re-running this on an already-clean box a no-op. Best effort: a failed
-  # removal is a warning. Not reversed on uninstall.
+  # removal is a warning. The removal is refused, with a warning, when apt says
+  # it would take another package with it (see apt_remove_guarded in
+  # lib/apt.sh). Not reversed on uninstall.
   local pkg
   for pkg in modemmanager udisks2; do
     if dpkg -s "${pkg}" >/dev/null 2>&1; then
       info "Removing package: ${pkg}"
-      DEBIAN_FRONTEND=noninteractive apt-get remove -y "${pkg}" || \
-        warn "apt-get remove -y ${pkg} failed; continuing."
+      apt_remove_guarded remove "${pkg}" || \
+        warn "apt-get remove -y ${pkg} failed or was refused; continuing."
     else
       info "Package '${pkg}' already absent; skipping."
     fi

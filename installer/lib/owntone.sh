@@ -133,7 +133,8 @@ install_owntone_mini_from_source() {
   if dpkg -s owntone >/dev/null 2>&1; then
     info "Removing packaged OwnTone before source install"
     systemctl stop owntone || true
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y owntone
+    apt_remove_guarded remove owntone \
+      || warn "Could not remove the packaged OwnTone; continuing."
     remove_owntone_apt_repo
   else
     remove_owntone_apt_repo

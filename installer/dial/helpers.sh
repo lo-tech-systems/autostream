@@ -1203,9 +1203,15 @@ revert_plymouth() {
         plymouth-set-default-theme -r || true
     fi
 
-    read -r -a pkgs <<< "$(_plymouth_state_get packages_installed)"
+    # initramfs-tools is part of the base system whether or not this installer
+    # added it, and removing it takes the kernel packages with it, so it is
+    # never purged. The rest is purged only if apt says nothing else goes too.
+    read -r -a words <<< "$(_plymouth_state_get packages_installed)"
+    for pkg in ${words[@]+"${words[@]}"}; do
+        [[ "${pkg}" == initramfs-tools ]] || pkgs+=("${pkg}")
+    done
     if (( ${#pkgs[@]} > 0 )); then
-        apt-get purge -y "${pkgs[@]}" || true
+        apt_remove_guarded purge "${pkgs[@]}" || true
     fi
 
     if command -v update-initramfs >/dev/null 2>&1; then

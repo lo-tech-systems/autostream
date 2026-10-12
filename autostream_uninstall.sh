@@ -30,6 +30,18 @@ if [[ -n "${INSTALLER_LIB_DIR}" && -f "${INSTALLER_LIB_DIR}/hardware.sh" && -f "
   source "${INSTALLER_LIB_DIR}/bluetooth.sh"
 fi
 
+# apt_remove_guarded (installer/lib/apt.sh) removes a package only when apt
+# says nothing else would go with it. Without the library nothing is removed.
+if [[ -n "${INSTALLER_LIB_DIR}" && -f "${INSTALLER_LIB_DIR}/apt.sh" ]]; then
+  # shellcheck source=installer/lib/apt.sh
+  source "${INSTALLER_LIB_DIR}/apt.sh"
+else
+  apt_remove_guarded() {
+    warn "installer/lib/apt.sh is unavailable; leaving $* installed."
+    return 1
+  }
+fi
+
 # restore_wifi_profiles (installer/lib/wifi_restore.sh) is shared with the dial
 # uninstaller. Without the library the profiles stay as the wifi watcher left
 # them, which is said plainly rather than skipped silently.
@@ -142,8 +154,8 @@ remove_path() {
 apt_remove_owntone() {
   if command -v apt-get >/dev/null 2>&1; then
     info "Attempting to remove packaged OwnTone"
-    DEBIAN_FRONTEND=noninteractive apt-get remove -y owntone >/dev/null 2>&1 \
-      || warn "apt remove owntone failed or owntone was not installed as a package"
+    apt_remove_guarded remove owntone >/dev/null 2>&1 \
+      || warn "apt remove owntone failed, was refused, or owntone was not installed as a package"
   else
     warn "apt-get not found; skipping packaged OwnTone removal"
   fi

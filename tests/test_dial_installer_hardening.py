@@ -1221,6 +1221,7 @@ class TestCleanPackageCache:
     def test_nothing_is_removed_or_purged(self):
         text = APT_LIB.read_text(encoding="utf-8")
         body = text[text.index("clean_package_cache() {"):]
+        body = body[:body.index("\n}\n")]
         assert "autoremove" not in body and "purge" not in body
 
 
