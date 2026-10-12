@@ -267,8 +267,11 @@ if ! $UPDATE; then
     fi
 else
     # Parse without source — never execute env file contents.
-    DIAL_UUID=$(grep '^DIAL_UUID=' \
-        "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" 2>/dev/null | cut -d= -f2- || true)
+    # Every DIAL_UUID line counts, so a repeated one reads as malformed. The
+    # file is in the service account's directory: read without following a link.
+    _saved_state=$(read_state_file \
+        "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" || true)
+    DIAL_UUID=$(grep '^DIAL_UUID=' <<< "${_saved_state}" | cut -d= -f2- || true)
     if [[ ! "$DIAL_UUID" =~ ^[0-9a-f]{20}$ ]]; then
         # The file sits in the service account's directory, so what it holds
         # is checked before use.
@@ -328,10 +331,14 @@ systemctl restart nginx
 # Read name from settings JSON on update; blank string on fresh install.
 DIAL_NAME=""
 if $UPDATE; then
+    # The file is in the service account's directory: opened without following a link.
     DIAL_NAME=$(python3 -c "
-import json, sys
+import json, os
 try:
-    d = json.load(open('/var/lib/autostream/dial-settings.json'))
+    fd = os.open('/var/lib/autostream/dial-settings.json',
+                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd) as f:
+        d = json.load(f)
     print(d.get('name', ''))
 except Exception:
     pass

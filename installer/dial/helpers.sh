@@ -1639,10 +1639,9 @@ requirements_lock_sha256() {
 }
 
 _install_state_value() {
-    # Value of KEY in install-state.env; empty when absent.
-    local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
-    [[ -r "${state}" ]] || return 0
-    grep -m 1 "^$1=" "${state}" 2>/dev/null | cut -d= -f2- || true
+    # Value of KEY in install-state.env; empty when absent. The file is in the
+    # service account's directory, so it is read without following a link.
+    read_state_value "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" "$1"
 }
 
 _sanitise_tag() {
@@ -1730,24 +1729,26 @@ _update_result_file() {
 }
 
 _update_result_value() {
-    # Print the value of KEY in the result file; empty when absent.
-    local file line
-    file="$(_update_result_file)"
-    [[ -r "${file}" && ! -L "${file}" ]] || return 0
-    while IFS= read -r line || [[ -n "${line}" ]]; do
-        if [[ "${line%%=*}" == "$1" && "${line}" == *=* ]]; then
-            printf '%s\n' "${line#*=}"
-            return 0
-        fi
-    done < "${file}"
-    return 0
+    # Print the value of KEY in the result file; empty when absent. The file is
+    # in the service account's directory, so it is read without following a
+    # link.
+    read_state_value "$(_update_result_file)" "$1"
 }
 
 _installed_release_tag() {
     # Release tag recorded by the previous install; empty when unknown.
-    local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
-    [[ -r "${state}" && ! -L "${state}" ]] || return 0
-    grep '^AUTOSTREAM_RELEASE_TAG=' "${state}" 2>/dev/null | head -n 1 | cut -d= -f2- || true
+    read_state_value "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" \
+        AUTOSTREAM_RELEASE_TAG
+}
+
+_tag_or_empty() {
+    # The tag as given when it is a short version string, otherwise nothing.
+    # A tag taken from a file the service account can write goes into the
+    # hand-off file the boot step checks, so it is checked here too.
+    # Usage: _tag_or_empty TAG
+    if [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]; then
+        printf '%s\n' "$1"
+    fi
 }
 
 write_update_result() {
@@ -1760,11 +1761,11 @@ write_update_result() {
     # The file stays 0644 so the dial's own processes can read it.
     local status="$1" message="$2" percent="${3:-0}"
     shift $(( $# < 3 ? $# : 3 ))
-    local file last_run_at key arg value line owner=""
+    local file last_run_at key arg value line owner="" old
     local -A kv=()
     file="$(_update_result_file)"
     message="${message//$'\n'/ }"
-    if [[ -r "${file}" && ! -L "${file}" ]]; then
+    if old="$(read_state_file "${file}")"; then
         while IFS= read -r line || [[ -n "${line}" ]]; do
             [[ "${line}" == *=* && -n "${line#*=}" ]] || continue
             for key in "${UPDATE_RESULT_KEYS[@]}"; do
@@ -1772,7 +1773,7 @@ write_update_result() {
                     kv["${key}"]="${line#*=}"
                 fi
             done
-        done < "${file}"
+        done <<< "${old}"
     fi
     for arg in "$@"; do
         key="${arg%%=*}"
@@ -2061,8 +2062,8 @@ write_update_swap() {
     # Hand the staged update to the boot step (contract above). Reads TAG,
     # previous tag and the venv decision from the installer's variables.
     local file tmp previous
-    previous="$(_update_result_value PREVIOUS_TAG)"
-    previous="${previous:-${PREVIOUS_RELEASE_TAG:-}}"
+    previous="$(_tag_or_empty "$(_update_result_value PREVIOUS_TAG)")"
+    previous="${previous:-$(_tag_or_empty "${PREVIOUS_RELEASE_TAG:-}")}"
     file="$(_update_dir)/update-swap.env"
     tmp="${file}.tmp.$$"
     {
@@ -2125,9 +2126,9 @@ write_install_state() {
     # The SD card health wrapper records its method and last outcome in
     # this file. Carry those lines over so an update keeps monitoring
     # enabled with the method the user chose.
-    local sdmon_lines=""
-    if [[ -f "${path}" ]]; then
-        sdmon_lines="$(grep -E '^SDMON_[A-Z_]+=' "${path}" 2>/dev/null || true)"
+    local sdmon_lines="" saved
+    if saved="$(read_state_file "${path}")"; then
+        sdmon_lines="$(grep -E '^SDMON_[A-Z_]+=' <<< "${saved}" || true)"
     fi
     # root-owned 0644: root writes, all can read (including autostream for UUID fallback).
     # Written beside the old file and renamed over it: the directory belongs

@@ -33,6 +33,7 @@ import json
 import os
 import pwd
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -247,10 +248,26 @@ def _read_old_release_tag(state_file: Path) -> Optional[str]:
     """
     if not state_file.exists():
         return None
+    # The file is in a directory the service account owns: open it without
+    # following a link and take it only if it is a regular file of modest size.
     try:
-        lines = state_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        fd = os.open(
+            str(state_file),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
     except OSError:
         return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > (1 << 20):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(1 << 20)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    lines = raw.decode("utf-8", errors="replace").splitlines()
 
     tag: Optional[str] = None
     for line in lines:

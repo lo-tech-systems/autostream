@@ -63,8 +63,11 @@ remove_bluetooth_if_enabled() {
 # switch keeps whatever its boot files say. Must run before /var/lib/autostream
 # is removed below, because that is where the record lives.
 revert_low_power_if_used() {
-  local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
-  [[ -f "${state}" ]] && grep -qE '^LOW_POWER="?1"?[[:space:]]*$' "${state}" || return 0
+  local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" saved
+  # The file is in the service account's directory: read it without following a link.
+  [[ -f "${state}" && ! -L "${state}" ]] || return 0
+  saved="$(dd if="${state}" iflag=nofollow,nonblock bs=65536 count=1 status=none 2>/dev/null || true)"
+  grep -qE '^LOW_POWER="?1"?[[:space:]]*$' <<< "${saved}" || return 0
   if ! command -v remove_low_power_settings >/dev/null 2>&1; then
     warn "installer/lib/hardware.sh is unavailable; remove maxcpus=2 from cmdline.txt and"
     warn "arm_freq=700, arm_boost=0 and force_turbo=0 from config.txt by hand."
