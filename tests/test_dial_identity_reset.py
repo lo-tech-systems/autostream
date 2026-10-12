@@ -747,7 +747,7 @@ class TestUpdateReinstallUninstall:
         r, calls = _dry_run(tmp_path, update=True)
         assert r.returncode == 0, r.stderr
         assert "write_dial_hw_config" not in _names(calls)
-        assert "write_install_state abc" in calls
+        assert "write_install_state feedfacefeedfacefeed" in calls
 
     def test_the_installer_script_never_writes_a_salt(self):
         text = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")

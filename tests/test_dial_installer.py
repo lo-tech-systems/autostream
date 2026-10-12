@@ -32,6 +32,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 DIAL_INSTALLER = REPO_ROOT / "autostream_dial_install.sh"
 HELPERS_SH = REPO_ROOT / "installer" / "dial" / "helpers.sh"
+STATE_FILES_SH = REPO_ROOT / "installer" / "lib" / "state_files.sh"
 SUDOERS = REPO_ROOT / "system" / "sudoers" / "autostream_dial"
 
 sys.path.insert(0, str(REPO_ROOT / "tests"))
@@ -1444,6 +1445,7 @@ class TestWriteInstallStatePreservesSdmon:
 set -uo pipefail
 chown() {{ :; }}
 chmod() {{ :; }}
+source "{STATE_FILES_SH.as_posix()}"
 AUTOSTREAM_RELEASE_TAG="v1.2.3"
 {func_src_local}
 write_install_state "new-uuid"
@@ -1474,6 +1476,7 @@ echo "EXIT:$?"
 set -uo pipefail
 chown() {{ :; }}
 chmod() {{ :; }}
+source "{STATE_FILES_SH.as_posix()}"
 AUTOSTREAM_RELEASE_TAG="v1.2.3"
 {func_src_local}
 write_install_state "new-uuid"

@@ -80,6 +80,8 @@ source "${INSTALLER_LIB}/apt.sh"
 source "${INSTALLER_LIB}/sudoers.sh"
 # shellcheck source=installer/lib/swap.sh
 source "${INSTALLER_LIB}/swap.sh"
+# shellcheck source=installer/lib/state_files.sh
+source "${INSTALLER_LIB}/state_files.sh"
 # shellcheck source=installer/lib/system_tuning.sh
 source "${INSTALLER_LIB}/system_tuning.sh"
 # shellcheck source=installer/lib/owntone.sh
@@ -372,7 +374,9 @@ save_state() {
     low_power=1
   fi
 
-  cat > "${STATE_FILE}" <<EOF
+  # Written beside the old file and renamed over it: the directory belongs to
+  # the service account.
+  write_state_file "${STATE_FILE}" 0644 root:root <<EOF
 # autostream install state — written by ${SCRIPT_NAME}
 # Do not edit manually.
 AUTOSTREAM_PRODUCT=autostream
@@ -389,8 +393,6 @@ SDMON_CHECK_REASON="${SDMON_CHECK_REASON}"
 FETCH_AUTOSTREAM="${FETCH_AUTOSTREAM}"
 LOW_POWER="${low_power}"
 EOF
-  chmod 0644 "${STATE_FILE}"
-  chown root:root "${STATE_FILE}"
   info "Saved install state to ${STATE_FILE}"
 }
 

@@ -349,6 +349,7 @@ UNATTENDED=0; PIN_VALUE=""; PIN_REGEX='^[A-Za-z0-9-]{{4,20}}$'
 SDMON_METHOD=""; SDMON_CHECK=none; SDMON_CHECK_SERIAL=""; SDMON_CHECK_AT=""; SDMON_CHECK_REASON=""
 SDMON_FLAG_THIS_RUN=0; FETCH_AUTOSTREAM=0; OWNTONE_MODE=mini
 LOW_POWER=0; LOW_POWER_REQUESTED=0
+source "{(REPO_ROOT / "installer" / "lib" / "state_files.sh").as_posix()}"
 {_installer_functions()}
 {body}
 '''

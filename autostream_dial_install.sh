@@ -266,10 +266,16 @@ if ! $UPDATE; then
 else
     # Parse without source — never execute env file contents.
     DIAL_UUID=$(grep '^DIAL_UUID=' \
-        "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" 2>/dev/null | cut -d= -f2-)
-    if [[ -z "$DIAL_UUID" ]]; then
-        echo "ERROR: DIAL_UUID not found in /var/lib/autostream/install-state.env" >&2
-        exit 1
+        "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" 2>/dev/null | cut -d= -f2- || true)
+    if [[ ! "$DIAL_UUID" =~ ^[0-9a-f]{20}$ ]]; then
+        # The file sits in the service account's directory, so what it holds
+        # is checked before use.
+        echo "WARNING: DIAL_UUID in /var/lib/autostream/install-state.env is missing or malformed; deriving the dial identity instead." >&2
+        DIAL_UUID=$(generate_dial_id)
+        if [[ -z "$DIAL_UUID" ]]; then
+            echo "ERROR: Unable to derive Dial identity." >&2
+            exit 1
+        fi
     fi
 fi
 
@@ -377,9 +383,7 @@ write_install_state "$DIAL_UUID"
 # do not overwrite.
 if ! $UPDATE; then
     _result_file="${UPDATE_RESULT_FILE:-/var/lib/autostream/update-result.env}"
-    printf 'STATUS=\nMESSAGE=\n' > "$_result_file"
-    chown root:autostream "$_result_file"
-    chmod 0644 "$_result_file"
+    printf 'STATUS=\nMESSAGE=\n' | write_state_file "$_result_file" 0644 root:autostream
 fi
 
 # ---- Finish -----------------------------------------------------------------

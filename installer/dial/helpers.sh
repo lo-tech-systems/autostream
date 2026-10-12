@@ -24,6 +24,10 @@ source "${BASH_SOURCE[0]%/*}/../lib/system_tuning.sh"
 # installer.
 # shellcheck source=../lib/boot_files.sh
 source "${BASH_SOURCE[0]%/*}/../lib/boot_files.sh"
+# Writing a state file without following a link, shared with the appliance
+# installer.
+# shellcheck source=../lib/state_files.sh
+source "${BASH_SOURCE[0]%/*}/../lib/state_files.sh"
 
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
@@ -382,11 +386,26 @@ else:
     if not base:
         # Create a new cryptographically secure fallback identity.
         base = secrets.token_hex(10)
-        tmp = fallback_path.with_suffix('.tmp')
-        tmp.write_text(base, encoding='utf-8')
-        os.chmod(tmp, 0o644)
-        os.chown(tmp, 0, 0)
-        tmp.replace(fallback_path)
+        # The directory belongs to the service account, so the file is made
+        # under a name nothing can already hold, mode and owner are set on
+        # the open file, and the rename replaces whatever is at the final name.
+        tmp = state / ('.dial-id.' + secrets.token_hex(8))
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchown(fd, 0, 0)
+            os.fchmod(fd, 0o644)
+            os.write(fd, base.encode('utf-8'))
+            os.fsync(fd)
+        except BaseException:
+            os.close(fd)
+            os.unlink(str(tmp))
+            raise
+        os.close(fd)
+        try:
+            os.rename(str(tmp), str(fallback_path))
+        except BaseException:
+            os.unlink(str(tmp))
+            raise
 
 if salt is not None:
     text = 'autostream-dial-v1:' + base + ':' + salt
@@ -1699,7 +1718,7 @@ _update_result_value() {
     # Print the value of KEY in the result file; empty when absent.
     local file line
     file="$(_update_result_file)"
-    [[ -r "${file}" ]] || return 0
+    [[ -r "${file}" && ! -L "${file}" ]] || return 0
     while IFS= read -r line || [[ -n "${line}" ]]; do
         if [[ "${line%%=*}" == "$1" && "${line}" == *=* ]]; then
             printf '%s\n' "${line#*=}"
@@ -1712,7 +1731,7 @@ _update_result_value() {
 _installed_release_tag() {
     # Release tag recorded by the previous install; empty when unknown.
     local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
-    [[ -r "${state}" ]] || return 0
+    [[ -r "${state}" && ! -L "${state}" ]] || return 0
     grep '^AUTOSTREAM_RELEASE_TAG=' "${state}" 2>/dev/null | head -n 1 | cut -d= -f2- || true
 }
 
@@ -1726,11 +1745,11 @@ write_update_result() {
     # The file stays 0644 so the dial's own processes can read it.
     local status="$1" message="$2" percent="${3:-0}"
     shift $(( $# < 3 ? $# : 3 ))
-    local file tmp last_run_at key arg value line
+    local file last_run_at key arg value line owner=""
     local -A kv=()
     file="$(_update_result_file)"
     message="${message//$'\n'/ }"
-    if [[ -r "${file}" ]]; then
+    if [[ -r "${file}" && ! -L "${file}" ]]; then
         while IFS= read -r line || [[ -n "${line}" ]]; do
             [[ "${line}" == *=* && -n "${line#*=}" ]] || continue
             for key in "${UPDATE_RESULT_KEYS[@]}"; do
@@ -1751,7 +1770,10 @@ write_update_result() {
         fi
     done
     last_run_at="$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')"
-    tmp="${file}.tmp.$$"
+    # An existing result file keeps its owner.
+    if [[ -f "${file}" && ! -L "${file}" ]]; then
+        owner="$(stat -c '%u:%g' -- "${file}" 2>/dev/null || true)"
+    fi
     {
         printf 'STATUS=%s\nPERCENT_COMPLETE=%s\nMESSAGE=%s\nLAST_RUN_AT=%s\n' \
             "${status}" "${percent}" "${message}" "${last_run_at}"
@@ -1760,12 +1782,7 @@ write_update_result() {
                 printf '%s=%s\n' "${key}" "${kv[${key}]}"
             fi
         done
-    } > "${tmp}"
-    chmod 0644 "${tmp}"
-    if [[ -e "${file}" ]]; then
-        chown --reference="${file}" "${tmp}" 2>/dev/null || true
-    fi
-    mv -f "${tmp}" "${file}"
+    } | write_state_file "${file}" 0644 "${owner}"
 }
 
 phase() {
@@ -2085,6 +2102,8 @@ write_install_state() {
         sdmon_lines="$(grep -E '^SDMON_[A-Z_]+=' "${path}" 2>/dev/null || true)"
     fi
     # root-owned 0644: root writes, all can read (including autostream for UUID fallback).
+    # Written beside the old file and renamed over it: the directory belongs
+    # to the service account.
     {
         cat <<EOF
 AUTOSTREAM_PRODUCT=autostream-dial
@@ -2094,8 +2113,6 @@ EOF
         # Digest of the requirements the venv was built from; the next update
         # reuses the venv when it still matches.
         [[ -z "${VENV_LOCK_SHA256:-}" ]] || printf 'REQUIREMENTS_LOCK_SHA256=%s\n' "${VENV_LOCK_SHA256}"
-        [[ -n "${sdmon_lines}" ]] && printf '%s\n' "${sdmon_lines}"
-    } > "${path}"
-    chown root:root "${path}"
-    chmod 0644 "${path}"
+        if [[ -n "${sdmon_lines}" ]]; then printf '%s\n' "${sdmon_lines}"; fi
+    } | write_state_file "${path}" 0644 root:root
 }

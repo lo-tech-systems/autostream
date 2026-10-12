@@ -649,7 +649,8 @@ class TestRetireAndOwnedFiles:
 # ---------------------------------------------------------------------------
 
 def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
-             detects_hd: bool = False, reinstall: bool = False):
+             detects_hd: bool = False, reinstall: bool = False,
+             state_text: str = "DIAL_UUID=feedfacefeedfacefeed\n"):
     env = Env(tmp_path)
     deploy = tmp_path / "deploy"
     (deploy / "installer" / "dial").mkdir(parents=True)
@@ -673,7 +674,7 @@ def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
     for name in ("install", "cp", "mkdir", "rm", "ln", "sed", "chown", "chmod", "reboot",
                  "flock"):
         env.fake(name, RECORDER)
-    env.install_state.write_text("DIAL_UUID=abc\n", encoding="utf-8")
+    env.install_state.write_text(state_text, encoding="utf-8")
     args = ["bash", str(deploy / "autostream_dial_install.sh")]
     if update:
         args.append("--update")
