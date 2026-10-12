@@ -1160,12 +1160,22 @@ class TestLogrotateCoversTheInstallLogs:
         raise AssertionError(f"{log} is not rotated")
 
     @pytest.mark.parametrize("log", ["dial-install.log", "dial-update.log"])
-    def test_the_log_is_rotated_daily_with_a_bounded_history_and_matching_ownership(self, log):
+    def test_the_log_is_rotated_daily_with_a_bounded_history(self, log):
         body = self._stanza(log)
         assert re.search(r"^\s*daily\s*$", body, re.M)
         assert re.search(r"^\s*rotate\s+14\s*$", body, re.M)
         assert re.search(r"^\s*compress\s*$", body, re.M)
-        assert re.search(r"^\s*create\s+0640\s+root\s+adm\s*$", body, re.M)
+        assert re.search(r"^\s*copytruncate\s*$", body, re.M)
+
+    @pytest.mark.parametrize("log", ["dial-install.log", "dial-update.log"])
+    def test_the_log_is_never_renamed_from_under_a_run_that_holds_it_open(self, log):
+        # The installers append through a descriptor opened once, so a rotation
+        # that renamed the file would send the rest of a run into the rotated
+        # copy. With copytruncate the file stays where it is, which also leaves
+        # create with nothing to do, so it is not given.
+        body = self._stanza(log)
+        assert re.search(r"^\s*copytruncate\s*$", body, re.M)
+        assert not re.search(r"^\s*create\b", body, re.M)
 
 
 # ---------------------------------------------------------------------------

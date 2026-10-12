@@ -16,7 +16,7 @@
     delaycompress
     missingok
     notifempty
-    create 0640 root adm
+    copytruncate
 }
 
 /var/log/autostream/autostream-dial.log {
