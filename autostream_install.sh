@@ -1725,6 +1725,9 @@ run_install() {
   save_state
   sdmon_probe_and_enable
 
+  # Everything has succeeded; free the space the downloaded packages took.
+  clean_package_cache
+
   info "Installation complete."
 }
 
@@ -1768,6 +1771,10 @@ run_update() {
 
   CURRENT_PHASE="complete"
   write_update_result "success" "Update complete" 100
+
+  # The update has succeeded, and the appliance has no rollback that could need
+  # the downloaded packages; free the space they took.
+  clean_package_cache
 
   info "Update complete. Scheduling reboot..."
   /usr/local/libexec/autostream/autostream_admin reboot --delay 3 AutostreamUpdate || true

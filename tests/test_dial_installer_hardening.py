@@ -1197,3 +1197,122 @@ class TestLogrotateCoversTheInstallLogs:
         assert re.search(r"^\s*rotate\s+14\s*$", body, re.M)
         assert re.search(r"^\s*compress\s*$", body, re.M)
         assert re.search(r"^\s*create\s+0640\s+root\s+adm\s*$", body, re.M)
+
+
+# ---------------------------------------------------------------------------
+# The package cache is cleaned once an install or update is known good
+# ---------------------------------------------------------------------------
+
+@bash_capable
+class TestCleanPackageCache:
+    def test_runs_apt_get_clean_and_nothing_else(self, env):
+        env.fake("apt-get", RECORDER)
+        r = env.run("clean_package_cache", update="false")
+        assert r.returncode == 0, r.stderr
+        assert env.calls() == ["apt-get clean"]
+
+    def test_a_failure_is_a_warning_and_does_not_fail_the_install(self, env):
+        env.fake("apt-get", '#!/bin/bash\necho "apt-get $*" >> "$TRACE"\nexit 100\n')
+        r = env.run("clean_package_cache\necho carried-on", update="false")
+        assert r.returncode == 0, r.stderr
+        assert "carried-on" in r.stdout
+        assert "apt-get clean failed" in r.stderr
+
+    def test_nothing_is_removed_or_purged(self):
+        text = APT_LIB.read_text(encoding="utf-8")
+        body = text[text.index("clean_package_cache() {"):]
+        assert "autoremove" not in body and "purge" not in body
+
+
+@bash_capable
+class TestDialInstallerCleansTheCache:
+    def test_a_fresh_install_cleans_once_after_the_services_are_restarted(self, tmp_path):
+        from test_dial_installer_hd import _dry_run
+        r, calls = _dry_run(tmp_path, update=False)
+        assert r.returncode == 0, r.stderr
+        assert calls.count("clean_package_cache ") == 1
+        restart = calls.index("systemctl restart autostream_dial autostream_dial_wifi_watcher")
+        assert restart < calls.index("clean_package_cache ")
+        assert calls.index("write_install_state 0123456789abcdef0123") < restart
+
+    def test_a_failed_fresh_install_does_not_clean(self, tmp_path):
+        from test_dial_staged_install import _dry_run
+        r, calls = _dry_run(tmp_path, update=False, fail="deploy_admin")
+        assert r.returncode != 0
+        assert "clean_package_cache " not in calls
+
+    def test_an_update_does_not_clean_in_the_installer(self, tmp_path):
+        from test_dial_installer_hd import _dry_run
+        r, calls = _dry_run(tmp_path, update=True)
+        assert r.returncode == 0, r.stderr
+        assert "clean_package_cache " not in calls
+
+    def test_the_update_still_trims_obsolete_packages_during_the_upgrade(self, env):
+        env.fake("apt-get", RECORDER)
+        env.run("system_upgrade")
+        assert "apt-get autoclean -y" in env.calls()
+        assert "apt-get clean" not in env.calls()
+
+
+def _stubbed_appliance_run(env: Env, function: str, names: list[str], fail: str | None = None):
+    """Run the appliance installer's FUNCTION with each phase it calls replaced
+    by a recorder (one of them failing on request) and the real
+    clean_package_cache over a fake apt-get."""
+    env.fake("apt-get", RECORDER)
+    func = _function_text(APPLIANCE_INSTALLER, function)
+    stubs = "\n".join(
+        f'{n}() {{ echo "{n}" >> "$TRACE"; ' + ("return 1; " if n == fail else "") + "}"
+        for n in names)
+    body = (f'source "{APT_LIB}"\nORIG_HOME=/\nINSTALL_MODE=install\nPROMPT_REBOOT_ON_EXIT=0\n'
+            f'info() {{ :; }}\n{stubs}\n{func}\n{function}\n')
+    return env.run(body)
+
+
+INSTALL_PHASES = ["stop_watchdog_if_ram_monitored", "check_network_manager",
+                  "show_warnings_and_prompt", "require_rpi_os_trixie", "handle_pin",
+                  "bootstrap_phase", "fetch_phase", "sdmon_phase", "deploy_phase",
+                  "configure_phase", "network_state_phase", "services_phase", "save_state",
+                  "sdmon_probe_and_enable"]
+UPDATE_PHASES = ["write_update_result", "engage_update_page", "stop_watchdog_if_ram_monitored",
+                 "check_network_manager", "update_progress", "stop_services_for_update",
+                 "system_upgrade_phase", "ensure_build_deps", "fetch_phase", "sdmon_phase",
+                 "deploy_phase", "configure_phase", "services_phase", "save_state",
+                 "sdmon_probe_and_enable"]
+
+
+@bash_capable
+class TestApplianceInstallerCleansTheCache:
+    def test_a_fresh_install_cleans_after_every_phase_has_succeeded(self, env):
+        r = _stubbed_appliance_run(env, "run_install", INSTALL_PHASES)
+        assert r.returncode == 0, r.stderr
+        calls = env.calls()
+        assert calls[-1] == "apt-get clean"
+        assert calls.count("apt-get clean") == 1
+        assert calls.index("sdmon_probe_and_enable") < calls.index("apt-get clean")
+
+    def test_a_failed_fresh_install_does_not_clean(self, env):
+        r = _stubbed_appliance_run(env, "run_install", INSTALL_PHASES, fail="deploy_phase")
+        assert r.returncode != 0
+        assert "apt-get clean" not in env.calls()
+
+    def test_an_update_cleans_after_the_last_phase_and_after_success_is_recorded(self, env):
+        r = _stubbed_appliance_run(env, "run_update", UPDATE_PHASES)
+        assert r.returncode == 0, r.stderr
+        calls = env.calls()
+        assert calls.count("apt-get clean") == 1
+        assert calls.index("sdmon_probe_and_enable") < calls.index("apt-get clean")
+
+    def test_a_failed_update_does_not_clean(self, env):
+        r = _stubbed_appliance_run(env, "run_update", UPDATE_PHASES, fail="configure_phase")
+        assert r.returncode != 0
+        assert "apt-get clean" not in env.calls()
+
+    def test_update_text_cleans_between_the_success_record_and_the_reboot(self):
+        func = _function_text(APPLIANCE_INSTALLER, "run_update")
+        assert func.index('write_update_result "success"') < func.index("clean_package_cache") \
+            < func.index("autostream_admin reboot")
+
+    def test_installer_does_not_remove_packages_for_the_cleanup(self):
+        for path in (APPLIANCE_INSTALLER, INSTALLER, HELPERS, APT_LIB):
+            text = path.read_text(encoding="utf-8")
+            assert "autoremove" not in text, path.name

@@ -1106,7 +1106,20 @@ def _finish_success(swap: Dict[str, str]) -> Dict[str, Any]:
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(_swap_file())
     _log(f"update to {tag or 'new release'} verified")
+    _clean_package_cache()
     return {"ok": True, "verified": True}
+
+
+def _clean_package_cache() -> None:
+    """Free the space the update's downloaded packages took.  Done only once
+    the update has passed its health check, never before a rollback; the verdict
+    is already recorded, so a failure here is logged and nothing more."""
+    try:
+        rc, _out, err = _run(["apt-get", "clean"], timeout=120)
+        if rc != 0:
+            _log(f"apt-get clean failed rc={rc}: {err!r}")
+    except Exception as e:
+        _log(f"apt-get clean could not run: {e}")
 
 
 def _rollback(swap: Dict[str, str], stop_services: bool) -> Dict[str, Any]:

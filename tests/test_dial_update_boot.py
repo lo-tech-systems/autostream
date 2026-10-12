@@ -1243,3 +1243,91 @@ class TestHdRollbackRestoresTheHdFiles:
                     "/var/lib/autostream/hd-kiosk"}
         assert hd_paths <= out["true"]
         assert not hd_paths & out["false"]
+
+
+# ---------------------------------------------------------------------------
+# The package cache is cleaned once the update is verified
+# ---------------------------------------------------------------------------
+
+class TestDialUpdaterCleansAfterVerification:
+    """Driven through the boot-step harness in test_dial_update_boot."""
+
+    def clean_calls(self, system):
+        return [c for c in system.calls if c[:2] == ["apt-get", "clean"]]
+
+    def test_a_verified_update_cleans_after_the_success_is_recorded(self, world, mod, system, clock):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        serve_status(mod)
+        status_when_cleaned = []
+        real = system.__call__
+
+        def spy(cmd, timeout=60):
+            if cmd[:2] == ["apt-get", "clean"]:
+                status_when_cleaned.append(world.result()["STATUS"])
+            return real(cmd, timeout=timeout)
+
+        mod._run = spy
+        assert mod.cmd_verify()["verified"] is True
+        assert status_when_cleaned == ["success"]
+        assert len(self.clean_calls(system)) == 1
+
+    def test_a_rolled_back_update_does_not_clean(self, world, mod, system, clock):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        serve_status(mod)
+        system.units[mod.DIAL_UNIT] = ("failed", 0)
+        assert mod.cmd_verify()["rolled_back"] is True
+        assert self.clean_calls(system) == []
+
+    def test_a_timed_out_check_does_not_clean(self, world, mod, system, clock):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        mod._fetch_status = lambda: (0, {})
+        mod.cmd_verify()
+        assert self.clean_calls(system) == []
+
+    def test_nothing_cleans_before_the_check_runs(self, world, mod, system):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        assert self.clean_calls(system) == []
+
+    def test_a_failing_clean_does_not_change_the_verdict(self, world, mod, system, clock):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        serve_status(mod)
+        real = system.__call__
+
+        def failing(cmd, timeout=60):
+            if cmd[:2] == ["apt-get", "clean"]:
+                return 100, "", "E: Could not get lock"
+            return real(cmd, timeout=timeout)
+
+        mod._run = failing
+        assert mod.cmd_verify()["verified"] is True
+        assert world.result()["STATUS"] == "success"
+        assert "apt-get clean failed" in mod.LOG_PATH.read_text(encoding="utf-8")
+
+    def test_a_clean_that_cannot_run_does_not_change_the_verdict(self, world, mod, system, clock):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        serve_status(mod)
+        real = system.__call__
+
+        def missing(cmd, timeout=60):
+            if cmd[:2] == ["apt-get", "clean"]:
+                raise FileNotFoundError("apt-get")
+            return real(cmd, timeout=timeout)
+
+        mod._run = missing
+        assert mod.cmd_verify()["verified"] is True
+
+    def test_the_repeat_after_a_cut_between_success_and_cleanup_cleans_too(
+            self, world, mod, system, clock):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        world.swap_file.write_text(
+            world.swap_file.read_text(encoding="utf-8").replace("PHASE=swapped", "PHASE=done"),
+            encoding="utf-8")
+        mod.cmd_boot()
+        assert len(self.clean_calls(system)) == 1

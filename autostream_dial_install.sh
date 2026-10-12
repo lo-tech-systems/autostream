@@ -380,6 +380,9 @@ if $UPDATE; then
 else
     systemctl restart autostream_dial autostream_dial_wifi_watcher
     _install_success=true
+    # Everything has succeeded; free the space the downloaded packages took.
+    # (An update does this once the boot step has verified it, not here.)
+    clean_package_cache
     echo "autostream dial installation complete."
 fi
 if ! $UPDATE; then

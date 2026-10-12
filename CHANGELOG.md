@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- improvement: the dial and appliance installers now delete the downloaded package
+  files (`apt-get clean`) once an install or update has succeeded, freeing space
+  on a small SD card; before, a fresh install never cleaned them and an update
+  kept the current ones. A dial update does this only after the new version has
+  passed its check after the reboot, so a rolled-back update leaves them alone.
+  Installed packages are not touched.
 - improvement: after an update, an HD dial is only kept on the new version if its
   page server answers and, with a display connected, its kiosk browser is running.
   Otherwise the update is rolled back like any other failed check. A dial with no
