@@ -2158,3 +2158,101 @@ class TestFrozenTxtRecords:
             if key == "dial_api":
                 continue
             assert DIAL_CAPABILITIES.get(key, 0) >= 1, key
+
+
+# ---------------------------------------------------------------------------
+# Appliance factory reset forgets the authorised dials
+# ---------------------------------------------------------------------------
+
+class TestApplianceResetForgetsDials:
+    """The list of authorised dials goes with the appliance's other settings."""
+
+    OLD_DIAL = "fa54e5a89180d01053e0"
+
+    @pytest.fixture
+    def store(self, tmp_path, monkeypatch):
+        core = str(Path(__file__).resolve().parent.parent / "core")
+        if core not in sys.path:
+            sys.path.insert(0, core)
+        import autostream_dials
+        path = tmp_path / "dials.json"
+        path.write_text(json.dumps({self.OLD_DIAL: {
+            "name": "Lounge", "authorized_at": "2026-01-01T00:00:00"}}), encoding="utf-8")
+        monkeypatch.setattr(autostream_dials, "DIALS_PATH", path)
+        monkeypatch.setattr(m, "DIALS_STORE_FILE", path)
+        monkeypatch.setattr(m, "FACTORY_RESET_DELETE_FILES", (path,))
+        monkeypatch.setattr(m.shutil, "chown", lambda *a, **kw: None)
+        self.dials = autostream_dials
+        return path
+
+    def _reset(self, product="autostream", order=None):
+        order = order if order is not None else []
+        with patch.object(m, "_acquire_reset_lock", return_value=object()), \
+             patch.object(m, "_read_product", return_value=product), \
+             patch.object(m, "_rotate_logs"), \
+             patch.object(m, "_stop_service",
+                          side_effect=lambda name: order.append(("stop", name)) or True), \
+             patch.object(m, "_stop_owntone"), \
+             patch.object(m, "_sync_owntone_conf"), \
+             patch.object(m, "_delete_wifi_connections"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")), \
+             patch("pathlib.Path.exists", return_value=True):
+            return m._execute_factory_reset()
+
+    def test_the_dials_file_is_on_the_reset_allowlist(self):
+        fresh = load_supervisor_script("autostream_admin", "admin_reset_list")
+        assert Path("/var/lib/autostream/dials.json") in fresh.FACTORY_RESET_DELETE_FILES
+
+    def test_after_a_reset_no_dial_is_authorised(self, store):
+        assert self.dials.is_dial_authorized(self.OLD_DIAL)
+        assert self._reset() is True
+        assert not self.dials.is_dial_authorized(self.OLD_DIAL)
+        assert self.dials.parse_dial_entries() == []
+
+    def test_the_store_is_started_empty_and_private(self, store):
+        self._reset()
+        assert json.loads(store.read_text(encoding="utf-8")) == {}
+        assert oct(store.stat().st_mode & 0o777) == "0o600"
+
+    def test_the_service_is_stopped_before_the_list_is_deleted(self, store):
+        events = []
+        real = m._delete_reset_files
+        with patch.object(m, "_delete_reset_files",
+                          side_effect=lambda: (events.append("delete"), real())):
+            self._reset(order=events)
+        assert events.index(("stop", "autostream.service")) < events.index("delete")
+
+    def test_a_late_sighting_cannot_bring_the_old_list_back(self, store):
+        self._reset()
+        self.dials.update_dial_sighting(self.OLD_DIAL, "Lounge")
+        assert json.loads(store.read_text(encoding="utf-8")) == {}
+
+    def test_a_late_sighting_does_not_recreate_a_deleted_list(self, store):
+        store.unlink()
+        self.dials.update_dial_sighting(self.OLD_DIAL, "Lounge")
+        assert not store.exists()
+
+    def test_a_failure_to_start_an_empty_list_does_not_fail_the_reset(self, store):
+        with patch.object(m, "_write_durable", side_effect=OSError("read-only")):
+            assert self._reset() is True
+        assert not store.exists()
+
+    def test_an_appliance_that_is_not_reset_keeps_its_list(self, store):
+        before = store.read_bytes()
+        with patch.object(m, "find_systemd_run", return_value="/usr/bin/systemd-run"), \
+             patch.object(m, "_read_product", return_value="autostream"), \
+             patch.object(m, "run_cmd", return_value=(0, "", "")):
+            assert m._schedule_factory_reset() is True
+        assert store.read_bytes() == before
+        assert self.dials.is_dial_authorized(self.OLD_DIAL)
+
+    def test_resetting_a_dial_leaves_the_dials_file_alone(self, store):
+        before = store.read_bytes()
+        with patch.object(m, "_reset_dial_identity", return_value=True):
+            self._reset(product="autostream-dial")
+        assert store.read_bytes() == before
+
+    def test_the_documented_deletions_include_the_network_state_file(self):
+        assert "/etc/autostream-network.json" in m.__doc__.split("autostream product — deleted")[1] \
+            .split("autostream product — best-effort")[0]
+        assert Path("/etc/autostream-network.json") in m.FACTORY_RESET_DELETE_FILES

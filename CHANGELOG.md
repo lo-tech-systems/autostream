@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- change: a factory reset of the appliance now also erases its list of authorised
+  dials, so a reset appliance is as unconfigured as a new one. Before, the list
+  survived and the appliance still accepted the dials it knew. After a reset,
+  every dial has to be authorised again from the Dials card.
 - change: a factory reset of a dial now gives it a new identity, so every
   appliance treats it as a new dial and it has to be authorised again on each one.
   Before, the dial kept the identity it was born with and stayed authorised. The

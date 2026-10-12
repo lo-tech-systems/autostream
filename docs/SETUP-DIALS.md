@@ -55,6 +55,11 @@ Turn **Allow dial to control this appliance** off. A confirmation prompt
 the dial's access; the card falls back to its unauthorized state. Cancelling
 leaves the toggle on and nothing changes.
 
+## After the appliance is factory reset
+
+A factory reset of the appliance erases its list of authorised dials. Every dial
+shows as **New** again and has to be authorised as above.
+
 ## A dial that has been factory reset
 
 A factory reset gives a dial a new UUID, so this appliance treats it as a new

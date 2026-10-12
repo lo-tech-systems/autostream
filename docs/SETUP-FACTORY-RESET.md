@@ -11,6 +11,10 @@ and the appliance reboots into the same state it was in out of the box, broadcas
 Wi-Fi access point (named `autostream_XXXX`) so you can reconnect and reconfigure it from
 scratch.
 
+The list of dials you have authorised is erased too. After a reset no dial can control the
+appliance until you authorise it again on the **Dials** card (see [Dials](SETUP-DIALS.md)),
+the same as for a new appliance.
+
 ## Running it
 
 Press the red **Factory Reset** button. A confirmation dialog explains that all settings,

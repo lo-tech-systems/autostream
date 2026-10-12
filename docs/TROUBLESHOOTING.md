@@ -97,7 +97,7 @@ If the UI still works but the appliance is misconfigured, the quickest recovery 
 Factory Reset:
 
 * is PIN-protected
-* erases settings
+* erases settings, including the list of authorised dials
 * returns the appliance to first-run Wi-Fi setup mode
 
 Use Factory Reset when:

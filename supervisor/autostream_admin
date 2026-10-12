@@ -90,10 +90,13 @@ autostream product — deleted (fixed allowlist, no wildcards):
   /etc/autostream/autostream.json
   /var/lib/autostream/autostream-state.json
   /opt/autostream/ssid
+  /etc/autostream-network.json
   /var/lib/autostream/playback_stats.json
   /etc/autostream/nowplaying_hints.json
   /var/lib/autostream/sdcardhealth.json
   /var/lib/autostream/sdcardhealth-status.json
+  /var/lib/autostream/dials.json  (the list of authorised dials; an empty one is
+                                   then created again, as the installer does)
   /var/cache/owntone/songs3.db
   /etc/owntone-settings.json
 
@@ -173,6 +176,11 @@ HOSTNAME_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", re.IGNOR
 FACTORY_RESET_LOCK_DIR = Path("/run/autostream")
 FACTORY_RESET_LOCK_FILE = FACTORY_RESET_LOCK_DIR / "factory-reset.lock"
 
+# The list of authorised dials. Only the autostream service writes it, and only
+# when someone changes the list or a listed dial is seen, so nothing puts the
+# old list back once the service is stopped and the file is gone.
+DIALS_STORE_FILE = STAMP_DIR / "dials.json"
+
 # Factory reset: fixed allowlists of files to delete — no wildcards, no /opt path construction
 # Main autostream product files
 FACTORY_RESET_DELETE_FILES = (
@@ -184,6 +192,7 @@ FACTORY_RESET_DELETE_FILES = (
     Path("/etc/autostream/nowplaying_hints.json"),
     Path("/var/lib/autostream/sdcardhealth.json"),
     Path("/var/lib/autostream/sdcardhealth-status.json"),
+    DIALS_STORE_FILE,
     Path("/var/cache/owntone/songs3.db"),
     Path("/etc/owntone-settings.json"),
 )
@@ -1170,6 +1179,21 @@ def _delete_reset_files() -> None:
             log("WARN", f"factory-reset: could not delete {path}: {e!r}")
 
 
+def _empty_dials_store() -> None:
+    """Start the appliance with an empty list of authorised dials.
+
+    The list was deleted with the other reset files. The installer creates an
+    empty one, owned by the service user, so this does the same: a missing file
+    is treated as empty too, but logs a warning on every read. Best-effort.
+    """
+    try:
+        _write_durable(DIALS_STORE_FILE, "{}\n", 0o600)
+        shutil.chown(str(DIALS_STORE_FILE), "autostream", "autostream")
+        log("INFO", f"factory-reset: started an empty {DIALS_STORE_FILE}")
+    except Exception as e:
+        log("WARN", f"factory-reset: could not create an empty {DIALS_STORE_FILE}: {e!r}")
+
+
 def _delete_wifi_connections() -> None:
     """Enumerate and delete all saved Wi-Fi (802-11-wireless) NetworkManager connections."""
     nmcli = find_nmcli()
@@ -1290,7 +1314,8 @@ def _execute_factory_reset_autostream(lock_fd: object) -> bool:
       3. Stop autostream_wifi_watcher.service
       4. Stop owntone
       5. Sync owntone.conf (best-effort)
-      6. Delete allowlisted runtime/config files
+      6. Delete allowlisted runtime/config files (this includes the list of
+         authorised dials, which is then started again empty)
       7. Delete Wi-Fi connections
       8. Reboot
     """
@@ -1302,6 +1327,7 @@ def _execute_factory_reset_autostream(lock_fd: object) -> bool:
 
     _sync_owntone_conf()
     _delete_reset_files()
+    _empty_dials_store()
     _delete_wifi_connections()
     return True
 
