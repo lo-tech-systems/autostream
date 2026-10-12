@@ -122,6 +122,24 @@ Reconnect-to-saved and explicit-reconfigure rollback use a reconnect episode:
 one target adapter is tried per monitor pass, and the episode advances only after
 the worker result is applied.
 
+## Reconnect timing
+
+When connectivity is lost the watcher makes one prompt reconnect on the pass that
+notices it. If that does not bring the link back, the next attempts are made once
+the gateway has been unreachable for 5 minutes, then at most every 2 minutes.
+
+One case is handled sooner. If NetworkManager reports every Wi-Fi device as
+`unavailable` around that prompt attempt (the radio or its authentication service
+is restarting, for example during a package upgrade, so the attempt could not
+have succeeded), the watcher checks the device state every 3 seconds, in between
+its ordinary 15-second passes, and reconnects as soon as a device is available
+again. This fast phase lasts at most 60 seconds and runs at most once per offline
+episode. It applies only to a device that has been online since boot, never while
+a hotspot is up, and it only adds that one reconnect: the passes, their debounce
+counters, the 5-minute and 2-minute schedule and every reboot and recovery
+threshold are unchanged. A failure with the device available, such as a wrong
+password or an access point out of range, follows the schedule above as before.
+
 ## Hotspot purpose table
 
 The hotspot is a single parameterised state `HOTSPOT(purpose)`. There is no
@@ -317,6 +335,7 @@ cross-boot cap of **3 reboots per 24 h** plus an in-process throttle):
 | Connectivity/USB soft-fail debounce | 2 passes |
 | Gateway-down → start reconnect | 5 min |
 | Reconnect attempt interval | 2 min |
+| Reconnect after the Wi-Fi device was not available: device-state check | every 3 s, for at most 60 s |
 | Recovery-hotspot saved-SSID scan | 30 s |
 | Runtime USB-adoption scan | 5 min |
 | BSSID survey (full rescan when idle, cheap read during playback) | 60 s |

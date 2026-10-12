@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import autostream_wifi_network as wifi_net
+import wifi_policy
 
 
 @dataclass
@@ -92,6 +93,10 @@ class LoopContext:
     next_recovery_action: Callable
     RecoveryKind: object
     PURPOSE_TABLE: dict
+    # Whether NetworkManager can activate a connection on a Wi-Fi device now:
+    # "unavailable" | "ready" | "unknown" (autostream_wifi_network.wifi_radio_state).
+    # None switches the fast reconnect after an unavailable device off.
+    wifi_radio_state: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -724,6 +729,83 @@ def step_boot_ap_entry(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
     return ctx.Verdict.CONTINUE
 
 
+def _radio_state(ctx: LoopContext) -> str:
+    """The Wi-Fi radio fact, or "unknown" when it is not wired in or fails."""
+    if ctx.wifi_radio_state is None:
+        return "unknown"
+    try:
+        return ctx.wifi_radio_state()
+    except Exception:  # an optional fact must never break the loop
+        ctx.logger.debug("Wi-Fi device state unreadable", exc_info=True)
+        return "unknown"
+
+
+def _reconnect_noting_device_state(ctx: LoopContext, now: float, episode: float) -> None:
+    """Run the steady-state reconnect; if the Wi-Fi device was not available, start
+    the fast phase that retries once it is.
+
+    "Not available" is NetworkManager's own device state (every Wi-Fi device
+    ``unavailable``), read before and after the attempt, so a device that comes
+    back between the attempt and the read still counts.  The attempt itself is
+    unchanged and so are the schedule and the escalation that follow it.  Only a
+    device that has been online this boot qualifies (a runtime interruption, not
+    the boot window), never during setup mode, and at most once per offline
+    episode (``episode`` is that episode's ``conn_down_start``).
+    """
+    before = _radio_state(ctx)
+    ctx.connect_to_configured_wifi()
+    if ctx.wifi_radio_state is None:
+        return
+    after = _radio_state(ctx)
+    if "unavailable" not in (before, after):
+        return
+    with ctx.state_lock:
+        if (not ctx.STATE.been_online_this_boot or ctx.STATE.setup_mode
+                or ctx.STATE.device_wait_episode == episode):
+            return
+        ctx.STATE.device_wait_episode = episode
+        ctx.STATE.device_wait_until = now + wifi_policy.DEVICE_WAIT_MAX
+    ctx.logger.info(
+        "Wi-Fi device not available yet; will reconnect as soon as it is "
+        "(checking every %ds for up to %ds)",
+        wifi_policy.DEVICE_WAIT_POLL_INTERVAL, wifi_policy.DEVICE_WAIT_MAX)
+
+
+def poll_device_wait(ctx: LoopContext, now: float) -> None:
+    """Between monitor passes: while the fast phase runs, reconnect once the Wi-Fi
+    device is available.
+
+    Does nothing when no fast phase is running.  The phase ends at its deadline,
+    when the connection is back, when a hotspot, credential apply or reconnect
+    episode takes over, or after the one reconnect it makes.  It makes that
+    reconnect through the same ``connect_to_configured_wifi`` the pass uses, so
+    an already healthy connection is left alone, and it changes neither the
+    reconnect schedule nor any escalation timer.
+    """
+    with ctx.state_lock:
+        until = ctx.STATE.device_wait_until
+        if until is None:
+            return
+        taken_over = (ctx.STATE.setup_mode or ctx.APPLY_STATE.apply_in_progress
+                      or ctx.STATE.reconnect_episode is not None)
+        recovered = ctx.STATE.conn_down_start is None
+        busy = ctx.STATE.transitioning
+        if now >= until or taken_over or recovered:
+            ctx.STATE.device_wait_until = None
+            ended = True
+        else:
+            ended = False
+    if ended:
+        ctx.logger.debug("Fast Wi-Fi reconnect phase over")
+        return
+    if busy or _radio_state(ctx) != "ready":
+        return
+    with ctx.state_lock:
+        ctx.STATE.device_wait_until = None
+    ctx.logger.info("Wi-Fi device available again; reconnecting")
+    ctx.connect_to_configured_wifi()
+
+
 def step_connection_reliability(ctx: LoopContext, hctx: "HealthContext") -> "Verdict":
     """WiFi configured, ethernet down: prompt/periodic reconnect + gateway-down reboot.
 
@@ -749,7 +831,7 @@ def step_connection_reliability(ctx: LoopContext, hctx: "HealthContext") -> "Ver
                 ctx.STATE.last_reconnect_attempt = now
             down_start = now
             ctx.logger.info("Connectivity lost; attempting prompt reconnect on entry")
-            ctx.connect_to_configured_wifi()
+            _reconnect_noting_device_state(ctx, now, down_start)
 
         down_for = now - down_start
 
@@ -768,7 +850,7 @@ def step_connection_reliability(ctx: LoopContext, hctx: "HealthContext") -> "Ver
                 with ctx.state_lock:
                     ctx.STATE.last_reconnect_attempt = now
                 ctx.logger.info("Connectivity unhealthy for %.0fs; attempting reconnect", down_for)
-                ctx.connect_to_configured_wifi()
+                _reconnect_noting_device_state(ctx, now, down_start)
     else:
         with ctx.state_lock:
             ctx.STATE.conn_down_start = None

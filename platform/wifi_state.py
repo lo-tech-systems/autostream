@@ -188,6 +188,12 @@ class NetworkMonitorState:
     # Degradation tracking for "healthy connectivity"
     conn_down_start: Optional[float] = None
     last_reconnect_attempt: Optional[float] = None
+    # Fast reconnect after the Wi-Fi device was not available (see wifi_policy
+    # DEVICE_WAIT_*): the monotonic deadline of the running fast phase, or None;
+    # and the conn_down_start of the offline episode that has had its fast phase,
+    # so that each episode gets at most one.
+    device_wait_until: Optional[float] = None
+    device_wait_episode: Optional[float] = None
     # Last time a recovery hotspot scanned for the saved SSID (scan gate).
     last_recovery_scan: Optional[float] = None
     # Reboot-request throttle: monotonic time before which another reboot request is

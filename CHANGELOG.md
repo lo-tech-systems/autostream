@@ -73,6 +73,12 @@
   makes every automatic retry fail. The dial and appliance installers now finish
   an interrupted package run (`dpkg --configure -a`) before their first package
   command, so the retry after the next boot can complete the update.
+- fix: Wi-Fi now comes back within seconds, not minutes, after a brief
+  interruption of the adapter (for example when a package upgrade restarts the
+  Wi-Fi authentication service). The Wi-Fi watcher used to wait for its
+  five-minute retry when its first attempt found the adapter not yet available;
+  it now checks every few seconds for up to a minute and reconnects as soon as
+  the adapter is back.
 - fix: an update no longer fails when a system package upgrade briefly drops the
   Wi-Fi. The dial and appliance installers now wait up to three minutes for the
   network to come back before each step that downloads, and run a step again

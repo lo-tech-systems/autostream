@@ -454,6 +454,34 @@ def _nmcli_wifi_devices() -> list[dict]:
     return devs
 
 
+def classify_wifi_radio(states: list[str]) -> str:
+    """Classify the NetworkManager states of the Wi-Fi devices as one fact.
+
+    "unavailable" when there is at least one device and every one is in the
+    ``unavailable`` state (NetworkManager has the device but the radio or its
+    authentication service is not ready, so no connection can be activated on
+    it); "ready" when some device is in any state other than ``unavailable`` or
+    ``unmanaged``; "unknown" otherwise (no device listed, or only unmanaged
+    ones).
+    """
+    if not states:
+        return "unknown"
+    if all(s == "unavailable" for s in states):
+        return "unavailable"
+    if any(s not in ("unavailable", "unmanaged") for s in states):
+        return "ready"
+    return "unknown"
+
+
+def wifi_radio_state() -> str:
+    """Whether NetworkManager can activate a connection on a Wi-Fi device now.
+
+    One ``nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status`` query,
+    classified by ``classify_wifi_radio``.  "unknown" when the query fails.
+    """
+    return classify_wifi_radio([d["state"] for d in _nmcli_wifi_devices()])
+
+
 def _nmcli_device_detail(ifname: str) -> dict:
     """Return GENERAL.HWADDR / permanent address / product description for a device."""
     base_fields = [

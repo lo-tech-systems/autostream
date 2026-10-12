@@ -1591,8 +1591,30 @@ def _sleep_or_finish_monitor_pass(run_once: bool) -> bool:
     """Sleep between monitor passes, or signal one-pass tests to return."""
     if run_once:
         return True
-    time.sleep(NETWORK_MONITOR_INTERVAL)
+    _sleep_monitor_interval()
     return False
+
+
+def _sleep_monitor_interval() -> None:
+    """Sleep NETWORK_MONITOR_INTERVAL; while a fast reconnect phase is running,
+    wake every DEVICE_WAIT_POLL_INTERVAL to look at the Wi-Fi device state.
+
+    The pass cadence is unchanged (the whole interval is still slept, and the
+    passes, with their debounce counters, run at the same rate); the extra wake-ups
+    only reconnect sooner when the device becomes available.
+    """
+    deadline = time.monotonic() + NETWORK_MONITOR_INTERVAL
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        with state_lock:
+            waiting = STATE.device_wait_until is not None
+        if not waiting:
+            time.sleep(remaining)
+            return
+        time.sleep(min(remaining, wifi_policy.DEVICE_WAIT_POLL_INTERVAL))
+        wifi_loop.poll_device_wait(LOOP_CTX, time.monotonic())
 
 
 def request_guarded_reboot(now: float, reason: str, *, domain: str, target=None) -> bool:
@@ -2170,6 +2192,7 @@ def build_contexts() -> None:
         next_recovery_action=wifi_policy.next_recovery_action,
         RecoveryKind=wifi_policy.RecoveryKind,
         PURPOSE_TABLE=wifi_policy.PURPOSE_TABLE,
+        wifi_radio_state=lambda: wifi_net.wifi_radio_state(),
     )
 
 

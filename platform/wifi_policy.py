@@ -27,6 +27,16 @@ AP_MAX_DURATION = 30 * 60               # AP mode lifetime for configured device
 HOTSPOT_PROBE_GRACE = 15 * 60           # user-opened hotspot delay before probing for the saved network
 BOOT_AP_GRACE = 60                      # still offline after this many seconds of boot -> boot-window AP entry
 
+# Reconnect after the adapter was not ready.  An activation that finds the Wi-Fi
+# device unavailable (its radio or authentication service restarting, say) cannot
+# succeed, and the device is normally back within seconds.  For up to
+# DEVICE_WAIT_MAX seconds after such an attempt the watcher looks at the device
+# state every DEVICE_WAIT_POLL_INTERVAL seconds between its ordinary passes and
+# reconnects as soon as the device is available.  Once per offline episode; after
+# the bound the ordinary reconnect schedule applies unchanged.
+DEVICE_WAIT_POLL_INTERVAL = 3           # seconds between device-state checks while waiting
+DEVICE_WAIT_MAX = 60                    # seconds the fast phase lasts at most
+
 
 class Mode(Enum):
     """The watcher's explicit connectivity operating mode."""
