@@ -556,13 +556,13 @@ class TestBootRollback:
         assert system.stops == [["systemctl", "stop", mod.DIAL_UNIT, mod.WATCHER_UNIT]]
         assert system.calls.index(system.stops[0]) < system.calls.index([mod.REBOOT_BIN])
 
-    def test_rollback_keeps_the_staging_directory(self, world, mod):
+    def test_rollback_removes_the_staging_directory(self, world, mod):
         swap_in(world, mod, "swapped")
         staging = mod.STAGING_DIR
         staging.mkdir(parents=True)
         (staging / "release_tag").write_text("v1.3.0\n", encoding="utf-8")
         mod.cmd_rollback()
-        assert (staging / "release_tag").exists()
+        assert not staging.exists()
 
     def test_rollback_without_a_swap_is_a_noop(self, world, mod, system):
         result = mod.cmd_rollback()

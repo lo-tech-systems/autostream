@@ -260,14 +260,9 @@ def write_update_result(status: str, message: str, percent: int = 0, **extra: An
             lines.append(f"{key}={' '.join(kept[key].splitlines())}")
     content = "\n".join(lines) + "\n"
 
-    owner = None
-    try:
-        st = os.lstat(str(path))
-        if stat.S_ISREG(st.st_mode):
-            owner = (st.st_uid, st.st_gid)
-    except (OSError, AttributeError):
-        pass
-    write_file_safely(path, content, 0o644, owner)
+    # Owned by the user this runs as (root), whatever owned the file it
+    # replaces: a file the service account put there is not to lend its owner.
+    write_file_safely(path, content, 0o644)
 
 
 def _is_transient_staging_error(exc: BaseException) -> bool:
@@ -1359,6 +1354,8 @@ def _rollback(swap: Dict[str, str], stop_services: bool) -> Dict[str, Any]:
         tag=tag or None, previous_tag=previous or None, rolled_back=1,
     )
     _remove_quietly(_backup_dir(swap))
+    # The staged release is of no use once the update has been rolled back.
+    _remove_quietly(STAGING_DIR)
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(_swap_file())
     _remove_legacy_update_state()

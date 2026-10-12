@@ -1901,7 +1901,7 @@ write_update_result() {
     # The file stays 0644 so the dial's own processes can read it.
     local status="$1" message="$2" percent="${3:-0}"
     shift $(( $# < 3 ? $# : 3 ))
-    local file last_run_at key arg value line owner="" old
+    local file last_run_at key arg value line old
     local -A kv=()
     file="$(_update_result_file)"
     message="${message//$'\n'/ }"
@@ -1926,10 +1926,6 @@ write_update_result() {
         fi
     done
     last_run_at="$(date -u '+%Y-%m-%dT%H:%M:%S+00:00')"
-    # An existing result file keeps its owner.
-    if [[ -f "${file}" && ! -L "${file}" ]]; then
-        owner="$(stat -c '%u:%g' -- "${file}" 2>/dev/null || true)"
-    fi
     {
         printf 'STATUS=%s\nPERCENT_COMPLETE=%s\nMESSAGE=%s\nLAST_RUN_AT=%s\n' \
             "${status}" "${percent}" "${message}" "${last_run_at}"
@@ -1938,7 +1934,7 @@ write_update_result() {
                 printf '%s=%s\n' "${key}" "${kv[${key}]}"
             fi
         done
-    } | write_state_file "${file}" 0644 "${owner}"
+    } | write_state_file "${file}" 0644
 }
 
 phase() {

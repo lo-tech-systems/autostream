@@ -201,15 +201,15 @@ class TestTheInstallersWritersUseIt:
         assert r.returncode == 0, r.stderr
         assert "leaked" not in env.result.read_text(encoding="utf-8")
 
-    def test_the_dial_update_result_keeps_its_keys_and_its_owner(self, env):
+    def test_the_dial_update_result_keeps_its_keys_and_is_owned_by_the_writer(self, env):
         env.result.write_text("STATUS=in_progress\nTAG=1.2.3\nATTEMPT=2\n", encoding="utf-8")
         env.fake("chown", '#!/bin/bash\necho "$@" >> "$TRACE"\n')
         r = env.run('write_update_result in_progress "next" 6 PHASE=install')
         assert r.returncode == 0, r.stderr
         text = env.result.read_text(encoding="utf-8")
         assert "TAG=1.2.3" in text and "ATTEMPT=2" in text and "PHASE=install" in text
-        assert any(re.fullmatch(rf"{os.getuid()}:{os.getgid()} /proc/\d+/fd/1", c)
-                   for c in env.calls())
+        assert not [c for c in env.calls() if c.startswith("chown") or "/proc/" in c]
+        assert env.result.stat().st_uid == os.getuid()
         assert stat.S_IMODE(env.result.stat().st_mode) == 0o644
 
     def test_the_installed_tag_and_result_values_are_not_read_through_a_link(
