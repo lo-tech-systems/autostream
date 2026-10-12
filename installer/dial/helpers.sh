@@ -13,6 +13,9 @@ source "${BASH_SOURCE[0]%/*}/../lib/sudoers.sh"
 # recover_interrupted_packages, shared with the appliance installer.
 # shellcheck source=../lib/apt.sh
 source "${BASH_SOURCE[0]%/*}/../lib/apt.sh"
+# install_swap_limit, shared with the appliance installer.
+# shellcheck source=../lib/swap.sh
+source "${BASH_SOURCE[0]%/*}/../lib/swap.sh"
 
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
@@ -1880,6 +1883,7 @@ owned_files_list() {
                   /etc/logrotate.d/autostream-dial \
                   /etc/systemd/journald.conf.d/99-autostream-storage.conf \
                   /etc/systemd/coredump.conf.d/99-autostream-coredump.conf \
+                  /etc/rpi/swap.conf.d/99-autostream-swap.conf \
                   /var/lib/autostream/install-state.env
     for name in $(dial_image_names); do
         printf '%s\n' "${opt}/images/${name}"

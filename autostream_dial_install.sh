@@ -350,6 +350,10 @@ mkdir -p /etc/systemd/coredump.conf.d
 install -m 0644 -o root -g root "$DEPLOY/system/coredump/99-autostream-coredump.conf" \
     /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
 
+# Swap file limit, shared with the appliance: rpi-swap sizes the file from RAM,
+# so a 4 GB board would put 2 GB on the SD card. Takes effect at the next boot.
+install_swap_limit "$DEPLOY/system/rpi-swap/99-autostream-swap.conf"
+
 write_install_state "$DIAL_UUID"
 
 # ---- Initialize update-result.env on fresh install only ---------------------

@@ -46,6 +46,7 @@ INSTALLER_SCRIPTS = [
     REPO_ROOT / "installer" / "lib" / "owntone.sh",
     REPO_ROOT / "installer" / "lib" / "vibra.sh",
     REPO_ROOT / "installer" / "lib" / "hardware.sh",
+    REPO_ROOT / "installer" / "lib" / "swap.sh",
     REPO_ROOT / "installer" / "dial" / "helpers.sh",
     REPO_ROOT / "nginx" / "cgi" / "update-status.cgi",
 ]

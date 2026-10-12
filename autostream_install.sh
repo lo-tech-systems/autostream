@@ -69,6 +69,8 @@ source "${INSTALLER_LIB}/helpers.sh"
 source "${INSTALLER_LIB}/apt.sh"
 # shellcheck source=installer/lib/sudoers.sh
 source "${INSTALLER_LIB}/sudoers.sh"
+# shellcheck source=installer/lib/swap.sh
+source "${INSTALLER_LIB}/swap.sh"
 # shellcheck source=installer/lib/owntone.sh
 source "${INSTALLER_LIB}/owntone.sh"
 # shellcheck source=installer/lib/vibra.sh
@@ -1065,6 +1067,10 @@ configure_phase() {
   mkdir -p /etc/systemd/coredump.conf.d
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/coredump/99-autostream-coredump.conf" \
     /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
+
+  # Swap file limit: rpi-swap sizes the file from RAM, so a 4 GB board would put
+  # 2 GB on the SD card. The limit takes effect at the next boot.
+  install_swap_limit "${AUTOSTREAM_DIR}/system/rpi-swap/99-autostream-swap.conf"
 
   # logind drop-in: suppress power-key events so USB enumeration cannot shut down the appliance
   mkdir -p /etc/systemd/logind.conf.d

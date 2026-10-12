@@ -57,6 +57,8 @@ it should not be treated as a full system rollback.
 - Removes the journald storage drop-in
   (`/etc/systemd/journald.conf.d/99-autostream-storage.conf`) and restarts
   `systemd-journald` to apply the removal.
+- Removes the swap file limit (`/etc/rpi/swap.conf.d/99-autostream-swap.conf`); the
+  swap file returns to its default size at the next reboot.
 - Removes a few other installer-managed files we can identify confidently, such as
   the autostream logrotate file, the autostream dnsmasq snippet, the
   NetworkManager files copied by the installer, the network state file

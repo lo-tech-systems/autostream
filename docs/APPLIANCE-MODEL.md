@@ -67,6 +67,7 @@ on the dial device and are not counted here.) Core always-running units:
 | `/etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf` | `HandlePowerKey=ignore` - suppresses USB-enumeration spurious power-key events that would otherwise shut down an unattended Pi. Disables physical power-button shutdown system-wide. |
 | `/etc/systemd/journald.conf.d/99-autostream-storage.conf` | Caps journal at 128 MB / 14-day retention. |
 | `/etc/systemd/coredump.conf.d/99-autostream-coredump.conf` | Caps core dumps at 256 MB each and 256 MB in total, and clears older ones to keep 512 MB of disk free. Dials get the same file. |
+| `/etc/rpi/swap.conf.d/99-autostream-swap.conf` | Limits the swap file to 512 MiB. Raspberry Pi OS makes it as large as the board's RAM, up to 2 GiB, on the SD card. Dials get the same file. Only written when the `rpi-swap` package is present; applies at boot, so after a reboot (a larger existing file is expected to be replaced then [not yet confirmed on a device]). The zram swap settings are untouched. Removed on uninstall. |
 | `/etc/sudoers.d/autostream_updater`, `autostream_admin` | Passwordless root for targeted update, reboot, and network-reconfiguration commands. |
 | `/etc/logrotate.d/autostream` | Rotates `/var/log/autostream/`. |
 | `/etc/cloud/cloud.cfg.d/` | Disables cloud-init management of `/etc/hosts` (if cloud-init present) to prevent it overwriting the `autostream.local` hostname entry on each boot. |

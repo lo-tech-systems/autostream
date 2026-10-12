@@ -243,6 +243,7 @@ main() {
   remove_path /var/lib/autostream/journald-persistent.applied
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
   remove_path /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
+  remove_path /etc/rpi/swap.conf.d/99-autostream-swap.conf
   remove_path /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
   systemctl restart systemd-logind || warn "systemctl restart systemd-logind failed"
 

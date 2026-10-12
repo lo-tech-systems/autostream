@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- improvement: the appliance and dial installers now limit the swap file to
+  512 MiB. Raspberry Pi OS makes it as large as the board's RAM, up to 2 GiB, so
+  a 4 GB board put a 2 GB file on its SD card. Install and update put the setting
+  in place and uninstall removes it; it applies at the next reboot, when a larger
+  existing file is expected to be replaced [not yet confirmed on a device]. The
+  zram swap settings are left alone.
 - improvement: the dial and appliance installers now delete the downloaded package
   files (`apt-get clean`) once an install or update has succeeded, freeing space
   on a small SD card; before, a fresh install never cleaned them and an update
