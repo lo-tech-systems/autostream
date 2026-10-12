@@ -315,3 +315,176 @@ class TestScriptsDoNotWriteThroughLinks:
         _plant(tmp_path, "storage-guard.json", victim)
         assert mod.save_state({"a": 1}) is True
         assert victim.read_text(encoding="utf-8") == "precious\n"
+
+
+SECRET_LINES = (
+    "root-only-secret-line\n"
+    "AUTOSTREAM_PRODUCT=leaked-product\n"
+    "AUTOSTREAM_RELEASE_TAG=leaked-installed-tag\n"
+    "STATUS=leaked-status\n"
+    "MESSAGE=leaked-message\n"
+    "TAG=leaked-tag\n"
+    "PREVIOUS_TAG=leaked-previous\n"
+    "PHASE=leaked-phase\n"
+)
+SECRET_JSON = '{"serial": "leaked-serial", "leaked": "leaked-json"}\n'
+
+
+@pytest.fixture
+def secret(tmp_path):
+    """A stand-in for a file only root may read, outside the state directory."""
+    outside = tmp_path / "root-only"
+    outside.mkdir()
+    path = outside / "secret"
+    path.write_text(SECRET_LINES, encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def state_dir(tmp_path):
+    path = tmp_path / "state"
+    path.mkdir()
+    return path
+
+
+def _assert_no_leak(text: str) -> None:
+    assert "leaked" not in text
+    assert "root-only-secret-line" not in text
+
+
+@posix_only
+class TestRootReadsDoNotFollowLinks:
+    """A root-run helper reading a file in a directory the service account
+    owns must not follow a link that account placed there."""
+
+    def _sd(self, state_dir):
+        mod = load_supervisor_script("autostream_sdcardhealth", "sdcardhealth_reads")
+        mod.STATE_DIR = state_dir
+        mod.STATE_FILE = state_dir / "install-state.env"
+        mod.MARKER_FILE = state_dir / "sdcardhealth.inflight"
+        return mod
+
+    def test_sd_health_state_update_does_not_copy_a_linked_file(self, state_dir, secret):
+        mod = self._sd(state_dir)
+        mod.STATE_FILE.symlink_to(secret)
+        mod.update_state_file({"SDMON_CHECK": "pass"})
+        written = mod.STATE_FILE.read_text(encoding="utf-8")
+        _assert_no_leak(written)
+        assert not mod.STATE_FILE.is_symlink()
+        assert 'SDMON_CHECK="pass"' in written
+
+    def test_sd_health_state_read_ignores_a_linked_file(self, state_dir, secret):
+        mod = self._sd(state_dir)
+        mod.STATE_FILE.symlink_to(secret)
+        assert mod.read_state_value("AUTOSTREAM_PRODUCT", "fallback") == "fallback"
+
+    def test_sd_health_marker_read_ignores_a_linked_file(self, state_dir, tmp_path):
+        mod = self._sd(state_dir)
+        target = tmp_path / "root-only" / "marker.json"
+        target.parent.mkdir()
+        target.write_text(SECRET_JSON, encoding="utf-8")
+        mod.MARKER_FILE.symlink_to(target)
+        assert mod.read_marker() == {}
+
+    def test_sd_health_ordinary_reads_are_unchanged(self, state_dir):
+        mod = self._sd(state_dir)
+        mod.STATE_FILE.write_text('AUTOSTREAM_PRODUCT="autostream"\nOTHER=1\n',
+                                  encoding="utf-8")
+        assert mod.read_state_value("AUTOSTREAM_PRODUCT") == "autostream"
+        assert mod.read_state_value("MISSING", "d") == "d"
+        mod.update_state_file({"OTHER": "2", "NEW": "x"})
+        assert mod.STATE_FILE.read_text(encoding="utf-8") == (
+            'AUTOSTREAM_PRODUCT="autostream"\nOTHER="2"\nNEW="x"\n')
+        mod.MARKER_FILE.write_text('{"serial": "abc"}', encoding="utf-8")
+        assert mod.read_marker() == {"serial": "abc"}
+        mod.MARKER_FILE.unlink()
+        assert mod.read_marker() is None
+
+    def test_the_dial_updater_result_does_not_carry_over_a_linked_file(
+            self, state_dir, secret):
+        mod = load_supervisor_script("autostream_dial_updater", "dial_updater_reads")
+        mod.STATE_DIR = state_dir
+        (state_dir / "update-result.env").symlink_to(secret)
+        mod.write_update_result("in_progress", "working", percent=5)
+        written = (state_dir / "update-result.env").read_text(encoding="utf-8")
+        _assert_no_leak(written)
+        assert "STATUS=in_progress" in written
+
+    def test_the_dial_updater_result_still_carries_its_own_keys_over(self, state_dir):
+        mod = load_supervisor_script("autostream_dial_updater", "dial_updater_reads_ok")
+        mod.STATE_DIR = state_dir
+        mod.write_update_result("in_progress", "one", percent=5, tag="1.2.3")
+        mod.write_update_result("in_progress", "two", percent=6)
+        written = (state_dir / "update-result.env").read_text(encoding="utf-8")
+        assert "TAG=1.2.3" in written
+        assert "MESSAGE=two" in written
+
+    def test_the_installed_tag_is_not_taken_from_a_linked_file(self, state_dir, secret):
+        mod = load_supervisor_script("autostream_dial_updater", "dial_updater_tag")
+        mod.STATE_DIR = state_dir
+        (state_dir / "install-state.env").symlink_to(secret)
+        assert "leaked" not in mod._read_installed_tag()
+        (state_dir / "install-state.env").unlink()
+        (state_dir / "install-state.env").write_text(
+            "AUTOSTREAM_RELEASE_TAG=1.2.3\n", encoding="utf-8")
+        assert mod._read_installed_tag() == "1.2.3"
+
+    def test_the_appliance_updater_tag_is_not_taken_from_a_linked_file(
+            self, state_dir, secret):
+        mod = load_supervisor_script("autostream_updater", "appliance_updater_tag")
+        mod.INSTALL_STATE_FILE = state_dir / "install-state.env"
+        mod.INSTALL_STATE_FILE.symlink_to(secret)
+        assert "leaked" not in mod._read_installed_release_tag()
+        mod.INSTALL_STATE_FILE.unlink()
+        mod.INSTALL_STATE_FILE.write_text("AUTOSTREAM_RELEASE_TAG=1.2.3\n", encoding="utf-8")
+        assert mod._read_installed_release_tag() == "1.2.3"
+
+    def test_the_shared_env_reader_ignores_a_link(self, state_dir, secret):
+        (state_dir / "x.env").symlink_to(secret)
+        assert support._read_env_file(state_dir / "x.env") == {}
+        (state_dir / "y.env").write_text("A=1\n", encoding="utf-8")
+        assert support._read_env_file(state_dir / "y.env") == {"A": "1"}
+        assert support._read_env_file(state_dir / "absent.env") == {}
+
+    def test_update_status_reports_nothing_from_linked_files(
+            self, state_dir, secret, capsys):
+        import json
+        mod = load_supervisor_script("autostream_admin", "admin_reads_status")
+        mod.STAMP_DIR = state_dir
+        mod.INSTALL_STATE_FILE = state_dir / "install-state.env"
+        mod.UPDATE_RESULT_FILE = state_dir / "update-result.env"
+        mod._INSTALL_LOG = state_dir / "autostream_install.log"
+        mod.UPDATE_RESULT_FILE.symlink_to(secret)
+        mod._INSTALL_LOG.symlink_to(secret)
+        mod.read_update_status()
+        _assert_no_leak(capsys.readouterr().out)
+        mod.UPDATE_RESULT_FILE.unlink()
+        mod.UPDATE_RESULT_FILE.write_text(
+            "STATUS=success\nMESSAGE=done\nPERCENT_COMPLETE=100\n", encoding="utf-8")
+        mod._INSTALL_LOG.unlink()
+        mod._INSTALL_LOG.write_text("line one\nline two\n", encoding="utf-8")
+        mod.read_update_status()
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "success"
+        assert data["log_tail"] == "line one\nline two"
+
+    def test_version_info_reports_nothing_from_a_linked_file(
+            self, state_dir, secret, capsys):
+        mod = load_supervisor_script("autostream_admin", "admin_reads_version")
+        mod.INSTALL_STATE_FILE = state_dir / "install-state.env"
+        mod.INSTALL_STATE_FILE.symlink_to(secret)
+        mod.read_version_info()
+        _assert_no_leak(capsys.readouterr().out)
+
+    def test_the_storage_guard_state_is_not_loaded_from_a_linked_file(
+            self, state_dir, tmp_path):
+        mod = load_supervisor_script("autostream_storage_guard", "storage_guard_reads")
+        target = tmp_path / "root-only" / "state.json"
+        target.parent.mkdir()
+        target.write_text(SECRET_JSON, encoding="utf-8")
+        mod.STATE_PATH = state_dir / "storage-guard.json"
+        mod.STATE_PATH.symlink_to(target)
+        assert mod.load_state() == {}
+        mod.STATE_PATH.unlink()
+        mod.STATE_PATH.write_text('{"a": 1}', encoding="utf-8")
+        assert mod.load_state() == {"a": 1}

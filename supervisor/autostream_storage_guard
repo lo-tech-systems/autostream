@@ -55,7 +55,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from autostream_update_support import write_file_safely
+from autostream_update_support import read_file_if_trusted, write_file_safely
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -360,8 +360,8 @@ def _read_env_value(path: Path, key: str) -> str:
     """One KEY=VALUE from a plain env file, outer quotes stripped; "" when
     absent or unreadable. Never executes the file."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        text = read_file_if_trusted(path, None, max_bytes=1 << 20)
+    except (OSError, ValueError):
         return ""
     for raw in text.splitlines():
         line = raw.strip()
@@ -1047,9 +1047,7 @@ def delete_crash_files(
 
 def load_state() -> dict:
     try:
-        if not STATE_PATH.is_file():
-            return {}
-        raw = STATE_PATH.read_text(encoding="utf-8", errors="replace")
+        raw = read_file_if_trusted(STATE_PATH, None, max_bytes=1 << 20)
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except Exception:

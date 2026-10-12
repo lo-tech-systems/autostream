@@ -151,6 +151,7 @@ import os
 import re
 import secrets
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -159,8 +160,8 @@ from typing import Optional, Tuple
 
 # Installed next to this script (root-owned). Every write this script makes
 # into a directory an unprivileged account can also write goes through
-# write_file_safely; every read of such a file that influences a later write
-# goes through read_file_if_trusted.
+# write_file_safely; every read of such a file that influences a later write,
+# or whose content goes back to the caller, goes through read_file_if_trusted.
 from autostream_update_support import read_file_if_trusted, write_file_safely
 
 # The account that must own anything this script trusts. Tests change it.
@@ -390,8 +391,10 @@ def atomic_write_text(path: Path, text: str, mode: int = 0o644) -> None:
 
 
 def read_env_file(path: Path) -> dict[str, str]:
+    """Parse a KEY=VALUE file; FileNotFoundError when absent, ValueError when
+    it is not a regular file reached without following a link."""
     data: dict[str, str] = {}
-    text = path.read_text(encoding="utf-8")
+    text = read_file_if_trusted(path, None, max_bytes=1 << 20)
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -551,13 +554,19 @@ def _read_log_tail(log_path: Optional[Path] = None) -> str:
     """
     path = log_path if log_path is not None else _INSTALL_LOG
     try:
-        with path.open("rb") as fh:
+        # Opened without following a link: the log sits in a directory the
+        # service account may own, and the tail goes back to the caller.
+        fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
+        with os.fdopen(fd, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return ""
             fh.seek(0, 2)
             size = fh.tell()
             read_size = min(size, _LOG_TAIL_CHUNK_BYTES)
             fh.seek(-read_size, 2)
             data = fh.read()
-    except (FileNotFoundError, OSError):
+    except OSError:
         return ""
     text = data.decode("utf-8", errors="replace")
     lines = text.splitlines()

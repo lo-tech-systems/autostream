@@ -76,10 +76,17 @@ def _http_get(url: str, ua: str, timeout: int = 20) -> Tuple[int, bytes]:
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
-    """Parse a KEY=VALUE env file; returns an empty dict if the file is absent."""
+    """Parse a KEY=VALUE env file; returns an empty dict if the file is absent.
+
+    The file is opened without following a link and must be a regular file of
+    modest size, so a privileged caller reading a file in a directory an
+    unprivileged account owns is not steered to some other file.  A file that
+    fails those rules reads as absent.
+    """
     data: dict[str, str] = {}
     try:
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
+        text = read_file_if_trusted(path, None, max_bytes=1 << 20)
+        for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -89,7 +96,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
             if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
                 value = value[1:-1]
             data[key] = value
-    except OSError:
+    except (OSError, ValueError):
         pass
     return data
 
