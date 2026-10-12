@@ -427,7 +427,8 @@ class TestRetryCallsPreUpdateTeardown:
              patch.object(mod, "_run", side_effect=_run), \
              patch.object(mod, "stop_owntone_playback", side_effect=_stop), \
              patch.object(mod, "free_repeat_buffer", side_effect=_free), \
-             patch("os.chown", return_value=None, create=True):
+             patch("os.chown", return_value=None, create=True), \
+             patch("os.fchown", return_value=None, create=True):
             rc = mod.main()
 
         assert rc == 0
@@ -449,7 +450,8 @@ class TestRetryCallsPreUpdateTeardown:
              patch.object(mod, "_run", return_value=(0, "", "")), \
              patch.object(mod, "stop_owntone_playback", return_value=(False, "owntone down")), \
              patch.object(mod, "free_repeat_buffer", return_value=(False, "socket unavailable")), \
-             patch("os.chown", return_value=None, create=True):
+             patch("os.chown", return_value=None, create=True), \
+             patch("os.fchown", return_value=None, create=True):
             rc = mod.main()
 
         assert rc == 0
@@ -470,7 +472,8 @@ class TestRetryCallsPreUpdateTeardown:
              patch.object(mod, "_run", return_value=(0, "", "")), \
              patch.object(mod, "stop_owntone_playback", side_effect=RuntimeError("boom")), \
              patch.object(mod, "free_repeat_buffer", side_effect=RuntimeError("boom2")), \
-             patch("os.chown", return_value=None, create=True):
+             patch("os.chown", return_value=None, create=True), \
+             patch("os.fchown", return_value=None, create=True):
             rc = mod.main()
 
         assert rc == 0
