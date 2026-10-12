@@ -128,7 +128,8 @@ systemctl restart systemd-journald 2>/dev/null || true
 best_effort rm -f /etc/NetworkManager/dispatcher.d/99-wlan-fix
 best_effort rm -f /etc/NetworkManager/conf.d/wifi-powersave.conf
 best_effort rm -f /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
-systemctl restart systemd-logind 2>/dev/null || true
+# Signalled, not restarted: a restart would drop the login session this runs in.
+systemctl kill --kill-whom=main --signal=HUP systemd-logind.service 2>/dev/null || true
 best_effort rm -f /usr/local/sbin/sdmon
 best_effort rm -f /usr/local/bin/autostream-dial-control
 

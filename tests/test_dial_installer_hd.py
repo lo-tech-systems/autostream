@@ -653,7 +653,8 @@ class TestRetireAndOwnedFiles:
 
 def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
              detects_hd: bool = False, reinstall: bool = False,
-             state_text: str = "DIAL_UUID=feedfacefeedfacefeed\n"):
+             state_text: str = "DIAL_UUID=feedfacefeedfacefeed\n",
+             extra_stubs: tuple = (), extra_env: dict | None = None):
     env = Env(tmp_path)
     deploy = tmp_path / "deploy"
     (deploy / "installer" / "dial").mkdir(parents=True)
@@ -672,6 +673,7 @@ def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
         "generate_dial_id() { echo 0123456789abcdef0123; }",
         "has_tty() { return 1; }",
     ]
+    stubs.extend(extra_stubs)
     if reinstall:
         stubs.append('detect_existing_dial_install() { printf "detect_existing_dial_install\\n" >> "$TRACE"; REINSTALL=true; }')
     if detects_hd:
@@ -692,6 +694,7 @@ def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
         DIAL_INSTALL_LOGFILE=(tmp_path / "install.log").as_posix(),
         HOME=tmp_path.as_posix(),
         UPDATE_PAINT_DELAY="0",
+        **(extra_env or {}),
     )
     r = subprocess.run(args, capture_output=True, text=True, timeout=60, env=e)
     return r, env.calls()

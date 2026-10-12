@@ -33,6 +33,11 @@ source "${BASH_SOURCE[0]%/*}/../lib/state_files.sh"
 # shellcheck source=../lib/update_state.sh
 source "${BASH_SOURCE[0]%/*}/../lib/update_state.sh"
 
+# Handing a fresh install over to a system service when it is started from a
+# login session.
+# shellcheck source=../lib/handover.sh
+source "${BASH_SOURCE[0]%/*}/../lib/handover.sh"
+
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
     # Falls back to "unknown" (not "dev") when AUTOSTREAM_RELEASE_TAG is unset

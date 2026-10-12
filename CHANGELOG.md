@@ -53,6 +53,13 @@
   Otherwise the update is rolled back like any other failed check. A dial with no
   display connected is not held to the kiosk browser, so an update is not rolled
   back just because no screen is plugged in. SPI dials are checked as before.
+- fix: a first-time install started over SSH no longer stops, without a message,
+  if the connection drops part way. The installer used to restart the login service
+  to apply the power-key setting, which ended the login session it was running in
+  and took the install with it; it now asks the login service to read its settings
+  again, and an install started from a login session carries on as a system
+  service that no session can end, with its progress still shown on the terminal.
+  Uninstalling no longer restarts the login service either.
 - fix: a dial update no longer wipes its own install log or the dial's log history.
   The log files are now created only when missing, so the install log of an update,
   and of its automatic retries after a reboot, can be read afterwards, and a fresh

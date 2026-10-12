@@ -44,6 +44,45 @@ AUTOSTREAM_RELEASE_TAG="$(detect_install_version)"
 # install-state.env.
 PREVIOUS_RELEASE_TAG="$(_installed_release_tag)"
 
+# offer_reboot: ask whether to reboot now, where there is a terminal to ask on.
+offer_reboot() {
+    if has_tty; then
+        echo ""
+        tty_read "Reboot now to complete setup? (Y/N) " _rb || true
+        case "${_rb:-N}" in
+            Y|y) echo "Rebooting..."; reboot ;;
+            *) echo "Reboot skipped. Please reboot the device when convenient." ;;
+        esac
+    else
+        echo "Non-interactive session; please reboot the device when convenient."
+    fi
+}
+
+# ---- Questions, then a hand-over to a service ---------------------------------
+# A fresh install is long, so a login session that ends part way must not end
+# it: from a login session the questions are asked here, then the installer runs
+# itself again as a system service (which has no terminal, so it asks nothing)
+# and this process follows its log. The reboot question is asked here, after.
+# An --update is already started as a service by the updater.
+PROMPTED=false
+if [[ "${AUTOSTREAM_HANDED_OVER:-0}" == "1" ]]; then PROMPTED=true; fi
+if [[ "$UPDATE" == false && "$PROMPTED" == false ]] && handover_available; then
+    require_trixie_os
+    detect_existing_dial_install
+    if $REINSTALL; then detect_hd_install; fi
+    show_info_and_prompt
+    PROMPTED=true
+    if hand_over_to_unit autostream-dial-install "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" \
+            "${HOME:-/root}/autostream_dial_install.log" "$@"; then
+        if [[ "$HANDOVER_RC" -eq 0 ]]; then offer_reboot; fi
+        exit "$HANDOVER_RC"
+    fi
+    warn "The install could not be handed over to a system service, so it will"
+    warn "stop if this session ends. Keep the connection up, or run it in tmux or screen."
+fi
+# Where it could not be handed over, at least a closing terminal does not stop it.
+if [[ "$UPDATE" == false ]] && in_login_session; then stay_running_after_hangup; fi
+
 # ---- Logging ----------------------------------------------------------------
 # The log is appended to, never replaced, so the output of earlier runs and of
 # an update's boot-time retries stays in it; logrotate keeps it bounded.
@@ -120,7 +159,7 @@ if ! $UPDATE; then
     # writers below leave them in place) and a plain run keeps an HD dial HD.
     detect_existing_dial_install
     if $REINSTALL; then detect_hd_install; fi
-    show_info_and_prompt
+    if ! $PROMPTED; then show_info_and_prompt; fi
     check_pi_model
     # An --update does both of these in system_upgrade; a fresh install does them
     # here, ahead of its first apt command.
@@ -417,14 +456,9 @@ if ! $UPDATE; then
     else
         echo "Connect to 'autostream-dial_SETUP' WiFi to complete setup."
     fi
-    if has_tty; then
-        echo ""
-        tty_read "Reboot now to complete setup? (Y/N) " _rb || true
-        case "${_rb:-N}" in
-            Y|y) echo "Rebooting..."; reboot ;;
-            *) echo "Reboot skipped. Please reboot the device when convenient." ;;
-        esac
+    if [[ "${AUTOSTREAM_HANDED_OVER:-0}" == "1" ]]; then
+        echo "Reboot the device to complete setup."
     else
-        echo "Non-interactive session; please reboot the device when convenient."
+        offer_reboot
     fi
 fi

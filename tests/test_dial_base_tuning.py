@@ -51,6 +51,9 @@ for p in ${FAIL:-}; do [[ "$p" == "$3" ]] && exit 1; done
 exit 0
 """
 
+# The call that makes logind read its settings again; it is never restarted.
+HUP_LOGIND = "systemctl kill --kill-whom=main --signal=HUP systemd-logind.service"
+
 SHIM = 'info() { echo "INFO: $*"; }; warn() { echo "WARN: $*" >&2; }\n'
 
 
@@ -121,32 +124,33 @@ class TestIgnorePowerKey:
     def _dest(self, env: Env) -> Path:
         return env.root / "etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf"
 
-    def test_the_drop_in_is_installed_and_logind_restarted(self, env):
+    def test_the_drop_in_is_installed_and_logind_told_to_re_read_it(self, env):
         r = self._call(env)
         assert r.returncode == 0, r.stderr
         assert "HandlePowerKey=ignore" in self._dest(env).read_text(encoding="utf-8")
-        assert "systemctl restart systemd-logind" in env.calls()
+        assert HUP_LOGIND in env.calls()
+        assert "systemctl restart systemd-logind" not in env.calls()
 
-    def test_an_unchanged_drop_in_does_not_restart_logind_again(self, env):
+    def test_an_unchanged_drop_in_does_not_signal_logind_again(self, env):
         self._call(env)
         env.trace.write_text("", encoding="utf-8")
         r = self._call(env)
         assert r.returncode == 0, r.stderr
-        assert "systemctl restart systemd-logind" not in env.calls()
+        assert HUP_LOGIND not in env.calls()
 
-    def test_a_changed_drop_in_is_replaced_and_logind_restarted(self, env):
+    def test_a_changed_drop_in_is_replaced_and_logind_told_to_re_read_it(self, env):
         self._call(env)
         self._dest(env).write_text("[Login]\nHandlePowerKey=poweroff\n", encoding="utf-8")
         env.trace.write_text("", encoding="utf-8")
         self._call(env)
         assert "HandlePowerKey=ignore" in self._dest(env).read_text(encoding="utf-8")
-        assert "systemctl restart systemd-logind" in env.calls()
+        assert HUP_LOGIND in env.calls()
 
-    def test_a_failed_restart_warns_and_carries_on(self, env):
+    def test_a_failed_signal_warns_that_it_applies_after_the_reboot_and_carries_on(self, env):
         env.fake("systemctl", '#!/bin/bash\nexit 1\n')
         r = self._call(env)
         assert r.returncode == 0, r.stderr
-        assert "systemctl restart systemd-logind failed" in r.stderr
+        assert "applies after the reboot" in r.stderr
         assert self._dest(env).exists()
 
 
@@ -279,9 +283,10 @@ class TestDialUninstallerReverts:
         for path in TUNING_FILES:
             assert f"rm -f {path}" in calls, path
 
-    def test_logind_is_restarted_after_its_drop_in_is_removed(self, env):
+    def test_logind_is_signalled_not_restarted_after_its_drop_in_is_removed(self, env):
         calls = self._run(env)
-        assert calls.index("rm -f " + TUNING_FILES[2]) < calls.index("systemctl restart systemd-logind")
+        assert calls.index("rm -f " + TUNING_FILES[2]) < calls.index(HUP_LOGIND)
+        assert "systemctl restart systemd-logind" not in calls
 
     def test_the_swap_behaviour_and_the_removed_packages_are_left_alone_as_on_the_appliance(self, env):
         calls = self._run(env)
@@ -293,7 +298,8 @@ class TestDialUninstallerReverts:
         appliance = APPLIANCE_UNINSTALLER.read_text(encoding="utf-8")
         for path in TUNING_FILES:
             assert f"remove_path {path}" in appliance, path
-        assert "systemctl restart systemd-logind" in appliance
+        assert HUP_LOGIND in appliance
+        assert "systemctl restart systemd-logind" not in appliance
 
 
 # ---------------------------------------------------------------------------

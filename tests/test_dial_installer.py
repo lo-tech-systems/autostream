@@ -1081,6 +1081,12 @@ class TestInstallerSafetyPrompt:
 # Reboot prompt at end of fresh install
 # ---------------------------------------------------------------------------
 
+def _reboot_prompt_text(content: str) -> str:
+    """The end of the installer plus offer_reboot(), where the question is asked."""
+    start = content.index("offer_reboot() {")
+    return content[start:content.index("\n}\n", start)] + content[content.find("installation complete"):]
+
+
 class TestInstallerRebootPrompt:
     def test_reboot_prompt_uses_has_tty(self):
         """Reboot prompt must gate on has_tty so it only runs interactively."""
@@ -1088,7 +1094,7 @@ class TestInstallerRebootPrompt:
         # find 'has_tty' after 'installation complete'
         complete_pos = content.find("installation complete")
         assert complete_pos != -1
-        after = content[complete_pos:]
+        after = _reboot_prompt_text(content)
         assert "has_tty" in after, (
             "Reboot prompt after 'installation complete' must use has_tty"
         )
@@ -1119,7 +1125,7 @@ class TestInstallerRebootPrompt:
         content = DIAL_INSTALLER.read_text(encoding="utf-8")
         complete_pos = content.find("installation complete")
         assert complete_pos != -1
-        after = content[complete_pos:]
+        after = _reboot_prompt_text(content)
         assert "reboot the device when convenient" in after, (
             "Non-interactive path must tell user to reboot when convenient"
         )

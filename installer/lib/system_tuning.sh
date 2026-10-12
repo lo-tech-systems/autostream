@@ -95,10 +95,13 @@ remove_unneeded_packages() {
 
 ignore_power_key() {
   # Install the logind drop-in that ignores the power key, so spurious power-key
-  # events from USB enumeration cannot shut down an unattended device, and
-  # restart logind to apply it. logind is restarted only when the drop-in is new
-  # or changed: it reads the file at start, so a restart on every update would
-  # do nothing but disturb the login sessions.
+  # events from USB enumeration cannot shut down an unattended device, and tell
+  # logind to read it. logind is never restarted from here: a restart drops the
+  # login sessions it knows about and stops what is left running in them, which
+  # includes an installer started over SSH. It is sent SIGHUP instead, which
+  # makes it read its settings again and touches no session (systemd 230 and
+  # later; the man page lists it as "Reloads the service configuration file").
+  # That is done only when the drop-in is new or changed.
   # Usage: ignore_power_key SYSTEM_DIR [ROOT]
   #   SYSTEM_DIR  the release's system/ directory
   #   ROOT        prefix for the destination path (a test sandbox); default none
@@ -112,5 +115,13 @@ ignore_power_key() {
     return 0
   fi
   install -m 0644 ${own[@]+"${own[@]}"} "${src}" "${dest}"
-  systemctl restart systemd-logind || warn "systemctl restart systemd-logind failed"
+  reload_logind_config
+}
+
+# reload_logind_config: make systemd-logind read its settings again, without
+# restarting it. If it cannot be signalled the setting still applies at the
+# reboot that ends every install and update.
+reload_logind_config() {
+  systemctl kill --kill-whom=main --signal=HUP systemd-logind.service ||
+    warn "Could not tell systemd-logind to re-read its settings; the power-key setting applies after the reboot."
 }

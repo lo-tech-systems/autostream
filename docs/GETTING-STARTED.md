@@ -12,6 +12,8 @@ This downloads the latest stable release and installs everything autostream need
 
 During installation you are asked to set a PIN for the appliance. See [What the PIN does](#what-the-pin-does) below.
 
+The install can take half an hour or more. Once you have answered its questions it keeps running if your connection drops, so you can log in again and read `~/autostream_install.log` to see how far it got.
+
 For install options, such as running a full OwnTone build instead of the bundled one, see [Advanced Operations](ADVANCED.md).
 
 ---

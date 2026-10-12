@@ -94,6 +94,8 @@ source "${INSTALLER_LIB}/vibra.sh"
 source "${INSTALLER_LIB}/hardware.sh"
 # shellcheck source=installer/lib/bluetooth.sh
 source "${INSTALLER_LIB}/bluetooth.sh"
+# shellcheck source=installer/lib/handover.sh
+source "${INSTALLER_LIB}/handover.sh"
 
 #############################################
 # Globals
@@ -161,6 +163,14 @@ OWNTONE_MODE="mini"
 LOW_POWER=0
 LOW_POWER_REQUESTED=0
 PROMPT_REBOOT_ON_EXIT=0
+# Set once the confirmation, the OS check and the PIN have been settled with
+# the person at the terminal, so a run that has no terminal does not ask them
+# again. HANDED_OVER is set in the system service a login session handed the
+# install to (see installer/lib/handover.sh); the reboot question is then the
+# terminal side's.
+PROMPTS_DONE=0
+HANDED_OVER="${AUTOSTREAM_HANDED_OVER:-0}"
+if [[ "${HANDED_OVER}" == "1" ]]; then PROMPTS_DONE=1; fi
 CURRENT_PHASE=""
 UPDATE_RUN_AT=""
 
@@ -792,7 +802,7 @@ WARNING:
 - Do NOT run on machines containing important data or multi-purpose systems.
 
 A full activity log will be written to ~/autostream_install.log
-Note: the log is overwritten on each run.
+Note: each run adds to the end of the log.
 =============================================================================
 EOF
 
@@ -1852,13 +1862,22 @@ stop_watchdog_if_ram_monitored() {
 #############################################
 run_install() {
   info ">>> Starting first-time installation <<<"
-  PROMPT_REBOOT_ON_EXIT=1
+  # Handed over to a service, the reboot question is asked where the terminal is.
+  if [[ "${HANDED_OVER:-0}" == "1" ]]; then
+    PROMPT_REBOOT_ON_EXIT=0
+  else
+    PROMPT_REBOOT_ON_EXIT=1
+  fi
 
   stop_watchdog_if_ram_monitored
   check_network_manager
-  show_warnings_and_prompt
-  require_rpi_os_trixie
-  handle_pin
+  if [[ "${PROMPTS_DONE:-0}" == "1" ]]; then
+    info "Confirmation, OS check and PIN were settled before the install started running."
+  else
+    show_warnings_and_prompt
+    require_rpi_os_trixie
+    handle_pin
+  fi
 
   info "Setting working directory to original user's home: ${ORIG_HOME}"
   cd "${ORIG_HOME}"
@@ -1877,6 +1896,9 @@ run_install() {
   clean_package_cache
 
   info "Installation complete."
+  if [[ "${HANDED_OVER:-0}" == "1" ]]; then
+    info "Reboot the device to complete setup."
+  fi
 }
 
 run_update() {
@@ -1938,6 +1960,28 @@ run_update() {
 main() {
   require_sudo
   parse_args "$@"
+
+  # A fresh install is long, so a login session that ends part way must not end
+  # it: it asks its questions here, then runs itself again as a system service
+  # and follows that. An update is already started as a service.
+  if [[ "${INSTALL_MODE}" == "install" && "${PROMPTS_DONE}" != "1" ]]; then
+    PROMPT_REBOOT_ON_EXIT=1
+    check_network_manager
+    show_warnings_and_prompt
+    require_rpi_os_trixie
+    handle_pin
+    PROMPTS_DONE=1
+    if hand_over_to_unit autostream-install "${AUTOSTREAM_DIR}/${SCRIPT_NAME}" "${LOGFILE}" "$@"; then
+      exit "${HANDOVER_RC}"
+    else
+      if in_login_session; then
+        warn "The install could not be handed over to a system service, so it will"
+        warn "stop if this session ends. Keep the connection up, or run it in tmux or screen."
+      fi
+      stay_running_after_hangup
+    fi
+  fi
+
   init_logging
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
