@@ -26,8 +26,7 @@ OWNTONE_MINI_VERSION_STAMP="/var/lib/autostream/owntone-mini-version"
 # Binary the source build installs; also removed by the uninstaller.
 OWNTONE_MINI_BINARY="/usr/sbin/owntone"
 
-configure_owntone_apt_repo() {
-  info "Configuring OwnTone APT repository"
+fetch_owntone_apt_repo_files() {
   curl -fsSL "https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone.gpg" \
     | gpg --dearmor \
     | tee /usr/share/keyrings/owntone-archive-keyring.gpg >/dev/null
@@ -35,8 +34,12 @@ configure_owntone_apt_repo() {
   curl -fsSL \
     -o /etc/apt/sources.list.d/owntone.list \
     "https://raw.githubusercontent.com/owntone/owntone-apt/refs/heads/master/repo/rpi/owntone-trixie.list"
+}
 
-  DEBIAN_FRONTEND=noninteractive apt-get update
+configure_owntone_apt_repo() {
+  info "Configuring OwnTone APT repository"
+  network_step --host raw.githubusercontent.com fetch_owntone_apt_repo_files
+  network_step env DEBIAN_FRONTEND=noninteractive apt-get update
 }
 
 remove_owntone_apt_repo() {
@@ -51,7 +54,7 @@ remove_owntone_apt_repo() {
   fi
   if [[ ${removed} -eq 1 ]]; then
     info "Removed OwnTone APT repository configuration"
-    DEBIAN_FRONTEND=noninteractive apt-get update
+    network_step env DEBIAN_FRONTEND=noninteractive apt-get update
   fi
 }
 
@@ -139,7 +142,7 @@ install_owntone_mini_from_source() {
   local tmpdir
   tmpdir="$(mktemp -d)"
   info "Fetching owntone-mini ${OWNTONE_MINI_VERSION}"
-  git clone \
+  network_step --host github.com git clone \
     --branch "${OWNTONE_MINI_VERSION}" \
     --depth 1 \
     --single-branch \

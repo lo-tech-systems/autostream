@@ -399,6 +399,7 @@ warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*"; }}
 update_progress() {{ :; }}
 apt_install() {{ echo "APT_INSTALL $*"; }}
+network_step() {{ if [[ "$1" == --host ]]; then shift 2; fi; "$@"; }}
 dpkg() {{ return 1; }}
 systemctl() {{ echo "SYSTEMCTL $*"; }}
 git() {{

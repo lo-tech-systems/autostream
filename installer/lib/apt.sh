@@ -33,3 +33,165 @@ clean_package_cache() {
   fi
   return 0
 }
+
+# ---- Waiting for the network ---------------------------------------------------
+# An update can restart networking itself: upgrading the Wi-Fi authentication
+# service, NetworkManager, radio firmware or a driver drops the link for a
+# while. The steps that download must not fail just because that happened a
+# moment ago. Budget: a link that has lost its radio is normally back within
+# seconds once the Wi-Fi watcher reconnects it, but a slow access point or a
+# congested band can take a minute or two, so a step waits up to three
+# minutes, checking every five seconds. Overridable in the environment.
+: "${NETWORK_WAIT_BUDGET:=180}"
+: "${NETWORK_WAIT_INTERVAL:=5}"
+# Where the package sources are read from (a test points it elsewhere).
+: "${NETWORK_APT_ETC:=/etc/apt}"
+# Used when the configured sources name no host that can be resolved.
+: "${NETWORK_FALLBACK_HOSTS:=deb.debian.org archive.raspberrypi.com}"
+# Output that marks a failed step as the network's fault.
+NETWORK_FAILURE_PATTERN='Failed to fetch|Temporary failure resolving|Temporary failure in name resolution|Could not resolve|Name or service not known|Network is unreachable|No route to host|Connection timed out|Connection failed|Failed to connect|Unable to connect|Read timed out|Max retries exceeded'
+# Set once a wait has used its whole budget, so that the steps after it on a
+# device that is truly offline fail at once instead of each waiting again.
+NETWORK_WAIT_GAVE_UP=0
+
+network_apt_hosts() {
+  # The host names apt is configured to download from, one per line (at most
+  # four), read from the classic and the deb822 source files.
+  local files=() f
+  for f in "${NETWORK_APT_ETC}/sources.list" \
+           "${NETWORK_APT_ETC}"/sources.list.d/*.list \
+           "${NETWORK_APT_ETC}"/sources.list.d/*.sources; do
+    [[ -r "${f}" ]] && files+=("${f}")
+  done
+  (( ${#files[@]} )) || return 0
+  grep -hE '^(deb|deb-src|URIs:)' "${files[@]}" 2>/dev/null \
+    | grep -oE '(https?|ftp)://[^/ ]+' \
+    | sed -E 's#^[a-z]+://##; s#^[^@]*@##; s#:[0-9]+$##' \
+    | sort -u | head -n 4
+}
+
+network_usable() {
+  # True when a download can be expected to work: a default route exists and a
+  # host the next step needs resolves. The hosts are the arguments; with none,
+  # the ones apt is configured to use, or else the Debian and Raspberry Pi
+  # archives. One resolving host is enough, so a single dead mirror does not
+  # hold the install up. Nothing here depends on the kind of link, so a device
+  # on a cable passes the same way.
+  local hosts=("$@") host
+  if command -v ip >/dev/null 2>&1; then
+    [[ -n "$(ip -o route show default 2>/dev/null)" ||
+       -n "$(ip -o -6 route show default 2>/dev/null)" ]] || return 1
+  fi
+  if (( ${#hosts[@]} == 0 )); then
+    mapfile -t hosts < <(network_apt_hosts)
+    if (( ${#hosts[@]} == 0 )); then
+      read -r -a hosts <<< "${NETWORK_FALLBACK_HOSTS}"
+    fi
+  fi
+  for host in "${hosts[@]}"; do
+    if timeout 10 getent hosts "${host}" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+network_wait() {
+  # Return at once when the network is usable. Otherwise wait for it, up to
+  # NETWORK_WAIT_BUDGET seconds, saying so once at the start and once at the
+  # end. Returns 1 when the budget ran out; a later call on a network that is
+  # still down then returns 1 straight away. The hosts to check are arguments,
+  # as for network_usable.
+  local start="${SECONDS}" waited=0 elapsed
+  if network_usable "$@"; then
+    NETWORK_WAIT_GAVE_UP=0
+    return 0
+  fi
+  if [[ "${NETWORK_WAIT_GAVE_UP}" == 1 ]]; then
+    return 1
+  fi
+  echo "The network is not available; waiting up to ${NETWORK_WAIT_BUDGET}s for it to return."
+  # The count of sleeps bounds the wait when the clock is not trusted; the
+  # clock bounds it when the checks themselves are slow.
+  while (( waited < NETWORK_WAIT_BUDGET && SECONDS - start < NETWORK_WAIT_BUDGET )); do
+    sleep "${NETWORK_WAIT_INTERVAL}"
+    waited=$(( waited + NETWORK_WAIT_INTERVAL ))
+    if network_usable "$@"; then
+      elapsed=$(( SECONDS - start ))
+      (( elapsed > waited )) && waited="${elapsed}"
+      echo "The network is back after about ${waited}s."
+      NETWORK_WAIT_GAVE_UP=0
+      return 0
+    fi
+  done
+  echo "WARNING: the network did not return within ${NETWORK_WAIT_BUDGET}s" >&2
+  NETWORK_WAIT_GAVE_UP=1
+  return 1
+}
+
+network_attempt() {
+  # Run a command, passing its output through and keeping a copy in a file.
+  # Usage: network_attempt OUTFILE COMMAND [ARG...]; returns the command's status.
+  local out="$1" rc
+  shift
+  if "$@" 2>&1 | tee "${out}"; then
+    rc="${PIPESTATUS[0]}"
+  else
+    rc="${PIPESTATUS[0]}"
+  fi
+  return "${rc}"
+}
+
+network_failed() {
+  # True when a failed step looks to have failed because of the network: its
+  # output (the file named first) says so, or the network is not usable now.
+  # The hosts to check are the remaining arguments.
+  local out="$1"
+  shift
+  grep -qE "${NETWORK_FAILURE_PATTERN}" "${out}" || ! network_usable "$@"
+}
+
+network_step() {
+  # Run a step that downloads: wait for the network first; if the step then
+  # fails because of the network, wait again and run it once more. A second
+  # failure is returned to the caller after a message saying the network was
+  # not available. A failure that is not the network's fault is returned at
+  # once. The command may be a function (it runs in a subshell, so it must not
+  # be relied on to set variables).
+  # Usage: network_step [--host HOST]... COMMAND [ARG...]
+  # --host names what the step downloads from, when that is not apt's mirror.
+  local hosts=() out rc=0 gave_up=0
+  while [[ "${1:-}" == --host ]]; do
+    hosts+=("$2")
+    shift 2
+  done
+  network_wait "${hosts[@]}" || gave_up=1
+  out="$(mktemp)"
+  network_attempt "${out}" "$@" || rc=$?
+  if (( rc == 0 )); then
+    rm -f "${out}"
+    return 0
+  fi
+  if ! network_failed "${out}" "${hosts[@]}"; then
+    rm -f "${out}"
+    return "${rc}"
+  fi
+  if (( ! gave_up )); then
+    echo "Step failed because the network was not available; trying once more: $*" >&2
+    if network_wait "${hosts[@]}"; then
+      rc=0
+      network_attempt "${out}" "$@" || rc=$?
+      if (( rc == 0 )); then
+        rm -f "${out}"
+        return 0
+      fi
+      if ! network_failed "${out}" "${hosts[@]}"; then
+        rm -f "${out}"
+        return "${rc}"
+      fi
+    fi
+  fi
+  rm -f "${out}"
+  echo "ERROR: the network was not available, so this step failed: $*" >&2
+  return "${rc}"
+}

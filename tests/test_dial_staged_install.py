@@ -56,6 +56,19 @@ def _lock_sha() -> str:
     return hashlib.sha256(LOCK.read_bytes()).hexdigest()
 
 
+# A network that is always usable, so the installer's wait for the network
+# never depends on the machine the tests run on: a default route, and every
+# host name resolves. Anything else goes to the real command.
+HEALTHY_IP = (
+    '#!/bin/bash\n[[ "$*" == *route* ]] && { echo "default via 192.0.2.1 dev eth0"; exit 0; }\n'
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec ip "$@"\n'
+)
+HEALTHY_GETENT = (
+    '#!/bin/bash\n[[ "$1" == hosts ]] && { echo "192.0.2.10 $2"; exit 0; }\n'
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec getent "$@"\n'
+)
+
+
 class Env:
     """A scratch root, fake commands and a trace file for one test."""
 
@@ -82,6 +95,8 @@ class Env:
         for name in ("systemctl", "nginx", "sleep", "dpkg"):
             self.fake(name, RECORDER)
         self.fake_script(self.admin, RECORDER)
+        self.fake("ip", HEALTHY_IP)
+        self.fake("getent", HEALTHY_GETENT)
 
     def fake(self, name: str, text: str) -> None:
         self.fake_script(self.bin / name, text)

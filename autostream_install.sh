@@ -941,7 +941,7 @@ bootstrap_phase() {
   recover_interrupted_packages
 
   info "Updating apt metadata"
-  DEBIAN_FRONTEND=noninteractive apt-get update
+  network_step env DEBIAN_FRONTEND=noninteractive apt-get update
 
   apt_install curl gpg ca-certificates
 
@@ -986,10 +986,15 @@ system_upgrade_phase() {
   # retry; finish the interrupted package run first.
   recover_interrupted_packages
   info "Updating apt metadata"
-  DEBIAN_FRONTEND=noninteractive apt-get update
+  network_step env DEBIAN_FRONTEND=noninteractive apt-get update
   write_update_result "in_progress" "Upgrading system packages (this may take several minutes)..." 22
   info "Upgrading installed system packages"
-  NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+  network_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+  # Upgrading the Wi-Fi authentication service, NetworkManager, firmware or a
+  # driver can drop the link for a while. Go on only once it is back, so the
+  # log shows where a wait happened.
+  info "System packages upgraded; checking the network before going on"
+  network_wait || warn "The network is not back yet; each step that needs it will wait for it"
 }
 
 # fetch_phase: clone/update the autostream source repo (install only).
@@ -1039,7 +1044,7 @@ sdmon_phase() {
   info "Building sdmon at ${SDMON_GIT_REF}"
   local tmpdir
   tmpdir="$(mktemp -d)"
-  if git -c advice.detachedHead=false clone -q https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon" \
+  if network_step --host github.com git -c advice.detachedHead=false clone -q https://github.com/Ognian/sdmon.git "${tmpdir}/sdmon" \
      && git -C "${tmpdir}/sdmon" checkout -q "${SDMON_GIT_REF}" \
      && make -s -C "${tmpdir}/sdmon/src"; then
     install -m 0755 "${tmpdir}/sdmon/src/sdmon" "/usr/local/sbin/sdmon"
@@ -1142,15 +1147,16 @@ deploy_phase() {
   if [[ ! -d "${INSTALL_DIR}/venv" ]]; then
     PIP_CACHE_DIR=/tmp/pip-cache python3 -m venv --system-site-packages "${INSTALL_DIR}/venv"
   fi
-  PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore "${INSTALL_DIR}/venv/bin/pip" install -U pip
+  network_step --host pypi.org env PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore \
+    "${INSTALL_DIR}/venv/bin/pip" install -U pip
 
   if [[ -f "${INSTALL_DIR}/requirements.lock" ]]; then
     info "Installing Python dependencies from requirements.lock (hash-checked)"
-    PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore \
+    network_step --host pypi.org env PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore \
       "${INSTALL_DIR}/venv/bin/pip" install --require-hashes -r "${INSTALL_DIR}/requirements.lock"
   else
     warn "requirements.lock not found; installing from requirements.txt (not hash-pinned)"
-    PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore \
+    network_step --host pypi.org env PIP_CACHE_DIR=/tmp/pip-cache PIP_ROOT_USER_ACTION=ignore \
       "${INSTALL_DIR}/venv/bin/pip" install -r "${INSTALL_DIR}/requirements.txt"
   fi
 }

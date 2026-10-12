@@ -31,7 +31,10 @@ init_logging() {
 # TTY helpers
 #############################################
 has_tty() {
-  [[ -r /dev/tty && -w /dev/tty ]]
+  # /dev/tty is readable and writable even when the process has no
+  # controlling terminal (a service, cron, ssh without -t), so the check
+  # that counts is whether it can be opened.
+  [[ -r /dev/tty && -w /dev/tty ]] && { : < /dev/tty; } 2>/dev/null
 }
 
 tty_read() {
@@ -101,7 +104,7 @@ apt_install() {
 
   info "Installing packages: ${pkgs[*]}"
 
-  if ! DEBIAN_FRONTEND=noninteractive \
+  if ! network_step env DEBIAN_FRONTEND=noninteractive \
        apt-get install -y --no-install-recommends "${pkgs[@]}"; then
     if (( soft_fail )); then
       warn "apt_install soft-failed for packages: ${pkgs[*]}"
@@ -178,7 +181,7 @@ git_clone() {
   local repo_url="$1" dest_dir="$2"
   info "Cloning ${repo_url} into ${dest_dir}"
   rm -rf "${dest_dir}" || true
-  git clone "${repo_url}" "${dest_dir}"
+  network_step --host github.com git clone "${repo_url}" "${dest_dir}"
 }
 
 # Update an existing git repo to origin/main via fetch + reset.
@@ -190,7 +193,7 @@ git_update() {
     return 1
   fi
   info "Updating git repository at ${dest_dir}"
-  git -C "${dest_dir}" fetch --all --prune
+  network_step --host github.com git -C "${dest_dir}" fetch --all --prune
   git -C "${dest_dir}" reset --hard origin/main
 }
 

@@ -285,6 +285,11 @@ disable_cloud_init() {
     fi
 }
 
+fetch_sdmon_source() {
+    # Download and unpack the pinned sdmon source: fetch_sdmon_source REF DIR.
+    curl -fsSL "https://github.com/Ognian/sdmon/archive/$1.tar.gz" | tar -xz -C "$2"
+}
+
 install_sdmon() {
     # Build and install the sdmon binary at the pinned revision, the same
     # revision the appliance installer builds, so both products probe the
@@ -302,8 +307,7 @@ install_sdmon() {
     apt_step apt-get install -y --no-install-recommends make
     local tmpdir
     tmpdir="$(mktemp -d)"
-    if curl -fsSL "https://github.com/Ognian/sdmon/archive/${ref}.tar.gz" \
-            | tar -xz -C "${tmpdir}" \
+    if network_step --host github.com fetch_sdmon_source "${ref}" "${tmpdir}" \
        && make -s -C "${tmpdir}/sdmon-${ref}/src"; then
         install -m 0755 -o root -g root "${tmpdir}/sdmon-${ref}/src/sdmon" /usr/local/sbin/sdmon
         printf '%s\n' "${ref}" > "${marker}"
@@ -1657,15 +1661,15 @@ build_venv() {
     local dir="$1" py
     py="${dir}/bin/python"
     python3 -m venv --system-site-packages "${dir}"
-    "${py}" -m pip install --quiet -U pip
+    network_step --host pypi.org "${py}" -m pip install --quiet -U pip
     # Prefer hash-locked requirements for reproducible builds.  Fall back to
     # pinned requirements.txt with a warning.
     if [[ -f "$DEPLOY/dial/requirements.lock" ]]; then
-        "${py}" -m pip install --quiet \
+        network_step --host pypi.org "${py}" -m pip install --quiet \
             --require-hashes -r "$DEPLOY/dial/requirements.lock"
     else
         echo "WARNING: requirements.lock not found; installing from requirements.txt (not hash-pinned)" >&2
-        "${py}" -m pip install --quiet \
+        network_step --host pypi.org "${py}" -m pip install --quiet \
             -r "$DEPLOY/dial/requirements.txt"
     fi
 }
@@ -1852,6 +1856,13 @@ update_failure_message() {
 APT_TRANSIENT_PATTERN='Could not get lock|Unable to acquire the dpkg frontend lock|Failed to fetch|Temporary failure resolving|Connection timed out'
 
 apt_step() {
+    # Run an apt command once the network is usable, and once more after
+    # waiting for it if it fails for want of the network (see network_step in
+    # lib/apt.sh).
+    network_step apt_step_retrying "$@"
+}
+
+apt_step_retrying() {
     # Run an apt command; retry it once, after a pause, when it fails with
     # status 100 and its output shows a lock or fetch failure. A second
     # failure, or any other failure, is returned to the caller.
@@ -1909,6 +1920,11 @@ system_upgrade() {
     recover_interrupted_packages
     refresh_package_lists
     apt_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+    # Upgrading the Wi-Fi authentication service, NetworkManager, firmware or a
+    # driver can drop the link for a while. Go on only once it is back, so the
+    # log shows where a wait happened.
+    echo "System packages upgraded; checking the network before going on"
+    network_wait || echo "WARNING: the network is not back yet; each step that needs it will wait for it" >&2
     apt-get autoclean -y
 }
 

@@ -33,6 +33,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 HELPERS = REPO_ROOT / "installer" / "dial" / "helpers.sh"
 INSTALLER = REPO_ROOT / "autostream_dial_install.sh"
 
+# A usable network, whatever the machine running the tests has.
+HEALTHY_IP = (
+    '#!/bin/bash\n[[ "$*" == *route* ]] && { echo "default via 192.0.2.1 dev eth0"; exit 0; }\n'
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec ip "$@"\n'
+)
+HEALTHY_GETENT = (
+    '#!/bin/bash\n[[ "$1" == hosts ]] && { echo "192.0.2.10 $2"; exit 0; }\n'
+    'PATH=/usr/sbin:/usr/bin:/sbin:/bin exec getent "$@"\n'
+)
+
 LOCK_OUTPUT = "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 812"
 
 
@@ -49,6 +59,9 @@ def _bash(tmp_path: Path, body: str, *, bin_dir: Path | None = None,
     safe.mkdir(exist_ok=True)
     (safe / "dpkg").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
     (safe / "dpkg").chmod(0o755)
+    for name, text in (("ip", HEALTHY_IP), ("getent", HEALTHY_GETENT)):
+        (safe / name).write_text(text, encoding="utf-8", newline="\n")
+        (safe / name).chmod(0o755)
     env["PATH"] = safe.as_posix() + os.pathsep + env.get("PATH", "")
     if bin_dir is not None:
         env["PATH"] = bin_dir.as_posix() + os.pathsep + env["PATH"]
@@ -242,7 +255,6 @@ class TestAptStep:
         (100, "E: Unable to locate package nonesuch"),
         (100, "E: Sub-process /usr/bin/dpkg returned an error code (1)"),
         (1, LOCK_OUTPUT),
-        (2, "E: Failed to fetch http://example.invalid/x.deb"),
     ])
     def test_apt_step_fails_fast_on_other_errors(self, tmp_path, status, message):
         bin_dir = _flaky_apt(tmp_path, [(status, message), (0, "")])

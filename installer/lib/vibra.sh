@@ -29,7 +29,7 @@ clone_vibra_source() {
   local destination="$1"
 
   info "Fetching vibra-mini ${VIBRA_VERSION}"
-  git clone \
+  network_step --host github.com git clone \
     --branch "${VIBRA_VERSION}" \
     --depth 1 \
     --single-branch \

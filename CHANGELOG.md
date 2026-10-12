@@ -73,6 +73,12 @@
   makes every automatic retry fail. The dial and appliance installers now finish
   an interrupted package run (`dpkg --configure -a`) before their first package
   command, so the retry after the next boot can complete the update.
+- fix: an update no longer fails when a system package upgrade briefly drops the
+  Wi-Fi. The dial and appliance installers now wait up to three minutes for the
+  network to come back before each step that downloads, and run a step again
+  once if it failed because the network was gone. After a final failure the log
+  says the network was not available. An unattended run that fails also no longer
+  prints a message about a terminal.
 - fix: the dial and appliance installers now check each sudoers file with visudo
   before it replaces the installed one. A file with a syntax error stops the
   install with a message and leaves the working file in place, where before it
