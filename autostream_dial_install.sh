@@ -108,9 +108,9 @@ if $UPDATE; then
     create_dirs
     init_service_dirs
     detect_hd_install
-    adopt_older_update_staging
-    # The boot step acts on this update's hand-off only while this is there;
-    # written last, once what a retry would run is in place.
+    # An update started by an older release runs from the place that release
+    # chose; nothing is copied from it. The boot step acts on this update's
+    # hand-off only while this record is there.
     mark_update_in_progress
 fi
 

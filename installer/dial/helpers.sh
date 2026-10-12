@@ -2225,18 +2225,6 @@ write_update_swap() {
     UPDATE_STAGED=true
 }
 
-adopt_older_update_staging() {
-    # An update started by an older release's updater runs this installer from
-    # the old staging place, inside the directory the service account owns. The
-    # staged release is copied to the system-only directory so that an
-    # interruption is retried from there; the run itself is already executing
-    # from the old place and cannot be moved.
-    if ! migrate_staged_release "${DEPLOY}" "$(_state_dir)/update-staging" \
-         "$(_update_dir)/staging" autostream_dial_install.sh; then
-        echo "WARNING: could not copy the staged release to $(_update_dir); an interrupted update will not be retried." >&2
-    fi
-}
-
 mark_update_in_progress() {
     # Record, where only root can write, that this update is under way. The
     # boot step retries an interrupted run, or completes a hand-off, only while

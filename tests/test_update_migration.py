@@ -2,13 +2,14 @@
 
 A device on the older layout keeps its staged release, backup and hand-off in
 /var/lib/autostream. Its own updater downloads the new release there and runs
-the new installer from there with --update; that one run cannot be moved. The
-new installer makes the system-only directory, copies the staged release into
-it so that an interruption is retried from a tree only the system wrote,
-writes the record that an update is under way once that is in place, and
-removes the old places when the update has an outcome. These tests build the
-older layout, run the new installer's side of it and the new boot step, cut
-the power at each point and check the outcome, including that a rollback to
+the new installer from there with --update; that one run cannot be moved or
+protected, and nothing is copied out of it. The new installer makes the
+system-only directory and writes the record that an update is under way, and
+the old places are removed when the update has an outcome. A run cut short is
+reported as failed and the next update stages again in the system-only
+directory. These tests build the older layout, run the new installer's side of
+it and the new boot step, cut the power at each point and check that no state
+is left in which a device cannot update again, including that a rollback to
 the older release leaves nothing its boot step could misread.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -98,19 +99,12 @@ def _adopt(env: Env, release: Path, tag: str = "v0.7.0", **extra: str):
 
 @bash_capable
 class TestApplianceFirstRun:
-    def test_the_staged_release_is_copied_where_only_root_can_write(self, env):
+    def test_nothing_is_copied_out_of_the_old_place_and_the_record_is_written(self, env):
         release = _legacy_release(env, count="1")
         (env.state / "update-stopped-services.env").write_text("owntone\n")
         r = _adopt(env, release)
         assert r.returncode == 0, r.stderr
-        staging = env.upd / "staging"
-        copy = staging / "src" / release.name
-        assert (copy / "autostream_install.sh").read_text() == GOOD
-        assert os.access(copy / "autostream_install.sh", os.X_OK)
-        assert (copy / "system" / "unit").read_text() == "unit"
-        assert (staging / "release_tag").read_text().strip() == "v0.7.0"
-        assert (staging / "retry_count").read_text().strip() == "1"
-        assert stat.S_IMODE(os.stat(staging).st_mode) == 0o700
+        assert not (env.upd / "staging").exists()
         assert not list(env.upd.glob("staging.new"))
         marker = env.upd / "update-in-progress"
         assert marker.read_text().strip() == "v0.7.0"
@@ -119,62 +113,57 @@ class TestApplianceFirstRun:
         assert (release / "autostream_install.sh").read_text() == GOOD
         assert not (env.state / "update-stopped-services.env").exists()
 
-    def test_nothing_is_copied_when_the_installer_was_not_run_from_the_old_place(self, env):
+    def test_a_run_from_the_system_only_directory_leaves_it_as_it_is(self, env):
         new_release = env.upd / "staging" / "src" / "release"
         new_release.mkdir(parents=True)
         (new_release / "autostream_install.sh").write_text(GOOD)
         (env.upd / "staging" / "release_tag").write_text("v0.7.0\n")
         r = _adopt(env, new_release)
         assert r.returncode == 0, r.stderr
-        assert sorted(p.name for p in (env.upd / "staging" / "src").iterdir()) == ["release"]
-        assert not list(env.upd.glob("staging.new"))
+        assert (new_release / "autostream_install.sh").read_text() == GOOD
+        assert (env.upd / "staging" / "release_tag").read_text().strip() == "v0.7.0"
         assert (env.upd / "update-in-progress").exists()
 
-    def test_a_release_tag_and_count_that_are_not_plain_values_are_dropped(self, env):
-        release = _legacy_release(env, tag="v1; touch /tmp/pwned", count="7; rm -rf /")
-        r = _adopt(env, release, tag="not a version;")
+    @pytest.mark.parametrize("where", ["upd", "state-parent"])
+    def test_a_link_planted_at_the_old_name_does_not_touch_the_running_tree(
+            self, env, where):
+        new_release = env.upd / "staging" / "src" / "release"
+        new_release.mkdir(parents=True)
+        (new_release / "autostream_install.sh").write_text(GOOD)
+        target = env.upd if where == "upd" else env.state.parent
+        (env.state / "update-staging").symlink_to(target)
+        r = _adopt(env, new_release)
         assert r.returncode == 0, r.stderr
-        assert not (env.upd / "staging" / "release_tag").exists()
-        assert not (env.upd / "staging" / "retry_count").exists()
-        assert (env.upd / "staging" / "src" / release.name / "autostream_install.sh").exists()
-
-    def test_a_link_inside_the_old_tree_is_copied_as_a_link_not_followed(self, env):
-        secret = env.tmp / "root-only"
-        secret.write_text("secret", encoding="utf-8")
-        release = _legacy_release(env)
-        (release / "leak").symlink_to(secret)
-        r = _adopt(env, release)
-        assert r.returncode == 0, r.stderr
-        copied = env.upd / "staging" / "src" / release.name / "leak"
-        assert copied.is_symlink()
-
-    def test_a_copy_whose_installer_is_not_the_one_running_is_dropped(self, env):
-        release = _legacy_release(env)
-        env.fake("cmp", "#!/bin/sh\nexit 1\n")
-        r = _adopt(env, release)
-        assert r.returncode == 0, r.stderr
-        assert not (env.upd / "staging").exists()
-        assert not list(env.upd.glob("staging.new"))
-        assert "Could not copy" in r.stderr
+        assert (new_release / "autostream_install.sh").read_text() == GOOD
         assert (env.upd / "update-in-progress").exists()
+        # The link is still there; it is unlinked, never followed, when the
+        # update has succeeded.
+        assert (env.state / "update-staging").is_symlink()
 
-    def test_a_copy_cut_short_leaves_nothing_a_retry_could_use(self, env):
-        release = _legacy_release(env)
-        env.fake("cp", "#!/bin/sh\nexit 1\n")
-        r = _adopt(env, release)
+    def test_a_link_planted_at_the_old_name_is_unlinked_not_followed_by_the_clean_up(
+            self, env):
+        keep = env.upd / "staging" / "src" / "release"
+        keep.mkdir(parents=True)
+        (keep / "autostream_install.sh").write_text(GOOD)
+        (env.state / "update-staging").symlink_to(env.upd / "staging")
+        funcs = _function_text(APPLIANCE_INSTALLER, "retire_older_update_state")
+        r = _shell(env, f"{funcs}\nretire_older_update_state")
         assert r.returncode == 0, r.stderr
-        assert not (env.upd / "staging").exists()
-        assert not list(env.upd.glob("staging.new"))
+        assert not (env.state / "update-staging").is_symlink()
+        assert not (env.state / "update-staging").exists()
+        assert (keep / "autostream_install.sh").read_text() == GOOD
 
-    def test_a_copy_left_half_made_by_a_power_cut_is_replaced_next_time(self, env):
-        release = _legacy_release(env)
-        (env.upd / "staging.new" / "src").mkdir(parents=True)
-        (env.upd / "staging.new" / "src" / "junk").write_text("x")
-        r = _adopt(env, release)
+    def test_the_clean_up_does_not_descend_through_a_link_inside_the_old_place(self, env):
+        _legacy_release(env)
+        precious = env.tmp / "precious"
+        precious.mkdir()
+        (precious / "keep").write_text("keep")
+        (env.state / "update-staging" / "src" / "link").symlink_to(precious)
+        funcs = _function_text(APPLIANCE_INSTALLER, "retire_older_update_state")
+        r = _shell(env, f"{funcs}\nretire_older_update_state")
         assert r.returncode == 0, r.stderr
-        assert not list(env.upd.glob("staging.new"))
-        assert not (env.upd / "staging" / "src" / "junk").exists()
-        assert (env.upd / "staging" / "src" / release.name / "autostream_install.sh").exists()
+        assert not (env.state / "update-staging").exists()
+        assert (precious / "keep").read_text() == "keep"
 
     def test_the_old_place_is_removed_once_the_update_has_succeeded(self, env):
         _legacy_release(env)
@@ -227,36 +216,33 @@ class TestApplianceInterruptedFirstRun:
         _write_result(env.state, "in_progress", _old_timestamp())
         return m
 
-    def test_the_retry_runs_the_copy_made_by_the_first_run_not_the_old_place(
+    def test_a_cut_after_the_record_is_reported_and_never_runs_the_old_place(
             self, env, tmp_path):
         release = _legacy_release(env, count="1")
         assert _adopt(env, release).returncode == 0
-        # After the copy, the service account swaps the installer in the old place.
+        # The service account swaps the installer in the old place.
         (release / "autostream_install.sh").write_text(HOSTILE)
-        m = self._retry_over(env, tmp_path)
-        rc, scheduled = _run_retry(m)
-        assert rc == 0
-        (cmd,) = scheduled
-        installer = Path(cmd[cmd.index("--update") - 1])
-        assert installer.is_relative_to(env.upd)
-        assert installer.read_text() == GOOD
-        assert m.RETRY_COUNT_FILE.read_text().strip() == "2"
-
-    def test_a_cut_before_the_copy_is_complete_does_not_run_anything(self, env, tmp_path):
-        release = _legacy_release(env)
-        (env.upd / "staging.new" / "src" / release.name).mkdir(parents=True)
-        (env.upd / "staging.new" / "src" / release.name / "autostream_install.sh").write_text(HOSTILE)
         m = self._retry_over(env, tmp_path)
         rc, scheduled = _run_retry(m)
         assert rc == 1
         assert scheduled == []
         assert "failure" in (env.state / "update-result.env").read_text().lower()
+        assert not (env.upd / "update-in-progress").exists()
 
-    def test_a_cut_after_the_copy_but_before_the_record_does_not_run_anything(
-            self, env, tmp_path):
+    def test_the_device_is_idle_and_clean_after_the_next_boot(self, env, tmp_path):
         release = _legacy_release(env)
         assert _adopt(env, release).returncode == 0
-        (env.upd / "update-in-progress").unlink()
+        m = self._retry_over(env, tmp_path)
+        assert _run_retry(m)[0] == 1
+        with _geteuid_root():
+            assert m.main() == 0
+        assert not (env.state / "update-staging").exists()
+        assert not (env.upd / "update-in-progress").exists()
+        assert not (env.upd / "staging").exists()
+
+    def test_a_cut_before_the_record_is_written_does_not_run_anything(
+            self, env, tmp_path):
+        _legacy_release(env)
         m = self._retry_over(env, tmp_path)
         rc, scheduled = _run_retry(m)
         assert rc == 1
@@ -352,6 +338,23 @@ class TestDialFirstUpdateFromTheOlderLayout:
         mod.cmd_boot()
         assert _legacy_names(world) == []
         assert system.reboots == 0
+
+    @pytest.mark.parametrize("backup", [False, True])
+    def test_a_run_cut_short_with_nothing_staged_is_reported_and_the_dial_is_idle_again(
+            self, world, mod, system, backup):
+        world.build_interrupted(attempt=1, installer=False, backup=backup)
+        mod.cmd_boot()
+        env = world.result()
+        assert env["STATUS"] == "failure"
+        assert "recovery files are unavailable" in env["MESSAGE"]
+        assert system.retries_scheduled() == []
+        assert not (world.upd / "update-in-progress").exists()
+        assert not world.backup.exists()
+        # The next boot has nothing to do, and a new update can start.
+        system.calls.clear()
+        assert mod.cmd_boot() == {"ok": True}
+        assert system.reboots == 0
+        assert system.retries_scheduled() == []
 
 
 class TestDialRollbackToTheOlderRelease:
@@ -455,35 +458,23 @@ class TestDialFirstRunFromTheOldPlace:
         env.fake("chown", RECORDER)
         return env.run(f'DEPLOY="{release.as_posix()}"\nadopt_older_update_staging')
 
-    def test_the_staged_release_is_copied_to_the_system_only_directory(self, env):
-        release = _legacy_release(env, installer="autostream_dial_install.sh")
-        r = self._adopt(env, release)
-        assert r.returncode == 0, r.stderr
-        copy = env.upd / "staging" / "src" / release.name
-        assert (copy / "autostream_dial_install.sh").read_text() == GOOD
-        assert (env.upd / "staging" / "release_tag").read_text().strip() == "1.3.0"
-        assert stat.S_IMODE(os.stat(env.upd / "staging").st_mode) == 0o700
-        assert (release / "autostream_dial_install.sh").exists()
+    def test_nothing_is_copied_out_of_the_old_place(self):
+        for path in (APPLIANCE_INSTALLER, REPO_ROOT / "autostream_dial_install.sh",
+                     REPO_ROOT / "installer" / "dial" / "helpers.sh", UPDATE_LIB):
+            text = path.read_text(encoding="utf-8")
+            assert "migrate_staged_release" not in text, path.name
+            assert "adopt_older_update_staging" not in text, path.name
 
-    def test_a_failed_copy_is_a_warning_and_leaves_no_partial_staging(self, env):
-        release = _legacy_release(env, installer="autostream_dial_install.sh")
-        env.fake("cmp", "#!/bin/sh\nexit 1\n")
-        r = self._adopt(env, release)
-        assert r.returncode == 0, r.stderr
-        assert "could not copy" in r.stderr
-        assert not (env.upd / "staging").exists()
-        assert not list(env.upd.glob("staging.new"))
-
-    def test_the_record_is_written_after_the_copy_in_the_installer(self):
+    def test_the_record_is_written_in_the_prepare_phase_of_an_update(self):
         text = (REPO_ROOT / "autostream_dial_install.sh").read_text(encoding="utf-8")
         block = text[text.index("if $UPDATE; then\n    create_service_user"):]
         block = block[:block.index("\nfi\n")]
-        assert block.index("adopt_older_update_staging") < block.index("mark_update_in_progress")
+        assert "mark_update_in_progress" in block
 
-    def test_the_appliance_record_is_written_after_the_copy(self):
+    def test_the_appliance_record_is_written_before_the_update_runs(self):
         text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
         body = _function_text(APPLIANCE_INSTALLER, "adopt_older_update_state")
-        assert body.index("migrate_staged_release") < body.index("write_state_file")
+        assert "write_state_file" in body
         run = text[text.index("run_update() {"):]
         assert run.index("adopt_older_update_state") < run.index("write_update_result")
         assert run.index("write_update_result \"success\"") < run.index("retire_older_update_state") \

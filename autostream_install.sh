@@ -528,16 +528,12 @@ prepare_update_state_dir() {
 
 # adopt_older_update_state: an update started by an older release's updater runs
 # this installer from the old staging place, inside the directory the service
-# account owns. The staged release is copied to the system-only directory so
-# that an interruption is retried from there, the record that an update is under
-# way is written once that copy is complete, and the list of stopped services
-# the older installer kept in the old place is dropped. The run itself cannot be
-# moved: it is already executing from the old place.
+# account owns. That run cannot be moved or protected, and nothing is copied
+# from it: if it is cut short the update is reported as failed and the next one
+# stages in the system-only directory. The record that an update is under way
+# is written, and the list of stopped services the older installer kept in the
+# old place is dropped.
 adopt_older_update_state() {
-  if ! migrate_staged_release "${AUTOSTREAM_DIR}" "${STAMP_DIR}/update-staging" \
-       "${UPDATE_STATE_DIR}/staging" autostream_install.sh retry_count; then
-    warn "Could not copy the staged release to ${UPDATE_STATE_DIR}; an interruption would have to be retried from the web UI."
-  fi
   printf '%s\n' "${AUTOSTREAM_RELEASE_TAG:-unknown}" \
     | write_state_file "${UPDATE_IN_PROGRESS_FILE}" 0600 root:root
   remove_legacy_update_state "${STAMP_DIR}/update-stopped-services.env"
