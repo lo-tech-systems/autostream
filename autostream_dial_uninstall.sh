@@ -35,7 +35,35 @@ require_root_user "$(basename "$0")"
 require_dial_install
 confirm_dial_uninstall "${ASSUME_YES}"
 
-systemctl disable --now \
+# From here the uninstall must reach the end. The checks above are the only
+# reason to stop; once units and files start to go, stopping half way leaves a
+# dial that the checks would no longer let anyone finish removing. A step that
+# cannot be done is reported and counted, and the rest carries on.
+failed=0
+best_effort() {
+    "$@" || {
+        warn "Could not complete: $*"
+        failed=$((failed + 1))
+    }
+}
+
+# Remove a service account. The account may be missing already (nothing to do)
+# or still in use by a running process (it stays, and the owner is told).
+remove_account() {
+    local name="$1" rc=0
+    userdel "${name}" 2>/dev/null || rc=$?
+    case "${rc}" in
+        0|6) ;;
+        *)
+            warn "Could not remove the ${name} account (userdel exit ${rc}); a process may still be running as it. Run 'userdel ${name}' once it has stopped."
+            failed=$((failed + 1))
+            ;;
+    esac
+}
+
+# One unit at a time, so that a unit that is not installed cannot keep the
+# others in the list from being stopped.
+for unit in \
     autostream_dial \
     autostream_dial_wifi_watcher \
     autostream_dial_dnsmasq \
@@ -43,8 +71,9 @@ systemctl disable --now \
     autostream_dial_update_recover \
     autostream_storage_guard.timer \
     autostream_sdcardhealth.timer \
-    autostream_sdcardhealth_boot \
-    2>/dev/null || true
+    autostream_sdcardhealth_boot; do
+    systemctl disable --now "${unit}" 2>/dev/null || true
+done
 systemctl stop autostream_dial_dnsmasq 2>/dev/null || true
 # HD dial only; each step does nothing on an SPI dial.
 systemctl disable --now autostream_dial_kiosk 2>/dev/null || true
@@ -70,8 +99,8 @@ rm -f /etc/systemd/system/autostream_dial_kiosk.service
 # Take back the boot splash while its state file (under /var/lib/autostream,
 # removed below) still says what was added. This also removes the splash's
 # systemd drop-in, so the reload that follows covers it.
-revert_plymouth
-systemctl daemon-reload
+best_effort revert_plymouth
+best_effort systemctl daemon-reload
 
 rm -f /etc/nginx/sites-enabled/autostream-dial
 rm -f /etc/nginx/sites-available/autostream-dial
@@ -104,32 +133,38 @@ rm -f /usr/local/sbin/sdmon
 rm -f /usr/local/bin/autostream-dial-control
 
 # Shared admin infrastructure — safe to remove on dial-only device
-rm -rf /usr/local/libexec/autostream
-rm -rf /usr/local/share/autostream
+best_effort rm -rf /usr/local/libexec/autostream
+best_effort rm -rf /usr/local/share/autostream
 
-rm -rf /opt/autostream         # dial-only device; no autostream appliance present
+best_effort rm -rf /opt/autostream         # dial-only device; no autostream appliance present
 rm -f  /etc/autostream-network.json
 # A dial that has been factory reset keeps its identity salt through an
 # uninstall. Removing it would put the dial back on the identity it had before
 # the reset, and so back on every appliance that still lists that identity.
 # The salt is in /etc/autostream, which only root can write, so everything else
-# in that directory is removed and the directory stays.
+# in that directory is removed and the directory stays. Each entry is removed on
+# its own, so one that cannot be removed does not keep the others.
 dial_etc="$(_fs_root)/etc/autostream"
 if [[ -f "${dial_etc}/dial-id-salt" && ! -L "${dial_etc}/dial-id-salt" ]]; then
-    find "${dial_etc}" -mindepth 1 ! -name dial-id-salt -delete
+    best_effort find "${dial_etc}" -mindepth 1 -maxdepth 1 ! -name dial-id-salt \
+        -exec rm -rf -- {} +
     salt_kept=true
 else
-    rm -rf /etc/autostream
+    best_effort rm -rf /etc/autostream
     salt_kept=false
 fi
-rm -rf /var/lib/autostream
+best_effort rm -rf /var/lib/autostream
 rm -f  /run/autostream/autostream-dial-setup.conf 2>/dev/null || true
 
-userdel autostream 2>/dev/null || true
-userdel autostream-kiosk 2>/dev/null || true
-rm -rf /var/lib/autostream-kiosk
+remove_account autostream
+remove_account autostream-kiosk
+best_effort rm -rf /var/lib/autostream-kiosk
 if $salt_kept; then
     echo "Kept the dial identity salt in /etc/autostream so a reinstall does not"
     echo "give this dial back the identity it had before its factory reset."
+fi
+if (( failed > 0 )); then
+    warn "${failed} step(s) could not be completed (see the warnings above); the rest of the dial has been removed."
+    exit 1
 fi
 echo "autostream dial uninstalled."

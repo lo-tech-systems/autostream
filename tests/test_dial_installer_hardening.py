@@ -165,7 +165,7 @@ class TestUninstallerHandsWifiBack:
         _run_uninstaller(env, script, "--yes", **extra)
         calls = env.calls()
         stop = next(i for i, c in enumerate(calls)
-                    if c.startswith("systemctl disable --now autostream_dial "))
+                    if c == "systemctl disable --now autostream_dial")
         first_modify = next(i for i, c in enumerate(calls)
                             if c.startswith("nmcli connection modify"))
         assert stop < first_modify
@@ -1317,3 +1317,137 @@ class TestApplianceInstallerCleansTheCache:
         for path in (APPLIANCE_INSTALLER, INSTALLER, HELPERS, APT_LIB):
             text = path.read_text(encoding="utf-8")
             assert "autoremove" not in text, path.name
+
+
+# ---------------------------------------------------------------------------
+# An uninstall that meets something it cannot remove still reaches the end
+# ---------------------------------------------------------------------------
+
+# rm that removes what is inside the scratch root, fails for the paths named
+# in RM_FAIL, and only records anything else (the real system paths).
+WORKING_RM = r"""#!/bin/bash
+echo "rm $*" >> "$TRACE"
+rc=0
+for a in "$@"; do
+    case "$a" in -*) continue ;; esac
+    for bad in ${RM_FAIL:-}; do
+        if [[ "$a" == "$bad" ]]; then rc=1; continue 2; fi
+    done
+    case "$a" in "$AUTOSTREAM_FS_ROOT"*) /bin/rm -rf -- "$a" || rc=1 ;; esac
+done
+exit $rc
+"""
+
+# systemctl that fails for the units named in SYSTEMCTL_FAIL.
+FAILING_SYSTEMCTL = r"""#!/bin/bash
+echo "systemctl $*" >> "$TRACE"
+for a in "$@"; do
+    for bad in ${SYSTEMCTL_FAIL:-}; do [[ "$a" == "$bad" ]] && exit 5; done
+done
+exit 0
+"""
+
+# userdel that exits with the code in USERDEL_RC.
+FAKE_USERDEL = r"""#!/bin/bash
+echo "userdel $*" >> "$TRACE"
+exit "${USERDEL_RC:-0}"
+"""
+
+SALT = "00112233445566778899aabbccddeeff"
+
+
+@bash_capable
+@posix_only
+class TestUninstallerCarriesOnPastAFailure:
+    def _sandbox(self, env: Env) -> Path:
+        script = _uninstall_sandbox(env)
+        env.fake("rm", WORKING_RM)
+        env.fake("systemctl", FAILING_SYSTEMCTL)
+        env.fake("userdel", FAKE_USERDEL)
+        return script
+
+    def test_a_dial_with_a_salt_keeps_it_and_loses_everything_else_in_the_directory(self, env):
+        script = self._sandbox(env)
+        env.put("etc/autostream/dial-id-salt", SALT + "\n")
+        env.put("etc/autostream/autostream-dial.json", "{}")
+        env.put("etc/autostream/sub/deeper/file", "x")
+        r = _run_uninstaller(env, script, "--yes")
+        assert r.returncode == 0, r.stderr
+        assert [p.name for p in (env.root / "etc/autostream").iterdir()] == ["dial-id-salt"]
+        assert (env.root / "etc/autostream/dial-id-salt").read_text() == SALT + "\n"
+
+    def test_an_entry_named_like_the_salt_further_down_does_not_stop_the_uninstall(self, env):
+        script = self._sandbox(env)
+        env.put("etc/autostream/dial-id-salt", SALT + "\n")
+        env.put("etc/autostream/sub/dial-id-salt", "not the salt")
+        r = _run_uninstaller(env, script, "--yes")
+        assert r.returncode == 0, r.stderr
+        assert [p.name for p in (env.root / "etc/autostream").iterdir()] == ["dial-id-salt"]
+        assert "autostream dial uninstalled." in r.stdout
+        assert "userdel autostream" in env.calls()
+
+    def test_an_entry_that_cannot_be_removed_is_reported_and_the_rest_still_goes(self, env):
+        script = self._sandbox(env)
+        env.put("etc/autostream/dial-id-salt", SALT + "\n")
+        stuck = env.put("etc/autostream/stuck", "x")
+        env.put("etc/autostream/other", "x")
+        r = _run_uninstaller(env, script, "--yes", RM_FAIL=str(stuck))
+        assert r.returncode == 1
+        assert "Could not complete" in r.stdout
+        assert "could not be completed" in r.stdout
+        assert not (env.root / "etc/autostream/other").exists()
+        calls = env.calls()
+        assert "rm -rf /var/lib/autostream" in calls
+        assert "userdel autostream" in calls and "userdel autostream-kiosk" in calls
+        assert "rm -rf /var/lib/autostream-kiosk" in calls
+        assert "autostream dial uninstalled." not in r.stdout
+
+    def test_a_directory_that_cannot_be_removed_does_not_stop_the_later_steps(self, env):
+        script = self._sandbox(env)
+        r = _run_uninstaller(env, script, "--yes", RM_FAIL="/opt/autostream")
+        assert r.returncode == 1
+        assert "Could not complete: rm -rf /opt/autostream" in r.stdout
+        calls = env.calls()
+        assert "rm -rf /var/lib/autostream" in calls
+        assert "userdel autostream-kiosk" in calls
+
+    def test_an_account_still_in_use_stays_with_a_message_and_the_rest_goes(self, env):
+        script = self._sandbox(env)
+        r = _run_uninstaller(env, script, "--yes", USERDEL_RC="8")
+        assert r.returncode == 1
+        assert "Could not remove the autostream account" in r.stdout
+        assert "userdel autostream'" in r.stdout
+        calls = env.calls()
+        assert "userdel autostream" in calls and "userdel autostream-kiosk" in calls
+        assert "rm -rf /var/lib/autostream-kiosk" in calls
+
+    def test_an_account_that_is_not_there_is_not_a_problem(self, env):
+        script = self._sandbox(env)
+        r = _run_uninstaller(env, script, "--yes", USERDEL_RC="6")
+        assert r.returncode == 0, r.stderr
+        assert "Could not" not in r.stdout
+        assert "autostream dial uninstalled." in r.stdout
+
+    def test_a_unit_that_is_not_installed_does_not_keep_the_others_from_being_stopped(self, env):
+        script = self._sandbox(env)
+        r = _run_uninstaller(env, script, "--yes", SYSTEMCTL_FAIL="autostream_dial_dnsmasq")
+        assert r.returncode == 0, r.stderr
+        calls = env.calls()
+        for unit in ("autostream_dial", "autostream_dial_wifi_watcher",
+                     "autostream_dial_updater.timer", "autostream_dial_update_recover",
+                     "autostream_storage_guard.timer", "autostream_sdcardhealth.timer",
+                     "autostream_sdcardhealth_boot", "autostream_dial_kiosk"):
+            assert f"systemctl disable --now {unit}" in calls, unit
+
+    def test_a_failed_daemon_reload_is_reported_and_the_rest_goes(self, env):
+        script = self._sandbox(env)
+        r = _run_uninstaller(env, script, "--yes", SYSTEMCTL_FAIL="daemon-reload")
+        assert r.returncode == 1
+        assert "Could not complete: systemctl daemon-reload" in r.stdout
+        assert "userdel autostream" in env.calls()
+
+    def test_a_clean_run_exits_zero_with_no_warning(self, env):
+        script = self._sandbox(env)
+        r = _run_uninstaller(env, script, "--yes")
+        assert r.returncode == 0, r.stderr
+        assert "[WARN]" not in r.stdout

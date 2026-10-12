@@ -25,7 +25,7 @@ from test_dial_staged_install import (  # noqa: E402
     Env, REPO_ROOT, bash_capable, posix_only,
 )
 from test_dial_installer_hardening import (  # noqa: E402
-    _real_python3, _run_uninstaller, _uninstall_sandbox,
+    WORKING_RM, _real_python3, _run_uninstaller, _uninstall_sandbox,
 )
 
 for _p in (REPO_ROOT / "core", REPO_ROOT / "dial"):
@@ -753,6 +753,7 @@ class TestUpdateReinstallUninstall:
 
     def test_uninstalling_a_salted_dial_keeps_its_salt_and_removes_the_rest(self, env):
         script = _uninstall_sandbox(env)
+        env.fake("rm", WORKING_RM)
         env.put("etc/autostream/dial-id-salt", SALT_A + "\n")
         env.put("etc/autostream/autostream-dial.json", "{}")
         env.put("etc/autostream/sub/other", "x")

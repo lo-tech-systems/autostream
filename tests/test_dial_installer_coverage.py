@@ -294,7 +294,7 @@ def _removed_by_uninstaller() -> tuple[set[str], list[str]]:
     files: set[str] = set()
     trees: list[str] = []
     for line in UNINSTALLER.read_text(encoding="utf-8").splitlines():
-        m = re.match(r"^rm\s+(-\w+)\s+(/\S+)", line.strip())
+        m = re.match(r"^(?:best_effort\s+)?rm\s+(-\w+)\s+(/\S+)", line.strip())
         if not m:
             continue
         if "r" in m.group(1):

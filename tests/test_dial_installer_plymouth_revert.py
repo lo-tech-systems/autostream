@@ -181,10 +181,10 @@ class TestUninstaller:
 
     def test_reverts_the_splash_before_the_state_directory_goes(self):
         assert self.text.count("revert_plymouth") == 1
-        call = self.text.index("\nrevert_plymouth\n")
+        call = self.text.index("\nbest_effort revert_plymouth\n")
         assert call < self.text.index("rm -rf /var/lib/autostream\n")
 
     def test_one_daemon_reload_covers_the_dropin_removal(self):
-        call = self.text.index("\nrevert_plymouth\n")
+        call = self.text.index("\nbest_effort revert_plymouth\n")
         assert call < self.text.index("systemctl daemon-reload")
         assert self.text.count("systemctl daemon-reload") == 1

@@ -237,7 +237,7 @@ class TestUninstaller:
         assert "rm -f /etc/systemd/system/autostream_dial_kiosk.service" in text
         assert "rm -f /etc/udev/rules.d/99-autostream-backlight.rules" in text
         assert "rm -f /etc/modules-load.d/autostream-dial-i2c.conf" in text
-        assert "userdel autostream-kiosk" in text
+        assert "remove_account autostream-kiosk" in text
         assert "rm -rf /var/lib/autostream-kiosk" in text
         assert text.index("autostream_dial_kiosk") < text.index("systemctl daemon-reload")
 
