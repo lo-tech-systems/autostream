@@ -10,6 +10,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/installer/dial/helpers.sh"
+# The Wi-Fi handback is the appliance uninstaller's own function; it reports
+# through info and warn.
+info() { echo "[INFO] $*"; }
+warn() { echo "[WARN] $*"; }
+# shellcheck source=installer/lib/wifi_restore.sh
+source "$SCRIPT_DIR/installer/lib/wifi_restore.sh"
 
 systemctl disable --now \
     autostream_dial \
@@ -24,6 +30,11 @@ systemctl disable --now \
 systemctl stop autostream_dial_dnsmasq 2>/dev/null || true
 # HD dial only; each step does nothing on an SPI dial.
 systemctl disable --now autostream_dial_kiosk 2>/dev/null || true
+
+# The Wi-Fi watcher, now stopped, keeps every client profile on autoconnect
+# off; give them back to NetworkManager before anything is removed so a
+# Wi-Fi-only dial rejoins its network after the next boot.
+restore_wifi_profiles
 
 rm -f /etc/systemd/system/autostream_dial.service
 rm -f /etc/systemd/system/autostream_dial_wifi_watcher.service

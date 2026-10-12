@@ -523,7 +523,8 @@ class TestUninstallRestoresWifiProfiles:
     so a Wi-Fi-only headless device is not stranded after uninstall."""
 
     def _uninstall_text(self) -> str:
-        return (REPO_ROOT / "autostream_uninstall.sh").read_text(encoding="utf-8")
+        # The sweep lives in the library the appliance and dial uninstallers share.
+        return (REPO_ROOT / "installer" / "lib" / "wifi_restore.sh").read_text(encoding="utf-8")
 
     def test_restores_autoconnect(self):
         text = self._uninstall_text()
@@ -567,8 +568,8 @@ class TestUninstallRestoresWifiProfiles:
         """The Wi-Fi handback must run while nmcli/NetworkManager state is still
         addressable, i.e. before the uninstaller starts ripping out autostream's
         own files."""
-        text = self._uninstall_text()
-        restore_idx = text.find("restore_wifi_profiles")
+        text = (REPO_ROOT / "autostream_uninstall.sh").read_text(encoding="utf-8")
+        restore_idx = text.find("\n  restore_wifi_profiles\n")
         remove_idx = text.find('info "Removing autostream application files"')
         assert restore_idx != -1 and remove_idx != -1
         assert restore_idx < remove_idx

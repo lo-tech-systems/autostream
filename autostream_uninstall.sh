@@ -30,6 +30,19 @@ if [[ -n "${INSTALLER_LIB_DIR}" && -f "${INSTALLER_LIB_DIR}/hardware.sh" && -f "
   source "${INSTALLER_LIB_DIR}/bluetooth.sh"
 fi
 
+# restore_wifi_profiles (installer/lib/wifi_restore.sh) is shared with the dial
+# uninstaller. Without the library the profiles stay as the wifi watcher left
+# them, which is said plainly rather than skipped silently.
+if [[ -n "${INSTALLER_LIB_DIR}" && -f "${INSTALLER_LIB_DIR}/wifi_restore.sh" ]]; then
+  # shellcheck source=installer/lib/wifi_restore.sh
+  source "${INSTALLER_LIB_DIR}/wifi_restore.sh"
+else
+  restore_wifi_profiles() {
+    warn "installer/lib/wifi_restore.sh is unavailable; Wi-Fi profiles keep autoconnect disabled."
+    warn "Re-enable each with: nmcli connection modify <name> connection.autoconnect yes"
+  }
+fi
+
 # remove_bluetooth_if_enabled: call remove_bluetooth_stack (disable/remove
 # the unit, module config, bluez fragment). Apt packages are kept, matching
 # this uninstaller's existing light-touch stance. Must run before
@@ -113,48 +126,6 @@ apt_remove_owntone() {
   else
     warn "apt-get not found; skipping packaged OwnTone removal"
   fi
-}
-
-restore_wifi_profiles() {
-  # The wifi watcher (see migrate_client_profiles_autoconnect_no in
-  # platform/wifi_config.py) sets connection.autoconnect no on every Wi-Fi
-  # client profile and is the sole reconnection agent while autostream is
-  # installed; a surviving profile may also carry an 802-11-wireless.bssid
-  # pin and a connection.interface-name restriction. Once autostream is
-  # uninstalled nothing re-enables those profiles, so hand Wi-Fi back to
-  # stock NetworkManager behaviour here. This is best-effort: a missing
-  # nmcli, a stopped NetworkManager, or a single profile failure must not
-  # abort the uninstall.
-  if ! command -v nmcli >/dev/null 2>&1; then
-    info "nmcli not found; skipping Wi-Fi profile restoration"
-    return 0
-  fi
-
-  info "Restoring Wi-Fi connection profiles to NetworkManager defaults"
-
-  local line uuid type mode
-  while IFS=: read -r uuid type; do
-    [[ "${type}" == "802-11-wireless" ]] || continue
-
-    mode="$(nmcli -g 802-11-wireless.mode connection show "${uuid}" 2>/dev/null || true)"
-
-    if [[ "${mode}" == "ap" ]]; then
-      if nmcli connection delete "${uuid}" >/dev/null 2>&1; then
-        info "Deleted leftover AP profile ${uuid}"
-      else
-        warn "Failed to delete AP profile ${uuid}"
-      fi
-    else
-      if nmcli connection modify "${uuid}" \
-          connection.autoconnect yes \
-          802-11-wireless.bssid "" \
-          connection.interface-name "" >/dev/null 2>&1; then
-        info "Restored autoconnect and cleared pins on Wi-Fi profile ${uuid}"
-      else
-        warn "Failed to restore Wi-Fi profile ${uuid}"
-      fi
-    fi
-  done < <(nmcli -t -f UUID,TYPE connection show 2>/dev/null || true)
 }
 
 prompt_reboot() {

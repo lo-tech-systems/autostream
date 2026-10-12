@@ -214,7 +214,10 @@ taking effect, or the dial being unreachable at all, see
 software and its services. It also takes back the boot splash: it removes the
 theme, the boot options and boot files the installer added (and only those),
 purges the splash packages the installer itself installed, and rebuilds the
-boot files. It is meant for a dedicated dial.
+boot files. It also hands the saved Wi-Fi networks back to NetworkManager
+(autoconnect on again, the setup hotspot profile removed), so a dial that only
+has Wi-Fi rejoins its network after the next reboot. It is meant for a
+dedicated dial.
 
 ## Next steps
 

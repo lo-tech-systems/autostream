@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: uninstalling the dial software now gives the saved Wi-Fi networks back to
+  NetworkManager (autoconnect on again, hotspot profile removed), the same as the
+  appliance uninstaller, so a dial on Wi-Fi alone rejoins its network after the
+  next reboot instead of staying offline.
 - fix: the title and cover no longer drop out on a dial or the Home page every few
   minutes while a playing track is re-checked, including when the re-check finds
   nothing. A new track still clears the old one at once.
