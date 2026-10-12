@@ -5,7 +5,18 @@
 # where it is known to be appropriate.  All actions are best-effort and must
 # never fail the dispatcher run.
 #
+# Both settings are made with `iw`, which the installers put on the device.
+#
 # Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
+
+# A dispatcher script runs with a minimal environment, and `iw` lives in
+# /usr/sbin, so add the system directories to whatever the caller gave rather
+# than rely on it.
+PATH="${PATH:+${PATH}:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+# Where the kernel lists network interfaces (a test points this elsewhere).
+NET_SYSFS="${NET_SYSFS:-/sys/class/net}"
 
 IFACE="$1"
 STATUS="$2"
@@ -13,9 +24,9 @@ STATUS="$2"
 [ "$STATUS" = "up" ] || exit 0
 
 # Apply only to wireless interfaces.  A device is wireless if it exposes a
-# /sys/class/net/<iface>/wireless directory or /sys/class/net/<iface>/phy80211.
-if [ ! -d "/sys/class/net/${IFACE}/wireless" ] && \
-   [ ! -e "/sys/class/net/${IFACE}/phy80211" ]; then
+# ${NET_SYSFS}/<iface>/wireless directory or ${NET_SYSFS}/<iface>/phy80211.
+if [ ! -d "${NET_SYSFS}/${IFACE}/wireless" ] && \
+   [ ! -e "${NET_SYSFS}/${IFACE}/phy80211" ]; then
     exit 0
 fi
 
@@ -25,13 +36,13 @@ iw "$IFACE" set power_save off 2>/dev/null || \
     logger -t wlan-fix "power_save off not supported on ${IFACE} (ignored)"
 
 # The hard-coded transmit-power setting is known-good for the built-in radio
-# only.  Do not assume every USB adapter supports `iwconfig txpower`.
+# only.  Do not assume every USB adapter supports setting the transmit power.
+# 1200 is 12 dBm in the hundredths of a dBm that `iw` takes.
 IS_USB=0
-case "$(readlink -f "/sys/class/net/${IFACE}/device" 2>/dev/null)" in
+case "$(readlink -f "${NET_SYSFS}/${IFACE}/device" 2>/dev/null)" in
     *"/usb"*) IS_USB=1 ;;
 esac
 if [ "$IS_USB" = "0" ]; then
-    iwconfig "$IFACE" txpower 12 2>/dev/null || \
+    iw dev "$IFACE" set txpower fixed 1200 2>/dev/null || \
         logger -t wlan-fix "txpower set not supported on ${IFACE} (ignored)"
 fi
-

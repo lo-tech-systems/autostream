@@ -62,8 +62,11 @@ install_recovery_packages() {
     # Install offline-recovery dependencies idempotently.
     # Called unconditionally (fresh install and --update) so that upgraded
     # devices gain fcgiwrap and zip without requiring a re-image, and fresh
-    # installs are covered by a single code path.
-    apt_step apt-get install -y --no-install-recommends fcgiwrap zip
+    # installs are covered by a single code path. iw is here too: the Wi-Fi
+    # watcher counts the stations on the setup hotspot with it, and the
+    # NetworkManager dispatcher script (99-wlan-fix) uses it to turn Wi-Fi power
+    # saving off and set the transmit power.
+    apt_step apt-get install -y --no-install-recommends fcgiwrap zip iw
     # Dial logs are root:adm 0640; www-data needs adm membership to read them
     # for the CGI log-download endpoint.
     usermod -aG adm www-data

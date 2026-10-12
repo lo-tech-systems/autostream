@@ -825,10 +825,16 @@ ensure_build_deps() {
   # last exercised would go unensured until a rebuild is eventually forced.
   # Listing them here too guarantees them on every install and update
   # regardless of that fast path, at near-zero cost once already present.
+  #
+  # iw: the 99-wlan-fix NetworkManager dispatcher script turns Wi-Fi power
+  # saving off and sets the transmit power with it; the Wi-Fi watcher counts
+  # the stations on the setup hotspot with it. Without it neither setting is
+  # applied. Ensured on every install and update, like the rest of this list.
   apt_install git build-essential libffi-dev pkg-config fq \
     libasound2-dev libsamplerate0-dev libtwolame-dev libmpg123-dev \
     python3-dev python3-venv python3-pip python3-flask python3-pil \
-    autoconf automake libtool libtool-bin gettext gawk gperf bison flex cmake
+    autoconf automake libtool libtool-bin gettext gawk gperf bison flex cmake \
+    iw
 }
 
 # bootstrap_phase: first-time-only setup — users, groups, directories, base packages.

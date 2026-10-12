@@ -202,7 +202,7 @@ class TestRecoveryHelpers:
         content = HELPERS_SH.read_text(encoding="utf-8")
         start = content.find("install_recovery_packages() {")
         assert start != -1, "install_recovery_packages() definition not found"
-        body = content[start: start + 600]
+        body = content[start: content.find("\n}\n", start)]
         assert "www-data" in body and "adm" in body, (
             "install_recovery_packages() must run usermod -aG adm www-data"
         )
