@@ -313,7 +313,9 @@ mkdir -p /usr/local/share/autostream/dnsmasq
 install -m 0644 -o root -g root "$DEPLOY/system/dnsmasq/autostream-dial-setup.conf" \
     /usr/local/share/autostream/dnsmasq/autostream-dial-setup.conf
 rm -f /etc/dnsmasq.d/autostream-dial-setup.conf
-install -m 0440 "$DEPLOY/system/sudoers/autostream_dial" \
+# The sudoers file is checked before it replaces the installed one: a broken
+# drop-in stops sudo working on the whole system.
+install_sudoers_file "$DEPLOY/system/sudoers/autostream_dial" \
     /etc/sudoers.d/autostream_dial
 install -m 0644 "$DEPLOY/system/logrotate/autostream-dial" \
     /etc/logrotate.d/autostream-dial

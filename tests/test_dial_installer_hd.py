@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from conftest import bash_can_run_script_at_windows_path  # noqa: E402
-from test_dial_staged_install import Env, RECORDER  # noqa: E402
+from test_dial_staged_install import Env, RECORDER, _helper_text  # noqa: E402
 
 bash_capable = pytest.mark.skipif(
     not bash_can_run_script_at_windows_path(),
@@ -654,7 +654,7 @@ def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
     deploy = tmp_path / "deploy"
     (deploy / "installer" / "dial").mkdir(parents=True)
     (deploy / "autostream_dial_install.sh").write_bytes(INSTALLER.read_bytes())
-    names = re.findall(r"^([a-z][a-z0-9_]*)\(\) \{", HELPERS.read_text(encoding="utf-8"), re.M)
+    names = re.findall(r"^([a-z][a-z0-9_]*)\(\) \{", _helper_text(), re.M)
     stubs = [f'source "{HELPERS.as_posix()}"']
     for name in names:
         stubs.append(f'{name}() {{ printf "%s %s\\n" {name} "$*" >> "$TRACE"; }}')

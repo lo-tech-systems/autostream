@@ -595,12 +595,21 @@ class TestReboot:
 # The installer end to end, helpers replaced by recorders
 # ---------------------------------------------------------------------------
 
+SHARED_LIBS = (REPO_ROOT / "installer" / "lib" / "sudoers.sh",)
+
+
+def _helper_text() -> str:
+    """helpers.sh and the shared libraries it sources: every function a dry run
+    of the installer must replace with a recorder."""
+    return "\n".join(p.read_text(encoding="utf-8") for p in (HELPERS, *SHARED_LIBS))
+
+
 def _dry_run(tmp_path: Path, *, update: bool, fail: str | None = None):
     env = Env(tmp_path)
     deploy = tmp_path / "deploy"
     (deploy / "installer" / "dial").mkdir(parents=True)
     (deploy / "autostream_dial_install.sh").write_bytes(INSTALLER.read_bytes())
-    names = re.findall(r"^([a-z][a-z0-9_]*)\(\) \{", HELPERS.read_text(encoding="utf-8"), re.M)
+    names = re.findall(r"^([a-z][a-z0-9_]*)\(\) \{", _helper_text(), re.M)
     stubs = [f'source "{HELPERS.as_posix()}"']
     for name in names:
         stubs.append(f'{name}() {{ printf "%s %s\\n" {name} "$*" >> "$TRACE"; }}')

@@ -65,6 +65,8 @@ IFS=$'\n\t'
 INSTALLER_LIB="$(cd "$(dirname "$0")/installer/lib" && pwd)"
 # shellcheck source=installer/lib/helpers.sh
 source "${INSTALLER_LIB}/helpers.sh"
+# shellcheck source=installer/lib/sudoers.sh
+source "${INSTALLER_LIB}/sudoers.sh"
 # shellcheck source=installer/lib/owntone.sh
 source "${INSTALLER_LIB}/owntone.sh"
 # shellcheck source=installer/lib/vibra.sh
@@ -995,8 +997,11 @@ configure_phase() {
   update_progress "Applying configuration..." 62
 
   info "Configuring permissions and policy"
-  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
-  install -m 0440 -o root -g root "${AUTOSTREAM_DIR}/system/sudoers/autostream_admin"   /etc/sudoers.d/autostream_admin
+  # Each file is checked as a temporary copy before it replaces the installed
+  # one, so a bad file never lands in /etc/sudoers.d; validate_sudoers then
+  # checks the whole configuration.
+  install_sudoers_file "${AUTOSTREAM_DIR}/system/sudoers/autostream_updater" /etc/sudoers.d/autostream_updater
+  install_sudoers_file "${AUTOSTREAM_DIR}/system/sudoers/autostream_admin"   /etc/sudoers.d/autostream_admin
   validate_sudoers
 
   info "Running config layout migration (idempotent)"

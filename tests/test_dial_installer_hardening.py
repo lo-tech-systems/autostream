@@ -12,6 +12,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -231,3 +232,122 @@ class TestInstallerRefreshesListsOnAFreshInstall:
         names = _dry_names(tmp_path, update=True)
         assert "refresh_package_lists" not in names
         assert names.count("system_upgrade") == 1
+
+
+# ---------------------------------------------------------------------------
+# Sudoers files are validated before they are installed
+# ---------------------------------------------------------------------------
+
+SUDOERS_LIB = REPO_ROOT / "installer" / "lib" / "sudoers.sh"
+APPLIANCE_INSTALLER = REPO_ROOT / "autostream_install.sh"
+
+# A fake visudo that rejects any file containing the word BROKEN.
+FAKE_VISUDO = r"""#!/bin/bash
+echo "visudo $*" >> "$TRACE"
+if grep -q BROKEN "${@: -1}"; then echo "parse error in ${@: -1} near line 1"; exit 1; fi
+exit 0
+"""
+
+
+def _sudoers(env: Env, text: str) -> tuple[Path, Path]:
+    src = env.tmp / "sudoers-src"
+    src.write_text(text, encoding="utf-8")
+    dest = env.tmp / "sudoers-dest"
+    return src, dest
+
+
+@bash_capable
+class TestInstallSudoersFile:
+    def test_a_valid_file_is_installed_with_its_content_and_mode_0440(self, env):
+        env.fake("visudo", FAKE_VISUDO)
+        src, dest = _sudoers(env, "autostream ALL=(root) NOPASSWD: /bin/true\n")
+        r = env.run(f'install_sudoers_file "{src}" "{dest}"', update="false")
+        assert r.returncode == 0, r.stderr
+        assert dest.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
+        assert oct(dest.stat().st_mode & 0o777) == "0o440"
+
+    def test_visudo_checks_a_temporary_copy_not_the_source_or_the_destination(self, env):
+        env.fake("visudo", FAKE_VISUDO)
+        src, dest = _sudoers(env, "fine\n")
+        env.run(f'install_sudoers_file "{src}" "{dest}"', update="false")
+        checked = [c.split()[-1] for c in env.calls() if c.startswith("visudo")]
+        assert len(checked) == 1
+        assert checked[0] not in (str(src), str(dest))
+        assert env.calls()[0].startswith("visudo -cf ")
+
+    def test_an_invalid_file_is_refused_and_the_installed_one_is_left_alone(self, env):
+        env.fake("visudo", FAKE_VISUDO)
+        src, dest = _sudoers(env, "BROKEN\n")
+        dest.write_text("previous good file\n", encoding="utf-8")
+        r = env.run(f'install_sudoers_file "{src}" "{dest}"\necho carried-on', update="false")
+        assert r.returncode == 1
+        assert "carried-on" not in r.stdout
+        assert "is not valid sudoers syntax" in r.stderr
+        assert "parse error" in r.stdout
+        assert dest.read_text(encoding="utf-8") == "previous good file\n"
+
+    def test_an_invalid_file_is_not_created_on_a_fresh_install(self, env):
+        env.fake("visudo", FAKE_VISUDO)
+        src, dest = _sudoers(env, "BROKEN\n")
+        r = env.run(f'install_sudoers_file "{src}" "{dest}"', update="false")
+        assert r.returncode == 1
+        assert not dest.exists()
+
+    def test_no_temporary_copy_is_left_behind_after_a_refusal(self, env):
+        env.fake("visudo", FAKE_VISUDO)
+        src, dest = _sudoers(env, "BROKEN\n")
+        env.run(f'install_sudoers_file "{src}" "{dest}"', update="false",
+                TMPDIR=env.tmp.as_posix())
+        assert not [p for p in env.tmp.glob("tmp.*")]
+
+    def test_a_missing_source_file_is_an_error(self, env):
+        env.fake("visudo", FAKE_VISUDO)
+        r = env.run(f'install_sudoers_file "{env.tmp}/absent" "{env.tmp}/dest"', update="false")
+        assert r.returncode == 1
+        assert "is missing" in r.stderr
+
+    def test_without_visudo_the_file_is_installed_with_a_warning(self, env):
+        for name in ("bash", "install", "mktemp", "rm", "id"):
+            (env.bin / name).symlink_to(shutil.which(name))
+        src, dest = _sudoers(env, "fine\n")
+        r = env.run(f'install_sudoers_file "{src}" "{dest}"', update="false",
+                    PATH=env.bin.as_posix())
+        assert r.returncode == 0, r.stderr
+        assert "visudo not found" in r.stderr
+        assert dest.read_text(encoding="utf-8") == "fine\n"
+
+
+@bash_capable
+class TestInstallersUseTheCheckedInstall:
+    def test_dial_fresh_install_installs_its_sudoers_through_the_check(self, tmp_path):
+        from test_dial_installer_hd import _dry_run
+        r, calls = _dry_run(tmp_path, update=False)
+        assert r.returncode == 0, r.stderr
+        want = [c for c in calls if c.startswith("install_sudoers_file")]
+        assert len(want) == 1
+        assert want[0].endswith("system/sudoers/autostream_dial /etc/sudoers.d/autostream_dial")
+
+    def test_dial_update_installs_its_sudoers_through_the_check(self, tmp_path):
+        from test_dial_installer_hd import _dry_run
+        r, calls = _dry_run(tmp_path, update=True)
+        assert r.returncode == 0, r.stderr
+        assert len([c for c in calls if c.startswith("install_sudoers_file")]) == 1
+
+    def test_dial_installer_text_has_no_unchecked_install_of_the_sudoers_file(self):
+        text = INSTALLER.read_text(encoding="utf-8")
+        assert "install -m 0440" not in text
+
+    def test_dial_helpers_source_the_shared_library(self):
+        text = HELPERS.read_text(encoding="utf-8")
+        assert 'source "${BASH_SOURCE[0]%/*}/../lib/sudoers.sh"' in text
+
+    def test_appliance_installer_text_checks_both_files_before_installing_them(self):
+        text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
+        assert 'source "${INSTALLER_LIB}/sudoers.sh"' in text
+        for name in ("autostream_updater", "autostream_admin"):
+            assert re.search(
+                r'install_sudoers_file "\$\{AUTOSTREAM_DIR\}/system/sudoers/' + name
+                + r'"\s+/etc/sudoers.d/' + name, text)
+        assert "install -m 0440 -o root -g root \"${AUTOSTREAM_DIR}/system/sudoers" not in text
+        configure = text[text.index("configure_phase() {"):]
+        assert configure.index("\n  install_sudoers_file") < configure.index("\n  validate_sudoers\n")

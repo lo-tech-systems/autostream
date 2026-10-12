@@ -7,6 +7,10 @@
 #
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
+# install_sudoers_file, shared with the appliance installer.
+# shellcheck source=../lib/sudoers.sh
+source "${BASH_SOURCE[0]%/*}/../lib/sudoers.sh"
+
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
     # Falls back to "unknown" (not "dev") when AUTOSTREAM_RELEASE_TAG is unset

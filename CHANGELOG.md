@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: the dial and appliance installers now check each sudoers file with visudo
+  before it replaces the installed one. A file with a syntax error stops the
+  install with a message and leaves the working file in place, where before it
+  could have left sudo unusable on the whole system.
 - fix: a fresh dial install now refreshes the package lists first, as the appliance
   installer does, so it no longer stops with "Unable to locate package" on a newly
   written card whose lists are empty or out of date. With no network it stops at
