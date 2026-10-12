@@ -89,7 +89,7 @@ class _Scenario:
         return s
 
 
-def test_the_field_sequence_reconnects_within_the_fast_phase(watcher):
+def test_a_device_that_comes_back_within_the_fast_phase_is_reconnected_at_the_next_check(watcher):
     """The link drops, the first attempt finds the device unavailable, and the
     device becomes available five seconds later."""
     sc = _Scenario(watcher, ready_at=T0 + 5)
@@ -103,7 +103,7 @@ def test_the_field_sequence_reconnects_within_the_fast_phase(watcher):
     assert sc.sleeps == [3, 3, 9]                   # two short waits, then the rest of the interval
 
 
-def test_the_field_sequence_does_not_back_off_or_escalate(watcher):
+def test_the_fast_reconnect_leaves_the_back_off_and_the_escalation_unchanged(watcher):
     fast = _Scenario(watcher, ready_at=T0 + 5)
     fast.run(60)
     fast_state, fast_reboots, fast_esc = fast.state(), fast.reboots, fast.escalations
@@ -121,7 +121,7 @@ def test_the_field_sequence_does_not_back_off_or_escalate(watcher):
     assert len(fast.connects) == len(off.connects) + 1
 
 
-def test_a_real_connection_failure_with_the_device_available_keeps_todays_back_off(watcher):
+def test_a_real_connection_failure_with_the_device_available_keeps_the_ordinary_back_off(watcher):
     sc = _Scenario(watcher, ready_at=T0 - 1)        # the device is available throughout
     sc.pass_()
     assert sc.connects == [T0]
@@ -146,7 +146,7 @@ def test_a_real_connection_failure_with_the_device_available_keeps_todays_back_o
     assert len(sc.connects) == 3
 
 
-def test_the_fast_phase_ends_at_its_bound_and_todays_schedule_resumes(watcher):
+def test_the_fast_phase_ends_at_its_bound_and_the_ordinary_schedule_resumes(watcher):
     sc = _Scenario(watcher, ready_at=None)          # the device never becomes available
     sc.pass_()
     assert watcher.STATE.device_wait_until == T0 + watcher.wifi_policy.DEVICE_WAIT_MAX
