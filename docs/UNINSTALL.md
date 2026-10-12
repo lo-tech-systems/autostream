@@ -27,7 +27,7 @@ it should not be treated as a full system rollback.
 
 - Shows a warning and asks for confirmation before continuing.
 - Stops and disables these services when present:
-  `autostream.service`, `autostream_monitor.service`,
+  `autostream.service`, `autostream_monitor.service`, `vibra-mini.service`,
   `autostream_wifi_watcher.service`, `autostream_storage_guard.timer`,
   `autostream_storage_guard.service`, `autostream_sdcardhealth.service`,
   `autostream_sdcardhealth.timer`, `autostream_sdcardhealth_boot.service`,
@@ -54,6 +54,10 @@ it should not be treated as a full system rollback.
   client profiles, and deletes leftover AP-mode (`Hotspot`) profiles, so a
   Wi-Fi-only device is not stranded after the wifi watcher is gone.
 - Removes the systemd unit files created by the installer for autostream.
+- Removes the `autostream` service account and its group, once the services that
+  ran as it have stopped and the directories it owned are gone. If a process is
+  still running as it, the script says so and leaves the account; run
+  `sudo userdel autostream` once that process has stopped.
 - Removes the sudoers snippets created by the installer.
 - Removes the journald storage drop-in
   (`/etc/systemd/journald.conf.d/99-autostream-storage.conf`) and restarts
@@ -91,13 +95,14 @@ In particular, it does not attempt to:
 - Guarantee removal of every OwnTone-related artifact.
 - Guarantee that the system is returned to a known-good non-autostream state.
 
-Some examples of changes that are deliberately not reversed:
+These changes are deliberately not reversed, so they remain after the script has run:
 
-- `/boot/firmware/config.txt`
+- `/boot/firmware/config.txt` (apart from the low power mode settings above)
 - `/boot/firmware/user-data`
 - `/etc/sysctl.d/90-autostream-swappiness.conf` (`vm.swappiness=20`)
 - the masked `rpi-zram-writeback.timer`
 - `/etc/cloud/cloud-init.disabled`
+- the hardware watchdog setup (`/etc/watchdog.conf` and the enabled `watchdog` service)
 - the removal of the `modemmanager` and `udisks2` packages
 - Any generic packages that may also be useful to other software on the system
 
@@ -131,7 +136,7 @@ At minimum, review:
 - `systemctl list-unit-files | grep -E 'autostream|owntone'`
 - `/etc/nginx/`
 - `/etc/NetworkManager/`
-- `/boot/firmware/config.txt`
+- `/boot/firmware/config.txt` (apart from the low power mode settings above)
 - `/boot/firmware/user-data`
 
 If you want a predictable clean slate, re-image the SD card instead of relying on

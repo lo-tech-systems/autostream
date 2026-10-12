@@ -151,6 +151,28 @@ remove_path() {
   fi
 }
 
+# remove_service_account: remove the account the installer made for the
+# services, and its group. The account may be missing already (nothing to do),
+# or still in use by a running process (it stays and the owner is told). Every
+# service that ran as it has been stopped and every directory it owned removed
+# by the time this is called.
+remove_service_account() {
+  local name="$1" rc=0
+  if ! getent passwd "${name}" >/dev/null 2>&1; then
+    info "Account ${name} not present; skipping"
+    return 0
+  fi
+  info "Removing the ${name} account"
+  userdel "${name}" >/dev/null 2>&1 || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    warn "Could not remove the ${name} account (userdel exit ${rc}); a process may still be running as it. Run 'userdel ${name}' once it has stopped."
+    return 0
+  fi
+  if getent group "${name}" >/dev/null 2>&1; then
+    groupdel "${name}" >/dev/null 2>&1 || warn "Could not remove the ${name} group"
+  fi
+}
+
 apt_remove_owntone() {
   if command -v apt-get >/dev/null 2>&1; then
     info "Attempting to remove packaged OwnTone"
@@ -191,6 +213,7 @@ main() {
   stop_and_disable_service autostream_updater.service
   stop_and_disable_service autostream.service
   stop_and_disable_service autostream_monitor.service
+  stop_and_disable_service vibra-mini.service
   stop_and_disable_service autostream_wifi_watcher.service
   stop_and_disable_service autostream_storage_guard.timer
   stop_and_disable_service autostream_storage_guard.service
@@ -239,6 +262,8 @@ main() {
   remove_path /etc/systemd/system/autostream_updater.timer
   remove_path /etc/systemd/system/autostream.service
   remove_path /etc/systemd/system/autostream_monitor.service
+  remove_path /etc/systemd/system/vibra-mini.service
+  remove_path /tmp/vibra-mini.sock
   remove_path /etc/systemd/system/autostream_wifi_watcher.service
   remove_path /etc/systemd/system/autostream_dnsmasq.service
   remove_path /etc/systemd/system/autostream_sdcardhealth.service
@@ -289,6 +314,8 @@ main() {
   remove_path /etc/modules-load.d/autostream-bluetooth.conf
   remove_path /etc/modprobe.d/autostream-bluetooth.conf
   remove_path /etc/bluetooth/main.conf.d/autostream.conf
+
+  remove_service_account autostream
 
   info "Reloading systemd manager configuration"
   systemctl daemon-reload || warn "systemctl daemon-reload failed"

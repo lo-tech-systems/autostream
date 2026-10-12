@@ -60,6 +60,10 @@
   again, and an install started from a login session carries on as a system
   service that no session can end, with its progress still shown on the terminal.
   Uninstalling no longer restarts the login service either.
+- fix: uninstalling the appliance now stops, disables and removes the track
+  identification service (`vibra-mini`), which before kept running and stayed
+  enabled, and removes the `autostream` service account it ran under. The guide
+  to uninstalling lists what is deliberately left.
 - fix: a dial update no longer wipes its own install log or the dial's log history.
   The log files are now created only when missing, so the install log of an update,
   and of its automatic retries after a reboot, can be read afterwards, and a fresh
