@@ -7,6 +7,9 @@
 #
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
+# shellcheck source=boot_files.sh
+source "${BASH_SOURCE[0]%/*}/boot_files.sh"
+
 #############################################
 # Firmware / watchdog helpers
 #############################################
@@ -52,7 +55,7 @@ update_pi_firmware_config() {
   info "Updating firmware settings in ${cfg}"
 
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(boot_file_stage "${cfg}")" || { warn "Could not update ${cfg}."; return 1; }
 
   local bt_line="dtoverlay=disable-bt"
   local write_bt=1
@@ -110,11 +113,7 @@ update_pi_firmware_config() {
     } > "${tmp}"
   fi
 
-  install -m "$(stat -c %a "${cfg}")" \
-          -o "$(stat -c %u "${cfg}")" \
-          -g "$(stat -c %g "${cfg}")" \
-          "${tmp}" "${cfg}"
-  rm -f "${tmp}"
+  boot_file_commit "${tmp}" "${cfg}" || { warn "Could not update ${cfg}."; return 1; }
 }
 
 #############################################
@@ -136,18 +135,22 @@ boot_file_path() {
 # Usage: _cmdline_rewrite FILE HAS_TRAILING_NEWLINE LINE
 # The first change to a file keeps a copy of the original beside it
 # (FILE.autostream-bak), and a later change does not replace that copy. The
-# file is overwritten in place, not replaced, so its mode and ownership stay.
+# file is replaced by renaming a finished copy over it (see boot_files.sh), so
+# a power cut leaves the old line or the new one and never an empty file; its
+# mode and ownership are carried across.
 _cmdline_rewrite() {
   local file="$1" has_nl="$2" line="$3" tmp
   if [[ ! -e "${file}.autostream-bak" ]]; then
     cp -p "${file}" "${file}.autostream-bak" || \
       warn "Could not back up ${file}; continuing."
   fi
-  tmp="$(mktemp)"
-  printf '%s' "${line}" > "${tmp}"
-  [[ "${has_nl}" == "1" ]] && printf '\n' >> "${tmp}"
-  cat "${tmp}" > "${file}" || { rm -f "${tmp}"; return 1; }
-  rm -f "${tmp}"
+  tmp="$(boot_file_stage "${file}")" || return 1
+  {
+    printf '%s' "${line}"
+    [[ "${has_nl}" == "1" ]] && printf '\n'
+    true
+  } > "${tmp}" || { boot_file_discard "${tmp}"; return 1; }
+  boot_file_commit "${tmp}" "${file}"
 }
 
 # _cmdline_read: split a kernel command line file into its facts.
@@ -165,6 +168,12 @@ _cmdline_read() {
     return 1
   fi
   CMDLINE_LINE="$(grep -m1 '[^[:space:]]' "${file}" || true)"
+  # A file saved with Windows line endings ends in a carriage return that is
+  # not part of the command line; it is dropped, and the line is written back
+  # with a plain newline.
+  while [[ "${CMDLINE_LINE}" == *$'\r' ]]; do
+    CMDLINE_LINE="${CMDLINE_LINE%$'\r'}"
+  done
   if [[ -s "${file}" && -n "$(tail -c1 "${file}")" ]]; then
     CMDLINE_HAS_NL=0
   fi
@@ -255,17 +264,20 @@ remove_low_power_settings() {
 
   if [[ -f "${cfg}" ]]; then
     local tmp
-    tmp="$(mktemp)"
-    awk '
-      BEGIN { cond=0 }
-      /^[[:space:]]*\[/ { s=$0; gsub(/[[:space:]]/, "", s); cond=(s != "[all]") }
-      !cond && /^[[:space:]]*(arm_freq=700|arm_boost=0|force_turbo=0)[[:space:]]*$/ { next }
-      { print }
-    ' "${cfg}" > "${tmp}"
-    if ! cmp -s "${tmp}" "${cfg}"; then
-      cat "${tmp}" > "${cfg}" || warn "Could not update ${cfg}."
+    tmp="$(boot_file_stage "${cfg}")" || { warn "Could not update ${cfg}."; tmp=""; }
+    if [[ -n "${tmp}" ]]; then
+      awk '
+        BEGIN { cond=0 }
+        /^[[:space:]]*\[/ { s=$0; gsub(/[[:space:]]/, "", s); cond=(s != "[all]") }
+        !cond && /^[[:space:]]*(arm_freq=700|arm_boost=0|force_turbo=0)[[:space:]]*$/ { next }
+        { print }
+      ' "${cfg}" > "${tmp}"
+      if cmp -s "${tmp}" "${cfg}"; then
+        boot_file_discard "${tmp}"
+      else
+        boot_file_commit "${tmp}" "${cfg}" || warn "Could not update ${cfg}."
+      fi
     fi
-    rm -f "${tmp}"
   fi
   remove_cmdline_option maxcpus 2 "${cmdline}"
 }

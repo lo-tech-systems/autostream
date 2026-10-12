@@ -368,11 +368,25 @@ def validate_hostname(hostname: str) -> Tuple[bool, str]:
 
 
 def atomic_write_text(path: Path, text: str, mode: int = 0o644) -> None:
-    """Atomically write a file (write temp then replace)."""
+    """Atomically write a file (write temp then replace).
+
+    The temporary file is beside PATH and renamed over it, so PATH is never
+    empty or half written (this is how config.txt is changed on the FAT boot
+    partition); the data is flushed before the rename so a power cut cannot
+    leave the new name pointing at nothing. Only for directories root alone can
+    write: the temporary name is not random.
+    """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.chmod(tmp, mode)
-    tmp.replace(path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def read_env_file(path: Path) -> dict[str, str]:

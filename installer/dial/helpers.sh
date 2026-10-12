@@ -20,6 +20,10 @@ source "${BASH_SOURCE[0]%/*}/../lib/swap.sh"
 # shared with the appliance installer.
 # shellcheck source=../lib/system_tuning.sh
 source "${BASH_SOURCE[0]%/*}/../lib/system_tuning.sh"
+# Replacing config.txt and cmdline.txt by rename, shared with the appliance
+# installer.
+# shellcheck source=../lib/boot_files.sh
+source "${BASH_SOURCE[0]%/*}/../lib/boot_files.sh"
 
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
@@ -594,16 +598,18 @@ write_boot_config_line() {
         return 0
     fi
     if _boot_config_in_all "${cfg}" "^[[:space:]]*${key}="; then
-        tmp="$(mktemp)"
+        tmp="$(boot_file_stage "${cfg}")" \
+            || { echo "WARNING: could not rewrite ${key} in ${cfg}" >&2; return 0; }
         awk -v pat="^[[:space:]]*${key}=" -v line="${line}" '
             /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); cond = (s != "[all]") }
             !cond && $0 ~ pat { if (!done) { print line; done = 1 } next }
-            { print }' "${cfg}" > "${tmp}" || { rm -f "${tmp}"; return 0; }
-        if ! cmp -s "${tmp}" "${cfg}"; then
-            cat "${tmp}" > "${cfg}" \
+            { print }' "${cfg}" > "${tmp}" || { boot_file_discard "${tmp}"; return 0; }
+        if cmp -s "${tmp}" "${cfg}"; then
+            boot_file_discard "${tmp}"
+        else
+            boot_file_commit "${tmp}" "${cfg}" \
                 || echo "WARNING: could not rewrite ${key} in ${cfg}" >&2
         fi
-        rm -f "${tmp}"
         return 0
     fi
     _boot_config_append "${cfg}" "${line}"
@@ -838,16 +844,18 @@ remove_boot_config_line() {
     # Usage: remove_boot_config_line KEY [CONFIG_FILE]
     local key="$1" cfg="${2:-/boot/firmware/config.txt}" tmp
     [[ -f "${cfg}" ]] || return 0
-    tmp="$(mktemp)"
+    tmp="$(boot_file_stage "${cfg}")" \
+        || { echo "WARNING: could not remove ${key} from ${cfg}" >&2; return 0; }
     awk -v pat="^[[:space:]]*${key}=" '
         /^[[:space:]]*\[/ { s = $0; gsub(/[[:space:]]/, "", s); cond = (s != "[all]") }
         !cond && $0 ~ pat { next }
-        { print }' "${cfg}" > "${tmp}" || { rm -f "${tmp}"; return 0; }
-    if ! cmp -s "${tmp}" "${cfg}"; then
-        cat "${tmp}" > "${cfg}" \
+        { print }' "${cfg}" > "${tmp}" || { boot_file_discard "${tmp}"; return 0; }
+    if cmp -s "${tmp}" "${cfg}"; then
+        boot_file_discard "${tmp}"
+    else
+        boot_file_commit "${tmp}" "${cfg}" \
             || echo "WARNING: could not remove ${key} from ${cfg}" >&2
     fi
-    rm -f "${tmp}"
 }
 
 set_disable_splash() {
