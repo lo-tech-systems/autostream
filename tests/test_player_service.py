@@ -182,6 +182,7 @@ class TestEnsureAudioFifo:
         assert result.ok is False
         assert result.error_code == "invalid_path"
 
+    @pytest.mark.timeout(10)
     def test_existing_fifo_returns_ok(self, tmp_path):
         fifo = tmp_path / "test.fifo"
         try:
@@ -295,6 +296,7 @@ class TestReconcileFifoWithBackend:
         assert result.ok is False
         assert result.error_code == "not_fifo"
 
+    @pytest.mark.timeout(10)
     def test_empty_base_url_skips_backend(self, tmp_path):
         fifo = tmp_path / "a.fifo"
         try:
@@ -304,6 +306,7 @@ class TestReconcileFifoWithBackend:
         result = svc.reconcile_fifo_with_backend("", str(fifo))
         assert result.ok is True
 
+    @pytest.mark.timeout(10)
     def test_matching_path_no_save_called(self, tmp_path):
         fifo = tmp_path / "a.fifo"
         try:
@@ -316,6 +319,7 @@ class TestReconcileFifoWithBackend:
         assert result.ok is True
         b.save_setting.assert_not_called()
 
+    @pytest.mark.timeout(10)
     def test_changed_path_saves_new_fifo_path(self, tmp_path):
         fifo = tmp_path / "a.fifo"
         try:
@@ -332,6 +336,7 @@ class TestReconcileFifoWithBackend:
         args = b.save_setting.call_args[0]
         assert str(fifo) in str(args)
 
+    @pytest.mark.timeout(10)
     def test_save_failure_returns_ok_with_warning(self, tmp_path):
         fifo = tmp_path / "a.fifo"
         try:
@@ -345,6 +350,7 @@ class TestReconcileFifoWithBackend:
         assert result.ok is True
         assert result.error or result.error_code
 
+    @pytest.mark.timeout(10)
     def test_unsupported_setting_skips_save(self, tmp_path):
         fifo = tmp_path / "a.fifo"
         try:
@@ -357,6 +363,7 @@ class TestReconcileFifoWithBackend:
         assert result.ok is True
         b.save_setting.assert_not_called()
 
+    @pytest.mark.timeout(10)
     def test_get_failure_returns_ok_with_warning(self, tmp_path):
         fifo = tmp_path / "a.fifo"
         try:

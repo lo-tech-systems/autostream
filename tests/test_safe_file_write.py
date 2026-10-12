@@ -204,6 +204,7 @@ class TestReadFileIfTrusted:
         with pytest.raises(ValueError):
             support.read_file_if_trusted(link, None)
 
+    @pytest.mark.timeout(10)
     def test_a_pipe_is_refused_without_blocking(self, tmp_path):
         fifo = tmp_path / "fifo"
         os.mkfifo(fifo)

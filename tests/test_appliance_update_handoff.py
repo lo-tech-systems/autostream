@@ -333,7 +333,7 @@ AUTOSTREAM_DIR=/staged
 """
 
 
-def _installer_run(env: Env, names: list[str], body: str, **extra: str):
+def _installer_run(env: Env, names: list[str], body: str, *, timeout: float = 60, **extra: str):
     funcs = "\n".join(_function_text(APPLIANCE_INSTALLER, n) for n in names)
     state = (env.root / "var" / "lib" / "autostream")
     script = (
@@ -351,7 +351,7 @@ def _installer_run(env: Env, names: list[str], body: str, **extra: str):
     env.fake("chown", RECORDER)
     e = env.env(**extra)
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                          timeout=60, env=e, cwd=env.tmp)
+                          timeout=timeout, env=e, cwd=env.tmp)
 
 
 LOAD_FUNCS = ["is_valid_owntone_mode", "is_valid_sdmon_method", "load_state"]
@@ -388,7 +388,8 @@ class TestLoadState:
 
     def test_a_fifo_at_the_state_file_does_not_hang_or_load(self, env):
         os.mkfifo(env.install_state)
-        r = _installer_run(env, LOAD_FUNCS, f"load_state\n{SHOW}")
+        # A regression that opens the pipe blocks for ever; fail in seconds instead.
+        r = _installer_run(env, LOAD_FUNCS, f"load_state\n{SHOW}", timeout=10)
         assert r.returncode != 0
         assert "No saved install state" in r.stderr
 

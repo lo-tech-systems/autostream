@@ -187,6 +187,7 @@ class TestSettingsToolOldTag:
         state.symlink_to(target)
         assert tool._read_old_release_tag(state) is None
 
+    @pytest.mark.timeout(10)
     def test_a_pipe_reads_as_no_tag_and_does_not_block(self, tool, tmp_path):
         state = tmp_path / "install-state.env"
         os.mkfifo(state)
