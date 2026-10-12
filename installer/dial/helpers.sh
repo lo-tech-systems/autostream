@@ -1832,8 +1832,8 @@ prepare_update_venv() {
     done
     PREVIOUS_VENV="${current}"
     if [[ "${current}" == "venv" ]]; then
-        prev_tag="$(_update_result_value PREVIOUS_TAG)"
-        [[ -n "${prev_tag}" ]] || prev_tag="${PREVIOUS_RELEASE_TAG:-}"
+        prev_tag="$(_tag_or_empty "$(_update_result_value PREVIOUS_TAG)")"
+        [[ -n "${prev_tag}" ]] || prev_tag="$(_tag_or_empty "${PREVIOUS_RELEASE_TAG:-}")"
         prev_tag="$(_sanitise_tag "${prev_tag}")"
         migrate_name="venv.${prev_tag:-previous}"
         PREVIOUS_VENV="${migrate_name}"
@@ -1870,12 +1870,18 @@ _installed_release_tag() {
 }
 
 _tag_or_empty() {
-    # The tag as given when it is a short version string, otherwise nothing.
-    # A tag taken from a file the service account can write goes into the
-    # hand-off file the boot step checks, so it is checked here too.
+    # The tag as given when it is a plain version, otherwise nothing. A plain
+    # version is a short string of version characters that reads as a release
+    # number (1.2.0, v1.2.0, 0.7.0-beta.1); this is valid_release_tag in
+    # supervisor/autostream_update_support.py, and the two are tested against
+    # the same cases. A tag taken from a file the service account can write
+    # goes into the hand-off file, and into a directory name, so it is checked
+    # here; one that fails reads as unknown rather than being a problem.
     # Usage: _tag_or_empty TAG
-    if [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]]; then
-        printf '%s\n' "$1"
+    local tag="$1"
+    if [[ "${tag}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$ ]] \
+        && [[ "${tag}" =~ ^v?[0-9]+(\.[0-9]+)?(\.[0-9]+)?(-[a-zA-Z][a-zA-Z0-9]*(\.[0-9]+)?)?(\+.*)?$ ]]; then
+        printf '%s\n' "${tag}"
     fi
 }
 
@@ -1942,7 +1948,7 @@ phase() {
     local -a extras=("PHASE=$1" "TAG=${AUTOSTREAM_RELEASE_TAG:-}")
     local previous
     if [[ -z "$(_update_result_value PREVIOUS_TAG)" ]]; then
-        previous="$(_installed_release_tag)"
+        previous="$(_tag_or_empty "$(_installed_release_tag)")"
         if [[ -n "${previous}" ]]; then
             extras+=("PREVIOUS_TAG=${previous}")
         fi
@@ -1959,8 +1965,8 @@ phase() {
 update_failure_message() {
     # Failure text for the phase that was running when the installer stopped.
     local previous step
-    previous="$(_update_result_value PREVIOUS_TAG)"
-    [[ -n "${previous}" ]] || previous="$(_installed_release_tag)"
+    previous="$(_tag_or_empty "$(_update_result_value PREVIOUS_TAG)")"
+    [[ -n "${previous}" ]] || previous="$(_tag_or_empty "$(_installed_release_tag)")"
     case "${CURRENT_PHASE:-}" in
         prepare)   step="preparation" ;;
         packages)  step="package installation" ;;

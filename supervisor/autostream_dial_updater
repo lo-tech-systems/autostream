@@ -610,6 +610,16 @@ def _clean_tag(raw: str) -> str:
     return tag.lstrip("v")
 
 
+def _previous_tag(raw: object) -> str:
+    """The release being replaced, for messages: a plain version or nothing.
+
+    It never decides whether an update is applied, so a value that is not a
+    version reads as unknown instead of being a problem.
+    """
+    tag = str(raw or "").strip()
+    return _clean_tag(tag) if valid_release_tag(tag) else ""
+
+
 def _subject(tag: str) -> str:
     return f"Update to {tag}" if tag else "Update"
 
@@ -661,9 +671,11 @@ def _swap_problem(swap: Dict[str, str]) -> str:
     The phase is not checked: one this step does not know is treated as a swap
     that never reached its verdict, which is rolled back.
     """
-    for key in ("TAG", "PREVIOUS_TAG"):
-        if not _tag_ok(str(swap.get(key, "")).strip()):
-            return f"{key} is not a release version"
+    # The release being installed decides what runs, so it must be a version.
+    # The one it replaces is only named in messages and is not checked here:
+    # _read_swap blanks it when it is not a plain version.
+    if not _tag_ok(str(swap.get("TAG", "")).strip()):
+        return "TAG is not a release version"
     for key in ("VENV", "PREVIOUS_VENV"):
         name = str(swap.get(key, "")).strip()
         if name and not _venv_name_ok(name):
@@ -691,6 +703,8 @@ def _read_swap() -> Optional[Dict[str, str]]:
     problem = _swap_problem(swap)
     if problem:
         raise ValueError(f"the hand-off file is not usable: {problem}")
+    if not valid_release_tag(swap.get("PREVIOUS_TAG", "")):
+        swap["PREVIOUS_TAG"] = ""
     return swap
 
 
@@ -1322,7 +1336,7 @@ def _rollback(swap: Dict[str, str], stop_services: bool) -> Dict[str, Any]:
     services have not started and a stop job would only disturb the boot.
     """
     tag = _clean_tag(swap.get("TAG", ""))
-    previous = _clean_tag(swap.get("PREVIOUS_TAG", ""))
+    previous = _previous_tag(swap.get("PREVIOUS_TAG", ""))
     if swap.get("PHASE") != SWAP_ROLLBACK:
         _set_swap_phase(swap, SWAP_ROLLBACK)
     if stop_services:
@@ -1383,7 +1397,7 @@ def cmd_rollback() -> Dict[str, Any]:
 def _boot_swap(swap: Dict[str, str]) -> Dict[str, Any]:
     """Swap the staged release in, then schedule its health check."""
     tag = _clean_tag(swap.get("TAG", ""))
-    previous = _clean_tag(swap.get("PREVIOUS_TAG", ""))
+    previous = _previous_tag(swap.get("PREVIOUS_TAG", ""))
     try:
         _swap_code_tree()
         _swap_venv(swap)
@@ -1469,7 +1483,7 @@ def _retry_interrupted(env: Dict[str, str]) -> Dict[str, Any]:
     the live software is untouched: retry it from the staged installer while
     attempts remain, otherwise record the failure."""
     tag = _clean_tag(env.get("TAG", ""))
-    previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
+    previous = _previous_tag(env.get("PREVIOUS_TAG", ""))
     attempt = max(1, _int_value(env.get("ATTEMPT"), 1), _root_attempt())
     # Only an update root staged is retried, and only from what root left in
     # its own directory; the result file alone, which the service account can
@@ -1508,7 +1522,7 @@ def _schedule_retry(env: Dict[str, str], installer: Path, tag: str, attempt: int
     if not valid_release_tag(release_tag):
         release_tag = ""
     release_tag = release_tag or (tag if valid_release_tag(tag) else "") or "unknown"
-    previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
+    previous = _previous_tag(env.get("PREVIOUS_TAG", ""))
 
     def fail(message: str) -> Dict[str, Any]:
         write_update_result(
@@ -1572,7 +1586,7 @@ def _leave_alone(reason: str) -> None:
     env = _read_env_file(STATE_DIR / "update-result.env")
     if env.get("STATUS", "").lower() == "in_progress":
         tag = _clean_tag(env.get("TAG", ""))
-        previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
+        previous = _previous_tag(env.get("PREVIOUS_TAG", ""))
         write_update_result(
             "failure", f"{_subject(tag)} was not applied - {_kept(previous)}",
             percent=0, phase="failed", tag=tag or None, previous_tag=previous or None,

@@ -229,7 +229,7 @@ class TestSwapValuesAreChecked:
         assert os.readlink(world.opt / "venv") == f"venv.{TAG}"
 
     @pytest.mark.parametrize("line", [
-        "TAG=1.3.0; touch /tmp/pwned", "PREVIOUS_TAG=$(id)", "VENV_MIGRATE=yes",
+        "TAG=1.3.0; touch /tmp/pwned", "TAG=mybranch", "VENV_MIGRATE=yes",
     ])
     def test_a_value_that_is_not_what_the_installer_writes_leaves_the_release_alone(
             self, world, mod, system, line):
