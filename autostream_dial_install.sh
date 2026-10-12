@@ -268,21 +268,12 @@ if ! $UPDATE; then
         write_hd_display_config
     fi
 else
-    # Parse without source — never execute env file contents.
-    # Every DIAL_UUID line counts, so a repeated one reads as malformed. The
-    # file is in the service account's directory: read without following a link.
-    _saved_state=$(read_state_file \
-        "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" || true)
-    DIAL_UUID=$(grep '^DIAL_UUID=' <<< "${_saved_state}" | cut -d= -f2- || true)
-    if [[ ! "$DIAL_UUID" =~ ^[0-9a-f]{20}$ ]]; then
-        # The file sits in the service account's directory, so what it holds
-        # is checked before use.
-        echo "WARNING: DIAL_UUID in /var/lib/autostream/install-state.env is missing or malformed; deriving the dial identity instead." >&2
-        DIAL_UUID=$(generate_dial_id)
-        if [[ -z "$DIAL_UUID" ]]; then
-            echo "ERROR: Unable to derive Dial identity." >&2
-            exit 1
-        fi
+    # The identity the dial already holds stays as it is, whatever shape an
+    # earlier installer gave it; see resolve_update_dial_id for the order.
+    DIAL_UUID=$(resolve_update_dial_id) || DIAL_UUID=""
+    if [[ -z "$DIAL_UUID" ]]; then
+        echo "ERROR: Unable to work out the Dial identity." >&2
+        exit 1
     fi
 fi
 

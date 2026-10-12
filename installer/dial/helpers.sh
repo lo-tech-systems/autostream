@@ -429,6 +429,69 @@ sys.exit(0)
 PYEOF
 }
 
+dial_identity_token_ok() {
+    # An identity a dial already holds: a short token of letters, digits and
+    # hyphens. Installers have written 20 lower-case hex characters and,
+    # earlier, a hyphenated UUID; no exact shape is required so that whatever a
+    # dial holds survives an update. Mirrors _HELD_DIAL_ID_RE in autostream_admin.
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,63}$ ]]
+}
+
+stored_hw_dial_id() {
+    # The uuid in the root-only hardware config, or nothing. The file is read
+    # without following a link; a file that is absent or not a JSON object
+    # with a text uuid prints nothing.
+    local content
+    content="$(read_state_file "$(_fs_root)/etc/autostream/autostream-dial.json")" || return 0
+    python3 -c '
+import json, sys
+try:
+    value = json.loads(sys.stdin.read()).get("uuid")
+except (ValueError, AttributeError):
+    value = None
+if isinstance(value, str) and "\n" not in value:
+    print(value)
+' <<< "${content}" 2>/dev/null || true
+}
+
+resolve_update_dial_id() {
+    # The identity an --update announces and records. A dial with a salt file
+    # has had a factory reset, and the identity derived from the salt wins. A
+    # dial with none keeps whatever identity it already holds, in the root-only
+    # hardware config first and the install state after it; one is derived from
+    # the board only when neither holds a usable identity, and then written to
+    # the hardware config too (when there is one) so that every copy agrees.
+    # A stored identity is never replaced by a derived one otherwise.
+    local salt id state
+    salt="$(_fs_root)/etc/autostream/dial-id-salt"
+    if [[ -e "${salt}" || -L "${salt}" ]]; then
+        generate_dial_id
+        return
+    fi
+    id="$(stored_hw_dial_id)"
+    if dial_identity_token_ok "${id}"; then
+        printf '%s\n' "${id}"
+        return 0
+    fi
+    [[ -z "${id}" ]] || echo "WARNING: the uuid in the dial's hardware config is not a usable identity; ignoring it." >&2
+    # Every DIAL_UUID line counts, so a repeated one reads as malformed. The
+    # file is in the service account's directory: read without following a link.
+    state="$(read_state_file \
+        "${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}" || true)"
+    id="$(grep '^DIAL_UUID=' <<< "${state}" | cut -d= -f2- || true)"
+    if ! dial_identity_token_ok "${id}"; then
+        echo "WARNING: DIAL_UUID in /var/lib/autostream/install-state.env is missing or malformed and the hardware config holds no identity; deriving the dial identity instead." >&2
+        id="$(generate_dial_id)" || return 1
+        [[ -n "${id}" ]] || return 1
+    fi
+    # The hardware config is the copy the announcement and the dial itself
+    # read, so it takes the identity chosen here when it is not already usable.
+    if [[ -f "$(_fs_root)/etc/autostream/autostream-dial.json" ]]; then
+        write_dial_hw_config "${id}"
+    fi
+    printf '%s\n' "${id}"
+}
+
 write_dial_hw_config() {
     # Hardware + identity config — root-owned, service user can read, never writes it.
     # Run over an existing install it keeps the pins and the display profile

@@ -283,17 +283,30 @@ class TestTheStoredDialIdentityIsChecked:
         assert f"write_install_state {self.STORED}" in calls
         assert "malformed" not in r.stdout + r.stderr
 
+    @pytest.mark.parametrize("stored", [
+        pytest.param("FEEDFACEFEEDFACEFEED", id="upper-case"),
+        pytest.param("feedfacefeedfacefee", id="short"),
+        pytest.param("feedfacefeedfacefeed0", id="longer-hex"),
+        pytest.param("zzzzzzzzzzzzzzzzzzzz", id="letters"),
+        pytest.param("4f0c6c52-7a53-4b4e-9d0a-1c2b3d4e5f60", id="hyphenated-uuid"),
+        pytest.param("a" * 64, id="longest-token"),
+    ])
+    def test_any_short_token_the_dial_holds_is_used_as_it_is(self, tmp_path, stored):
+        r, calls = self._update(tmp_path, f"DIAL_UUID={stored}\n")
+        assert f"write_install_state {stored}" in calls
+        assert "malformed" not in r.stdout + r.stderr
+
     @pytest.mark.parametrize("state", [
         pytest.param("DIAL_UUID=\n", id="empty"),
         pytest.param("AUTOSTREAM_PRODUCT=autostream-dial\n", id="absent"),
-        pytest.param("DIAL_UUID=FEEDFACEFEEDFACEFEED\n", id="upper-case"),
-        pytest.param("DIAL_UUID=feedfacefeedfacefee\n", id="too-short"),
-        pytest.param("DIAL_UUID=feedfacefeedfacefeed0\n", id="too-long"),
         pytest.param("DIAL_UUID=feedfacefeedfacefeed \n", id="trailing-space"),
         pytest.param("DIAL_UUID=feedfacefeedfacefeed\nDIAL_UUID=feedfacefeedfacefeed\n",
                      id="two-lines"),
-        pytest.param("DIAL_UUID=zzzzzzzzzzzzzzzzzzzz\n", id="not-hex"),
+        pytest.param("DIAL_UUID=" + "a" * 65 + "\n", id="too-long"),
+        pytest.param("DIAL_UUID=-feedface\n", id="leading-hyphen"),
+        pytest.param("DIAL_UUID=feed_face\n", id="underscore"),
         pytest.param("DIAL_UUID=feedfacefeedfacefe$(id)\n", id="shell-syntax"),
+        pytest.param("DIAL_UUID=feed<face>&\"'\n", id="markup"),
     ])
     def test_anything_else_is_replaced_by_the_derivation_with_a_warning(
             self, tmp_path, state):

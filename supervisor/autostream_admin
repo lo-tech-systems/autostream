@@ -241,6 +241,11 @@ CPUINFO_FILE = Path("/proc/cpuinfo")
 DEVICE_TREE_SERIAL_FILE = Path("/proc/device-tree/serial-number")
 _DIAL_ID_SALT_RE = re.compile(r"^[0-9a-f]{32}$")
 _DIAL_ID_RE = re.compile(r"^[0-9a-f]{20}$")
+# An identity a dial already holds. Installers have written 20 lower-case hex
+# characters and, earlier, a hyphenated UUID, so any short token of letters,
+# digits and hyphens is kept as it is rather than one exact shape. Anything
+# else is treated as no identity at all.
+_HELD_DIAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 # One KEY=value line of install-state.env, as the installers write them.
 _ENV_LINE_RE = re.compile(r'^[A-Z][A-Z0-9_]*=[^\x00-\x08\x0a-\x1f\x7f]*$')
 
@@ -1429,15 +1434,20 @@ def _stored_dial_id() -> Optional[str]:
     """The identity recorded in the root-only hardware config, or None.
 
     None when the file is absent, cannot be trusted, is not a JSON object, or
-    holds no uuid of exactly 20 lower-case hex characters.
+    holds no uuid that is a short token of letters, digits and hyphens (every
+    identity an installer has written is one). A uuid of another shape is
+    logged and treated as absent.
     """
     try:
         raw = read_file_if_trusted(DIAL_HW_CONFIG_FILE, ROOT_UID, check_directory=True)
         value = json.loads(raw).get("uuid")
     except (OSError, ValueError, AttributeError):
         return None
-    if isinstance(value, str) and _DIAL_ID_RE.fullmatch(value):
+    if isinstance(value, str) and _HELD_DIAL_ID_RE.fullmatch(value):
         return value
+    if value is not None:
+        log("WARN", f"dial identity: ignoring the uuid in {DIAL_HW_CONFIG_FILE}: "
+                    "it is not a short token of letters, digits and hyphens")
     return None
 
 

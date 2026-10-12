@@ -795,6 +795,8 @@ class TestUpdateReinstallUninstall:
 # ---------------------------------------------------------------------------
 
 LEGACY_RANDOM = "feedfacefeedfacefeed"
+# The form the earliest installer wrote: a random UUID, hyphenated.
+UUID4 = "4f0c6c52-7a53-4b4e-9d0a-1c2b3d4e5f60"
 
 
 def _set_stored(dial, uuid) -> None:
@@ -830,11 +832,30 @@ class TestAnnouncementUsesTheStoredIdentity:
         assert "differs" in capsys.readouterr().err
 
     @pytest.mark.parametrize("stored", [
+        pytest.param(UUID4, id="hyphenated-uuid"),
         pytest.param("FEEDFACEFEEDFACEFEED", id="upper-case"),
-        pytest.param(LEGACY_RANDOM[:-1], id="too-short"),
-        pytest.param(LEGACY_RANDOM + "0", id="too-long"),
+        pytest.param(LEGACY_RANDOM[:-1], id="short"),
+        pytest.param(LEGACY_RANDOM + "0", id="longer"),
+        pytest.param("zzzzzzzzzzzzzzzzzzzz", id="letters"),
+        pytest.param("a" * 64, id="longest-token"),
+    ])
+    def test_any_short_token_of_letters_digits_and_hyphens_is_kept(
+            self, dial, tmp_path, monkeypatch, capsys, stored):
+        _set_stored(dial, stored)
+        rc, service = self._announce(dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        assert rc == 0
+        assert f"id={stored}<" in service.read_text(encoding="utf-8")
+        assert "stored in" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("stored", [
         pytest.param(LEGACY_RANDOM + "\n", id="trailing-newline"),
-        pytest.param("zzzzzzzzzzzzzzzzzzzz", id="not-hex"),
+        pytest.param("a" * 65, id="too-long"),
+        pytest.param("-" + LEGACY_RANDOM, id="leading-hyphen"),
+        pytest.param("feed face", id="space"),
+        pytest.param("feed_face", id="underscore"),
+        pytest.param("feed<face>&", id="markup"),
+        pytest.param('feed"face', id="quote"),
+        pytest.param("", id="empty"),
         pytest.param(12345, id="not-text"),
         pytest.param(None, id="absent"),
     ])
@@ -991,3 +1012,201 @@ class TestAbsentSaltInAnUntrustedDirectory:
         else:
             assert r.returncode == 0, r.stderr
             assert r.stdout.strip() == OLD_UUID
+
+
+# ---------------------------------------------------------------------------
+# What a dial holds, through an update, a service start and a reinstall
+# ---------------------------------------------------------------------------
+
+SHARED_SHAPES = [
+    # Cases the installer function and the privileged helper must agree on.
+    ("feedfacefeedfacefeed", True),
+    ("FEEDFACEFEEDFACEFEED", True),
+    (UUID4, True),
+    ("a", True),
+    ("a" * 64, True),
+    ("a" * 65, False),
+    ("", False),
+    ("-abc", False),
+    ("ab cd", False),
+    ("ab_cd", False),
+    ("ab.cd", False),
+    ("ab/cd", False),
+    ("ab<cd", False),
+    ('ab"cd', False),
+    ("ab'cd", False),
+    ("ab&cd", False),
+    ("ab;cd", False),
+    ("ab$(id)", False),
+    ("ab\tcd", False),
+]
+
+
+class TestOneDefinitionOfAnIdentityTheDialHolds:
+    @bash_capable
+    @pytest.mark.parametrize("value, ok", SHARED_SHAPES)
+    def test_the_installer_and_the_helper_agree(self, env, value, ok):
+        env.put("value", value)
+        r = env.run('dial_identity_token_ok "$(cat "$VALUE_FILE")"',
+                    update="true", VALUE_FILE=(env.root / "value").as_posix())
+        assert (r.returncode == 0) is ok
+        assert (m._HELD_DIAL_ID_RE.fullmatch(value) is not None) is ok
+
+
+def _sandbox(tmp_path: Path, monkeypatch, stored, salted: bool):
+    """A dial with STORED in both stored copies, and the installer's sandbox over it."""
+    dial_dir = tmp_path / "dial"
+    dial_dir.mkdir()
+    dial = _Dial(dial_dir, monkeypatch)
+    _set_stored(dial, stored)
+    dial.set_serial(SERIAL)
+    if salted:
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    env = Env(sandbox)
+    _real_python3(env)
+    return dial, env, dial_dir
+
+
+def _run_update_identity(env: Env, dial: _Dial, dial_dir: Path):
+    """The identity steps of an --update: choose, then record it."""
+    return env.run(
+        'U=$(resolve_update_dial_id)\nwrite_install_state "$U"\necho "$U"',
+        update="true",
+        AUTOSTREAM_FS_ROOT=dial_dir.as_posix(),
+        INSTALL_STATE_FILE=dial.install_state.as_posix())
+
+
+def _run_reinstall_identity(env: Env, dial: _Dial, dial_dir: Path):
+    return env.run(
+        'U=$(generate_dial_id)\nwrite_dial_hw_config "$U"\nwrite_install_state "$U"\necho "$U"',
+        update="false",
+        AUTOSTREAM_FS_ROOT=dial_dir.as_posix(),
+        INSTALL_STATE_FILE=dial.install_state.as_posix())
+
+
+# stored value, whether the dial holds it as an identity
+HELD_SHAPES = [
+    pytest.param(OLD_UUID, True, id="hex-equal-to-the-derived-one"),
+    pytest.param(LEGACY_RANDOM, True, id="hex-from-another-board"),
+    pytest.param(UUID4, True, id="hyphenated-uuid"),
+    pytest.param("not an identity!", False, id="invalid"),
+]
+
+
+@bash_capable
+@posix_only
+class TestStoredIdentityThroughTheLifecycle:
+    @pytest.mark.parametrize("stored, held", HELD_SHAPES)
+    def test_without_a_salt_an_update_keeps_what_the_dial_holds(
+            self, tmp_path, monkeypatch, capsys, stored, held):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, stored, salted=False)
+        r = _run_update_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        want = stored if held else OLD_UUID
+        assert r.stdout.strip() == want
+        assert dial.state_uuid() == want
+        assert dial.hw_uuid() == want
+        assert ("malformed" in r.stderr) is (not held)
+
+        # The service start leaves every copy as it is.
+        before = dial.snapshot()
+        assert m.reconcile_dial_identity() is True
+        assert dial.snapshot() == before
+
+        # What is announced is the same identity.
+        capsys.readouterr()
+        rc, service = TestAnnouncementIsDerived._announce(
+            self, dial, tmp_path, monkeypatch, "0" * 20)
+        assert rc == 0
+        assert f"id={want}<" in service.read_text(encoding="utf-8")
+        assert dial.snapshot() == before
+
+    @pytest.mark.parametrize("stored, held", HELD_SHAPES)
+    def test_with_a_salt_the_derived_identity_wins_everywhere(
+            self, tmp_path, monkeypatch, stored, held):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, stored, salted=True)
+        derived = m.derive_dial_id(SALT_A)
+        r = _run_update_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == derived
+        assert dial.state_uuid() == derived
+
+        # The hardware config is brought into line when the service starts.
+        assert m.reconcile_dial_identity() is True
+        assert dial.hw_uuid() == derived
+        assert dial.state_uuid() == derived
+
+        rc, service = TestAnnouncementIsDerived._announce(
+            self, dial, tmp_path, monkeypatch, stored if held else OLD_UUID)
+        assert rc == 0
+        assert f"id={derived}<" in service.read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("stored, held", HELD_SHAPES)
+    def test_a_reinstall_derives_a_new_identity_for_every_copy(
+            self, tmp_path, monkeypatch, stored, held):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, stored, salted=False)
+        r = _run_reinstall_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == OLD_UUID
+        assert dial.hw_uuid() == OLD_UUID
+        assert dial.state_uuid() == OLD_UUID
+
+    @pytest.mark.parametrize("stored", [OLD_UUID, UUID4])
+    def test_a_reinstall_over_a_salted_dial_derives_from_the_salt(
+            self, tmp_path, monkeypatch, stored):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, stored, salted=True)
+        r = _run_reinstall_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        derived = m.derive_dial_id(SALT_A)
+        assert r.stdout.strip() == derived
+        assert dial.hw_uuid() == derived and dial.state_uuid() == derived
+
+    def test_the_hardware_config_is_preferred_over_the_install_state(
+            self, tmp_path, monkeypatch):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, UUID4, salted=False)
+        dial.install_state.write_text(INSTALL_STATE.replace(OLD_UUID, LEGACY_RANDOM),
+                                      encoding="utf-8")
+        r = _run_update_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == UUID4
+        assert dial.state_uuid() == UUID4 and dial.hw_uuid() == UUID4
+
+    def test_a_missing_install_state_line_is_filled_from_the_hardware_config(
+            self, tmp_path, monkeypatch):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, UUID4, salted=False)
+        dial.install_state.write_text("AUTOSTREAM_PRODUCT=autostream-dial\n", encoding="utf-8")
+        r = _run_update_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        assert dial.state_uuid() == UUID4 and dial.hw_uuid() == UUID4
+        assert "malformed" not in r.stderr
+
+    def test_a_hardware_config_without_an_identity_takes_the_one_in_the_install_state(
+            self, tmp_path, monkeypatch):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, UUID4, salted=False)
+        dial.hw.write_text(json.dumps({k: v for k, v in HW.items() if k != "uuid"}),
+                           encoding="utf-8")
+        r = _run_update_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        assert dial.state_uuid() == UUID4 and dial.hw_uuid() == UUID4
+        assert json.loads(dial.hw.read_text(encoding="utf-8"))["clk_gpio"] == 5
+
+    def test_a_missing_hardware_config_is_not_created_by_an_update(
+            self, tmp_path, monkeypatch):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, UUID4, salted=False)
+        dial.hw.unlink()
+        r = _run_update_identity(env, dial, dial_dir)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == UUID4
+        assert not dial.hw.exists()
+
+    def test_a_link_for_the_hardware_config_is_not_read(self, tmp_path, monkeypatch):
+        dial, env, dial_dir = _sandbox(tmp_path, monkeypatch, UUID4, salted=False)
+        target = tmp_path / "elsewhere.json"
+        target.write_text(json.dumps({"uuid": LEGACY_RANDOM}), encoding="utf-8")
+        dial.hw.unlink()
+        dial.hw.symlink_to(target)
+        dial.install_state.write_text(INSTALL_STATE.replace(OLD_UUID, UUID4), encoding="utf-8")
+        r = _run_update_identity(env, dial, dial_dir)
+        assert r.stdout.strip() == UUID4
