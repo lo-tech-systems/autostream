@@ -14,9 +14,12 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -41,6 +44,11 @@ if [[ "${SR_MODE:-ok}" == "refuse" ]]; then
     exit 1
 fi
 echo "Running as unit: autostream-install.service."
+if [[ "${SR_MODE:-ok}" == "hang" ]]; then
+    echo $$ > "$HANG_PIDFILE"
+    exec /bin/sleep 30
+fi
+if [[ "${SR_MODE:-ok}" == "silent" ]]; then exit "${SR_RC:-1}"; fi
 sleep 0.4
 printf 'service line one\n' >> "$HANDOVER_LOG"
 sleep 0.4
@@ -127,12 +135,81 @@ class TestHandOver:
         assert len(run) == 1
         line = run[0]
         for wanted in ("--collect", "--wait", "--unit=autostream-install",
-                       f"--working-directory={tmp_path.as_posix()}",
+                       "--working-directory=/opt/x",
                        "--setenv=AUTOSTREAM_HANDED_OVER=1", "--setenv=SUDO_USER=pi",
                        "--setenv=AUTOSTREAM_RELEASE_TAG=0.7.0"):
             assert wanted in line, (wanted, line)
         assert "--setenv=HOME=" not in line
         assert line.endswith("-- bash /opt/x/installer.sh --unattended PIN=1234 --owntone=mini")
+
+    def test_the_service_starts_in_the_scripts_own_directory_not_the_callers(self, env, tmp_path):
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        r, _ = _handover(env, tmp_path, f'cd "{other.as_posix()}"\n{CALL}')
+        assert r.returncode == 0, r.stderr
+        line = next(c for c in env.calls() if c.startswith("systemd-run"))
+        assert "--working-directory=/opt/x " in line
+        assert "elsewhere" not in line
+
+    def test_a_service_that_fails_before_writing_anything_points_to_its_journal(self, env, tmp_path):
+        r, _ = _handover(env, tmp_path, CALL, SR_MODE="silent", SR_RC="200")
+        assert "RC=200" in r.stdout
+        assert "ended with status 200 without writing to" in r.stderr
+        assert "journalctl -u autostream-install" in r.stderr
+
+    def test_a_service_that_wrote_to_the_log_before_failing_needs_no_such_hint(self, env, tmp_path):
+        r, _ = _handover(env, tmp_path, CALL, SR_RC="3")
+        assert "RC=3" in r.stdout
+        assert "without writing" not in r.stderr
+
+    def test_a_service_that_succeeds_silently_needs_no_hint(self, env, tmp_path):
+        r, _ = _handover(env, tmp_path, CALL, SR_MODE="silent", SR_RC="0")
+        assert "RC=0" in r.stdout
+        assert "without writing" not in r.stderr
+
+    @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGHUP, signal.SIGTERM])
+    def test_leaving_the_terminal_early_cleans_up_and_says_the_install_goes_on(self, env, tmp_path, sig):
+        systemd_dir = tmp_path / "run-systemd"
+        systemd_dir.mkdir()
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        pidfile = tmp_path / "hang.pid"
+        log = tmp_path / "install.log"
+        log.write_text("a run before\n", encoding="utf-8")
+        script = (
+            "set -Eeuo pipefail\n"
+            f'HANDOVER_CGROUP_FILE="{_cgroup(tmp_path, SESSION).as_posix()}"\n'
+            f'HANDOVER_SYSTEMD_DIR="{systemd_dir.as_posix()}"\n'
+            "HANDOVER_POLL_SECONDS=0.1\n"
+            f'source "{LIB.as_posix()}"\n{CALL}')
+        proc = subprocess.Popen(
+            ["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=tmp_path, env=env.env(HANDOVER_LOG=log.as_posix(), SR_MODE="hang",
+                                      HANG_PIDFILE=pidfile.as_posix(), TMPDIR=scratch.as_posix()))
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
+                break
+            time.sleep(0.1)
+        else:
+            proc.kill()
+            raise AssertionError("the stubbed service never started")
+        child = int(pidfile.read_text(encoding="utf-8").strip())
+        proc.send_signal(sig)
+        _out, err = proc.communicate(timeout=20)
+        assert proc.returncode == 1, (proc.returncode, _out, err)
+        assert "still running as autostream-install.service" in err
+        assert "sudo systemctl stop autostream-install" in err
+        assert "tail -f" in err
+        assert list(scratch.iterdir()) == []
+        for _ in range(50):
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(child, signal.SIGKILL)
+            raise AssertionError("the waiting client was left running")
 
     def test_the_service_output_is_shown_and_what_was_there_before_is_not(self, env, tmp_path):
         r, _ = _handover(env, tmp_path, CALL)
@@ -238,7 +315,8 @@ class TestApplianceInstaller:
         assert "init_logging" not in names and "run_install" not in names
         handed = next(c for c in calls if c.startswith("hand_over_to_unit"))
         assert handed == ("hand_over_to_unit autostream-install /opt/rel/autostream_install.sh "
-                          "/var/log/autostream/autostream_install.log --unattended PIN=1234")
+                          "/var/log/autostream/autostream_install.log --unattended")
+        assert "PIN=" not in handed
 
     def test_a_second_run_asks_nothing_and_writes_nothing_while_an_install_is_running(self, tmp_path, monkeypatch):
         monkeypatch.setenv("FAKE_RUNNING", "1")
@@ -246,6 +324,22 @@ class TestApplianceInstaller:
         assert r.returncode == 1 and "main returned" not in r.stdout
         assert [c.split()[0] for c in calls] == ["require_sudo", "handover_refuse_if_running"]
         assert calls[1] == "handover_refuse_if_running autostream-install /var/log/autostream/autostream_install.log"
+
+    def test_the_service_accepts_the_arguments_it_is_given_without_the_pin(self, tmp_path):
+        # The service gets "--unattended" with no PIN=; it must neither complain
+        # nor fall over, and the other options must still be read.
+        parse = _function(APPLIANCE.read_text(encoding="utf-8"), "parse_args")
+        script = f'''
+set -uo pipefail
+warn() {{ echo "WARN $*"; }}; error() {{ echo "ERROR $*"; }}; usage() {{ :; }}
+is_valid_sdmon_method() {{ true; }}; is_valid_owntone_mode() {{ true; }}
+INSTALL_MODE=install; UNATTENDED=0; PIN_VALUE=""; OWNTONE_MODE=mini; LOW_POWER=0
+{parse}
+parse_args --unattended --owntone=full --low-power
+echo "rc=$? mode=$OWNTONE_MODE unattended=$UNATTENDED pin=[$PIN_VALUE] low=$LOW_POWER"
+'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.stdout.strip() == "rc=0 mode=full unattended=0 pin=[] low=1", (r.stdout, r.stderr)
 
     def test_without_a_hand_over_the_install_carries_on_here_without_asking_again(self, tmp_path):
         r, calls = _appliance_main(tmp_path, mode="install", handover_ok=False)

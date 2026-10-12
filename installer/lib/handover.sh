@@ -89,8 +89,21 @@ follow_log_until() {
   done
 }
 
+# handover_leave: the terminal side was interrupted (Ctrl-C, a closed terminal).
+# The service carries on; stop waiting for it, remove the temporary file and say
+# how to follow it and how to stop it.
+# Usage: handover_leave UNIT LOGFILE PID OUTFILE
+handover_leave() {
+  local unit="$1" logfile="$2" pid="$3" out="$4"
+  trap - INT TERM HUP
+  if [[ -n "${pid}" ]]; then kill "${pid}" 2>/dev/null || true; fi
+  rm -f -- "${out}"
+  printf '%s\n' "[INFO] The install is still running as ${unit}.service; follow it with: tail -f ${logfile} (stop it with: sudo systemctl stop ${unit})" >&2
+  exit 1
+}
+
 # hand_over_to_unit: run SCRIPT with ARGS again as the transient system service
-# UNIT, in the same directory and with the environment it needs, and follow
+# UNIT, in the directory the script is in and with the environment it needs, and follow
 # LOGFILE until the service ends. When the service ran, return 0 with its exit
 # status in HANDOVER_RC, for the caller to act on (it holds the terminal, so it
 # asks the reboot question). Return 1, with the reason on standard error, when
@@ -105,7 +118,8 @@ hand_over_to_unit() {
 
   local -a cmd=(systemd-run --collect --wait "--unit=${unit}"
                 "--description=autostream installer"
-                "--working-directory=${PWD}" --setenv=AUTOSTREAM_HANDED_OVER=1)
+                "--working-directory=$(dirname -- "${script}")"
+                --setenv=AUTOSTREAM_HANDED_OVER=1)
   local var
   for var in "${HANDOVER_ENV_VARS[@]}"; do
     if [[ -n "${!var:-}" ]]; then
@@ -123,10 +137,12 @@ hand_over_to_unit() {
   printf '%s\n' "[INFO] Handing the install over to the system service ${unit}.service," \
     "[INFO] so that it carries on if this session ends. Progress is shown from" \
     "[INFO] ${logfile}; the same output is in the journal (journalctl -u ${unit})."
+  # Leaving early (Ctrl-C, a closed terminal) stops only the waiting, not the
+  # service.
+  pid=""
+  trap 'handover_leave "${unit}" "${logfile}" "${pid}" "${out}"' INT TERM HUP
   "${cmd[@]}" < /dev/null > "${out}" 2>&1 &
   pid=$!
-  # Leaving early (Ctrl-C, a closed terminal) leaves the service running.
-  trap 'printf "%s\n" "[INFO] Leaving the install running as ${unit}.service; follow it with: journalctl -fu ${unit}" >&2; exit 1' INT TERM HUP
   follow_log_until "${pid}" "${logfile}" "${start}"
   wait "${pid}" || rc=$?
   trap - INT TERM HUP
@@ -139,6 +155,18 @@ hand_over_to_unit() {
   fi
   cat "${out}"
   rm -f "${out}"
+  if [[ "${rc}" -ne 0 ]]; then
+    # A service that fails before it opens the log (a missing library, say)
+    # leaves nothing to follow here.
+    local end=0
+    if [[ -f "${logfile}" && ! -L "${logfile}" ]]; then
+      end="$(stat -c %s -- "${logfile}" 2>/dev/null || echo 0)"
+    fi
+    if [[ "${end}" -le "${start}" ]]; then
+      printf '%s\n' "[WARN] The install ended with status ${rc} without writing to ${logfile};" \
+        "[WARN] the service's own output is in: journalctl -u ${unit}" >&2
+    fi
+  fi
   # shellcheck disable=SC2034  # read by the installer that sourced this file
   HANDOVER_RC="${rc}"
   return 0

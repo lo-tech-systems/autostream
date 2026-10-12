@@ -1987,7 +1987,14 @@ main() {
     require_rpi_os_trixie
     handle_pin
     PROMPTS_DONE=1
-    if hand_over_to_unit autostream-install "${AUTOSTREAM_DIR}/${SCRIPT_NAME}" "${LOGFILE}" "$@"; then
+    # The PIN is already in its file, and the service does not ask for it, so it
+    # is not put on the service's command line where anyone could read it.
+    local -a unit_args=()
+    local arg
+    for arg in "$@"; do
+      [[ "${arg}" == PIN=* ]] || unit_args+=("${arg}")
+    done
+    if hand_over_to_unit autostream-install "${AUTOSTREAM_DIR}/${SCRIPT_NAME}" "${LOGFILE}" "${unit_args[@]}"; then
       exit "${HANDOVER_RC}"
     else
       if in_login_session; then
