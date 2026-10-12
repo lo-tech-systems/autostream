@@ -302,14 +302,21 @@ install_sdmon() {
 generate_dial_id() {
     # Derive the Dial identity from the CPU serial (SHA-256 hash, 20 hex chars)
     # or create and store a cryptographically secure random fallback identity.
+    # A dial that has been factory reset also has a salt file; the salt is mixed
+    # into the hash so the same board is a different device. The installer
+    # never creates or changes the salt, and a salt file that is not exactly 32
+    # lowercase hex characters stops the install rather than guessing.
     # Prints exactly 20 lowercase hexadecimal characters and exits non-zero on failure.
-    python3 - <<'PYEOF'
+    python3 - "$(_fs_root)" <<'PYEOF'
 import hashlib, os, re, secrets, sys
 from pathlib import Path
 
+root = sys.argv[1]
+state = Path(root + '/var/lib/autostream')
+
 def _get_cpu_serial():
     try:
-        text = Path('/proc/cpuinfo').read_text(encoding='utf-8', errors='ignore')
+        text = Path(root + '/proc/cpuinfo').read_text(encoding='utf-8', errors='ignore')
         for ln in text.splitlines():
             if ln.strip().lower().startswith('serial'):
                 parts = ln.split(':', 1)
@@ -318,34 +325,51 @@ def _get_cpu_serial():
     except Exception:
         pass
     try:
-        raw = Path('/proc/device-tree/serial-number').read_bytes()
+        raw = Path(root + '/proc/device-tree/serial-number').read_bytes()
         if raw:
             return raw.replace(b'\x00', b'').decode('utf-8', errors='ignore').strip()
     except Exception:
         pass
     return ''
 
+salt = None
+salt_path = state / 'dial-id-salt'
+if salt_path.exists():
+    try:
+        salt = salt_path.read_text(encoding='utf-8').strip()
+    except Exception:
+        salt = ''
+    if not re.fullmatch(r'[0-9a-f]{32}', salt):
+        print('ERROR: ' + str(salt_path) + ' does not hold a valid salt', file=sys.stderr)
+        sys.exit(1)
+
 serial = _get_cpu_serial().strip().lower()
 if re.match(r'^[0-9a-f]+$', serial) and serial:
-    digest = hashlib.sha256(('autostream-dial-v1:' + serial).encode('utf-8')).hexdigest()
-    print(digest[:20])
-    sys.exit(0)
+    base, from_serial = serial, True
+else:
+    from_serial = False
+    fallback_path = state / 'dial-id'
+    base = ''
+    if fallback_path.exists():
+        raw = fallback_path.read_text(encoding='utf-8').strip()
+        if len(raw) == 20 and re.match(r'^[0-9a-f]+$', raw):
+            base = raw
+    if not base:
+        # Create a new cryptographically secure fallback identity.
+        base = secrets.token_hex(10)
+        tmp = fallback_path.with_suffix('.tmp')
+        tmp.write_text(base, encoding='utf-8')
+        os.chmod(tmp, 0o644)
+        os.chown(tmp, 0, 0)
+        tmp.replace(fallback_path)
 
-fallback_path = Path('/var/lib/autostream/dial-id')
-if fallback_path.exists():
-    raw = fallback_path.read_text(encoding='utf-8').strip()
-    if len(raw) == 20 and re.match(r'^[0-9a-f]+$', raw):
-        print(raw)
-        sys.exit(0)
-
-# Create a new cryptographically secure fallback identity.
-new_id = secrets.token_hex(10)
-tmp = fallback_path.with_suffix('.tmp')
-tmp.write_text(new_id, encoding='utf-8')
-os.chmod(tmp, 0o644)
-os.chown(tmp, 0, 0)
-tmp.replace(fallback_path)
-print(new_id)
+if salt is not None:
+    text = 'autostream-dial-v1:' + base + ':' + salt
+    print(hashlib.sha256(text.encode('utf-8')).hexdigest()[:20])
+elif from_serial:
+    print(hashlib.sha256(('autostream-dial-v1:' + base).encode('utf-8')).hexdigest()[:20])
+else:
+    print(base)
 sys.exit(0)
 PYEOF
 }

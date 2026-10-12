@@ -213,7 +213,7 @@ The recovery page offers four actions:
 | **Retry** | Refreshes the page to check whether the service has restarted. |
 | **Download Logs** | Downloads a ZIP of the dial, Wi-Fi setup, install and update logs to help diagnose the problem. The install and update logs are kept across updates and reboots in `/var/log/autostream/` and rotated daily. |
 | **Reboot** | Triggers a graceful reboot. The page switches to a *rebooting* holding page and waits until the dial's service returns. |
-| **Factory Reset** | After a confirmation step, erases the dial's Wi-Fi credentials and settings, then reboots. Reconnect to the `autostream-dial_XXXX` hotspot afterwards to reconfigure Wi-Fi. |
+| **Factory Reset** | After a confirmation step, erases the dial's Wi-Fi credentials and settings, gives the dial a new identity, then reboots. Reconnect to the `autostream-dial_XXXX` hotspot afterwards to reconfigure Wi-Fi, then authorise the dial again on each appliance (see below). |
 
 ### During a firmware update
 
@@ -233,8 +233,26 @@ If **Reboot** and **Retry** don't bring the service back:
 2. Use **Download Logs** from the recovery page to capture what happened
    before trying a **Factory Reset**.
 3. As a last resort, **Factory Reset** clears the dial's Wi-Fi and settings
-   (not its identity or hardware configuration), and starts it fresh from
-   the setup hotspot.
+   (not its hardware configuration), and starts it fresh from the setup
+   hotspot.
+
+### What a factory reset does to the dial's identity
+
+A factory reset gives the dial a new identity. To every appliance it is then a
+new dial, so none of them will accept it until you authorise it again: open
+each appliance's **Setup** page, find the dial under **Dials** (it appears
+with the **New** badge) and turn on **Allow dial to control this appliance**.
+
+The dial's old identity stays on each appliance's list as an authorised dial
+that is shown as **Offline**. It does no harm, but you can tidy it away by
+turning off **Allow dial to control this appliance** on that card and
+confirming.
+
+Updating the dial, or running the installer over it again, does not change its
+identity. Uninstalling the dial software also keeps what a reset added, so
+installing again does not hand back the identity the dial had before the
+reset. A dial that has never been factory reset keeps the identity it has
+always had, including across an uninstall and a fresh install.
 
 For dial-specific problems that aren't covered by the recovery page, such as
 the dial not appearing on the appliance's Setup page, volume commands not

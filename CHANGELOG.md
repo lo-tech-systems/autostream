@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- change: a factory reset of a dial now gives it a new identity, so every
+  appliance treats it as a new dial and it has to be authorised again on each one.
+  Before, the dial kept the identity it was born with and stayed authorised. The
+  old entry stays on each appliance's Dials list, shown as offline, until you
+  switch it off there. A dial that has not been reset keeps its identity across an
+  update, a reinstall and an uninstall; one that has been reset keeps its new
+  identity across all three.
 - improvement: the appliance and dial installers now limit the swap file to
   512 MiB. Raspberry Pi OS makes it as large as the board's RAM, up to 2 GiB, so
   a 4 GB board put a 2 GB file on its SD card. Install and update put the setting

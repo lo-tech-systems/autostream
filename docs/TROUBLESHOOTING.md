@@ -1065,7 +1065,8 @@ flow.
     `autostream_admin factory-reset` and then redirects to the resetting
     holding page. The confirmation text warns that this erases all settings,
     including Wi-Fi, and tells you to reconnect to the `autostream_XXXX`
-    hotspot with the factory PIN afterwards.
+    hotspot with the factory PIN afterwards. On a dial it also gives the
+    dial a new identity, so each appliance has to authorise it again.
 
   None of these actions is PIN-protected - same-origin POST is the only
   check - because this page is reachable only in AP mode or on the local LAN.

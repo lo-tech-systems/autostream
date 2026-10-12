@@ -852,6 +852,7 @@ class TestDialFactoryReset:
                           side_effect=lambda: stop_calls.append("_sync_owntone_conf")), \
              patch.object(m, "_delete_reset_files",
                           side_effect=lambda: delete_calls.append("_delete_reset_files")), \
+             patch.object(m, "_reset_dial_identity", return_value=True), \
              patch.object(m, "_delete_wifi_connections"), \
              patch.object(m, "run_cmd", return_value=(0 if run_ok else 1, "", "")), \
              patch("pathlib.Path.exists", return_value=True):
@@ -906,6 +907,7 @@ class TestDialFactoryReset:
              patch.object(m, "_read_product", return_value="autostream-dial"), \
              patch.object(m, "_rotate_logs"), \
              patch.object(m, "_stop_service", return_value=True), \
+             patch.object(m, "_reset_dial_identity", return_value=True), \
              patch.object(m, "_delete_wifi_connections"), \
              patch.object(m, "run_cmd", return_value=(0, "", "")), \
              patch.object(m, "FACTORY_RESET_DIAL_DELETE_FILES", dial_files), \

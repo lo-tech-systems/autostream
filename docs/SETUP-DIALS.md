@@ -28,7 +28,7 @@ Every dial discovered on the network, authorized or not, gets its own card:
 - **Last seen**, shown for an authorized dial that is currently offline.
 - **UUID**: a unique identity code so you can tell two dials apart, even
   before either has a name. It stays the same across reboots and firmware
-  updates.
+  updates, and changes only if the dial is factory reset.
 - **SD card health monitoring**, on dials whose firmware supports it: the
   same enable/disable control as the System page, with the dial's last
   reading.
@@ -54,6 +54,14 @@ Turn **Allow dial to control this appliance** off. A confirmation prompt
 ("Remove authorization for this dial?") appears first. Confirming removes
 the dial's access; the card falls back to its unauthorized state. Cancelling
 leaves the toggle on and nothing changes.
+
+## A dial that has been factory reset
+
+A factory reset gives a dial a new UUID, so this appliance treats it as a new
+dial: it appears with the **New** badge, and you authorise it as above. The
+dial's old entry stays in the list, shown as **Offline** with the time it was
+last seen. To remove it, turn off **Allow dial to control this appliance** on
+that card and confirm.
 
 ## Next steps
 

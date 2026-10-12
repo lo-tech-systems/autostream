@@ -18,6 +18,10 @@ After=avahi-daemon.service
 Type=simple
 User=autostream
 WorkingDirectory=/opt/autostream
+# Runs as root ("+") and never blocks the start ("-"): a dial that has an
+# identity salt has its stored identity checked against it first, so a factory
+# reset that was cut short still ends with one identity everywhere.
+ExecStartPre=-+/usr/local/libexec/autostream/autostream_admin reconcile-dial-identity
 ExecStart=/opt/autostream/venv/bin/python /opt/autostream/dial_main.py
 Restart=on-failure
 RestartSec=10

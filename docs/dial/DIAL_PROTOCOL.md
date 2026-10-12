@@ -65,7 +65,7 @@ Announced continuously by a dial device.
 
 | TXT field | Value | Meaning |
 |---|---|---|
-| `id` | 20-char hex | Stable dial identity (used for authorization) |
+| `id` | 20-char hex | Stable dial identity (used for authorization). A factory reset gives the dial a new one |
 | `name` | string | Human-readable display name |
 | `version` | e.g. `1.0.0` | Installed dial firmware version |
 | `pin_recovery` | `1` | PIN recovery window active (10-minute window only) |

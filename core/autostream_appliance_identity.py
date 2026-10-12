@@ -37,6 +37,10 @@ _HEX_RE = re.compile(r"^[0-9a-f]+$")
 
 APPLIANCE_ID_FILE = Path("/var/lib/autostream/appliance-id")
 DIAL_ID_FILE = Path("/var/lib/autostream/dial-id")
+# Present only on a dial that has been factory reset: 32 hex characters mixed
+# into the dial identity so the same board becomes a different device.
+DIAL_ID_SALT_FILE = Path("/var/lib/autostream/dial-id-salt")
+_SALT_RE = re.compile(r"^[0-9a-f]{32}$")
 
 _ID_CACHE_LOCK = threading.Lock()
 _appliance_id_cache: Optional[str] = None
@@ -74,6 +78,24 @@ def _read_id_file(path: Path) -> Optional[str]:
     if len(raw) == 20 and _HEX_RE.match(raw):
         return raw
     return None
+
+
+def _read_dial_salt(path: Path) -> Optional[str]:
+    """Return the dial's identity salt, or None when the dial has no salt file.
+
+    A file that exists but does not hold exactly 32 lowercase hex characters
+    raises ValueError: the caller must not fall back to the unsalted identity.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise ValueError(f"{path} is unreadable: {e!r}")
+    salt = raw.strip()
+    if not _SALT_RE.match(salt):
+        raise ValueError(f"{path} does not hold a valid salt")
+    return salt
 
 
 def get_appliance_id() -> Optional[str]:
@@ -125,6 +147,9 @@ def get_dial_id() -> Optional[str]:
     distinct namespace, so the same hardware produces different appliance and
     dial identifiers.  Caches the result for the process lifetime.  Returns
     None and logs one error per process if both sources fail.
+
+    A dial with a salt file mixes the salt in (sha256 of namespace, serial or
+    fallback id, ":" and the salt).  An invalid salt file gives None.
     """
     global _dial_id_cache, _dial_id_cache_set, _dial_id_error_logged
 
@@ -132,15 +157,36 @@ def get_dial_id() -> Optional[str]:
         if _dial_id_cache_set:
             return _dial_id_cache
 
-        serial = get_cpu_serial()
-        derived = _namespaced_id_hash(_DIAL_NAMESPACE, serial)
-        if derived:
-            _dial_id_cache = derived
+        try:
+            salt = _read_dial_salt(DIAL_ID_SALT_FILE)
+        except ValueError as e:
+            _dial_id_cache = None
             _dial_id_cache_set = True
-            return _dial_id_cache
+            if not _dial_id_error_logged:
+                _dial_id_error_logged = True
+                logger.error("Dial identity unavailable: %s", e)
+            return None
 
+        serial = get_cpu_serial()
         fallback = _read_id_file(DIAL_ID_FILE)
-        if fallback:
+        if salt is not None:
+            normalized = serial.strip().lower()
+            base = normalized if _HEX_RE.match(normalized) else fallback
+            if base:
+                digest = hashlib.sha256(
+                    f"{_DIAL_NAMESPACE}{base}:{salt}".encode("utf-8")
+                ).hexdigest()
+                _dial_id_cache = digest[:20]
+                _dial_id_cache_set = True
+                return _dial_id_cache
+        else:
+            derived = _namespaced_id_hash(_DIAL_NAMESPACE, serial)
+            if derived:
+                _dial_id_cache = derived
+                _dial_id_cache_set = True
+                return _dial_id_cache
+
+        if salt is None and fallback:
             _dial_id_cache = fallback
             _dial_id_cache_set = True
             return _dial_id_cache

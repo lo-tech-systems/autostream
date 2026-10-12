@@ -29,6 +29,7 @@ Exactly one of:
   restart-owntone
   restart-monitor
   restart-dial-service
+  reconcile-dial-identity
   update-status
   version-info
   sethostname HOSTNAME
@@ -59,6 +60,9 @@ Notes:
     The reset sequence is product-specific: it stops the appropriate services,
     rotates logs, deletes product-specific runtime state, removes Wi-Fi
     connections, and reboots.
+  - reconcile-dial-identity runs as root before the dial service starts. A dial
+    that has an identity salt gets its stored identity brought into line with
+    the identity derived from its salt; a dial with no salt is left alone.
 
 REBOOT REASONS
 --------------
@@ -97,13 +101,21 @@ autostream product — best-effort sync before deletion:
   /etc/owntone.conf -> /opt/autostream/owntone/owntone.conf (if both exist)
 
 autostream-dial product — preserved:
-  /etc/autostream/autostream-dial.json  (hardware config and identity)
-  DIAL_UUID in /var/lib/autostream/install-state.env
+  /etc/autostream/autostream-dial.json  (hardware config; its uuid is replaced)
   /var/lib/autostream/dial-id
+
+autostream-dial product — identity:
+  A fresh random salt is written to /var/lib/autostream/dial-id-salt and the
+  dial's UUID is derived again from it. The new UUID replaces the old one in
+  /etc/autostream/autostream-dial.json and as DIAL_UUID in
+  /var/lib/autostream/install-state.env, so the dial is a new, unauthorised
+  device on every appliance.
 
 autostream-dial product — deleted (fixed allowlist, no wildcards):
   /var/lib/autostream/dial-settings.json
+  /var/lib/autostream/dial-warnings.json
   /opt/autostream/ssid
+  /etc/autostream-network.json
 
 HOSTNAME
 --------
@@ -124,6 +136,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import html as _html
 import re as _re
 import shutil
@@ -131,6 +144,7 @@ import datetime as dt
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -177,9 +191,28 @@ FACTORY_RESET_DELETE_FILES = (
 # autostream-dial product files deleted on factory reset
 FACTORY_RESET_DIAL_DELETE_FILES = (
     Path("/var/lib/autostream/dial-settings.json"),
+    Path("/var/lib/autostream/dial-warnings.json"),
     Path("/opt/autostream/ssid"),
     Path("/etc/autostream-network.json"),
 )
+
+# Dial identity. The UUID is derived from the CPU serial, or from the fallback
+# id file when the board has no usable serial. A dial that has been factory
+# reset also mixes in a random salt, so the same board becomes a different
+# device. Without a salt file the result is exactly the unsalted identity every
+# dial has had so far.
+# NOTE: this derivation is deliberately duplicated in the dial installer
+# (generate_dial_id) and in core/autostream_appliance_identity.py. This script
+# is an extensionless privileged executable that cannot import either, and the
+# tests run one shared set of vectors against all three.
+DIAL_ID_NAMESPACE = "autostream-dial-v1:"
+DIAL_ID_SALT_FILE = STAMP_DIR / "dial-id-salt"
+DIAL_ID_FALLBACK_FILE = STAMP_DIR / "dial-id"
+DIAL_HW_CONFIG_FILE = Path("/etc/autostream/autostream-dial.json")
+CPUINFO_FILE = Path("/proc/cpuinfo")
+DEVICE_TREE_SERIAL_FILE = Path("/proc/device-tree/serial-number")
+_DIAL_ID_SALT_RE = re.compile(r"^[0-9a-f]{32}$")
+_DIAL_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 
 # Valid AUTOSTREAM_PRODUCT values
 VALID_PRODUCTS = {"autostream", "autostream-dial"}
@@ -1273,26 +1306,220 @@ def _execute_factory_reset_autostream(lock_fd: object) -> bool:
     return True
 
 
+def _dial_cpu_serial() -> str:
+    """Return the board's CPU serial as lower-case text, or '' when it has none."""
+    try:
+        for line in CPUINFO_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.strip().lower().startswith("serial"):
+                parts = line.split(":", 1)
+                if len(parts) == 2 and parts[1].strip():
+                    return parts[1].strip().lower()
+    except OSError:
+        pass
+    try:
+        raw = DEVICE_TREE_SERIAL_FILE.read_bytes()
+        if raw:
+            return raw.replace(b"\x00", b"").decode("utf-8", errors="ignore").strip().lower()
+    except OSError:
+        pass
+    return ""
+
+
+def _read_dial_id_salt() -> Optional[str]:
+    """Return the dial's identity salt, or None when the dial has none.
+
+    An absent file means an unsalted dial. A file that exists but does not hold
+    exactly 32 lower-case hex characters raises ValueError: the caller must
+    stop rather than guess, because falling back to the unsalted identity (or
+    inventing another) would silently give the dial an identity it was never
+    meant to have.
+    """
+    try:
+        raw = DIAL_ID_SALT_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise ValueError(f"{DIAL_ID_SALT_FILE} is unreadable: {e!r}")
+    salt = raw.strip()
+    if not _DIAL_ID_SALT_RE.match(salt):
+        raise ValueError(f"{DIAL_ID_SALT_FILE} does not hold a valid salt")
+    return salt
+
+
+def derive_dial_id(salt: Optional[str]) -> Optional[str]:
+    """Return the dial's 20-character identity for SALT, or None if it cannot be derived.
+
+    Unsalted: the first 20 hex characters of sha256(namespace + serial), or the
+    fallback id file's content when the board has no hex serial. Salted: the
+    same hash over namespace + base + ":" + salt, where base is the serial or,
+    without one, the fallback id.
+    """
+    serial = _dial_cpu_serial()
+    from_serial = bool(serial) and re.fullmatch(r"[0-9a-f]+", serial) is not None
+    if from_serial:
+        base = serial
+    else:
+        try:
+            base = DIAL_ID_FALLBACK_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not _DIAL_ID_RE.match(base):
+            return None
+    if salt is None:
+        if not from_serial:
+            return base
+        text = DIAL_ID_NAMESPACE + base
+    else:
+        text = f"{DIAL_ID_NAMESPACE}{base}:{salt}"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
+
+
+def _write_durable(path: Path, text: str, mode: int, owner: Optional[Tuple[int, int]] = None) -> None:
+    """Replace PATH with TEXT so that a power cut leaves the old or the new file.
+
+    The new content is flushed to disk before the rename, and the directory
+    entry is flushed after it.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, mode)
+    if owner is not None:
+        os.chown(tmp, owner[0], owner[1])
+    tmp.replace(path)
+    dir_fd = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _store_dial_id_salt(salt: str) -> None:
+    DIAL_ID_SALT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _write_durable(DIAL_ID_SALT_FILE, salt + "\n", 0o644, (0, 0))
+
+
+def _apply_dial_id(uuid: str) -> bool:
+    """Make the hardware config and install-state record UUID. Returns True when both agree.
+
+    A copy that already holds UUID is not touched. A copy that is missing is
+    reported and left missing: this never creates one.
+    """
+    ok = True
+
+    try:
+        st = DIAL_HW_CONFIG_FILE.stat()
+        cfg = json.loads(DIAL_HW_CONFIG_FILE.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            raise ValueError("not a JSON object")
+        if cfg.get("uuid") != uuid:
+            cfg["uuid"] = uuid
+            _write_durable(DIAL_HW_CONFIG_FILE, json.dumps(cfg, indent=2) + "\n",
+                           st.st_mode & 0o7777, (st.st_uid, st.st_gid))
+            log("INFO", f"dial identity: updated uuid in {DIAL_HW_CONFIG_FILE}")
+    except (OSError, ValueError) as e:
+        log("ERROR", f"dial identity: cannot update {DIAL_HW_CONFIG_FILE}: {e!r}")
+        ok = False
+
+    try:
+        text = INSTALL_STATE_FILE.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        wanted = f"DIAL_UUID={uuid}"
+        if wanted not in lines:
+            new_lines: list[str] = []
+            replaced = False
+            for ln in lines:
+                if not ln.startswith("DIAL_UUID="):
+                    new_lines.append(ln)
+                elif not replaced:
+                    new_lines.append(wanted)
+                    replaced = True
+            if not replaced:
+                new_lines.append(wanted)
+            _write_durable(INSTALL_STATE_FILE, "\n".join(new_lines) + "\n", 0o644, (0, 0))
+            log("INFO", f"dial identity: updated DIAL_UUID in {INSTALL_STATE_FILE}")
+    except OSError as e:
+        log("ERROR", f"dial identity: cannot update {INSTALL_STATE_FILE}: {e!r}")
+        ok = False
+
+    return ok
+
+
+def reconcile_dial_identity() -> bool:
+    """Bring a salted dial's stored identity into line with its salt.
+
+    Runs before every start of the dial service, so a reset that was cut short
+    after the salt was written finishes on the next boot. A dial with no salt
+    is never touched. A salt that is present but invalid stops the whole
+    thing: the stored identity stays as it is and the error is logged.
+    """
+    try:
+        salt = _read_dial_id_salt()
+    except ValueError as e:
+        log("ERROR", f"dial identity: {e}; leaving the stored identity unchanged")
+        return False
+    if salt is None:
+        return True
+    uuid = derive_dial_id(salt)
+    if uuid is None:
+        log("ERROR", "dial identity: cannot derive an identity (no CPU serial and no "
+                     "fallback id); leaving the stored identity unchanged")
+        return False
+    return _apply_dial_id(uuid)
+
+
+def _reset_dial_identity() -> bool:
+    """Give the dial a new identity: a fresh salt first, then every stored copy.
+
+    The new identity is worked out before anything is written, so a dial that
+    cannot derive one keeps its old identity. The salt is written before the
+    copies; if the power fails in between, reconcile_dial_identity() finishes
+    the job when the dial next starts.
+    """
+    salt = secrets.token_hex(16)
+    uuid = derive_dial_id(salt)
+    if uuid is None:
+        log("ERROR", "factory-reset: cannot derive a new dial identity (no CPU serial and "
+                     "no fallback id); the identity is unchanged")
+        return False
+    try:
+        _store_dial_id_salt(salt)
+    except OSError as e:
+        log("ERROR", f"factory-reset: could not write {DIAL_ID_SALT_FILE}: {e!r}; "
+                     "the identity is unchanged")
+        return False
+    log("INFO", "factory-reset: wrote a new dial identity salt")
+    return _apply_dial_id(uuid)
+
+
 def _execute_factory_reset_dial(lock_fd: object) -> bool:
     """Execute the autostream-dial factory reset sequence.
 
-    Preserved: /etc/autostream/autostream-dial.json (hardware config + UUID),
-               DIAL_UUID in install-state.env.
+    Preserved: /etc/autostream/autostream-dial.json (hardware config).
+    Replaced: the dial's identity (a new salt, and the UUID derived from it,
+              in autostream-dial.json and install-state.env).
 
     Sequence:
       1. Rotate logs (autostream-dial policy only)
       2. Stop autostream_dial.service
       3. Stop autostream_dial_wifi_watcher.service
       4. Stop autostream_dial_dnsmasq.service
-      5. Delete dial-specific runtime files (fixed allowlist, no wildcards)
-      6. Delete Wi-Fi connections
-      7. Reboot
+      5. Give the dial a new identity
+      6. Delete dial-specific runtime files (fixed allowlist, no wildcards)
+      7. Delete Wi-Fi connections
+      8. Reboot
     """
     _rotate_logs("autostream-dial")
 
     _stop_service("autostream_dial.service")
     _stop_service("autostream_dial_wifi_watcher.service")
     _stop_service("autostream_dial_dnsmasq.service")
+
+    if not _reset_dial_identity():
+        log("WARN", "factory-reset: the dial identity was not fully replaced; "
+                    "continuing with the rest of the reset")
 
     for path in FACTORY_RESET_DIAL_DELETE_FILES:
         try:
@@ -2131,6 +2358,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
 
     subparsers.add_parser(
+        "reconcile-dial-identity",
+        help="Bring a salted dial's stored identity into line with its salt.",
+    )
+
+    subparsers.add_parser(
         "update-status",
         help="Print the latest installer update status as JSON.",
     )
@@ -2322,6 +2554,9 @@ def main(argv: list[str]) -> int:
         if args.command == "restart-dial-service":
             ok = restart_dial_service()
             return 0 if ok else 1
+
+        if args.command == "reconcile-dial-identity":
+            return 0 if reconcile_dial_identity() else 1
 
         if args.command == "update-status":
             return read_update_status()
