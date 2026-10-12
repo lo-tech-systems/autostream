@@ -57,8 +57,9 @@ it should not be treated as a full system rollback.
 - Removes the journald storage drop-in
   (`/etc/systemd/journald.conf.d/99-autostream-storage.conf`) and restarts
   `systemd-journald` to apply the removal.
-- Removes the swap file limit (`/etc/rpi/swap.conf.d/99-autostream-swap.conf`); the
-  swap file returns to its default size at the next reboot.
+- Removes the swap file limit (`/etc/rpi/swap.conf.d/99-autostream-swap.conf`). The
+  system's own swap setup applies again from the next boot; a swap file that already
+  exists is not resized while the system is running.
 - Removes the low power mode settings (`maxcpus=2` in `cmdline.txt`, and `arm_freq=700`,
   `arm_boost=0` and `force_turbo=0` in `config.txt`) if the install state records
   that the installer's `--low-power` switch was used. Nothing else in those two

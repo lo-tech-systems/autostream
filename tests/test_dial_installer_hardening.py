@@ -1446,6 +1446,27 @@ class TestUninstallerCarriesOnPastAFailure:
         assert "Could not complete: systemctl daemon-reload" in r.stdout
         assert "userdel autostream" in env.calls()
 
+    def test_every_plain_file_removal_is_allowed_to_fail_without_stopping_the_uninstall(
+            self, env):
+        script = self._sandbox(env)
+        paths = re.findall(r"^(?:best_effort )?rm -f +(/\S+)\s*$",
+                           script.read_text(encoding="utf-8"), re.M)
+        assert len(paths) > 25
+        r = _run_uninstaller(env, script, "--yes", RM_FAIL=" ".join(paths))
+        assert r.returncode == 1
+        for path in paths:
+            assert f"Could not complete: rm -f {path}" in r.stdout, path
+        calls = env.calls()
+        assert "rm -rf /var/lib/autostream" in calls
+        assert "userdel autostream" in calls and "userdel autostream-kiosk" in calls
+        assert "autostream dial uninstalled." not in r.stdout
+
+    def test_no_plain_file_removal_is_left_to_abort_the_script(self):
+        text = UNINSTALLER.read_text(encoding="utf-8")
+        bare = [ln for ln in text.splitlines()
+                if re.match(r"rm -f ", ln) and "|| true" not in ln]
+        assert bare == []
+
     def test_a_clean_run_exits_zero_with_no_warning(self, env):
         script = self._sandbox(env)
         r = _run_uninstaller(env, script, "--yes")

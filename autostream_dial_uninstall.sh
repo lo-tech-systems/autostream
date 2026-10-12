@@ -83,18 +83,18 @@ systemctl disable --now autostream_dial_kiosk 2>/dev/null || true
 # Wi-Fi-only dial rejoins its network after the next boot.
 restore_wifi_profiles
 
-rm -f /etc/systemd/system/autostream_dial.service
-rm -f /etc/systemd/system/autostream_dial_wifi_watcher.service
-rm -f /etc/systemd/system/autostream_dial_dnsmasq.service
-rm -f /etc/systemd/system/autostream_dial_updater.service
-rm -f /etc/systemd/system/autostream_dial_updater.timer
-rm -f /etc/systemd/system/autostream_dial_update_recover.service
-rm -f /etc/systemd/system/autostream_storage_guard.service
-rm -f /etc/systemd/system/autostream_storage_guard.timer
-rm -f /etc/systemd/system/autostream_sdcardhealth.service
-rm -f /etc/systemd/system/autostream_sdcardhealth.timer
-rm -f /etc/systemd/system/autostream_sdcardhealth_boot.service
-rm -f /etc/systemd/system/autostream_dial_kiosk.service
+best_effort rm -f /etc/systemd/system/autostream_dial.service
+best_effort rm -f /etc/systemd/system/autostream_dial_wifi_watcher.service
+best_effort rm -f /etc/systemd/system/autostream_dial_dnsmasq.service
+best_effort rm -f /etc/systemd/system/autostream_dial_updater.service
+best_effort rm -f /etc/systemd/system/autostream_dial_updater.timer
+best_effort rm -f /etc/systemd/system/autostream_dial_update_recover.service
+best_effort rm -f /etc/systemd/system/autostream_storage_guard.service
+best_effort rm -f /etc/systemd/system/autostream_storage_guard.timer
+best_effort rm -f /etc/systemd/system/autostream_sdcardhealth.service
+best_effort rm -f /etc/systemd/system/autostream_sdcardhealth.timer
+best_effort rm -f /etc/systemd/system/autostream_sdcardhealth_boot.service
+best_effort rm -f /etc/systemd/system/autostream_dial_kiosk.service
 
 # Take back the boot splash while its state file (under /var/lib/autostream,
 # removed below) still says what was added. This also removes the splash's
@@ -102,42 +102,42 @@ rm -f /etc/systemd/system/autostream_dial_kiosk.service
 best_effort revert_plymouth
 best_effort systemctl daemon-reload
 
-rm -f /etc/nginx/sites-enabled/autostream-dial
-rm -f /etc/nginx/sites-available/autostream-dial
+best_effort rm -f /etc/nginx/sites-enabled/autostream-dial
+best_effort rm -f /etc/nginx/sites-available/autostream-dial
 nginx -s reload 2>/dev/null || true
 
-rm -f /etc/avahi/services/autostream-dial.service
-rm -f /etc/dnsmasq.d/autostream-dial-setup.conf
-rm -f /etc/sudoers.d/autostream_dial
-rm -f /etc/logrotate.d/autostream-dial
-rm -f /etc/udev/rules.d/99-autostream-backlight.rules
-rm -f /etc/modules-load.d/autostream-dial-i2c.conf
+best_effort rm -f /etc/avahi/services/autostream-dial.service
+best_effort rm -f /etc/dnsmasq.d/autostream-dial-setup.conf
+best_effort rm -f /etc/sudoers.d/autostream_dial
+best_effort rm -f /etc/logrotate.d/autostream-dial
+best_effort rm -f /etc/udev/rules.d/99-autostream-backlight.rules
+best_effort rm -f /etc/modules-load.d/autostream-dial-i2c.conf
 udevadm control --reload 2>/dev/null || true
 
 # Restore system dnsmasq (masked during install)
 systemctl unmask dnsmasq.service 2>/dev/null || true
 
-rm -f /etc/systemd/journald.conf.d/99-autostream-storage.conf
-rm -f /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
-rm -f /etc/rpi/swap.conf.d/99-autostream-swap.conf
+best_effort rm -f /etc/systemd/journald.conf.d/99-autostream-storage.conf
+best_effort rm -f /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
+best_effort rm -f /etc/rpi/swap.conf.d/99-autostream-swap.conf
 systemctl restart systemd-journald 2>/dev/null || true
 
 # Wi-Fi power saving and the power key, as the appliance uninstaller takes them
 # back. The swappiness setting, the masked zram writeback timer and the removed
 # modemmanager and udisks2 packages are left as they are, also as there.
-rm -f /etc/NetworkManager/dispatcher.d/99-wlan-fix
-rm -f /etc/NetworkManager/conf.d/wifi-powersave.conf
-rm -f /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
+best_effort rm -f /etc/NetworkManager/dispatcher.d/99-wlan-fix
+best_effort rm -f /etc/NetworkManager/conf.d/wifi-powersave.conf
+best_effort rm -f /etc/systemd/logind.conf.d/90-autostream-ignore-power-key.conf
 systemctl restart systemd-logind 2>/dev/null || true
-rm -f /usr/local/sbin/sdmon
-rm -f /usr/local/bin/autostream-dial-control
+best_effort rm -f /usr/local/sbin/sdmon
+best_effort rm -f /usr/local/bin/autostream-dial-control
 
 # Shared admin infrastructure — safe to remove on dial-only device
 best_effort rm -rf /usr/local/libexec/autostream
 best_effort rm -rf /usr/local/share/autostream
 
 best_effort rm -rf /opt/autostream         # dial-only device; no autostream appliance present
-rm -f  /etc/autostream-network.json
+best_effort rm -f /etc/autostream-network.json
 # A dial that has been factory reset keeps its identity salt through an
 # uninstall. Removing it would put the dial back on the identity it had before
 # the reset, and so back on every appliance that still lists that identity.
