@@ -299,7 +299,7 @@ install_sdmon() {
     # failure warns and continues: the dial must install without it.
     local ref="8a70aed673f4b319972b3a2cfac043e3b171653a"
     local marker="/var/lib/autostream/sdmon-version"
-    if [[ -x /usr/local/sbin/sdmon && -f "${marker}" && "$(cat "${marker}")" == "${ref}" ]]; then
+    if [[ -x /usr/local/sbin/sdmon && "$(read_state_file "${marker}" || true)" == "${ref}" ]]; then
         echo "sdmon binary already at ${ref}"
         return 0
     fi
@@ -310,8 +310,7 @@ install_sdmon() {
     if network_step --host github.com fetch_sdmon_source "${ref}" "${tmpdir}" \
        && make -s -C "${tmpdir}/sdmon-${ref}/src"; then
         install -m 0755 -o root -g root "${tmpdir}/sdmon-${ref}/src/sdmon" /usr/local/sbin/sdmon
-        printf '%s\n' "${ref}" > "${marker}"
-        chmod 0644 "${marker}"
+        printf '%s\n' "${ref}" | write_state_file "${marker}" 0644
     else
         if [[ -x /usr/local/sbin/sdmon ]]; then
             echo "WARNING: sdmon build failed; keeping the existing binary" >&2
@@ -706,27 +705,64 @@ _ere_escape() {
     printf '%s' "$1" | sed -E 's/[][^.$*+?(){}|\\]/\\&/g'
 }
 
+_plymouth_state_clean() {
+    # Print the part of VALUE that this installer could have recorded for KEY:
+    # each word must be one of the fixed set for that key (the packages it
+    # installs, the modules and command-line tokens it adds, the few flags it
+    # sets). The state file is in the service account's directory, so what the
+    # uninstaller reads back from it is never trusted beyond that.
+    # Usage: _plymouth_state_clean KEY VALUE
+    local key="$1" value="$2" word allowed
+    local -a words=() allow=() kept=()
+    case "${key}" in
+        packages_installed) allow=("${PLYMOUTH_PACKAGES[@]}") ;;
+        modules_added)      allow=("${PLYMOUTH_INITRAMFS_MODULES[@]}") ;;
+        cmdline_added)      allow=("${PLYMOUTH_CMDLINE_TOKENS[@]}") ;;
+        config_added)       allow=(disable_splash=1) ;;
+        plymouthd_conf)     allow=(backup created) ;;
+        dropin)             allow=(1) ;;
+        theme)              allow=("${PLYMOUTH_THEME}") ;;
+        initramfs_kernel)
+            [[ "${value}" =~ ^[A-Za-z0-9._+-]{1,64}$ ]] && printf '%s\n' "${value}"
+            return 0 ;;
+        *) return 0 ;;
+    esac
+    read -r -a words <<< "${value}"
+    for word in ${words[@]+"${words[@]}"}; do
+        for allowed in "${allow[@]}"; do
+            if [[ "${word}" == "${allowed}" ]]; then
+                kept+=("${word}")
+                break
+            fi
+        done
+    done
+    (( ${#kept[@]} == 0 )) || printf '%s\n' "${kept[*]}"
+    return 0
+}
+
 _plymouth_state_get() {
-    # Print the value recorded for KEY, empty when there is none.
-    local file
-    file="$(_plymouth_state)"
-    [[ -f "${file}" ]] || return 0
-    sed -n "s/^$1=//p" "${file}" | tail -n 1
+    # Print the value recorded for KEY, empty when there is none. The file is
+    # read without following a link and only a value the installer could have
+    # recorded comes out (see _plymouth_state_clean).
+    local content value
+    content="$(read_state_file "$(_plymouth_state)")" || return 0
+    value="$(printf '%s\n' "${content}" | sed -n "s/^$1=//p" | tail -n 1)"
+    _plymouth_state_clean "$1" "${value}"
 }
 
 _plymouth_state_set() {
     # Record KEY=VALUE, replacing any earlier line for KEY.
     # Usage: _plymouth_state_set KEY VALUE
-    local file tmp
+    local file content
     file="$(_plymouth_state)"
     mkdir -p "$(dirname "${file}")"
-    tmp="$(mktemp)"
-    if [[ -f "${file}" ]]; then
-        grep -v "^$1=" "${file}" > "${tmp}" || true
-    fi
-    printf '%s=%s\n' "$1" "$2" >> "${tmp}"
-    cat "${tmp}" > "${file}"
-    rm -f "${tmp}"
+    content="$(read_state_file "${file}" || true)"
+    {
+        if [[ -n "${content}" ]]; then
+            printf '%s\n' "${content}" | grep -v "^$1=" || true
+        fi
+        printf '%s=%s\n' "$1" "$2"
+    } | write_state_file "${file}" 0644
 }
 
 _plymouth_state_add() {
@@ -815,7 +851,7 @@ set_plymouth_device_timeout() {
     fi
     if [[ -z "$(_plymouth_state_get plymouthd_conf)" ]]; then
         if [[ -f "${file}" ]]; then
-            cp -p "${file}" "$(_state_dir)/plymouthd.conf.orig" \
+            write_state_file "$(_state_dir)/plymouthd.conf.orig" "$(_plymouth_conf_mode "${file}")" < "${file}" \
                 && _plymouth_state_set plymouthd_conf backup
         else
             _plymouth_state_set plymouthd_conf created
@@ -1020,6 +1056,31 @@ configure_plymouth() {
     apply_plymouth_theme "${changed}"
 }
 
+_plymouth_conf_mode() {
+    # Print the mode of the plymouthd.conf FILE, 644 when it cannot be read.
+    stat -c '%a' -- "$1" 2>/dev/null || printf '644\n'
+}
+
+_plymouth_restore_conf() {
+    # Put the saved copy of plymouthd.conf back. The copy is in the service
+    # account's directory, so it is read without following a link and used
+    # only if every line looks like one of a plymouthd.conf: blank, a comment,
+    # a [Section] or a Key=value of printable characters.
+    # Usage: _plymouth_restore_conf SAVED CONF
+    local saved="$1" conf="$2" tmp
+    tmp="$(mktemp)"
+    if ! read_state_file "${saved}" > "${tmp}"; then
+        rm -f "${tmp}"
+        return 0
+    fi
+    if grep -qvE '^([[:space:]]*|[[:space:]]*#.*|\[[A-Za-z0-9_ -]+\]|[A-Za-z0-9_.-]+=[[:print:]]*)$' "${tmp}"; then
+        echo "WARNING: the saved ${saved##*/} does not look like a plymouthd.conf; leaving ${conf} as it is" >&2
+    else
+        write_state_file "${conf}" "$(_plymouth_conf_mode "${conf}")" < "${tmp}" || true
+    fi
+    rm -f "${tmp}"
+}
+
 revert_plymouth() {
     # Undo exactly what the boot splash steps recorded in the state file, in
     # reverse of how it was set up, then remove the state file. Every step
@@ -1042,7 +1103,7 @@ revert_plymouth() {
 
     value="$(_plymouth_state_get plymouthd_conf)"
     case "${value}" in
-        backup) [[ -f "${orig}" ]] && { cp -p "${orig}" "${conf}" || true; } ;;
+        backup) _plymouth_restore_conf "${orig}" "${conf}" ;;
         created) rm -f "${conf}" ;;
         "") ;;
         *) [[ -f "${conf}" ]] && { sed -i "/^[[:space:]]*DeviceTimeout=${PLYMOUTH_DEVICE_TIMEOUT}\$/d" "${conf}" || true; } ;;

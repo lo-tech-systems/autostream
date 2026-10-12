@@ -298,11 +298,21 @@ def _read_installed_tag() -> str:
 
 # ---- Config helpers ----------------------------------------------------------
 
+def _read_dial_settings() -> str:
+    """Return the text of dial-settings.json, read without following a link.
+
+    The file is in the service account's directory, which can put a link at
+    that name, so it goes through the trusted reader (owner not required: the
+    service account writes it).  Raises FileNotFoundError when absent and
+    ValueError when it is not a plain file.
+    """
+    return read_file_if_trusted(STATE_DIR / "dial-settings.json", None)
+
+
 def _read_dial_channel() -> str:
     """Return the configured update channel from dial-settings.json, defaulting to 'stable'."""
     try:
-        settings_path = STATE_DIR / "dial-settings.json"
-        s = json.loads(settings_path.read_text(encoding="utf-8"))
+        s = json.loads(_read_dial_settings())
         return _normalise_update_channel(s.get("update_channel"))
     except Exception:
         return "stable"
@@ -386,8 +396,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
     # auto_update flag check
     if auto:
         try:
-            settings_path = STATE_DIR / "dial-settings.json"
-            s = json.loads(settings_path.read_text(encoding="utf-8"))
+            s = json.loads(_read_dial_settings())
             if not s.get("auto_update", False):
                 _log("apply --auto: auto_update=false in settings — no-op")
                 return {"ok": True}

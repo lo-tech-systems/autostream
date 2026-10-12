@@ -1026,6 +1026,20 @@ fetch_phase() {
   fi
 }
 
+# sdmon_marker_matches REF: true when the sdmon binary is installed and the
+# marker beside the other state names REF. The marker is in the directory the
+# service account owns, so it is read without following a link.
+sdmon_marker_matches() {
+  [[ -x "/usr/local/sbin/sdmon" && "$(read_state_file "${STAMP_DIR}/sdmon-version" || true)" == "$1" ]]
+}
+
+# record_sdmon_marker REF: write the marker, replacing whatever is at its name
+# (a link included) without following it.
+record_sdmon_marker() {
+  mkdir -p "${STAMP_DIR}"
+  printf '%s\n' "$1" | write_state_file "${STAMP_DIR}/sdmon-version" 0644
+}
+
 # sdmon_phase: build and install the sdmon binary (install and update).
 # The binary is always present so the health check can be switched on later
 # without a build; SDMON_METHOD only decides whether services_phase and
@@ -1034,8 +1048,7 @@ sdmon_phase() {
   CURRENT_PHASE="sdmon"
   info "=== Phase: sdmon ==="
 
-  local marker="${STAMP_DIR}/sdmon-version"
-  if [[ -x "/usr/local/sbin/sdmon" && -f "${marker}" && "$(cat "${marker}")" == "${SDMON_GIT_REF}" ]]; then
+  if sdmon_marker_matches "${SDMON_GIT_REF}"; then
     info "sdmon binary already at ${SDMON_GIT_REF}"
     return 0
   fi
@@ -1048,8 +1061,7 @@ sdmon_phase() {
      && git -C "${tmpdir}/sdmon" checkout -q "${SDMON_GIT_REF}" \
      && make -s -C "${tmpdir}/sdmon/src"; then
     install -m 0755 "${tmpdir}/sdmon/src/sdmon" "/usr/local/sbin/sdmon"
-    mkdir -p "${STAMP_DIR}"
-    printf '%s\n' "${SDMON_GIT_REF}" > "${marker}"
+    record_sdmon_marker "${SDMON_GIT_REF}"
   else
     if [[ -x "/usr/local/sbin/sdmon" ]]; then
       warn "sdmon build failed; keeping the existing binary"
@@ -1488,13 +1500,22 @@ permissions_pass() {
     chmod 0644 /etc/autostream-network.json
   fi
 
-  # Create dial authorization store if absent (under /var/lib/autostream/).
-  # Runs on both fresh install and --update; the ! -f guard preserves existing authorizations.
-  if [[ ! -f "${STAMP_DIR}/dials.json" ]]; then
-    echo '{}' > "${STAMP_DIR}/dials.json"
-    chown autostream:autostream "${STAMP_DIR}/dials.json"
-    chmod 0600 "${STAMP_DIR}/dials.json"
+  ensure_dials_store
+}
+
+# ensure_dials_store: create the dial authorization store if absent (under
+# /var/lib/autostream/). Runs on both fresh install and --update; a regular
+# file already there is kept, so existing authorizations survive. The service
+# account owns that directory and can leave a link at the name, so a link
+# (dangling or not) does not count as the store: it is replaced by a new file
+# written beside it and renamed over it, with owner and mode set on the open
+# file, never by name.
+ensure_dials_store() {
+  local file="${STAMP_DIR}/dials.json"
+  if [[ -f "${file}" && ! -L "${file}" ]]; then
+    return 0
   fi
+  printf '{}\n' | write_state_file "${file}" 0600 autostream:autostream
 }
 
 # services_phase: install and enable/reload systemd units (install and update).
