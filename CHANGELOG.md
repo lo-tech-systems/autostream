@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- improvement: the dial uninstaller now checks before it removes anything. It must
+  be run as root, refuses on an appliance or a device with no dial on it, and asks
+  for confirmation. `--yes` skips the question, and is needed when there is no
+  terminal to ask on.
 - fix: a power cut in the middle of the package upgrade during an update no longer
   makes every automatic retry fail. The dial and appliance installers now finish
   an interrupted package run (`dpkg --configure -a`) before their first package

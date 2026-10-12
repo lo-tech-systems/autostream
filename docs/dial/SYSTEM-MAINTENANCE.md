@@ -219,6 +219,16 @@ boot files. It also hands the saved Wi-Fi networks back to NetworkManager
 has Wi-Fi rejoins its network after the next reboot. It is meant for a
 dedicated dial.
 
+Run it with `sudo`. It checks before it removes anything: it refuses to run
+as a normal user, and it refuses on a device that is not a dial (an appliance,
+or a device with no dial software on it). It then asks you to confirm, which
+needs a terminal. To run it without a prompt, for example over `ssh` without
+`-t` or from a script, add `--yes`:
+
+```bash
+sudo ./autostream_dial_uninstall.sh --yes
+```
+
 ## Next steps
 
 - [Getting Started](GETTING-STARTED.md): authorizing, configuring, and using

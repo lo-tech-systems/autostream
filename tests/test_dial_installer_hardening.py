@@ -12,6 +12,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -112,9 +113,17 @@ class TestWifiHandback:
         assert "nmcli not found" in r.stdout
 
 
-def _uninstall_sandbox(env: Env, extra_shims: tuple[str, ...] = ()) -> Path:
+# id -u answers FAKE_UID so the root check can be exercised without root.
+FAKE_ID = r"""#!/bin/bash
+if [[ "$1" == "-u" ]]; then echo "${FAKE_UID:-0}"; else exec /usr/bin/id "$@"; fi
+"""
+
+
+def _uninstall_sandbox(env: Env, extra_shims: tuple[str, ...] = (),
+                       product: str | None = "autostream-dial") -> Path:
     """A copy of the uninstaller and the installer tree it sources, with every
-    command that would change the machine replaced by a recorder."""
+    command that would change the machine replaced by a recorder, and the
+    install-state file naming PRODUCT (none when it is None)."""
     deploy = env.tmp / "deploy"
     (deploy / "installer").mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "installer" / "dial", deploy / "installer" / "dial")
@@ -123,6 +132,9 @@ def _uninstall_sandbox(env: Env, extra_shims: tuple[str, ...] = ()) -> Path:
     for name in ("rm", "systemctl", "nginx", "udevadm", "userdel", "update-initramfs",
                  *extra_shims):
         env.fake(name, RECORDER)
+    env.fake("id", FAKE_ID)
+    if product is not None:
+        env.install_state.write_text(f"AUTOSTREAM_PRODUCT={product}\n", encoding="utf-8")
     return deploy / UNINSTALLER.name
 
 
@@ -136,7 +148,7 @@ class TestUninstallerHandsWifiBack:
     def test_profiles_are_restored_before_anything_is_removed(self, env):
         extra = _nm(env)
         script = _uninstall_sandbox(env)
-        r = _run_uninstaller(env, script, **extra)
+        r = _run_uninstaller(env, script, "--yes", **extra)
         assert r.returncode == 0, r.stderr
         calls = env.calls()
         first_modify = next(i for i, c in enumerate(calls)
@@ -147,7 +159,7 @@ class TestUninstallerHandsWifiBack:
     def test_profiles_are_restored_after_the_watcher_is_stopped(self, env):
         extra = _nm(env)
         script = _uninstall_sandbox(env)
-        _run_uninstaller(env, script, **extra)
+        _run_uninstaller(env, script, "--yes", **extra)
         calls = env.calls()
         stop = next(i for i, c in enumerate(calls)
                     if c.startswith("systemctl disable --now autostream_dial "))
@@ -449,3 +461,211 @@ class TestApplianceRecoversInterruptedPackages:
     def test_installer_sources_the_shared_library(self):
         text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
         assert 'source "${INSTALLER_LIB}/apt.sh"' in text
+
+
+# ---------------------------------------------------------------------------
+# The uninstaller checks what it is about to remove
+# ---------------------------------------------------------------------------
+
+def _uid(uid: str) -> dict:
+    return {"FAKE_UID": uid}
+
+
+def _id_shim(env: Env) -> None:
+    env.fake("id", FAKE_ID)
+
+
+@bash_capable
+class TestUninstallGuardFunctions:
+    def test_a_normal_user_is_refused_with_the_appliance_wording(self, env):
+        _id_shim(env)
+        r = env.run("require_root_user autostream_dial_uninstall.sh\necho carried-on",
+                    **_uid("1000"))
+        assert r.returncode == 1
+        assert "carried-on" not in r.stdout
+        assert ("[ERROR] This script must be run as root "
+                "(e.g. sudo ./autostream_dial_uninstall.sh).") in r.stderr
+
+    def test_root_passes(self, env):
+        _id_shim(env)
+        assert env.run("require_root_user x", **_uid("0")).returncode == 0
+
+    def test_a_dial_install_passes(self, env):
+        env.install_state.write_text("AUTOSTREAM_PRODUCT=autostream-dial\n", encoding="utf-8")
+        assert env.run("require_dial_install").returncode == 0
+
+    def test_an_appliance_install_is_refused_and_pointed_at_its_own_uninstaller(self, env):
+        env.install_state.write_text("AUTOSTREAM_PRODUCT=autostream\n", encoding="utf-8")
+        r = env.run("require_dial_install\necho carried-on")
+        assert r.returncode == 1
+        assert "carried-on" not in r.stdout
+        assert "not a dial" in r.stderr
+        assert "autostream_uninstall.sh" in r.stderr
+
+    def test_a_box_with_no_install_at_all_is_refused(self, env):
+        r = env.run("require_dial_install")
+        assert r.returncode == 1
+        assert "No autostream dial installation found" in r.stderr
+
+    def test_an_install_that_stopped_before_its_state_file_still_counts_as_a_dial(self, env):
+        env.put("etc/autostream/autostream-dial.json", "{}")
+        assert env.run("require_dial_install").returncode == 0
+
+    def test_a_started_dial_unit_without_a_state_file_still_counts_as_a_dial(self, env):
+        env.put("etc/systemd/system/autostream_dial.service", "[Unit]")
+        assert env.run("require_dial_install").returncode == 0
+
+    def test_yes_skips_the_question_even_without_a_terminal(self, env):
+        r = env.run("has_tty() { return 1; }; confirm_dial_uninstall true")
+        assert r.returncode == 0, r.stderr
+        assert "continuing without confirmation" in r.stdout
+
+    def test_no_terminal_and_no_yes_refuses(self, env):
+        r = env.run("has_tty() { return 1; }; confirm_dial_uninstall false\necho carried-on")
+        assert r.returncode == 1
+        assert "carried-on" not in r.stdout
+        assert "Interactive confirmation requires a TTY" in r.stderr
+        assert "--yes" in r.stderr
+
+    @pytest.mark.parametrize("answer,code", [("y", 0), ("Y", 0), ("n", 1), ("", 1),
+                                             ("yes please", 1)])
+    def test_the_answer_decides_when_there_is_a_terminal(self, env, answer, code):
+        r = env.run('has_tty() { return 0; }; '
+                    f'tty_read() {{ printf -v "$2" %s "{answer}"; }}; '
+                    "confirm_dial_uninstall false")
+        assert r.returncode == code, r.stderr
+        if code:
+            assert "Aborted by user" in r.stderr
+
+
+def _changes(env: Env) -> list[str]:
+    """Calls the uninstaller made to anything that changes the machine."""
+    return [c for c in env.calls() if c.split()[0] in
+            ("rm", "systemctl", "userdel", "nginx", "udevadm", "nmcli")]
+
+
+def _run_detached(env: Env, script: Path, *args: str):
+    """Run with no controlling terminal, as under a service or over ssh without -t."""
+    return subprocess.run(["bash", str(script), *args], capture_output=True, text=True,
+                          timeout=60, env=env.env(), start_new_session=True,
+                          stdin=subprocess.DEVNULL)
+
+
+@bash_capable
+class TestUninstallerScript:
+    """The real uninstaller run in a sandbox; every command that changes the
+    machine is a recorder, so a refusal shows as an empty trace."""
+
+    def test_a_normal_user_changes_nothing(self, env):
+        script = _uninstall_sandbox(env)
+        r = _run_uninstaller(env, script, "--yes", **_uid("1000"))
+        assert r.returncode == 1
+        assert "must be run as root" in r.stderr
+        assert _changes(env) == []
+
+    def test_an_appliance_install_changes_nothing_even_with_yes(self, env):
+        script = _uninstall_sandbox(env, product="autostream")
+        r = _run_uninstaller(env, script, "--yes")
+        assert r.returncode == 1
+        assert "not a dial" in r.stderr
+        assert _changes(env) == []
+
+    def test_an_unconfigured_box_changes_nothing(self, env):
+        script = _uninstall_sandbox(env, product=None)
+        r = _run_uninstaller(env, script, "--yes")
+        assert r.returncode == 1
+        assert "No autostream dial installation found" in r.stderr
+        assert _changes(env) == []
+
+    def test_no_terminal_and_no_yes_changes_nothing(self, env):
+        script = _uninstall_sandbox(env)
+        r = _run_detached(env, script)
+        assert r.returncode == 1
+        assert "requires a TTY" in r.stderr
+        assert _changes(env) == []
+
+    def test_an_unknown_argument_changes_nothing(self, env):
+        script = _uninstall_sandbox(env)
+        r = _run_uninstaller(env, script, "--yse")
+        assert r.returncode == 2
+        assert "Usage:" in r.stderr
+        assert _changes(env) == []
+
+    @pytest.mark.parametrize("flag", ["--yes", "-y"])
+    def test_yes_removes_the_dial_without_a_terminal(self, env, flag):
+        script = _uninstall_sandbox(env)
+        r = _run_detached(env, script, flag)
+        assert r.returncode == 0, r.stderr
+        calls = env.calls()
+        assert "rm -rf /opt/autostream" in calls
+        assert "rm -rf /var/lib/autostream" in calls
+        assert "userdel autostream" in calls
+
+    def test_the_guards_come_before_the_first_change_text_check(self):
+        text = UNINSTALLER.read_text(encoding="utf-8")
+        first_change = text.index("systemctl disable --now")
+        for guard in ("require_root_user", "require_dial_install", "confirm_dial_uninstall"):
+            assert text.index(guard) < first_change, guard
+
+
+def _run_on_a_terminal(argv: list[str], env: dict, answer: bytes) -> tuple[int, str]:
+    """Run argv with a controlling terminal and send ANSWER at the prompt."""
+    import pty
+    import select
+    import time
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvpe(argv[0], argv, env)
+    out = b""
+    sent = False
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.5)
+        if ready:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+            if not sent and b"(Y/N)" in out:
+                os.write(fd, answer)
+                sent = True
+    _, status = os.waitpid(pid, 0)
+    return os.waitstatus_to_exitcode(status), out.decode("utf-8", "replace")
+
+
+@bash_capable
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
+class TestUninstallerOnATerminal:
+    def test_a_no_answer_leaves_the_device_alone(self, env):
+        script = _uninstall_sandbox(env)
+        code, out = _run_on_a_terminal(["bash", str(script)], env.env(), b"n\n")
+        assert code == 1
+        assert "Aborted by user" in out
+        assert _changes(env) == []
+
+    def test_a_yes_answer_removes_the_dial(self, env):
+        script = _uninstall_sandbox(env)
+        code, out = _run_on_a_terminal(["bash", str(script)], env.env(), b"y\n")
+        assert code == 0, out
+        assert "rm -rf /opt/autostream" in env.calls()
+
+    def test_has_tty_is_true_on_a_terminal(self, env):
+        code, out = _run_on_a_terminal(
+            ["bash", "-c", f'source "{HELPERS}"; has_tty && echo TTY-YES || echo TTY-NO'],
+            env.env(), b"")
+        assert "TTY-YES" in out
+
+
+@bash_capable
+class TestHasTty:
+    def test_has_tty_is_false_without_a_controlling_terminal(self, env):
+        r = subprocess.run(
+            ["bash", "-c", f'source "{HELPERS}"; has_tty && echo TTY-YES || echo TTY-NO'],
+            capture_output=True, text=True, timeout=30, env=env.env(),
+            start_new_session=True, stdin=subprocess.DEVNULL)
+        assert r.stdout.strip() == "TTY-NO", r.stderr
+        assert r.stderr == ""

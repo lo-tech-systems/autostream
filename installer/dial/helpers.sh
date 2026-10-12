@@ -990,12 +990,83 @@ retire_hd_kiosk() {
 }
 
 has_tty() {
-    [[ -r /dev/tty && -w /dev/tty ]]
+    # /dev/tty is readable and writable even when the process has no
+    # controlling terminal (a service, cron, ssh without -t), so the check
+    # that counts is whether it can be opened.
+    [[ -r /dev/tty && -w /dev/tty ]] && { : < /dev/tty; } 2>/dev/null
 }
 
 tty_read() {
     local prompt="$1" __var="$2"
     IFS= read -r -p "${prompt}" "${__var}" < /dev/tty
+}
+
+# ---- Uninstaller guards -------------------------------------------------------
+# The dial uninstaller deletes shared paths (/opt/autostream, /var/lib/autostream,
+# /usr/local/libexec/autostream and the service user), so it checks who is
+# running it, what it is running on and, unless told not to ask, whether the
+# owner means it. Wording follows the appliance uninstaller.
+
+require_root_user() {
+    # Usage: require_root_user SCRIPT_NAME
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "[ERROR] This script must be run as root (e.g. sudo ./${1:-autostream_dial_uninstall.sh})." >&2
+        exit 1
+    fi
+}
+
+require_dial_install() {
+    # Proceed only on a dial install. The installer's state file names the
+    # product; where it is absent (an install that stopped before writing it)
+    # the dial's own hardware file or service unit shows a dial was started.
+    local product root
+    product="$(_install_state_value AUTOSTREAM_PRODUCT)"
+    root="$(_fs_root)"
+    case "${product}" in
+        autostream-dial) return 0 ;;
+        "")
+            if [[ -e "${root}/etc/autostream/autostream-dial.json" \
+                  || -e "${root}/etc/systemd/system/autostream_dial.service" ]]; then
+                return 0
+            fi
+            echo "[ERROR] No autostream dial installation found on this device; nothing was removed." >&2
+            exit 1
+            ;;
+        *)
+            echo "[ERROR] This device is an autostream installation of another kind (${product}), not a dial." >&2
+            echo "[ERROR] This script would remove files the appliance shares; nothing was removed." >&2
+            echo "[ERROR] Use autostream_uninstall.sh to remove an appliance." >&2
+            exit 1
+            ;;
+    esac
+}
+
+confirm_dial_uninstall() {
+    # Usage: confirm_dial_uninstall ASSUME_YES (true when --yes was given)
+    cat <<'EOF'
+
+=============================================================================
+AUTOSTREAM DIAL UNINSTALLER
+=============================================================================
+This script removes the autostream dial software from this device, including
+the dial's name, PIN and settings, and its identity files. Installed packages
+and boot configuration are not undone.
+=============================================================================
+EOF
+    if [[ "${1:-false}" == true ]]; then
+        echo "[INFO] --yes given; continuing without confirmation."
+        return 0
+    fi
+    if ! has_tty; then
+        echo "[ERROR] Interactive confirmation requires a TTY (or pass --yes to continue without one)." >&2
+        exit 1
+    fi
+    local ans
+    tty_read "Continue with uninstall? (Y/N) " ans || true
+    case "${ans:-N}" in
+        Y|y) ;;
+        *) echo "[ERROR] Aborted by user." >&2; exit 1 ;;
+    esac
 }
 
 show_info_and_prompt() {

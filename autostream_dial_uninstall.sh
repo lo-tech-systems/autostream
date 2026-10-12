@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # autostream_dial_uninstall.sh — Removes all autostream dial components.
 #
+# Usage:
+#   sudo ./autostream_dial_uninstall.sh          # asks for confirmation
+#   sudo ./autostream_dial_uninstall.sh --yes    # no prompt (scripted use)
+#
+# Must run as root, and only on a dial install: it refuses an appliance or a
+# device with no dial on it. Without --yes it needs a terminal to ask on.
+#
 # Co-installation (autostream + dial on the same device) is not supported.
 # This uninstaller assumes a dial-only device and removes /opt/autostream/.
 #
@@ -16,6 +23,17 @@ info() { echo "[INFO] $*"; }
 warn() { echo "[WARN] $*"; }
 # shellcheck source=installer/lib/wifi_restore.sh
 source "$SCRIPT_DIR/installer/lib/wifi_restore.sh"
+
+ASSUME_YES=false
+for _arg in "$@"; do
+    case "${_arg}" in
+        --yes|-y) ASSUME_YES=true ;;
+        *) echo "Usage: $(basename "$0") [--yes]" >&2; exit 2 ;;
+    esac
+done
+require_root_user "$(basename "$0")"
+require_dial_install
+confirm_dial_uninstall "${ASSUME_YES}"
 
 systemctl disable --now \
     autostream_dial \
