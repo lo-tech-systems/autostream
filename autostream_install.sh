@@ -606,6 +606,14 @@ restore_stopped_services() {
   rm -f "${STOPPED_SERVICES_FILE}"
 }
 
+# require_rpi_os_trixie: check the OS release on an install and on an update.
+#
+# Fresh install (attended, or unattended with a terminal to ask on): warn, and
+# let the user continue by typing TRIXIE; with no terminal to ask on, refuse.
+#
+# Update (run unattended by the built-in updater, with no terminal): warn and
+# carry on. It never prompts and never blocks, because an appliance installed
+# with the override above must keep updating.
 require_rpi_os_trixie() {
   local codename
   codename="$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-}")"
@@ -614,6 +622,11 @@ require_rpi_os_trixie() {
     warn "Detected VERSION_CODENAME='${codename:-unknown}'."
     warn "This installer is intended ONLY for Raspberry Pi OS (Trixie)."
     warn "Continuing on other OS versions may break the system."
+
+    if [[ "${INSTALL_MODE:-install}" == "update" ]]; then
+      warn "Continuing with the update; it is not blocked on this OS."
+      return 0
+    fi
 
     if has_tty; then
       echo
@@ -1705,6 +1718,7 @@ run_update() {
 
   stop_watchdog_if_ram_monitored
   check_network_manager
+  require_rpi_os_trixie
 
   CURRENT_PHASE="stopping services"
   update_progress "Stopping services..." 8

@@ -1274,7 +1274,8 @@ INSTALL_PHASES = ["stop_watchdog_if_ram_monitored", "check_network_manager",
                   "configure_phase", "network_state_phase", "services_phase", "save_state",
                   "sdmon_probe_and_enable"]
 UPDATE_PHASES = ["write_update_result", "engage_update_page", "stop_watchdog_if_ram_monitored",
-                 "check_network_manager", "update_progress", "stop_services_for_update",
+                 "check_network_manager", "require_rpi_os_trixie", "update_progress",
+                 "stop_services_for_update",
                  "system_upgrade_phase", "ensure_build_deps", "fetch_phase", "sdmon_phase",
                  "deploy_phase", "configure_phase", "services_phase", "save_state",
                  "sdmon_probe_and_enable"]
