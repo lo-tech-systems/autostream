@@ -15,18 +15,15 @@
 PATH="${PATH:+${PATH}:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
-# Where the kernel lists network interfaces (a test points this elsewhere).
-NET_SYSFS="${NET_SYSFS:-/sys/class/net}"
-
 IFACE="$1"
 STATUS="$2"
 
 [ "$STATUS" = "up" ] || exit 0
 
 # Apply only to wireless interfaces.  A device is wireless if it exposes a
-# ${NET_SYSFS}/<iface>/wireless directory or ${NET_SYSFS}/<iface>/phy80211.
-if [ ! -d "${NET_SYSFS}/${IFACE}/wireless" ] && \
-   [ ! -e "${NET_SYSFS}/${IFACE}/phy80211" ]; then
+# /sys/class/net/<iface>/wireless directory or /sys/class/net/<iface>/phy80211.
+if [ ! -d "/sys/class/net/${IFACE}/wireless" ] && \
+   [ ! -e "/sys/class/net/${IFACE}/phy80211" ]; then
     exit 0
 fi
 
@@ -39,7 +36,7 @@ iw "$IFACE" set power_save off 2>/dev/null || \
 # only.  Do not assume every USB adapter supports setting the transmit power.
 # 1200 is 12 dBm in the hundredths of a dBm that `iw` takes.
 IS_USB=0
-case "$(readlink -f "${NET_SYSFS}/${IFACE}/device" 2>/dev/null)" in
+case "$(readlink -f "/sys/class/net/${IFACE}/device" 2>/dev/null)" in
     *"/usb"*) IS_USB=1 ;;
 esac
 if [ "$IS_USB" = "0" ]; then

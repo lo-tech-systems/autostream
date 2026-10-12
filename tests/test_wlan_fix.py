@@ -4,7 +4,8 @@ sets the transmit power, and the packages it needs.
 The script calls `iw` for both settings, so both installers must put `iw` on the
 device: if it is missing the script only logs that the setting is "not
 supported" and the setting never applies. The script is run here against a
-scratch /sys/class/net with recorders for `iw` and `logger`.
+scratch /sys/class/net, by pointing a copy of the script at it, with recorders
+for `iw` and `logger`.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -103,10 +104,18 @@ class TestDispatcherScript:
             f.chmod(0o755)
         return net, shims, trace
 
+    @staticmethod
+    def _copy_for(net: Path, text: str | None = None) -> Path:
+        """A copy of the script that looks in NET instead of /sys/class/net."""
+        text = SCRIPT.read_text(encoding="utf-8") if text is None else text
+        copy = net.parent / "wlan-fix"
+        copy.write_text(text.replace("/sys/class/net", str(net)), encoding="utf-8")
+        return copy
+
     def _run(self, net, shims, *args):
-        env = {"PATH": f"{shims}{os.pathsep}/usr/bin:/bin", "NET_SYSFS": str(net)}
-        return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True,
-                              timeout=30, env=env)
+        env = {"PATH": f"{shims}{os.pathsep}/usr/bin:/bin"}
+        return subprocess.run(["bash", str(self._copy_for(net)), *args], capture_output=True,
+                              text=True, timeout=30, env=env)
 
     def _calls(self, trace: Path) -> list[str]:
         return trace.read_text(encoding="utf-8").splitlines()
@@ -135,6 +144,21 @@ class TestDispatcherScript:
         assert any("power_save off not supported" in c for c in logged)
         assert any("txpower set not supported" in c for c in logged)
 
+    def test_the_script_reads_nothing_from_its_environment_to_find_the_interfaces(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        assert "NET_SYSFS" not in text
+        assert "/sys/class/net/${IFACE}/wireless" in text
+
+    def test_an_environment_variable_cannot_redirect_where_it_looks(self, tmp_path):
+        net, shims, trace = self._world(tmp_path, wireless=False)
+        other = tmp_path / "other"
+        (other / "wlan0" / "wireless").mkdir(parents=True)
+        env = {"PATH": f"{shims}{os.pathsep}/usr/bin:/bin", "NET_SYSFS": str(other)}
+        r = subprocess.run(["bash", str(self._copy_for(net)), "wlan0", "up"],
+                           capture_output=True, text=True, timeout=30, env=env)
+        assert r.returncode == 0, r.stderr
+        assert self._calls(trace) == []
+
     def test_an_interface_going_down_is_left_alone(self, tmp_path):
         net, shims, trace = self._world(tmp_path)
         assert self._run(net, shims, "wlan0", "down").returncode == 0
@@ -156,9 +180,8 @@ class TestDispatcherScript:
         probe.write_text(f'#!/bin/bash\necho "found $*" >> "{trace.as_posix()}"\n',
                          encoding="utf-8")
         probe.chmod(0o755)
-        patched = tmp_path / "wlan-fix"
-        patched.write_text(text.replace("/usr/local/sbin", str(sbin), 1), encoding="utf-8")
-        env = {"PATH": "", "NET_SYSFS": str(net)}
+        patched = self._copy_for(net, text.replace("/usr/local/sbin", str(sbin), 1))
+        env = {"PATH": ""}
         r = subprocess.run(["/bin/bash", str(patched), "wlan0", "up"], capture_output=True,
                            text=True, timeout=30, env=env)
         assert r.returncode == 0, r.stderr
