@@ -16,9 +16,9 @@
 - improvement: the appliance and dial installers now limit the swap file to
   512 MiB. Raspberry Pi OS makes it as large as the board's RAM, up to 2 GiB, so
   a 4 GB board put a 2 GB file on its SD card. Install and update put the setting
-  in place and uninstall removes it; it applies at the next reboot, when a larger
-  existing file is expected to be replaced [not yet confirmed on a device]. The
-  zram swap settings are left alone.
+  in place and uninstall removes it; it applies at the next reboot. With the
+  default `rpi-swap` mechanism the file is the target that zram writes back to.
+  The zram swap settings are left alone.
 - improvement: the dial installer now applies the same base system tuning as the
   appliance installer, on a fresh install and on update, for SPI and HD dials:
   Wi-Fi power saving is turned off (a dial with it on can be slow to receive what
@@ -31,10 +31,12 @@
   boards such as a Zero 2 W. It limits the appliance to two cores at 700 MHz
   (`maxcpus=2` on the kernel command line; `arm_freq=700`, `arm_boost=0` and
   `force_turbo=0` in `config.txt`) and takes effect after a reboot. It is off
-  unless given, the choice is saved and re-applied by `--update` (an update without
-  it leaves existing settings alone), and the uninstaller removes exactly what it
-  added. To turn it off, remove the settings by hand and delete the `LOW_POWER`
-  line from the install state.
+  unless given, and once given the choice is saved and applied again by every
+  `--update`, with or without the switch (an update on an appliance that has never
+  used the switch leaves existing settings alone). The uninstaller removes exactly
+  what the switch added; a different `maxcpus` value it replaced is not put back.
+  To turn it off, remove the settings by hand and delete the `LOW_POWER` line from
+  the install state.
 - improvement: the dial and appliance installers now delete the downloaded package
   files (`apt-get clean`) once an install or update has succeeded, freeing space
   on a small SD card; before, a fresh install never cleaned them and an update

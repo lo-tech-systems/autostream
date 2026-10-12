@@ -32,7 +32,8 @@ to two cores at 700 MHz to lower its power draw. It is off
 unless you ask for it. It writes four settings:
 
 - `maxcpus=2` on the kernel command line in `/boot/firmware/cmdline.txt` (added
-  once, and the file stays a single line; the first change keeps a copy of the
+  once, or changed in place if there is a `maxcpus` setting with another value
+  already, and the file stays a single line; the first change keeps a copy of the
   original as `cmdline.txt.autostream-bak`);
 - `arm_freq=700`, `arm_boost=0` and `force_turbo=0` under `[all]` in
   `/boot/firmware/config.txt`.
@@ -45,20 +46,30 @@ curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/boo
 ```
 
 The settings take effect at the next reboot. Reduced to two cores at 700 MHz,
-the appliance has less headroom than at full speed [how this affects behaviour on
-boards other than a Zero 2 W has not been measured], so use it only where the
+the appliance has less headroom than at full speed, so use it only where the
 power or heat budget needs it.
 
-The choice is saved with the other install choices, so the automatic updater
-applies it again on each update while it is on. An update run by hand can switch
-it on too (`sudo ./autostream_install.sh --update --low-power`). An update
-without the switch leaves whatever is already in the two files alone, so an
-appliance that already has these settings keeps them. The uninstaller removes
-exactly these settings, and only if the switch was used.
+The switch belongs to the appliance installer. The dial installer has no low
+power mode.
+
+Once the switch has been used, the choice is saved with the other install
+choices and stays saved. Every later update, the automatic updater's and one run
+by hand, applies it again whether or not the switch is given, so settings you
+have removed from the two files come back. An update run by hand can switch it
+on too (`sudo ./autostream_install.sh --update --low-power`). On an appliance
+that has never used the switch, an update leaves whatever is already in the two
+files alone, so an appliance that already has these settings by hand keeps them.
+
+The uninstaller removes exactly these settings, and only if the switch was used.
+It removes the `maxcpus=2` setting only. If the switch changed a different
+`maxcpus` value to `maxcpus=2`, the uninstaller does not put the old value back,
+and the kernel command line ends up with no `maxcpus` at all; the original line
+is in `cmdline.txt.autostream-bak`, which is left in place.
 
 There is no switch to turn it off again. To turn it off, remove `maxcpus=2` from
 `cmdline.txt` and the three lines from `config.txt` by hand, and delete the
 `LOW_POWER=` line from `/var/lib/autostream/install-state.env`, then reboot.
+Without the last step the next update puts the settings back.
 
 ### Unattended install
 
