@@ -1032,6 +1032,14 @@ Where logs live on disk:
 * `/var/log/autostream/update.log` (updater)
 * `/var/log/owntone.log` (OwnTone; included in both ZIP bundles above, not shown on the Logs page)
 
+**Core dumps.** Raspberry Pi OS does not include `systemd-coredump`, so by
+default a crashed program leaves no core dump, and the installer does not add
+the package. To investigate a crash, install it with
+`sudo apt install systemd-coredump`; dumps are then written under
+`/var/lib/systemd/coredump`, and autostream's setting limits them to 256 MB in
+total and keeps 512 MB of the card free. Read them with `coredumpctl`, and
+remove the package when you are done.
+
 ---
 
 ### Recovery screens (nginx offline pages)

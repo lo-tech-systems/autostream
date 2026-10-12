@@ -359,7 +359,9 @@ install -m 0644 -o root -g root "$DEPLOY/system/journald/99-autostream-storage.c
 systemctl restart systemd-journald || echo "WARNING: systemctl restart systemd-journald failed" >&2
 
 # systemd-coredump storage bounds, shared with the appliance: cap how much
-# disk core dumps may use. Read on every dump, so nothing is restarted.
+# disk core dumps may use. Raspberry Pi OS does not include systemd-coredump and
+# this installer does not add it, so the cap has no effect until someone installs
+# the package to investigate a crash. Read on every dump, so nothing is restarted.
 mkdir -p /etc/systemd/coredump.conf.d
 install -m 0644 -o root -g root "$DEPLOY/system/coredump/99-autostream-coredump.conf" \
     /etc/systemd/coredump.conf.d/99-autostream-coredump.conf

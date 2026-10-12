@@ -132,11 +132,13 @@
 - fix: a dial now shows that playback has stopped within a second or so. It
   used to keep showing the appliance as playing until its next regular poll,
   up to a few seconds after the sound had gone.
-- improvement: the appliance and dial installers now cap the space core dumps
-  may use, so a crash or a crash loop cannot fill the SD card. Each dump is
-  limited to 256 MB, all dumps together to 256 MB, and older dumps are cleared
-  to keep 512 MB of the card free. Install and update put the setting in
-  place.
+- improvement: the appliance and dial installers now put in place a limit for
+  core dumps, so that a crash or a crash loop cannot fill the SD card if
+  dumps are being taken: each dump limited to 256 MB, all dumps together to
+  256 MB, and older dumps cleared to keep 512 MB of the card free. Raspberry Pi
+  OS does not include `systemd-coredump`, so nothing takes core dumps and the
+  limit has no effect until that package is installed; autostream does not
+  install it. Install and update put the setting in place.
 - change: the HD dial's kiosk now runs WPE WebKit through its `cog` launcher,
   drawing straight to the display. It uses far less memory (about 140 MiB on a
   512 MB Pi 3 Model A+), so a 512 MB board is enough for an HD dial. The HD

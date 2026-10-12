@@ -1122,8 +1122,10 @@ configure_phase() {
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
 
   # systemd-coredump storage bounds: cap how much disk core dumps may use so a
-  # crash cannot fill the SD card. Applied per-dump by systemd-coredump, so no
-  # service restart is required.
+  # crash cannot fill the SD card. Raspberry Pi OS does not include
+  # systemd-coredump and this installer does not add it, so the cap has no
+  # effect until someone installs the package to investigate a crash. Applied
+  # per-dump by systemd-coredump, so no service restart is required.
   mkdir -p /etc/systemd/coredump.conf.d
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/coredump/99-autostream-coredump.conf" \
     /etc/systemd/coredump.conf.d/99-autostream-coredump.conf
