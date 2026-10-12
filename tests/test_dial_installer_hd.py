@@ -649,7 +649,7 @@ class TestRetireAndOwnedFiles:
 # ---------------------------------------------------------------------------
 
 def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
-             detects_hd: bool = False):
+             detects_hd: bool = False, reinstall: bool = False):
     env = Env(tmp_path)
     deploy = tmp_path / "deploy"
     (deploy / "installer" / "dial").mkdir(parents=True)
@@ -664,6 +664,8 @@ def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
         "generate_dial_id() { echo 0123456789abcdef0123; }",
         "has_tty() { return 1; }",
     ]
+    if reinstall:
+        stubs.append('detect_existing_dial_install() { printf "detect_existing_dial_install\\n" >> "$TRACE"; REINSTALL=true; }')
     if detects_hd:
         stubs.append('detect_hd_install() { printf "detect_hd_install\\n" >> "$TRACE"; HD=true; }')
     (deploy / "installer" / "dial" / "helpers.sh").write_text("\n".join(stubs) + "\n",

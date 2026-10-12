@@ -260,6 +260,12 @@ The installer:
 
 Installation will take 5-10 minutes.
 
+Running the installer again over a dial that is already installed, for example
+to repair it, is safe: it keeps the dial's name, PIN, update settings and display
+settings and refreshes the software. An SPI dial stays an SPI dial and an HD dial
+stays an HD dial. It does not need `--update`, which is for the dial's own
+updater.
+
 ---
 
 ## Wi-Fi Setup and Hotspot Fallback

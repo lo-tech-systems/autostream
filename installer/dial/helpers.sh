@@ -320,34 +320,72 @@ PYEOF
 
 write_dial_hw_config() {
     # Hardware + identity config — root-owned, service user can read, never writes it.
-    local uuid="$1"
-    python3 - "$uuid" <<'PYEOF'
+    # Run over an existing install it keeps the pins and the display profile
+    # already in the file and refreshes only the identity.
+    local uuid="$1" path
+    path="$(_fs_root)/etc/autostream/autostream-dial.json"
+    python3 - "$uuid" "$path" <<'PYEOF'
 import json, sys
-uuid = sys.argv[1]
-with open('/etc/autostream/autostream-dial.json', 'w') as f:
-    json.dump({
+uuid, path = sys.argv[1], sys.argv[2]
+cfg = None
+try:
+    with open(path, encoding='utf-8') as f:
+        loaded = json.load(f)
+    if isinstance(loaded, dict):
+        cfg = loaded
+except (OSError, ValueError):
+    pass
+if cfg is None:
+    cfg = {
         "clk_gpio": 17,
         "dt_gpio":  27,
         "sw_gpio":  22,
         "led_gpio": None,
         "port":     7842,
         "uuid":     uuid
-    }, f, indent=2)
+    }
+cfg["uuid"] = uuid
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
 PYEOF
-    chown root:autostream /etc/autostream/autostream-dial.json
-    chmod 0640 /etc/autostream/autostream-dial.json
+    chown root:autostream "${path}"
+    chmod 0640 "${path}"
 }
 
 write_dial_settings() {
-    # Runtime-mutable settings owned by the service user.
+    # Runtime-mutable settings owned by the service user; a file already there
+    # (the installer run over an existing install) is kept as it is.
+    local path
+    path="$(_state_dir)/dial-settings.json"
     python3 -c "
-import json, os
-path = '/var/lib/autostream/dial-settings.json'
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, 'w') as f:
-    json.dump({'step_percent': 2, 'name': '', 'pin': '', 'auto_update': False, 'update_channel': 'stable', 'sd_health_monitoring': False}, f, indent=2)
-"
-    chown autostream:autostream /var/lib/autostream/dial-settings.json
+import json, os, sys
+path = sys.argv[1]
+defaults = {'step_percent': 2, 'name': '', 'pin': '', 'auto_update': False, 'update_channel': 'stable', 'sd_health_monitoring': False}
+try:
+    with open(path, encoding='utf-8') as f:
+        keep = isinstance(json.load(f), dict)
+except (OSError, ValueError):
+    keep = False
+if not keep:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        json.dump(defaults, f, indent=2)
+" "${path}"
+    chown autostream:autostream "${path}"
+    chmod 0600 "${path}"
+}
+
+detect_existing_dial_install() {
+    # A fresh-install run over a dial that is already installed, or part
+    # installed. Sets REINSTALL, which keeps the dial's settings and display
+    # profile in place (write_dial_settings, write_dial_hw_config) and lets a
+    # plain run keep an HD dial HD (detect_hd_install).
+    REINSTALL=false
+    if [[ "$(_install_state_value AUTOSTREAM_PRODUCT)" == autostream-dial \
+          || -e "$(_fs_root)/etc/autostream/autostream-dial.json" \
+          || -e "$(_state_dir)/dial-settings.json" ]]; then
+        REINSTALL=true
+    fi
 }
 
 # ---- HD dial (kiosk browser) -------------------------------------------------
@@ -938,17 +976,32 @@ revert_plymouth() {
 }
 
 write_hd_display_config() {
-    # A fresh --hd install: the hardware file's display block selects the HD
+    # An --hd install: the hardware file's display block selects the HD
     # profile with no SPI panel and no touch driver, so the dial runs headless
-    # and serves the page. Keeps the file's owner and mode.
-    python3 - "$(_fs_root)/etc/autostream/autostream-dial.json" <<'PYEOF'
+    # and serves the page. Keeps the file's owner and mode and any other
+    # display settings already in the block. A display block in the dial's own
+    # settings file overrides the hardware file's, so one left by an earlier
+    # SPI set-up is switched to the HD profile too.
+    python3 - "$(_fs_root)/etc/autostream/autostream-dial.json" \
+        "$(_state_dir)/dial-settings.json" <<'PYEOF'
 import json, sys
+hd = {'fitted': True, 'screen_type': 'hd_kiosk', 'touch_type': 'none'}
 path = sys.argv[1]
 with open(path, encoding='utf-8') as f:
     cfg = json.load(f)
-cfg['display'] = {'fitted': True, 'screen_type': 'hd_kiosk', 'touch_type': 'none'}
+display = cfg.get('display')
+cfg['display'] = {**display, **hd} if isinstance(display, dict) else dict(hd)
 with open(path, 'w', encoding='utf-8') as f:
     json.dump(cfg, f, indent=2)
+try:
+    with open(sys.argv[2], encoding='utf-8') as f:
+        settings = json.load(f)
+except (OSError, ValueError):
+    settings = None
+if isinstance(settings, dict) and isinstance(settings.get('display'), dict):
+    settings['display'].update(hd)
+    with open(sys.argv[2], 'w', encoding='utf-8') as f:
+        json.dump(settings, f, indent=2)
 PYEOF
 }
 
@@ -1092,6 +1145,7 @@ A full activity log will be written to ~/autostream_dial_install.log
 =============================================================================
 EOF
     [[ "${HD:-false}" == true ]] && echo "HD dial: also installs the kiosk browser (cog) and its service."
+    [[ "${REINSTALL:-false}" == true ]] && echo "An existing dial installation was found: its name, PIN and settings are kept."
 
     if has_tty; then
         local ans

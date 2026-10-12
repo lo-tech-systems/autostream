@@ -12,6 +12,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -23,7 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 from test_dial_staged_install import (  # noqa: E402
-    Env, RECORDER, REPO_ROOT, bash_capable, HELPERS, INSTALLER,
+    Env, RECORDER, REPO_ROOT, bash_capable, HELPERS, INSTALLER, posix_only,
 )
 
 UNINSTALLER = REPO_ROOT / "autostream_dial_uninstall.sh"
@@ -669,3 +670,291 @@ class TestHasTty:
             start_new_session=True, stdin=subprocess.DEVNULL)
         assert r.stdout.strip() == "TTY-NO", r.stderr
         assert r.stderr == ""
+
+
+# ---------------------------------------------------------------------------
+# The installer run over an existing install keeps the dial's settings
+# ---------------------------------------------------------------------------
+
+SPI_HW = {"clk_gpio": 5, "dt_gpio": 6, "sw_gpio": 7, "led_gpio": None, "port": 7842,
+          "uuid": "oldoldoldoldoldoldo",
+          "display": {"fitted": True, "screen_type": "ili9341", "rotate": True}}
+HD_HW = {"clk_gpio": 17, "dt_gpio": 27, "sw_gpio": 22, "led_gpio": None, "port": 7842,
+         "uuid": "oldoldoldoldoldoldo",
+         "display": {"fitted": True, "screen_type": "hd_kiosk", "touch_type": "none",
+                     "brightness": 40}}
+OWNER_SETTINGS = {"step_percent": 5, "name": "Lounge", "pin": "4321", "auto_update": True,
+                  "update_channel": "dev", "sd_health_monitoring": True}
+NEW_UUID = "0123456789abcdef0123"
+
+
+def _real_python3(env: Env) -> None:
+    (env.bin / "python3").unlink()
+    for name in ("chown", "chmod"):
+        env.fake(name, RECORDER)
+
+
+def _hw_path(env: Env) -> Path:
+    return env.root / "etc" / "autostream" / "autostream-dial.json"
+
+
+def _settings_path(env: Env) -> Path:
+    return env.state / "dial-settings.json"
+
+
+def _put_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# The fresh-install sequence in the installer, for the part that decides and
+# writes the dial's identity, settings and display profile.
+REINSTALL_STEPS = (
+    "detect_existing_dial_install\n"
+    "if $REINSTALL; then detect_hd_install; fi\n"
+    "write_dial_hw_config " + NEW_UUID + "\n"
+    "write_dial_settings\n"
+    'if $HD; then write_hd_display_config; fi\n'
+    'echo "HD=$HD REINSTALL=$REINSTALL"\n'
+)
+
+
+def _reinstall(env: Env, *, hd_flag: bool = False):
+    return env.run(f"HD={'true' if hd_flag else 'false'}\n" + REINSTALL_STEPS, update="false")
+
+
+@bash_capable
+class TestWriteDialSettings:
+    def test_an_existing_settings_file_is_left_exactly_as_it_is(self, env):
+        _real_python3(env)
+        _put_json(_settings_path(env), OWNER_SETTINGS)
+        before = _settings_path(env).read_bytes()
+        r = env.run("write_dial_settings", update="false")
+        assert r.returncode == 0, r.stderr
+        assert _settings_path(env).read_bytes() == before
+
+    def test_a_missing_file_gets_the_defaults(self, env):
+        _real_python3(env)
+        r = env.run("write_dial_settings", update="false")
+        assert r.returncode == 0, r.stderr
+        assert _load(_settings_path(env)) == {
+            "step_percent": 2, "name": "", "pin": "", "auto_update": False,
+            "update_channel": "stable", "sd_health_monitoring": False}
+
+    @posix_only
+    def test_a_new_file_is_private_to_its_owner(self, env):
+        _real_python3(env)
+        env.run("write_dial_settings", update="false")
+        assert oct(_settings_path(env).stat().st_mode & 0o777) == "0o600"
+
+    def test_a_damaged_file_is_replaced_with_the_defaults(self, env):
+        _real_python3(env)
+        _settings_path(env).write_text("{not json", encoding="utf-8")
+        r = env.run("write_dial_settings", update="false")
+        assert r.returncode == 0, r.stderr
+        assert _load(_settings_path(env))["name"] == ""
+
+    def test_ownership_is_still_applied_to_a_kept_file(self, env):
+        _real_python3(env)
+        _put_json(_settings_path(env), OWNER_SETTINGS)
+        env.run("write_dial_settings", update="false")
+        assert f"chown autostream:autostream {_settings_path(env)}" in env.calls()
+
+
+@bash_capable
+class TestWriteDialHwConfig:
+    def test_pins_and_display_profile_are_kept_and_the_identity_refreshed(self, env):
+        _real_python3(env)
+        _put_json(_hw_path(env), SPI_HW)
+        r = env.run(f"write_dial_hw_config {NEW_UUID}", update="false")
+        assert r.returncode == 0, r.stderr
+        cfg = _load(_hw_path(env))
+        assert cfg["uuid"] == NEW_UUID
+        assert {k: v for k, v in cfg.items() if k != "uuid"} == \
+            {k: v for k, v in SPI_HW.items() if k != "uuid"}
+
+    def test_a_missing_file_gets_the_production_pins(self, env):
+        _real_python3(env)
+        _hw_path(env).parent.mkdir(parents=True, exist_ok=True)
+        env.run(f"write_dial_hw_config {NEW_UUID}", update="false")
+        assert _load(_hw_path(env)) == {"clk_gpio": 17, "dt_gpio": 27, "sw_gpio": 22,
+                                        "led_gpio": None, "port": 7842, "uuid": NEW_UUID}
+
+    def test_a_damaged_file_is_replaced(self, env):
+        _real_python3(env)
+        _hw_path(env).parent.mkdir(parents=True, exist_ok=True)
+        _hw_path(env).write_text("[1, 2]", encoding="utf-8")
+        env.run(f"write_dial_hw_config {NEW_UUID}", update="false")
+        assert _load(_hw_path(env))["sw_gpio"] == 22
+
+
+@bash_capable
+class TestWriteHdDisplayConfig:
+    def test_a_settings_display_block_from_an_spi_set_up_is_switched_to_hd(self, env):
+        _real_python3(env)
+        _put_json(_hw_path(env), SPI_HW)
+        _put_json(_settings_path(env), {**OWNER_SETTINGS, "display": {
+            "fitted": True, "screen_type": "ili9341", "touch_type": "xpt2046", "brightness": 70}})
+        r = env.run("write_hd_display_config", update="false")
+        assert r.returncode == 0, r.stderr
+        display = _load(_settings_path(env))["display"]
+        assert display["screen_type"] == "hd_kiosk" and display["touch_type"] == "none"
+        assert display["brightness"] == 70
+        assert _load(_settings_path(env))["name"] == "Lounge"
+
+    def test_settings_without_a_display_block_gain_none(self, env):
+        _real_python3(env)
+        _put_json(_hw_path(env), SPI_HW)
+        _put_json(_settings_path(env), OWNER_SETTINGS)
+        env.run("write_hd_display_config", update="false")
+        assert _load(_settings_path(env)) == OWNER_SETTINGS
+
+    def test_other_display_settings_in_the_hardware_file_survive(self, env):
+        _real_python3(env)
+        _put_json(_hw_path(env), HD_HW)
+        env.run("write_hd_display_config", update="false")
+        assert _load(_hw_path(env))["display"]["brightness"] == 40
+
+    def test_a_missing_settings_file_is_not_created(self, env):
+        _real_python3(env)
+        _put_json(_hw_path(env), {"uuid": "abc"})
+        env.run("write_hd_display_config", update="false")
+        assert not _settings_path(env).exists()
+
+
+@bash_capable
+class TestDetectExistingDialInstall:
+    @pytest.mark.parametrize("what", ["state", "hardware", "settings"])
+    def test_any_trace_of_a_dial_install_counts(self, env, what):
+        if what == "state":
+            env.install_state.write_text("AUTOSTREAM_PRODUCT=autostream-dial\n", encoding="utf-8")
+        elif what == "hardware":
+            env.put("etc/autostream/autostream-dial.json", "{}")
+        else:
+            env.put("var/lib/autostream/dial-settings.json", "{}")
+        r = env.run("detect_existing_dial_install\necho $REINSTALL", update="false")
+        assert r.stdout.strip() == "true"
+
+    def test_a_clean_device_is_not_a_reinstall(self, env):
+        r = env.run("detect_existing_dial_install\necho $REINSTALL", update="false")
+        assert r.stdout.strip() == "false"
+
+    def test_an_appliance_state_file_is_not_a_dial_install(self, env):
+        env.install_state.write_text("AUTOSTREAM_PRODUCT=autostream\n", encoding="utf-8")
+        r = env.run("detect_existing_dial_install\necho $REINSTALL", update="false")
+        assert r.stdout.strip() == "false"
+
+
+@bash_capable
+class TestReinstallSequence:
+    """The identity, settings and display-profile steps of the installer run
+    in order over each starting point."""
+
+    def _installed(self, env, hw, settings):
+        _real_python3(env)
+        env.install_state.write_text("AUTOSTREAM_PRODUCT=autostream-dial\n", encoding="utf-8")
+        _put_json(_hw_path(env), hw)
+        _put_json(_settings_path(env), settings)
+
+    def test_a_plain_run_over_an_spi_dial_keeps_everything_and_stays_spi(self, env):
+        self._installed(env, SPI_HW, OWNER_SETTINGS)
+        r = _reinstall(env)
+        assert r.returncode == 0, r.stderr
+        assert "HD=false REINSTALL=true" in r.stdout
+        assert _load(_settings_path(env)) == OWNER_SETTINGS
+        cfg = _load(_hw_path(env))
+        assert cfg["display"] == SPI_HW["display"] and cfg["clk_gpio"] == 5
+
+    def test_a_plain_run_over_an_hd_dial_keeps_it_hd_with_its_settings(self, env):
+        self._installed(env, HD_HW, OWNER_SETTINGS)
+        r = _reinstall(env)
+        assert r.returncode == 0, r.stderr
+        assert "HD=true REINSTALL=true" in r.stdout
+        assert _load(_settings_path(env)) == OWNER_SETTINGS
+        assert _load(_hw_path(env))["display"]["screen_type"] == "hd_kiosk"
+        assert _load(_hw_path(env))["display"]["brightness"] == 40
+
+    def test_a_plain_run_over_an_hd_dial_whose_profile_is_unreadable_follows_the_marker(self, env):
+        self._installed(env, {"uuid": "x"}, OWNER_SETTINGS)
+        (env.state / "hd-kiosk").write_text("", encoding="utf-8")
+        r = _reinstall(env)
+        assert "HD=true REINSTALL=true" in r.stdout
+
+    def test_hd_over_an_spi_dial_converts_it_and_keeps_name_pin_and_settings(self, env):
+        self._installed(env, SPI_HW, {**OWNER_SETTINGS, "display": {
+            "fitted": True, "screen_type": "ili9341", "touch_type": "xpt2046"}})
+        r = _reinstall(env, hd_flag=True)
+        assert r.returncode == 0, r.stderr
+        settings = _load(_settings_path(env))
+        assert settings["name"] == "Lounge" and settings["pin"] == "4321"
+        assert settings["display"]["screen_type"] == "hd_kiosk"
+        assert _load(_hw_path(env))["display"]["screen_type"] == "hd_kiosk"
+        assert _load(_hw_path(env))["clk_gpio"] == 5
+
+    def test_a_clean_device_gets_the_defaults_as_before(self, env):
+        _real_python3(env)
+        _hw_path(env).parent.mkdir(parents=True, exist_ok=True)
+        r = _reinstall(env)
+        assert r.returncode == 0, r.stderr
+        assert "HD=false REINSTALL=false" in r.stdout
+        assert _load(_settings_path(env))["name"] == ""
+        assert _load(_hw_path(env))["uuid"] == NEW_UUID
+
+    def test_a_clean_device_with_the_hd_flag_is_an_hd_dial(self, env):
+        _real_python3(env)
+        _hw_path(env).parent.mkdir(parents=True, exist_ok=True)
+        r = _reinstall(env, hd_flag=True)
+        assert r.returncode == 0, r.stderr
+        assert _load(_hw_path(env))["display"] == {
+            "fitted": True, "screen_type": "hd_kiosk", "touch_type": "none"}
+
+
+@bash_capable
+class TestInstallerReinstallWiring:
+    """The real installer script with every helper replaced by a recorder."""
+
+    def test_an_existing_install_is_detected_before_the_prompt_and_hd_follows_the_profile(self, tmp_path):
+        from test_dial_installer_hd import _dry_run, _names
+        r, calls = _dry_run(tmp_path, update=False, reinstall=True, detects_hd=True)
+        assert r.returncode == 0, r.stderr
+        names = _names(calls)
+        at = names.index
+        assert at("detect_existing_dial_install") < at("detect_hd_install") \
+            < at("show_info_and_prompt") < at("install_os_packages")
+        # An HD dial found on a plain run gets its HD steps.
+        for name in ("install_kiosk_packages", "write_hd_display_config", "deploy_kiosk_unit"):
+            assert names.count(name) == 1, name
+        assert "retire_hd_kiosk" not in names
+
+    def test_a_clean_device_does_not_look_for_an_hd_profile(self, tmp_path):
+        from test_dial_installer_hd import _dry_run, _names
+        r, calls = _dry_run(tmp_path, update=False)
+        names = _names(calls)
+        assert names.count("detect_existing_dial_install") == 1
+        assert "detect_hd_install" not in names
+
+    def test_an_update_does_not_run_the_reinstall_detection(self, tmp_path):
+        from test_dial_installer_hd import _dry_run, _names
+        r, calls = _dry_run(tmp_path, update=True)
+        assert "detect_existing_dial_install" not in _names(calls)
+
+    def test_the_banner_says_the_settings_are_kept(self, env):
+        r = env.run("has_tty() { return 1; }\nREINSTALL=true\nHD=false\nshow_info_and_prompt",
+                    update="false")
+        assert "An existing dial installation was found" in r.stdout
+        assert "name, PIN and settings are kept" in r.stdout
+
+    def test_the_banner_is_unchanged_on_a_clean_device(self, env):
+        r = env.run("has_tty() { return 1; }\nREINSTALL=false\nHD=false\nshow_info_and_prompt",
+                    update="false")
+        assert "existing dial installation" not in r.stdout
+
+    def test_usage_text_states_the_rule(self):
+        head = INSTALLER.read_text(encoding="utf-8").split("set -euo pipefail")[0]
+        assert "reinstall" in head
+        assert "keeps the dial's name, PIN and settings" in head
+        assert "--hd over an SPI dial converts it to HD" in head

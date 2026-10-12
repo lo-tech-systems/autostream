@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: running the dial installer again over a dial that is already installed no
+  longer resets it. The dial keeps its name, PIN, update and display settings, an
+  SPI dial stays SPI and an HD dial stays HD, and `--hd` over an SPI dial turns it
+  into an HD dial with its other settings kept. Before, the settings file was
+  overwritten and an HD dial came back as an SPI profile with a kiosk that waited
+  for a page that was never served.
 - improvement: the dial uninstaller now checks before it removes anything. It must
   be run as root, refuses on an appliance or a device with no dial on it, and asks
   for confirmation. `--yes` skips the question, and is needed when there is no

@@ -4,7 +4,14 @@
 # Usage:
 #   ./autostream_dial_install.sh           # fresh install
 #   ./autostream_dial_install.sh --update  # in-place update (run by autostream_dial_updater)
-#   ./autostream_dial_install.sh --hd      # fresh install of an HD (kiosk browser) dial
+#   ./autostream_dial_install.sh --hd      # install of an HD (kiosk browser) dial
+#
+# Run over a dial that is already installed, a plain or --hd run is a reinstall
+# that keeps the dial's name, PIN and settings and its display profile (no
+# --update needed to repair a dial): an SPI dial stays SPI and an HD dial stays
+# HD. --hd over an SPI dial converts it to HD, keeping its other settings. To
+# turn an HD dial back into an SPI one, change its screen type from the
+# appliance's Setup page rather than reinstalling.
 #
 # Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -16,6 +23,7 @@ source "$DEPLOY/installer/dial/helpers.sh"
 
 UPDATE=false
 HD=false
+REINSTALL=false
 for _arg in "$@"; do
     case "${_arg}" in
         --update) UPDATE=true ;;
@@ -93,6 +101,10 @@ fi
 
 # ---- Fresh-install only steps -----------------------------------------------
 if ! $UPDATE; then
+    # Over an existing install the settings and display profile are kept (the
+    # writers below leave them in place) and a plain run keeps an HD dial HD.
+    detect_existing_dial_install
+    if $REINSTALL; then detect_hd_install; fi
     show_info_and_prompt
     check_pi_model
     # An --update does both of these in system_upgrade; a fresh install does them

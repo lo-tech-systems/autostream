@@ -72,6 +72,12 @@ not affected. To do this the installer adds Plymouth and rebuilds the boot
 files, so the first update on an existing dial takes a few minutes longer than
 usual. It also quietens the console during boot; the dial's logs are unchanged.
 
+Running the installer again over a dial that is already installed keeps the
+dial's name, PIN and settings and its screen type. A plain run leaves an HD dial
+an HD dial, and the `--hd` flag over an SPI dial turns it into an HD dial,
+keeping its name, PIN and other settings. To turn an HD dial back into an SPI
+dial, change its screen type on the appliance's Setup page.
+
 Reboot when the installer finishes. The kiosk starts at boot and the dial
 service starts its page server first. A DSI panel may need its own overlay
 in the boot configuration; the installer leaves that to you, as the right
