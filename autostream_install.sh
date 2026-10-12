@@ -1298,6 +1298,11 @@ configure_phase() {
   # (the onboard radio is opt-in via a later, separate runtime action) and
   # preserves the line's current presence/absence on updates -- the line is
   # the onboard-radio setting's only store.
+  # Before low power mode first changes the boot files, note what it is about to
+  # replace, so removing it can put that back (once; see record_low_power_originals).
+  if [[ "${LOW_POWER}" == "1" ]]; then
+    record_low_power_originals
+  fi
   update_pi_firmware_config
   # Low power mode writes its config.txt lines in the call above and its kernel
   # command line token here. Without --low-power (or a saved choice) neither file

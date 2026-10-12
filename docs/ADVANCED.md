@@ -60,11 +60,15 @@ on too (`sudo ./autostream_install.sh --update --low-power`). On an appliance
 that has never used the switch, an update leaves whatever is already in the two
 files alone, so an appliance that already has these settings by hand keeps them.
 
-The uninstaller removes exactly these settings, and only if the switch was used.
-It removes the `maxcpus=2` setting only. If the switch changed a different
-`maxcpus` value to `maxcpus=2`, the uninstaller does not put the old value back,
-and the kernel command line ends up with no `maxcpus` at all; the original line
-is in `cmdline.txt.autostream-bak`, which is left in place.
+The uninstaller removes these settings, and only if the switch was used. It also
+puts back what the switch replaced when it was first used: an `arm_freq`,
+`arm_boost` or `force_turbo` line that was in `config.txt` outside any section, or
+under `[all]`, returns to the part of the file it came from, and a `maxcpus` value
+other than 2 on the kernel command line returns in place of `maxcpus=2`. A line
+in any other section of `config.txt` is never touched. An appliance that first used
+the switch under an earlier release made no such note, and only loses the added
+settings. The backup
+`cmdline.txt.autostream-bak` is left in place.
 
 There is no switch to turn it off again. To turn it off, remove `maxcpus=2` from
 `cmdline.txt` and the three lines from `config.txt` by hand, and delete the

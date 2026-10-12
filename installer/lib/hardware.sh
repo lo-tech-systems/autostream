@@ -252,25 +252,135 @@ apply_low_power_cmdline() {
   ensure_cmdline_option maxcpus 2 "$@"
 }
 
+# Where low power mode records what it replaced, in the directory only root can
+# write (the service account owns /var/lib/autostream and could plant lines
+# there that root would then write into the boot files).
+LOW_POWER_RECORD_FILE="/var/lib/autostream-update/low-power-restore.env"
+
+# record_low_power_originals: before low power mode first changes anything,
+# note which lines of its own it is about to replace, so removing the mode can
+# put them back: an arm_freq, arm_boost or force_turbo line in the unconditional
+# part of config.txt or under [all] with a numeric value (a line in any other
+# section is left alone by the mode, and so is not recorded), and a maxcpus
+# token on the kernel command line with a value other than 2. A line that is
+# exactly what the mode writes, under [all], is not recorded: it cannot be told
+# from the mode's own. The record is made once; if it exists it is left as it
+# is, so a later run, which finds the mode's own lines, cannot overwrite what
+# the board had before. An empty record (nothing replaced) is still a record.
+# Usage: record_low_power_originals [CONFIG_FILE [CMDLINE_FILE [RECORD_FILE]]]
+record_low_power_originals() {
+  local cfg="${1:-$(boot_file_path config.txt)}"
+  local cmdline="${2:-$(boot_file_path cmdline.txt)}"
+  local rec="${3:-${LOW_POWER_RECORD_FILE}}"
+  if [[ -e "${rec}" || -L "${rec}" ]]; then
+    return 0
+  fi
+  local dir
+  dir="$(dirname -- "${rec}")"
+  if [[ "${rec}" == "${LOW_POWER_RECORD_FILE}" ]] && declare -F ensure_update_state_dir >/dev/null; then
+    ensure_update_state_dir "${dir}" || { warn "Could not prepare ${dir}; not recording the previous CPU settings."; return 0; }
+  else
+    mkdir -p -- "${dir}" || { warn "Could not create ${dir}; not recording the previous CPU settings."; return 0; }
+  fi
+
+  local body="# What low power mode replaced. Put back when it is removed."
+  if [[ -f "${cfg}" ]]; then
+    local found
+    found="$(awk '
+      BEGIN { sec="top" }
+      /^[[:space:]]*\[/ { s=$0; gsub(/[[:space:]]/, "", s); sec=(s == "[all]") ? "all" : "other" }
+      sec != "other" && /^[[:space:]]*(arm_freq|arm_boost|force_turbo)[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*$/ {
+        line=$0; gsub(/[[:space:]]/, "", line); split(line, kv, "=")
+        ours = (sec == "all" && ((kv[1] == "arm_freq" && kv[2] == "700") || \
+                                 (kv[1] == "arm_boost" && kv[2] == "0") || \
+                                 (kv[1] == "force_turbo" && kv[2] == "0")))
+        if (!ours) print "CONFIG=" sec ":" kv[1] ":" kv[2]
+      }
+    ' "${cfg}")" || found=""
+    [[ -z "${found}" ]] || body+=$'\n'"${found}"
+  fi
+  if [[ -f "${cmdline}" ]] && _cmdline_read "${cmdline}"; then
+    local tok
+    for tok in ${CMDLINE_TOKENS[@]+"${CMDLINE_TOKENS[@]}"}; do
+      if [[ "${tok}" =~ ^maxcpus=([0-9]+)$ && "${BASH_REMATCH[1]}" != "2" ]]; then
+        body+=$'\n'"MAXCPUS=${BASH_REMATCH[1]}"
+        break
+      fi
+    done
+  fi
+  printf '%s\n' "${body}" | write_state_file "${rec}" 0600 || \
+    warn "Could not record the previous CPU settings in ${rec}."
+}
+
+# _read_low_power_record: print the lines of the record that are what the
+# installer writes, and nothing else: a CONFIG line for one of the three keys
+# with a numeric value and a place, or a numeric MAXCPUS line. The file is read
+# without following a link and only if it is a regular file the reader owns.
+# Returns 1 when there is no usable record.
+_read_low_power_record() {
+  local rec="$1" content line
+  [[ -f "${rec}" && ! -L "${rec}" && "$(stat -c '%u' -- "${rec}" 2>/dev/null)" == "$(id -u)" ]] || return 1
+  content="$(dd if="${rec}" iflag=nofollow,nonblock bs=65536 count=1 status=none 2>/dev/null)" || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" =~ ^CONFIG=(top|all):(arm_freq|arm_boost|force_turbo):[0-9]+$ \
+          || "${line}" =~ ^MAXCPUS=[0-9]+$ ]]; then
+      printf '%s\n' "${line}"
+    fi
+  done <<< "${content}"
+  return 0
+}
+
 # remove_low_power_settings: take back what low power mode added: maxcpus=2 on
 # the kernel command line, and arm_freq=700, arm_boost=0 and force_turbo=0 from
 # the unconditional part of config.txt and [all]. Only those exact settings go;
 # the same keys with other values, other sections and over_voltage are left
-# alone.
-# Usage: remove_low_power_settings [CONFIG_FILE [CMDLINE_FILE]]
+# alone. What the mode replaced when it was first applied (see
+# record_low_power_originals) is put back: config.txt lines in the part of the
+# file they came from, and the maxcpus value the command line had. Without a
+# record only the added settings are removed.
+# Usage: remove_low_power_settings [CONFIG_FILE [CMDLINE_FILE [RECORD_FILE]]]
 remove_low_power_settings() {
   local cfg="${1:-$(boot_file_path config.txt)}"
   local cmdline="${2:-$(boot_file_path cmdline.txt)}"
+  local rec="${3:-${LOW_POWER_RECORD_FILE}}"
+
+  local top="" all="" maxcpus="" line value
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    if [[ "${line}" == MAXCPUS=* ]]; then
+      maxcpus="${line#MAXCPUS=}"
+    else
+      value="${line#CONFIG=}"           # place:key:number
+      if [[ "${value}" == top:* ]]; then
+        top+="${value#top:}"'\n'
+      else
+        all+="${value#all:}"'\n'
+      fi
+    fi
+  done < <(_read_low_power_record "${rec}" || true)
+  # The record's "key:number" becomes the "key=number" line it came from.
+  top="${top//:/=}"
+  all="${all//:/=}"
 
   if [[ -f "${cfg}" ]]; then
     local tmp
     tmp="$(boot_file_stage "${cfg}")" || { warn "Could not update ${cfg}."; tmp=""; }
     if [[ -n "${tmp}" ]]; then
-      awk '
-        BEGIN { cond=0 }
-        /^[[:space:]]*\[/ { s=$0; gsub(/[[:space:]]/, "", s); cond=(s != "[all]") }
+      awk -v top="${top}" -v all="${all}" '
+        BEGIN { cond=0; done_top=(top == ""); done_all=(all == "") }
+        /^[[:space:]]*\[/ {
+          s=$0; gsub(/[[:space:]]/, "", s); cond=(s != "[all]")
+          if (!done_top) { printf "%s", top; done_top=1 }
+          print
+          if (s == "[all]" && !done_all) { printf "%s", all; done_all=1 }
+          next
+        }
         !cond && /^[[:space:]]*(arm_freq=700|arm_boost=0|force_turbo=0)[[:space:]]*$/ { next }
         { print }
+        END {
+          if (!done_top) printf "%s", top
+          if (!done_all) { print "[all]"; printf "%s", all }
+        }
       ' "${cfg}" > "${tmp}"
       if cmp -s "${tmp}" "${cfg}"; then
         boot_file_discard "${tmp}"
@@ -279,5 +389,10 @@ remove_low_power_settings() {
       fi
     fi
   fi
-  remove_cmdline_option maxcpus 2 "${cmdline}"
+  if [[ -n "${maxcpus}" ]]; then
+    ensure_cmdline_option maxcpus "${maxcpus}" "${cmdline}"
+  else
+    remove_cmdline_option maxcpus 2 "${cmdline}"
+  fi
+  rm -f -- "${rec}"
 }

@@ -517,3 +517,214 @@ class TestUninstaller:
     def test_text_check_it_runs_before_the_state_directory_is_removed(self):
         text = UNINSTALLER.read_text(encoding="utf-8")
         assert text.index("\n  revert_low_power_if_used\n") < text.index("remove_path /var/lib/autostream\n")
+
+
+# ---------------------------------------------------------------------------
+# What the mode replaced is put back when it is removed
+# ---------------------------------------------------------------------------
+
+OS_STOCK_CONFIG = """# For more options and information see
+dtparam=audio=on
+arm_boost=1
+camera_auto_detect=1
+
+[cm4]
+otg_mode=1
+
+[all]
+"""
+STATE_LIB = REPO_ROOT / "installer" / "lib" / "state_files.sh"
+
+
+def _round_trip(tmp_path: Path, config: str, cmdline: str, *, record_twice_with: str | None = None):
+    """Apply low power mode to the files as the installer does, then remove it as
+    the uninstaller does. Returns (config as applied, cmdline as applied, config
+    after removal, cmdline after removal, the record's text, the record's path)."""
+    cfg = _write(tmp_path / "config.txt", config)
+    cmd = _write(tmp_path / "cmdline.txt", cmdline)
+    rec = tmp_path / "state" / "low-power-restore.env"
+
+    def q(p: Path) -> str:
+        return f'"{p.as_posix()}"'
+
+    apply_ = (f'record_low_power_originals {q(cfg)} {q(cmd)} {q(rec)}\n'
+              f'update_pi_firmware_config {q(cfg)} install 1\n'
+              f'apply_low_power_cmdline {q(cmd)}\n')
+    r = _bash(f'source "{STATE_LIB.as_posix()}"\n{apply_}', tmp_path)
+    assert r.returncode == 0, r.stderr
+    applied = (_text(cfg), _text(cmd))
+    record = _text(rec) if rec.exists() else ""
+    if record_twice_with is not None:
+        # An update: the files now hold the mode's own lines (and the user's later edits).
+        _write(cfg, applied[0] + record_twice_with)
+        r = _bash(f'source "{STATE_LIB.as_posix()}"\n{apply_}', tmp_path)
+        assert r.returncode == 0, r.stderr
+        assert _text(rec) == record, "the record must not be rewritten"
+    r = _bash(f'source "{STATE_LIB.as_posix()}"\nremove_low_power_settings {q(cfg)} {q(cmd)} {q(rec)}',
+              tmp_path)
+    assert r.returncode == 0, r.stderr
+    return applied[0], applied[1], _text(cfg), _text(cmd), record, rec
+
+
+def _section_of(text: str, line: str) -> list:
+    """The section (None before the first) each copy of LINE sits in."""
+    where, section = [], None
+    for ln in text.splitlines():
+        if ln.strip().startswith("["):
+            section = ln.strip()
+        elif ln.strip() == line:
+            where.append(section)
+    return where
+
+
+@bash_capable
+class TestRestoredOnRemoval:
+    def test_a_stock_boost_line_outside_any_section_comes_back_where_it_was(self, tmp_path):
+        applied, _c, after, _cmd, record, _rec = _round_trip(tmp_path, OS_STOCK_CONFIG, BASE_CMDLINE + "\n")
+        assert "arm_boost=1" not in applied.splitlines()         # the mode replaced it
+        assert "arm_boost=0" in applied.splitlines()
+        assert "CONFIG=top:arm_boost:1" in record
+        assert _section_of(after, "arm_boost=1") == [None]
+        assert not [ln for ln in after.splitlines() if ln.startswith(("arm_freq", "force_turbo"))]
+        assert "arm_boost=0" not in after.splitlines()
+
+    def test_the_key_absent_leaves_none_of_the_three_behind(self, tmp_path):
+        config = "dtparam=audio=on\n\n[all]\nenable_uart=1\n"
+        _a, _c, after, cmd_after, record, _rec = _round_trip(tmp_path, config, BASE_CMDLINE + "\n")
+        assert "CONFIG=" not in record and "MAXCPUS=" not in record
+        assert not [ln for ln in after.splitlines() if ln.startswith(("arm_", "force_turbo"))]
+        assert cmd_after == BASE_CMDLINE + "\n"
+
+    def test_a_line_in_a_conditional_section_is_never_touched_or_recorded(self, tmp_path):
+        config = "[pi5]\narm_boost=1\narm_freq=2400\n\n[all]\n"
+        applied, _c, after, _cmd, record, _rec = _round_trip(tmp_path, config, BASE_CMDLINE + "\n")
+        assert "CONFIG=" not in record
+        assert _section_of(applied, "arm_boost=1") == ["[pi5]"]
+        assert _section_of(after, "arm_boost=1") == ["[pi5]"]
+        assert _section_of(after, "arm_freq=2400") == ["[pi5]"]
+
+    def test_another_value_under_all_comes_back_under_all(self, tmp_path):
+        config = "arm_boost=1\n\n[all]\narm_freq=1000\nforce_turbo=1\n"
+        _a, _c, after, _cmd, record, _rec = _round_trip(tmp_path, config, BASE_CMDLINE + "\n")
+        assert "CONFIG=all:arm_freq:1000" in record and "CONFIG=all:force_turbo:1" in record
+        assert _section_of(after, "arm_freq=1000") == ["[all]"]
+        assert _section_of(after, "force_turbo=1") == ["[all]"]
+        assert _section_of(after, "arm_boost=1") == [None]
+
+    def test_a_value_equal_to_the_modes_own_but_outside_any_section_is_put_back(self, tmp_path):
+        config = "arm_freq=700\n\n[all]\n"
+        _a, _c, after, _cmd, record, _rec = _round_trip(tmp_path, config, BASE_CMDLINE + "\n")
+        assert "CONFIG=top:arm_freq:700" in record
+        assert _section_of(after, "arm_freq=700") == [None]
+
+    def test_a_file_with_no_all_section_gets_its_top_line_back_once(self, tmp_path):
+        config = "dtparam=audio=on\narm_boost=1\n"
+        _a, _c, after, _cmd, record, _rec = _round_trip(tmp_path, config, BASE_CMDLINE + "\n")
+        assert _section_of(after, "arm_boost=1") == [None]
+        assert after.count("arm_boost") == 1
+
+    def test_a_maxcpus_value_other_than_two_comes_back(self, tmp_path):
+        cmdline = "console=tty1 maxcpus=4 rootwait\n"
+        _a, applied_cmd, _after, cmd_after, record, _rec = _round_trip(tmp_path, OS_STOCK_CONFIG, cmdline)
+        assert "maxcpus=2" in applied_cmd and "maxcpus=4" not in applied_cmd
+        assert "MAXCPUS=4" in record
+        assert cmd_after == "console=tty1 maxcpus=4 rootwait\n"
+
+    def test_a_maxcpus_the_mode_added_is_removed(self, tmp_path):
+        _a, _c, _after, cmd_after, record, _rec = _round_trip(tmp_path, OS_STOCK_CONFIG, BASE_CMDLINE + "\n")
+        assert "MAXCPUS=" not in record
+        assert cmd_after == BASE_CMDLINE + "\n"
+
+    def test_a_maxcpus_of_two_already_there_cannot_be_told_from_the_modes_and_goes(self, tmp_path):
+        _a, _c, _after, cmd_after, record, _rec = _round_trip(tmp_path, OS_STOCK_CONFIG, "rootwait maxcpus=2\n")
+        assert "MAXCPUS=" not in record
+        assert cmd_after == "rootwait\n"
+
+    def test_a_later_run_does_not_replace_the_record_with_the_modes_own_lines(self, tmp_path):
+        # The second pass finds the mode's own lines under [all]; the record stays as it was.
+        _a, _c, after, _cmd, record, _rec = _round_trip(
+            tmp_path, OS_STOCK_CONFIG, "console=tty1 maxcpus=4\n", record_twice_with="")
+        assert "CONFIG=top:arm_boost:1" in record
+        assert _section_of(after, "arm_boost=1") == [None]
+
+    def test_a_record_that_is_there_is_never_made_again_even_when_it_is_empty(self, tmp_path):
+        rec = tmp_path / "state" / "low-power-restore.env"
+        cfg = _write(tmp_path / "config.txt", "[all]\n")
+        cmd = _write(tmp_path / "cmdline.txt", "rootwait\n")
+        call = f'record_low_power_originals "{cfg.as_posix()}" "{cmd.as_posix()}" "{rec.as_posix()}"'
+        _bash(f'source "{STATE_LIB.as_posix()}"\n{call}', tmp_path)
+        assert rec.exists()
+        _write(cfg, "arm_boost=1\n[all]\n")
+        _bash(f'source "{STATE_LIB.as_posix()}"\n{call}', tmp_path)
+        assert "CONFIG=" not in _text(rec)
+
+    @posix_only
+    def test_the_record_is_private_to_root(self, tmp_path):
+        cfg = _write(tmp_path / "c2.txt", OS_STOCK_CONFIG)
+        cmd = _write(tmp_path / "m2.txt", BASE_CMDLINE + "\n")
+        rec = tmp_path / "state2" / "r.env"
+        _bash(f'source "{STATE_LIB.as_posix()}"\nrecord_low_power_originals '
+              f'"{cfg.as_posix()}" "{cmd.as_posix()}" "{rec.as_posix()}"', tmp_path)
+        assert rec.stat().st_mode & 0o777 == 0o600
+
+    def test_the_record_is_removed_once_it_has_been_used(self, tmp_path):
+        *_x, rec = _round_trip(tmp_path, OS_STOCK_CONFIG, BASE_CMDLINE + "\n")
+        assert not rec.exists()
+
+
+@bash_capable
+class TestTheRecordIsOnlyTrustedForWhatTheInstallerWrites:
+    def _remove(self, tmp_path: Path, record_text, *, link: bool = False):
+        cfg = _write(tmp_path / "config.txt", "[all]\narm_boost=0\n")
+        cmd = _write(tmp_path / "cmdline.txt", "rootwait maxcpus=2\n")
+        rec = tmp_path / "low-power-restore.env"
+        if link:
+            target = _write(tmp_path / "target.env", record_text or "")
+            rec.symlink_to(target)
+        elif record_text is not None:
+            _write(rec, record_text)
+        r = _bash(f'remove_low_power_settings "{cfg.as_posix()}" "{cmd.as_posix()}" "{rec.as_posix()}"',
+                  tmp_path)
+        assert r.returncode == 0, r.stderr
+        return _text(cfg), _text(cmd)
+
+    @pytest.mark.parametrize("bad", [
+        "CONFIG=top:evil_key:1\n",
+        "CONFIG=top:arm_boost:1; touch /tmp/x\n",
+        "CONFIG=top:arm_boost:\n",
+        "CONFIG=top:arm_boost:one\n",
+        "CONFIG=other:arm_boost:1\n",
+        "CONFIG=all:arm_boost:1 \n",
+        "arm_boost=1\n",
+        "MAXCPUS=four\n",
+        "MAXCPUS=4 root=/dev/sda1\n",
+        "MAXCPUS=\n",
+    ])
+    def test_a_line_that_is_not_one_of_the_forms_it_writes_is_ignored(self, tmp_path, bad):
+        cfg, cmd = self._remove(tmp_path, "# note\n" + bad)
+        assert "arm_boost=1" not in cfg and "evil" not in cfg and "touch" not in cfg
+        assert cmd == "rootwait\n"
+
+    def test_a_good_line_among_bad_ones_is_still_used(self, tmp_path):
+        cfg, cmd = self._remove(tmp_path, "CONFIG=top:evil:1\nCONFIG=top:arm_boost:1\nMAXCPUS=3\n")
+        assert _section_of(cfg, "arm_boost=1") == [None]
+        assert cmd == "rootwait maxcpus=3\n"
+
+    @posix_only
+    def test_a_record_that_is_a_link_is_not_followed(self, tmp_path):
+        cfg, cmd = self._remove(tmp_path, "CONFIG=top:arm_boost:1\nMAXCPUS=3\n", link=True)
+        assert "arm_boost=1" not in cfg
+        assert cmd == "rootwait\n"
+
+    def test_without_a_record_only_the_added_lines_go(self, tmp_path):
+        cfg, cmd = self._remove(tmp_path, None)
+        assert "arm_boost" not in cfg
+        assert cmd == "rootwait\n"
+
+
+class TestInstallerWiring:
+    def test_text_check_the_originals_are_noted_before_config_txt_is_changed_and_only_in_the_mode(self):
+        text = INSTALLER.read_text(encoding="utf-8")
+        i = text.index("    record_low_power_originals\n")
+        assert text.rindex('if [[ "${LOW_POWER}" == "1" ]]', 0, i) > i - 200
+        assert i < text.index("\n  update_pi_firmware_config\n")

@@ -63,9 +63,11 @@ it should not be treated as a full system rollback.
   exists is not resized while the system is running.
 - Removes the low power mode settings (`maxcpus=2` in `cmdline.txt`, and `arm_freq=700`,
   `arm_boost=0` and `force_turbo=0` in `config.txt`) if the install state records
-  that the installer's `--low-power` switch was used. Nothing else in those two
-  files is touched, and the backup `cmdline.txt.autostream-bak` is left in place.
-  The change applies at the next reboot.
+  that the installer's `--low-power` switch was used, and puts back what the switch
+  replaced: an `arm_freq`, `arm_boost` or `force_turbo` line that was outside any
+  section of `config.txt` or under `[all]`, and a `maxcpus` value other than 2. Nothing
+  else in those two files is touched, and the backup `cmdline.txt.autostream-bak` is
+  left in place. The change applies at the next reboot.
 - Removes a few other installer-managed files we can identify confidently, such as
   the autostream logrotate file, the autostream dnsmasq snippet, the
   NetworkManager files copied by the installer, the network state file
