@@ -12,6 +12,7 @@ on Windows.  Path constants are redirected to tmp_path after load.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -61,8 +62,11 @@ def _geteuid_root():
 
 
 def _chown_noop():
-    """Patch os.chown to no-op; create=True for Windows where it doesn't exist."""
-    return patch("os.chown", return_value=None, create=True)
+    """Patch os.chown and os.fchown to no-ops; create=True for Windows where they do not exist."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(patch("os.chown", return_value=None, create=True))
+    stack.enter_context(patch("os.fchown", return_value=None, create=True))
+    return stack
 
 
 def _load_dial(tmp_path: Path) -> ModuleType:

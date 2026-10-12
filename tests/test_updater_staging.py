@@ -1032,6 +1032,7 @@ class TestDialLockRelease:
              patch.object(_asu, "_run", return_value=(run_rc, "", "")), \
              patch.object(mod, "_dial_update_unit_active", return_value=False), \
              patch.object(mod, "fcntl") as mk_fcntl, \
+             patch.object(mod, "write_file_safely"), \
              patch("os.open", return_value=FAKE_FD), \
              patch("os.close", side_effect=lambda fd: close_calls.append(fd)):
             mk_fcntl.LOCK_EX = 2

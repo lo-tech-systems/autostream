@@ -46,7 +46,6 @@ import fcntl
 import json
 import os
 import sys
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -61,7 +60,7 @@ from autostream_update_support import (
     _find_systemd_run, _github_latest_release,
     _normalise_update_channel, _read_env_file, _version_key,
     free_repeat_buffer, is_active_transient_unit, schedule_locked_installer,
-    stage_release, stop_owntone_playback,
+    stage_release, stop_owntone_playback, write_file_safely,
 )
 
 # ---- Paths / constants ----
@@ -118,28 +117,13 @@ def _write_update_result(status: str, percent: int, message: str) -> None:
         safe_message = str(message).replace('"', "'")
 
         UPDATE_RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{UPDATE_RESULT_FILE.name}.",
-            suffix=".tmp",
-            dir=str(UPDATE_RESULT_FILE.parent),
+        content = (
+            f'LAST_RUN_AT="{run_at}"\n'
+            f'STATUS="{status}"\n'
+            f'MESSAGE="{safe_message}"\n'
+            f'PERCENT_COMPLETE="{percent}"\n'
         )
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(f'LAST_RUN_AT="{run_at}"\n')
-                fh.write(f'STATUS="{status}"\n')
-                fh.write(f'MESSAGE="{safe_message}"\n')
-                fh.write(f'PERCENT_COMPLETE="{percent}"\n')
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, UPDATE_RESULT_FILE)
-        except Exception:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+        write_file_safely(UPDATE_RESULT_FILE, content, 0o644)
     except Exception as e:
         _log(f"apply: warning — could not write update-result.env: {e}")
 

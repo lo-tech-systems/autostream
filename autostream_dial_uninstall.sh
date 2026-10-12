@@ -108,26 +108,28 @@ rm -rf /usr/local/libexec/autostream
 rm -rf /usr/local/share/autostream
 
 rm -rf /opt/autostream         # dial-only device; no autostream appliance present
-rm -rf /etc/autostream
 rm -f  /etc/autostream-network.json
 # A dial that has been factory reset keeps its identity salt through an
 # uninstall. Removing it would put the dial back on the identity it had before
 # the reset, and so back on every appliance that still lists that identity.
-dial_state="$(_state_dir)"
-if [[ -f "${dial_state}/dial-id-salt" ]]; then
-    find "${dial_state}" -mindepth 1 ! -name dial-id-salt -delete
+# The salt is in /etc/autostream, which only root can write, so everything else
+# in that directory is removed and the directory stays.
+dial_etc="$(_fs_root)/etc/autostream"
+if [[ -f "${dial_etc}/dial-id-salt" && ! -L "${dial_etc}/dial-id-salt" ]]; then
+    find "${dial_etc}" -mindepth 1 ! -name dial-id-salt -delete
     salt_kept=true
 else
-    rm -rf /var/lib/autostream
+    rm -rf /etc/autostream
     salt_kept=false
 fi
+rm -rf /var/lib/autostream
 rm -f  /run/autostream/autostream-dial-setup.conf 2>/dev/null || true
 
 userdel autostream 2>/dev/null || true
 userdel autostream-kiosk 2>/dev/null || true
 rm -rf /var/lib/autostream-kiosk
 if $salt_kept; then
-    echo "Kept the dial identity salt in /var/lib/autostream so a reinstall does not"
+    echo "Kept the dial identity salt in /etc/autostream so a reinstall does not"
     echo "give this dial back the identity it had before its factory reset."
 fi
 echo "autostream dial uninstalled."

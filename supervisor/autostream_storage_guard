@@ -45,12 +45,17 @@ import shutil
 import subprocess
 import sys
 import time
-import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib import request as urllib_request
 from urllib.error import URLError
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from autostream_update_support import write_file_safely
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1054,24 +1059,8 @@ def load_state() -> dict:
 def save_state(data: dict) -> bool:
     try:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=".storage-guard.", suffix=".tmp.json",
-            dir=str(STATE_PATH.parent),
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.chmod(tmp_name, 0o644)
-            os.replace(tmp_name, str(STATE_PATH))
-            return True
-        except Exception:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
+        write_file_safely(STATE_PATH, json.dumps(data, indent=2), 0o644)
+        return True
     except Exception as e:
         logging.warning("storage guard: could not save state: %s", e)
         return False

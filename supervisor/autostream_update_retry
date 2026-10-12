@@ -48,7 +48,7 @@ if _HERE not in sys.path:
 from autostream_update_support import (
     FLOCK_BIN,
     _find_systemd_run, _is_pre_boot, _read_env_file, _run,
-    free_repeat_buffer, stop_owntone_playback,
+    free_repeat_buffer, stop_owntone_playback, write_file_safely,
 )
 
 # ---- Paths / constants -------------------------------------------------------
@@ -97,24 +97,19 @@ def _read_retry_count() -> int:
 
 
 def _write_retry_count(n: int) -> None:
-    RETRY_COUNT_FILE.write_text(str(n) + "\n", encoding="utf-8")
-    os.chmod(str(RETRY_COUNT_FILE), 0o600)
+    write_file_safely(RETRY_COUNT_FILE, str(n) + "\n", 0o600)
 
 
 def _write_update_result(status: str, message: str, percent: int, run_at: str) -> None:
     """Atomically write update-result.env (mirrors the installer's write_update_result)."""
     STAMP_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = UPDATE_RESULT_FILE.with_suffix(".tmp")
     content = (
         f'LAST_RUN_AT="{run_at}"\n'
         f'STATUS="{status}"\n'
         f'MESSAGE="{message}"\n'
         f'PERCENT_COMPLETE="{percent}"\n'
     )
-    tmp.write_text(content, encoding="utf-8")
-    os.chmod(str(tmp), 0o600)
-    os.chown(str(tmp), 0, 0)
-    tmp.replace(UPDATE_RESULT_FILE)
+    write_file_safely(UPDATE_RESULT_FILE, content, 0o600, (0, 0))
 
 
 # ---- Main --------------------------------------------------------------------

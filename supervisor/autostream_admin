@@ -60,6 +60,8 @@ Notes:
     The reset sequence is product-specific: it stops the appropriate services,
     rotates logs, deletes product-specific runtime state, removes Wi-Fi
     connections, and reboots.
+  - update-dial-service announces the identity this script derives from the
+    board and the root-owned salt; the UUID argument is only compared with it.
   - reconcile-dial-identity runs as root before the dial service starts. A dial
     that has an identity salt gets its stored identity brought into line with
     the identity derived from its salt; a dial with no salt is left alone.
@@ -108,7 +110,7 @@ autostream-dial product — preserved:
   /var/lib/autostream/dial-id
 
 autostream-dial product — identity:
-  A fresh random salt is written to /var/lib/autostream/dial-id-salt and the
+  A fresh random salt is written to /etc/autostream/dial-id-salt and the
   dial's UUID is derived again from it. The new UUID replaces the old one in
   /etc/autostream/autostream-dial.json and as DIAL_UUID in
   /var/lib/autostream/install-state.env, so the dial is a new, unauthorised
@@ -154,6 +156,15 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional, Tuple
+
+# Installed next to this script (root-owned). Every write this script makes
+# into a directory an unprivileged account can also write goes through
+# write_file_safely; every read of such a file that influences a later write
+# goes through read_file_if_trusted.
+from autostream_update_support import read_file_if_trusted, write_file_safely
+
+# The account that must own anything this script trusts. Tests change it.
+ROOT_UID = 0
 
 # Persistent stamp file for rate limiting NetworkDown reboots
 STAMP_DIR = Path("/var/lib/autostream")
@@ -215,13 +226,22 @@ FACTORY_RESET_DIAL_DELETE_FILES = (
 # is an extensionless privileged executable that cannot import either, and the
 # tests run one shared set of vectors against all three.
 DIAL_ID_NAMESPACE = "autostream-dial-v1:"
-DIAL_ID_SALT_FILE = STAMP_DIR / "dial-id-salt"
+# The salt lives in /etc/autostream, which on a dial only root can write, so the
+# dial's own service account can neither create nor replace it.
+DIAL_ID_SALT_FILE = Path("/etc/autostream/dial-id-salt")
+# Where an earlier version kept the salt, in the service account's directory.
+# A salt found there is moved to the root-owned place if root wrote it.
+LEGACY_DIAL_ID_SALT_FILE = STAMP_DIR / "dial-id-salt"
+# The fallback id (boards with no serial) is in the service account's
+# directory too, so it is used only if root owns it.
 DIAL_ID_FALLBACK_FILE = STAMP_DIR / "dial-id"
 DIAL_HW_CONFIG_FILE = Path("/etc/autostream/autostream-dial.json")
 CPUINFO_FILE = Path("/proc/cpuinfo")
 DEVICE_TREE_SERIAL_FILE = Path("/proc/device-tree/serial-number")
 _DIAL_ID_SALT_RE = re.compile(r"^[0-9a-f]{32}$")
 _DIAL_ID_RE = re.compile(r"^[0-9a-f]{20}$")
+# One KEY=value line of install-state.env, as the installers write them.
+_ENV_LINE_RE = re.compile(r'^[A-Z][A-Z0-9_]*=[^\x00-\x08\x0a-\x1f\x7f]*$')
 
 # Valid AUTOSTREAM_PRODUCT values
 VALID_PRODUCTS = {"autostream", "autostream-dial"}
@@ -967,7 +987,7 @@ def should_rate_limit_networkdown() -> Tuple[bool, Optional[int]]:
 
 def touch_networkdown_stamp() -> None:
     STAMP_DIR.mkdir(parents=True, exist_ok=True)
-    NETWORKDOWN_STAMP.touch()
+    write_file_safely(NETWORKDOWN_STAMP, "", 0o644)
 
 
 def reboot_host(reason: Optional[str]) -> Optional[bool]:
@@ -1179,6 +1199,13 @@ def _delete_reset_files() -> None:
             log("WARN", f"factory-reset: could not delete {path}: {e!r}")
 
 
+def _service_owner() -> Tuple[int, int]:
+    """The (uid, gid) of the autostream service account."""
+    import grp
+    import pwd
+    return pwd.getpwnam("autostream").pw_uid, grp.getgrnam("autostream").gr_gid
+
+
 def _empty_dials_store() -> None:
     """Start the appliance with an empty list of authorised dials.
 
@@ -1187,8 +1214,7 @@ def _empty_dials_store() -> None:
     is treated as empty too, but logs a warning on every read. Best-effort.
     """
     try:
-        _write_durable(DIALS_STORE_FILE, "{}\n", 0o600)
-        shutil.chown(str(DIALS_STORE_FILE), "autostream", "autostream")
+        write_file_safely(DIALS_STORE_FILE, "{}\n", 0o600, _service_owner())
         log("INFO", f"factory-reset: started an empty {DIALS_STORE_FILE}")
     except Exception as e:
         log("WARN", f"factory-reset: could not create an empty {DIALS_STORE_FILE}: {e!r}")
@@ -1245,7 +1271,11 @@ def _acquire_reset_lock() -> Optional[object]:
         log("WARN", f"factory-reset: could not create lock dir: {e!r}")
 
     try:
-        lock_fd = open(str(FACTORY_RESET_LOCK_FILE), "w")
+        # Never follow a link at the lock's name, and never truncate.
+        raw_fd = os.open(str(FACTORY_RESET_LOCK_FILE),
+                         os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_CLOEXEC", 0), 0o600)
+        lock_fd = os.fdopen(raw_fd, "w")
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return lock_fd
     except BlockingIOError:
@@ -1361,11 +1391,11 @@ def _read_dial_id_salt() -> Optional[str]:
     meant to have.
     """
     try:
-        raw = DIAL_ID_SALT_FILE.read_text(encoding="utf-8")
+        raw = read_file_if_trusted(DIAL_ID_SALT_FILE, ROOT_UID, check_directory=True)
     except FileNotFoundError:
         return None
-    except OSError as e:
-        raise ValueError(f"{DIAL_ID_SALT_FILE} is unreadable: {e!r}")
+    except (OSError, ValueError) as e:
+        raise ValueError(f"{DIAL_ID_SALT_FILE} is not trusted: {e}")
     salt = raw.strip()
     if not _DIAL_ID_SALT_RE.match(salt):
         raise ValueError(f"{DIAL_ID_SALT_FILE} does not hold a valid salt")
@@ -1386,8 +1416,8 @@ def derive_dial_id(salt: Optional[str]) -> Optional[str]:
         base = serial
     else:
         try:
-            base = DIAL_ID_FALLBACK_FILE.read_text(encoding="utf-8").strip()
-        except OSError:
+            base = read_file_if_trusted(DIAL_ID_FALLBACK_FILE, ROOT_UID).strip()
+        except (OSError, ValueError):
             return None
         if not _DIAL_ID_RE.match(base):
             return None
@@ -1400,31 +1430,38 @@ def derive_dial_id(salt: Optional[str]) -> Optional[str]:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
 
 
-def _write_durable(path: Path, text: str, mode: int, owner: Optional[Tuple[int, int]] = None) -> None:
-    """Replace PATH with TEXT so that a power cut leaves the old or the new file.
-
-    The new content is flushed to disk before the rename, and the directory
-    entry is flushed after it.
-    """
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.chmod(tmp, mode)
-    if owner is not None:
-        os.chown(tmp, owner[0], owner[1])
-    tmp.replace(path)
-    dir_fd = os.open(str(path.parent), os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-
-
 def _store_dial_id_salt(salt: str) -> None:
     DIAL_ID_SALT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _write_durable(DIAL_ID_SALT_FILE, salt + "\n", 0o644, (0, 0))
+    write_file_safely(DIAL_ID_SALT_FILE, salt + "\n", 0o644, (ROOT_UID, 0))
+
+
+def _migrate_legacy_dial_id_salt() -> None:
+    """Move a salt kept in the service account's directory to the root-owned place.
+
+    Only a salt root itself wrote is moved: it must be a regular file owned by
+    root and not writable by others, and hold a valid salt. Anything else in
+    that place is ignored and left where it is. Does nothing once the salt is
+    in the root-owned place.
+    """
+    if os.path.lexists(DIAL_ID_SALT_FILE):
+        return
+    try:
+        raw = read_file_if_trusted(LEGACY_DIAL_ID_SALT_FILE, ROOT_UID)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        log("WARN", f"dial identity: ignoring {LEGACY_DIAL_ID_SALT_FILE}: {e}")
+        return
+    salt = raw.strip()
+    if not _DIAL_ID_SALT_RE.match(salt):
+        log("WARN", f"dial identity: ignoring {LEGACY_DIAL_ID_SALT_FILE}: not a valid salt")
+        return
+    try:
+        _store_dial_id_salt(salt)
+        LEGACY_DIAL_ID_SALT_FILE.unlink()
+        log("INFO", f"dial identity: moved the salt to {DIAL_ID_SALT_FILE}")
+    except OSError as e:
+        log("ERROR", f"dial identity: could not move the salt to {DIAL_ID_SALT_FILE}: {e!r}")
 
 
 def _apply_dial_id(uuid: str) -> bool:
@@ -1442,16 +1479,19 @@ def _apply_dial_id(uuid: str) -> bool:
             raise ValueError("not a JSON object")
         if cfg.get("uuid") != uuid:
             cfg["uuid"] = uuid
-            _write_durable(DIAL_HW_CONFIG_FILE, json.dumps(cfg, indent=2) + "\n",
-                           st.st_mode & 0o7777, (st.st_uid, st.st_gid))
+            write_file_safely(DIAL_HW_CONFIG_FILE, json.dumps(cfg, indent=2) + "\n",
+                              st.st_mode & 0o7777, (st.st_uid, st.st_gid))
             log("INFO", f"dial identity: updated uuid in {DIAL_HW_CONFIG_FILE}")
     except (OSError, ValueError) as e:
         log("ERROR", f"dial identity: cannot update {DIAL_HW_CONFIG_FILE}: {e!r}")
         ok = False
 
     try:
-        text = INSTALL_STATE_FILE.read_text(encoding="utf-8")
-        lines = text.splitlines()
+        # The service account can replace this file, so it is read without
+        # following a link and only well-formed KEY=value lines are carried
+        # over. The one value this adds is the identity root derived.
+        text = read_file_if_trusted(INSTALL_STATE_FILE, None, max_bytes=1 << 20)
+        lines = [ln for ln in text.splitlines() if _ENV_LINE_RE.match(ln)]
         wanted = f"DIAL_UUID={uuid}"
         if wanted not in lines:
             new_lines: list[str] = []
@@ -1464,9 +1504,10 @@ def _apply_dial_id(uuid: str) -> bool:
                     replaced = True
             if not replaced:
                 new_lines.append(wanted)
-            _write_durable(INSTALL_STATE_FILE, "\n".join(new_lines) + "\n", 0o644, (0, 0))
+            write_file_safely(INSTALL_STATE_FILE, "\n".join(new_lines) + "\n",
+                              0o644, (ROOT_UID, 0))
             log("INFO", f"dial identity: updated DIAL_UUID in {INSTALL_STATE_FILE}")
-    except OSError as e:
+    except (OSError, ValueError) as e:
         log("ERROR", f"dial identity: cannot update {INSTALL_STATE_FILE}: {e!r}")
         ok = False
 
@@ -1480,7 +1521,13 @@ def reconcile_dial_identity() -> bool:
     after the salt was written finishes on the next boot. A dial with no salt
     is never touched. A salt that is present but invalid stops the whole
     thing: the stored identity stays as it is and the error is logged.
+
+    The salt is read from a root-owned place. The only thing read from
+    install-state.env is its existing lines, which are kept as they are; the
+    identity written is always the one derived here from the serial and the
+    salt, never one taken from a file the service account can write.
     """
+    _migrate_legacy_dial_id_salt()
     try:
         salt = _read_dial_id_salt()
     except ValueError as e:
@@ -1807,9 +1854,23 @@ def _update_dial_service(args) -> int:
     if not _DIAL_TEMPLATE.exists():
         log("ERROR", f"update-dial-service: template not found: {_DIAL_TEMPLATE}")
         return 1
+    # The identity announced is the one derived here from the board and the
+    # root-owned salt. The UUID the caller passes is checked against it and
+    # never used, so the unprivileged dial cannot announce another identity.
+    try:
+        uuid = derive_dial_id(_read_dial_id_salt())
+    except ValueError as e:
+        log("ERROR", f"update-dial-service: {e}; not announcing")
+        return 1
+    if uuid is None:
+        log("ERROR", "update-dial-service: cannot derive this dial's identity; not announcing")
+        return 1
+    if args.uuid != uuid:
+        log("WARN", "update-dial-service: the UUID given differs from this dial's own "
+                    "identity; announcing the dial's own")
     content = (_DIAL_TEMPLATE.read_text()
                .replace("__AUTOSTREAM_RELEASE_TAG__", _html.escape(args.version))
-               .replace("__DIAL_UUID__", _html.escape(args.uuid))
+               .replace("__DIAL_UUID__", _html.escape(uuid))
                .replace("__DIAL_NAME__", _html.escape(args.name)))
     if args.pin_recovery:
         content = content.replace(

@@ -9,6 +9,7 @@ Avahi XML escaping, and update status parsing.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -454,7 +455,7 @@ class TestAvahiXmlEscaping:
             with pytest.raises(ValueError):
                 m._update_dial_service(args)
 
-    def test_dial_service_escapes_html_in_uuid(self, tmp_path):
+    def test_dial_service_announces_the_derived_identity_not_the_caller_s(self, tmp_path):
         template = tmp_path / "template.xml"
         template.write_text(
             "__AUTOSTREAM_RELEASE_TAG__ __DIAL_UUID__ __DIAL_NAME__ </service>",
@@ -472,11 +473,32 @@ class TestAvahiXmlEscaping:
 
         with patch.object(m, "_DIAL_TEMPLATE", template), \
              patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
-             patch.object(m, "_DIAL_SERVICE", svc_file):
-            m._update_dial_service(args)
+             patch.object(m, "_DIAL_SERVICE", svc_file), \
+             patch.object(m, "_read_dial_id_salt", return_value=None), \
+             patch.object(m, "derive_dial_id", return_value="0123456789abcdef0123"):
+            assert m._update_dial_service(args) == 0
 
         content = svc_file.read_text(encoding="utf-8")
-        assert "<uuid>" not in content or "&lt;uuid&gt;" in content
+        assert "0123456789abcdef0123" in content
+        assert "special" not in content
+
+    def test_dial_service_is_not_written_when_the_identity_cannot_be_derived(self, tmp_path):
+        template = tmp_path / "template.xml"
+        template.write_text("__DIAL_UUID__ </service>", encoding="utf-8")
+        svc_file = tmp_path / "autostream-dial.service"
+        args = MagicMock()
+        args.version = "v1.0"
+        args.uuid = "feedfacefeedfacefeed"
+        args.name = "Good Name"
+        args.pin_recovery = False
+
+        with patch.object(m, "_DIAL_TEMPLATE", template), \
+             patch.object(m, "_AVAHI_SERVICES_DIR", tmp_path), \
+             patch.object(m, "_DIAL_SERVICE", svc_file), \
+             patch.object(m, "_read_dial_id_salt", return_value=None), \
+             patch.object(m, "derive_dial_id", return_value=None):
+            assert m._update_dial_service(args) == 1
+        assert not svc_file.exists()
 
     def test_validate_dial_name_accepts_normal_name(self):
         m._validate_dial_name("Living Room")
@@ -2181,6 +2203,7 @@ class TestApplianceResetForgetsDials:
         monkeypatch.setattr(autostream_dials, "DIALS_PATH", path)
         monkeypatch.setattr(m, "DIALS_STORE_FILE", path)
         monkeypatch.setattr(m, "FACTORY_RESET_DELETE_FILES", (path,))
+        monkeypatch.setattr(m, "_service_owner", lambda: (os.getuid(), os.getgid()), raising=False)
         monkeypatch.setattr(m.shutil, "chown", lambda *a, **kw: None)
         self.dials = autostream_dials
         return path
@@ -2214,6 +2237,59 @@ class TestApplianceResetForgetsDials:
         assert json.loads(store.read_text(encoding="utf-8")) == {}
         assert oct(store.stat().st_mode & 0o777) == "0o600"
 
+    def test_links_at_the_temporary_names_do_not_redirect_the_new_list(self, store, tmp_path):
+        victim = tmp_path / "victim"
+        victim.write_text("precious\n", encoding="utf-8")
+        victim.chmod(0o600)
+        for name in ("dials.json.tmp", ".dials.json.tmp", f".dials.json.tmp.{os.getpid()}"):
+            (tmp_path / name).symlink_to(victim)
+        self._reset()
+        assert victim.read_text(encoding="utf-8") == "precious\n"
+        assert oct(victim.stat().st_mode & 0o777) == "0o600"
+        assert json.loads(store.read_text(encoding="utf-8")) == {}
+
+    def test_a_link_where_the_list_is_replaced_not_followed(self, store, tmp_path):
+        victim = tmp_path / "victim"
+        victim.write_text("precious\n", encoding="utf-8")
+        # The reset deletes the list first; a link planted after that, before the
+        # empty list is written, must not be written through.
+        with patch.object(m, "_delete_reset_files",
+                          side_effect=lambda: (store.unlink(), store.symlink_to(victim))):
+            self._reset()
+        assert victim.read_text(encoding="utf-8") == "precious\n"
+        assert not store.is_symlink()
+        assert json.loads(store.read_text(encoding="utf-8")) == {}
+
+    def test_the_new_list_belongs_to_the_service_account(self, store):
+        owners = []
+        with patch.object(m.os, "fchown", side_effect=lambda fd, u, g: owners.append((u, g))):
+            with patch.object(m, "_service_owner", return_value=(1234, 5678)):
+                self._reset()
+        assert owners == [(1234, 5678)]
+
+    def test_a_link_at_the_stamp_is_replaced_and_its_target_left_alone(self, tmp_path):
+        victim = tmp_path / "victim"
+        victim.write_text("precious\n", encoding="utf-8")
+        stamp = tmp_path / "reboot_networkdown.stamp"
+        stamp.symlink_to(tmp_path / "does-not-exist")
+        with patch.object(m, "NETWORKDOWN_STAMP", stamp), patch.object(m, "STAMP_DIR", tmp_path):
+            m.touch_networkdown_stamp()
+        assert stamp.is_file() and not stamp.is_symlink()
+        assert not (tmp_path / "does-not-exist").exists()
+        assert victim.read_text(encoding="utf-8") == "precious\n"
+
+    def test_the_reset_lock_is_not_opened_through_a_link(self, tmp_path):
+        victim = tmp_path / "victim"
+        victim.write_text("precious\n", encoding="utf-8")
+        lock_dir = tmp_path / "run"
+        lock_dir.mkdir()
+        lock = lock_dir / "factory-reset.lock"
+        lock.symlink_to(victim)
+        with patch.object(m, "FACTORY_RESET_LOCK_DIR", lock_dir), \
+             patch.object(m, "FACTORY_RESET_LOCK_FILE", lock):
+            assert m._acquire_reset_lock() is None
+        assert victim.read_text(encoding="utf-8") == "precious\n"
+
     def test_the_service_is_stopped_before_the_list_is_deleted(self, store):
         events = []
         real = m._delete_reset_files
@@ -2233,7 +2309,7 @@ class TestApplianceResetForgetsDials:
         assert not store.exists()
 
     def test_a_failure_to_start_an_empty_list_does_not_fail_the_reset(self, store):
-        with patch.object(m, "_write_durable", side_effect=OSError("read-only")):
+        with patch.object(m, "write_file_safely", side_effect=OSError("read-only")):
             assert self._reset() is True
         assert not store.exists()
 

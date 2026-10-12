@@ -38,8 +38,9 @@ _HEX_RE = re.compile(r"^[0-9a-f]+$")
 APPLIANCE_ID_FILE = Path("/var/lib/autostream/appliance-id")
 DIAL_ID_FILE = Path("/var/lib/autostream/dial-id")
 # Present only on a dial that has been factory reset: 32 hex characters mixed
-# into the dial identity so the same board becomes a different device.
-DIAL_ID_SALT_FILE = Path("/var/lib/autostream/dial-id-salt")
+# into the dial identity so the same board becomes a different device. It is
+# kept in a root-owned directory, out of the service account's reach.
+DIAL_ID_SALT_FILE = Path("/etc/autostream/dial-id-salt")
 _SALT_RE = re.compile(r"^[0-9a-f]{32}$")
 
 _ID_CACHE_LOCK = threading.Lock()

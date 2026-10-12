@@ -11,6 +11,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -84,13 +85,18 @@ class _Dial:
         self.proc = tmp / "proc"
         for d in (self.state, self.etc, self.proc):
             d.mkdir(parents=True)
-        self.salt = self.state / "dial-id-salt"
+        self.salt = self.etc / "dial-id-salt"
+        self.legacy_salt = self.state / "dial-id-salt"
         self.fallback = self.state / "dial-id"
         self.hw = self.etc / "autostream-dial.json"
         self.install_state = self.state / "install-state.env"
         self.cpuinfo = self.proc / "cpuinfo"
         self.chowns: list[tuple[str, int, int]] = []
         monkeypatch.setattr(m, "DIAL_ID_SALT_FILE", self.salt)
+        monkeypatch.setattr(m, "LEGACY_DIAL_ID_SALT_FILE", self.legacy_salt, raising=False)
+        # Tests run unprivileged: the files they make belong to the invoking user,
+        # who stands in for root.
+        monkeypatch.setattr(m, "ROOT_UID", os.getuid(), raising=False)
         monkeypatch.setattr(m, "DIAL_ID_FALLBACK_FILE", self.fallback)
         monkeypatch.setattr(m, "DIAL_HW_CONFIG_FILE", self.hw)
         monkeypatch.setattr(m, "INSTALL_STATE_FILE", self.install_state)
@@ -99,6 +105,8 @@ class _Dial:
         monkeypatch.setattr(m.os, "chown",
                             lambda p, u, g: self.chowns.append((Path(p).name, u, g)),
                             raising=False)
+        monkeypatch.setattr(m.os, "fchown",
+                            lambda fd, u, g: self.chowns.append((u, g)), raising=False)
         self.set_serial(SERIAL)
         self.hw.write_text(json.dumps(HW, indent=2), encoding="utf-8")
         self.install_state.write_text(INSTALL_STATE, encoding="utf-8")
@@ -202,7 +210,7 @@ def _installer_identity(env: Env, serial: str, fallback, salt):
     if fallback:
         env.put("var/lib/autostream/dial-id", fallback)
     if salt is not None:
-        env.put("var/lib/autostream/dial-id-salt", salt)
+        env.put("etc/autostream/dial-id-salt", salt)
     return env.run("generate_dial_id", update="false")
 
 
@@ -223,11 +231,11 @@ class TestInstallerDerivation:
 
     def test_the_installer_never_creates_or_changes_a_salt(self, env):
         _installer_identity(env, SERIAL, None, None)
-        assert not (env.state / "dial-id-salt").exists()
-        env.put("var/lib/autostream/dial-id-salt", SALT_A + "\n")
-        before = (env.state / "dial-id-salt").read_bytes()
+        assert not (env.root / "etc/autostream/dial-id-salt").exists()
+        env.put("etc/autostream/dial-id-salt", SALT_A + "\n")
+        before = (env.root / "etc/autostream/dial-id-salt").read_bytes()
         env.run("generate_dial_id", update="false")
-        assert (env.state / "dial-id-salt").read_bytes() == before
+        assert (env.root / "etc/autostream/dial-id-salt").read_bytes() == before
 
 
 class TestCoreDerivation:
@@ -319,7 +327,7 @@ class TestFactoryResetIdentity:
         salt = dial.salt.read_text(encoding="utf-8").strip()
         assert re.fullmatch(r"[0-9a-f]{32}", salt)
         assert oct(dial.salt.stat().st_mode & 0o777) == "0o644"
-        assert ("dial-id-salt.tmp", 0, 0) in dial.chowns
+        assert (m.ROOT_UID, 0) in dial.chowns
 
     def test_every_stored_copy_holds_the_identity_derived_from_the_new_salt(self, dial):
         m._reset_dial_identity()
@@ -343,7 +351,7 @@ class TestFactoryResetIdentity:
         st = dial.hw.stat()
         m._reset_dial_identity()
         assert oct(dial.hw.stat().st_mode & 0o777) == "0o640"
-        assert ("autostream-dial.json.tmp", st.st_uid, st.st_gid) in dial.chowns
+        assert (st.st_uid, st.st_gid) in dial.chowns
 
     def test_two_resets_give_two_different_identities(self, dial):
         m._reset_dial_identity()
@@ -414,14 +422,14 @@ class TestInterruptedResetHeals:
         assert dial.hw_uuid() == expected == dial.state_uuid() != OLD_UUID
 
     def test_a_power_cut_between_the_two_copies_is_repaired_the_same_way(self, dial):
-        real = m._write_durable
+        real = m.write_file_safely
 
         def fail_on_install_state(path, *a, **kw):
             if path == dial.install_state:
                 raise OSError("power cut")
             return real(path, *a, **kw)
 
-        with patch.object(m, "_write_durable", side_effect=fail_on_install_state):
+        with patch.object(m, "write_file_safely", side_effect=fail_on_install_state):
             assert m._reset_dial_identity() is False
         assert dial.hw_uuid() != dial.state_uuid()
         assert m.reconcile_dial_identity() is True
@@ -430,7 +438,7 @@ class TestInterruptedResetHeals:
     def test_reconcile_changes_nothing_when_the_copies_already_agree(self, dial):
         m._reset_dial_identity()
         before = dial.snapshot()
-        with patch.object(m, "_write_durable") as write:
+        with patch.object(m, "write_file_safely") as write:
             assert m.reconcile_dial_identity() is True
         write.assert_not_called()
         assert dial.snapshot() == before
@@ -438,7 +446,7 @@ class TestInterruptedResetHeals:
     def test_reconcile_never_touches_a_dial_that_has_no_salt(self, dial):
         dial.hw.write_text(json.dumps({**HW, "uuid": "feedfacefeedfacefeed"}), encoding="utf-8")
         before = dial.snapshot()
-        with patch.object(m, "_write_durable") as write:
+        with patch.object(m, "write_file_safely") as write:
             assert m.reconcile_dial_identity() is True
         write.assert_not_called()
         assert dial.snapshot() == before
@@ -458,13 +466,250 @@ class TestInterruptedResetHeals:
 
 
 # ---------------------------------------------------------------------------
+# What the service account can leave in its own directory does not steer root
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def victim(tmp_path):
+    path = tmp_path / "victim"
+    path.write_text("precious\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def _untouched(victim: Path) -> bool:
+    return (victim.read_text(encoding="utf-8") == "precious\n"
+            and oct(victim.stat().st_mode & 0o777) == "0o600")
+
+
+@posix_only
+class TestRootWritesStayWhereTheyAreMeant:
+    TEMP_NAMES = ("{n}.tmp", ".{n}.tmp", ".{n}.tmp.{pid}")
+
+    def _plant_links(self, directory: Path, name: str, victim: Path) -> None:
+        for pattern in self.TEMP_NAMES:
+            (directory / pattern.format(n=name, pid=os.getpid())).symlink_to(victim)
+
+    def test_a_reset_writes_nothing_through_links_at_the_temporary_names(self, dial, victim):
+        self._plant_links(dial.state, "install-state.env", victim)
+        self._plant_links(dial.state, "dial-id-salt", victim)
+        self._plant_links(dial.etc, "dial-id-salt", victim)
+        self._plant_links(dial.etc, "autostream-dial.json", victim)
+        assert m._reset_dial_identity() is True
+        assert _untouched(victim)
+        assert dial.state_uuid() == dial.hw_uuid() != OLD_UUID
+
+    def test_a_reconcile_writes_nothing_through_links_at_the_temporary_names(self, dial, victim):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        self._plant_links(dial.state, "install-state.env", victim)
+        self._plant_links(dial.etc, "autostream-dial.json", victim)
+        assert m.reconcile_dial_identity() is True
+        assert _untouched(victim)
+        assert dial.state_uuid() == dial.hw_uuid() == m.derive_dial_id(SALT_A)
+
+    def test_a_link_where_install_state_should_be_is_neither_read_nor_written_through(
+            self, dial, victim):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        victim.write_text("precious\nDIAL_UUID=" + OLD_UUID + "\n", encoding="utf-8")
+        dial.install_state.unlink()
+        dial.install_state.symlink_to(victim)
+        assert m.reconcile_dial_identity() is False
+        assert dial.install_state.is_symlink()
+        assert victim.read_text(encoding="utf-8") == "precious\nDIAL_UUID=" + OLD_UUID + "\n"
+        assert dial.hw_uuid() == m.derive_dial_id(SALT_A)
+
+    def test_a_reset_replaces_a_link_where_install_state_is_and_leaves_its_target(
+            self, dial, victim):
+        dial.install_state.unlink()
+        dial.install_state.symlink_to(victim)
+        m._reset_dial_identity()
+        assert _untouched(victim)
+
+    def test_only_well_formed_lines_of_a_replaced_install_state_are_carried_over(self, dial):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        dial.install_state.write_text(
+            "AUTOSTREAM_PRODUCT=autostream-dial\n"
+            f"DIAL_UUID={OLD_UUID}\n"
+            "not a setting\n"
+            "lower=case\n"
+            "A B=C\n"
+            "AUTOSTREAM_RELEASE_TAG=1.2.0\n", encoding="utf-8")
+        assert m.reconcile_dial_identity() is True
+        assert dial.install_state.read_text(encoding="utf-8").splitlines() == [
+            "AUTOSTREAM_PRODUCT=autostream-dial",
+            f"DIAL_UUID={m.derive_dial_id(SALT_A)}",
+            "AUTOSTREAM_RELEASE_TAG=1.2.0",
+        ]
+
+    def test_the_identity_written_is_never_taken_from_a_file_the_service_account_can_write(
+            self, dial):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        planted = "feedfacefeedfacefeed"
+        dial.install_state.write_text(f"DIAL_UUID={planted}\n", encoding="utf-8")
+        dial.fallback.write_text(planted, encoding="utf-8")
+        m.reconcile_dial_identity()
+        assert dial.hw_uuid() == dial.state_uuid() == m.derive_dial_id(SALT_A) != planted
+
+    def test_a_link_at_the_salt_is_refused(self, dial, tmp_path):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.write_text(SALT_A + "\n", encoding="utf-8")
+        dial.salt.symlink_to(elsewhere)
+        before = dial.snapshot()
+        with pytest.raises(ValueError):
+            m._read_dial_id_salt()
+        assert m.reconcile_dial_identity() is False
+        assert dial.snapshot() == before
+
+    def test_a_salt_the_service_account_owns_is_refused(self, dial, monkeypatch):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        monkeypatch.setattr(m, "ROOT_UID", os.getuid() + 1)
+        before = dial.snapshot()
+        with pytest.raises(ValueError):
+            m._read_dial_id_salt()
+        assert m.reconcile_dial_identity() is False
+        assert dial.snapshot() == before
+
+    @pytest.mark.parametrize("mode", [0o664, 0o646, 0o666])
+    def test_a_salt_that_others_can_write_is_refused(self, dial, mode):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        dial.salt.chmod(mode)
+        with pytest.raises(ValueError):
+            m._read_dial_id_salt()
+        assert m.reconcile_dial_identity() is False
+
+    def test_a_salt_in_a_directory_others_can_write_is_refused(self, dial):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        dial.etc.chmod(0o777)
+        try:
+            with pytest.raises(ValueError):
+                m._read_dial_id_salt()
+        finally:
+            dial.etc.chmod(0o755)
+
+    def test_a_salt_in_the_service_accounts_directory_is_not_used_as_the_salt(self, dial):
+        dial.legacy_salt.write_text(SALT_A + "\n", encoding="utf-8")
+        dial.legacy_salt.chmod(0o666)
+        assert m.reconcile_dial_identity() is True
+        assert not dial.salt.exists()
+        assert dial.hw_uuid() == OLD_UUID
+        assert dial.legacy_salt.exists()
+
+    def test_a_link_in_place_of_the_fallback_id_gives_no_identity(self, dial, tmp_path):
+        dial.set_serial("")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.write_text(FALLBACK, encoding="utf-8")
+        dial.fallback.symlink_to(elsewhere)
+        assert m.derive_dial_id(None) is None
+
+    def test_a_reset_refuses_nothing_and_changes_only_the_root_owned_salt(self, dial):
+        m._reset_dial_identity()
+        assert not dial.legacy_salt.exists()
+        assert dial.salt.exists()
+        assert [p.name for p in dial.state.iterdir() if p.name.endswith(".tmp")] == []
+        assert [p.name for p in dial.etc.iterdir() if p.name.endswith(".tmp")] == []
+
+
+@posix_only
+class TestSaltMovesOutOfTheServiceAccountsDirectory:
+    def test_a_salt_root_wrote_there_is_moved_and_applied(self, dial):
+        dial.legacy_salt.write_text(SALT_A + "\n", encoding="utf-8")
+        assert m.reconcile_dial_identity() is True
+        assert dial.salt.read_text(encoding="utf-8") == SALT_A + "\n"
+        assert not dial.legacy_salt.exists()
+        assert dial.hw_uuid() == dial.state_uuid() == m.derive_dial_id(SALT_A)
+
+    def test_a_salt_that_is_not_root_owned_is_left_alone_and_not_moved(self, dial, monkeypatch):
+        dial.legacy_salt.write_text(SALT_A + "\n", encoding="utf-8")
+        monkeypatch.setattr(m, "ROOT_UID", os.getuid() + 1)
+        before = dial.snapshot()
+        m._migrate_legacy_dial_id_salt()
+        assert not dial.salt.exists()
+        assert dial.legacy_salt.exists()
+        assert dial.snapshot() == before
+
+    def test_a_link_there_is_not_moved(self, dial, tmp_path):
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.write_text(SALT_A + "\n", encoding="utf-8")
+        dial.legacy_salt.symlink_to(elsewhere)
+        m._migrate_legacy_dial_id_salt()
+        assert not dial.salt.exists()
+
+    def test_a_malformed_salt_there_is_not_moved(self, dial):
+        dial.legacy_salt.write_text("nonsense\n", encoding="utf-8")
+        m._migrate_legacy_dial_id_salt()
+        assert not dial.salt.exists()
+
+    def test_a_salt_already_in_the_root_owned_place_wins_and_the_old_one_stays(self, dial):
+        dial.salt.write_text(SALT_B + "\n", encoding="utf-8")
+        dial.legacy_salt.write_text(SALT_A + "\n", encoding="utf-8")
+        m._migrate_legacy_dial_id_salt()
+        assert dial.salt.read_text(encoding="utf-8") == SALT_B + "\n"
+        assert dial.legacy_salt.exists()
+
+
+# ---------------------------------------------------------------------------
+# The announced identity is the dial's own
+# ---------------------------------------------------------------------------
+
+@posix_only
+class TestAnnouncementIsDerived:
+    def _announce(self, dial, tmp_path, monkeypatch, given: str):
+        template = tmp_path / "template.service"
+        template.write_text("<txt-record>id=__DIAL_UUID__</txt-record>", encoding="utf-8")
+        service = tmp_path / "autostream-dial.service"
+        monkeypatch.setattr(m, "_DIAL_TEMPLATE", template)
+        monkeypatch.setattr(m, "_DIAL_SERVICE", service)
+        monkeypatch.setattr(m, "_AVAHI_SERVICES_DIR", tmp_path)
+
+        class Args:
+            version, name, pin_recovery = "1.0", "Lounge", False
+            uuid = given
+
+        return m._update_dial_service(Args), service
+
+    def test_an_unsalted_dial_announces_the_identity_derived_from_its_board(
+            self, dial, tmp_path, monkeypatch):
+        rc, service = self._announce(dial, tmp_path, monkeypatch, "feedfacefeedfacefeed")
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+
+    def test_a_salted_dial_announces_the_identity_derived_from_its_salt(
+            self, dial, tmp_path, monkeypatch):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        rc, service = self._announce(dial, tmp_path, monkeypatch, OLD_UUID)
+        assert rc == 0
+        assert f"id={m.derive_dial_id(SALT_A)}<" in service.read_text(encoding="utf-8")
+
+    def test_the_value_the_dial_passes_is_accepted_when_it_matches(
+            self, dial, tmp_path, monkeypatch):
+        rc, service = self._announce(dial, tmp_path, monkeypatch, OLD_UUID)
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+
+    def test_nothing_is_announced_when_the_salt_cannot_be_trusted(
+            self, dial, tmp_path, monkeypatch):
+        dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+        dial.salt.chmod(0o666)
+        rc, service = self._announce(dial, tmp_path, monkeypatch, OLD_UUID)
+        assert rc == 1
+        assert not service.exists()
+
+    def test_nothing_is_announced_when_no_identity_can_be_derived(
+            self, dial, tmp_path, monkeypatch):
+        dial.set_serial("")
+        rc, service = self._announce(dial, tmp_path, monkeypatch, OLD_UUID)
+        assert rc == 1
+        assert not service.exists()
+
+
+# ---------------------------------------------------------------------------
 # Update, reinstall, uninstall
 # ---------------------------------------------------------------------------
 
 def _salted_dial(env: Env, salt: str = SALT_A) -> str:
     _real_python3(env)
     env.put("proc/cpuinfo", f"Serial\t\t: {SERIAL}\n")
-    env.put("var/lib/autostream/dial-id-salt", salt + "\n")
+    env.put("etc/autostream/dial-id-salt", salt + "\n")
     return {SALT_A: "5a51ead2f359f9ad69d5", SALT_B: "7f05b4c5571831a46a48"}[salt]
 
 
@@ -477,11 +722,11 @@ class TestUpdateReinstallUninstall:
     def test_a_reinstall_over_a_salted_dial_keeps_its_salt_and_identity(self, env):
         expected = _salted_dial(env)
         env.put("etc/autostream/autostream-dial.json", json.dumps({**HW, "uuid": expected}))
-        salt_before = (env.state / "dial-id-salt").read_bytes()
+        salt_before = (env.root / "etc/autostream/dial-id-salt").read_bytes()
         r = env.run(REINSTALL, update="false")
         assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == expected
-        assert (env.state / "dial-id-salt").read_bytes() == salt_before
+        assert (env.root / "etc/autostream/dial-id-salt").read_bytes() == salt_before
         hw = json.loads((env.root / "etc/autostream/autostream-dial.json").read_text())
         assert hw["uuid"] == expected and hw["clk_gpio"] == 5
         assert f"DIAL_UUID={expected}" in env.install_state.read_text().splitlines()
@@ -493,7 +738,7 @@ class TestUpdateReinstallUninstall:
         r = env.run(REINSTALL, update="false")
         assert r.returncode == 0, r.stderr
         assert r.stdout.strip() == OLD_UUID
-        assert not (env.state / "dial-id-salt").exists()
+        assert not (env.root / "etc/autostream/dial-id-salt").exists()
 
     def test_an_update_keeps_the_stored_identity_and_asks_for_no_new_one(self, tmp_path):
         from test_dial_installer_hd import _dry_run, _names
@@ -508,14 +753,15 @@ class TestUpdateReinstallUninstall:
 
     def test_uninstalling_a_salted_dial_keeps_its_salt_and_removes_the_rest(self, env):
         script = _uninstall_sandbox(env)
-        env.put("var/lib/autostream/dial-id-salt", SALT_A + "\n")
-        env.put("var/lib/autostream/dial-settings.json", "{}")
-        env.put("var/lib/autostream/sub/other", "x")
+        env.put("etc/autostream/dial-id-salt", SALT_A + "\n")
+        env.put("etc/autostream/autostream-dial.json", "{}")
+        env.put("etc/autostream/sub/other", "x")
         r = _run_uninstaller(env, script, "--yes")
         assert r.returncode == 0, r.stderr
-        assert [p.name for p in env.state.iterdir()] == ["dial-id-salt"]
-        assert (env.state / "dial-id-salt").read_text() == SALT_A + "\n"
-        assert "rm -rf /var/lib/autostream" not in env.calls()
+        assert [p.name for p in (env.root / "etc/autostream").iterdir()] == ["dial-id-salt"]
+        assert (env.root / "etc/autostream/dial-id-salt").read_text() == SALT_A + "\n"
+        assert "rm -rf /etc/autostream" not in env.calls()
+        assert "rm -rf /var/lib/autostream" in env.calls()
         assert "Kept the dial identity salt" in r.stdout
 
     def test_a_fresh_install_after_uninstalling_a_salted_dial_gets_the_salted_identity(self, env):
@@ -525,10 +771,11 @@ class TestUpdateReinstallUninstall:
         r = env.run("generate_dial_id", update="false")
         assert r.stdout.strip() == expected != OLD_UUID
 
-    def test_uninstalling_an_unsalted_dial_removes_the_whole_state_area_as_before(self, env):
+    def test_uninstalling_an_unsalted_dial_removes_both_directories_whole(self, env):
         script = _uninstall_sandbox(env)
         r = _run_uninstaller(env, script, "--yes")
         assert r.returncode == 0, r.stderr
+        assert "rm -rf /etc/autostream" in env.calls()
         assert "rm -rf /var/lib/autostream" in env.calls()
         assert "Kept the dial identity salt" not in r.stdout
 

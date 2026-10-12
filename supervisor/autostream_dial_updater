@@ -95,6 +95,7 @@ import logging
 import os
 import shutil
 import socket
+import stat
 import sys
 import time
 import urllib.error
@@ -112,6 +113,7 @@ from autostream_update_support import (
     _find_systemd_run, _github_latest_release, _is_pre_boot,
     _normalise_update_channel, _read_env_file, _run, _semver_re, _version_key,
     is_active_transient_unit, schedule_locked_installer, stage_release,
+    write_file_safely,
 )
 
 # ---- Paths / constants -------------------------------------------------------
@@ -233,21 +235,14 @@ def write_update_result(status: str, message: str, percent: int = 0, **extra: An
             lines.append(f"{key}={' '.join(kept[key].splitlines())}")
     content = "\n".join(lines) + "\n"
 
-    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    owner = None
     try:
-        tmp.write_text(content, encoding="utf-8")
-        os.chmod(str(tmp), 0o644)
-        try:
-            st = path.stat()
-            os.chown(str(tmp), st.st_uid, st.st_gid)
-        except (OSError, AttributeError):
-            pass
-        os.replace(str(tmp), str(path))
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        st = os.lstat(str(path))
+        if stat.S_ISREG(st.st_mode):
+            owner = (st.st_uid, st.st_gid)
+    except (OSError, AttributeError):
+        pass
+    write_file_safely(path, content, 0o644, owner)
 
 
 def _is_transient_staging_error(exc: BaseException) -> bool:
@@ -584,16 +579,7 @@ def _kept(previous: str) -> str:
 def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
     """Write *content* to *path* through a temporary sibling, then rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    try:
-        tmp.write_text(content, encoding="utf-8")
-        os.chmod(str(tmp), mode)
-        os.replace(str(tmp), str(path))
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+    write_file_safely(path, content, mode)
 
 
 def _swap_file() -> Path:

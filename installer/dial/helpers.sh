@@ -305,10 +305,11 @@ generate_dial_id() {
     # A dial that has been factory reset also has a salt file; the salt is mixed
     # into the hash so the same board is a different device. The installer
     # never creates or changes the salt, and a salt file that is not exactly 32
-    # lowercase hex characters stops the install rather than guessing.
+    # lowercase hex characters, or that is not a root-owned regular file in a
+    # root-owned directory, stops the install rather than guessing.
     # Prints exactly 20 lowercase hexadecimal characters and exits non-zero on failure.
     python3 - "$(_fs_root)" <<'PYEOF'
-import hashlib, os, re, secrets, sys
+import hashlib, os, re, secrets, stat, sys
 from pathlib import Path
 
 root = sys.argv[1]
@@ -332,11 +333,28 @@ def _get_cpu_serial():
         pass
     return ''
 
+# The salt lives where only root can write: a regular file (never a link) owned
+# by the user running this, in a directory only that user can change.
 salt = None
-salt_path = state / 'dial-id-salt'
-if salt_path.exists():
+salt_path = Path(root + '/etc/autostream/dial-id-salt')
+
+def _read_salt(path):
+    me = os.geteuid()
+    d = os.lstat(str(path.parent))
+    if not stat.S_ISDIR(d.st_mode) or d.st_uid != me or d.st_mode & 0o022:
+        raise ValueError('directory')
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        salt = salt_path.read_text(encoding='utf-8').strip()
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != me or st.st_mode & 0o022:
+            raise ValueError('file')
+        return os.read(fd, 4096).decode('utf-8', errors='replace').strip()
+    finally:
+        os.close(fd)
+
+if os.path.lexists(str(salt_path)):
+    try:
+        salt = _read_salt(salt_path)
     except Exception:
         salt = ''
     if not re.fullmatch(r'[0-9a-f]{32}', salt):

@@ -56,6 +56,12 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from autostream_update_support import write_file_safely
+
 # ---------------------------------------------------------------------------
 # Paths and constants (module-level so tests can override them directly).
 # ---------------------------------------------------------------------------
@@ -110,7 +116,7 @@ def read_card_serial() -> str:
 def write_marker(serial: str, method: str) -> None:
     MARKER_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = {"serial": serial, "at": _now_iso(), "method": method}
-    MARKER_FILE.write_text(json.dumps(payload), encoding="utf-8")
+    write_file_safely(MARKER_FILE, json.dumps(payload), 0o644)
 
 
 def read_marker() -> Optional[dict]:
@@ -177,10 +183,7 @@ def update_state_file(updates: dict) -> None:
         out_lines.append(f'{key}="{_sanitize_env_value(value)}"\n')
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
-    tmp.write_text("".join(out_lines), encoding="utf-8")
-    os.chmod(tmp, 0o644)
-    tmp.replace(STATE_FILE)
+    write_file_safely(STATE_FILE, "".join(out_lines), 0o644)
 
 
 def read_state_value(key: str, default: str = "") -> str:
@@ -241,19 +244,13 @@ def write_status_file() -> None:
         "reason": read_state_value("SDMON_CHECK_REASON", ""),
     }
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATUS_FILE.with_suffix(STATUS_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload), encoding="utf-8")
-    os.chmod(tmp, 0o644)
-    tmp.replace(STATUS_FILE)
+    write_file_safely(STATUS_FILE, json.dumps(payload), 0o644)
 
 
 def write_health_json(payload: dict) -> None:
     """Move the tool's successful JSON reply into the About page's file."""
     HEALTH_JSON_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = HEALTH_JSON_FILE.with_suffix(HEALTH_JSON_FILE.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload), encoding="utf-8")
-    os.chmod(tmp, 0o644)
-    tmp.replace(HEALTH_JSON_FILE)
+    write_file_safely(HEALTH_JSON_FILE, json.dumps(payload), 0o644)
 
 
 def remove_health_json() -> None:

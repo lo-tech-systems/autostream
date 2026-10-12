@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import socket
 import subprocess
 import tarfile
@@ -607,3 +609,119 @@ def _is_pre_boot(timestamp_str: str) -> bool:
         return ts < boot_time
     except Exception:
         return (datetime.now(tz=timezone.utc) - ts) > timedelta(minutes=90)
+
+
+# ---- Writing and reading files in directories an unprivileged account owns --
+
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def write_file_safely(
+    path,
+    data,
+    mode: int,
+    owner: Optional[Tuple[int, int]] = None,
+) -> None:
+    """Replace PATH with DATA so that a crash leaves the old or the new file.
+
+    Meant for a privileged process writing into a directory that an
+    unprivileged account can also write to.  The new content goes to a
+    temporary file created in the same directory under an unpredictable name,
+    opened so that it can neither be an existing file nor a link.  Mode and
+    owner are set on the open descriptor, never by name, so nothing placed
+    at the temporary name can redirect them.  The file is then renamed over
+    PATH: a rename replaces whatever is at PATH, including a link, and never
+    follows it.  The temporary file is removed if anything fails.
+
+    DATA is text or bytes.  OWNER is (uid, gid), or None to leave the file
+    with the owner of the calling process.
+    """
+    path = Path(path)
+    directory = path.parent
+    payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC
+    fd = -1
+    tmp = directory / path.name
+    for _ in range(16):
+        tmp = directory / f".{path.name}.{secrets.token_hex(8)}.tmp"
+        try:
+            fd = os.open(str(tmp), flags, mode)
+            break
+        except FileExistsError:
+            continue
+    if fd < 0:
+        raise FileExistsError(f"could not create a temporary file next to {path}")
+    try:
+        try:
+            if owner is not None:
+                os.fchown(fd, owner[0], owner[1])
+            os.fchmod(fd, mode)
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.rename(str(tmp), str(path))
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
+    dir_fd = os.open(str(directory), os.O_RDONLY | _O_CLOEXEC)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def read_file_if_trusted(
+    path,
+    owner_uid: Optional[int],
+    *,
+    check_directory: bool = False,
+    max_bytes: int = 65536,
+) -> str:
+    """Return the text of PATH, but only if a privileged reader may trust it.
+
+    The file must be a regular file reached without following a link, owned
+    by OWNER_UID, and not writable by its group or by others.  An OWNER_UID of
+    None skips the owner and permission rules and keeps the rest (for a file
+    whose content is checked line by line instead).  With
+    CHECK_DIRECTORY the directory holding it must meet the same owner and
+    permission rule, because whoever may write that directory can replace the
+    file whatever the file's own owner.
+
+    Raises FileNotFoundError when the file is absent and ValueError for any
+    refusal, so a caller can tell "not there" from "not to be trusted".
+    """
+    path = Path(path)
+    if check_directory:
+        dst = os.lstat(str(path.parent))
+        if (not stat.S_ISDIR(dst.st_mode) or dst.st_uid != owner_uid
+                or dst.st_mode & 0o022):
+            raise ValueError(f"{path.parent} is not a directory only {owner_uid} can change")
+    try:
+        fd = os.open(str(path), os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC)
+    except FileNotFoundError:
+        raise
+    except OSError as e:
+        raise ValueError(f"{path} cannot be opened safely: {e!r}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        if owner_uid is not None and st.st_uid != owner_uid:
+            raise ValueError(f"{path} is not owned by {owner_uid}")
+        if owner_uid is not None and st.st_mode & 0o022:
+            raise ValueError(f"{path} can be written by others")
+        if st.st_size > max_bytes:
+            raise ValueError(f"{path} is too large")
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(max_bytes + 1)
+    finally:
+        os.close(fd)
+    return raw.decode("utf-8", errors="replace")

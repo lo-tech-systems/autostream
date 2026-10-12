@@ -51,6 +51,11 @@ def load_supervisor_script(name: str, unique_alias: str | None = None) -> Module
     path = repo_root / "supervisor" / name
     alias = unique_alias or name
 
+    # The scripts import the shared support module from their own directory
+    # when installed; give them the same view of the source tree.
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
+
     from importlib.machinery import SourceFileLoader
     loader = SourceFileLoader(alias, str(path))
     spec = importlib.util.spec_from_loader(alias, loader)
