@@ -145,6 +145,14 @@ DIAL_UNIT = "autostream_dial"
 WATCHER_UNIT = "autostream_dial_wifi_watcher"
 STATUS_URL = "http://127.0.0.1:7842/update/status"
 
+# An HD dial (the installer left its marker) is also checked for its page
+# server and its kiosk browser.  The page server is the dial's own loopback
+# listener, the one the kiosk's start-up wait polls.
+KIOSK_UNIT = "autostream_dial_kiosk"
+HD_MARKER_NAME = "hd-kiosk"          # in the state directory
+HD_STATE_URL = "http://127.0.0.1:7843/api/v1/state"
+DRM_DIR = Path(FS_ROOT + "/sys/class/drm")
+
 # The boot unit runs before the virtualenv is trusted, so the transient verify
 # unit uses the system interpreter too.
 SYSTEM_PYTHON = "/usr/bin/python3"
@@ -973,11 +981,63 @@ def _tag_parses(tag: str) -> bool:
     return bool(tag) and _semver_re.match(tag.strip()) is not None
 
 
+def _fetch_hd_state() -> int:
+    """GET the HD page server's state; 0 when it does not answer."""
+    try:
+        with urllib.request.urlopen(HD_STATE_URL, timeout=5) as resp:
+            return getattr(resp, "status", 200)
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+def _display_connected() -> bool:
+    """True when the kernel reports a display on any output.  A dial with no
+    panel plugged in (or a screen that is off) has none, and its kiosk browser
+    has nothing to draw on."""
+    try:
+        for status in DRM_DIR.glob("card*-*/status"):
+            try:
+                if status.read_text(encoding="utf-8").strip() == "connected":
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return False
+
+
+def _hd_health_check() -> Tuple[str, str]:
+    """The HD part of the health check, for a dial with the kiosk marker.
+
+    The page server must answer.  The kiosk browser must be running and not
+    restarting, but only when a display is connected: a browser with no screen
+    to draw on may legitimately exit and restart, and an update must not be
+    rolled back because nobody plugged a panel in.  Same verdicts as
+    _health_check: ok, wait for a condition that may yet come right, or fail.
+    """
+    code = _fetch_hd_state()
+    if code != 200:
+        return "wait", f"HD page server answered {code or 'nothing'}"
+    if not _display_connected():
+        return "ok", "no display connected; kiosk browser not required"
+    state, restarts = _unit_state(KIOSK_UNIT)
+    if restarts > 0:
+        return "fail", f"{KIOSK_UNIT} restarted {restarts} time(s)"
+    if state == "failed":
+        return "fail", f"{KIOSK_UNIT} failed"
+    if state != "active":
+        return "wait", f"{KIOSK_UNIT} is {state or 'not active'}"
+    return "ok", ""
+
+
 def _health_check(tag: str) -> Tuple[str, str]:
     """One pass of the post-boot health check.
 
-    Returns ("ok", ""), ("wait", reason) for a condition that may yet come
-    right, or ("fail", reason) for one that cannot.
+    Returns ("ok", note), ("wait", reason) for a condition that may yet come
+    right, or ("fail", reason) for one that cannot.  An HD dial is checked for
+    its page server and kiosk browser as well as the dial service.
     """
     for unit in (DIAL_UNIT, WATCHER_UNIT):
         state, restarts = _unit_state(unit)
@@ -994,6 +1054,8 @@ def _health_check(tag: str) -> Tuple[str, str]:
         reported = str(body.get("version") or "")
         if _version_key(reported) != _version_key(tag):
             return "fail", f"running version {reported or 'unknown'}, expected {tag}"
+    if (STATE_DIR / HD_MARKER_NAME).exists():
+        return _hd_health_check()
     return "ok", ""
 
 
@@ -1015,6 +1077,8 @@ def cmd_verify() -> Dict[str, Any]:
     while True:
         verdict, reason = _health_check(tag)
         if verdict == "ok":
+            if reason:
+                _log(f"verify: {reason}")
             return _finish_success(swap)
         if verdict == "fail":
             break

@@ -58,6 +58,7 @@ class FakeSystem:
         self.units = {
             mod.DIAL_UNIT: ("active", 0),
             mod.WATCHER_UNIT: ("active", 0),
+            mod.KIOSK_UNIT: ("active", 0),
         }
         self.systemd_run_rc = 0
         self.nginx_rc = 0
@@ -1017,3 +1018,228 @@ class TestCrashMatrixCoverage:
     def test_rollback_sequence_fits_the_interruption_range(self, world, mod):
         swap_in(world, mod, "verifying", first_update=False, migrate=True)
         assert self._count(mod.cmd_rollback) < 26
+
+
+# ---------------------------------------------------------------------------
+# Verify, HD dial: page server and kiosk browser
+# ---------------------------------------------------------------------------
+
+class TestVerifyHd:
+    def hd(self, world, mod, *, panel: str | None = "connected", server=200, **build):
+        """Swap in the release on an HD dial: marker present, a display with
+        the given kernel status (None: no output at all), the page server
+        answering SERVER."""
+        build.setdefault("first_update", False)
+        build.setdefault("migrate", False)
+        world.build_staged(**build)
+        mod.cmd_boot()
+        (world.state / "hd-kiosk").write_text("", encoding="utf-8")
+        mod.DRM_DIR = world.root / "drm"
+        if panel is not None:
+            out = mod.DRM_DIR / "card1-HDMI-A-1"
+            out.mkdir(parents=True)
+            (out / "status").write_text(panel + "\n", encoding="utf-8")
+        mod._fetch_hd_state = server if callable(server) else (lambda: server)
+        serve_status(mod)
+
+    # -- an SPI dial is checked exactly as before --
+
+    def test_an_spi_dial_ignores_the_kiosk_and_the_page_server(self, world, mod, system, clock):
+        world.build_staged(first_update=False, migrate=False)
+        mod.cmd_boot()
+        serve_status(mod)
+        system.units[mod.KIOSK_UNIT] = ("failed", 5)
+        mod._fetch_hd_state = lambda: 0
+        assert mod.cmd_verify()["verified"] is True
+        assert not [c for c in system.calls if c[-1] == mod.KIOSK_UNIT]
+
+    # -- a healthy HD dial --
+
+    def test_an_hd_dial_with_a_running_kiosk_and_page_server_is_verified(
+            self, world, mod, system, clock):
+        self.hd(world, mod)
+        assert mod.cmd_verify()["verified"] is True
+        assert world.result()["STATUS"] == "success"
+        assert system.reboots == 0
+
+    # -- the page server --
+
+    def test_a_page_server_that_never_answers_rolls_the_update_back(
+            self, world, mod, system, clock):
+        self.hd(world, mod, server=0)
+        assert mod.cmd_verify()["rolled_back"] is True
+        assert clock.now >= mod.VERIFY_DEADLINE_S
+        assert world.result()["ROLLED_BACK"] == "1"
+        assert system.reboots == 1
+
+    def test_a_page_server_that_errors_rolls_the_update_back(self, world, mod, system, clock):
+        self.hd(world, mod, server=500)
+        assert mod.cmd_verify()["rolled_back"] is True
+
+    def test_a_slow_page_server_is_waited_for(self, world, mod, system, clock):
+        answers = iter([0, 0, 200])
+        self.hd(world, mod, server=lambda: next(answers))
+        assert mod.cmd_verify()["verified"] is True
+        assert clock.sleeps == 2
+
+    def test_the_page_server_is_required_even_when_no_display_is_connected(
+            self, world, mod, system, clock):
+        self.hd(world, mod, panel="disconnected", server=0)
+        assert mod.cmd_verify()["rolled_back"] is True
+
+    # -- the kiosk browser, with a display --
+
+    def test_a_failed_kiosk_rolls_back_at_once(self, world, mod, system, clock):
+        self.hd(world, mod)
+        system.units[mod.KIOSK_UNIT] = ("failed", 0)
+        assert mod.cmd_verify()["rolled_back"] is True
+        assert clock.sleeps == 0
+
+    def test_a_restarting_kiosk_rolls_back_at_once(self, world, mod, system, clock):
+        self.hd(world, mod)
+        system.units[mod.KIOSK_UNIT] = ("active", 3)
+        assert mod.cmd_verify()["rolled_back"] is True
+        assert clock.sleeps == 0
+
+    def test_a_kiosk_that_never_becomes_active_rolls_back_at_the_deadline(
+            self, world, mod, system, clock):
+        self.hd(world, mod)
+        system.units[mod.KIOSK_UNIT] = ("activating", 0)
+        assert mod.cmd_verify()["rolled_back"] is True
+        assert clock.now >= mod.VERIFY_DEADLINE_S
+
+    def test_a_kiosk_that_is_still_starting_is_waited_for(self, world, mod, system, clock):
+        self.hd(world, mod)
+        states = iter([("activating", 0), ("activating", 0), ("active", 0)])
+
+        def show(cmd, timeout=60):
+            system.calls.append(list(cmd))
+            if cmd[:2] == ["systemctl", "show"]:
+                if cmd[-1] == mod.KIOSK_UNIT:
+                    state, restarts = next(states)
+                else:
+                    state, restarts = system.units[cmd[-1]]
+                return 0, f"ActiveState={state}\nNRestarts={restarts}", ""
+            return 0, "", ""
+
+        mod._run = show
+        assert mod.cmd_verify()["verified"] is True
+
+    def test_a_rollback_for_the_kiosk_restores_the_dial_the_same_way(
+            self, world, mod, system, clock):
+        self.hd(world, mod)
+        system.units[mod.KIOSK_UNIT] = ("failed", 0)
+        mod.cmd_verify()
+        assert world.live_files() == OLD_TREE
+        assert world.venv_marker() == "old-venv"
+        assert (world.fs / "etc" / "foo.conf").read_text(encoding="utf-8") == "old conf"
+
+    # -- no panel attached --
+
+    @pytest.mark.parametrize("units", [("failed", 0), ("active", 4), ("activating", 0),
+                                       ("inactive", 0)])
+    def test_without_a_connected_display_the_kiosk_state_is_not_required(
+            self, world, mod, system, clock, units):
+        self.hd(world, mod, panel="disconnected")
+        system.units[mod.KIOSK_UNIT] = units
+        assert mod.cmd_verify()["verified"] is True
+        assert world.result()["STATUS"] == "success"
+        assert system.reboots == 0
+        assert clock.sleeps == 0
+
+    def test_a_dial_with_no_display_outputs_at_all_is_not_held_to_the_kiosk(
+            self, world, mod, system, clock):
+        self.hd(world, mod, panel=None)
+        system.units[mod.KIOSK_UNIT] = ("failed", 9)
+        assert mod.cmd_verify()["verified"] is True
+
+    def test_the_skipped_kiosk_check_is_noted_in_the_update_log(self, world, mod, system, clock):
+        self.hd(world, mod, panel="disconnected")
+        mod.cmd_verify()
+        assert "no display connected" in mod.LOG_PATH.read_text(encoding="utf-8")
+
+    def test_the_dial_service_is_still_required_without_a_display(self, world, mod, system, clock):
+        self.hd(world, mod, panel="disconnected")
+        system.units[mod.DIAL_UNIT] = ("failed", 0)
+        assert mod.cmd_verify()["rolled_back"] is True
+
+
+class TestDisplayConnected:
+    def outputs(self, mod, tmp_path, **statuses):
+        mod.DRM_DIR = tmp_path / "drm"
+        for name, status in statuses.items():
+            d = mod.DRM_DIR / name
+            d.mkdir(parents=True)
+            (d / "status").write_text(status + "\n", encoding="utf-8")
+
+    def test_a_connected_hdmi_output_counts(self, mod, tmp_path):
+        self.outputs(mod, tmp_path, **{"card1-HDMI-A-1": "connected",
+                                       "card1-HDMI-A-2": "disconnected"})
+        assert mod._display_connected() is True
+
+    def test_a_connected_dsi_panel_counts(self, mod, tmp_path):
+        self.outputs(mod, tmp_path, **{"card0-DSI-1": "connected"})
+        assert mod._display_connected() is True
+
+    def test_only_disconnected_outputs_do_not(self, mod, tmp_path):
+        self.outputs(mod, tmp_path, **{"card1-HDMI-A-1": "disconnected"})
+        assert mod._display_connected() is False
+
+    def test_an_unknown_status_does_not(self, mod, tmp_path):
+        self.outputs(mod, tmp_path, **{"card1-HDMI-A-1": "unknown"})
+        assert mod._display_connected() is False
+
+    def test_no_drm_directory_does_not(self, mod, tmp_path):
+        mod.DRM_DIR = tmp_path / "absent"
+        assert mod._display_connected() is False
+
+    def test_the_card_node_itself_is_not_an_output(self, mod, tmp_path):
+        mod.DRM_DIR = tmp_path / "drm"
+        (mod.DRM_DIR / "card1").mkdir(parents=True)
+        (mod.DRM_DIR / "card1" / "status").write_text("connected\n", encoding="utf-8")
+        assert mod._display_connected() is False
+
+
+class TestHdRollbackRestoresTheHdFiles:
+    """The owned-file restore puts back what the HD path installs."""
+
+    def test_kiosk_unit_rule_module_file_and_marker_are_restored_or_removed(
+            self, world, mod, system):
+        unit = "/etc/systemd/system/autostream_dial_kiosk.service"
+        rule = "/etc/udev/rules.d/99-autostream-backlight.rules"
+        mods = "/etc/modules-load.d/autostream-dial-i2c.conf"
+        marker = "/var/lib/autostream/hd-kiosk"
+        for path, text in ((unit, "new unit"), (rule, "new rule"), (mods, "new mods"),
+                           (marker, "")):
+            target = world.fs / path.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        saved = world.backup / "files" / unit.lstrip("/")
+        saved.parent.mkdir(parents=True)
+        saved.write_text("old unit", encoding="utf-8")
+        (world.backup / "MANIFEST").write_text(
+            f"PRESENT\t{unit}\nABSENT\t{rule}\nABSENT\t{mods}\nABSENT\t{marker}\n",
+            encoding="utf-8")
+        mod._restore_owned_files(world.backup)
+        assert (world.fs / unit.lstrip("/")).read_text(encoding="utf-8") == "old unit"
+        for gone in (rule, mods, marker):
+            assert not (world.fs / gone.lstrip("/")).exists(), gone
+        assert ["systemctl", "daemon-reload"] in system.calls
+
+    def test_the_installer_owns_those_paths_on_an_hd_dial_only(self):
+        import subprocess
+        helpers = REPO_ROOT / "installer" / "dial" / "helpers.sh"
+        out = {}
+        for hd in ("true", "false"):
+            r = subprocess.run(
+                ["bash", "-c", f'DEPLOY="{REPO_ROOT.as_posix()}"; source "{helpers.as_posix()}"; '
+                               f"HD={hd}; owned_files_list"],
+                capture_output=True, text=True, timeout=30)
+            assert r.returncode == 0, r.stderr
+            out[hd] = set(r.stdout.split())
+        hd_paths = {"/etc/systemd/system/autostream_dial_kiosk.service",
+                    "/etc/udev/rules.d/99-autostream-backlight.rules",
+                    "/etc/modules-load.d/autostream-dial-i2c.conf",
+                    "/var/lib/autostream/hd-kiosk"}
+        assert hd_paths <= out["true"]
+        assert not hd_paths & out["false"]

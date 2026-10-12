@@ -88,12 +88,21 @@ dial puts the previous version back and restarts again. This is not retried:
 a version that failed its check is not tried again until you start another
 update.
 
+The check is that the dial's services are running and have not restarted,
+and that the dial reports the new version. On an HD dial it also needs the
+page server to answer and, when a display is connected, the kiosk browser to
+be running and not restarting. With no display connected (nothing plugged in,
+or the screen off) the kiosk browser is not required, so a dial without a
+screen is not rolled back for that.
+
 What a rollback restores:
 
 - The dial's own software.
 - Its Python environment.
 - Its services and configuration files (systemd services, web server and
   discovery settings, and the like) and its recorded installed version.
+- On an HD dial, the kiosk service, the backlight rule and the module list
+  the update installed or changed.
 
 What a rollback does not undo:
 
@@ -102,6 +111,8 @@ What a rollback does not undo:
   any ordinary system upgrade.
 - Changes to the boot configuration for the display and sensor
   connections, which are additive and safe for the older software.
+- On an HD dial, the kiosk browser packages and their account, which an
+  update only adds to.
 
 After a rollback the dial's card shows a red line such as "Update to 0.7.0
 failed - restored 0.6.0". If an update fails without being rolled back, it

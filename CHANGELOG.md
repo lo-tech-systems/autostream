@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- improvement: after an update, an HD dial is only kept on the new version if its
+  page server answers and, with a display connected, its kiosk browser is running.
+  Otherwise the update is rolled back like any other failed check. A dial with no
+  display connected is not held to the kiosk browser, so an update is not rolled
+  back just because no screen is plugged in. SPI dials are checked as before.
 - fix: a dial update no longer wipes its own install log or the dial's log history.
   The log files are now created only when missing, so the install log of an update,
   and of its automatic retries after a reboot, can be read afterwards, and a fresh
