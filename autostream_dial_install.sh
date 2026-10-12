@@ -42,15 +42,23 @@ AUTOSTREAM_RELEASE_TAG="$(detect_install_version)"
 PREVIOUS_RELEASE_TAG="$(_installed_release_tag)"
 
 # ---- Logging ----------------------------------------------------------------
-# On --update: log dir already exists (created on initial install); redirect immediately.
-# On fresh unattended install: log dir is created by create_dirs below; start in HOME,
-# then redirect to persistent path once create_dirs + init_service_dirs have run.
+# The log is appended to, never replaced, so the output of earlier runs and of
+# an update's boot-time retries stays in it; logrotate keeps it bounded.
+# On --update the log directory already exists (created by the initial install)
+# and the output goes to the persistent log alone. A fresh install also writes
+# to a log in the user's home, where it is easy to find; the persistent copy is
+# prepared first so the whole run lands in /var/log/autostream/ and so in the
+# support log bundle.
+INSTALL_LOG="${DIAL_INSTALL_LOGFILE:-/var/log/autostream/dial-install.log}"
 if $UPDATE; then
-    LOGFILE="${DIAL_INSTALL_LOGFILE:-/var/log/autostream/dial-install.log}"
+    LOGFILES=("$INSTALL_LOG")
 else
-    LOGFILE="${HOME:-/root}/autostream_dial_install.log"
+    LOGFILES=("${HOME:-/root}/autostream_dial_install.log")
+    if prepare_install_log "$INSTALL_LOG"; then
+        LOGFILES+=("$INSTALL_LOG")
+    fi
 fi
-exec > >(tee -a "$LOGFILE") 2>&1
+exec > >(tee -a "${LOGFILES[@]}") 2>&1
 echo "=== autostream dial install $(date -Iseconds) ==="
 
 # ---- Flock: serialise concurrent installer invocations ----------------------
@@ -118,11 +126,6 @@ if ! $UPDATE; then
     add_gpio_group
     disable_system_dnsmasq
     network_state_phase       # record existing WiFi so wifi_watcher can reconnect
-    # Redirect to persistent log now that /var/log/autostream/ and log files exist.
-    if [[ ! -t 1 ]]; then
-        LOGFILE=/var/log/autostream/dial-install.log
-        exec > >(tee -a "$LOGFILE") 2>&1
-    fi
 fi
 
 # ---- Packages (fresh install and --update) ----------------------------------

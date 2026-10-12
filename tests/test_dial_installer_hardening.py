@@ -12,12 +12,14 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -958,3 +960,240 @@ class TestInstallerReinstallWiring:
         assert "reinstall" in head
         assert "keeps the dial's name, PIN and settings" in head
         assert "--hd over an SPI dial converts it to HD" in head
+
+
+# ---------------------------------------------------------------------------
+# The install log and the dial's logs survive an update
+# ---------------------------------------------------------------------------
+
+LOG_NAMES = ("autostream-dial.log", "dial-install.log", "dial-update.log",
+             "autostream_wifi_watcher.log")
+LOGROTATE = REPO_ROOT / "system" / "logrotate" / "autostream-dial"
+DIAL_CGI = REPO_ROOT / "dial" / "cgi" / "download-logs.cgi"
+
+# install(1) as GNU does it over an existing file: the old file is unlinked and
+# a new one created, so a descriptor held on the old one writes into the void.
+FAKE_INSTALL_REPLACING = r"""#!/bin/bash
+echo "install $*" >> "$TRACE"
+dest="${@: -1}"
+rm -f "$dest"
+: > "$dest"
+"""
+
+
+def _logdir(env: Env) -> Path:
+    d = env.root / "var" / "log" / "autostream"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _init_dirs(env: Env, **extra):
+    env.fake("install", FAKE_INSTALL_REPLACING)
+    for name in ("chown", "chmod"):
+        env.fake(name, RECORDER)
+    return env.run("init_service_dirs", update="true", **extra)
+
+
+@bash_capable
+class TestInitServiceDirsKeepsLogs:
+    def test_existing_logs_keep_their_content_and_identity(self, env):
+        logs = _logdir(env)
+        before = {}
+        for name in LOG_NAMES:
+            (logs / name).write_text(f"history of {name}\n", encoding="utf-8")
+            before[name] = (logs / name).stat().st_ino
+        r = _init_dirs(env)
+        assert r.returncode == 0, r.stderr
+        for name in LOG_NAMES:
+            assert (logs / name).read_text(encoding="utf-8") == f"history of {name}\n"
+            assert (logs / name).stat().st_ino == before[name], name
+        assert not [c for c in env.calls() if c.startswith("install")]
+
+    def test_a_log_a_running_installer_holds_open_keeps_receiving_output(self, env):
+        logs = _logdir(env)
+        (logs / "dial-install.log").write_text("earlier lines\n", encoding="utf-8")
+        env.fake("install", FAKE_INSTALL_REPLACING)
+        for name in ("chown", "chmod"):
+            env.fake(name, RECORDER)
+        r = env.run(f'exec 3>>"{logs}/dial-install.log"\n'
+                    "init_service_dirs\n"
+                    'echo "written after the directories were set up" >&3\n', update="true")
+        assert r.returncode == 0, r.stderr
+        text = (logs / "dial-install.log").read_text(encoding="utf-8")
+        assert text == "earlier lines\nwritten after the directories were set up\n"
+
+    def test_missing_logs_are_created_with_the_neighbouring_owner_and_mode(self, env):
+        _logdir(env)
+        r = _init_dirs(env)
+        assert r.returncode == 0, r.stderr
+        installs = [c for c in env.calls() if c.startswith("install")]
+        assert len(installs) == 4
+        assert any(c.startswith("install -m 0640 -o autostream -g adm /dev/null")
+                   and c.endswith("autostream-dial.log") for c in installs)
+        for name in LOG_NAMES[1:]:
+            assert any(c.startswith("install -m 0640 -o root -g adm /dev/null")
+                       and c.endswith(name) for c in installs), name
+
+    def test_owner_and_mode_of_existing_logs_are_corrected_in_place(self, env):
+        logs = _logdir(env)
+        for name in LOG_NAMES:
+            (logs / name).write_text("x", encoding="utf-8")
+        _init_dirs(env)
+        calls = env.calls()
+        assert f"chown autostream:adm {logs}/autostream-dial.log" in calls
+        for name in LOG_NAMES[1:]:
+            assert f"chown root:adm {logs}/{name}" in calls, name
+        for name in LOG_NAMES:
+            assert f"chmod 0640 {logs}/{name}" in calls, name
+
+
+@bash_capable
+class TestPrepareInstallLog:
+    def test_creates_the_directory_and_file_when_absent(self, env):
+        env.fake("install", FAKE_INSTALL_REPLACING)
+        for name in ("chown", "chmod"):
+            env.fake(name, RECORDER)
+        target = env.tmp / "newdir" / "dial-install.log"
+        r = env.run(f'prepare_install_log "{target}"', update="false")
+        assert r.returncode == 0, r.stderr
+        assert target.exists()
+        assert f"install -m 0640 -o root -g adm /dev/null {target}" in env.calls()
+
+    def test_an_existing_log_is_kept(self, env):
+        env.fake("install", FAKE_INSTALL_REPLACING)
+        for name in ("chown", "chmod"):
+            env.fake(name, RECORDER)
+        target = env.tmp / "dial-install.log"
+        target.write_text("previous run\n", encoding="utf-8")
+        r = env.run(f'prepare_install_log "{target}"', update="false")
+        assert r.returncode == 0, r.stderr
+        assert target.read_text(encoding="utf-8") == "previous run\n"
+        assert not [c for c in env.calls() if c.startswith("install")]
+
+    def test_an_unwritable_place_is_reported_to_the_caller(self, env):
+        (env.tmp / "afile").write_text("", encoding="utf-8")
+        r = env.run(f'prepare_install_log "{env.tmp}/afile/dial-install.log"; echo "rc=$?"',
+                    update="false")
+        assert "rc=1" in r.stdout or r.returncode != 0
+
+
+@bash_capable
+class TestInstallerLogging:
+    """The real installer script with every helper replaced by a recorder."""
+
+    def _log_text(self, tmp_path):
+        return (tmp_path / "install.log").read_text(encoding="utf-8")
+
+    def test_an_update_appends_to_the_install_log_and_keeps_what_was_there(self, tmp_path):
+        from test_dial_installer_hd import _dry_run
+        (tmp_path / "install.log").write_text("=== earlier attempt ===\nit failed here\n",
+                                              encoding="utf-8")
+        r, _calls = _dry_run(tmp_path, update=True)
+        assert r.returncode == 0, r.stderr
+        text = self._log_text(tmp_path)
+        assert text.startswith("=== earlier attempt ===\nit failed here\n")
+        assert "=== autostream dial install" in text
+
+    def test_a_second_update_adds_a_second_section(self, tmp_path):
+        from test_dial_installer_hd import _dry_run
+        (tmp_path / "first").mkdir()
+        (tmp_path / "second").mkdir()
+        _dry_run(tmp_path / "first", update=True)
+        first = (tmp_path / "first" / "install.log").read_text(encoding="utf-8")
+        (tmp_path / "second" / "install.log").write_text(first, encoding="utf-8")
+        _dry_run(tmp_path / "second", update=True)
+        text = (tmp_path / "second" / "install.log").read_text(encoding="utf-8")
+        assert text.startswith(first)
+        assert text.count("=== autostream dial install") == 2
+
+    def test_a_fresh_install_writes_the_whole_run_to_the_persistent_log_and_to_home(self, tmp_path):
+        from test_dial_installer_hd import _dry_run
+        r, _calls = _dry_run(tmp_path, update=False)
+        assert r.returncode == 0, r.stderr
+        home_log = (tmp_path / "autostream_dial_install.log").read_text(encoding="utf-8")
+        assert "=== autostream dial install" in home_log
+        persistent = self._log_text(tmp_path)
+        assert "=== autostream dial install" in persistent
+        assert "autostream dial installation complete." in persistent
+        assert persistent == home_log
+
+    def test_a_fresh_install_prepares_the_persistent_log_before_its_first_output(self, tmp_path):
+        from test_dial_installer_hd import _dry_run, _names
+        r, calls = _dry_run(tmp_path, update=False)
+        names = _names(calls)
+        assert names.index("prepare_install_log") < names.index("show_info_and_prompt")
+
+    def test_installer_text_no_longer_redirects_the_log_half_way_through(self):
+        text = INSTALLER.read_text(encoding="utf-8")
+        assert text.count("exec > >(tee") == 1
+        assert "tee -a \"${LOGFILES[@]}\"" in text
+
+
+@bash_capable
+class TestApplianceInstallLogIsNotTruncated:
+    def test_a_second_run_appends_to_the_log_of_the_first(self, tmp_path):
+        log = tmp_path / "autostream_install.log"
+        log.write_text("[INFO] first run\n[ERROR] it failed\n", encoding="utf-8")
+        script = (
+            f'source "{REPO_ROOT}/installer/lib/helpers.sh"\n'
+            f'LOGFILE="{log}" SCRIPT_NAME=autostream_install.sh ORIG_USER=pi ORIG_HOME=/home/pi\n'
+            "init_logging\n"
+        )
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        text = log.read_text(encoding="utf-8")
+        assert text.startswith("[INFO] first run\n[ERROR] it failed\n")
+        assert "autostream_install.sh starting at" in text
+
+    def test_a_missing_log_is_created(self, tmp_path):
+        log = tmp_path / "sub" / "autostream_install.log"
+        script = (
+            f'source "{REPO_ROOT}/installer/lib/helpers.sh"\n'
+            f'LOGFILE="{log}" SCRIPT_NAME=autostream_install.sh ORIG_USER=pi ORIG_HOME=/home/pi\n'
+            "init_logging\n"
+        )
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, r.stderr
+        assert "starting at" in log.read_text(encoding="utf-8")
+
+
+def _bundle_names(log_dir: Path) -> set[str]:
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+           "REQUEST_METHOD": "POST", "HTTP_X_REQUESTED_WITH": "XMLHttpRequest",
+           "HTTP_HOST": "dial.local", "DIAL_LOG_DIR": str(log_dir)}
+    r = subprocess.run(["bash", str(DIAL_CGI)], capture_output=True, env=env, timeout=30)
+    assert r.returncode == 0, r.stderr
+    body = r.stdout[r.stdout.index(b"\r\n\r\n") + 4:]
+    return {n for n in zipfile.ZipFile(io.BytesIO(body)).namelist() if not n.endswith("/")}
+
+
+@bash_capable
+@pytest.mark.skipif(shutil.which("zip") is None, reason="zip is not installed")
+class TestSupportBundleCarriesTheInstallLogs:
+    def test_the_install_and_update_logs_and_their_rotations_are_in_the_dial_bundle(self, tmp_path):
+        for base in ("dial-install.log", "dial-update.log"):
+            (tmp_path / base).write_text("current\n", encoding="utf-8")
+            (tmp_path / f"{base}.1").write_text("yesterday\n", encoding="utf-8")
+            (tmp_path / f"{base}.2.gz").write_bytes(b"\x1f\x8b")
+        names = _bundle_names(tmp_path)
+        for base in ("dial-install.log", "dial-update.log"):
+            for suffix in ("", ".1", ".2.gz"):
+                assert f"autostream-dial/{base}{suffix}" in names, (base, suffix, sorted(names))
+
+
+class TestLogrotateCoversTheInstallLogs:
+    def _stanza(self, log: str) -> str:
+        text = LOGROTATE.read_text(encoding="utf-8")
+        for block in re.findall(r"((?:/\S+\n)+)?(/\S+ \{.*?\n\})", text, re.S):
+            body = "".join(block)
+            if log in body:
+                return body
+        raise AssertionError(f"{log} is not rotated")
+
+    @pytest.mark.parametrize("log", ["dial-install.log", "dial-update.log"])
+    def test_the_log_is_rotated_daily_with_a_bounded_history_and_matching_ownership(self, log):
+        body = self._stanza(log)
+        assert re.search(r"^\s*daily\s*$", body, re.M)
+        assert re.search(r"^\s*rotate\s+14\s*$", body, re.M)
+        assert re.search(r"^\s*compress\s*$", body, re.M)
+        assert re.search(r"^\s*create\s+0640\s+root\s+adm\s*$", body, re.M)

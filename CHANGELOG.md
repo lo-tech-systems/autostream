@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a dial update no longer wipes its own install log or the dial's log history.
+  The log files are now created only when missing, so the install log of an update,
+  and of its automatic retries after a reboot, can be read afterwards, and a fresh
+  install writes its whole log to `/var/log/autostream/dial-install.log` as well as
+  to the home directory, so it is in the Download Logs bundle. The appliance
+  installer also appends to its install log instead of replacing it on each run.
 - fix: running the dial installer again over a dial that is already installed no
   longer resets it. The dial keeps its name, PIN, update and display settings, an
   SPI dial stays SPI and an HD dial stays HD, and `--hd` over an SPI dial turns it

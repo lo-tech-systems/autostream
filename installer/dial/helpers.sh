@@ -80,11 +80,36 @@ init_service_dirs() {
     chmod 0755 /etc/autostream
     chown autostream:autostream /var/lib/autostream
     chmod 0750 /var/lib/autostream
-    # Create initial log files with correct owner/mode before logrotate's first rotation.
-    install -m 0640 -o autostream -g adm /dev/null /var/log/autostream/autostream-dial.log
-    install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-install.log
-    install -m 0640 -o root -g adm /dev/null /var/log/autostream/dial-update.log
-    install -m 0640 -o root -g adm /dev/null /var/log/autostream/autostream_wifi_watcher.log
+    # Create the log files with the right owner and mode before logrotate's
+    # first rotation. A file that is already there is kept: install(1) over it
+    # would replace it, wiping the dial's log history on every update along with
+    # the log the running installer is writing to. Owner and mode are corrected
+    # in place instead.
+    local logdir f
+    logdir="$(_fs_root)/var/log/autostream"
+    [[ -e "${logdir}/autostream-dial.log" ]] || \
+        install -m 0640 -o autostream -g adm /dev/null "${logdir}/autostream-dial.log"
+    chown autostream:adm "${logdir}/autostream-dial.log"
+    chmod 0640 "${logdir}/autostream-dial.log"
+    for f in dial-install.log dial-update.log autostream_wifi_watcher.log; do
+        [[ -e "${logdir}/${f}" ]] || install -m 0640 -o root -g adm /dev/null "${logdir}/${f}"
+        chown root:adm "${logdir}/${f}"
+        chmod 0640 "${logdir}/${f}"
+    done
+}
+
+prepare_install_log() {
+    # The persistent install log, ready before a fresh install writes its first
+    # line: the directory and the file are created if absent, an existing file
+    # is kept and appended to, and it is root:adm 0640 like the other dial logs,
+    # which puts the whole run in the support log bundle. Fails (so the caller
+    # logs to the user's home alone) when the file cannot be prepared.
+    # Usage: prepare_install_log FILE
+    local file="$1"
+    mkdir -p "$(dirname "${file}")" || return 1
+    [[ -e "${file}" ]] || install -m 0640 -o root -g adm /dev/null "${file}" || return 1
+    chown root:adm "${file}" 2>/dev/null || true
+    chmod 0640 "${file}" 2>/dev/null || true
 }
 
 add_gpio_group() {
@@ -1141,7 +1166,8 @@ WARNING:
 - Use on a clean image only.
 - Do NOT run on machines containing important data or multi-purpose systems.
 
-A full activity log will be written to ~/autostream_dial_install.log
+A full activity log will be written to ~/autostream_dial_install.log and
+/var/log/autostream/dial-install.log
 =============================================================================
 EOF
     [[ "${HD:-false}" == true ]] && echo "HD dial: also installs the kiosk browser (cog) and its service."

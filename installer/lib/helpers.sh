@@ -16,7 +16,10 @@ error() { echo "[ERROR] $*"; }
 
 init_logging() {
   mkdir -p "$(dirname "${LOGFILE}")" || true
-  : > "${LOGFILE}"
+  # Appended to, not truncated: the log of an earlier run (a failed update
+  # that is about to be retried, say) must survive the next one. In
+  # ${APP_LOG_DIR} logrotate keeps it bounded.
+  [[ -e "${LOGFILE}" ]] || : > "${LOGFILE}"
   chmod 0644 "${LOGFILE}" || true
   exec > >(tee -a "${LOGFILE}") 2>&1
   echo "[INFO] ${SCRIPT_NAME} starting at $(date -Is)"
