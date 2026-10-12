@@ -2029,10 +2029,11 @@ refresh_package_lists() {
     # it installs anything: a freshly written card can carry lists that are
     # empty or out of date, and an install against them stops at "Unable to
     # locate package" or a 404. Runs once per install or update, ahead of the
-    # first package step. When the lists cannot be fetched (no network) the
-    # installer stops here, before a package has been touched.
-    if ! apt_step apt-get update -o APT::Update::Error-Mode=any; then
-        echo "ERROR: could not refresh the package lists; check the network connection and run the installer again." >&2
+    # first package step. A source that cannot be read while the network is up is
+    # warned about and the lists already held are used; when the refresh fails
+    # outright the installer stops here, before a package has been touched.
+    if ! apt_refresh_lists apt_step_retrying; then
+        echo "ERROR: could not refresh the package lists; deal with the cause shown above and run the installer again." >&2
         return 1
     fi
 }

@@ -94,7 +94,9 @@
   Wi-Fi. The dial and appliance installers now wait up to nine minutes for the
   network to come back before each step that downloads, and run a step again
   once if it failed because the network was gone. After a final failure the log
-  says the network was not available. An unattended run that fails also no longer
+  says the network was not available. When the network is up but a package
+  source cannot be read, the install or update carries on with the lists it
+  already holds and the log says which source could not be read. An unattended run that fails also no longer
   prints a message about a terminal.
 - fix: the dial and appliance installers now check each sudoers file with visudo
   before it replaces the installed one. A file with a syntax error stops the

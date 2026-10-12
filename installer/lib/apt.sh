@@ -264,3 +264,55 @@ network_step() {
   echo "ERROR: the network was not available, so this step failed: $*" >&2
   return "${rc}"
 }
+
+apt_refresh_lists() {
+  # Refresh the package lists. Usage: apt_refresh_lists [WRAPPER...]; the
+  # wrapper words, if any, go in front of the apt-get command (the dial's lock
+  # retry, or env to set the frontend).
+  # The first try treats any index that could not be fetched as a failure, so
+  # that a link lost during the refresh is noticed rather than left to run
+  # on stale lists. If that fails and the network is down, wait for it and
+  # try again the same way. If it fails with the network up, the trouble is
+  # with one archive (unreachable, or part-way through an update of its own):
+  # run the refresh once more without the strict option and go on with the
+  # lists already held for the sources that could not be read, saying so. Only
+  # a refresh that fails outright fails the step.
+  local out rc=0 failing
+  out="$(mktemp)"
+  network_wait || true
+  network_attempt "${out}" "$@" apt-get update -o APT::Update::Error-Mode=any || rc=$?
+  if (( rc == 0 )); then
+    rm -f "${out}"
+    return 0
+  fi
+  if ! network_usable; then
+    if network_wait; then
+      echo "The package lists could not be refreshed because the network was not available; trying once more." >&2
+      rc=0
+      network_attempt "${out}" "$@" apt-get update -o APT::Update::Error-Mode=any || rc=$?
+      if (( rc == 0 )); then
+        rm -f "${out}"
+        return 0
+      fi
+    fi
+  fi
+  if ! network_usable; then
+    rm -f "${out}"
+    echo "ERROR: could not refresh the package lists because the network was not available." >&2
+    return "${rc}"
+  fi
+  failing="$(grep -E '^(Err:|[EW]: Failed to fetch|[EW]: GPG error|[EW]: The repository)' "${out}" | head -n 5)" || true
+  rc=0
+  network_attempt "${out}" "$@" apt-get update || rc=$?
+  rm -f "${out}"
+  if (( rc != 0 )); then
+    echo "ERROR: could not refresh the package lists (apt-get update failed with status ${rc})." >&2
+    return "${rc}"
+  fi
+  echo "WARNING: some package lists could not be refreshed, so the lists already on this system are being used for them." >&2
+  if [[ -n "${failing}" ]]; then
+    echo "The sources that could not be read:" >&2
+    sed 's/^/  /' <<< "${failing}" >&2
+  fi
+  return 0
+}

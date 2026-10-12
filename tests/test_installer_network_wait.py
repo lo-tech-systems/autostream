@@ -468,7 +468,7 @@ FETCH_COMMAND = re.compile(
     r"apt-get (update|upgrade|install)\b|\bpip3? install\b|-m pip install\b|"
     r"\bgit (-c \S+ )?(-C \S+ )?(clone|fetch)\b|\bcurl -f")
 # Wrappers that put a command behind the wait.
-WRAPPED = re.compile(r"^\s*((if|!|\()\s*)*(network_step|apt_step|apt_install)\b")
+WRAPPED = re.compile(r"^\s*((if|!|\()\s*)*(network_step|apt_step|apt_install|apt_refresh_lists)\b")
 # Functions that only run under network_step, and local-only curl calls.
 INSIDE_A_WRAPPED_FUNCTION = ("fetch_sdmon_source()", "fetch_owntone_apt_repo_files()")
 
@@ -514,7 +514,7 @@ def test_the_appliance_upgrade_phase_waits_for_the_network_after_the_upgrade_tex
     text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
     body = text[text.index("system_upgrade_phase() {"):]
     body = body[:body.index("\n}\n")]
-    assert "apt-get update" in body and "apt-get upgrade" in body
+    assert "apt_refresh_lists" in body and "apt-get upgrade" in body
     assert body.index("apt-get upgrade") < body.index("network_wait")
 
 
@@ -531,12 +531,28 @@ def test_both_installers_share_the_one_wait_function_text():
 # ---------------------------------------------------------------------------
 
 # apt-get as it behaves: a list refresh that cannot fetch exits 0 unless it is
-# asked to treat any fetch failure as an error. The first refresh cannot fetch;
+# asked to treat any fetch failure as an error. By default the first refresh
+# cannot fetch (APT_MODE=bad_source: one archive is unreadable while the network
+# is up; APT_MODE=broken: every refresh fails outright);
 # the network comes back after two waits.
 FAKE_UPDATING_APT = r"""#!/bin/bash
 echo "apt-get $*" >> "$NET/events"
 if [[ "$1" == update ]]; then
     n=$(cat "$NET/runs" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$NET/runs"
+    case "${APT_MODE:-}" in
+        bad_source)
+            if [[ "$*" == *"APT::Update::Error-Mode=any"* ]]; then
+                echo "Err:3 http://archive.raspberrypi.com/debian trixie InRelease" >&2
+                echo "E: Failed to fetch http://archive.raspberrypi.com/debian/dists/trixie/InRelease  Hash Sum mismatch" >&2
+                echo "E: Some index files failed to download." >&2
+                exit 100
+            fi
+            echo "W: Failed to fetch http://archive.raspberrypi.com/debian/dists/trixie/InRelease" >&2
+            exit 0 ;;
+        broken)
+            echo "E: Problem renaming the file /var/cache/apt/pkgcache.bin" >&2
+            exit 100 ;;
+    esac
     if (( n == 1 )); then
         echo down > "$NET/state"; echo 2 > "$NET/back_after"
         if [[ "$*" == *"APT::Update::Error-Mode=any"* ]]; then
@@ -555,7 +571,7 @@ UPDATE_OPTION = "APT::Update::Error-Mode=any"
 
 
 @bash_capable
-class TestAFailedListRefreshIsRetried:
+class TestAFailedListRefresh:
     def _env(self, tmp_path: Path) -> tuple[Env, Net]:
         env = Env(tmp_path)
         net = Net(tmp_path)
@@ -564,26 +580,55 @@ class TestAFailedListRefreshIsRetried:
         env.fake("apt-get", FAKE_UPDATING_APT)
         return env, net
 
-    def test_the_dial_refresh_fails_the_step_and_is_retried_when_the_fetch_fails(
-            self, tmp_path):
+    def test_the_dial_refresh_is_retried_when_the_link_was_lost_during_it(self, tmp_path):
         env, net = self._env(tmp_path)
         r = env.run("refresh_package_lists", NET=net.dir.as_posix())
         assert r.returncode == 0, r.stderr
         assert net.runs() == 2
         updates = [e for e in net.events() if e.startswith("apt-get update")]
         assert len(updates) == 2 and all(UPDATE_OPTION in u for u in updates)
+        assert "WARNING" not in r.stderr
 
     def test_the_appliance_refresh_is_retried_the_same_way(self, tmp_path):
         net = Net(tmp_path)
         Env.fake_script(net.bin / "apt-get", FAKE_UPDATING_APT)
-        func_text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
-        body = func_text[func_text.index("system_upgrade_phase() {"):]
-        body = body[:body.index("\n}\n") + 3]
-        update_line = next(ln for ln in body.splitlines()
-                           if "apt-get update" in ln and not ln.lstrip().startswith("#")).strip()
-        r = net.run(update_line)
+        r = net.run("apt_refresh_lists env DEBIAN_FRONTEND=noninteractive")
         assert r.returncode == 0, r.stderr
         assert net.runs() == 2
+        assert net.sleeps() == ["sleep 5"] * 2
+
+    def test_one_bad_source_with_the_network_up_warns_and_carries_on(self, tmp_path):
+        net = Net(tmp_path)
+        Env.fake_script(net.bin / "apt-get", FAKE_UPDATING_APT)
+        r = net.run("apt_refresh_lists env DEBIAN_FRONTEND=noninteractive",
+                    APT_MODE="bad_source")
+        assert r.returncode == 0, r.stderr
+        updates = [e for e in net.events() if e.startswith("apt-get update")]
+        assert len(updates) == 2
+        assert UPDATE_OPTION in updates[0] and UPDATE_OPTION not in updates[1]
+        assert net.sleeps() == []
+        assert "WARNING: some package lists could not be refreshed" in r.stderr
+        assert "lists already on this system are being used" in r.stderr
+        assert "archive.raspberrypi.com" in r.stderr
+
+    def test_a_refresh_that_fails_outright_with_the_network_up_fails_without_blaming_it(
+            self, tmp_path):
+        net = Net(tmp_path)
+        Env.fake_script(net.bin / "apt-get", FAKE_UPDATING_APT)
+        r = net.run("apt_refresh_lists env DEBIAN_FRONTEND=noninteractive",
+                    APT_MODE="broken")
+        assert r.returncode == 100
+        assert "could not refresh the package lists (apt-get update failed with status 100)" in r.stderr
+        assert "network" not in r.stderr.lower()
+        assert net.sleeps() == []
+
+    def test_a_network_that_never_returns_fails_the_refresh_naming_the_network(self, tmp_path):
+        net = Net(tmp_path, up=False)
+        Env.fake_script(net.bin / "apt-get", FAKE_UPDATING_APT)
+        r = net.run("apt_refresh_lists env DEBIAN_FRONTEND=noninteractive")
+        assert r.returncode == 100
+        assert "because the network was not available" in r.stderr
+        assert "WARNING: some package lists" not in r.stderr
 
     def test_without_the_option_the_same_failure_would_go_unnoticed(self, tmp_path):
         # Pins what the option is for: apt exits 0 and the stale lists are used.
@@ -593,18 +638,21 @@ class TestAFailedListRefreshIsRetried:
         assert r.returncode == 0
         assert net.runs() == 1
 
-    def test_every_list_refresh_in_the_installers_carries_the_option(self):
+    def test_every_list_refresh_in_the_installers_goes_through_the_one_wrapper(self):
         seen = 0
         for path in (APPLIANCE_INSTALLER, DIAL_HELPERS, APPLIANCE_HELPERS,
                      REPO_ROOT / "installer" / "lib" / "owntone.sh",
                      REPO_ROOT / "installer" / "lib" / "vibra.sh",
                      REPO_ROOT / "installer" / "lib" / "bluetooth.sh"):
             for line, _func in _logical_lines(path):
-                if re.search(r"apt-get update\b", line) and not line.lstrip().startswith(
-                        ("echo ", "info ", "warn ", "error ")) and "assert" not in line:
+                assert not re.search(r"apt-get update\b", line) or line.lstrip().startswith(
+                    ("echo ", "info ", "warn ", "error ")) or "assert" in line, (
+                    path.name, line.strip())
+                if re.search(r"\bapt_refresh_lists\b", line):
                     seen += 1
-                    assert UPDATE_OPTION in line, (path.name, line.strip())
         assert seen >= 5
+        wrapper = APT_SH.read_text(encoding="utf-8")
+        assert UPDATE_OPTION in wrapper
 
 
 # ---------------------------------------------------------------------------

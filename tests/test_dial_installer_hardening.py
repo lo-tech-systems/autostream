@@ -462,7 +462,7 @@ class TestApplianceRecoversInterruptedPackages:
 
     def test_install_text_recovers_before_the_first_apt_command(self):
         func = _function_text(APPLIANCE_INSTALLER, "bootstrap_phase")
-        assert func.index("recover_interrupted_packages") < func.index("apt-get update")
+        assert func.index("recover_interrupted_packages") < func.index("apt_refresh_lists")
 
     def test_installer_sources_the_shared_library(self):
         text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
