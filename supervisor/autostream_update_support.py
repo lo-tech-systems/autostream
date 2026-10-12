@@ -740,3 +740,56 @@ def read_file_if_trusted(
     finally:
         os.close(fd)
     return raw.decode("utf-8", errors="replace")
+
+
+# ---- The root-only directory updates stage into and hand off through --------
+
+UPDATE_STATE_DIR = Path("/var/lib/autostream-update")
+
+
+def trusted_state_dir(
+    path=UPDATE_STATE_DIR,
+    owner_uid: int = 0,
+    *,
+    create: bool = False,
+) -> Path:
+    """Return PATH once it is shown to be a directory only OWNER_UID can use.
+
+    This is the one way the updaters open the directory that holds what root
+    executes and trusts while an update is staged, handed to the next boot or
+    retried.  It must be a real directory, not a link, owned by OWNER_UID
+    (root outside the tests) with mode 0700.  Anything else is refused, so a
+    directory made by hand, or weakened since it was made, is never used.
+
+    With CREATE an absent directory is made first (mode 0700, set on the open
+    directory itself).  A directory that is there is checked, never repaired:
+    whatever it holds is not to be trusted if it was ever looser than this.
+
+    Raises FileNotFoundError when the directory is absent and ValueError when
+    it is there but not fit to use.
+    """
+    path = Path(path)
+    if create:
+        try:
+            os.mkdir(str(path), 0o700)
+        except FileExistsError:
+            pass
+        else:
+            fd = os.open(
+                str(path),
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _O_NOFOLLOW | _O_CLOEXEC,
+            )
+            try:
+                os.fchmod(fd, 0o700)
+            finally:
+                os.close(fd)
+    st = os.lstat(str(path))
+    if stat.S_ISLNK(st.st_mode):
+        raise ValueError(f"{path} is a link")
+    if not stat.S_ISDIR(st.st_mode):
+        raise ValueError(f"{path} is not a directory")
+    if st.st_uid != owner_uid:
+        raise ValueError(f"{path} is not owned by {owner_uid}")
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        raise ValueError(f"{path} has mode {stat.S_IMODE(st.st_mode):o}, not 700")
+    return path

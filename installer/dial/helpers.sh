@@ -28,6 +28,10 @@ source "${BASH_SOURCE[0]%/*}/../lib/boot_files.sh"
 # installer.
 # shellcheck source=../lib/state_files.sh
 source "${BASH_SOURCE[0]%/*}/../lib/state_files.sh"
+# The root-only directory an update stages into, shared with the appliance
+# installer.
+# shellcheck source=../lib/update_state.sh
+source "${BASH_SOURCE[0]%/*}/../lib/update_state.sh"
 
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
@@ -80,6 +84,10 @@ create_dirs() {
     mkdir -p /opt/autostream
     mkdir -p /etc/autostream
     mkdir -p /var/lib/autostream
+    ensure_update_state_dir "$(_update_dir)" || {
+        echo "ERROR: could not prepare $(_update_dir)." >&2
+        return 1
+    }
     mkdir -p /var/log/autostream
     mkdir -p /usr/local/libexec/autostream
     mkdir -p /usr/local/share/autostream/avahi
@@ -1525,11 +1533,13 @@ install_venv_build_packages() {
 #     BACKUP_DIR     the update-prev directory above
 #
 # AUTOSTREAM_FS_ROOT prefixes every path (tests use a scratch root);
-# AUTOSTREAM_OPT_DIR and AUTOSTREAM_STATE_DIR override the two directories
-# individually; AUTOSTREAM_ADMIN_BIN overrides the admin wrapper.
+# AUTOSTREAM_OPT_DIR, AUTOSTREAM_STATE_DIR and AUTOSTREAM_UPDATE_DIR override the
+# three directories individually; AUTOSTREAM_ADMIN_BIN overrides the admin wrapper.
 _fs_root()   { local r="${AUTOSTREAM_FS_ROOT:-}"; printf '%s\n' "${r%/}"; }
 _opt_dir()   { printf '%s\n' "${AUTOSTREAM_OPT_DIR:-$(_fs_root)/opt/autostream}"; }
 _state_dir() { printf '%s\n' "${AUTOSTREAM_STATE_DIR:-$(_fs_root)/var/lib/autostream}"; }
+# The root-only directory the staged release and the boot hand-off live in.
+_update_dir() { printf '%s\n' "${AUTOSTREAM_UPDATE_DIR:-$(_fs_root)/var/lib/autostream-update}"; }
 _admin_bin() {
     printf '%s\n' "${AUTOSTREAM_ADMIN_BIN:-$(_fs_root)/usr/local/libexec/autostream/autostream_admin}"
 }

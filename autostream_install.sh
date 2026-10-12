@@ -82,6 +82,8 @@ source "${INSTALLER_LIB}/sudoers.sh"
 source "${INSTALLER_LIB}/swap.sh"
 # shellcheck source=installer/lib/state_files.sh
 source "${INSTALLER_LIB}/state_files.sh"
+# shellcheck source=installer/lib/update_state.sh
+source "${INSTALLER_LIB}/update_state.sh"
 # shellcheck source=installer/lib/system_tuning.sh
 source "${INSTALLER_LIB}/system_tuning.sh"
 # shellcheck source=installer/lib/owntone.sh
@@ -115,6 +117,7 @@ else
   LOGFILE="${APP_LOG_DIR}/autostream_install.log"
 fi
 STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin area
+UPDATE_STATE_DIR="/var/lib/autostream-update"   # root-only: what an update executes and trusts
 LIBEXEC_DIR="/usr/local/libexec/autostream"
 
 STATE_FILE="${STAMP_DIR}/install-state.env"
@@ -473,6 +476,16 @@ PERCENT_COMPLETE="${percent}"
 EOF
   install -m 0600 -o root -g root "${tmp}" "${UPDATE_RESULT_FILE}"
   rm -f "${tmp}"
+}
+
+# prepare_update_state_dir: the root-only directory an update stages into and
+# keeps its hand-off state in, made on a fresh install and on every update so
+# a device that predates it gains it from the update that first needs it.
+prepare_update_state_dir() {
+  if ! ensure_update_state_dir "${UPDATE_STATE_DIR}"; then
+    error "Could not prepare ${UPDATE_STATE_DIR}."
+    exit 1
+  fi
 }
 
 update_progress() {
@@ -847,6 +860,7 @@ bootstrap_phase() {
   mkdir -p "${AUTOSTREAM_DIR}" || true
   mkdir -p "${INSTALL_DIR}" "${APP_LOG_DIR}"
   mkdir -p "${STAMP_DIR}"
+  prepare_update_state_dir
   mkdir -p /etc/autostream
   mkdir -p "${LIBEXEC_DIR}"
 
@@ -1775,6 +1789,7 @@ run_update() {
   PROMPT_REBOOT_ON_EXIT=0
   UPDATE_RUN_AT="$(date -Is)"
   CURRENT_PHASE="preflight"
+  prepare_update_state_dir
   write_update_result "in_progress" "Starting update" 0
 
   CURRENT_PHASE="update page"

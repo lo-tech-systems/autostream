@@ -154,6 +154,7 @@ else
     salt_kept=false
 fi
 best_effort rm -rf /var/lib/autostream
+best_effort rm -rf /var/lib/autostream-update
 rm -f  /run/autostream/autostream-dial-setup.conf 2>/dev/null || true
 
 remove_account autostream

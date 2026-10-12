@@ -198,6 +198,7 @@ main() {
   remove_path /etc/autostream
   remove_path /var/log/autostream
   remove_path /var/lib/autostream
+  remove_path /var/lib/autostream-update
   remove_path /usr/local/libexec/autostream
 
   apt_remove_owntone
