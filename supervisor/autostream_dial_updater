@@ -492,12 +492,12 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
             try:
                 staging = _staging_dir()
                 # No marker may outlive the tree it was written for.
-                clear_update_in_progress(staging)
+                clear_update_in_progress(staging, UPDATE_STATE_UID)
                 installer = stage_release(
                     tarball_url, tag, staging,
                     "autostream_dial_install.sh", [], UA,
                 )
-                mark_update_in_progress(staging, tag)
+                mark_update_in_progress(staging, tag, UPDATE_STATE_UID)
                 _log(f"apply: staged release at {installer.parent}")
                 break
             except Exception as e:
@@ -547,7 +547,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
                                     phase="failed")
                 _log(f"apply: systemd-run failed rc={rc} stderr={err!r}")
                 UPDATING_FLAG.unlink(missing_ok=True)
-                clear_update_in_progress(STAGING_DIR)
+                clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
                 return {"ok": False, "error": "Failed to schedule installer", "details": err or out}
 
             _log(f"apply: installer scheduled as {unit_name} tag={tag}")
@@ -566,7 +566,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
                 UPDATING_FLAG.unlink(missing_ok=True)
             except OSError:
                 pass
-            clear_update_in_progress(STAGING_DIR)
+            clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
             return {"ok": False, "error": "Unexpected scheduling error", "details": str(e)}
 
     finally:
@@ -700,6 +700,25 @@ def _remove_quietly(path: Path) -> None:
             shutil.rmtree(str(path), ignore_errors=True)
     except OSError as e:
         _log(f"could not remove {path}: {e}")
+
+
+def _remove_legacy_update_state() -> None:
+    """Take away what an older release kept its update state in.
+
+    Before the system-only directory existed the staged release, the backup and
+    the hand-off were kept in the service account's directory.  Nothing reads
+    them there now, so once an update has an outcome they are removed rather
+    than left to be mistaken for a live hand-off.  Each name is unlinked if it
+    is a link and removed without following anything inside it otherwise.
+    """
+    for name in ("update-staging", "update-prev", "update-swap.env"):
+        _remove_quietly(STATE_DIR / name)
+    try:
+        leftovers = list(STATE_DIR.glob("update-swap.env.tmp.*"))
+    except OSError:
+        leftovers = []
+    for leftover in leftovers:
+        _remove_quietly(leftover)
 
 
 def _read_manifest_paths(path: Path) -> List[str]:
@@ -1267,8 +1286,9 @@ def _finish_success(swap: Dict[str, str]) -> Dict[str, Any]:
     _remove_quietly(OPT_DIR / ".prev.done")
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(_swap_file())
+    _remove_legacy_update_state()
     # Last, so a power cut before this repeats the cleanup.
-    clear_update_in_progress(STAGING_DIR)
+    clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
     _log(f"update to {tag or 'new release'} verified")
     _clean_package_cache()
     return {"ok": True, "verified": True}
@@ -1318,7 +1338,8 @@ def _rollback(swap: Dict[str, str], stop_services: bool) -> Dict[str, Any]:
     _remove_quietly(_backup_dir(swap))
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(_swap_file())
-    clear_update_in_progress(STAGING_DIR)
+    _remove_legacy_update_state()
+    clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
     _sync()
     _log(f"rolled back: {message}")
     _reboot()
@@ -1390,6 +1411,17 @@ def _find_staged_installer() -> Optional[Path]:
     return None
 
 
+def _root_attempt() -> int:
+    """The attempt number root recorded when it last scheduled a retry, 0 when
+    there is none.  The attempt in the result file can be rewritten by the
+    service account, so it can raise the count but never lower it."""
+    try:
+        text = (STAGING_DIR / "retry_count").read_text(encoding="utf-8").strip()
+    except OSError:
+        return 0
+    return int(text) if text.isdigit() and len(text) < 4 else 0
+
+
 def _int_value(raw: Any, default: int) -> int:
     try:
         return int(str(raw).strip())
@@ -1429,7 +1461,7 @@ def _retry_interrupted(env: Dict[str, str]) -> Dict[str, Any]:
     attempts remain, otherwise record the failure."""
     tag = _clean_tag(env.get("TAG", ""))
     previous = _clean_tag(env.get("PREVIOUS_TAG", ""))
-    attempt = max(1, _int_value(env.get("ATTEMPT"), 1))
+    attempt = max(1, _int_value(env.get("ATTEMPT"), 1), _root_attempt())
     # Only an update root staged is retried, and only from what root left in
     # its own directory; the result file alone, which the service account can
     # also write, never selects what runs.
@@ -1453,7 +1485,7 @@ def _retry_interrupted(env: Dict[str, str]) -> Dict[str, Any]:
     _remove_quietly(UPDATING_FLAG)
     _remove_quietly(OPT_DIR / ".next")
     _remove_quietly(STAGING_DIR)
-    clear_update_in_progress(STAGING_DIR)
+    clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
     _log(f"boot: {message}")
     return {"ok": True}
 
@@ -1475,7 +1507,7 @@ def _schedule_retry(env: Dict[str, str], installer: Path, tag: str, attempt: int
             tag=tag or None, previous_tag=previous or None,
         )
         _remove_quietly(UPDATING_FLAG)
-        clear_update_in_progress(STAGING_DIR)
+        clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
         return {"ok": False, "error": message}
 
     systemd_run = _find_systemd_run()
@@ -1490,7 +1522,11 @@ def _schedule_retry(env: Dict[str, str], installer: Path, tag: str, attempt: int
     except OSError as e:
         _log(f"boot: could not create the updating flag: {e}")
     # Count the attempt before the installer is fired, so a second power cut
-    # during the retry is counted too.
+    # during the retry is counted too; root keeps its own count of it.
+    try:
+        write_file_safely(STAGING_DIR / "retry_count", f"{attempt}\n", 0o600)
+    except OSError as e:
+        _log(f"boot: could not record the attempt count: {e}")
     write_update_result(
         "in_progress", f"Retrying update (attempt {attempt} of {MAX_ATTEMPTS})",
         percent=0, phase="download", attempt=attempt, max_attempts=MAX_ATTEMPTS,
@@ -1575,6 +1611,7 @@ def cmd_boot() -> Dict[str, Any]:
 
     env = _read_env_file(STATE_DIR / "update-result.env")
     if env.get("STATUS", "").lower() != "in_progress":
+        _remove_legacy_update_state()
         _remove_quietly(OPT_DIR / ".prev.done")
         try:
             _prune_venvs_idle()

@@ -34,6 +34,7 @@ it should not be treated as a full system rollback.
   `autostream_dnsmasq.service`, `owntone.service`, and `nginx.service`.
 - Removes the main application directories:
   `/opt/autostream`, `/var/log/autostream`, `/var/lib/autostream`,
+  `/var/lib/autostream-update` (where updates are staged),
   and `/usr/local/libexec/autostream` (this also removes the SD card health
   wrapper, its status file, and its in-flight marker).
   `/usr/local/sbin/sdmon` is removed separately.

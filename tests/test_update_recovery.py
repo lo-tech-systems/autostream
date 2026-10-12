@@ -94,7 +94,7 @@ def _make_installer(tmp_path: Path, staging_dir: Path) -> Path:
     installer.write_text("#!/bin/sh\nexit 0\n")
     installer.chmod(0o755)
     # The record root leaves when it stages an update.
-    _asu.mark_update_in_progress(staging_dir, "v1.2.3")
+    _asu.mark_update_in_progress(staging_dir, "v1.2.3", os.getuid())
     return installer
 
 

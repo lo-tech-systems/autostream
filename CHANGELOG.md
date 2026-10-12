@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- improvement: updates, on the appliance and on the dial, are now downloaded and
+  prepared in a folder that only the system can write, instead of one the
+  application's own account can write, and the system checks what it reads back
+  before it acts on it. An appliance or dial updating from an earlier release
+  does this by itself; nothing needs doing.
 - change: a factory reset of the appliance now also erases its list of authorised
   dials, so a reset appliance is as unconfigured as a new one. Before, the list
   survived and the appliance still accepted the dials it knew. After a reset,

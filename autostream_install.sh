@@ -526,6 +526,29 @@ prepare_update_state_dir() {
   fi
 }
 
+# adopt_older_update_state: an update started by an older release's updater runs
+# this installer from the old staging place, inside the directory the service
+# account owns. The staged release is copied to the system-only directory so
+# that an interruption is retried from there, the record that an update is under
+# way is written once that copy is complete, and the list of stopped services
+# the older installer kept in the old place is dropped. The run itself cannot be
+# moved: it is already executing from the old place.
+adopt_older_update_state() {
+  if ! migrate_staged_release "${AUTOSTREAM_DIR}" "${STAMP_DIR}/update-staging" \
+       "${UPDATE_STATE_DIR}/staging" autostream_install.sh retry_count; then
+    warn "Could not copy the staged release to ${UPDATE_STATE_DIR}; an interruption would have to be retried from the web UI."
+  fi
+  printf '%s\n' "${AUTOSTREAM_RELEASE_TAG:-unknown}" \
+    | write_state_file "${UPDATE_IN_PROGRESS_FILE}" 0600 root:root
+  remove_legacy_update_state "${STAMP_DIR}/update-stopped-services.env"
+}
+
+# retire_older_update_state: once an update has succeeded nothing reads the old
+# staging place, so what an older release's updater left there is removed.
+retire_older_update_state() {
+  remove_legacy_update_state "${STAMP_DIR}/update-staging"
+}
+
 update_progress() {
   # Write a progress update only when running in update mode.
   [[ "${INSTALL_MODE}" == "update" ]] || return 0
@@ -1839,6 +1862,7 @@ run_update() {
   UPDATE_RUN_AT="$(date -Is)"
   CURRENT_PHASE="preflight"
   prepare_update_state_dir
+  adopt_older_update_state
   write_update_result "in_progress" "Starting update" 0
 
   CURRENT_PHASE="update page"
@@ -1879,6 +1903,7 @@ run_update() {
   # The update has succeeded, and the appliance has no rollback that could need
   # the downloaded packages; free the space they took.
   clean_package_cache
+  retire_older_update_state
 
   info "Update complete. Scheduling reboot..."
   /usr/local/libexec/autostream/autostream_admin reboot --delay 3 AutostreamUpdate || true

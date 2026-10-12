@@ -281,7 +281,7 @@ class TestRetryActsOnlyOnWhatRootStaged:
         mod.STAGING_DIR.mkdir()
         _make_installer(tmp_path, mod.STAGING_DIR)
         mod.RELEASE_TAG_FILE.write_text("junk;\n")
-        _asu.mark_update_in_progress(mod.STAGING_DIR, "also;junk")
+        _asu.mark_update_in_progress(mod.STAGING_DIR, "also;junk", os.getuid())
         rc, commands = _retry(mod)
         (cmd,) = _scheduled(commands)
         assert "--setenv=AUTOSTREAM_RELEASE_TAG=unknown" in cmd

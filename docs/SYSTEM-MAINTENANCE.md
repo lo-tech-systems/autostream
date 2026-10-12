@@ -30,7 +30,10 @@ Tap **Install**. autostream saves your current settings, then starts the
 update in the background and switches you to a progress page. The updater
 downloads the release, stops the affected services (audio playback stops for
 the duration), and restarts `autostream` automatically once it's done - a
-full reboot isn't required for the update itself. If a previous update is
+full reboot isn't required for the update itself. The release is downloaded
+into `/var/lib/autostream-update/`, a folder only the system can write, rather
+than the folder the application itself runs from (see
+[Appliance Model](APPLIANCE-MODEL.md#where-an-update-is-kept)). If a previous update is
 still in progress, or appears to have stalled, the Updates card shows that
 state instead of letting you start a new one.
 

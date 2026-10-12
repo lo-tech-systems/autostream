@@ -123,7 +123,7 @@ class World:
 
     def mark(self) -> None:
         """The record the installer leaves when an update starts."""
-        _asu.mark_update_in_progress(self.mod.STAGING_DIR, TAG)
+        _asu.mark_update_in_progress(self.mod.STAGING_DIR, TAG, os.getuid())
 
     # -- builders --
     def write_tree(self, base: Path, files: dict[str, str]) -> None:

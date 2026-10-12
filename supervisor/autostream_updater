@@ -140,7 +140,7 @@ def _write_update_result(status: str, percent: int, message: str) -> None:
         _log(f"apply: warning — could not write update-result.env: {e}")
     if status in ("success", "failure"):
         # A final result ends the interrupted-update window.
-        clear_update_in_progress(STAGING_DIR)
+        clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
 
 
 def _staging_dir() -> Path:
@@ -384,12 +384,12 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         try:
             staging = _staging_dir()
             # No marker may outlive the tree it was written for.
-            clear_update_in_progress(staging)
+            clear_update_in_progress(staging, UPDATE_STATE_UID)
             installer = stage_release(
                 tarball_url, tag, staging,
                 "autostream_install.sh", ["system"], UA,
             )
-            mark_update_in_progress(STAGING_DIR, tag)
+            mark_update_in_progress(STAGING_DIR, tag, UPDATE_STATE_UID)
             _log(f"apply: staged release at {installer.parent}")
         except Exception as e:
             _log(f"apply: staging failed: {e}")

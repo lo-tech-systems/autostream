@@ -425,3 +425,64 @@ class TestInstallerWritesToTheRootOnlyDirectory:
         text = BOOTSTRAP.read_text(encoding="utf-8")
         assert 'UPDATE_STATE_DIR="/var/lib/autostream-update"' in text
         assert "/var/lib/autostream/update-staging" not in text
+
+
+# ---------------------------------------------------------------------------
+# The attempt count and the marker helpers
+# ---------------------------------------------------------------------------
+
+class TestRetryCountIsRootsOwn:
+    def test_a_result_file_rewritten_to_a_lower_attempt_does_not_reset_the_count(
+            self, world, mod, system):
+        world.build_interrupted(attempt=1)
+        for expected in (2, 3):
+            assert mod.cmd_boot() == {"ok": True, "retry": expected}
+            # The service account puts the attempt back to 1 each time.
+            mod.write_update_result("in_progress", "Installing...", percent=45,
+                                    phase="python", attempt=1, max_attempts=4)
+        assert mod.cmd_boot() == {"ok": True, "retry": 4}
+        mod.write_update_result("in_progress", "Installing...", percent=45,
+                                phase="python", attempt=1, max_attempts=4)
+        system.calls.clear()
+        mod.cmd_boot()
+        assert system.retries_scheduled() == []
+        assert world.result()["STATUS"] == "failure"
+        assert not (world.upd / "update-in-progress").exists()
+
+    def test_the_count_is_kept_in_the_root_only_directory(self, world, mod, system):
+        world.build_interrupted(attempt=1)
+        mod.cmd_boot()
+        count = mod.STAGING_DIR / "retry_count"
+        assert count.read_text(encoding="utf-8").strip() == "2"
+        assert stat.S_IMODE(os.stat(count).st_mode) == 0o600
+
+    def test_a_count_that_is_not_a_number_counts_as_none(self, world, mod):
+        mod.STAGING_DIR.mkdir(parents=True)
+        (mod.STAGING_DIR / "retry_count").write_text("9; reboot\n", encoding="utf-8")
+        assert mod._root_attempt() == 0
+
+
+class TestMarkerHelpersUseTheGuardedDirectory:
+    def test_nothing_is_written_or_removed_in_a_directory_that_is_not_roots(self, tmp_path):
+        d = tmp_path / "upd"
+        d.mkdir(mode=0o700)
+        (d / "update-in-progress").write_text("x")
+        d.chmod(0o755)
+        _asu.clear_update_in_progress(d / "staging", os.getuid())
+        assert (d / "update-in-progress").exists()
+        with pytest.raises(ValueError):
+            _asu.mark_update_in_progress(d / "staging", "1.0.0", os.getuid())
+        d.chmod(0o700)
+        _asu.clear_update_in_progress(d / "staging", os.getuid() + 1)
+        assert (d / "update-in-progress").exists()
+        _asu.clear_update_in_progress(d / "staging", os.getuid())
+        assert not (d / "update-in-progress").exists()
+
+    def test_a_link_in_place_of_the_directory_is_not_followed_when_clearing(self, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir(mode=0o700)
+        (real / "update-in-progress").write_text("x")
+        link = tmp_path / "upd"
+        link.symlink_to(real)
+        _asu.clear_update_in_progress(link / "staging", os.getuid())
+        assert (real / "update-in-progress").exists()

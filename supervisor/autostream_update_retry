@@ -44,6 +44,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -135,7 +136,25 @@ def _write_update_result(status: str, message: str, percent: int, run_at: str) -
     write_file_safely(UPDATE_RESULT_FILE, content, 0o600, (0, 0))
     if status in ("success", "failure"):
         # A final result ends the interrupted-update window.
-        clear_update_in_progress(STAGING_DIR)
+        clear_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
+
+
+def _remove_legacy_staging() -> None:
+    """Remove what an older release staged in the service account's directory.
+
+    Nothing reads it there any more, so it is not left to be mistaken for a
+    staged update.  A link is unlinked; a directory is removed without
+    following anything in it.
+    """
+    for name in ("update-staging", "update-stopped-services.env"):
+        path = STAMP_DIR / name
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(str(path), ignore_errors=True)
+        except OSError as e:
+            _log(f"could not remove {path}: {e}")
 
 
 # ---- Main --------------------------------------------------------------------
@@ -151,6 +170,7 @@ def main() -> int:
     last_run_at = env.get("LAST_RUN_AT", "")
 
     if status != "in_progress":
+        _remove_legacy_staging()
         _log(f"no interrupted update (status={status!r}); nothing to do")
         return 0
 

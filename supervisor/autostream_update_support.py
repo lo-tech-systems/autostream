@@ -822,22 +822,25 @@ def valid_release_tag(tag: object) -> bool:
     return bool(_TAG_CHARS_RE.match(text)) and _semver_re.match(text) is not None
 
 
-def mark_update_in_progress(staging_dir, tag: str) -> None:
+def mark_update_in_progress(staging_dir, tag: str, owner_uid: int = 0) -> None:
     """Record, where only root can write, that an update has been staged.
 
     The boot-time retry acts on an interrupted update only when this marker
     is there, never on the status file alone, which the service account can
-    also write.  Removed once the update has a final result.
+    also write.  Removed once the update has a final result.  The directory
+    is opened through trusted_state_dir first.
     """
-    path = Path(staging_dir).parent / UPDATE_IN_PROGRESS_NAME
-    write_file_safely(path, str(tag).strip() + "\n", 0o600)
+    directory = trusted_state_dir(Path(staging_dir).parent, owner_uid)
+    write_file_safely(directory / UPDATE_IN_PROGRESS_NAME, str(tag).strip() + "\n", 0o600)
 
 
-def clear_update_in_progress(staging_dir) -> None:
-    """Remove the marker; absent is fine."""
+def clear_update_in_progress(staging_dir, owner_uid: int = 0) -> None:
+    """Remove the marker; absent is fine, and nothing is removed from a
+    directory that is not the root-only one."""
     try:
-        os.unlink(str(Path(staging_dir).parent / UPDATE_IN_PROGRESS_NAME))
-    except OSError:
+        directory = trusted_state_dir(Path(staging_dir).parent, owner_uid)
+        os.unlink(str(directory / UPDATE_IN_PROGRESS_NAME))
+    except (OSError, ValueError):
         pass
 
 

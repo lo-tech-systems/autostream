@@ -85,8 +85,35 @@ on the dial device and are not counted here.) Core always-running units:
 ## Filesystem Layout
 
 `/opt/autostream` (application), `/etc/autostream/` (config),
-`/var/lib/autostream/` (state), `/usr/local/libexec/autostream/` (privileged
-helpers), `/var/log/autostream/` (logs).
+`/var/lib/autostream/` (state), `/var/lib/autostream-update/` (staged updates,
+system only), `/usr/local/libexec/autostream/` (privileged helpers),
+`/var/log/autostream/` (logs).
+
+### Where an update is kept
+
+The application runs as an unprivileged service account that owns
+`/var/lib/autostream/`, so anything kept there could be replaced by that
+account. An update is run by the system, so what it runs and what it trusts
+after a restart is kept somewhere else.
+
+| Path | Owner and mode | Holds | Who can read it |
+|---|---|---|---|
+| `/var/lib/autostream-update/` | `root:root`, `0700` | The downloaded release (`staging/`), and a short record that an update is under way (`update-in-progress`). The list of services the installer stopped is kept here too. | The system only |
+| `/var/lib/autostream/update-result.env` | root-written | The progress and last result of an update. | The Web UI and the setup pages, through the updater |
+| `/var/lib/autostream/install-state.env` | root-written, `0644` | The installed version and the choices saved for the next update. | The Web UI, the storage guard and the SD card health check |
+
+An update goes like this. The updater downloads the release into
+`/var/lib/autostream-update/staging/`, writes the record beside it and starts
+the installer from there. The installer reads the saved choices from
+`install-state.env`, checking each value, and always installs into
+`/opt/autostream`. If power is lost part-way, the boot-time retry looks only in
+`/var/lib/autostream-update/`; it acts only when the record is there, and
+otherwise marks the update failed and leaves the appliance as it was. The
+record is removed as soon as the update has a final result. An appliance
+updated from an earlier release has its staged release copied across by that
+one update, and the old copy is removed once the update has succeeded.
+The updater refuses to use `/var/lib/autostream-update/` unless it is a real
+directory, owned by root, with mode `0700`.
 
 Runtime: `/tmp/autostream_monitor.sock`, `/tmp/vibra-mini.sock`,
 `/run/autostream-pipes/autostream.fifo` (created at boot from

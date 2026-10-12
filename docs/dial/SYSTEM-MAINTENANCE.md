@@ -35,7 +35,9 @@ was.
 3. **Install.** It builds a fresh Python environment for the new version,
    copies the new software into a holding area beside the live copy, and
    updates its services and configuration files. Before changing any of
-   those it keeps a copy of the old ones.
+   those it keeps a copy of the old ones. The downloaded release, that copy
+   and the note for the next boot are kept in `/var/lib/autostream-update/`,
+   which only the system can write (see below).
 4. **Restart and switch over.** The dial restarts. Very early in the boot,
    before its main service starts, the new software is swapped in for the
    old.
@@ -48,6 +50,36 @@ was.
 An update can take a long time, up to about 40 minutes on a Pi Zero 2 W,
 most of it in the package upgrade, and a slow SD card makes it longer. Leave
 the dial powered and let it finish.
+
+### Where an update keeps its files
+
+The dial's software runs as an unprivileged service account that owns
+`/var/lib/autostream/`. The update runs as the system, and it acts on what it
+finds after the restart, so it does not keep anything it will run or trust in
+that folder. Everything it needs for the switch-over is in
+`/var/lib/autostream-update/`, a folder owned by root with mode `0700`:
+
+| Item | What it is |
+|---|---|
+| `staging/` | The downloaded release the installer runs from. |
+| `update-prev/` | The copy of the services and configuration files the update replaces, used by a rollback. |
+| `update-swap.env` | The note for the next boot, saying which release and which Python environment to switch to. |
+| `update-in-progress` | A short record, written when the update starts, that says an update is under way. The boot step acts on the note, or retries an interrupted update, only while it is there. |
+
+The result of the update (the progress and the final message) stays in
+`/var/lib/autostream/update-result.env`, where the dial and the appliance read
+it. At the next boot the boot step checks what it reads: the Python environment
+must be a plain name beside the software, versions must look like versions, and
+a rollback puts back only the files the installer itself owns. If anything
+does not check out, the dial keeps the release it has and the card shows the
+update as not applied. The dial refuses to use `/var/lib/autostream-update/`
+unless it is a real folder, owned by root, with mode `0700`.
+
+A dial updated from an earlier release copies the downloaded release into the
+new folder at the start of that one update, so that a power cut part-way is
+still retried, and removes the old copies in `/var/lib/autostream` once the
+update has an outcome. After a rollback the folder holds nothing the earlier
+release could mistake for an update in progress.
 
 ### Seeing progress
 
@@ -262,7 +294,7 @@ taking effect, or the dial being unreachable at all, see
 ## Removing the dial software
 
 `autostream_dial_uninstall.sh`, run from the dial's checkout, removes the dial
-software and its services. It also takes back the boot splash: it removes the
+software and its services, including `/var/lib/autostream-update`. It also takes back the boot splash: it removes the
 theme, the boot options and boot files the installer added (and only those),
 purges the splash packages the installer itself installed, and rebuilds the
 boot files. It also hands the saved Wi-Fi networks back to NetworkManager
