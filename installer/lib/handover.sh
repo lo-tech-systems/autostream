@@ -48,6 +48,22 @@ handover_available() {
   in_login_session
 }
 
+# handover_refuse_if_running: when a hand-over would be made, stop at once if an
+# install it started earlier is still running as UNIT, saying how to follow it
+# and how to stop it. Call it before asking anything or writing anything, so a
+# second run changes nothing.
+# Usage: handover_refuse_if_running UNIT LOGFILE
+handover_refuse_if_running() {
+  local unit="$1" logfile="$2"
+  handover_available || return 0
+  if systemctl is-active --quiet "${unit}.service" 2>/dev/null; then
+    printf '%s\n' "[ERROR] An install is already running as ${unit}.service; nothing has been changed." \
+      "[ERROR] Follow it with: tail -f ${logfile}  (or: journalctl -fu ${unit})" \
+      "[ERROR] To stop it: sudo systemctl stop ${unit}" >&2
+    exit 1
+  fi
+}
+
 # follow_log_until: show what is appended to FILE from byte START until the
 # process PID ends, and what it wrote at the end. A file that is not a regular
 # file, or is a link, is not read (the log sits in a directory the service
@@ -85,12 +101,7 @@ hand_over_to_unit() {
   local unit="$1" script="$2" logfile="$3"
   shift 3
   handover_available || return 1
-
-  if systemctl is-active --quiet "${unit}.service" 2>/dev/null; then
-    printf '%s\n' "[ERROR] An install is already running as ${unit}.service." \
-      "[ERROR] Follow it with: journalctl -fu ${unit}" >&2
-    exit 1
-  fi
+  handover_refuse_if_running "${unit}" "${logfile}"
 
   local -a cmd=(systemd-run --collect --wait "--unit=${unit}"
                 "--description=autostream installer"

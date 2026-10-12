@@ -1981,6 +1981,7 @@ main() {
   # and follows that. An update is already started as a service.
   if [[ "${INSTALL_MODE}" == "install" && "${PROMPTS_DONE}" != "1" ]]; then
     PROMPT_REBOOT_ON_EXIT=1
+    handover_refuse_if_running autostream-install "${LOGFILE}"
     check_network_manager
     show_warnings_and_prompt
     require_rpi_os_trixie

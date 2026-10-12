@@ -89,6 +89,10 @@ CALL = ('hand_over_to_unit autostream-install /opt/x/installer.sh "$HANDOVER_LOG
         '--unattended PIN=1234 --owntone=mini && echo "RC=$HANDOVER_RC" || echo "NOT HANDED OVER"')
 
 
+REFUSE = ('handover_refuse_if_running autostream-install "$HANDOVER_LOG"\n'
+          'echo CARRIED-ON')
+
+
 @bash_capable
 class TestInLoginSession:
     @pytest.mark.parametrize("line", [
@@ -168,6 +172,23 @@ class TestHandOver:
         assert "already running as autostream-install.service" in r.stderr
         assert not [c for c in env.calls() if c.startswith("systemd-run")]
 
+    def test_the_refusal_says_how_to_follow_the_running_install_and_how_to_stop_it(self, env, tmp_path):
+        env.fake("systemctl", '#!/bin/bash\n[[ "$1" == is-active ]] && exit 0\nexit 0\n')
+        r, log = _handover(env, tmp_path, REFUSE)
+        assert r.returncode == 1 and "CARRIED-ON" not in r.stdout
+        assert f"tail -f {log.as_posix()}" in r.stderr
+        assert "journalctl -fu autostream-install" in r.stderr
+        assert "sudo systemctl stop autostream-install" in r.stderr
+
+    def test_nothing_is_refused_when_no_install_is_running(self, env, tmp_path):
+        r, _ = _handover(env, tmp_path, REFUSE)
+        assert r.returncode == 0 and "CARRIED-ON" in r.stdout
+
+    def test_nothing_is_refused_where_no_hand_over_would_be_made(self, env, tmp_path):
+        env.fake("systemctl", '#!/bin/bash\n[[ "$1" == is-active ]] && exit 0\nexit 0\n')
+        r, _ = _handover(env, tmp_path, REFUSE, cgroup=SERVICE)
+        assert r.returncode == 0 and "CARRIED-ON" in r.stdout
+
 
 # ---------------------------------------------------------------------------
 # The appliance installer: where the questions are asked, and what is not handed over
@@ -191,6 +212,7 @@ def _appliance_main(tmp_path: Path, *, mode: str, handover_ok: bool, handed_over
     script = f'''
 set -uo pipefail
 {stubs}
+handover_refuse_if_running() {{ echo "handover_refuse_if_running $*" >> "{trace.as_posix()}"; [[ -z "${{FAKE_RUNNING:-}}" ]] || exit 1; }}
 parse_args() {{ :; }}
 in_login_session() {{ true; }}
 hand_over_to_unit() {{ echo "hand_over_to_unit $*" >> "{trace.as_posix()}"; {"HANDOVER_RC=7; return 0" if handover_ok else "return 1"}; }}
@@ -217,6 +239,13 @@ class TestApplianceInstaller:
         handed = next(c for c in calls if c.startswith("hand_over_to_unit"))
         assert handed == ("hand_over_to_unit autostream-install /opt/rel/autostream_install.sh "
                           "/var/log/autostream/autostream_install.log --unattended PIN=1234")
+
+    def test_a_second_run_asks_nothing_and_writes_nothing_while_an_install_is_running(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("FAKE_RUNNING", "1")
+        r, calls = _appliance_main(tmp_path, mode="install", handover_ok=True)
+        assert r.returncode == 1 and "main returned" not in r.stdout
+        assert [c.split()[0] for c in calls] == ["require_sudo", "handover_refuse_if_running"]
+        assert calls[1] == "handover_refuse_if_running autostream-install /var/log/autostream/autostream_install.log"
 
     def test_without_a_hand_over_the_install_carries_on_here_without_asking_again(self, tmp_path):
         r, calls = _appliance_main(tmp_path, mode="install", handover_ok=False)
@@ -254,6 +283,7 @@ HANDOVER_STUBS = (
     "in_login_session() { return 0; }",
     'stay_running_after_hangup() { printf "stay_running_after_hangup\\n" >> "$TRACE"; }',
     'show_info_and_prompt() { printf "show_info_and_prompt\\n" >> "$TRACE"; }',
+    'handover_refuse_if_running() { printf "handover_refuse_if_running %s\\n" "$1" >> "$TRACE"; [[ -z "${FAKE_RUNNING:-}" ]] || exit 1; }',
 )
 
 
@@ -272,6 +302,14 @@ class TestDialInstaller:
         assert "autostream-dial-install" in " ".join(calls)
         assert not [n for n in names if n.startswith("phase") or n == "install_os_packages"]
         assert "Non-interactive session; please reboot the device when convenient." in r.stdout
+
+    def test_a_second_run_asks_nothing_and_does_nothing_while_an_install_is_running(self, tmp_path):
+        r, calls, names = self._run(tmp_path, update=False, extra_env={"FAKE_RUNNING": "1"})
+        assert r.returncode != 0
+        assert "handover_refuse_if_running" in names
+        assert "show_info_and_prompt" not in names and "hand_over_to_unit" not in names
+        assert not [n for n in names if n.startswith("phase") or n == "install_os_packages"]
+        assert "handover_refuse_if_running autostream-dial-install" in " ".join(calls)
 
     def test_the_services_failure_is_this_processs_exit_status_and_no_reboot_is_offered(self, tmp_path):
         r, _calls, _names_ = self._run(tmp_path, update=False, extra_env={"FAKE_RC": "5"})

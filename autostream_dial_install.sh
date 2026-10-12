@@ -69,6 +69,7 @@ offer_reboot() {
 PROMPTED=false
 if [[ "${AUTOSTREAM_HANDED_OVER:-0}" == "1" ]]; then PROMPTED=true; fi
 if [[ "$UPDATE" == false && "$PROMPTED" == false ]] && handover_available; then
+    handover_refuse_if_running autostream-dial-install "$DIAL_INSTALL_LOG"
     require_trixie_os
     detect_existing_dial_install
     if $REINSTALL; then detect_hd_install; fi
