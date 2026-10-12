@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a power cut in the middle of the package upgrade during an update no longer
+  makes every automatic retry fail. The dial and appliance installers now finish
+  an interrupted package run (`dpkg --configure -a`) before their first package
+  command, so the retry after the next boot can complete the update.
 - fix: the dial and appliance installers now check each sudoers file with visudo
   before it replaces the installed one. A file with a syntax error stops the
   install with a message and leaves the working file in place, where before it

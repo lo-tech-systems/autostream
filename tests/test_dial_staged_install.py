@@ -75,7 +75,7 @@ class Env:
         self.swap = self.state / "update-swap.env"
         self.admin = tmp_path / "admin"
         self.fake("python3", FAKE_PYTHON3)
-        for name in ("systemctl", "nginx", "sleep"):
+        for name in ("systemctl", "nginx", "sleep", "dpkg"):
             self.fake(name, RECORDER)
         self.fake_script(self.admin, RECORDER)
 
@@ -595,7 +595,8 @@ class TestReboot:
 # The installer end to end, helpers replaced by recorders
 # ---------------------------------------------------------------------------
 
-SHARED_LIBS = (REPO_ROOT / "installer" / "lib" / "sudoers.sh",)
+SHARED_LIBS = (REPO_ROOT / "installer" / "lib" / "sudoers.sh",
+               REPO_ROOT / "installer" / "lib" / "apt.sh")
 
 
 def _helper_text() -> str:

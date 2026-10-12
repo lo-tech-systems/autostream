@@ -351,3 +351,101 @@ class TestInstallersUseTheCheckedInstall:
         assert "install -m 0440 -o root -g root \"${AUTOSTREAM_DIR}/system/sudoers" not in text
         configure = text[text.index("configure_phase() {"):]
         assert configure.index("\n  install_sudoers_file") < configure.index("\n  validate_sudoers\n")
+
+
+# ---------------------------------------------------------------------------
+# An interrupted package run is finished before apt is used
+# ---------------------------------------------------------------------------
+
+APT_LIB = REPO_ROOT / "installer" / "lib" / "apt.sh"
+
+# apt-get that refuses with dpkg's interrupted-run error until dpkg --configure -a
+# has run, the state a power cut inside an upgrade leaves behind.
+FAKE_INTERRUPTED_APT = r"""#!/bin/bash
+echo "apt-get $*" >> "$TRACE"
+if [[ "$1" == upgrade && ! -e "$RECOVERED" ]]; then
+    echo "E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem." >&2
+    exit 100
+fi
+exit 0
+"""
+
+FAKE_DPKG = r"""#!/bin/bash
+echo "dpkg $* frontend=${DEBIAN_FRONTEND:-}" >> "$TRACE"
+[[ "$*" == "--configure -a" ]] && touch "$RECOVERED"
+exit ${DPKG_RC:-0}
+"""
+
+
+@bash_capable
+class TestRecoverInterruptedPackages:
+    def test_runs_dpkg_configure_all_non_interactively(self, env):
+        env.fake("dpkg", FAKE_DPKG)
+        r = env.run("recover_interrupted_packages", RECOVERED=(env.tmp / "rec").as_posix())
+        assert r.returncode == 0, r.stderr
+        assert env.calls() == ["dpkg --configure -a frontend=noninteractive"]
+
+    def test_a_failed_recovery_warns_and_does_not_stop_the_install(self, env):
+        env.fake("dpkg", FAKE_DPKG)
+        r = env.run("recover_interrupted_packages\necho carried-on",
+                    RECOVERED=(env.tmp / "rec").as_posix(), DPKG_RC="2")
+        assert r.returncode == 0, r.stderr
+        assert "carried-on" in r.stdout
+        assert "dpkg --configure -a did not complete" in r.stderr
+
+    def test_an_update_interrupted_inside_the_upgrade_succeeds_on_the_retry(self, env):
+        env.fake("dpkg", FAKE_DPKG)
+        env.fake("apt-get", FAKE_INTERRUPTED_APT)
+        r = env.run("system_upgrade", RECOVERED=(env.tmp / "rec").as_posix())
+        assert r.returncode == 0, r.stderr
+        assert (env.tmp / "rec").exists()
+
+    def test_without_the_recovery_the_same_retry_would_fail(self, env):
+        env.fake("dpkg", RECORDER)
+        env.fake("apt-get", FAKE_INTERRUPTED_APT)
+        r = env.run("system_upgrade", RECOVERED=(env.tmp / "rec").as_posix())
+        assert r.returncode == 100
+        assert "dpkg was interrupted" in r.stdout + r.stderr
+
+    def test_an_update_recovers_before_its_first_apt_command(self, env):
+        env.fake("dpkg", FAKE_DPKG)
+        env.fake("apt-get", FAKE_INTERRUPTED_APT)
+        env.run("system_upgrade", RECOVERED=(env.tmp / "rec").as_posix())
+        calls = [c for c in env.calls() if c.startswith(("dpkg", "apt-get"))]
+        assert calls[0].startswith("dpkg --configure -a")
+        assert calls[1] == "apt-get update"
+
+    def test_a_fresh_install_recovers_before_the_lists_are_refreshed(self, tmp_path):
+        names = _dry_names(tmp_path, update=False)
+        at = names.index
+        assert at("recover_interrupted_packages") < at("refresh_package_lists") \
+            < at("install_os_packages")
+
+
+def _function_text(path: Path, name: str) -> str:
+    text = path.read_text(encoding="utf-8")
+    start = text.index(f"{name}() {{")
+    return text[start: text.index("\n}\n", start) + 3]
+
+
+@bash_capable
+class TestApplianceRecoversInterruptedPackages:
+    def test_update_recovers_before_it_refreshes_and_upgrades(self, env):
+        env.fake("dpkg", FAKE_DPKG)
+        env.fake("apt-get", FAKE_INTERRUPTED_APT)
+        func = _function_text(APPLIANCE_INSTALLER, "system_upgrade_phase")
+        body = (f'info() {{ :; }}; write_update_result() {{ :; }}; source "{APT_LIB}"\n'
+                f'{func}\nsystem_upgrade_phase')
+        r = env.run(body, RECOVERED=(env.tmp / "rec").as_posix())
+        assert r.returncode == 0, r.stderr
+        calls = [c for c in env.calls() if c.startswith(("dpkg", "apt-get"))]
+        assert calls[0].startswith("dpkg --configure -a")
+        assert calls[1:] == ["apt-get update", "apt-get upgrade -y"]
+
+    def test_install_text_recovers_before_the_first_apt_command(self):
+        func = _function_text(APPLIANCE_INSTALLER, "bootstrap_phase")
+        assert func.index("recover_interrupted_packages") < func.index("apt-get update")
+
+    def test_installer_sources_the_shared_library(self):
+        text = APPLIANCE_INSTALLER.read_text(encoding="utf-8")
+        assert 'source "${INSTALLER_LIB}/apt.sh"' in text

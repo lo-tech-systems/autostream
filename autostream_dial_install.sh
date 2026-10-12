@@ -95,7 +95,9 @@ fi
 if ! $UPDATE; then
     show_info_and_prompt
     check_pi_model
-    # An --update refreshes the lists in system_upgrade; a fresh install does it here.
+    # An --update does both of these in system_upgrade; a fresh install does them
+    # here, ahead of its first apt command.
+    recover_interrupted_packages
     refresh_package_lists
     install_os_packages
     create_dirs

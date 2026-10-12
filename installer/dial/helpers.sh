@@ -10,6 +10,9 @@
 # install_sudoers_file, shared with the appliance installer.
 # shellcheck source=../lib/sudoers.sh
 source "${BASH_SOURCE[0]%/*}/../lib/sudoers.sh"
+# recover_interrupted_packages, shared with the appliance installer.
+# shellcheck source=../lib/apt.sh
+source "${BASH_SOURCE[0]%/*}/../lib/apt.sh"
 
 detect_install_version() {
     # Same contract as autostream_install.sh: strip refs/tags/ and v prefix.
@@ -1657,6 +1660,9 @@ system_upgrade() {
     # appliance installer does; needrestart is told only to list, never to
     # restart services mid-install. Then trim the downloaded package cache,
     # since the card is small.
+    # The first apt command of an update: finish any interrupted package run
+    # first, or the upgrade below is refused for it.
+    recover_interrupted_packages
     refresh_package_lists
     apt_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
     apt-get autoclean -y

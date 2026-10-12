@@ -44,8 +44,14 @@ def _bash(tmp_path: Path, body: str, *, bin_dir: Path | None = None,
     env["UPDATE_RESULT_FILE"] = result.as_posix()
     env["INSTALL_STATE_FILE"] = state.as_posix()
     env["APT_RETRY_DELAY"] = "0"
+    # Package recovery runs dpkg; a no-op stands in so no test touches the real one.
+    safe = tmp_path / "safe-bin"
+    safe.mkdir(exist_ok=True)
+    (safe / "dpkg").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    (safe / "dpkg").chmod(0o755)
+    env["PATH"] = safe.as_posix() + os.pathsep + env.get("PATH", "")
     if bin_dir is not None:
-        env["PATH"] = bin_dir.as_posix() + os.pathsep + env.get("PATH", "")
+        env["PATH"] = bin_dir.as_posix() + os.pathsep + env["PATH"]
     script = (
         f'set -euo pipefail; source "{HELPERS.as_posix()}"; '
         f'UPDATE={update}; AUTOSTREAM_RELEASE_TAG={tag}\n{body}'

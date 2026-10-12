@@ -65,6 +65,8 @@ IFS=$'\n\t'
 INSTALLER_LIB="$(cd "$(dirname "$0")/installer/lib" && pwd)"
 # shellcheck source=installer/lib/helpers.sh
 source "${INSTALLER_LIB}/helpers.sh"
+# shellcheck source=installer/lib/apt.sh
+source "${INSTALLER_LIB}/apt.sh"
 # shellcheck source=installer/lib/sudoers.sh
 source "${INSTALLER_LIB}/sudoers.sh"
 # shellcheck source=installer/lib/owntone.sh
@@ -778,6 +780,10 @@ bootstrap_phase() {
   mkdir -p /etc/autostream
   mkdir -p "${LIBEXEC_DIR}"
 
+  # Finish any package run an earlier power cut or crash interrupted, or apt
+  # refuses everything below.
+  recover_interrupted_packages
+
   info "Updating apt metadata"
   DEBIAN_FRONTEND=noninteractive apt-get update
 
@@ -820,6 +826,9 @@ system_upgrade_phase() {
   CURRENT_PHASE="system upgrade"
   info "=== Phase: system upgrade ==="
   write_update_result "in_progress" "Refreshing package lists..." 20
+  # An update interrupted inside apt would otherwise fail the same way on every
+  # retry; finish the interrupted package run first.
+  recover_interrupted_packages
   info "Updating apt metadata"
   DEBIAN_FRONTEND=noninteractive apt-get update
   write_update_result "in_progress" "Upgrading system packages (this may take several minutes)..." 22
