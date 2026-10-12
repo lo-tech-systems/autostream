@@ -13,8 +13,11 @@ conflicts.
 |---|---|
 | `dtparam=watchdog=on` | Enables BCM hardware watchdog; `watchdog.conf` is replaced with autostream's thresholds (load, free memory). Daemon will **reboot the Pi** autonomously when thresholds are exceeded. |
 | `dtoverlay=disable-bt` | Disables on-board Bluetooth, freeing the primary UART. `hciuart.service` becomes a no-op. Written on fresh installs only: the line doubles as the persistent store for the Setup page's onboard-Bluetooth toggle (removed/reinserted by `autostream_admin bt-onboard-on/off`), so updates preserve its current presence/absence rather than re-asserting the default. |
+| `maxcpus=2` in `cmdline.txt`; `arm_freq=700`, `arm_boost=0`, `force_turbo=0` | **Low power mode, only if you pass `--low-power` to the installer.** Limits the appliance to two cores at 700 MHz for low-power boards such as a Zero 2 W. Takes effect at the next reboot. Saved with the install choices and re-applied by `--update`; an update without the switch leaves any such lines alone. `over_voltage` is never written or removed. The uninstaller removes exactly these settings if the switch was used. See [Advanced Operations](ADVANCED.md#low-power-mode---low-power). |
 
-The uninstaller does **not** revert these; they persist on the SD card.
+The uninstaller does **not** revert the watchdog, GPU memory and Bluetooth
+settings; they persist on the SD card. It does remove the low power mode
+settings, but only if the installer's `--low-power` switch was used.
 
 ---
 

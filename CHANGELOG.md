@@ -16,6 +16,14 @@
   power key is ignored. The dial uninstaller takes back the Wi-Fi and power key
   files, as the appliance uninstaller does. The Wi-Fi change takes effect after
   a reboot. The dial's display memory setting is left as it is.
+- new: the appliance installer has an opt-in `--low-power` switch for low-power
+  boards such as a Zero 2 W. It limits the appliance to two cores at 700 MHz
+  (`maxcpus=2` on the kernel command line; `arm_freq=700`, `arm_boost=0` and
+  `force_turbo=0` in `config.txt`) and takes effect after a reboot. It is off
+  unless given, the choice is saved and re-applied by `--update` (an update without
+  it leaves existing settings alone), and the uninstaller removes exactly what it
+  added. To turn it off, remove the settings by hand and delete the `LOW_POWER`
+  line from the install state.
 - improvement: the dial and appliance installers now delete the downloaded package
   files (`apt-get clean`) once an install or update has succeeded, freeing space
   on a small SD card; before, a fresh install never cleaned them and an update

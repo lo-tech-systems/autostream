@@ -16,7 +16,8 @@
 # Modes:
 #   (default)  First-time installation.
 #   --update   Update an existing installation, reusing prior install choices.
-#              This must be the only flag passed.
+#              This must be the only flag passed, except that --low-power
+#              may accompany it.
 #
 # Options:
 # --unattended PIN=1234
@@ -32,6 +33,14 @@
 #   IMPORTANT: Enable only for supported cards, generally industrial-grade
 #              cards from the listed manufacturers. Querying a consumer-grade
 #              card can take it offline until the next power cycle.
+#
+# --low-power
+#   Limit the appliance to two cores at 700 MHz, for low-power boards such as a
+#   Pi Zero 2 W: maxcpus=2 on the kernel command line, and arm_freq=700,
+#   arm_boost=0 and force_turbo=0 under [all] in config.txt. Off unless given.
+#   Takes effect at the next reboot. The choice is saved and re-applied by
+#   --update; without the flag an update leaves any such settings as they are.
+#   The uninstaller removes exactly these settings if this flag was used.
 #
 # --fetch-autostream
 #   Clone or update the Autostream repository from GitHub.
@@ -136,6 +145,12 @@ SDMON_FLAG_THIS_RUN=0
 SDMON_GIT_REF="8a70aed673f4b319972b3a2cfac043e3b171653a"
 FETCH_AUTOSTREAM=0
 OWNTONE_MODE="mini"
+# Low power mode (--low-power): two cores at 700 MHz. Off unless asked for; the
+# choice is saved in install-state.env and re-applied by --update. LOW_POWER_
+# REQUESTED is set when the flag was given on this run, so the saved value
+# cannot override it.
+LOW_POWER=0
+LOW_POWER_REQUESTED=0
 PROMPT_REBOOT_ON_EXIT=0
 CURRENT_PHASE=""
 UPDATE_RUN_AT=""
@@ -145,13 +160,14 @@ UPDATE_RUN_AT=""
 #############################################
 usage() {
   cat <<EOF
-Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone=<mini|full|skip>] [--fetch-autostream]
-       sudo ./${SCRIPT_NAME} --update
+Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone=<mini|full|skip>] [--low-power] [--fetch-autostream]
+       sudo ./${SCRIPT_NAME} --update [--low-power]
 
 Modes:
   (default)               First-time install.
   --update                Update an existing installation using the choices
-                          saved in ${STATE_FILE}. This must be the only flag.
+                          saved in ${STATE_FILE}. This must be the only flag,
+                          except that --low-power may accompany it.
 
 Options:
   --unattended PIN=1234   Run non-interactively and set the PIN.
@@ -165,6 +181,12 @@ Options:
                                  without editing /etc/owntone.conf
                           full = install packaged OwnTone
                           skip = do not install/build OwnTone, but update /etc/owntone.conf when present
+
+  --low-power             Limit the appliance to two cores at 700 MHz, for low-power
+                          boards such as a Zero 2 W (maxcpus=2 in cmdline.txt;
+                          arm_freq=700, arm_boost=0, force_turbo=0 in config.txt).
+                          Off unless given. Takes effect after a reboot. Saved,
+                          and re-applied by --update.
 
   --fetch-autostream      Clone/update the autostream GitHub repository.
   --help, -h              Show this help.
@@ -276,6 +298,12 @@ parse_args() {
         fi
         shift 2
         ;;
+      --low-power)
+        # Allowed beside --update, so an update can switch the mode on.
+        LOW_POWER=1
+        LOW_POWER_REQUESTED=1
+        shift
+        ;;
       --fetch-autostream)
         _non_update_arg_seen=1
         FETCH_AUTOSTREAM=1
@@ -292,7 +320,7 @@ parse_args() {
   done
 
   if [[ ${_update_seen} -eq 1 && ${_non_update_arg_seen} -eq 1 ]]; then
-    error "--update must be the only flag."
+    error "--update must be the only flag, except that --low-power may accompany it."
     usage
     exit 2
   fi
@@ -334,6 +362,16 @@ save_state() {
     sdmon_check="pending"
   fi
 
+  # Low power mode is recorded as on once it has been asked for, and stays
+  # recorded until the line is cleared by hand: a later run without the flag
+  # leaves the settings in the boot files, so the uninstaller must still know
+  # to take them back.
+  local low_power="${LOW_POWER}"
+  if [[ "${low_power}" != "1" && -f "${STATE_FILE}" ]] && \
+     grep -qE '^LOW_POWER="?1"?[[:space:]]*$' "${STATE_FILE}"; then
+    low_power=1
+  fi
+
   cat > "${STATE_FILE}" <<EOF
 # autostream install state — written by ${SCRIPT_NAME}
 # Do not edit manually.
@@ -349,6 +387,7 @@ SDMON_CHECK_SERIAL="${SDMON_CHECK_SERIAL}"
 SDMON_CHECK_AT="${SDMON_CHECK_AT}"
 SDMON_CHECK_REASON="${SDMON_CHECK_REASON}"
 FETCH_AUTOSTREAM="${FETCH_AUTOSTREAM}"
+LOW_POWER="${low_power}"
 EOF
   chmod 0644 "${STATE_FILE}"
   chown root:root "${STATE_FILE}"
@@ -403,6 +442,12 @@ load_state() {
       SDMON_CHECK_REASON)  SDMON_CHECK_REASON="${_val}"   ;;
       FETCH_AUTOSTREAM)    FETCH_AUTOSTREAM="${_val}"     ;;
       INSTALL_DIR)         INSTALL_DIR="${_val}"          ;;
+      LOW_POWER)
+        # A flag given on this run wins; otherwise re-assert what was recorded.
+        if [[ "${LOW_POWER_REQUESTED}" -eq 0 ]]; then
+          [[ "${_val}" == "1" ]] && LOW_POWER=1 || LOW_POWER=0
+        fi
+        ;;
     esac
   done < "${STATE_FILE}"
 
@@ -1129,6 +1174,13 @@ configure_phase() {
   # preserves the line's current presence/absence on updates -- the line is
   # the onboard-radio setting's only store.
   update_pi_firmware_config
+  # Low power mode writes its config.txt lines in the call above and its kernel
+  # command line token here. Without --low-power (or a saved choice) neither file
+  # gets these settings, and any already there are left as they are.
+  if [[ "${LOW_POWER}" == "1" ]]; then
+    apply_low_power_cmdline
+    info "Low power mode: two cores at 700 MHz. This takes effect at the next reboot."
+  fi
   install_bluetooth_stack
   cp -a "${AUTOSTREAM_DIR}/system/watchdog/watchdog.conf" /etc/watchdog.conf
   systemctl enable watchdog
@@ -1766,7 +1818,7 @@ main() {
 
   if [[ "${INSTALL_MODE}" == "update" ]]; then
     load_state
-    info "Loaded saved update config: OWNTONE_MODE=${OWNTONE_MODE} SDMON_METHOD=${SDMON_METHOD:-none}"
+    info "Loaded saved update config: OWNTONE_MODE=${OWNTONE_MODE} SDMON_METHOD=${SDMON_METHOD:-none} LOW_POWER=${LOW_POWER}"
     run_update
   else
     run_install

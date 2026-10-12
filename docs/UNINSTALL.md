@@ -59,6 +59,11 @@ it should not be treated as a full system rollback.
   `systemd-journald` to apply the removal.
 - Removes the swap file limit (`/etc/rpi/swap.conf.d/99-autostream-swap.conf`); the
   swap file returns to its default size at the next reboot.
+- Removes the low power mode settings (`maxcpus=2` in `cmdline.txt`, and `arm_freq=700`,
+  `arm_boost=0` and `force_turbo=0` in `config.txt`) if the install state records
+  that the installer's `--low-power` switch was used. Nothing else in those two
+  files is touched, and the backup `cmdline.txt.autostream-bak` is left in place.
+  The change applies at the next reboot.
 - Removes a few other installer-managed files we can identify confidently, such as
   the autostream logrotate file, the autostream dnsmasq snippet, the
   NetworkManager files copied by the installer, the network state file
@@ -77,7 +82,7 @@ In particular, it does not attempt to:
 - Restore the previous nginx site layout.
 - Re-enable services that may have been disabled during install.
 - Reconstruct previous versions of shared config files.
-- Undo changes to firmware or boot configuration.
+- Undo changes to firmware or boot configuration (other than the low power mode settings above).
 - Undo cloud-init changes.
 - Guarantee removal of every OwnTone-related artifact.
 - Guarantee that the system is returned to a known-good non-autostream state.

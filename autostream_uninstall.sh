@@ -57,6 +57,24 @@ remove_bluetooth_if_enabled() {
   remove_bluetooth_stack
 }
 
+# revert_low_power_if_used: take back the low power mode settings (maxcpus=2,
+# arm_freq=700, arm_boost=0, force_turbo=0) only if the install state records
+# that the installer's --low-power switch was used; a device that never had the
+# switch keeps whatever its boot files say. Must run before /var/lib/autostream
+# is removed below, because that is where the record lives.
+revert_low_power_if_used() {
+  local state="${INSTALL_STATE_FILE:-/var/lib/autostream/install-state.env}"
+  [[ -f "${state}" ]] && grep -qE '^LOW_POWER="?1"?[[:space:]]*$' "${state}" || return 0
+  if ! command -v remove_low_power_settings >/dev/null 2>&1; then
+    warn "installer/lib/hardware.sh is unavailable; remove maxcpus=2 from cmdline.txt and"
+    warn "arm_freq=700, arm_boost=0 and force_turbo=0 from config.txt by hand."
+    return 0
+  fi
+  info "Removing low power mode settings"
+  remove_low_power_settings
+  info "The previous CPU limits return at the next reboot."
+}
+
 require_sudo() {
   if [[ ${EUID} -ne 0 ]]; then
     error "This script must be run as root (e.g. sudo ./${SCRIPT_NAME})."
@@ -172,6 +190,7 @@ main() {
   stop_and_disable_service nginx.service
 
   restore_wifi_profiles
+  revert_low_power_if_used
   remove_bluetooth_if_enabled
 
   info "Removing autostream application files"

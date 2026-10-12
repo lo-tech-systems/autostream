@@ -25,6 +25,41 @@ low-power devices. It streams to AirPlay and AirPlay 2 speakers.
 - `--owntone=skip` leaves OwnTone alone, for a machine where you manage it
   yourself.
 
+### Low power mode (`--low-power`)
+
+For low-power boards such as a Pi Zero 2 W, `--low-power` limits the appliance
+to two cores at 700 MHz to lower its power draw. It is off
+unless you ask for it. It writes four settings:
+
+- `maxcpus=2` on the kernel command line in `/boot/firmware/cmdline.txt` (added
+  once, and the file stays a single line; the first change keeps a copy of the
+  original as `cmdline.txt.autostream-bak`);
+- `arm_freq=700`, `arm_boost=0` and `force_turbo=0` under `[all]` in
+  `/boot/firmware/config.txt`.
+
+It does not set `over_voltage`, and never removes an `over_voltage` line that is
+already there.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash -s -- --low-power
+```
+
+The settings take effect at the next reboot. Reduced to two cores at 700 MHz,
+the appliance has less headroom than at full speed [how this affects behaviour on
+boards other than a Zero 2 W has not been measured], so use it only where the
+power or heat budget needs it.
+
+The choice is saved with the other install choices, so the automatic updater
+applies it again on each update while it is on. An update run by hand can switch
+it on too (`sudo ./autostream_install.sh --update --low-power`). An update
+without the switch leaves whatever is already in the two files alone, so an
+appliance that already has these settings keeps them. The uninstaller removes
+exactly these settings, and only if the switch was used.
+
+There is no switch to turn it off again. To turn it off, remove `maxcpus=2` from
+`cmdline.txt` and the three lines from `config.txt` by hand, and delete the
+`LOW_POWER=` line from `/var/lib/autostream/install-state.env`, then reboot.
+
 ### Unattended install
 
 Set the appliance PIN without the interactive prompt by passing it on the
