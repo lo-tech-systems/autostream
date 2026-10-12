@@ -95,6 +95,8 @@ fi
 if ! $UPDATE; then
     show_info_and_prompt
     check_pi_model
+    # An --update refreshes the lists in system_upgrade; a fresh install does it here.
+    refresh_package_lists
     install_os_packages
     create_dirs
     create_service_user       # user must exist before init_service_dirs

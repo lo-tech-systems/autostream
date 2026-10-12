@@ -164,3 +164,70 @@ class TestApplianceUninstallerSharesTheHandback:
     def test_dial_uninstaller_sources_the_same_file(self):
         text = UNINSTALLER.read_text(encoding="utf-8")
         assert 'source "$SCRIPT_DIR/installer/lib/wifi_restore.sh"' in text
+
+
+# ---------------------------------------------------------------------------
+# Package lists are refreshed before a fresh install installs anything
+# ---------------------------------------------------------------------------
+
+def _apt_script(env: Env, *, update_rc: int = 0, update_text: str = "") -> None:
+    """A fake apt-get that records its calls and fails 'update' on demand."""
+    env.fake("apt-get", (
+        '#!/bin/bash\necho "apt-get $*" >> "$TRACE"\n'
+        f'if [[ "$1" == update ]]; then echo "{update_text}"; exit {update_rc}; fi\n'
+    ))
+
+
+@bash_capable
+class TestRefreshPackageLists:
+    def test_runs_apt_get_update_once(self, env):
+        _apt_script(env)
+        r = env.run("refresh_package_lists", update="false")
+        assert r.returncode == 0, r.stderr
+        assert env.calls() == ["apt-get update"]
+
+    def test_a_failed_refresh_stops_a_set_e_script_with_a_clear_message(self, env):
+        _apt_script(env, update_rc=100, update_text="E: Failed to fetch http://x/Packages  404")
+        r = env.run("refresh_package_lists\necho carried-on", update="false")
+        assert r.returncode == 1
+        assert "carried-on" not in r.stdout
+        assert "could not refresh the package lists" in r.stderr
+
+    def test_a_lock_held_by_another_process_is_retried_once(self, env):
+        env.fake("apt-get", (
+            '#!/bin/bash\necho "apt-get $*" >> "$TRACE"\n'
+            'n=$(wc -l < "$TRACE")\n'
+            'if (( n == 1 )); then echo "E: Could not get lock /var/lib/dpkg/lock-frontend"; exit 100; fi\n'
+        ))
+        r = env.run("refresh_package_lists", update="false")
+        assert r.returncode == 0, r.stderr
+        assert [c for c in env.calls() if c.startswith("apt-get")] == ["apt-get update"] * 2
+
+    def test_an_update_refreshes_the_lists_exactly_once(self, env):
+        _apt_script(env)
+        r = env.run("system_upgrade")
+        assert r.returncode == 0, r.stderr
+        assert [c for c in env.calls() if c == "apt-get update"] == ["apt-get update"]
+
+
+def _dry_names(tmp_path: Path, **kw) -> list[str]:
+    from test_dial_installer_hd import _dry_run, _names
+    r, calls = _dry_run(tmp_path, **kw)
+    assert r.returncode == 0, r.stderr
+    return _names(calls)
+
+
+@bash_capable
+class TestInstallerRefreshesListsOnAFreshInstall:
+    """The real installer script run with every helper replaced by a recorder."""
+
+    def test_fresh_install_refreshes_the_lists_before_the_first_package_step(self, tmp_path):
+        names = _dry_names(tmp_path, update=False)
+        assert names.count("refresh_package_lists") == 1
+        assert names.index("refresh_package_lists") < names.index("install_os_packages")
+        assert names.index("show_info_and_prompt") < names.index("refresh_package_lists")
+
+    def test_update_does_not_refresh_the_lists_a_second_time(self, tmp_path):
+        names = _dry_names(tmp_path, update=True)
+        assert "refresh_package_lists" not in names
+        assert names.count("system_upgrade") == 1

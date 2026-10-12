@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a fresh dial install now refreshes the package lists first, as the appliance
+  installer does, so it no longer stops with "Unable to locate package" on a newly
+  written card whose lists are empty or out of date. With no network it stops at
+  that step with a plain message, before any package is touched.
 - fix: uninstalling the dial software now gives the saved Wi-Fi networks back to
   NetworkManager (autoconnect on again, hotspot profile removed), the same as the
   appliance uninstaller, so a dial on Wi-Fi alone rejoins its network after the

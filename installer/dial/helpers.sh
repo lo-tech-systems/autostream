@@ -1635,12 +1635,25 @@ apt_step() {
     return "${rc}"
 }
 
+refresh_package_lists() {
+    # Fetch the current package lists, as the appliance installer does before
+    # it installs anything: a freshly written card can carry lists that are
+    # empty or out of date, and an install against them stops at "Unable to
+    # locate package" or a 404. Runs once per install or update, ahead of the
+    # first package step. When the lists cannot be fetched (no network) the
+    # installer stops here, before a package has been touched.
+    if ! apt_step apt-get update; then
+        echo "ERROR: could not refresh the package lists; check the network connection and run the installer again." >&2
+        return 1
+    fi
+}
+
 system_upgrade() {
     # Refresh the package index and upgrade installed packages, as the
     # appliance installer does; needrestart is told only to list, never to
     # restart services mid-install. Then trim the downloaded package cache,
     # since the card is small.
-    apt_step apt-get update
+    refresh_package_lists
     apt_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
     apt-get autoclean -y
 }
