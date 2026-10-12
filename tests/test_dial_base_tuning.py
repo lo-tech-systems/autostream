@@ -315,5 +315,7 @@ class TestApplianceUsesTheSharedLibrary:
         assert re.search(r"^remove_unneeded_system_services\(\) \{.*?\n  remove_unneeded_packages\n",
                          APPLIANCE_INSTALLER.read_text(encoding="utf-8"), re.S | re.M)
 
-    def test_text_check_the_appliance_still_installs_its_mdns_setting_itself(self):
-        assert "system/NetworkManager/mdns.conf" in self._configure()
+    def test_text_check_the_appliance_removes_its_old_mdns_setting(self):
+        configure = self._configure()
+        assert "system/NetworkManager/mdns.conf" not in configure
+        assert "rm -f /etc/NetworkManager/conf.d/mdns.conf" in configure

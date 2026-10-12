@@ -1155,11 +1155,13 @@ configure_phase() {
   systemctl disable dnsmasq || true
 
   # NetworkManager: Wi-Fi power saving off (the wifi-powersave.conf drop-in and
-  # the 99-wlan-fix dispatcher, installer/lib/system_tuning.sh), then mDNS.
+  # the 99-wlan-fix dispatcher, installer/lib/system_tuning.sh).
   install_wifi_power_save_off "${AUTOSTREAM_DIR}/system"
-  install -m 0644 -o root -g root \
-      "${AUTOSTREAM_DIR}/system/NetworkManager/mdns.conf" \
-      /etc/NetworkManager/conf.d/mdns.conf
+  # Earlier releases also set NetworkManager's mDNS mode. NetworkManager only
+  # passes that to systemd-resolved, which is not installed: avahi answers
+  # mDNS here. Remove the leftover so it cannot start a second responder if
+  # systemd-resolved is ever added.
+  rm -f /etc/NetworkManager/conf.d/mdns.conf
 
   # cloud-init
   configure_cloud_init

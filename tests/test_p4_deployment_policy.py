@@ -923,11 +923,20 @@ class TestWatchdogConfig:
 # ---------------------------------------------------------------------------
 
 class TestNetworkManagerConfig:
-    def test_mdns_conf_enables_mdns(self):
-        text = (NM_DIR / "mdns.conf").read_text(encoding="utf-8")
-        assert "mdns=2" in text or "connection.mdns=2" in text, (
-            "mdns.conf must enable mDNS (connection.mdns=2)"
-        )
+    def test_no_networkmanager_mdns_setting_is_shipped_or_installed(self):
+        # avahi is the only mDNS responder; NetworkManager's mDNS mode would
+        # only matter to systemd-resolved, which is not installed.
+        assert not (NM_DIR / "mdns.conf").exists()
+        text = INSTALL_SH.read_text(encoding="utf-8")
+        assert "system/NetworkManager/mdns.conf" not in text
+
+    def test_installer_removes_a_leftover_networkmanager_mdns_setting(self):
+        text = INSTALL_SH.read_text(encoding="utf-8")
+        assert "rm -f /etc/NetworkManager/conf.d/mdns.conf" in text
+
+    def test_uninstaller_removes_a_leftover_networkmanager_mdns_setting(self):
+        text = (REPO_ROOT / "autostream_uninstall.sh").read_text(encoding="utf-8")
+        assert "remove_path /etc/NetworkManager/conf.d/mdns.conf" in text
 
     def test_wifi_powersave_conf_disables_powersave(self):
         text = (NM_DIR / "wifi-powersave.conf").read_text(encoding="utf-8")
@@ -949,12 +958,6 @@ class TestNetworkManagerConfig:
             r'\s+"\$\{root\}/etc/NetworkManager/dispatcher\.d/99-wlan-fix"',
             lib,
         ), "99-wlan-fix must be installed root-owned and executable"
-        assert re.search(
-            r"install\s+-m\s+0644\s+-o\s+root\s+-g\s+root\s+\\\n"
-            r'\s+"\$\{AUTOSTREAM_DIR\}/system/NetworkManager/mdns\.conf"\s+\\\n'
-            r"\s+/etc/NetworkManager/conf\.d/mdns\.conf",
-            text,
-        ), "mdns.conf must be installed root-owned"
         assert re.search(
             r"install\s+-m\s+0644\s+\$\{own\[@\]\+\"\$\{own\[@\]\}\"\}\s+"
             r'"\$\{sys\}/NetworkManager/wifi-powersave\.conf"\s+\\\n'
