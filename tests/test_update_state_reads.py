@@ -103,13 +103,12 @@ class TestDialInstallerReaders:
         assert "SDMON_METHOD=auto" in text and "OTHER" not in text
 
     def test_the_identity_is_read_without_following_a_link(self, env):
-        text = DIAL_INSTALLER.read_text(encoding="utf-8")
-        block = text[text.index("Parse without source"):]
-        assert 'read_state_file' in block[:block.index("DIAL_UUID=$(grep")]
-        assert "grep '^DIAL_UUID=' \\\n" not in block
-        env.install_state.symlink_to(_secret(env, "DIAL_UUID=0123456789abcdef0123\n"))
-        r = env.run('read_state_file "$INSTALL_STATE_FILE" || echo absent')
-        assert r.returncode == 0 and r.stdout.strip() == "absent"
+        env.install_state.symlink_to(_secret(env, "DIAL_UUID=feedfacefeedfacefeed\n"))
+        r = env.run("generate_dial_id() { echo 0123456789abcdef0123; }\n"
+                    "resolve_update_dial_id")
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.strip() == "0123456789abcdef0123"
+        assert "malformed" in r.stderr
 
     def test_the_dial_name_is_opened_without_following_a_link(self):
         text = DIAL_INSTALLER.read_text(encoding="utf-8")

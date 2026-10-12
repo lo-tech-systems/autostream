@@ -631,7 +631,10 @@ def _dry_run(tmp_path: Path, *, update: bool, fail: str | None = None):
     deploy = tmp_path / "deploy"
     (deploy / "installer" / "dial").mkdir(parents=True)
     (deploy / "autostream_dial_install.sh").write_bytes(INSTALLER.read_bytes())
-    names = re.findall(r"^([a-z][a-z0-9_]*)\(\) \{", _helper_text(), re.M)
+    # The identity choice on an update runs for real, over the stubbed derivation.
+    real = {"resolve_update_dial_id", "dial_identity_token_ok", "stored_hw_dial_id"}
+    names = [n for n in re.findall(r"^([a-z][a-z0-9_]*)\(\) \{", _helper_text(), re.M)
+             if n not in real]
     stubs = [f'source "{HELPERS.as_posix()}"']
     for name in names:
         stubs.append(f'{name}() {{ printf "%s %s\\n" {name} "$*" >> "$TRACE"; }}')
