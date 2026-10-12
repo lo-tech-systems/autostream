@@ -697,6 +697,8 @@ class TestAnnouncementIsDerived:
     def test_nothing_is_announced_when_no_identity_can_be_derived(
             self, dial, tmp_path, monkeypatch):
         dial.set_serial("")
+        dial.hw.write_text(json.dumps({k: v for k, v in HW.items() if k != "uuid"}),
+                           encoding="utf-8")
         rc, service = self._announce(dial, tmp_path, monkeypatch, OLD_UUID)
         assert rc == 1
         assert not service.exists()
@@ -786,3 +788,206 @@ class TestUpdateReinstallUninstall:
         env.put("proc/cpuinfo", f"Serial\t\t: {SERIAL}\n")
         assert _run_uninstaller(env, script, "--yes").returncode == 0
         assert env.run("generate_dial_id", update="false").stdout.strip() == OLD_UUID
+
+
+# ---------------------------------------------------------------------------
+# The announced identity is the one the dial already holds
+# ---------------------------------------------------------------------------
+
+LEGACY_RANDOM = "feedfacefeedfacefeed"
+
+
+def _set_stored(dial, uuid) -> None:
+    """Put UUID in both stored copies (None removes the hardware config key)."""
+    cfg = dict(HW)
+    if uuid is None:
+        cfg.pop("uuid")
+    else:
+        cfg["uuid"] = uuid
+    dial.hw.write_text(json.dumps(cfg), encoding="utf-8")
+    dial.install_state.write_text(
+        INSTALL_STATE.replace(OLD_UUID, str(uuid)), encoding="utf-8")
+
+
+@posix_only
+class TestAnnouncementUsesTheStoredIdentity:
+    _announce = TestAnnouncementIsDerived._announce
+
+    def test_a_dial_with_a_stored_identity_of_its_own_keeps_announcing_it(
+            self, dial, tmp_path, monkeypatch, capsys):
+        _set_stored(dial, LEGACY_RANDOM)
+        rc, service = self._announce(dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        assert rc == 0
+        assert f"id={LEGACY_RANDOM}<" in service.read_text(encoding="utf-8")
+        assert "stored in" in capsys.readouterr().out
+
+    def test_the_value_the_caller_gives_is_ignored_and_the_difference_is_logged(
+            self, dial, tmp_path, monkeypatch, capsys):
+        _set_stored(dial, LEGACY_RANDOM)
+        rc, service = self._announce(dial, tmp_path, monkeypatch, "0" * 20)
+        assert rc == 0
+        assert f"id={LEGACY_RANDOM}<" in service.read_text(encoding="utf-8")
+        assert "differs" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("stored", [
+        pytest.param("FEEDFACEFEEDFACEFEED", id="upper-case"),
+        pytest.param(LEGACY_RANDOM[:-1], id="too-short"),
+        pytest.param(LEGACY_RANDOM + "0", id="too-long"),
+        pytest.param(LEGACY_RANDOM + "\n", id="trailing-newline"),
+        pytest.param("zzzzzzzzzzzzzzzzzzzz", id="not-hex"),
+        pytest.param(12345, id="not-text"),
+        pytest.param(None, id="absent"),
+    ])
+    def test_an_unusable_stored_identity_falls_back_to_the_derivation(
+            self, dial, tmp_path, monkeypatch, capsys, stored):
+        if stored is None:
+            _set_stored(dial, None)
+        else:
+            cfg = dict(HW, uuid=stored)
+            dial.hw.write_text(json.dumps(cfg), encoding="utf-8")
+        rc, service = self._announce(dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+        assert "derived from the board" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("text", ["not json", "[1, 2]", ""])
+    def test_a_damaged_hardware_config_falls_back_to_the_derivation(
+            self, dial, tmp_path, monkeypatch, text):
+        dial.hw.write_text(text, encoding="utf-8")
+        rc, service = self._announce(dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+
+    def test_a_missing_hardware_config_falls_back_to_the_derivation(
+            self, dial, tmp_path, monkeypatch):
+        dial.hw.unlink()
+        rc, service = self._announce(dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+
+    def test_a_hardware_config_others_can_write_is_not_believed(
+            self, dial, tmp_path, monkeypatch):
+        _set_stored(dial, LEGACY_RANDOM)
+        dial.hw.chmod(0o666)
+        rc, service = self._announce(dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+
+    def test_a_stored_identity_in_a_directory_others_can_write_is_not_believed(
+            self, dial, tmp_path, monkeypatch):
+        _set_stored(dial, LEGACY_RANDOM)
+        dial.etc.chmod(0o777)
+        try:
+            rc, service = self._announce(dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        finally:
+            dial.etc.chmod(0o755)
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+
+
+# Which identity wins, by what the dial holds. A salt means a reset has started
+# or finished, so the identity derived from it wins and the stored copies are
+# brought into line; with no salt the stored identity wins and nothing is
+# rewritten.  The announcement and the start-up reconcile follow the same rule.
+@posix_only
+class TestWhichIdentityWins:
+    @pytest.mark.parametrize("salted, stored, wins, rewritten", [
+        pytest.param(False, LEGACY_RANDOM, "stored", False, id="no-salt-legacy-random-id"),
+        pytest.param(False, OLD_UUID, "stored", False, id="no-salt-stored-equals-derived"),
+        pytest.param(True, "derived", "derived", False, id="salt-stored-equals-derived"),
+        pytest.param(True, OLD_UUID, "derived", True, id="salt-stored-differs"),
+    ])
+    def test_the_announcement_and_reconcile_agree(
+            self, dial, tmp_path, monkeypatch, salted, stored, wins, rewritten):
+        derived = None
+        if salted:
+            dial.salt.write_text(SALT_A + "\n", encoding="utf-8")
+            derived = m.derive_dial_id(SALT_A)
+        if stored == "derived":
+            stored = derived
+        _set_stored(dial, stored)
+        before = dial.snapshot()
+        winner = stored if wins == "stored" else derived
+
+        rc, service = TestAnnouncementIsDerived._announce(
+            self, dial, tmp_path, monkeypatch, LEGACY_RANDOM)
+        assert rc == 0
+        assert f"id={winner}<" in service.read_text(encoding="utf-8")
+        assert dial.snapshot() == before  # announcing changes no stored copy
+
+        with patch.object(m, "write_file_safely", wraps=m.write_file_safely) as write:
+            assert m.reconcile_dial_identity() is True
+        assert write.called is rewritten
+        assert dial.hw_uuid() == winner
+        assert dial.state_uuid() == winner
+        if not rewritten:
+            assert dial.snapshot() == before
+
+
+# ---------------------------------------------------------------------------
+# An absent salt is "no salt", whatever the directory looks like; a present
+# salt in a directory others can write is refused. The privileged helper and
+# the installer's shell function follow the same cases.
+# ---------------------------------------------------------------------------
+
+SALT_DIRECTORY_CASES = [
+    # directory mode, salt text (None: no file), outcome
+    pytest.param(0o755, None, "unsalted", id="trusted-directory-no-salt"),
+    pytest.param(0o775, None, "unsalted", id="group-writable-directory-no-salt"),
+    pytest.param(0o777, None, "unsalted", id="world-writable-directory-no-salt"),
+    pytest.param(0o755, SALT_A + "\n", "salted", id="trusted-directory-salt"),
+    pytest.param(0o775, SALT_A + "\n", "refused", id="group-writable-directory-salt"),
+    pytest.param(0o777, SALT_A + "\n", "refused", id="world-writable-directory-salt"),
+]
+
+
+@posix_only
+class TestAbsentSaltInAnUntrustedDirectory:
+    @pytest.mark.parametrize("mode, salt, outcome", SALT_DIRECTORY_CASES)
+    def test_the_privileged_helper(self, dial, tmp_path, monkeypatch, mode, salt, outcome):
+        if salt is not None:
+            dial.salt.write_text(salt, encoding="utf-8")
+        dial.etc.chmod(mode)
+        try:
+            if outcome == "refused":
+                with pytest.raises(ValueError):
+                    m._read_dial_id_salt()
+                return
+            assert m._read_dial_id_salt() == (None if outcome == "unsalted" else SALT_A)
+        finally:
+            dial.etc.chmod(0o755)
+
+    @pytest.mark.parametrize("mode", [0o775, 0o777])
+    def test_announcing_still_works_with_no_salt_in_an_untrusted_directory(
+            self, dial, tmp_path, monkeypatch, mode):
+        dial.etc.chmod(mode)
+        try:
+            rc, service = TestAnnouncementIsDerived._announce(
+                self, dial, tmp_path, monkeypatch, OLD_UUID)
+        finally:
+            dial.etc.chmod(0o755)
+        assert rc == 0
+        assert f"id={OLD_UUID}<" in service.read_text(encoding="utf-8")
+
+    @bash_capable
+    @pytest.mark.parametrize("mode, salt, outcome", SALT_DIRECTORY_CASES)
+    def test_the_installer_function(self, env, mode, salt, outcome):
+        _real_python3(env)
+        env.put("proc/cpuinfo", f"processor\t: 0\nSerial\t\t: {SERIAL}\n")
+        etc = env.root / "etc" / "autostream"
+        etc.mkdir(parents=True, exist_ok=True)
+        if salt is not None:
+            env.put("etc/autostream/dial-id-salt", salt)
+        etc.chmod(mode)
+        try:
+            r = env.run("generate_dial_id", update="false")
+        finally:
+            etc.chmod(0o755)
+        if outcome == "refused":
+            assert r.returncode != 0 and r.stdout.strip() == ""
+        elif outcome == "salted":
+            assert r.returncode == 0, r.stderr
+            assert r.stdout.strip() == "5a51ead2f359f9ad69d5"
+        else:
+            assert r.returncode == 0, r.stderr
+            assert r.stdout.strip() == OLD_UUID

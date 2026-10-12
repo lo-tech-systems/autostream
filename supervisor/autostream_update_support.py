@@ -703,10 +703,18 @@ def read_file_if_trusted(
     file whatever the file's own owner.
 
     Raises FileNotFoundError when the file is absent and ValueError for any
-    refusal, so a caller can tell "not there" from "not to be trusted".
+    refusal, so a caller can tell "not there" from "not to be trusted".  A
+    file that is absent is reported as absent whatever the directory looks
+    like: the directory rule protects a file that is there.
     """
     path = Path(path)
     if check_directory:
+        try:
+            os.lstat(str(path))
+        except FileNotFoundError:
+            raise
+        except OSError:
+            pass
         dst = os.lstat(str(path.parent))
         if (not stat.S_ISDIR(dst.st_mode) or dst.st_uid != owner_uid
                 or dst.st_mode & 0o022):

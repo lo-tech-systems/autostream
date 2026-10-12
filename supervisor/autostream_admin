@@ -1425,6 +1425,48 @@ def _read_dial_id_salt() -> Optional[str]:
     return salt
 
 
+def _stored_dial_id() -> Optional[str]:
+    """The identity recorded in the root-only hardware config, or None.
+
+    None when the file is absent, cannot be trusted, is not a JSON object, or
+    holds no uuid of exactly 20 lower-case hex characters.
+    """
+    try:
+        raw = read_file_if_trusted(DIAL_HW_CONFIG_FILE, ROOT_UID, check_directory=True)
+        value = json.loads(raw).get("uuid")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if isinstance(value, str) and _DIAL_ID_RE.fullmatch(value):
+        return value
+    return None
+
+
+def current_dial_id() -> Tuple[Optional[str], str]:
+    """The identity this dial holds now, and where it came from.
+
+    Which value wins follows the order a factory reset writes things in: the
+    salt first, then the stored copies.  So a salt file means a reset has
+    started or finished, and the identity is the one derived from the salt
+    (the stored copies are made to match it, at once by a reset and at the
+    next start by reconcile_dial_identity).  With no salt there has been no
+    reset, and the stored identity wins: a dial installed before the
+    derivation existed, or given an identity by hand, keeps the one it has.
+    The derivation from the board is the last resort, for a dial that has no
+    usable stored identity.
+
+    Returns (uuid, source) with source one of "salt", "stored" or "board"; the
+    uuid is None when none can be worked out.  A salt that cannot be trusted
+    raises ValueError.
+    """
+    salt = _read_dial_id_salt()
+    if salt is not None:
+        return derive_dial_id(salt), "salt"
+    stored = _stored_dial_id()
+    if stored is not None:
+        return stored, "stored"
+    return derive_dial_id(None), "board"
+
+
 def derive_dial_id(salt: Optional[str]) -> Optional[str]:
     """Return the dial's 20-character identity for SALT, or None if it cannot be derived.
 
@@ -1542,7 +1584,8 @@ def reconcile_dial_identity() -> bool:
 
     Runs before every start of the dial service, so a reset that was cut short
     after the salt was written finishes on the next boot. A dial with no salt
-    is never touched. A salt that is present but invalid stops the whole
+    is never touched: its stored identity stands (see current_dial_id for why
+    the salt decides). A salt that is present but invalid stops the whole
     thing: the stored identity stays as it is and the error is logged.
 
     The salt is read from a root-owned place. The only thing read from
@@ -1877,17 +1920,22 @@ def _update_dial_service(args) -> int:
     if not _DIAL_TEMPLATE.exists():
         log("ERROR", f"update-dial-service: template not found: {_DIAL_TEMPLATE}")
         return 1
-    # The identity announced is the one derived here from the board and the
-    # root-owned salt. The UUID the caller passes is checked against it and
-    # never used, so the unprivileged dial cannot announce another identity.
+    # The identity announced is the one the dial holds (see current_dial_id),
+    # read from root-owned files. The UUID the caller passes is checked against
+    # it and never used, so the unprivileged dial cannot announce another one.
     try:
-        uuid = derive_dial_id(_read_dial_id_salt())
+        uuid, source = current_dial_id()
     except ValueError as e:
         log("ERROR", f"update-dial-service: {e}; not announcing")
         return 1
     if uuid is None:
-        log("ERROR", "update-dial-service: cannot derive this dial's identity; not announcing")
+        log("ERROR", "update-dial-service: cannot work out this dial's identity; not announcing")
         return 1
+    log("INFO", "update-dial-service: announcing the identity " + {
+        "salt": "derived from the salt",
+        "stored": f"stored in {DIAL_HW_CONFIG_FILE}",
+        "board": "derived from the board (none is stored)",
+    }[source])
     if args.uuid != uuid:
         log("WARN", "update-dial-service: the UUID given differs from this dial's own "
                     "identity; announcing the dial's own")
