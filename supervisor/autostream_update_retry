@@ -8,9 +8,17 @@ ordered before autostream_monitor.service and autostream.service.
 Recovery condition (all must hold):
   - /var/lib/autostream/update-result.env has STATUS=in_progress
   - LAST_RUN_AT in that file predates the current boot (update was interrupted)
-  - /var/lib/autostream/update-staging/src/<dir>/autostream_install.sh exists
+  - /var/lib/autostream-update is a directory only root can use, and the
+    marker root wrote there when the update was staged is present
+  - /var/lib/autostream-update/staging/src/<dir>/autostream_install.sh exists
     and is executable
   - retry_count in the staging dir is below MAX_RETRIES
+
+Everything root runs or reads back here comes from /var/lib/autostream-update.
+update-result.env sits in a directory the service account owns, so it only
+says that an update may have been interrupted; it never selects what runs.
+When the staged files are absent or not trustworthy the update is marked
+failed and the appliance carries on with what it has.
 
 On recovery:
   1. Write /tmp/autostream-updating  (nginx redirect flag — sends web hits to
@@ -46,15 +54,20 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from autostream_update_support import (
-    FLOCK_BIN,
+    FLOCK_BIN, UPDATE_STATE_DIR,
     _find_systemd_run, _is_pre_boot, _read_env_file, _run,
-    free_repeat_buffer, stop_owntone_playback, write_file_safely,
+    clear_update_in_progress, free_repeat_buffer, read_update_in_progress,
+    stop_owntone_playback, trusted_state_dir, valid_release_tag,
+    write_file_safely,
 )
 
 # ---- Paths / constants -------------------------------------------------------
 STAMP_DIR          = Path("/var/lib/autostream")
 UPDATE_RESULT_FILE = STAMP_DIR / "update-result.env"
-STAGING_DIR        = STAMP_DIR / "update-staging"
+# What root runs and trusts is in the directory only root can write; the user
+# whose ownership it must have is root outside the tests.
+UPDATE_STATE_UID   = 0
+STAGING_DIR        = UPDATE_STATE_DIR / "staging"
 RELEASE_TAG_FILE   = STAGING_DIR / "release_tag"
 RETRY_COUNT_FILE   = STAGING_DIR / "retry_count"
 UPDATING_FLAG      = Path("/tmp/autostream-updating")
@@ -75,6 +88,15 @@ def _log(msg: str) -> None:
 
 # ---- State helpers -----------------------------------------------------------
 
+def _staged_tag() -> str | None:
+    """The tag of the update root staged, or None when root left no record.
+
+    The directory must be one only root can use, and the marker in it must be
+    a file root wrote there.
+    """
+    return read_update_in_progress(STAGING_DIR, UPDATE_STATE_UID)
+
+
 def _find_installer() -> Path | None:
     """Return the staged autostream_install.sh if present and executable."""
     src_dir = STAGING_DIR / "src"
@@ -91,7 +113,8 @@ def _find_installer() -> Path | None:
 
 def _read_retry_count() -> int:
     try:
-        return max(0, int(RETRY_COUNT_FILE.read_text(encoding="utf-8").strip()))
+        text = RETRY_COUNT_FILE.read_text(encoding="utf-8").strip()
+        return max(0, int(text)) if text.isdigit() else 0
     except Exception:
         return 0
 
@@ -110,6 +133,9 @@ def _write_update_result(status: str, message: str, percent: int, run_at: str) -
         f'PERCENT_COMPLETE="{percent}"\n'
     )
     write_file_safely(UPDATE_RESULT_FILE, content, 0o600, (0, 0))
+    if status in ("success", "failure"):
+        # A final result ends the interrupted-update window.
+        clear_update_in_progress(STAGING_DIR)
 
 
 # ---- Main --------------------------------------------------------------------
@@ -132,8 +158,15 @@ def main() -> int:
         _log("update in_progress but not pre-boot; skipping (update may be running)")
         return 0
 
-    # 2. Verify the staged installer is available.
-    installer = _find_installer()
+    # 2. Verify the staged installer is available, in the directory only root
+    #    can use and with the marker root wrote there.
+    try:
+        trusted_state_dir(STAGING_DIR.parent, UPDATE_STATE_UID)
+        staged_tag = _staged_tag()
+    except (OSError, ValueError) as e:
+        _log(f"update state directory not usable ({e}); cannot retry")
+        staged_tag = None
+    installer = _find_installer() if staged_tag is not None else None
     if installer is None:
         _log("interrupted update detected but no staged installer found; cannot retry")
         now_str = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -164,9 +197,11 @@ def main() -> int:
         release_tag = RELEASE_TAG_FILE.read_text(encoding="utf-8").strip()
         if not release_tag:
             raise ValueError("empty")
+        if not valid_release_tag(release_tag):
+            raise ValueError("not a version")
     except Exception:
-        release_tag = "unknown"
-        _log("release_tag file missing or empty; proceeding with tag=unknown")
+        release_tag = staged_tag if valid_release_tag(staged_tag) else "unknown"
+        _log(f"release_tag file missing or unusable; proceeding with tag={release_tag}")
 
     attempt = retry_count + 1
     _log(

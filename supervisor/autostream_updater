@@ -29,8 +29,13 @@ NOTES
   failure/skip return in between — so the /offline/updating page never
   shows a stale result left over from a previous run while a new update is
   merely being staged. See cmd_apply and _write_update_result.
-- Staging location: /var/lib/autostream/update-staging/  (root-owned, cleaned
-  at the start of each apply run so stale extracts do not accumulate).
+- Staging location: /var/lib/autostream-update/staging/, inside the directory
+  only root can write (see autostream_update_support.trusted_state_dir).  It
+  is cleaned at the start of each apply run so stale extracts do not
+  accumulate.  The service account owns /var/lib/autostream and could swap a
+  staged installer there, so nothing root runs is staged in it.  Once staged,
+  a root-written marker beside it records that an update is in progress; the
+  boot-time retry acts on that marker, not on update-result.env alone.
 - Immediately before scheduling the installer, cmd_apply best-effort stops
   OwnTone playback and frees the autostream_monitor repeat buffer (up to
   ~120 MiB+) so that RAM is available for the installer's heavy work (apt +
@@ -59,8 +64,10 @@ from autostream_update_support import (
     FLOCK_BIN, RELEASES_HTML,
     _find_systemd_run, _github_latest_release,
     _normalise_update_channel, _read_env_file, _version_key,
-    free_repeat_buffer, is_active_transient_unit, schedule_locked_installer,
-    stage_release, stop_owntone_playback, write_file_safely,
+    UPDATE_STATE_DIR, clear_update_in_progress, free_repeat_buffer,
+    is_active_transient_unit, mark_update_in_progress,
+    schedule_locked_installer, stage_release, stop_owntone_playback,
+    trusted_state_dir, valid_release_tag, write_file_safely,
 )
 
 # ---- Paths / constants ----
@@ -69,7 +76,10 @@ APMODE_FLAG = Path("/tmp/apmode")
 INSTALL_STATE_FILE = Path("/var/lib/autostream/install-state.env")
 UPDATE_LOCK_FILE = Path("/run/autostream-update.lock")
 UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
-STAGING_DIR = Path("/var/lib/autostream/update-staging")
+# What root stages and trusts lives in a directory only root can write; the
+# user whose ownership it must have is root outside the tests.
+UPDATE_STATE_UID = 0
+STAGING_DIR = UPDATE_STATE_DIR / "staging"
 CONFIG_PATH = Path("/etc/autostream/autostream.json")
 PLAYING_SERVICE = Path("/etc/avahi/services/autostream-playing.service")
 
@@ -92,7 +102,9 @@ def _read_installed_release_tag() -> str:
         env = _read_env_file(INSTALL_STATE_FILE)
         v = str(env.get("AUTOSTREAM_RELEASE_TAG") or "").strip()
         if v:
-            return v
+            # The file is in a directory the service account owns, so a tag
+            # that is not a version reads as unknown.
+            return v if valid_release_tag(v) else "unknown"
     except Exception as e:
         _log(f"read_installed_release_tag: install-state read failed: {e}")
         return "unknown"
@@ -126,6 +138,16 @@ def _write_update_result(status: str, percent: int, message: str) -> None:
         write_file_safely(UPDATE_RESULT_FILE, content, 0o644)
     except Exception as e:
         _log(f"apply: warning — could not write update-result.env: {e}")
+    if status in ("success", "failure"):
+        # A final result ends the interrupted-update window.
+        clear_update_in_progress(STAGING_DIR)
+
+
+def _staging_dir() -> Path:
+    """The staging directory, once the directory that holds it is proven
+    root-only (and made, with that owner and mode, if it is not there)."""
+    trusted_state_dir(STAGING_DIR.parent, UPDATE_STATE_UID, create=True)
+    return STAGING_DIR
 
 
 def _update_unit_active() -> bool:
@@ -360,10 +382,14 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log(f"apply: staging release tag={tag}")
         _write_update_result("in_progress", 5, "Downloading the update...")
         try:
+            staging = _staging_dir()
+            # No marker may outlive the tree it was written for.
+            clear_update_in_progress(staging)
             installer = stage_release(
-                tarball_url, tag, STAGING_DIR,
+                tarball_url, tag, staging,
                 "autostream_install.sh", ["system"], UA,
             )
+            mark_update_in_progress(STAGING_DIR, tag)
             _log(f"apply: staged release at {installer.parent}")
         except Exception as e:
             _log(f"apply: staging failed: {e}")

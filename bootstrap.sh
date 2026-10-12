@@ -26,11 +26,36 @@ readonly UA="autostream-updater/1.0 (+https://github.com/${REPO_OWNER}/${REPO_NA
 # Staging layout mirrors autostream_updater exactly:
 #   ${STAGING_DIR}/release.tgz   — downloaded tarball
 #   ${STAGING_DIR}/src/          — extraction root
-readonly STAGING_DIR="/var/lib/autostream/update-staging"
+readonly UPDATE_STATE_DIR="/var/lib/autostream-update"
+readonly STAGING_DIR="${UPDATE_STATE_DIR}/staging"
 
 # ---- Helpers ----------------------------------------------------------------
 info()  { echo "[INFO] $*"; }
 error() { echo "[ERROR] $*" >&2; }
+
+# The directory the release is staged in belongs to root alone (mode 0700).
+# /var/lib/autostream belongs to the service account, which could swap what is
+# staged there for a file of its own before root runs it, so nothing is staged
+# in it. A link, a file, or a directory with another owner or a looser mode at
+# that name is removed and the directory made again.
+prepare_update_dir() {
+  if [[ -L "${UPDATE_STATE_DIR}" ]] || { [[ -e "${UPDATE_STATE_DIR}" ]] && [[ ! -d "${UPDATE_STATE_DIR}" ]]; }; then
+    rm -f -- "${UPDATE_STATE_DIR}"
+  elif [[ -d "${UPDATE_STATE_DIR}" && "$(stat -c '%u %a' -- "${UPDATE_STATE_DIR}")" != "0 700" ]]; then
+    rm -rf --one-file-system -- "${UPDATE_STATE_DIR}"
+  fi
+  if [[ ! -d "${UPDATE_STATE_DIR}" ]]; then
+    mkdir -m 0700 -- "${UPDATE_STATE_DIR}"
+  fi
+  chown root:root -- "${UPDATE_STATE_DIR}"
+}
+
+# Start the staging directory empty, so stale extracts do not accumulate.
+fresh_staging_dir() {
+  prepare_update_dir
+  rm -rf -- "${STAGING_DIR}"
+  mkdir -m 0700 -- "${STAGING_DIR}"
+}
 
 # ---- Preflight --------------------------------------------------------------
 if [[ ${EUID} -ne 0 ]]; then
@@ -53,11 +78,8 @@ fi
 for _arg in "$@"; do
   if [[ "${_arg}" == "--fetch-autostream" ]]; then
     repo_root="${STAGING_DIR}/src/main"
-    if [[ -d "${STAGING_DIR}" ]]; then
-      rm -rf "${STAGING_DIR}"
-    fi
+    fresh_staging_dir
     mkdir -p "${STAGING_DIR}/src"
-    chmod 0700 "${STAGING_DIR}"
     info "Cloning autostream main branch..."
     git clone "https://github.com/${REPO_OWNER}/${REPO_NAME}.git" "${repo_root}"
     installer="${repo_root}/autostream_install.sh"
@@ -89,11 +111,7 @@ info "Latest release: ${AUTOSTREAM_RELEASE_TAG}"
 # ---- Stage release ----------------------------------------------------------
 # Remove any previous staging directory so stale extracts do not accumulate —
 # consistent with the cleanup autostream_updater performs before each apply run.
-if [[ -d "${STAGING_DIR}" ]]; then
-  rm -rf "${STAGING_DIR}"
-fi
-mkdir -p "${STAGING_DIR}"
-chmod 0700 "${STAGING_DIR}"
+fresh_staging_dir
 
 tar_path="${STAGING_DIR}/release.tgz"
 info "Downloading release tarball..."

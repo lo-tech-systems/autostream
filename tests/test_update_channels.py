@@ -49,6 +49,10 @@ def _load_script(name: str) -> ModuleType:
             loader.exec_module(mod)
     else:
         loader.exec_module(mod)
+    # The root-only update directory belongs to root in production; the user
+    # running the test stands in for it.
+    if hasattr(mod, "UPDATE_STATE_UID") and hasattr(os, "getuid"):
+        mod.UPDATE_STATE_UID = os.getuid()
     return mod
 
 

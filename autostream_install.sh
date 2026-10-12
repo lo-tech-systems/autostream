@@ -123,7 +123,11 @@ LIBEXEC_DIR="/usr/local/libexec/autostream"
 STATE_FILE="${STAMP_DIR}/install-state.env"
 UPDATE_RESULT_FILE="${STAMP_DIR}/update-result.env"
 UPDATING_FLAG_FILE="/tmp/autostream-updating"
-STOPPED_SERVICES_FILE="${STAMP_DIR}/update-stopped-services.env"
+# Kept where only root can write: restore_stopped_services starts what it names.
+STOPPED_SERVICES_FILE="${UPDATE_STATE_DIR}/update-stopped-services.env"
+# Written by the updater when it stages a release; cleared by the first final
+# result, so the boot-time retry only ever acts on an update still in flight.
+UPDATE_IN_PROGRESS_FILE="${UPDATE_STATE_DIR}/update-in-progress"
 SWAPPINESS_SYSCTL_CONF="/etc/sysctl.d/90-autostream-swappiness.conf"
 
 PIN_REGEX='^[A-Za-z0-9-]{4,20}$'
@@ -371,10 +375,12 @@ save_state() {
   # recorded until the line is cleared by hand: a later run without the flag
   # leaves the settings in the boot files, so the uninstaller must still know
   # to take them back.
-  local low_power="${LOW_POWER}"
-  if [[ "${low_power}" != "1" && -f "${STATE_FILE}" ]] && \
-     grep -qE '^LOW_POWER="?1"?[[:space:]]*$' "${STATE_FILE}"; then
-    low_power=1
+  local low_power="${LOW_POWER}" saved_state
+  if [[ "${low_power}" != "1" ]]; then
+    saved_state="$(read_state_file "${STATE_FILE}" || true)"
+    if grep -qE '^LOW_POWER="?1"?[[:space:]]*$' <<< "${saved_state}"; then
+      low_power=1
+    fi
   fi
 
   # Written beside the old file and renamed over it: the directory belongs to
@@ -400,7 +406,13 @@ EOF
 }
 
 load_state() {
-  if [[ ! -f "${STATE_FILE}" ]]; then
+  # The file is in a directory the service account owns, so it is read without
+  # following a link and a link, or anything that is not a regular file, counts
+  # as no saved state at all.
+  local _state
+  local _re_word='^[a-z_]{1,24}$' _re_serial='^[A-Za-z0-9._:-]{0,64}$'
+  local _re_when='^[0-9A-Za-z:+.,_ -]{0,40}$' _re_text='^[[:print:]]{0,400}$'
+  if ! _state="$(read_state_file "${STATE_FILE}")"; then
     error "No saved install state found at ${STATE_FILE}."
     error "Cannot run --update without a prior installation."
     error "Run without --update to perform a first-time install."
@@ -413,12 +425,20 @@ load_state() {
   # state file could run arbitrary commands as root during an update.
   # Only the specific keys required are accepted; all others are ignored.
   #
-  # AUTOSTREAM_DIR and AUTOSTREAM_RELEASE_TAG are intentionally excluded:
+  # AUTOSTREAM_DIR, AUTOSTREAM_RELEASE_TAG and INSTALL_DIR are intentionally
+  # excluded:
   #   AUTOSTREAM_DIR         — always the staged release tree (this script's
   #                            own directory), not the original install path.
   #   AUTOSTREAM_RELEASE_TAG — exported by the supervisor via --setenv and
   #                            carries the NEW tag; the state file records the
   #                            OLD installed tag and must not overwrite it.
+  #   INSTALL_DIR            — always /opt/autostream. The file can be replaced
+  #                            by the service account, and root deploys into
+  #                            this directory and takes ownership of it.
+  #
+  # What is accepted is checked against the values the installer itself writes;
+  # anything else keeps the default, since each of these ends up in a test,
+  # a command line or a file root writes.
   local _key _val _line
   while IFS= read -r _line || [[ -n "${_line}" ]]; do
     # Skip blank lines and comments.
@@ -439,14 +459,30 @@ load_state() {
     fi
 
     case "${_key}" in
-      OWNTONE_MODE)        OWNTONE_MODE="${_val}"        ;;
-      SDMON_METHOD)        SDMON_METHOD="${_val}"         ;;
-      SDMON_CHECK)         SDMON_CHECK="${_val}"          ;;
-      SDMON_CHECK_SERIAL)  SDMON_CHECK_SERIAL="${_val}"   ;;
-      SDMON_CHECK_AT)      SDMON_CHECK_AT="${_val}"       ;;
-      SDMON_CHECK_REASON)  SDMON_CHECK_REASON="${_val}"   ;;
-      FETCH_AUTOSTREAM)    FETCH_AUTOSTREAM="${_val}"     ;;
-      INSTALL_DIR)         INSTALL_DIR="${_val}"          ;;
+      OWNTONE_MODE)
+        if is_valid_owntone_mode "${_val}"; then OWNTONE_MODE="${_val}"; fi
+        ;;
+      SDMON_METHOD)
+        if [[ -z "${_val}" ]] || is_valid_sdmon_method "${_val}"; then SDMON_METHOD="${_val}"; fi
+        ;;
+      SDMON_CHECK)
+        if [[ "${_val}" =~ ^[a-z_]{1,24}$ ]]; then SDMON_CHECK="${_val}"; fi
+        ;;
+      SDMON_CHECK_SERIAL)
+        if [[ "${_val}" =~ ^[A-Za-z0-9._:-]{0,64}$ ]]; then SDMON_CHECK_SERIAL="${_val}"; fi
+        ;;
+      SDMON_CHECK_AT)
+        if [[ "${_val}" =~ ^[0-9A-Za-z:+.,_\ -]{0,40}$ ]]; then SDMON_CHECK_AT="${_val}"; fi
+        ;;
+      SDMON_CHECK_REASON)
+        if [[ "${_val}" =~ ^[[:print:]]{0,200}$ && "${_val}" != *[\"\`\$\\]* ]]; then
+          SDMON_CHECK_REASON="${_val}"
+        fi
+        ;;
+      FETCH_AUTOSTREAM)
+        # Used in arithmetic tests, so anything but 0 or 1 must never reach them.
+        if [[ "${_val}" =~ ^[01]$ ]]; then FETCH_AUTOSTREAM="${_val}"; fi
+        ;;
       LOW_POWER)
         # A flag given on this run wins; otherwise re-assert what was recorded.
         if [[ "${LOW_POWER_REQUESTED}" -eq 0 ]]; then
@@ -454,7 +490,7 @@ load_state() {
         fi
         ;;
     esac
-  done < "${STATE_FILE}"
+  done <<< "${_state}"
 
   info "Update mode: using staged release at ${AUTOSTREAM_DIR}"
 }
@@ -464,18 +500,20 @@ write_update_result() {
   local message="$2"
   local percent="${3:-}"
   local run_at="${UPDATE_RUN_AT:-$(date -Is)}"
-  local tmp
 
   mkdir -p "${STAMP_DIR}"
-  tmp="$(mktemp)"
-  cat > "${tmp}" <<EOF
+  # Written beside the old file and renamed over it: the directory belongs to
+  # the service account, which could have put a link at the name.
+  write_state_file "${UPDATE_RESULT_FILE}" 0600 root:root <<EOF
 LAST_RUN_AT="${run_at}"
 STATUS="${status}"
 MESSAGE="${message}"
 PERCENT_COMPLETE="${percent}"
 EOF
-  install -m 0600 -o root -g root "${tmp}" "${UPDATE_RESULT_FILE}"
-  rm -f "${tmp}"
+  # A final result ends the window in which the boot-time retry may act.
+  case "${status}" in
+    success|failure) rm -f -- "${UPDATE_IN_PROGRESS_FILE}" || true ;;
+  esac
 }
 
 # prepare_update_state_dir: the root-only directory an update stages into and
@@ -609,14 +647,16 @@ check_network_manager() {
 # unit is logged and does not abort the update; the reboot at the end of a
 # successful update, or restore_stopped_services on the failure path, settles
 # service state either way.
+STOPPABLE_UNITS=(
+  autostream_monitor
+  autostream_bluetooth
+  owntone
+  vibra-mini
+  autostream
+)
+
 stop_services_for_update() {
-  local units=(
-    autostream_monitor
-    autostream_bluetooth
-    owntone
-    vibra-mini
-    autostream
-  )
+  local units=("${STOPPABLE_UNITS[@]}")
   local unit
 
   install -m 0600 -o root -g root /dev/null "${STOPPED_SERVICES_FILE}"
@@ -651,10 +691,19 @@ restore_stopped_services() {
     return 0
   fi
 
-  local units=() unit
+  # Only a unit this installer stops is started again, whatever the file says.
+  local units=() unit known _stoppable
   while IFS= read -r unit || [[ -n "${unit}" ]]; do
     [[ -n "${unit}" ]] || continue
-    units+=("${unit}")
+    known=0
+    for _stoppable in "${STOPPABLE_UNITS[@]}"; do
+      [[ "${unit}" == "${_stoppable}" ]] && known=1
+    done
+    if [[ "${known}" -eq 1 ]]; then
+      units+=("${unit}")
+    else
+      warn "Ignoring unexpected unit name in ${STOPPED_SERVICES_FILE}."
+    fi
   done < "${STOPPED_SERVICES_FILE}"
 
   local i

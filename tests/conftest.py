@@ -74,6 +74,11 @@ def load_supervisor_script(name: str, unique_alias: str | None = None) -> Module
         for stub_name in _injected:
             sys.modules.pop(stub_name, None)
 
+    # The scripts expect their root-only update directory to belong to root.
+    # A test runs as an ordinary user, so the user running it stands in.
+    if hasattr(mod, "UPDATE_STATE_UID") and hasattr(os, "getuid"):
+        mod.UPDATE_STATE_UID = os.getuid()
+
     return mod
 
 

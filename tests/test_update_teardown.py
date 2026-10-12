@@ -55,6 +55,13 @@ def _extract_function(src: str, name: str) -> str:
     return m.group(0)
 
 
+def _extract_array(src: str, name: str) -> str:
+    """The text of a top-level bash array assignment, parentheses included."""
+    m = re.search(r"^" + re.escape(name) + r"=\(.*?\n\)\n", src, re.S | re.M)
+    assert m is not None, f"could not locate array {name} in source"
+    return m.group(0)
+
+
 def _write_systemctl_stub(bin_dir: Path) -> None:
     stub = bin_dir / "systemctl"
     stub.write_text(
@@ -107,6 +114,7 @@ info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 STOPPED_SERVICES_FILE="{stopped_file.as_posix()}"
+{_extract_array(src, "STOPPABLE_UNITS")}
 {funcs}
 {script_body}
 '''
@@ -240,6 +248,7 @@ info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 STOPPED_SERVICES_FILE="{stopped_file.as_posix()}"
+{_extract_array(_src(), "STOPPABLE_UNITS")}
 {func_src}
 stop_services_for_update
 '''
@@ -279,6 +288,7 @@ info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 STOPPED_SERVICES_FILE="{stopped_file.as_posix()}"
+{_extract_array(_src(), "STOPPABLE_UNITS")}
 {func_src}
 restore_stopped_services
 '''
@@ -312,6 +322,7 @@ info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 STOPPED_SERVICES_FILE="{stopped_file.as_posix()}"
+{_extract_array(_src(), "STOPPABLE_UNITS")}
 {func_src}
 restore_stopped_services
 echo "EXIT:$?"
@@ -344,6 +355,7 @@ info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 STOPPED_SERVICES_FILE="{stopped_file.as_posix()}"
+{_extract_array(_src(), "STOPPABLE_UNITS")}
 {func_src}
 restore_stopped_services
 '''
@@ -375,6 +387,7 @@ info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 STOPPED_SERVICES_FILE="{stopped_file.as_posix()}"
+{_extract_array(_src(), "STOPPABLE_UNITS")}
 {func_src}
 restore_stopped_services
 '''
@@ -404,6 +417,7 @@ info() {{ echo "INFO: $*"; }}
 warn() {{ echo "WARN: $*"; }}
 error() {{ echo "ERROR: $*" >&2; }}
 STOPPED_SERVICES_FILE="{stopped_file.as_posix()}"
+{_extract_array(_src(), "STOPPABLE_UNITS")}
 {func_src}
 restore_stopped_services
 echo "EXIT:$?"
@@ -483,9 +497,9 @@ class TestRunUpdateWiring:
         func = _extract_function(src, "stop_services_for_update")
         assert "wifi_watcher" not in func
 
-    def test_state_file_constant_matches_stamp_dir(self):
+    def test_state_file_constant_is_in_the_root_only_directory(self):
         src = self._src()
-        assert 'STOPPED_SERVICES_FILE="${STAMP_DIR}/update-stopped-services.env"' in src
+        assert 'STOPPED_SERVICES_FILE="${UPDATE_STATE_DIR}/update-stopped-services.env"' in src
 
 
 class TestFailurePathRestore:

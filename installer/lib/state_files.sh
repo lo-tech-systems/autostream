@@ -11,6 +11,9 @@
 # itself, and is then renamed over the old one. A rename replaces whatever
 # is at the final name, a link included, and never follows it.
 #
+# Reading is the mirror of it: a state file root acts on is opened without
+# following a link, and one that is not a regular file reads as absent.
+#
 # Sourced by installer/dial/helpers.sh and autostream_install.sh; not executed
 # directly.
 #
@@ -40,5 +43,36 @@ write_state_file() {
     rm -f -- "${tmp}"
     return 1
   fi
+  return 0
+}
+
+# read_state_file: print FILE, at most 64 KiB of it, when it is a regular file
+# reached without following a link; print nothing and return 1 otherwise. The
+# file is opened with O_NOFOLLOW (and without blocking, so a pipe put there
+# does not hold the installer up), so a link placed at the name after the
+# check is refused as well. Use it for any read of a file in that directory
+# whose content root acts on. The status is that of the open, not of the
+# content: an empty file prints nothing and succeeds.
+# Usage: content="$(read_state_file FILE)" || ...
+read_state_file() {
+  local file="$1"
+  [[ -f "${file}" && ! -L "${file}" ]] || return 1
+  dd if="${file}" iflag=nofollow,nonblock bs=65536 count=1 status=none 2>/dev/null
+}
+
+# read_state_value: print the value of the first KEY=VALUE line of FILE, read
+# as read_state_file reads it; print nothing when the file cannot be read
+# safely or has no such line. The value is exactly what follows the first
+# equals sign: no quote stripping, no validation. Always returns success.
+# Usage: read_state_value FILE KEY
+read_state_value() {
+  local file="$1" key="$2" content line
+  content="$(read_state_file "${file}")" || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == "${key}="* ]]; then
+      printf '%s\n' "${line#*=}"
+      return 0
+    fi
+  done <<< "${content}"
   return 0
 }

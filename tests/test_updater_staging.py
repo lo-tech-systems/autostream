@@ -893,6 +893,7 @@ class TestHostLockRelease:
              patch.object(_asu, "_run", return_value=(run_rc, "", "")), \
              patch.object(mod, "_update_unit_active", return_value=False), \
              patch.object(mod, "fcntl") as mk_fcntl, \
+             patch.object(mod, "mark_update_in_progress"), \
              patch("os.open", return_value=FAKE_FD), \
              patch("os.close", side_effect=lambda fd: close_calls.append(fd)):
             mk_fcntl.LOCK_EX = 2

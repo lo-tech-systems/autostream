@@ -30,6 +30,7 @@ _SUPERVISOR_DIR = str(REPO_ROOT / "supervisor")
 if _SUPERVISOR_DIR not in sys.path:
     sys.path.insert(0, _SUPERVISOR_DIR)
 
+import autostream_update_support as _asu
 from conftest import load_supervisor_script
 
 
@@ -92,6 +93,8 @@ def _make_installer(tmp_path: Path, staging_dir: Path) -> Path:
     installer = src / "autostream_install.sh"
     installer.write_text("#!/bin/sh\nexit 0\n")
     installer.chmod(0o755)
+    # The record root leaves when it stages an update.
+    _asu.mark_update_in_progress(staging_dir, "v1.2.3")
     return installer
 
 

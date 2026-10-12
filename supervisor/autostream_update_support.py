@@ -369,11 +369,15 @@ def stage_release(
     executable, verifies *required_paths* exist, writes release_tag, and
     returns the installer path.  Removes partial staging on any failure and
     re-raises so callers can format a product-specific error response.
+
+    The directory that holds *staging_dir* is not created here: callers open
+    it through trusted_state_dir first, so staging never lands in a directory
+    an unprivileged account could replace.
     """
     if staging_dir.exists():
         shutil.rmtree(str(staging_dir))
 
-    staging_dir.mkdir(parents=True, exist_ok=True)
+    staging_dir.mkdir(parents=False, exist_ok=True)
     os.chmod(str(staging_dir), 0o700)
 
     try:
@@ -793,3 +797,51 @@ def trusted_state_dir(
     if stat.S_IMODE(st.st_mode) != 0o700:
         raise ValueError(f"{path} has mode {stat.S_IMODE(st.st_mode):o}, not 700")
     return path
+
+
+# ---- What an update leaves in that directory for the next boot to find ------
+
+UPDATE_IN_PROGRESS_NAME = "update-in-progress"
+
+# A release tag is a version, so it is short and made of version characters.
+_TAG_CHARS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+
+
+def valid_release_tag(tag: object) -> bool:
+    """True when TAG is a short version string such as v1.2.3 or 1.3.0-beta.2.
+
+    Used on a tag that comes from a file an unprivileged account can write,
+    before it is compared or handed on, so anything else reads as unknown.
+    """
+    text = str(tag or "").strip()
+    return bool(_TAG_CHARS_RE.match(text)) and _semver_re.match(text) is not None
+
+
+def mark_update_in_progress(staging_dir, tag: str) -> None:
+    """Record, where only root can write, that an update has been staged.
+
+    The boot-time retry acts on an interrupted update only when this marker
+    is there, never on the status file alone, which the service account can
+    also write.  Removed once the update has a final result.
+    """
+    path = Path(staging_dir).parent / UPDATE_IN_PROGRESS_NAME
+    write_file_safely(path, str(tag).strip() + "\n", 0o600)
+
+
+def clear_update_in_progress(staging_dir) -> None:
+    """Remove the marker; absent is fine."""
+    try:
+        os.unlink(str(Path(staging_dir).parent / UPDATE_IN_PROGRESS_NAME))
+    except OSError:
+        pass
+
+
+def read_update_in_progress(staging_dir, owner_uid: int = 0) -> Optional[str]:
+    """The tag the marker holds, or None when it is absent or not trustworthy."""
+    path = Path(staging_dir).parent / UPDATE_IN_PROGRESS_NAME
+    try:
+        trusted_state_dir(path.parent, owner_uid)
+        text = read_file_if_trusted(path, owner_uid, check_directory=True, max_bytes=256)
+    except (OSError, ValueError):
+        return None
+    return text.strip()
