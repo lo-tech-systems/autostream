@@ -1089,17 +1089,69 @@ class TestVerifyHd:
 
     # -- the kiosk browser, with a display --
 
-    def test_a_failed_kiosk_rolls_back_at_once(self, world, mod, system, clock):
+    def test_a_kiosk_that_is_still_failed_at_the_deadline_rolls_back(
+            self, world, mod, system, clock):
         self.hd(world, mod)
         system.units[mod.KIOSK_UNIT] = ("failed", 0)
         assert mod.cmd_verify()["rolled_back"] is True
-        assert clock.sleeps == 0
+        assert clock.now >= mod.VERIFY_DEADLINE_S
 
-    def test_a_restarting_kiosk_rolls_back_at_once(self, world, mod, system, clock):
+    def _kiosk_states(self, mod, system, states):
+        """Answer the kiosk's state from STATES in turn, the last one for good."""
+        queue = list(states)
+
+        def show(cmd, timeout=60):
+            system.calls.append(list(cmd))
+            if cmd[:2] == ["systemctl", "show"]:
+                if cmd[-1] == mod.KIOSK_UNIT:
+                    state, restarts = queue.pop(0) if len(queue) > 1 else queue[0]
+                else:
+                    state, restarts = system.units[cmd[-1]]
+                return 0, f"ActiveState={state}\nNRestarts={restarts}", ""
+            return 0, "", ""
+
+        mod._run = show
+
+    def test_a_kiosk_that_restarted_once_and_is_now_active_is_verified(
+            self, world, mod, system, clock):
+        self.hd(world, mod)
+        self._kiosk_states(mod, system, [("activating", 1), ("active", 1)])
+        assert mod.cmd_verify()["verified"] is True
+        assert world.result()["STATUS"] == "success"
+        assert system.reboots == 0
+        assert "restarted 1 time" in mod.LOG_PATH.read_text(encoding="utf-8")
+
+    def test_a_kiosk_that_restarted_and_stays_active_is_verified_after_a_settle(
+            self, world, mod, system, clock):
         self.hd(world, mod)
         system.units[mod.KIOSK_UNIT] = ("active", 3)
+        assert mod.cmd_verify()["verified"] is True
+        assert clock.now >= mod.KIOSK_SETTLE_S
+
+    def test_the_kiosk_unit_allows_a_start_longer_than_the_health_check_budget(self, mod):
+        unit = (Path(__file__).resolve().parent.parent / "system" / "systemd"
+                / "autostream_dial_kiosk.service").read_text(encoding="utf-8")
+        timeout = [ln for ln in unit.splitlines() if ln.startswith("TimeoutStartSec=")]
+        assert len(timeout) == 1
+        assert int(timeout[0].split("=", 1)[1]) > mod.VERIFY_DEADLINE_S
+
+    def test_a_kiosk_that_keeps_restarting_rolls_back_at_the_deadline(
+            self, world, mod, system, clock):
+        self.hd(world, mod)
+        count = iter(range(1, 1000))
+
+        def show(cmd, timeout=60):
+            system.calls.append(list(cmd))
+            if cmd[:2] == ["systemctl", "show"]:
+                if cmd[-1] == mod.KIOSK_UNIT:
+                    return 0, f"ActiveState=active\nNRestarts={next(count)}", ""
+                state, restarts = system.units[cmd[-1]]
+                return 0, f"ActiveState={state}\nNRestarts={restarts}", ""
+            return 0, "", ""
+
+        mod._run = show
         assert mod.cmd_verify()["rolled_back"] is True
-        assert clock.sleeps == 0
+        assert clock.now >= mod.VERIFY_DEADLINE_S
 
     def test_a_kiosk_that_never_becomes_active_rolls_back_at_the_deadline(
             self, world, mod, system, clock):

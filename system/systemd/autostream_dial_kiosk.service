@@ -29,6 +29,11 @@ StandardError=journal
 SyslogIdentifier=autostream-dial-kiosk
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 # Wait for the page's server so the browser never paints a connection error.
+# The wait counts against the start timeout, whose default (90 s) is shorter
+# than the 120 s the post-update health check allows a slow board to come up
+# in; a timeout here would stop the wait and restart the unit. 180 s lets the
+# wait run past that window without a restart.
+TimeoutStartSec=180
 ExecStartPre=/bin/sh -c 'until curl -fsS http://127.0.0.1:7843/api/v1/state >/dev/null; do sleep 1; done'
 # --platform=drm draws to the display directly; the user's video, input and
 # render groups give it the GPU and the touch panel. The GLES renderer is

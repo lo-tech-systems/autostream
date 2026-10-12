@@ -153,6 +153,11 @@ STATUS_URL = "http://127.0.0.1:7842/update/status"
 KIOSK_UNIT = "autostream_dial_kiosk"
 HD_MARKER_NAME = "hd-kiosk"          # in the state directory
 HD_STATE_URL = "http://127.0.0.1:7843/api/v1/state"
+# A kiosk browser that was restarted while the board was still booting (its
+# start-up wait for the page server can outlast the unit's start timeout, and
+# the unit restarts itself) is accepted once it has stayed active, with no
+# further restart, for this long.
+KIOSK_SETTLE_S = 10
 DRM_DIR = Path(FS_ROOT + "/sys/class/drm")
 
 # The boot unit runs before the virtualenv is trusted, so the transient verify
@@ -997,11 +1002,15 @@ def _display_connected() -> bool:
 def _hd_health_check() -> Tuple[str, str]:
     """The HD part of the health check, for a dial with the kiosk marker.
 
-    The page server must answer.  The kiosk browser must be running and not
-    restarting, but only when a display is connected: a browser with no screen
-    to draw on may legitimately exit and restart, and an update must not be
-    rolled back because nobody plugged a panel in.  Same verdicts as
-    _health_check: ok, wait for a condition that may yet come right, or fail.
+    The page server must answer.  The kiosk browser must be running, but only
+    when a display is connected: a browser with no screen to draw on may
+    legitimately exit and restart, and an update must not be rolled back
+    because nobody plugged a panel in.  A browser that restarted once while the
+    board was still starting is waited for, not failed: it passes when it is
+    active and has not restarted again over KIOSK_SETTLE_S, and a browser that
+    is still restarting, starting or failed is waited for until the overall
+    deadline, when the update is rolled back.  Same verdicts as _health_check:
+    ok, wait for a condition that may yet come right, or fail.
     """
     code = _fetch_hd_state()
     if code != 200:
@@ -1009,13 +1018,15 @@ def _hd_health_check() -> Tuple[str, str]:
     if not _display_connected():
         return "ok", "no display connected; kiosk browser not required"
     state, restarts = _unit_state(KIOSK_UNIT)
-    if restarts > 0:
-        return "fail", f"{KIOSK_UNIT} restarted {restarts} time(s)"
-    if state == "failed":
-        return "fail", f"{KIOSK_UNIT} failed"
     if state != "active":
         return "wait", f"{KIOSK_UNIT} is {state or 'not active'}"
-    return "ok", ""
+    if restarts == 0:
+        return "ok", ""
+    _sleep(KIOSK_SETTLE_S)
+    state, again = _unit_state(KIOSK_UNIT)
+    if state != "active" or again != restarts:
+        return "wait", f"{KIOSK_UNIT} is still restarting ({again} restart(s))"
+    return "ok", f"{KIOSK_UNIT} restarted {restarts} time(s) during start-up and is now stable"
 
 
 def _health_check(tag: str) -> Tuple[str, str]:
