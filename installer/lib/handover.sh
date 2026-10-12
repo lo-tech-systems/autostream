@@ -27,9 +27,8 @@ HANDOVER_CGROUP_FILE="${HANDOVER_CGROUP_FILE:-/proc/self/cgroup}"
 HANDOVER_SYSTEMD_DIR="${HANDOVER_SYSTEMD_DIR:-/run/systemd/system}"
 
 # Environment passed on to the service, which otherwise starts with a clean one:
-# the release the installer records, the user whose home holds the log, and the
-# log location a test or an operator chose.
-HANDOVER_ENV_VARS=(AUTOSTREAM_RELEASE_TAG SUDO_USER SUDO_UID SUDO_GID HOME DIAL_INSTALL_LOGFILE)
+# the release the installer records and the user who started it.
+HANDOVER_ENV_VARS=(AUTOSTREAM_RELEASE_TAG SUDO_USER SUDO_UID SUDO_GID)
 
 # in_login_session: succeeds when this process belongs to a login session (an
 # SSH login, a console login, su or sudo from either), the only place a process

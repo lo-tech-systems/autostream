@@ -125,8 +125,9 @@ class TestHandOver:
         for wanted in ("--collect", "--wait", "--unit=autostream-install",
                        f"--working-directory={tmp_path.as_posix()}",
                        "--setenv=AUTOSTREAM_HANDED_OVER=1", "--setenv=SUDO_USER=pi",
-                       "--setenv=HOME=/home/pi", "--setenv=AUTOSTREAM_RELEASE_TAG=0.7.0"):
+                       "--setenv=AUTOSTREAM_RELEASE_TAG=0.7.0"):
             assert wanted in line, (wanted, line)
+        assert "--setenv=HOME=" not in line
         assert line.endswith("-- bash /opt/x/installer.sh --unattended PIN=1234 --owntone=mini")
 
     def test_the_service_output_is_shown_and_what_was_there_before_is_not(self, env, tmp_path):
@@ -194,7 +195,7 @@ parse_args() {{ :; }}
 in_login_session() {{ true; }}
 hand_over_to_unit() {{ echo "hand_over_to_unit $*" >> "{trace.as_posix()}"; {"HANDOVER_RC=7; return 0" if handover_ok else "return 1"}; }}
 INSTALL_MODE={mode}; PROMPTS_DONE={handed_over}; PROMPT_REBOOT_ON_EXIT=0
-AUTOSTREAM_DIR=/opt/rel; SCRIPT_NAME=autostream_install.sh; LOGFILE=/home/pi/autostream_install.log
+AUTOSTREAM_DIR=/opt/rel; SCRIPT_NAME=autostream_install.sh; LOGFILE=/var/log/autostream/autostream_install.log
 OWNTONE_MODE=mini; SDMON_METHOD=; LOW_POWER=0
 {main}
 main --unattended PIN=1234
@@ -215,7 +216,7 @@ class TestApplianceInstaller:
         assert "init_logging" not in names and "run_install" not in names
         handed = next(c for c in calls if c.startswith("hand_over_to_unit"))
         assert handed == ("hand_over_to_unit autostream-install /opt/rel/autostream_install.sh "
-                          "/home/pi/autostream_install.log --unattended PIN=1234")
+                          "/var/log/autostream/autostream_install.log --unattended PIN=1234")
 
     def test_without_a_hand_over_the_install_carries_on_here_without_asking_again(self, tmp_path):
         r, calls = _appliance_main(tmp_path, mode="install", handover_ok=False)

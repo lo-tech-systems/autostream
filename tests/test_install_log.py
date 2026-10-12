@@ -188,23 +188,21 @@ class TestApplianceExitPaths:
 
 @bash_capable
 class TestDialInstaller:
-    def test_text_check_the_tee_is_waited_for_on_exit_and_before_a_reboot(self):
+    def test_text_check_the_writers_are_waited_for_on_exit_and_before_a_reboot(self):
         text = DIAL.read_text(encoding="utf-8")
-        assert "OUTPUT_LOG_TEE_PID=$!" in text
+        assert 'start_install_log "$DIAL_INSTALL_LOG"' in text
         trap = text[text.index("trap '_exit_rc=$?"):]
         trap = trap[:trap.index("EXIT")]
         assert "finish_output_log" in trap
         assert re.search(r'echo "Rebooting\.\.\."; finish_output_log; reboot', text)
 
-    def test_the_last_line_of_the_dial_log_is_in_both_files(self, tmp_path):
-        one, two = tmp_path / "home.log", tmp_path / "var.log"
+    def test_the_last_line_of_the_dial_log_is_in_the_file(self, tmp_path):
+        log = tmp_path / "dial-install.log"
         script = (
-            f'source "{LIB / "output_log.sh"}"\n'
-            f'save_terminal_output\nexec > >(exec tee -a "{one.as_posix()}" "{two.as_posix()}") 2>&1\n'
-            "OUTPUT_LOG_TEE_PID=$!\n"
+            f'source "{LIB / "state_files.sh"}"\nsource "{LIB / "output_log.sh"}"\n'
+            f'start_install_log "{log.as_posix()}" 0644\n'
             'trap finish_output_log EXIT\necho "autostream dial installation complete."\nexit 0\n'
         )
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
         assert r.returncode == 0, r.stderr
-        for f in (one, two):
-            assert f.read_text(encoding="utf-8") == "autostream dial installation complete.\n"
+        assert log.read_text(encoding="utf-8") == "autostream dial installation complete.\n"

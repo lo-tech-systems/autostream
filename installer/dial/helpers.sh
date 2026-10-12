@@ -133,20 +133,6 @@ init_service_dirs() {
     done
 }
 
-prepare_install_log() {
-    # The persistent install log, ready before a fresh install writes its first
-    # line: the directory and the file are created if absent, an existing file
-    # is kept and appended to, and it is root:adm 0640 like the other dial logs,
-    # which puts the whole run in the support log bundle. Fails (so the caller
-    # logs to the user's home alone) when the file cannot be prepared.
-    # Usage: prepare_install_log FILE
-    local file="$1"
-    mkdir -p "$(dirname "${file}")" || return 1
-    [[ -e "${file}" ]] || install -m 0640 -o root -g adm /dev/null "${file}" || return 1
-    chown root:adm "${file}" 2>/dev/null || true
-    chmod 0640 "${file}" 2>/dev/null || true
-}
-
 add_gpio_group() {
     usermod -aG gpio autostream 2>/dev/null || true
 }
@@ -1396,8 +1382,8 @@ WARNING:
 - Use on a clean image only.
 - Do NOT run on machines containing important data or multi-purpose systems.
 
-A full activity log will be written to ~/autostream_dial_install.log and
-/var/log/autostream/dial-install.log
+A full activity log will be written to /var/log/autostream/dial-install.log
+Note: each run adds to the end of the log.
 =============================================================================
 EOF
     [[ "${HD:-false}" == true ]] && echo "HD dial: also installs the kiosk browser (cog) and its service."

@@ -904,11 +904,7 @@ Check the daemon log for errors:
 sudo journalctl -u vibra-mini.service -n 50
 ```
 
-If the binary is missing, re-run the autostream installer to rebuild it:
-
-```bash
-sudo /opt/autostream/autostream_install.sh --mode=update
-```
+If the binary is missing, installing an update rebuilds it: use **Install** on the Updates card (Setup > System) when a newer release is offered, or run `sudo /usr/local/libexec/autostream/autostream_updater apply`, which does the same. Both do nothing when the appliance is already on the latest release. In that case run the install command from [Getting Started](GETTING-STARTED.md#installation) again. The installer's own log is `/var/log/autostream/autostream_install.log`.
 
 The installed executable should be `/opt/autostream/vibra/bin/vibra-mini`.
 Its stdout and stderr are also written to `/var/log/autostream/vibra-mini.log`.

@@ -109,15 +109,10 @@ AUTOSTREAM_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="/opt/autostream"
 APP_LOG_DIR="/var/log/autostream"
 
-# When invoked interactively via sudo (fresh install/manual run) the log goes
-# beside the calling user's home directory so they can easily find it.
-# When invoked by a systemd unit (update) there is no SUDO_USER, so we log to
-# the standard application log directory instead.
-if [[ -n "${SUDO_USER:-}" ]]; then
-  LOGFILE="${ORIG_HOME}/autostream_install.log"
-else
-  LOGFILE="${APP_LOG_DIR}/autostream_install.log"
-fi
+# The install log is always here, whoever starts the installer and however
+# (from a terminal, as a system service, by the updater), so it is in the
+# support log bundle and rotated.
+LOGFILE="${APP_LOG_DIR}/autostream_install.log"
 STAMP_DIR="/var/lib/autostream"          # root-only stamp/admin area
 UPDATE_STATE_DIR="/var/lib/autostream-update"   # root-only: what an update executes and trusts
 LIBEXEC_DIR="/usr/local/libexec/autostream"
@@ -626,6 +621,11 @@ on_exit() {
   # by engage_update_page. This runs on both success and failure paths (trap
   # on EXIT).
   rm -f "${UPDATING_FLAG_FILE}" || true
+  # Run from a terminal, say where the log is. Handed over to a service, the
+  # process that holds the terminal says it.
+  if [[ "${HANDED_OVER:-0}" != "1" ]]; then
+    info "Install log: ${LOGFILE}"
+  fi
   if [[ ${PROMPT_REBOOT_ON_EXIT} -ne 1 ]]; then
     finish_output_log
     exit "${exit_code}"
@@ -810,7 +810,7 @@ WARNING:
 - Ideally, run this on a clean image (otherwise, ensure you have a backup).
 - Do NOT run on machines containing important data or multi-purpose systems.
 
-A full activity log will be written to ~/autostream_install.log
+A full activity log will be written to /var/log/autostream/autostream_install.log
 Note: each run adds to the end of the log.
 =============================================================================
 EOF

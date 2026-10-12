@@ -74,3 +74,41 @@ finish_output_log() {
     _output_log_wait "${writer_pid}"
   fi
 }
+
+# start_install_log: copy everything this process prints into FILE, the one
+# install log of a product, as well as to where it was going. FILE is always
+# under /var/log/autostream, whoever started the installer and however. The
+# directory is made if absent (root-owned 0755; whatever sets its final owner
+# later only changes the owner, and the open log is not replaced), and a missing
+# FILE is made with MODE and, if given, OWNER (user:group).
+# Appended to, not truncated: the log of an earlier run (a failed update that is
+# about to be retried, say) must survive the next one; logrotate keeps it bounded.
+# The directory can belong to the service account, which can put a link at the
+# log's name. A log that is a link or not a regular file is not written, and the
+# output goes to the terminal or the journal alone; a missing one is made beside
+# its name and renamed into place; and the file is opened for appending without
+# following a link, so one put there after the check is refused too.
+# dd writes what it has read in output blocks, and holds back a part block until
+# its input ends, so the block size is one byte: every line reaches the file when
+# it is written. The shell keeps the writers' process ids and a descriptor into
+# dd, so finish_output_log can wait for both; without that the end of the log is
+# lost at exit. Returns 1, with the reason on standard error, when it is not
+# written.
+# Usage: start_install_log FILE MODE [OWNER]
+start_install_log() {
+  local file="$1" mode="$2" owner="${3:-}"
+  [[ -d "${file%/*}" ]] || { mkdir -p -- "${file%/*}" && chmod 0755 -- "${file%/*}"; } || true
+  if [[ -L "${file}" || ( -e "${file}" && ! -f "${file}" ) ]]; then
+    echo "[WARN] ${file} is a link or not a regular file; not writing the install log there" >&2
+    return 1
+  elif [[ -e "${file}" ]] || write_state_file "${file}" "${mode}" "${owner}" < /dev/null; then
+    save_terminal_output
+    exec {OUTPUT_LOG_WRITER_FD}> >(exec dd of="${file}" oflag=append,nofollow conv=notrunc ibs=64k obs=1 status=none 2>/dev/null)
+    OUTPUT_LOG_WRITER_PID=$!
+    exec > >(exec tee -p "/dev/fd/${OUTPUT_LOG_WRITER_FD}") 2>&1
+    OUTPUT_LOG_TEE_PID=$!
+  else
+    echo "[WARN] could not create ${file}; not writing the install log there" >&2
+    return 1
+  fi
+}

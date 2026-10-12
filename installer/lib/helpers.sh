@@ -18,33 +18,9 @@ warn()  { echo "[WARN] $*"; }
 error() { echo "[ERROR] $*"; }
 
 init_logging() {
-  mkdir -p "$(dirname "${LOGFILE}")" || true
-  # Appended to, not truncated: the log of an earlier run (a failed update
-  # that is about to be retried, say) must survive the next one. In
-  # ${APP_LOG_DIR} logrotate keeps it bounded.
-  # The directory can belong to the service account, which can put a link at
-  # the log's name. A log that is a link or not a regular file is not written,
-  # and the output goes to the journal alone; a missing one is made beside its
-  # name and renamed into place; and the file is opened for appending without
-  # following a link, so one put there after the check is refused too.
-  # dd writes what it has read in output blocks, and holds back a part block
-  # until its input ends, so the block size is one byte: every line reaches the
-  # file when it is written. The shell keeps the writers' process ids and a
-  # descriptor into dd, so finish_output_log can wait for both (see
-  # lib/output_log.sh); without that the end of the log is lost at exit.
-  if [[ -L "${LOGFILE}" || ( -e "${LOGFILE}" && ! -f "${LOGFILE}" ) ]]; then
-    echo "[WARN] ${LOGFILE} is a link or not a regular file; not writing the install log there" >&2
-  elif [[ -e "${LOGFILE}" ]] || write_state_file "${LOGFILE}" 0644 < /dev/null; then
-    save_terminal_output
-    exec {OUTPUT_LOG_WRITER_FD}> >(exec dd of="${LOGFILE}" oflag=append,nofollow conv=notrunc ibs=64k obs=1 status=none 2>/dev/null)
-    # shellcheck disable=SC2034  # read by finish_output_log
-    OUTPUT_LOG_WRITER_PID=$!
-    exec > >(exec tee -p "/dev/fd/${OUTPUT_LOG_WRITER_FD}") 2>&1
-    # shellcheck disable=SC2034  # read by finish_output_log
-    OUTPUT_LOG_TEE_PID=$!
-  else
-    echo "[WARN] could not create ${LOGFILE}; not writing the install log there" >&2
-  fi
+  # LOGFILE is always under ${APP_LOG_DIR}; see start_install_log in
+  # lib/output_log.sh for how it is opened.
+  start_install_log "${LOGFILE}" 0644 || true
   echo "[INFO] ${SCRIPT_NAME} starting at $(date -Is)"
   echo "[INFO] Running as: $(id -un) (uid=$(id -u)); original user: ${ORIG_USER}; original home: ${ORIG_HOME}"
   echo "[INFO] Log file: ${LOGFILE}"

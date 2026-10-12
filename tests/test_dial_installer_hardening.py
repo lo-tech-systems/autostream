@@ -1051,36 +1051,6 @@ class TestInitServiceDirsKeepsLogs:
 
 
 @bash_capable
-class TestPrepareInstallLog:
-    def test_creates_the_directory_and_file_when_absent(self, env):
-        env.fake("install", FAKE_INSTALL_REPLACING)
-        for name in ("chown", "chmod"):
-            env.fake(name, RECORDER)
-        target = env.tmp / "newdir" / "dial-install.log"
-        r = env.run(f'prepare_install_log "{target}"', update="false")
-        assert r.returncode == 0, r.stderr
-        assert target.exists()
-        assert f"install -m 0640 -o root -g adm /dev/null {target}" in env.calls()
-
-    def test_an_existing_log_is_kept(self, env):
-        env.fake("install", FAKE_INSTALL_REPLACING)
-        for name in ("chown", "chmod"):
-            env.fake(name, RECORDER)
-        target = env.tmp / "dial-install.log"
-        target.write_text("previous run\n", encoding="utf-8")
-        r = env.run(f'prepare_install_log "{target}"', update="false")
-        assert r.returncode == 0, r.stderr
-        assert target.read_text(encoding="utf-8") == "previous run\n"
-        assert not [c for c in env.calls() if c.startswith("install")]
-
-    def test_an_unwritable_place_is_reported_to_the_caller(self, env):
-        (env.tmp / "afile").write_text("", encoding="utf-8")
-        r = env.run(f'prepare_install_log "{env.tmp}/afile/dial-install.log"; echo "rc=$?"',
-                    update="false")
-        assert "rc=1" in r.stdout or r.returncode != 0
-
-
-@bash_capable
 class TestInstallerLogging:
     """The real installer script with every helper replaced by a recorder."""
 
@@ -1109,27 +1079,21 @@ class TestInstallerLogging:
         assert text.startswith(first)
         assert text.count("=== autostream dial install") == 2
 
-    def test_a_fresh_install_writes_the_whole_run_to_the_persistent_log_and_to_home(self, tmp_path):
+    def test_a_fresh_install_writes_the_whole_run_to_the_one_log_and_nowhere_else(self, tmp_path):
         from test_dial_installer_hd import _dry_run
         r, _calls = _dry_run(tmp_path, update=False)
         assert r.returncode == 0, r.stderr
-        home_log = (tmp_path / "autostream_dial_install.log").read_text(encoding="utf-8")
-        assert "=== autostream dial install" in home_log
         persistent = self._log_text(tmp_path)
         assert "=== autostream dial install" in persistent
         assert "autostream dial installation complete." in persistent
-        assert persistent == home_log
+        assert not (tmp_path / "autostream_dial_install.log").exists()
 
-    def test_a_fresh_install_prepares_the_persistent_log_before_its_first_output(self, tmp_path):
-        from test_dial_installer_hd import _dry_run, _names
-        r, calls = _dry_run(tmp_path, update=False)
-        names = _names(calls)
-        assert names.index("prepare_install_log") < names.index("show_info_and_prompt")
-
-    def test_installer_text_no_longer_redirects_the_log_half_way_through(self):
+    def test_installer_text_redirects_the_log_once_and_names_one_path(self):
         text = INSTALLER.read_text(encoding="utf-8")
-        assert text.count("exec > >(exec tee") == 1
-        assert "tee -a \"${LOGFILES[@]}\"" in text
+        assert text.count("start_install_log ") == 1
+        assert "exec > >(" not in text
+        assert text.count("/var/log/autostream/dial-install.log") == 1
+        assert "autostream_dial_install.log" not in text and "DIAL_INSTALL_LOGFILE" not in text
 
 
 @bash_capable

@@ -342,8 +342,10 @@ class TestInstallLog:
         assert victim.read_text(encoding="utf-8") == SECRET
 
     def test_the_text_has_no_plain_append_or_truncation_of_the_log(self):
-        text = (LIB / "helpers.sh").read_text(encoding="utf-8")
-        body = text[text.index("init_logging() {"):]
-        body = body[:body.index("\n}\n")]
-        assert "tee -a" not in body and ": > " not in body
+        for name, path in (("init_logging", LIB / "helpers.sh"),
+                           ("start_install_log", LIB / "output_log.sh")):
+            text = path.read_text(encoding="utf-8")
+            body = text[text.index(name + "() {"):]
+            body = body[:body.index("\n}\n")]
+            assert "tee -a" not in body and ": > " not in body
         assert "nofollow" in body

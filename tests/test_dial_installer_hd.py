@@ -658,7 +658,10 @@ def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
     env = Env(tmp_path)
     deploy = tmp_path / "deploy"
     (deploy / "installer" / "dial").mkdir(parents=True)
-    (deploy / "autostream_dial_install.sh").write_bytes(INSTALLER.read_bytes())
+    # The installer writes its log to one fixed path; the sandbox moves that path.
+    script = INSTALLER.read_text(encoding="utf-8").replace(
+        "/var/log/autostream/dial-install.log", (tmp_path / "install.log").as_posix())
+    (deploy / "autostream_dial_install.sh").write_bytes(script.encode("utf-8"))
     # The identity choice on an update runs for real; it calls the stubbed
     # derivation and the real state-file readers.
     real = {"resolve_update_dial_id", "dial_identity_token_ok", "stored_hw_dial_id"}
@@ -691,7 +694,6 @@ def _dry_run(tmp_path: Path, *, update: bool, hd_flag: bool = False,
         args.append("--hd")
     e = env.env(
         AUTOSTREAM_DIAL_LOCKED="1",
-        DIAL_INSTALL_LOGFILE=(tmp_path / "install.log").as_posix(),
         HOME=tmp_path.as_posix(),
         UPDATE_PAINT_DELAY="0",
         **(extra_env or {}),

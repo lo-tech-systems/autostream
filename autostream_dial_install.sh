@@ -24,6 +24,8 @@ source "$DEPLOY/installer/dial/helpers.sh"
 info() { echo "$*"; }
 warn() { echo "WARNING: $*" >&2; }
 
+# Where the install log is, whoever starts the installer and however.
+DIAL_INSTALL_LOG="/var/log/autostream/dial-install.log"
 UPDATE=false
 HD=false
 REINSTALL=false
@@ -73,7 +75,8 @@ if [[ "$UPDATE" == false && "$PROMPTED" == false ]] && handover_available; then
     show_info_and_prompt
     PROMPTED=true
     if hand_over_to_unit autostream-dial-install "$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")" \
-            "${HOME:-/root}/autostream_dial_install.log" "$@"; then
+            "$DIAL_INSTALL_LOG" "$@"; then
+        echo "Install log: $DIAL_INSTALL_LOG"
         if [[ "$HANDOVER_RC" -eq 0 ]]; then offer_reboot; fi
         exit "$HANDOVER_RC"
     fi
@@ -86,28 +89,14 @@ if [[ "$UPDATE" == false ]] && in_login_session; then stay_running_after_hangup;
 # ---- Logging ----------------------------------------------------------------
 # The log is appended to, never replaced, so the output of earlier runs and of
 # an update's boot-time retries stays in it; logrotate keeps it bounded.
-# On --update the log directory already exists (created by the initial install)
-# and the output goes to the persistent log alone. A fresh install also writes
-# to a log in the user's home, where it is easy to find; the persistent copy is
-# prepared first so the whole run lands in /var/log/autostream/ and so in the
-# support log bundle.
-INSTALL_LOG="${DIAL_INSTALL_LOGFILE:-/var/log/autostream/dial-install.log}"
-if $UPDATE; then
-    LOGFILES=("$INSTALL_LOG")
-else
-    LOGFILES=("${HOME:-/root}/autostream_dial_install.log")
-    if prepare_install_log "$INSTALL_LOG"; then
-        LOGFILES+=("$INSTALL_LOG")
-    fi
-fi
-# finish_output_log (the exit trap, and before a reboot) waits for tee, so the
-# last lines are in the files before the process, and the unit it may run in,
-# ends.
-save_terminal_output
-exec > >(exec tee -a "${LOGFILES[@]}") 2>&1
-# shellcheck disable=SC2034  # read by finish_output_log
-OUTPUT_LOG_TEE_PID=$!
+# The log is always written to the one place under /var/log/autostream/, whoever
+# starts the installer and however, so it is in the support log bundle.
+# finish_output_log (the exit trap, and before a reboot) waits for the writers,
+# so the last lines are in the file before the process, and the unit it may run
+# in, ends.
+start_install_log "$DIAL_INSTALL_LOG" 0640 root:adm || true
 echo "=== autostream dial install $(date -Iseconds) ==="
+echo "Install log: $DIAL_INSTALL_LOG"
 
 # ---- Flock: serialise concurrent installer invocations ----------------------
 # When launched by autostream_dial_updater the wrapper sets AUTOSTREAM_DIAL_LOCKED=1
@@ -135,6 +124,9 @@ UPDATING_FLAG=/tmp/autostream-dial-updating
 _install_success=false
 trap '_exit_rc=$?
     rm -f "$UPDATING_FLAG"
+    # Run from a terminal, say where the log is. Handed over to a service, the
+    # process that holds the terminal says it.
+    if [[ "${AUTOSTREAM_HANDED_OVER:-0}" != "1" ]]; then echo "Install log: $DIAL_INSTALL_LOG"; fi
     if [[ "$_install_success" != true ]] && $UPDATE; then
         abort_update || true
     fi

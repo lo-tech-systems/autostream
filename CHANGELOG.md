@@ -67,8 +67,8 @@
 - fix: a dial update no longer wipes its own install log or the dial's log history.
   The log files are now created only when missing, so the install log of an update,
   and of its automatic retries after a reboot, can be read afterwards, and a fresh
-  install writes its whole log to `/var/log/autostream/dial-install.log` as well as
-  to the home directory, so it is in the Download Logs bundle. The appliance
+  install writes its whole log to `/var/log/autostream/dial-install.log`, so it is in
+  the Download Logs bundle. The appliance
   installer also appends to its install log instead of replacing it on each run.
 - fix: running the dial installer again over a dial that is already installed no
   longer resets it. The dial keeps its name, PIN, update and display settings, an
@@ -289,6 +289,12 @@
 - change: this release builds owntone-mini 1.4.3. Nothing changes in how it
   plays: its documentation and licence notices were brought up to date and
   packaging it no longer uses was removed.
+- change: the install log of the appliance and of the dial is always written to the one
+  place, `/var/log/autostream/autostream_install.log` and
+  `/var/log/autostream/dial-install.log`, whoever starts the installer and however, so
+  it is in the Download Logs bundle and rotated. A log an older release left in a home
+  directory is no longer written to (it is not deleted), and the installer prints the
+  log's path when it starts and when it ends.
 
 ## Version 0.6.1 - 2026-10-02
 
