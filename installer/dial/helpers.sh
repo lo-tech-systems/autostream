@@ -1193,7 +1193,7 @@ This script will:
 - Install a boot and shutdown splash (shown on an HDMI or DSI screen)
 
 WARNING:
-- Use ONLY on a dedicated Raspberry Pi Zero running Raspberry Pi OS Lite (Trixie).
+- Use ONLY on a dedicated Raspberry Pi running Raspberry Pi OS Lite (Trixie).
 - Use on a clean image only.
 - Do NOT run on machines containing important data or multi-purpose systems.
 
