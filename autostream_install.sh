@@ -402,7 +402,6 @@ AUTOSTREAM_PRODUCT=autostream
 AUTOSTREAM_RELEASE_TAG="${release_tag}"
 INSTALL_TIMESTAMP="$(date -Is)"
 INSTALL_DIR="${INSTALL_DIR}"
-AUTOSTREAM_DIR="${AUTOSTREAM_DIR}"
 OWNTONE_MODE="${OWNTONE_MODE}"
 SDMON_METHOD="${SDMON_METHOD}"
 SDMON_CHECK="${sdmon_check}"
@@ -435,10 +434,7 @@ load_state() {
   # state file could run arbitrary commands as root during an update.
   # Only the specific keys required are accepted; all others are ignored.
   #
-  # AUTOSTREAM_DIR, AUTOSTREAM_RELEASE_TAG and INSTALL_DIR are intentionally
-  # excluded:
-  #   AUTOSTREAM_DIR         — always the staged release tree (this script's
-  #                            own directory), not the original install path.
+  # AUTOSTREAM_RELEASE_TAG and INSTALL_DIR are intentionally excluded:
   #   AUTOSTREAM_RELEASE_TAG — exported by the supervisor via --setenv and
   #                            carries the NEW tag; the state file records the
   #                            OLD installed tag and must not overwrite it.
@@ -553,6 +549,16 @@ adopt_older_update_state() {
 # staging place, so what an older release's updater left there is removed.
 retire_older_update_state() {
   remove_legacy_update_state "${STAMP_DIR}/update-staging"
+}
+
+# remove_staged_update: once an update has succeeded, the downloaded release and
+# the list of services stopped for it have no further use: no retry follows a
+# success. This installer runs from the staged copy; what it has already read,
+# and its open script, stay readable until it exits. A failed update keeps both,
+# which its retry needs.
+remove_staged_update() {
+  rm -rf --one-file-system -- "${UPDATE_STATE_DIR}/staging" || true
+  rm -f -- "${STOPPED_SERVICES_FILE}" || true
 }
 
 update_progress() {
@@ -1952,6 +1958,7 @@ run_update() {
 
   CURRENT_PHASE="complete"
   write_update_result "success" "Update complete" 100
+  remove_staged_update
 
   # The update has succeeded, and the appliance has no rollback that could need
   # the downloaded packages; free the space they took.

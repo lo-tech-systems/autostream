@@ -98,7 +98,7 @@ after a restart is kept somewhere else.
 
 | Path | Owner and mode | Holds | Who can read it |
 |---|---|---|---|
-| `/var/lib/autostream-update/` | `root:root`, `0700` | The downloaded release (`staging/`), and a short record that an update is under way (`update-in-progress`). The list of services the installer stopped is kept here too. | The system only |
+| `/var/lib/autostream-update/` | `root:root`, `0700` | The downloaded release (`staging/`), and a short record that an update is under way (`update-in-progress`). The list of services the installer stopped is kept here too. The release and that list are removed once an update has succeeded. If low power mode is used, a note of the boot settings it replaced is kept here, for the uninstaller. | The system only |
 | `/var/lib/autostream/update-result.env` | root-written | The progress and last result of an update. | The Web UI and the setup pages, through the updater |
 | `/var/lib/autostream/install-state.env` | root-written, `0644` | The installed version and the choices saved for the next update. | The Web UI, the storage guard and the SD card health check |
 
