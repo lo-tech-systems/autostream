@@ -212,7 +212,7 @@ class TestSendOneEitherKind:
         assert dv._fail_counts.get("1.2.3.4", 0) == 1
 
     def test_success_clears_fail_count(self, send_kind):
-        ip = "5.5.5.5"
+        ip = "192.0.2.55"
         dv._fail_counts[ip] = 3
         target = _target(ip=ip)
         with patch("urllib.request.urlopen", return_value=send_kind.success()):

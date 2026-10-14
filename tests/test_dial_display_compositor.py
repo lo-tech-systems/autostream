@@ -3859,7 +3859,7 @@ class TestFooterVolumeMute:
             assert result.getpixel((x, mid_y)) == _DIVIDER_RGB
 
     def test_thirds_sit_between_the_footer_dividers_in_order(self):
-        """Owner-chosen order: minus (DOWN) left, plus (UP) middle, mute
+        """The order: minus (DOWN) left, plus (UP) middle, mute
         right — the reverse of a mute-in-the-middle layout."""
         layout = layout_for(320, 240, metrics=_RICH_METRICS)
         assert layout.footer_down[2] <= layout.footer_dividers[0]
@@ -5074,7 +5074,7 @@ class TestCompactRepeatReplaying:
 
     def test_time_shows_the_position_only_never_the_duration(self, compositor):
         # The manager's own line always carries "position / duration"; the
-        # compact replaying cell is a quarter of the panel and the owner's
+        # compact replaying cell is a quarter of the panel and its
         # spec names the position alone -- an unconditional split on " / ",
         # not a fit-driven fallback.
         metrics = _COMPACT_240

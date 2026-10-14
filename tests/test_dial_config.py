@@ -852,7 +852,7 @@ class TestTouchTypeSettings:
 
 
 # ---------------------------------------------------------------------------
-# "Always show controls" screen setting (B.2) — colocated with the other
+# "Always show controls" screen setting — colocated with the other
 # screen fields, same save path and validation path as rotate/bgr/touch_type.
 # ---------------------------------------------------------------------------
 

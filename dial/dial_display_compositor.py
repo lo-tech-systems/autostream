@@ -3096,7 +3096,7 @@ def _footer_volume(img: Image.Image, layout, metrics: LayoutMetrics, footer: Foo
 
 def _footer_volume_mute(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     """The main screen's own three-way footer: minus | plus | mute, left to
-    right (the owner's chosen order — vol-/vol+ stay at today's thumb
+    right (vol-/vol+ stay at today's thumb
     positions, mute moves off the header into its own cell). The mute cell
     always shows the crossed-speaker glyph (GLYPH_MUTE) — this control IS
     the mute toggle, not a state readout — and carries the persistent wash

@@ -1503,7 +1503,7 @@ class TestRailListLayout:
     def test_touch_floor_is_respected(self, metrics):
         """Every row and every rail button clears the touch floor on its
         own (taller) axis. The rail's WIDTH is a deliberate, narrower,
-        owner-accepted exception — see test_rail_width_is_the_owner_set_
+        accepted exception — see test_rail_width_is_a_fixed_
         minimum below — so it is not asserted here."""
         layout = list_layout_for(metrics.width, metrics.height, metrics=metrics)
         for rect in layout.rows:
@@ -1511,10 +1511,10 @@ class TestRailListLayout:
         for rect in (layout.rail_up, layout.rail_cancel, layout.rail_down):
             assert rect[3] - rect[1] >= metrics.touch_min_px
 
-    def test_rail_width_is_the_owner_set_minimum(self):
+    def test_rail_width_is_a_fixed_minimum(self):
         # A straight icon-plus-padding formula gives 38px at the shipped
         # rich density — under the 8mm touch floor (TOUCH_MIN_MM). The
-        # owner chose a fixed 46px column instead (about 7mm): narrower
+        # design uses a fixed 46px column instead (about 7mm): narrower
         # than the header/footer bands, but not as narrow as the formula
         # alone would produce. The large tier's own icon-plus-padding value
         # already clears 46px, so it is untouched by the floor.

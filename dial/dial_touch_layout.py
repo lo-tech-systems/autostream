@@ -368,7 +368,7 @@ def metrics_for(
         rail_glyph = icon
         # icon plus its own pad on each side, floored at a fixed minimum —
         # a computed value can undercut the touch floor on a dense rich
-        # panel (the owner's call: a thinner rail than the header/footer
+        # panel (by design a thinner rail than the header/footer
         # bands, but never thinner than this).
         rail_w = max(icon + 2 * pad, RAIL_W_MIN_PX)
 

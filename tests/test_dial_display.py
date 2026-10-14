@@ -2142,7 +2142,7 @@ class TestNotifyTouchActivity:
 # ---------------------------------------------------------------------------
 # _effective_overlay_locked(): merges now-playing state (artist, the
 # optimistic volume readout, mute belief fallback) into the touch-published
-# overlay snapshot at compose time (A.4).
+# overlay snapshot at compose time.
 # ---------------------------------------------------------------------------
 
 class TestEffectiveOverlayMerge:
