@@ -63,6 +63,24 @@ FIXED_APP_VERSION = "1.0.0-golden"
 FIXED_CSRF_TOKEN = "golden-csrf-token"
 
 
+@pytest.fixture(autouse=True)
+def _no_sd_card(tmp_path):
+    """The page shows the SD card in the slot and its health monitoring, read
+    from the host; the golden file is the page with no card and monitoring
+    off, so every one of those host paths points at nothing."""
+    import autostream_sysutils
+
+    absent = tmp_path / "absent"
+    with patch.multiple(
+        autostream_sysutils,
+        SDCARD_SYSFS_DEVICE=absent / "device",
+        SDCARD_HEALTH_STATUS_FILE=absent / "sdcardhealth-status.json",
+        SDCARD_HEALTH_JSON_FILE=absent / "sdcardhealth.json",
+        SDMON_BIN=absent / "sdmon",
+    ):
+        yield
+
+
 def _minimal_cfg(tmp_path: Path) -> Path:
     cfg = tmp_path / "autostream.json"
     cfg.write_text(json.dumps({
