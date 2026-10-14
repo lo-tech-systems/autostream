@@ -122,12 +122,12 @@ class TestReadUpdateStateTranslation:
         # SUCCESS → lower → success → complete
         assert public == "complete"
 
-    @pytest.mark.parametrize("public_state", list(TERMINAL_PUBLIC_STATES))
+    @pytest.mark.parametrize("public_state", sorted(TERMINAL_PUBLIC_STATES))
     def test_terminal_states_are_complete_or_failed(self, tmp_path, public_state):
         """complete and failed are the only terminal public states."""
         assert public_state in TERMINAL_PUBLIC_STATES
 
-    @pytest.mark.parametrize("public_state", list(NON_TERMINAL_PUBLIC_STATES))
+    @pytest.mark.parametrize("public_state", sorted(NON_TERMINAL_PUBLIC_STATES))
     def test_non_terminal_states_are_running_or_idle(self, tmp_path, public_state):
         assert public_state in NON_TERMINAL_PUBLIC_STATES
 
