@@ -135,6 +135,9 @@ def _uninstall_sandbox(env: Env, extra_shims: tuple[str, ...] = (),
     for name in ("rm", "systemctl", "nginx", "udevadm", "userdel", "update-initramfs",
                  *extra_shims):
         env.fake(name, RECORDER)
+    if not (env.bin / "nmcli").exists():
+        # No profiles to hand back, and never the host's own NetworkManager.
+        env.fake("nmcli", RECORDER)
     env.fake("id", FAKE_ID)
     if product is not None:
         env.install_state.write_text(f"AUTOSTREAM_PRODUCT={product}\n", encoding="utf-8")
