@@ -28,3 +28,9 @@ dist/
 # Temporary working docs
 docs/dial/IMPLEMENTATION-PLAN.md
 docs/working/
+
+# Assistant instructions, memory and scratch files
+CLAUDE.md
+CLAUDE.local.md
+MEMORY.md
+scratchpad/
