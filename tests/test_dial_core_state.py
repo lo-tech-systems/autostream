@@ -693,7 +693,7 @@ class TestApplianceStates:
         assert cs.webui_address("192.0.2.10", 80) == ("http", "192.0.2.10", 80)
         assert cs.webui_address("192.0.2.11", 8080) == ("http", "192.0.2.11", 8080)
 
-    def test_one_state_per_roster_entry_in_roster_order(self):
+    def test_one_state_per_roster_entry(self):
         roster = [_entry("Kitchen", AUTH_AUTHORIZED, playing=True), _entry("Lounge")]
         states = cs.appliance_states(roster)
         assert [s.service_name for s in states] == ["Kitchen", "Lounge"]
@@ -702,6 +702,61 @@ class TestApplianceStates:
         assert (states[0].webui_scheme, states[0].webui_host, states[0].webui_port) == (
             "http", "192.0.2.10", 80,
         )
+
+    def test_authorised_idle_sorts_above_unauthorised_playing(self):
+        roster = [
+            _entry("Alpha", AUTH_UNAUTHORIZED, playing=True),
+            _entry("Zulu", AUTH_AUTHORIZED, playing=False),
+        ]
+        assert [s.service_name for s in cs.appliance_states(roster)] == ["Zulu", "Alpha"]
+
+    def test_within_one_auth_state_playing_then_name_then_id(self):
+        roster = [
+            _entry("beta", AUTH_AUTHORIZED, appliance_id="2" * 20),
+            _entry("Alpha", AUTH_AUTHORIZED, appliance_id="3" * 20),
+            _entry("alpha", AUTH_AUTHORIZED, appliance_id="1" * 20),
+            _entry("Zulu", AUTH_AUTHORIZED, playing=True, appliance_id="4" * 20),
+        ]
+        states = cs.appliance_states(roster)
+        assert [(s.service_name, s.appliance_id[0]) for s in states] == [
+            ("Zulu", "4"), ("alpha", "1"), ("Alpha", "3"), ("beta", "2"),
+        ]
+
+    def test_each_auth_state_has_its_place(self):
+        roster = [
+            _entry("A", AUTH_UNAUTHORIZED),
+            _entry("B", AUTH_UNKNOWN),
+            _entry("C", "something-else"),
+            _entry("D", AUTH_AUTHORIZED),
+        ]
+        # Authorised, then not yet known (an unrecognised state counts as
+        # unknown, name order within it), then refused.
+        assert [s.service_name for s in cs.appliance_states(roster)] == ["D", "B", "C", "A"]
+
+    def test_the_order_does_not_depend_on_the_roster_order(self):
+        roster = [
+            _entry("A", AUTH_UNAUTHORIZED, playing=True), _entry("B", AUTH_UNKNOWN),
+            _entry("C", AUTH_AUTHORIZED), _entry("D", AUTH_AUTHORIZED, playing=True),
+        ]
+        forward = [s.appliance_id for s in cs.appliance_states(roster)]
+        assert [s.appliance_id for s in cs.appliance_states(roster[::-1])] == forward
+
+    def test_an_appliance_moves_once_when_it_becomes_authorised(self):
+        before = [_entry("A", AUTH_AUTHORIZED), _entry("B", AUTH_UNKNOWN), _entry("C", AUTH_AUTHORIZED)]
+        after = [before[0], _entry("B", AUTH_AUTHORIZED), before[2]]
+        assert [s.service_name for s in cs.appliance_states(before)] == ["A", "C", "B"]
+        assert [s.service_name for s in cs.appliance_states(after)] == ["A", "B", "C"]
+        # Unchanged states give the same list every time.
+        assert cs.appliance_states(after) == cs.appliance_states(list(after))
+
+    def test_the_selector_rows_follow_the_list_order(self):
+        roster = [
+            _entry("Alpha", AUTH_UNAUTHORIZED, playing=True),
+            _entry("Zulu", AUTH_AUTHORIZED),
+            _entry("Mid", AUTH_AUTHORIZED, playing=True),
+        ]
+        snapshot = _snapshot(cs.appliance_states(roster))
+        assert [r.label for r in snapshot.selector_rows()] == ["Mid", "Zulu", "Alpha"]
 
     def test_repeat_records_are_attached_by_id(self):
         roster = [_entry("Kitchen"), _entry("Lounge")]

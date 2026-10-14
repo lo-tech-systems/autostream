@@ -197,6 +197,10 @@ it's currently playing or idle. Tap the X to close the list without
 changing anything. The chevrons (or, on some panels, a side rail) page
 through the list if there are more appliances than fit on one screen.
 
+Appliances that have authorised this dial are listed first, then those that
+have not. Within each group, appliances that are playing come before idle ones,
+then they are in name order.
+
 An appliance that has not authorised this dial is listed too, dimmed, with
 **Not authorised** in place of the playing glyph or volume. Tapping that row
 does not switch to it. Instead it opens a short full-screen hint, "Allow this

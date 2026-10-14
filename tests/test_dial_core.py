@@ -511,6 +511,31 @@ class TestRosterAndAppliances:
         assert second.dial_outputs and second.dial_outputs_version == 1
         assert second.auth == AUTH_UNKNOWN
 
+    def test_the_list_order_leaves_the_roster_and_what_is_followed_alone(self):
+        cid = "c" * 20
+        # By the old order (playing first) Alpha comes first; by the new one
+        # the authorised idle Zulu does.
+        roster = [
+            _entry(AID, "Alpha", auth=AUTH_UNAUTHORIZED, playing=True),
+            _entry(BID, "Zulu", auth=AUTH_AUTHORIZED),
+            _entry(cid, "Mid", auth=AUTH_UNKNOWN),
+        ]
+        core = _core()
+        core.set_field("reporting_id", cid)
+        core.set_roster(roster)
+        assert [a.appliance_id for a in core.snapshot().appliances] == [BID, cid, AID]
+        # The roster is held as given, and nothing the dial follows or
+        # reports for moves with the list.
+        assert core.roster() is roster
+        assert core.snapshot().focus.reporting_id == cid
+        assert core.snapshot().focus.manual_id is None
+        core.set_focus(BID)
+        assert core.focus_volume_target() is roster[1]
+        assert core.snapshot().focus.manual_id == BID
+        assert core.snapshot().focus.reporting_id == cid
+        core.set_roster(roster[::-1])
+        assert core.focus_volume_target() is roster[1]
+
     def test_roster_getter_returns_what_was_stored(self):
         core = _core()
         roster = [_entry()]

@@ -179,6 +179,32 @@ class TestShape:
         ids = [a["id"] for a in dataclasses.replace(scenario, snapshot=snapshot).state()["appliances"]]
         assert ids == [hs.LOUNGE]
 
+    def test_the_state_list_and_the_screen_selector_show_the_same_order(self):
+        from dial_core import DialCore
+        from dial_mdns import RosterEntry
+
+        def entry(name, auth, playing=False):
+            return RosterEntry(
+                appliance_id=(name.encode().hex() + "0" * 20)[:20], service_name=name,
+                name=name, ip="192.0.2.10", port=80, playing=playing, repeat_capable=False,
+                auth=auth)
+
+        core = DialCore("dial-1", lambda: [], lambda: [])
+        core.set_roster([
+            entry("Alpha", "unauthorized", playing=True),
+            entry("Mid", "unknown"),
+            entry("Zulu", "authorized"),
+            entry("Beta", "authorized", playing=True),
+        ])
+        snapshot = core.snapshot()
+        scenario = hs.SCENARIOS["nothing_playing"]
+        state = dataclasses.replace(scenario, snapshot=dataclasses.replace(
+            scenario.snapshot, appliances=snapshot.appliances)).state()
+        # The state and the screen leave the appliance not yet known off
+        # their lists; the rest sit in one order.
+        assert [a["name"] for a in state["appliances"]] == ["Beta", "Zulu", "Alpha"]
+        assert [r.label for r in snapshot.selector_rows()] == ["Beta", "Zulu", "Alpha"]
+
     def test_capability_versions_and_webui_text(self):
         a = _state("playing_artwork")["appliances"][0]
         assert a["capabilities"] == {

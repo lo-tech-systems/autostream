@@ -112,6 +112,10 @@ appliance to make the dial follow it. The row for the one being followed is
 highlighted, and it scrolls into view when the dial changes appliance by
 itself, unless you have just scrolled that list.
 
+Appliances that have authorised this dial are listed first, then those that
+have not. Within each group, appliances that are playing come before idle ones,
+then they are in name order.
+
 - An appliance that is not answering shows **Not responding** and its
   controls are disabled while it is followed.
 - An appliance that has not authorised this dial shows **Not authorised**.

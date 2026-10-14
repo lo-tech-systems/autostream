@@ -21,7 +21,7 @@ import unicodedata
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
-from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
+from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN
 from dial_capabilities import appliance_capabilities, txt_capabilities
 from dial_mdns import PlayingTarget, appliance_display_name
 from dial_network import NetworkView
@@ -364,7 +364,7 @@ class CoreSnapshot:
     seq: int
     at: float                           # monotonic publish time
     polling: bool                       # the fitted gate
-    appliances: tuple[ApplianceState, ...]   # roster order (playing first, then by name)
+    appliances: tuple[ApplianceState, ...]   # display order (see display_order)
     focus: FocusState
     now_playing: NowPlaying | None
     artwork: Artwork | None             # bytes for now_playing.artwork_url, or None
@@ -857,11 +857,36 @@ def webui_address(ip: str, port: int) -> tuple[str, str, int]:
     return "http", ip, port
 
 
+# Where each authorisation state sits in the appliance list: authorised
+# first, then not yet known, then refused. Anything else ranks as unknown.
+_AUTH_LIST_RANK = {AUTH_AUTHORIZED: 0, AUTH_UNKNOWN: 1, AUTH_UNAUTHORIZED: 2}
+
+
+def display_order(entries: Iterable) -> list:
+    """*entries* (roster entries or appliance states) in the order every
+    appliance list is shown: authorisation first (authorised, then unknown,
+    then refused), then playing before idle, then by display name, then by
+    id. A total order on stable fields, so a list moves only when an
+    appliance's own state changes. The roster's own order is the poll's
+    walk order and is left alone; lists built for display come through
+    here."""
+    def key(r):
+        service_name = getattr(r, "service_name", "") or ""
+        return (
+            _AUTH_LIST_RANK.get(getattr(r, "auth", ""), _AUTH_LIST_RANK[AUTH_UNKNOWN]),
+            not getattr(r, "playing", False),
+            appliance_display_name(service_name).lower() if isinstance(service_name, str) else "",
+            getattr(r, "appliance_id", "") or "",
+        )
+    return sorted(entries, key=key)
+
+
 def appliance_states(
     roster: Iterable, repeats: dict | None = None, appliance_warnings: dict | None = None,
     capabilities: dict | None = None, statuses: dict | None = None,
 ) -> tuple:
-    """One ApplianceState per roster entry, in roster order. *repeats* maps
+    """One ApplianceState per roster entry, in display order (see
+    display_order). *repeats* maps
     an appliance id to its repeat record, *appliance_warnings* to its
     validated warnings, *statuses* to the (status_error, master_volume,
     muted) the last poll tick read from it. *capabilities* maps an appliance id to its
@@ -876,7 +901,7 @@ def appliance_states(
     statuses = statuses or {}
     appliance_warnings = appliance_warnings or {}
     out = []
-    for r in roster:
+    for r in display_order(roster):
         appliance_id = getattr(r, "appliance_id", "") or ""
         service_name = getattr(r, "service_name", "") or ""
         ip = getattr(r, "ip", "") or ""

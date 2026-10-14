@@ -75996,7 +75996,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76052,7 +76052,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76108,7 +76108,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76164,7 +76164,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76220,7 +76220,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76276,7 +76276,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76332,7 +76332,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76385,7 +76385,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76438,7 +76438,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76496,7 +76496,7 @@
       ],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76541,7 +76541,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76586,7 +76586,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76631,7 +76631,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76676,7 +76676,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76721,7 +76721,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76766,7 +76766,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76811,7 +76811,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76856,7 +76856,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76901,7 +76901,7 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": "w303_000000000000000",
       "network": null,
       "now_playing": {
         "album": "",
@@ -76936,23 +76936,32 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
       "eq_optimistic": null,
       "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
+      "frame_count": 2,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ],
+        [
+          128,
+          160
+        ]
+      ],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -76969,7 +76978,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": "main",
@@ -76989,7 +76998,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -76999,13 +77008,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77022,7 +77031,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": "main",
@@ -77042,7 +77051,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77057,13 +77066,13 @@
       ],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77076,7 +77085,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": null,
@@ -77092,7 +77101,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77102,13 +77111,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77121,7 +77130,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": "main",
@@ -77137,7 +77146,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77147,13 +77156,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77166,7 +77175,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": "main",
@@ -77182,7 +77191,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77192,13 +77201,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77211,7 +77220,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": "main",
@@ -77227,7 +77236,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77237,13 +77246,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77256,7 +77265,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": "main",
@@ -77272,7 +77281,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77282,13 +77291,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77301,7 +77310,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": "main",
@@ -77317,7 +77326,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77332,13 +77341,13 @@
       ],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77351,7 +77360,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": null,
@@ -77367,7 +77376,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77377,13 +77386,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77396,7 +77405,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": null,
@@ -77412,7 +77421,7 @@
       ]
     },
     {
-      "bound_appliance_id": "w303_100000000000000",
+      "bound_appliance_id": "w303_000000000000000",
       "display_sleeping": false,
       "eq": null,
       "eq_available": false,
@@ -77422,13 +77431,13 @@
       "frame_sizes": [],
       "idle_started": false,
       "info": null,
-      "manual_focus_id": "w303_100000000000000",
+      "manual_focus_id": null,
       "network": null,
       "now_playing": {
         "album": "",
         "artist": "",
         "master_volume": 50,
-        "service_name": "W3031",
+        "service_name": "W3032",
         "title": ""
       },
       "nowifi_open": false,
@@ -77441,7 +77450,7 @@
       "pressed": null,
       "repeat_appliance_id": null,
       "repeat_close_reveal": false,
-      "reporting_appliance_id": "w303_100000000000000",
+      "reporting_appliance_id": "w303_200000000000000",
       "restarting_open": false,
       "screen": "main",
       "screen_request": null,

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- improvement: a dial now lists the appliances it is authorised on above the ones
+  it is not, on both the screen and the HD page. Within each group, playing
+  appliances still come before idle ones, then by name. Before, a playing
+  appliance that had refused the dial could sit above an authorised idle one.
 - improvement: updates, on the appliance and on the dial, are now downloaded and
   prepared in a folder that only the system can write, instead of one the
   application's own account can write, and the system checks what it reads back
