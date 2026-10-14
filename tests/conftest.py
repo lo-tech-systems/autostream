@@ -15,6 +15,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+
+def pytest_configure(config):
+    # The tests build scratch trees that stand for what root creates, and the
+    # code under test refuses state a group can write. Root's services run
+    # under umask 022, but a login on Raspberry Pi OS defaults to 002, which
+    # would leave every scratch directory group-writable. Fix it for the run.
+    os.umask(0o022)
+
+
 # ---------------------------------------------------------------------------
 # requests stub — only when the real package is absent
 # ---------------------------------------------------------------------------
