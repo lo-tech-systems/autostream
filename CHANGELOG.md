@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- change: this release builds owntone-mini 1.5.0. The two speakers of an
+  AirPlay 2 stereo pair now stay on one timeline and start together, a
+  speaker's first start-up timing waits until its clock has settled so it is
+  usually accepted first time, and starting a speaker no longer interrupts the
+  audio of outputs that are already playing.
 - fix: the dial's screen now shows a mute made somewhere else (another dial, or
   the appliance's own page) as soon as the dial hears of it. Before, the dial
   knew at once but the screen could take several seconds to redraw.

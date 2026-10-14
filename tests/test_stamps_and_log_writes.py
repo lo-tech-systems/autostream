@@ -13,6 +13,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -59,11 +60,18 @@ def _bash(tmp_path: Path, body: str, **scripts: str) -> subprocess.CompletedProc
 # The OwnTone and vibra version stamps
 # ---------------------------------------------------------------------------
 
+def _pinned(lib: str, var: str) -> str:
+    """The version a library script pins, so the stamp tests follow a bump."""
+    match = re.search(rf'^{var}="([^"]+)"', (LIB / lib).read_text(encoding="utf-8"), re.M)
+    assert match, f"{var} not found in {lib}"
+    return match.group(1)
+
+
 BACKENDS = [
-    pytest.param("owntone.sh", "OWNTONE_MINI_VERSION_STAMP", "OWNTONE_MINI_VERSION", "1.4.3",
+    pytest.param("owntone.sh", "OWNTONE_MINI_VERSION_STAMP", "OWNTONE_MINI_VERSION", _pinned("owntone.sh", "OWNTONE_MINI_VERSION"),
                  "OWNTONE_MINI_BINARY", "owntone_mini_stamp_reports_pinned_version",
                  "write_owntone_mini_version_stamp", id="owntone"),
-    pytest.param("vibra.sh", "VIBRA_VERSION_STAMP", "VIBRA_VERSION", "v1.0.1",
+    pytest.param("vibra.sh", "VIBRA_VERSION_STAMP", "VIBRA_VERSION", _pinned("vibra.sh", "VIBRA_VERSION"),
                  "VIBRA_BINARY", "vibra_mini_stamp_reports_pinned_version",
                  "write_vibra_version_stamp", id="vibra"),
 ]
