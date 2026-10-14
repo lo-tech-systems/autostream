@@ -1,314 +1,82 @@
 # Changelog
 
-## Unreleased
+## Version 0.7.0
 
-- change: this release builds owntone-mini 1.5.0. The two speakers of an
-  AirPlay 2 stereo pair now stay on one timeline and start together, a
-  speaker's first start-up timing waits until its clock has settled so it is
-  usually accepted first time, and starting a speaker no longer interrupts the
-  audio of outputs that are already playing.
-- fix: the dial's screen now shows a mute made somewhere else (another dial, or
-  the appliance's own page) as soon as the dial hears of it. Before, the dial
-  knew at once but the screen could take several seconds to redraw.
-- improvement: a dial now lists the appliances it is authorised on above the ones
-  it is not, on both the screen and the HD page. Within each group, playing
-  appliances still come before idle ones, then by name. Before, a playing
-  appliance that had refused the dial could sit above an authorised idle one.
-- improvement: updates, on the appliance and on the dial, are now downloaded and
-  prepared in a folder that only the system can write, instead of one the
-  application's own account can write, and the system checks what it reads back
-  before it acts on it. An appliance or dial updating from an earlier release
-  does this by itself; nothing needs doing.
-- change: a factory reset of the appliance now also erases its list of authorised
-  dials, so a reset appliance is as unconfigured as a new one. Before, the list
-  survived and the appliance still accepted the dials it knew. After a reset,
-  every dial has to be authorised again from the Dials card.
-- change: a factory reset of a dial now gives it a new identity, so every
-  appliance treats it as a new dial and it has to be authorised again on each one.
-  Before, the dial kept the identity it was born with and stayed authorised. The
-  old entry stays on each appliance's Dials list, shown as offline, until you
-  switch it off there. A dial that has not been reset keeps its identity across an
-  update, a reinstall and an uninstall; one that has been reset keeps its new
-  identity across all three.
-- improvement: the appliance and dial installers now limit the swap file to
-  512 MiB. Raspberry Pi OS makes it as large as the board's RAM, up to 2 GiB, so
-  a 4 GB board put a 2 GB file on its SD card. Install and update put the setting
-  in place and uninstall removes it; it applies at the next reboot. With the
-  default `rpi-swap` mechanism the file is the target that zram writes back to.
-  The zram swap settings are left alone.
-- improvement: the dial installer now applies the same base system tuning as the
-  appliance installer, on a fresh install and on update, for SPI and HD dials:
-  Wi-Fi power saving is turned off (a dial with it on can be slow to receive what
-  the appliance sends it), swappiness is lowered and the zram writeback timer is
-  masked, the unused `modemmanager` and `udisks2` packages are removed, and the
-  power key is ignored. The dial uninstaller takes back the Wi-Fi and power key
-  files, as the appliance uninstaller does. The Wi-Fi change takes effect after
-  a reboot. The dial's display memory setting is left as it is.
-- new: the appliance installer has an opt-in `--low-power` switch for low-power
-  boards such as a Zero 2 W. It limits the appliance to two cores at 700 MHz
-  (`maxcpus=2` on the kernel command line; `arm_freq=700`, `arm_boost=0` and
-  `force_turbo=0` in `config.txt`) and takes effect after a reboot. It is off
-  unless given, and once given the choice is saved and applied again by every
-  `--update`, with or without the switch (an update on an appliance that has never
-  used the switch leaves existing settings alone). The uninstaller removes exactly
-  what the switch added; a different `maxcpus` value it replaced is not put back.
-  To turn it off, remove the settings by hand and delete the `LOW_POWER` line from
-  the install state.
-- improvement: the dial and appliance installers now delete the downloaded package
-  files (`apt-get clean`) once an install or update has succeeded, freeing space
-  on a small SD card; before, a fresh install never cleaned them and an update
-  kept the current ones. A dial update does this only after the new version has
-  passed its check after the reboot, so a rolled-back update leaves them alone.
-  Installed packages are not touched.
-- improvement: after an update, an HD dial is only kept on the new version if its
-  page server answers and, with a display connected, its kiosk browser is running.
-  Otherwise the update is rolled back like any other failed check. A dial with no
-  display connected is not held to the kiosk browser, so an update is not rolled
-  back just because no screen is plugged in. SPI dials are checked as before.
-- fix: a first-time install started over SSH no longer stops, without a message,
-  if the connection drops part way. The installer used to restart the login service
-  to apply the power-key setting, which ended the login session it was running in
-  and took the install with it; it now asks the login service to read its settings
-  again, and an install started from a login session carries on as a system
-  service that no session can end, with its progress still shown on the terminal.
-  Uninstalling no longer restarts the login service either.
-- fix: uninstalling the appliance now stops, disables and removes the track
-  identification service (`vibra-mini`), which before kept running and stayed
-  enabled, and removes the `autostream` service account it ran under. The guide
-  to uninstalling lists what is deliberately left.
-- fix: a dial update no longer wipes its own install log or the dial's log history.
-  The log files are now created only when missing, so the install log of an update,
-  and of its automatic retries after a reboot, can be read afterwards, and a fresh
-  install writes its whole log to `/var/log/autostream/dial-install.log`, so it is in
-  the Download Logs bundle. The appliance
-  installer also appends to its install log instead of replacing it on each run.
-- fix: running the dial installer again over a dial that is already installed no
-  longer resets it. The dial keeps its name, PIN, update and display settings, an
-  SPI dial stays SPI and an HD dial stays HD, and `--hd` over an SPI dial turns it
-  into an HD dial with its other settings kept. Before, the settings file was
-  overwritten and an HD dial came back as an SPI profile with a kiosk that waited
-  for a page that was never served.
-- improvement: the dial uninstaller now checks before it removes anything. It must
-  be run as root, refuses on an appliance or a device with no dial on it, and asks
-  for confirmation. `--yes` skips the question, and is needed when there is no
-  terminal to ask on.
-- fix: a power cut in the middle of the package upgrade during an update no longer
-  makes every automatic retry fail. The dial and appliance installers now finish
-  an interrupted package run (`dpkg --configure -a`) before their first package
-  command, so the retry after the next boot can complete the update.
-- fix: Wi-Fi now comes back within seconds, not minutes, after a brief
-  interruption of the adapter (for example when a package upgrade restarts the
-  Wi-Fi authentication service). The Wi-Fi watcher used to wait for its
-  five-minute retry when its first attempt found the adapter not yet available;
-  it now checks every few seconds for up to a minute and reconnects as soon as
-  the adapter is back.
-- fix: an update no longer fails when a system package upgrade briefly drops the
-  Wi-Fi. The dial and appliance installers now wait up to nine minutes for the
-  network to come back before each step that downloads, and run a step again
-  once if it failed because the network was gone. After a final failure the log
-  says the network was not available. When the network is up but a package
-  source cannot be read, the install or update carries on with the lists it
-  already holds and the log says which source could not be read. An unattended run that fails also no longer
-  prints a message about a terminal.
-- fix: the dial and appliance installers now check each sudoers file with visudo
-  before it replaces the installed one. A file with a syntax error stops the
-  install with a message and leaves the working file in place, where before it
-  could have left sudo unusable on the whole system.
-- fix: a fresh dial install now refreshes the package lists first, as the appliance
-  installer does, so it no longer stops with "Unable to locate package" on a newly
-  written card whose lists are empty or out of date. With no network it stops at
-  that step with a plain message, before any package is touched.
-- fix: uninstalling the dial software now gives the saved Wi-Fi networks back to
-  NetworkManager (autoconnect on again, hotspot profile removed), the same as the
-  appliance uninstaller, so a dial on Wi-Fi alone rejoins its network after the
-  next reboot instead of staying offline.
-- fix: the title and cover no longer drop out on a dial or the Home page every few
-  minutes while a playing track is re-checked, including when the re-check finds
-  nothing. A new track still clears the old one at once.
-- improvement: the HD dial's pull-down and equaliser page now close by themselves
-  after a minute without a touch, and when the screen goes to sleep, so the dial
-  is back on the playing screen. They stay open while a finger is held on a
-  slider, and while a card is showing over them.
-- new: each input has a Dynamic Rate Matching switch on its Setup card, last,
-  under the Level readout, off by default. Some optical (S/PDIF) USB adapters
-  deliver audio at the rate of the source whatever rate the device was opened
-  at, so a 44.1 kHz CD through a device opened at 48 kHz plays about 8 percent
-  slow and low. With the switch on, autostream finds the real rate (32, 44.1 or
-  48 kHz) within about half a second and follows it, including when the source
-  changes rate later, and remembers it while the same device stays selected.
-  The first half second after a rate change still plays at the old rate, and
-  that stretch stays in repeat recordings. The switch applies at once and never
-  interrupts playback. With it off, an input delivering a different rate raises
-  a Home page banner reading "Sample Rate Mismatch: Please enable Dynamic Rate
-  Matching", which opens that input's card, and the note under the switch says
-  what rate is arriving. The Home card's input detail line gains Acquiring and
-  Mismatch beside Locked. The estimate of an input's rate now also counts audio
-  dropped when the Pi is overloaded. Existing installs are unchanged until the
-  switch is turned on. The monitor's `configure_input` gains
-  `dynamic_rate_matching`, and each input's status gains `negotiated_hz`,
-  `rate_lock`, `relock_count`, `rate_mismatch_hz` and `dynamic_rate_matching`.
-  `/api/status` gains `sample_rate_banner_text`, and `GET /api/inputs/levels`
-  gains `rate_matching_note`, `sample_rate_text`, `dynamic_rate_matching`,
-  `rate_mismatch_hz`, `negotiated_hz` and `monitor_supports_rate_matching`.
-  The card also shows the sample rate the input is running at, with whether it
-  has settled, in a live line under the Level readout. Appliances need the
-  new monitor for the switch to take effect.
-- new: each input now has a type, Turntable, CD or Line, chosen on its card in
-  Setup (and for Input 1 at first boot) in place of the Turntable switch. The
-  type names the input on the Home card, which shows a CD icon for a CD input,
-  and is the default title while a track has none. An appliance that names the
-  input behind what is playing now sends that name to dials, so a dial shows it
-  where it used to show "Playing" for an untitled track. Dials and appliances
-  both need updating for this. An input that was set as a turntable becomes
-  Turntable on update and every other input becomes Line, so a CD player on an
-  existing input stays on Line until you set it to CD.
-- new: each input has a Sensitivity slider on its Setup card, from -70 dB to
-  -30 dB, with a live Level readout beside it that updates about once a second
-  while the card is open. The slider and the type apply at once and never
-  interrupt playback. Choosing Turntable moves the slider to -45 dB and
-  choosing CD or Line to -60 dB, but only when that changes the preset. A
-  stored sensitivity is kept on update; one outside the slider's range is
-  brought back inside it. The Setup page gains a levels-only route,
-  `GET /api/inputs/levels`.
-- improvement: a click, pop or knock on a cable no longer starts a session or
-  wakes the speakers. A Turntable or Line input now needs a short run of sound
-  above the sensitivity level, a few hundredths of a second added up within one
-  second and not necessarily unbroken, before playback starts. A CD input
-  still starts on the first sound.
-- fix: with only the second input enabled, the Home card named the first
-  input's type and icon. It now matches the level to its own input.
-- new: dials follow changes made elsewhere. A change to the speakers, volume,
-  mute, repeat, the track shown or the equaliser bands, made on one dial or in
-  the appliance's web page, now shows on the other dials within a second or so
-  instead of on their next poll. Appliances tell dials a change has happened
-  and each dial then asks for the state itself, so a dial that misses the
-  notice catches up on its regular poll. Appliances and dials both need
-  updating for this. Dials gain a `POST /state-changed` route.
-- fix: a dial now shows that playback has stopped within a second or so. It
-  used to keep showing the appliance as playing until its next regular poll,
-  up to a few seconds after the sound had gone.
-- improvement: the appliance and dial installers now put in place a limit for
-  core dumps, so that a crash or a crash loop cannot fill the SD card if
-  dumps are being taken: each dump limited to 256 MB, all dumps together to
-  256 MB, and older dumps cleared to keep 512 MB of the card free. Raspberry Pi
-  OS does not include `systemd-coredump`, so nothing takes core dumps and the
-  limit has no effect until that package is installed; autostream does not
-  install it. Install and update put the setting in place.
-- change: the HD dial's kiosk now runs WPE WebKit through its `cog` launcher,
-  drawing straight to the display. It uses far less memory (about 140 MiB on a
-  512 MB Pi 3 Model A+), so a 512 MB board is enough for an HD dial. The HD
-  install adds `cog` and `libgles2`.
-- new: an HD dial now controls an HDMI panel's brightness when the panel
-  supports the monitor control channel (DDC/CI). Brightness follows the
-  setting, and when the screen sleeps the panel is turned down to its minimum
-  and left powered while the page shows "Touch to wake". A panel that does not
-  answer keeps the page blacking out the picture. Powering the panel off while
-  it sleeps is a setting, off by default, because some panels are left with
-  image retention after being powered down: **Switch the panel off when
-  asleep** on the dial's card in Setup, which asks you to confirm before it
-  turns on. The HD install loads `i2c-dev` at boot and adds the dial's account
-  to the `i2c` group; nothing new is installed.
-- improvement: the HD dial reads "Playing" as the track while an appliance is
-  playing but has not named the track yet (as a track changes, or at the start
-  of playback), as the small screen does, instead of "Nothing playing".
-- improvement: the HD dial's play and back-to-the-start buttons look pushed in
-  from the press until the appliance reports the replay running from the
-  start. They let go if the request is refused or unanswered, if the appliance
-  stops, or if you move to another appliance.
-- change: the HD dial now always shows its controls. The "Always show controls"
-  switch is gone from its pull-down and from the dial's Setup card for an HD
-  dial, and the controls no longer fade away. The small screen keeps its own
-  setting.
-- new: the HD dial's pull-down has a power button at the top right. It asks
-  "Shut down?" and, once confirmed, shuts the dial down. It works only from
-  the dial's own touchscreen, not from the page served on the local network.
-  If the dial does not switch off within about half a minute, a card says so
-  and the power button works again.
-  Dials gain a `poweroff` verb in their privileged helper and a matching
-  sudoers line on update.
-- new: an HD dial can pair a speaker that asks for a PIN. Switching the
-  speaker on opens a keypad on the dial; enter the code the device shows. The
-  appliance's Home page leaves the prompt to the dial while it is doing this.
-  The small screen tells you to pair in the appliance's web UI instead.
-- improved: the Home page's PIN dialog pairs and switches the speaker on in
-  one go, says when a code was not accepted, and asks you to wait a few
-  seconds after several quick attempts. A speaker switch the appliance
-  refuses now springs back on the dial at once.
-- improved: the replay timer on the dial's screens now runs behind the
-  appliance's reported position by the appliance's audio start buffer, so it
-  matches what you hear (it was a fixed two seconds on the small screens and
-  not offset on the HD page). Appliances send the buffer in the dial status;
-  against an older appliance the dial keeps using two seconds. On the HD page,
-  pressing Stop now stops the timer at once and it resets when playback
-  stops.
-- new: dials show a Starting... splash on an HDMI or DSI screen at boot and
-  Shutting down... at shutdown and reboot. Existing dials gain it on their
-  next update (one longer update while the boot files are rebuilt).
-- new: HD dial (preview). A dial can now drive a full-size HDMI or DSI
-  touchscreen. The dial serves a touch page to a kiosk browser on the same
-  board: appliances and speakers on the left; artwork, replay controls, track
-  and volume on the right; an equaliser page; a pull-down sheet for
-  brightness, sleep and the dial's details; warnings; and a screen that
-  sleeps and wakes on the first touch. Install it with
-  `autostream_dial_install.sh --hd`. A 512 MB board such as a Pi 3
-  Model A+ is enough.
-- new: appliances now send their own maintenance and power warnings to dials:
-  a stylus near or past the end of its life, a drive belt or main bearing due
-  for service, and a low power-supply voltage. They page on the dial's screen
-  with the appliance's name and a Dismiss button, quietly and only over the
-  now-playing screen, and the appliance tells the dial when they change.
-- new: the dial can use a six-band equaliser on an appliance that has one (the
-  HD dial's equaliser page); the small screen keeps bass and treble.
-- improvement: on the HD dial the appliances and speakers lists scroll
-  separately, and a list that has more to show fades at its edge.
-- new: the dial's Setup card shows Brightness and Sleep after for an HD dial
-  in place of the SPI-only rows.
-- improvement: the HD dial's replay row uses transport buttons and a timer in
-  place of the Replay, Restart and Stop text buttons: play (or back to the
-  start while a replay runs), stop, then the timer. A button that does not
-  apply is greyed out. While something plays live the row holds Repeat Play
-  as before. Lengths of an hour or more show hours.
-- improvement: the HD dial's replay timer counts evenly, a second at a time,
-  and no longer hops forwards or back as the dial reports in.
-- fix: the HD dial's mute button and volume number went back to unmuted a
-  moment after a press although the sound stayed muted, and the volume number
-  could show an old level or another appliance's. Both now follow the
-  appliance being shown, and a mute shows as soon as the dial has acted on it.
-- improvement: an output in use by another autostream appliance now says
-  which one (the HD dial shows "In Use by" and its name).
-- improvement: the dial's outputs list marks the appliance's default output (a
-  bullet on the small screen, a Default label on the HD page), and appliances
-  now report it to dials.
-- improvement: the HD dial's artwork sits on a blurred backdrop, as the small
-  screen's does, and the picture and backdrop fade together when the track
-  changes.
-- improvement: appliances advertise a new dial protocol generation (v3) and
-  serve a capabilities list that a dial reads in place of the discovery flags,
-  so new dial features need no new discovery keys. Older dials and appliances
-  keep working with each other. Protocol generations are now compared as
-  numbers.
-- fix: a dial whose saved poll interval is unusable now uses the default
-  instead of stopping its poll loop.
-- fix: the Dial name row in a dial's info (on the HD page and the small screen)
-  now shows the dial's UUID while the dial has no name, as the web UI does,
-  instead of "-".
-- change: the dial's code is split into a core that tracks the appliances and
-  views that draw the screen, so the small screen and the HD page share one
-  model. No change to what the small screen does.
-- change: the dial reports its screen's surface, brightness and sleep time in
-  its screen settings, and can optionally serve its page on a PIN-protected
-  development listener on the local network (off by default).
-- docs: new HD dial guide; the dial architecture, screen and protocol
-  documents describe the above.
-- change: this release builds owntone-mini 1.4.3. Nothing changes in how it
-  plays: its documentation and licence notices were brought up to date and
-  packaging it no longer uses was removed.
-- change: the install log of the appliance and of the dial is always written to the one
-  place, `/var/log/autostream/autostream_install.log` and
-  `/var/log/autostream/dial-install.log`, whoever starts the installer and however, so
-  it is in the Download Logs bundle and rotated. A log an older release left in a home
-  directory is no longer written to (it is not deleted), and the installer prints the
-  log's path when it starts and when it ends.
+Upgrade appliances and dials together: a 0.7 dial is not supported with a 0.6
+appliance, and several features below need both sides updated.
+
+### Inputs and playback
+
+- new: Dynamic Rate Matching, a switch on each input's Setup card, off by
+  default. Some optical (S/PDIF) USB adapters deliver audio at the source's rate
+  whatever rate they were opened at, so a CD could play about 8 percent slow and
+  low. With the switch on, autostream finds the real rate (32, 44.1 or 48 kHz)
+  within about half a second and follows it, without interrupting playback.
+  With it off, a mismatch raises a "Sample Rate Mismatch" banner on the Home
+  page that opens the input's card, which shows the rate arriving and the rate
+  in use.
+- new: each input has a type (Turntable, CD or Line) in place of the Turntable
+  switch, and a Sensitivity slider (-70 dB to -30 dB) with a live level readout.
+  Both apply at once. On update a turntable input becomes Turntable and every
+  other input becomes Line, so set a CD player to CD yourself.
+- improvement: a click, pop or knock no longer starts a session or wakes the
+  speakers. Turntable and Line inputs need a short run of sound above the
+  sensitivity level; a CD input still starts on the first sound.
+- change: this release builds owntone-mini 1.5.0, so the update rebuilds it,
+  which takes a long time on small Pis; leave the device powered. The two
+  speakers of an AirPlay 2 stereo pair now start together and stay in step, and
+  starting a speaker no longer interrupts outputs already playing.
+
+### Dials
+
+- new: HD dial. A dial can drive a full-size HDMI or DSI touchscreen through a
+  kiosk browser on the same board, with appliances and speakers, artwork, replay
+  controls, volume, a six-band equaliser where the appliance has one, and a
+  pull-down for brightness, sleep and details. Install it with
+  `autostream_dial_install.sh --hd`; a 512 MB board such as a Pi 3 Model A+ is
+  enough. HDMI panels with DDC/CI get brightness control. Switching the panel off
+  when asleep is an opt-in setting, as some panels keep image retention.
+- new: dials follow changes made elsewhere. Speakers, volume, mute, repeat, the
+  track and the equaliser, changed on one dial or in the web page, show on the
+  other dials within a second or so instead of on their next poll.
+- new: an HD dial can pair a speaker that asks for a PIN, with a keypad on the
+  dial. The Home page's PIN dialog now pairs and switches the speaker on in one
+  go.
+- new: appliances send stylus, drive belt, bearing and power-supply warnings to
+  dials, and dials show a Starting... and Shutting down... splash on HDMI and DSI
+  screens.
+- improvement: a dial lists the appliances it is authorised on first, then
+  playing before idle, then by name.
+- change: a factory reset of an appliance erases its list of authorised dials,
+  and a factory reset of a dial gives it a new identity, so it has to be
+  authorised again on each appliance.
+- fix: the title and cover no longer drop out every few minutes while a playing
+  track is re-checked, and the HD dial's mute and volume no longer flick back to
+  an old value after a press.
+
+### Install and update
+
+- new: an opt-in `--low-power` installer switch for boards such as a Zero 2 W
+  (two cores at 700 MHz), kept by every update and removed on uninstall.
+- improvement: the installers cap core dumps and limit the swap file to
+  512 MiB. The dump cap only takes effect if `systemd-coredump` is installed,
+  which Raspberry Pi OS does not include.
+- fix: an update no longer fails when a package upgrade briefly drops the
+  Wi-Fi or after a power cut during the upgrade, and an HD dial update is rolled
+  back if its page or kiosk does not come up.
+- fix: re-running the dial installer keeps the dial's name, PIN and settings,
+  and a fresh dial install no longer fails with "Unable to locate package".
+- fix: uninstalling removes the track identification service and the
+  `autostream` account, and the dial uninstaller hands saved Wi-Fi networks back
+  to NetworkManager.
+
+### Notes
+
+- Install logs always go to `/var/log/autostream/`, so they are in the Download
+  Logs bundle. Updates are staged where only the system can write, and sudoers
+  files are checked with `visudo` before use.
+- The dial applies the appliance's base system tuning, and its code is split
+  into a core shared by the small screen and the HD page. New HD dial guide.
 
 ## Version 0.6.1 - 2026-10-02
 
