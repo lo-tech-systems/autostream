@@ -26,7 +26,7 @@ appliance can't answer, the affected fields read "Unavailable" instead.
 
 ### Build and device information
 
-- **autostream Build** - the installed release tag (e.g. `0.6.0`).
+- **autostream Build** - the installed release tag (e.g. `0.7.0`).
 - **Device** - the Raspberry Pi model detected at startup.
 - **OS Build** - the operating system version.
 - **Total Playback Time** - cumulative playback hours across both inputs,

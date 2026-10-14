@@ -9,10 +9,10 @@ board, and that browser fills the touchscreen. The browser is WPE WebKit,
 started by its `cog` launcher, which draws straight to the display with no
 desktop or compositor in between.
 
-**This is a preview.** The software is written and tested against a simulated
-dial and a browser, but it has not yet been run on real HD dial hardware.
-Treat everything on this page about boards and panels as what we expect to
-work, not what we have confirmed. If you try one, please report what you see.
+**This is a preview.** It runs on real boards (a 512 MB Pi 3 Model A+ is
+enough), but only a few panels have been tried. Expect differences between
+panels, especially in how an HDMI panel answers its control channel. If you
+try one, please report what you see.
 
 ## What you need
 

@@ -37,6 +37,8 @@ than the folder the application itself runs from (see
 still in progress, or appears to have stalled, the Updates card shows that
 state instead of letting you start a new one.
 
+Update the appliance and its dials together: 0.7 dials are not supported with 0.6 appliances. An update that moves the bundled `owntone-mini` to a new version (0.7.0 moves it to 1.5.0) rebuilds it, so that update takes much longer than usual.
+
 If an update fails or seems to hang, see the "Update problems" section of
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 

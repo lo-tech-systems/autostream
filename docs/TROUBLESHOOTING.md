@@ -118,7 +118,7 @@ In-app updates can take a long time. A full update may take up to **15 minutes**
 * run an APT system update
 * rebuild `autostream_monitor`
 * recreate the Python virtual environment
-* rebuild `owntone-mini` and `vibra-mini` - but only when the release changes the pinned version. Each is skipped when the pinned version is already installed, so most updates do not pay this cost.
+* rebuild `owntone-mini` and `vibra-mini` - but only when the release changes the pinned version. Each is skipped when the pinned version is already installed, so most updates do not pay this cost. The update to 0.7.0 moves `owntone-mini` to 1.5.0, so expect the long rebuild that once.
 
 Micro-SD card speed has a big impact, so slower cards can make updates feel stalled even when they are still working.
 
@@ -197,7 +197,7 @@ USB and Bluetooth turntables usually include the pre-amp already, so they need n
 Each input has an **Input type** and a **Sensitivity** setting under [Setup: Inputs](SETUP-INPUTS.md#input-type). The **Level** readout on the input's card shows what autostream is hearing and adds "(above threshold)" when it is loud enough to count.
 
 * **Playback doesn't start.** Open the input's card, start the source and watch Level. If it reads "no level", autostream has no level to show for that input (check the Input device and that the source is on). If the level stays below the slider's value, move **Sensitivity** to the left. A very quiet passage after a long silence may not restart playback on a Turntable or Line input until it gets a little louder; moving the slider left fixes this.
-* **A click, pop or knocked cable starts playback.** On a Turntable or Line input a short noise should not start playback, because about a tenth of a second of sound above the level is needed first. If noise still starts it, move **Sensitivity** to the right. A CD input starts on the first sound, so if clicks start playback on an input set to CD, choose Line instead.
+* **A click, pop or knocked cable starts playback.** On a Turntable or Line input a short noise should not start playback, because about 60 milliseconds of sound above the level is needed first. If noise still starts it, move **Sensitivity** to the right. A CD input starts on the first sound, so if clicks start playback on an input set to CD, choose Line instead.
 
 ---
 
@@ -1028,6 +1028,8 @@ Where logs live on disk:
 * `/var/log/autostream/autostream.log` (common main log file path in this repo)
 * `/var/log/autostream/autostream_wifi_watcher.log` (Wi-Fi/AP mode state machine)
 * `/var/log/autostream/update.log` (updater)
+* `/var/log/autostream/autostream_install.log` (installer, appended to on each run; also written when an install is started over SSH)
+* `/var/log/autostream/dial-install.log` (a dial's installer, on the dial)
 * `/var/log/owntone.log` (OwnTone; included in both ZIP bundles above, not shown on the Logs page)
 
 **Core dumps.** Raspberry Pi OS does not include `systemd-coredump`, so by

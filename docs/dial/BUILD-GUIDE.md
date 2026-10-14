@@ -197,8 +197,8 @@ Instead of the small SPI display, a dial can drive a full-size touchscreen
 panel and its touch controller connect the way they would to any Raspberry Pi:
 there is no SPI wiring, no GPIO touch harness and no back-box to fit. The
 board runs a kiosk browser on the dial's own page, installed with the
-installer's `--hd` flag. This is a preview and has not yet been tried on real
-hardware. See [HD dial](HD-DIAL.md) for what to expect, how to install it
+installer's `--hd` flag. This is a preview: it runs on real boards, but only a few panels
+have been tried. See [HD dial](HD-DIAL.md) for what to expect, how to install it
 and how to use the screen.
 
 ---

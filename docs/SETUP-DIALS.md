@@ -48,6 +48,10 @@ That's it. Once authorized, the card's full settings section appears
 (covered in [Getting Started](dial/GETTING-STARTED.md)), and the dial can
 start adjusting volume on this appliance as soon as it is playing something.
 
+## Keeping dials and the appliance on the same release
+
+Update the appliance and its dials together. A 0.7 dial is not supported with a 0.6 appliance, and a 0.7 appliance needs 0.7 dials for changes made elsewhere to show on the dial within a second or so and for the input type name to appear on the dial.
+
 ## Revoking a dial
 
 Turn **Allow dial to control this appliance** off. A confirmation prompt

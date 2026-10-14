@@ -11,6 +11,11 @@ setting one up and using it day to day.
 - The dial has joined your home Wi-Fi (first-boot hotspot setup complete).
 - At least one autostream appliance on the same network.
 
+## Upgrade together
+
+A 0.7 dial is not supported with a 0.6 appliance. When you move to 0.7, update
+every appliance and every dial together.
+
 ## Where setup happens
 
 The dial doesn't serve a setup page of its own. Everything is configured

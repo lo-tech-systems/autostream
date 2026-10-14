@@ -40,7 +40,7 @@ The type also decides a few things you can see:
 * When autostream has no track title for what is playing, receivers and dials show the type name (**Turntable**, **CD** or **Line**) as the title. A Bluetooth source shows the type you chose, not "Bluetooth".
 * While a track is untitled, the round dial (on its larger layouts) and the HD dial show the input's name where they used to show "Playing".
 * The [Home page](HOME-PAGE.md) shows the matching icon and label, with a separate CD icon for a CD input.
-* A CD input starts a session on the very first sound. Turntable and Line inputs need about a tenth of a second of sound above the sensitivity level, within one second, before a session starts, so a single click, pop or knock on a cable does not start playback. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
+* A CD input starts a session on the very first sound. Turntable and Line inputs need about 60 milliseconds of sound above the sensitivity level, within one second, before a session starts, so a single click, pop or knock on a cable does not start playback. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
 
 If a Bluetooth source lands on this input (see below), choose the input type yourself. autostream doesn't detect it for a Bluetooth-paired device.
 
@@ -77,8 +77,6 @@ A few things worth knowing:
 * autostream remembers the rate it found while the same input device stays selected, including when the input stops and starts again, so after the first time the music should start at the right pitch. It forgets the rate if you change the device or the audio service restarts.
 * It recognises sources at 32, 44.1 and 48 kHz. A source at any other rate is not corrected, and if you have **Display Input Detail** on, the input's card on the Home page shows **Acquiring** for as long as it does.
 * If you connect a CD player through an optical adapter, also set the input's **Input type** to CD. See [Input type](#input-type).
-
-[Owner: this has not been tried on real adapters yet, so the page does not name any. Add a line about USB sound cards and Bluetooth sources not needing the switch only if you want one.]
 
 ### Gain and Equaliser
 

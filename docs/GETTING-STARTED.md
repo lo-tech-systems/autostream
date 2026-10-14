@@ -2,7 +2,7 @@
 
 ## Installation
 
-Run the installer on a Raspberry Pi running **Raspberry Pi OS Lite (Trixie)**. Use 64-bit for autostream, unless deploying on a Pi Zero W (32-bit only).
+Run the installer on a Raspberry Pi running **Raspberry Pi OS Lite (Trixie)**. Use the 64-bit version; 32-bit is not supported for the appliance.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lo-tech-systems/autostream/main/bootstrap.sh | sudo bash
@@ -12,7 +12,7 @@ This downloads the latest stable release and installs everything autostream need
 
 During installation you are asked to set a PIN for the appliance. See [What the PIN does](#what-the-pin-does) below.
 
-The install can take half an hour or more. Once you have answered its questions it keeps running if your connection drops, so you can log in again and read `/var/log/autostream/autostream_install.log` to see how far it got. The install log is always there, however the install was started.
+The install can take half an hour or more. Once you have answered its questions it keeps running if your connection drops, so you can log in again and read `/var/log/autostream/autostream_install.log` to see how far it got. The install log is always there, however the install was started. If an install is already running, starting a second one is refused and nothing is changed; the message says how to follow the first.
 
 For install options, such as running a full OwnTone build instead of the bundled one, see [Advanced Operations](ADVANCED.md).
 

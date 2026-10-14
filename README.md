@@ -47,7 +47,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 1. With a simple rotary encoder, to provide a physical volume control for all speakers
 2. With a touch screen, to show album artwork and provide a simple interface to control volume and replay repeat recordings available on any of your **autostream** appliances   
 
-**autostream dial** is currently under development with a preview available today. **autostream 0.7.0** - coming soon - will bring full functionality.
+Update every dial and appliance to 0.7 together: a 0.7 dial is not supported with a 0.6 appliance. The full-size touchscreen version (HD dial) is a preview.
 
 ---
 
@@ -64,7 +64,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 * **Raspberry Pi**
   *  Pi Zero 2W is the minimum for autostream; Zero W minimum for dial. 8GB+ microSD card.
   *  Pi Model 3A is generally the cheapest readily available board (as of October 2026)
-* **OS** - **Raspberry Pi OS Lite (Trixie)**. Use 64-bit for autostream, unless deploying on Pi Zero W.
+* **OS** - **Raspberry Pi OS Lite (Trixie)**. Use 64-bit for autostream; 32-bit is not supported. A dial can also run 32-bit, for example on a Pi Zero W.
 * **USB audio input**, for example:
   * USB turntable (e.g. Audio-Technica AT-LP60XUSBGM)
   * USB ADC for line-level or phono input (e.g. Behringer U-PHONE UFO202)
