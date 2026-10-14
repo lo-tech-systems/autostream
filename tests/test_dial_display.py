@@ -205,6 +205,42 @@ class TestNowPlayingRepaintSignal:
         assert display.core.snapshot().now_playing.album == "Second Album"
         assert display._overlay_signal.is_set()
 
+    def test_mute_changed_elsewhere_sets_overlay_signal(self):
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+
+        display._overlay_signal.clear()
+        with patch("dial_core.fetch_target_status",
+                   return_value=_status_result(track_id=_track_id(), muted=True)):
+            display._poll_once()
+        assert display._overlay_signal.is_set()
+
+    def test_volume_changed_elsewhere_sets_overlay_signal(self):
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+
+        display._overlay_signal.clear()
+        louder = dict(_status_result(track_id=_track_id()), master_volume=60)
+        with patch("dial_core.fetch_target_status", return_value=louder):
+            display._poll_once()
+        assert display._overlay_signal.is_set()
+
+    def test_unchanged_poll_leaves_overlay_signal_clear(self):
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        with patch("dial_core.fetch_target_status", return_value=_status_result(track_id=_track_id())):
+            display._poll_once()
+            display._overlay_signal.clear()
+            display._poll_once()
+        assert not display._overlay_signal.is_set()
+
 
 # Artwork URL eligibility and fetching now live in core/autostream_artwork.py,
 # shared with the OwnTone metadata publisher; their tests moved to test_artwork.py.

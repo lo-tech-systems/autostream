@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: the dial's screen now shows a mute made somewhere else (another dial, or
+  the appliance's own page) as soon as the dial hears of it. Before, the dial
+  knew at once but the screen could take several seconds to redraw.
 - improvement: a dial now lists the appliances it is authorised on above the ones
   it is not, on both the screen and the HD page. Within each group, playing
   appliances still come before idle ones, then by name. Before, a playing

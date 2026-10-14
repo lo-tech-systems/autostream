@@ -914,6 +914,9 @@ class DialDisplay:
         self._overlay_snapshot_lock = threading.Lock()
         self._overlay_snapshot = OverlayState()
         self._overlay_signal = _Signal()
+        # (service, volume, muted) as shown at the end of the last tick
+        # with something playing; see _apply_playing_tick.
+        self._tick_shown_level: tuple = (None, None, False)
         # The appliance model, which runs the poll on its own thread and
         # publishes snapshots. While started, this view subscribes and its
         # repaint thread folds each new snapshot into the screen (see
@@ -4668,6 +4671,15 @@ class DialDisplay:
         self._maybe_show_transition(tick.previous_reporting_id)
         self._close_bound_screen_if_unfocused()
         if new.now_playing != tick.previous_now_playing:
+            self._overlay_signal.set()
+        # The volume and mute the screens show are read from the volume
+        # worker's store at paint time, and a poll can change them (they
+        # were set from somewhere else): ask for the repaint that shows it.
+        playing = new.now_playing
+        service = playing.service_name if playing is not None else None
+        shown = (service, shown_volume(service), shown_muted(service))
+        if shown != self._tick_shown_level:
+            self._tick_shown_level = shown
             self._overlay_signal.set()
         if new.artwork is not None:
             self._show_artwork(new.artwork)
