@@ -1664,15 +1664,15 @@ class TestFontCaps:
 
     def test_rich_tier_sizes_and_has_no_album_line(self):
         # Rich scales its text from the large tier's own reference (see
-        # FONT_BODY_PX_AT_LARGE_REFERENCE); its halo is capped the same way
-        # the large tier's is, even though its fonts stay well under their
-        # own cap at this panel size.
+        # FONT_BODY_PX_AT_LARGE_REFERENCE), and its halo follows the body
+        # font: half the large tier's font, so stroke floor(1.5) and blur
+        # round(1.5).
         m = _RICH_320x240
         assert m.font_body == 18
         assert m.font_readout == 22
         assert m.icon == 22
-        assert m.halo_stroke == 3
-        assert m.halo_blur == 3
+        assert m.halo_stroke == 1
+        assert m.halo_blur == 2
         assert m.has_album_line is False
 
     @pytest.mark.parametrize("width,height", [(160, 128), (128, 128)])

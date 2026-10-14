@@ -144,12 +144,13 @@ class TestTransformArtworkForPanel:
 
     def test_square_source_foreground_matches_plain_resize(self):
         # Square album art (the common case) becomes a full 128x128
-        # foreground pasted centered over the backdrop.
+        # foreground pasted centered over the backdrop. 300 px is at least
+        # twice 128, so it goes through 256 px and a 2x box average.
         img = decode_artwork(_jpeg_bytes(size=(300, 300)))
         out = transform_artwork_for_panel(img)
         assert out.size == (PANEL_WIDTH, PANEL_HEIGHT)
 
-        expected_fg = img.resize((PANEL_HEIGHT, PANEL_HEIGHT), ddi._RESAMPLE)
+        expected_fg = img.resize((2 * PANEL_HEIGHT, 2 * PANEL_HEIGHT), ddi._RESAMPLE).reduce(2)
         x_offset = (PANEL_WIDTH - PANEL_HEIGHT) // 2
         actual_fg = out.crop((x_offset, 0, x_offset + PANEL_HEIGHT, PANEL_HEIGHT))
         assert list(actual_fg.getdata()) == list(expected_fg.getdata())
@@ -183,6 +184,18 @@ class TestTransformArtworkForPanel:
         # Sanity-check the offset used above is still outside the pasted
         # foreground region.
         assert 2 < x_offset
+
+    def test_supersampled_resize_goes_through_twice_the_size_when_it_can(self):
+        img = decode_artwork(_jpeg_bytes(size=(600, 600)))
+        expected = img.resize((480, 480), ddi._RESAMPLE).reduce(2)
+        out = ddi.resize_supersampled(img, (240, 240))
+        assert out.size == (240, 240)
+        assert list(out.getdata()) == list(expected.getdata())
+
+    def test_supersampled_resize_is_direct_below_twice_the_size(self):
+        img = decode_artwork(_jpeg_bytes(size=(479, 600)))
+        expected = img.resize((240, 240), ddi._RESAMPLE)
+        assert list(ddi.resize_supersampled(img, (240, 240)).getdata()) == list(expected.getdata())
 
     def test_backdrop_darken_percent_pinned(self):
         assert BACKDROP_DARKEN_PERCENT == 35

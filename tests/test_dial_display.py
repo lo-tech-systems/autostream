@@ -4892,6 +4892,21 @@ class TestRendersAtLogicalArrivesPhysical:
         assert fb.displayed[-1].size == (320, 240)
         spy.assert_called_with((640, 480), (320, 240))
 
+    def test_compose_is_told_the_panel_size(self):
+        # So a reveal slide's frames can be built at the panel's own size
+        # rather than built large and shrunk each frame.
+        fb = FakeBackend()
+        fb.width, fb.height = 320, 240
+        display, fb, gt = make_display(
+            screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="large", backend=fb,
+        )
+        display.enable()
+        compositor = display._compositor
+        with patch.object(compositor, "compose", wraps=compositor.compose) as compose:
+            with display._lock:
+                display._display_locked(display._current_base_image)
+        assert compose.call_args.kwargs["output_size"] == (320, 240)
+
     def test_small_on_320x240_panel(self):
         fb = FakeBackend()
         fb.width, fb.height = 320, 240

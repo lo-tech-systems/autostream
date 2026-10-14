@@ -93,6 +93,20 @@ except AttributeError:  # Pillow < 9.1
     _RESAMPLE = Image.LANCZOS
 
 
+def resize_supersampled(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Resize *img* to *size* with LANCZOS, going through twice *size* and
+    a 2x box average whenever the source has the pixels for it. A straight
+    LANCZOS reduction filters away more fine detail than the panel can
+    show; the two-step version matches what a 2x layout size box-averaged
+    down to the panel looks like, and reads visibly sharper on a small
+    panel. A source smaller than twice *size* on either axis gains nothing
+    from the detour and is resized directly."""
+    width, height = size
+    if img.width >= 2 * width and img.height >= 2 * height:
+        return img.resize((2 * width, 2 * height), _RESAMPLE).reduce(2)
+    return img.resize(size, _RESAMPLE)
+
+
 def decode_artwork(data: bytes) -> Image.Image | None:
     """Decode, validate, and orient fetched provider artwork bytes.
 
@@ -184,9 +198,8 @@ def transform_artwork_for_panel(
     # its axis (a 100x100 cover becomes a 128x128 foreground, not a stamp).
     src_w, src_h = img.size
     scale = min(width / src_w, height / src_h)
-    fitted = img.resize(
-        (max(1, round(src_w * scale)), max(1, round(src_h * scale))),
-        _RESAMPLE,
+    fitted = resize_supersampled(
+        img, (max(1, round(src_w * scale)), max(1, round(src_h * scale))),
     )
 
     if fitted.size == (width, height):
@@ -223,8 +236,10 @@ def load_logo(path: str, width: int = PANEL_WIDTH, height: int = PANEL_HEIGHT) -
 
     try:
         img = img.convert("RGB")
-        fitted = img.copy()
-        fitted.thumbnail((width, height), _RESAMPLE)
+        scale = min(1.0, width / img.width, height / img.height)
+        fitted = resize_supersampled(
+            img, (max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+        )
         canvas = Image.new("RGB", (width, height), LOGO_BACKGROUND_RGB)
         offset = (
             (width - fitted.width) // 2,

@@ -162,8 +162,10 @@ from dial_touch_layout import (
 # installs, the same guard dial_display_image.py uses for its own resizes.
 try:
     _LANCZOS = Image.Resampling.LANCZOS
+    _BOX = Image.Resampling.BOX
 except AttributeError:
     _LANCZOS = Image.LANCZOS
+    _BOX = Image.BOX
 
 _logger = logging.getLogger(__name__)
 
@@ -795,6 +797,7 @@ class DialDisplayCompositor:
         reveal_progress: float = 0.0,
         timer_text: str | None = None,
         timer_alpha: float = 1.0,
+        output_size: "tuple[int, int] | None" = None,
     ):
         """Build one display-ready frame from *base*.
 
@@ -834,6 +837,14 @@ class DialDisplayCompositor:
         timer_alpha: the timer line's opacity, 0.0 to 1.0, for its fade
             out. A paint parameter like reveal_progress: the manager owns
             the clock.
+        output_size: the panel's own size, which the caller will resample
+            the frame to when it differs from (width, height). A reveal
+            slide frame is then returned already at that size when it is a
+            reduction (see _reveal_layers()), so a slide composed at a
+            larger layout size costs per frame what one at the panel's
+            size does. Every other frame, and a slide frame that also
+            carries the timer line, is returned at (width, height) as
+            before. None (the default) never changes the size.
         """
         if base is None:
             return base
@@ -845,16 +856,22 @@ class DialDisplayCompositor:
         if is_artwork:
             image = transform_artwork_for_panel(image, width, height, blur_radius=metrics.blur_radius)
 
-        framed = self._compose_main(image, metrics, overlay, reveal_progress)
-        if timer_text and timer_alpha > 0.0 and metrics.content_tier != CONTENT_COMPACT:
+        timer = bool(timer_text) and timer_alpha > 0.0 and metrics.content_tier != CONTENT_COMPACT
+        # The timer line is drawn in compose space after the main frame, so
+        # a frame carrying it stays at the compose size throughout.
+        reveal_size = None if timer else _reveal_output_size(image.width, image.height, output_size)
+        framed = self._compose_main(image, metrics, overlay, reveal_progress, reveal_size)
+        if timer:
             framed = _draw_timer_line(framed, timer_text, timer_alpha, metrics)
         return _finish(framed, rotate, bgr)
 
     @staticmethod
-    def _compose_main(image, metrics: LayoutMetrics, overlay, reveal_progress: float):
-        """compose()'s own frame, in compose space (before rotate/BGR).
-        May return *image* itself when nothing is drawn over it, so a
-        caller that draws further must not do so in place."""
+    def _compose_main(image, metrics: LayoutMetrics, overlay, reveal_progress: float, reveal_size=None):
+        """compose()'s own frame, in compose space (before rotate/BGR), or
+        at *reveal_size* for a reveal slide frame when that is given (see
+        compose()'s output_size). May return *image* itself when nothing is
+        drawn over it, so a caller that draws further must not do so in
+        place."""
         if overlay is None or not overlay.visible:
             return image
 
@@ -875,8 +892,10 @@ class DialDisplayCompositor:
         layout = layout_for(image.width, image.height, metrics=metrics)
         layers = _reveal_layers(
             frame, image.width, image.height, metrics,
-            layout.top_band, layout.bottom_band, layout.artwork,
+            layout.top_band, layout.bottom_band, layout.artwork, reveal_size,
         )
+        if reveal_size is not None:
+            image = _shrunk_base(image, reveal_size)
         return _reveal_frame(image, layers, reveal_progress)
 
     def compose_list(
@@ -921,6 +940,7 @@ class DialDisplayCompositor:
     def compose_repeat(
         self, width: int, height: int, state: RepeatViewState, *, rotate: bool, bgr: bool, base=None,
         metrics: LayoutMetrics | None = None, controls: bool = True, reveal_progress: float = 0.0,
+        output_size: "tuple[int, int] | None" = None,
     ):
         """Build one display-ready frame for the repeat screen.
 
@@ -952,6 +972,8 @@ class DialDisplayCompositor:
         line fades, exactly as compose() does for the now-playing overlay;
         0 (the default) is the ordinary frame and 1 the same bare frame
         controls=False gives. Ignored elsewhere.
+
+        output_size: as compose()'s, for this screen's own reveal slide.
         """
         if metrics is None:
             metrics = metrics_for(width, height)
@@ -969,9 +991,12 @@ class DialDisplayCompositor:
                 return _finish(_new_frame(base, width, height, BG_BASE), rotate, bgr)
             layout = repeat_layout_for(width, height, metrics=metrics)
             strip = (0, layout.top_band[3], width, layout.bottom_band[1])
+            reveal_size = _reveal_output_size(width, height, output_size)
             layers = _reveal_layers(
-                frame, width, height, metrics, layout.top_band, layout.bottom_band, strip,
+                frame, width, height, metrics, layout.top_band, layout.bottom_band, strip, reveal_size,
             )
+            if reveal_size is not None:
+                base = _shrunk_base(base, reveal_size)
             return _finish(_reveal_frame(base, layers, reveal_progress), rotate, bgr)
         return _compose_frame(
             base, width, height, frame, rotate=rotate, bgr=bgr, metrics=metrics,
@@ -1285,7 +1310,7 @@ def _draw_top_band_content(
     volume_font = _load_font(metrics.font_readout)
 
     draw = ImageDraw.Draw(frame)
-    _draw_volume_cluster(draw, volume_cluster_rect, volume, None, volume_font, metrics)
+    _draw_volume_cluster(frame, volume_cluster_rect, volume, None, volume_font, metrics)
     pad = metrics.pad
     _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
@@ -1598,7 +1623,7 @@ def _fit_value_lines(
 
 
 def _draw_volume_cluster(
-    draw: ImageDraw.ImageDraw,
+    frame: Image.Image,
     rect: tuple[int, int, int, int],
     volume: int | None,
     muted: bool | None,
@@ -1614,8 +1639,11 @@ def _draw_volume_cluster(
 
     volume=None or font=None draws the glyph alone, right aligned — always
     safe, since _load_font() never raises and this function never assumes a
-    font is present.
+    font is present. The glyph goes through _draw_glyph() at the tier's
+    supersample factor, so its cone and arcs are antialiased like every
+    other small glyph rather than drawn straight onto the frame.
     """
+    draw = ImageDraw.Draw(frame)
     pad = metrics.pad
     gap = metrics.icon_gap
     icon = metrics.icon
@@ -1633,7 +1661,7 @@ def _draw_volume_cluster(
                 x_icon = x_text - gap - icon
 
     icon_box = (x_icon, cy - icon // 2, x_icon + icon, cy - icon // 2 + icon)
-    _draw_speaker_glyph(draw, icon_box, muted)
+    _draw_glyph(frame, icon_box, GLYPH_SPEAKER, bool(muted), supersample=metrics.supersample)
 
 
 def _draw_text_with_halo(
@@ -1730,6 +1758,7 @@ GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
 GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
 GLYPH_MUTE = "mute"                    # params: () or (color,) — the main screen's footer mute cell
+GLYPH_SPEAKER = "speaker"              # params: (muted,) — the top band's volume readout icon
 GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
 GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
 GLYPH_INFO = "info"                    # params: () — the idle screen's information badge
@@ -1805,13 +1834,15 @@ def _centred_box(rect: tuple[int, int, int, int], side: int) -> tuple[int, int, 
 
 
 def _reset_render_caches() -> None:
-    """Clear the memoised glyph-tile, halo-layer and reveal-layer caches.
-    Test-only hook, the same purpose _reset_font_cache() serves for the
-    font cache — lets a test exercise any of them from a clean slate
-    without restarting the process."""
+    """Clear the memoised glyph-tile, halo-layer, reveal-layer and shrunk
+    reveal-base caches. Test-only hook, the same purpose _reset_font_cache()
+    serves for the font cache — lets a test exercise any of them from a
+    clean slate without restarting the process."""
+    global _shrunk_base_memo
     _glyph_tile.cache_clear()
     _halo_layer.cache_clear()
     _reveal_layers.cache_clear()
+    _shrunk_base_memo = None
 
 
 def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit: bool) -> None:
@@ -1936,6 +1967,12 @@ def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB
     _draw_speaker_glyph(draw, box, muted=True, color=color)
 
 
+def _draw_speaker_tile(draw: ImageDraw.ImageDraw, w: int, h: int, muted: bool) -> None:
+    """The top band's volume readout icon: _draw_speaker_glyph() filling a
+    (w, h) canvas — see _draw_glyph."""
+    _draw_speaker_glyph(draw, (0, 0, w, h), muted)
+
+
 def _draw_restart_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
     """The compact tier's Restart control: the conventional media-player
     "seek to start" icon ("|<<") — a vertical bar near the left edge of the
@@ -2047,6 +2084,7 @@ _GLYPH_PAINTERS = {
     GLYPH_PLAY: _draw_play_glyph,
     GLYPH_CROSS: _draw_cross_glyph,
     GLYPH_MUTE: _draw_mute_glyph,
+    GLYPH_SPEAKER: _draw_speaker_tile,
     GLYPH_RESTART: _draw_restart_glyph,
     GLYPH_STOP: _draw_stop_glyph,
     GLYPH_INFO: _draw_info_glyph,
@@ -2200,10 +2238,50 @@ def _build_reveal_arrays(layers: RevealLayers) -> "_RevealArrays | None":
         return None
 
 
+def _reveal_output_size(width: int, height: int, output_size) -> "tuple[int, int] | None":
+    """The size a reveal slide's frames are built at when it is not the
+    compose size: *output_size* when it is strictly smaller on at least one
+    axis and no larger on either (a layout size composed bigger than the
+    panel), else None. Only a reduction qualifies: the shrink is a box
+    average, which is right for that and wrong for growing."""
+    if output_size is None:
+        return None
+    ow, oh = output_size
+    if (ow, oh) == (width, height) or ow > width or oh > height or ow < 1 or oh < 1:
+        return None
+    return ow, oh
+
+
+def _scale_rect(rect: Rect, sx: float, sy: float) -> Rect:
+    return (round(rect[0] * sx), round(rect[1] * sy), round(rect[2] * sx), round(rect[3] * sy))
+
+
+# The base a resampled reveal slide is drawn over, shrunk once per base
+# rather than once per frame: (source image, size, shrunk image). Holding
+# the source keeps its identity from being reused while the entry lives.
+_shrunk_base_memo: "tuple | None" = None
+
+
+def _shrunk_base(base, size: tuple[int, int]):
+    """*base* box-averaged to *size*, memoised on the base object itself
+    for as long as the same base keeps being passed (one slide's frames).
+    None stays None, and a base already at *size* is returned as it is."""
+    global _shrunk_base_memo
+    if base is None or getattr(base, "size", None) == size:
+        return base
+    memo = _shrunk_base_memo
+    if memo is not None and memo[0] is base and memo[1] == size:
+        return memo[2]
+    shrunk = base.convert("RGB").resize(size, _BOX)
+    _shrunk_base_memo = (base, size, shrunk)
+    return shrunk
+
+
 @functools.lru_cache(maxsize=2)
 def _reveal_layers(
     frame: Frame, width: int, height: int, metrics: LayoutMetrics,
     top_band: Rect, bottom_band: Rect, strip: Rect,
+    output_size: "tuple[int, int] | None" = None,
 ) -> RevealLayers:
     """Separate *frame*'s chrome from whatever base it will be drawn over,
     for the three regions the artwork-tap reveal moves or fades. Every
@@ -2215,12 +2293,27 @@ def _reveal_layers(
     pure function of its arguments, memoised the same way _glyph_tile()
     is (see _load_font()'s statelessness note): two entries, so the
     now-playing and the repeat screen's layers can both stay warm. The
-    numpy forms of the layers are built here too, once per slide."""
+    numpy forms of the layers are built here too, once per slide.
+
+    *output_size*, from _reveal_output_size(), is the panel size when the
+    frame is composed at a larger layout size: the layers are rendered at
+    the compose size, so the chrome keeps that size's sharpness, then
+    box-averaged to the panel along with their rects, so every frame of
+    the slide is built at the panel's own size instead of being built
+    large and shrunk each time. The box average is linear, so the shrunk
+    layers still separate chrome from base."""
     black = Image.new("RGB", (width, height), (0, 0, 0))
     white = Image.new("RGB", (width, height), (255, 255, 255))
     add = _compose_frame(black, width, height, frame, rotate=False, bgr=False, metrics=metrics)
     lit = _compose_frame(white, width, height, frame, rotate=False, bgr=False, metrics=metrics)
     keep = ImageChops.subtract(lit, add)
+    if output_size is not None:
+        sx, sy = output_size[0] / width, output_size[1] / height
+        add = add.resize(output_size, _BOX)
+        keep = keep.resize(output_size, _BOX)
+        top_band = _scale_rect(top_band, sx, sy)
+        bottom_band = _scale_rect(bottom_band, sx, sy)
+        strip = _scale_rect(strip, sx, sy)
     layers = RevealLayers(
         top_band=top_band, bottom_band=bottom_band, strip=strip,
         top_add=add.crop(top_band), top_keep=keep.crop(top_band),

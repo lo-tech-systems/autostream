@@ -114,7 +114,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from math import ceil
+from math import ceil, floor
 
 # Top and bottom bands each take this fraction of the panel height.
 BAND_DIVISOR = 4
@@ -345,16 +345,21 @@ def metrics_for(
     pad = scale_px(PAD_PX_AT_REFERENCE[0], width, height, PAD_PX_AT_REFERENCE[1])
     halo_stroke = scale_px(HALO_STROKE_PX_AT_REFERENCE[0], width, height, HALO_STROKE_PX_AT_REFERENCE[1])
     halo_blur = scale_px(HALO_BLUR_PX_AT_REFERENCE[0], width, height, HALO_BLUR_PX_AT_REFERENCE[1])
-    if content_tier not in (CONTENT_BASE, CONTENT_COMPACT):
-        # The halo is a fine screen-space stroke — physical scale keeps it
-        # from ballooning into a blur on a bigger panel.
-        halo_stroke = min(halo_stroke, HALO_MAX_PX)
-        halo_blur = min(halo_blur, HALO_MAX_PX)
     if content_tier == CONTENT_LARGE:
         # More room buys more content, not bigger glyphs past a legible size.
         font_body = min(font_body, FONT_BODY_MAX_PX)
         font_readout = min(font_readout, FONT_READOUT_MAX_PX)
         icon = min(icon, FONT_READOUT_MAX_PX)
+    if content_tier not in (CONTENT_BASE, CONTENT_COMPACT):
+        # The halo is a fine stroke around the text, so it follows the
+        # body font rather than the panel: HALO_MAX_PX at the large tier's
+        # FONT_BODY_MAX_PX, proportionally less below it. The stroke rounds
+        # down and the blur to nearest, which on a 320x240 panel (18 px
+        # text, stroke 1, blur 2) matches the same frame composed at
+        # 640x480 and box-averaged down to the panel.
+        halo_ratio = font_body / FONT_BODY_MAX_PX
+        halo_stroke = max(1, floor(HALO_MAX_PX * halo_ratio))
+        halo_blur = max(1, round(HALO_MAX_PX * halo_ratio))
 
     if content_tier in (CONTENT_BASE, CONTENT_COMPACT):
         rail_w = 0

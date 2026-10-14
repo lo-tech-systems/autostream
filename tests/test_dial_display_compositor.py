@@ -65,6 +65,7 @@ from dial_display_compositor import (  # noqa: E402
     GLYPH_CROSS,
     GLYPH_INFO,
     GLYPH_MUTE,
+    GLYPH_SPEAKER,
     GLYPH_PAGE_DOTS,
     GLYPH_PLAY,
     GLYPH_RESTART,
@@ -111,7 +112,6 @@ from dial_display_compositor import (  # noqa: E402
     _apply_layer,
     _compose_frame,
     _draw_compact_list_row,
-    _draw_speaker_glyph,
     _eq_frame,
     _eq_pressed_rects,
     _fit_value_lines,
@@ -3085,7 +3085,7 @@ class TestPlayGlyphTile:
 
         assert set(_GLYPH_PAINTERS) == {
             GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_PAGE_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
-            GLYPH_RESTART, GLYPH_STOP, GLYPH_INFO, GLYPH_WIFI,
+            GLYPH_SPEAKER, GLYPH_RESTART, GLYPH_STOP, GLYPH_INFO, GLYPH_WIFI,
         }
 
     def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):
@@ -3340,40 +3340,41 @@ class TestGlyphTileCacheAccounting:
         _reset_render_caches()
 
     def test_main_compose_with_dots_one_miss_then_one_hit(self):
-        """Two glyph-tile kinds are drawn on every main compose now: the
-        dots (when overlay.dots is True) and the footer's own mute cell
-        (drawn unconditionally by FOOTER_VOLUME_MUTE) -- one miss each on a
-        cold cache, one hit each once both tiles are memoised."""
+        """Three glyph-tile kinds are drawn on every main compose now: the
+        dots (when overlay.dots is True), the header's speaker icon and the
+        footer's own mute cell (drawn unconditionally by FOOTER_VOLUME_MUTE)
+        -- one miss each on a cold cache, one hit each once all three tiles
+        are memoised."""
         compositor = DialDisplayCompositor()
         img = Image.new("RGB", (160, 128), (200, 150, 100))
         overlay = OverlayState(visible=True, dots=True)
         compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
         info = _glyph_tile.cache_info()
-        assert info.misses == 2
+        assert info.misses == 3
         assert info.hits == 0
 
         compositor.compose(img, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
         info = _glyph_tile.cache_info()
-        assert info.misses == 2
-        assert info.hits == 2
+        assert info.misses == 3
+        assert info.hits == 3
 
     def test_a_second_profile_size_adds_a_miss(self):
         # 160x128 and 320x240 round to different dots/mute-glyph pixel
         # sizes, so the second compose's tile keys are genuinely new — a
         # same-tier size that happens to round to the identical glyph box
         # would (correctly) hit instead, which is why this picks two sizes
-        # confirmed to differ. Two glyph kinds (dots, mute) means two new
-        # misses per distinct size — see test_main_compose_with_dots_one_
-        # miss_then_one_hit above.
+        # confirmed to differ. Three glyph kinds (dots, speaker, mute) means
+        # three new misses per distinct size — see test_main_compose_with_
+        # dots_one_miss_then_one_hit above.
         compositor = DialDisplayCompositor()
         overlay = OverlayState(visible=True, dots=True)
         img_a = Image.new("RGB", (160, 128), (200, 150, 100))
         img_b = Image.new("RGB", (320, 240), (200, 150, 100))
         compositor.compose(img_a, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
-        assert _glyph_tile.cache_info().misses == 2
+        assert _glyph_tile.cache_info().misses == 3
 
         compositor.compose(img_b, 320, 240, rotate=False, bgr=False, is_artwork=False, overlay=overlay)
-        assert _glyph_tile.cache_info().misses == 4
+        assert _glyph_tile.cache_info().misses == 6
 
     def test_list_compose_chevrons_plus_one_per_distinct_marker(self):
         compositor = DialDisplayCompositor()
@@ -3683,20 +3684,35 @@ class TestLargeFontCaps:
         assert glyph_width(metrics) < glyph_width(uncapped_metrics)
 
     def test_speaker_icon_box_is_capped(self, compositor):
-        """The header's own readout glyph, drawn directly (not through the
-        glyph-tile cache) as the FIRST _draw_speaker_glyph call every main
-        compose makes -- the second call is the footer's own mute cell,
-        drawn through _glyph_tile() at that cell's (supersampled) size,
-        which has nothing to do with this cap."""
+        """The header's own readout glyph: the GLYPH_SPEAKER tile's box. The
+        footer's mute cell is a separate GLYPH_MUTE tile at that cell's own
+        size, which has nothing to do with this cap."""
         metrics = _LARGE_METRICS
         img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
-        with patch("dial_display_compositor._draw_speaker_glyph", wraps=_draw_speaker_glyph) as spy:
+        with patch("dial_display_compositor._draw_glyph", wraps=_dc._draw_glyph) as spy:
             compositor.compose(
                 img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, volume=42), metrics=metrics,
             )
-        box = spy.call_args_list[0].args[1]
+        speaker = [c for c in spy.call_args_list if c.args[2] == GLYPH_SPEAKER]
+        assert len(speaker) == 1
+        box = speaker[0].args[1]
         assert box[2] - box[0] == metrics.icon == FONT_READOUT_MAX_PX
+        assert speaker[0].kwargs["supersample"] == metrics.supersample
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_speaker_icon_is_antialiased(self, compositor, metrics):
+        """Drawn through the supersampled tile, the icon has intermediate
+        levels between the background and the glyph colour, not just the
+        two."""
+        img = Image.new("RGB", (metrics.width, metrics.height), (0, 0, 0))
+        out = compositor.compose(
+            img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True), metrics=metrics,
+        )
+        rect = layout_for(metrics.width, metrics.height, metrics=metrics).volume_cluster
+        levels = {px[0] for px in out.crop(rect).getdata()}
+        assert len(levels) > 4
 
 
 class TestLargeHaloCacheAccounting:
@@ -5962,6 +5978,89 @@ class TestRepeatRevealProgress:
         full = compositor.compose_repeat(w, h, state, reveal_progress=1.0, **kw)
         bare = compositor.compose_repeat(w, h, state, controls=False, **kw)
         assert list(full.getdata()) == list(bare.getdata())
+
+
+def _mean_abs_diff(a, b) -> float:
+    pairs = [(x, y) for pa, pb in zip(a.getdata(), b.getdata()) for x, y in zip(pa, pb)]
+    return sum(abs(x - y) for x, y in pairs) / len(pairs)
+
+
+class TestRevealAtPanelSize:
+    """A layout size composed larger than the panel builds its reveal slide
+    frames at the panel's own size (compose()'s output_size)."""
+
+    PANEL = (320, 240)
+
+    def _main(self, compositor, p, *, output_size=PANEL, **extra):
+        metrics = _LARGE_METRICS
+        base = _reveal_base_image(metrics)
+        return compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=_reveal_overlay(), metrics=metrics, reveal_progress=p,
+            output_size=output_size, **extra,
+        )
+
+    @pytest.mark.parametrize("p", [0.25, 0.5, 0.8])
+    def test_slide_frame_is_panel_sized_and_matches_the_shrunk_frame(self, compositor, p):
+        out = self._main(compositor, p)
+        assert out.size == self.PANEL
+        large = self._main(compositor, p, output_size=None)
+        assert large.size == (640, 480)
+        # Not bit-identical: the bands move in whole panel pixels and the
+        # chrome is averaged before it meets the base rather than after.
+        assert _mean_abs_diff(out, large.resize(self.PANEL, Image.Resampling.BOX)) < 3.0
+
+    @pytest.mark.parametrize("p", [0.0, 1.0])
+    def test_endpoints_stay_at_the_compose_size(self, compositor, p):
+        assert self._main(compositor, p).size == (640, 480)
+
+    def test_a_frame_carrying_the_timer_line_stays_at_the_compose_size(self, compositor):
+        out = self._main(compositor, 0.5, timer_text="0:07 / 3:12")
+        assert out.size == (640, 480)
+
+    @pytest.mark.parametrize("output_size", [(640, 480), (1280, 960), (800, 240)])
+    def test_no_reduction_means_no_change_of_size(self, compositor, output_size):
+        out = self._main(compositor, 0.5, output_size=output_size)
+        assert out.tobytes() == self._main(compositor, 0.5, output_size=None).tobytes()
+
+    def test_rotate_and_bgr_apply_after_the_shrink(self, compositor):
+        plain = self._main(compositor, 0.5)
+        metrics = _LARGE_METRICS
+        transformed = compositor.compose(
+            _reveal_base_image(metrics), metrics.width, metrics.height, rotate=True, bgr=True,
+            is_artwork=False, overlay=_reveal_overlay(), metrics=metrics, reveal_progress=0.5,
+            output_size=self.PANEL,
+        )
+        expected = Image.merge("RGB", plain.transpose(Image.ROTATE_180).split()[::-1])
+        assert transformed.tobytes() == expected.tobytes()
+
+    def test_the_base_is_shrunk_once_per_base(self, compositor):
+        metrics = _LARGE_METRICS
+        base = _reveal_base_image(metrics)
+        before = base.tobytes()
+        kw = dict(rotate=False, bgr=False, is_artwork=False, overlay=_reveal_overlay(),
+                  metrics=metrics, output_size=self.PANEL)
+        import dial_display_compositor as ddc
+
+        compositor.compose(base, 640, 480, reveal_progress=0.3, **kw)
+        memo = ddc._shrunk_base_memo
+        assert memo[0] is base and memo[2].size == self.PANEL
+        compositor.compose(base, 640, 480, reveal_progress=0.6, **kw)
+        assert ddc._shrunk_base_memo is memo
+        assert base.tobytes() == before
+        _reset_render_caches()
+        assert ddc._shrunk_base_memo is None
+
+    def test_repeat_slide_frame_is_panel_sized(self, compositor):
+        metrics = _LARGE_METRICS
+        kw = dict(rotate=False, bgr=False, base=_reveal_base_image(metrics), metrics=metrics)
+        state = _replaying_state()
+        out = compositor.compose_repeat(640, 480, state, reveal_progress=0.5, output_size=self.PANEL, **kw)
+        assert out.size == self.PANEL
+        large = compositor.compose_repeat(640, 480, state, reveal_progress=0.5, **kw)
+        assert _mean_abs_diff(out, large.resize(self.PANEL, Image.Resampling.BOX)) < 3.0
+        shown = compositor.compose_repeat(640, 480, state, output_size=self.PANEL, **kw)
+        assert shown.size == (640, 480)
 
 
 # ---------------------------------------------------------------------------

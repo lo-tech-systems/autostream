@@ -2058,7 +2058,9 @@ class DialDisplay:
     def _push_frame_locked(self, compose) -> None:
         """Compose one frame at the logical size and push it to the
         backend, resampling to the panel's physical size first if the two
-        differ — recording a write failure the same way for every screen.
+        differ (a reveal slide frame already arrives at the panel's size;
+        see the compositor's output_size) — recording a write failure the
+        same way for every screen.
         *compose* is a zero-argument callable returning the finished frame;
         it runs inside the guard so a compositor failure is handled
         identically to a backend/resample failure. Caller holds self._lock
@@ -2255,6 +2257,7 @@ class DialDisplay:
             reveal_progress=progress,
             timer_text=timer[0] if timer else None,
             timer_alpha=timer[1] if timer else 1.0,
+            output_size=(self._backend.width, self._backend.height),
         ))
         if timer:
             # The same reference the repeat screen's own counter advances
@@ -4123,6 +4126,7 @@ class DialDisplay:
             metrics.width, metrics.height, view, base=self._current_base_image,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
             controls=controls, reveal_progress=progress,
+            output_size=(self._backend.width, self._backend.height),
         ))
         if animating:
             self._reveal_frame_at = time.monotonic()
