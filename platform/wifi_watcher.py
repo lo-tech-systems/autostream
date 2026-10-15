@@ -130,7 +130,7 @@ import wifi_loop
 
 
 _DIAL_MODE = os.environ.get('APP_DIAL_MODE', '') == '1'
-WIFI_WATCHER_VERSION = "1.0.0"
+WIFI_WATCHER_VERSION = "1.1.0"
 
 # Presentation (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS,
 # render_setup_page, render_wait_page) lives in wifi_web.py.
