@@ -45,12 +45,15 @@ def _core(*entries, clock=None):
     return core
 
 
-def _record(state, appliance_id=AID, armed=False, available=True):
+def _record(state, appliance_id=AID, armed=False, available=True, now=None):
+    # Stamp the record on the core's clock: a test whose core runs on a
+    # _Clock must pass that clock's time, or the record's age depends on
+    # how long the machine has been up.
     drs.repeat_store.update(appliance_id, drs.parse_repeat_object({
         "available": available, "state": state, "armed": armed, "held": state == "hold",
         "recording_seconds": 30.0,
         "replay": {"active": state == "replaying", "position_seconds": 1.0, "duration_seconds": 30.0},
-    }, time.monotonic()))
+    }, time.monotonic() if now is None else now))
 
 
 @pytest.fixture(autouse=True)
@@ -98,7 +101,7 @@ class TestStartReplay:
     def test_pins_a_pending_focus_records_and_sends_a_seek_to_zero(self):
         clock = _Clock(1000.0)
         core = _core(clock=clock)
-        _record("hold")
+        _record("hold", now=clock())
         with patch("dial_core.enqueue_transport") as send:
             assert core.start_replay(AID) == ActionResult(True, token=1000.0)
         snap = core.snapshot()
