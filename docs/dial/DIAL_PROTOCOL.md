@@ -4,6 +4,9 @@ This document is the authoritative spec for the wire protocol between autostream
 and autostream appliances. Breaking changes require a version bump and a new capability indicator
 in the mDNS TXT record.
 
+This document describes the protocol between 0.7 appliances and 0.7 dials. Earlier
+appliances and dials are not supported.
+
 Out of scope: the dial's own loopback poll of its local Wi-Fi watcher (`GET
 127.0.0.1:9080/network_status`, every 15 s) and its use of the local nginx offline-recovery
 CGI (`POST 127.0.0.1/offline/reboot`) for the Restart action are dial-local, not part of the
@@ -25,28 +28,20 @@ Deleted when the last capture stops.
 |---|---|---|
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
-| `dial_proto` | `v3` | The appliance speaks the third dialect (see below). Absent on older appliances |
+| `dial_proto` | `v3` | The appliance speaks the third dialect (see below) |
 | `audio_status` | `v1` | `GET /api/audio/status` is available |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
 | `dial_eq` | `v1` | `POST /api/dial/eq` and `POST /api/dial/eq/set` are available |
 | `id` | 20 lowercase hex characters | This appliance's stable identity, matching the `appliance_id` returned by `POST /api/dial/status` (see below). Omitted entirely for an identity-less appliance. |
 
-A consumer that sees neither `dial_api` nor `audio_status` treats the appliance as a legacy
-instance (pre-dial support) and skips it.
-
-`dial_status=v1` is independent of `dial_api=v1`. An older appliance may support
-`dial_api=v1` without supporting `dial_status=v1`.
-
-`dial_proto` names the protocol dialect and is separate from `dial_api`, which stays `v1` so
-that older dials keep tracking and controlling the appliance. `dial_proto=v2` or later means
-the appliance sends typed refusals (`412` with `dial_not_authorized` and `appliance_id`) to a
-dial that itself advertises `dial_proto=v2` or later, reports `muted` in its status and volume
-replies, and carries `id` on the playing record. A dial that does not advertise at least
-`dial_proto=v2`, and a dial the appliance has not seen, gets the older bare `403 {}`. A
-consumer that sees no `dial_proto` treats the appliance as speaking the older dialect; an old
-dial ignores the key. `dial_proto=v3` adds `GET /api/dial/capabilities` (section 2), which is
-the authoritative list of what the appliance supports.
+`dial_proto` names the protocol dialect and is separate from `dial_api`, which stays `v1`.
+`dial_proto=v2` or later means the appliance sends typed refusals (`412` with
+`dial_not_authorized` and `appliance_id`) to a dial that itself advertises `dial_proto=v2` or
+later, reports `muted` in its status and volume replies, and carries `id` on the playing
+record. A dial that does not advertise at least `dial_proto=v2`, and a dial the appliance has
+not seen, gets a bare `403 {}`. `dial_proto=v3` adds `GET /api/dial/capabilities` (section 2),
+which is the authoritative list of what the appliance supports.
 
 The capability keys in the TXT records are frozen at the values listed above. A later version
 of a capability, such as the six-band EQ (`dial_eq` version 2), is announced only by
@@ -70,7 +65,7 @@ Announced continuously by a dial device.
 | `version` | e.g. `1.0.0` | Installed dial firmware version |
 | `pin_recovery` | `1` | PIN recovery window active (10-minute window only) |
 | `dial_sdmon` | `v1` | The dial exposes `GET`/`POST /sdcard-health` (section 4) and can run the guarded SD card health probe |
-| `dial_proto` | `v3` | The dial speaks the third dialect (see below). It includes everything `v2` means: typed refusals on every route matched to an appliance by `appliance_id`, and `muted` treated as authoritative. Absent on older dials |
+| `dial_proto` | `v3` | The dial speaks the third dialect (see below). It includes everything `v2` means: typed refusals on every route matched to an appliance by `appliance_id`, and `muted` treated as authoritative |
 
 Port: **7842** (dial HTTP server).
 
@@ -78,11 +73,9 @@ Port: **7842** (dial HTTP server).
 
 `dial_proto` is how each side tells the other which dialect it speaks. It is advertised by
 appliances (on both appliance records) and by dials (on `_autostream-dial._tcp`).
-`dial_api=v1` and `dial_status=v1` stay on the wire unchanged, so nothing that worked before
-stops working. The value is `v` followed by a generation number, and each generation includes
-everything the earlier ones mean, so a check is always "at least this generation". `v2` and
-`v3` are defined. Anything that is not `v` and digits, or no key at all, means the older
-dialect.
+The value is `v` followed by a generation number, and each generation includes everything
+the earlier ones mean, so a check is always "at least this generation". `v2` and `v3` are
+defined. Anything that is not `v` and digits, or no key at all, counts as generation 0.
 
 What `v3` adds to `v2`, on an appliance:
 
@@ -103,10 +96,8 @@ What `v3` means, on a dial: it reads `GET /api/dial/capabilities` from an applia
 advertises `v3` and uses the reply in place of the TXT capability keys, shows the six-band EQ,
 fetches `POST /api/dial/warnings` from an appliance that reports `dial_warnings`, and accepts
 `POST /warnings-changed` (section 4). An appliance sends the warnings push only to a dial that
-advertises `v3`. From 0.7.0 a `v3` dial also accepts `POST /state-changed` (section 4), and a
-0.7.0 appliance sends it to every sighted, authorised `v3` dial. A dial built before 0.7.0
-answers 404, which the appliance treats as a failed send and backs off from; nothing else
-happens.
+advertises `v3`. A `v3` dial also accepts `POST /state-changed` (section 4), and the
+appliance sends it to every sighted, authorised `v3` dial.
 
 What `v2` means:
 
@@ -120,39 +111,15 @@ What `v2` means:
   appliance is muted its reported volume is the pre-mute level, never 0. A v2 dial trusts the
   field and does not infer mute from the volume.
 
-Legacy behaviour, when one side does not advertise `dial_proto=v2`:
-
-- **Refusal style follows the requesting dial.** The appliance chooses between `412` and the
-  older answer from the *dial's* advertised `dial_proto`, read from the dial's own mDNS
-  record. A dial that advertises `dial_proto=v2` gets the typed `412`. Any other dial, and a
-  dial the appliance has not currently seen on the network (so cannot tell which dialect it
-  speaks), gets `403` with an empty JSON body, `{}`. The `400 missing_dial_id` and
-  `200 auth_unavailable` answers are the same for both styles. Volume and mute use the same
-  check as the other routes.
-- **How a v2 dial reads a refusal.** A `403` whose body is exactly `{}` with a JSON content
-  type, from an appliance that does not advertise `dial_proto=v2`, is read as a refusal. A
-  `403` with any other body (a proxy or CSRF rejection, for example) is not. A `403` from an
-  appliance that does advertise `dial_proto=v2` is treated as transient, because that
-  appliance would have sent a `412`.
-- **Status without `muted`.** An older appliance's status reply has no `muted` field. A v2
-  dial then goes by the mute it last sent: a later status poll that says nothing about mute
-  clears that belief instead of keeping it, so the dial follows a mute made elsewhere within
-  a poll. The press itself stays protected while a mute request is in flight.
-- **No `id` on the playing record.** An older appliance announces its `id` only on
-  `_autostream._tcp`. A v2 dial looks for an `_autostream._tcp` record at the same IP address
-  and port as the playing record and uses that record's `id`. The match is weaker than an `id`
-  on the playing record itself: if an address changes hands between the two lookups, a refusal
-  can be attributed to the wrong appliance until the next poll corrects it. An appliance whose
-  `id` cannot be found this way is not controlled by the dial and does not wake the screen.
-- **Older dials with a v2 appliance.** They keep tracking and controlling the appliance, since
-  it still advertises `dial_api=v1`, and they ignore the extra fields in its replies. An
-  unauthorized older dial is refused with the bare `403 {}`. The appliance's web UI shows
-  "Dial updates required" on the Home page and flags the dial's card on the Setup page with
-  "Needs update" while the dial advertises an older `dial_proto` generation than the
-  appliance does. A dial at `v2` against a `v3` appliance keeps working through the TXT
-  records and is flagged the same way.
-- **Capabilities with their own keys** (`dial_outputs`, `dial_eq`, `repeat`) are unaffected.
-  An older appliance does not advertise them, so a dial does not offer the features.
+**Refusal style follows the requesting dial.** The appliance chooses between `412` and a bare
+`403` from the *dial's* advertised `dial_proto`, read from the dial's own mDNS record. A dial
+that advertises `dial_proto=v2` or later gets the typed `412`. Any other dial, and a dial the
+appliance has not currently seen on the network (so cannot tell which dialect it speaks),
+gets `403` with an empty JSON body, `{}`. The `400 missing_dial_id` and `200 auth_unavailable`
+answers are the same for both styles. Volume and mute use the same check as the other routes.
+A dial reads a `412` carrying `dial_not_authorized` as a refusal; a `403` from an appliance
+that advertises `dial_proto=v2` or later is treated as transient, because that appliance
+would have sent a `412`.
 
 **Name constraints:** dial names are restricted to printable ASCII (0x20-0x7e) excluding `;`
 (avahi field separator) and `|` (config delimiter). Names containing these characters are
@@ -471,9 +438,9 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 | `selected_output_count` | int | Number of currently selected outputs |
 | `muted` | bool | `true` while the appliance holds a mute. While `true`, `master_volume` reports the level the outputs will return to on restore, never 0 - see `POST /api/dial/mute` |
 | `track_id` | object | Grouped now-playing/track-identification state for authorized dials (see below) |
-| `repeat` | object | Repeat-recording/replay state (see below). Omitted entirely when the daemon has never reported it (older monitor binary, or no poll yet) |
+| `repeat` | object | Repeat-recording/replay state (see below). Omitted entirely when the daemon has never reported it (no poll yet) |
 | `appliance_id` | string\|null | This appliance's stable identity (20 lowercase hex characters), or `null` for an identity-less appliance |
-| `input` | object\|null | The input behind the current session (see below); `null` when nothing is playing. Absent from a 0.6.x appliance |
+| `input` | object\|null | The input behind the current session (see below); `null` when nothing is playing |
 
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
 and `POST /api/dial/volume`; `muted` is an explicit flag the appliance sets and clears from
@@ -535,7 +502,7 @@ track from before the seek.
 
 | Field | Type | Rule |
 |---|---|---|
-| `input` | object or null | Present on every `ok: true` response from 0.7.0 on; absent on `ok: false` responses and from 0.6.x appliances. `null` when no session is active. Non-null whenever `playing` is true, except within one coordinator poll (0.5 s) of a session edge, when the two may briefly disagree |
+| `input` | object or null | Present on every `ok: true` response; absent on `ok: false` responses. `null` when no session is active. Non-null whenever `playing` is true, except within one coordinator poll (0.5 s) of a session edge, when the two may briefly disagree |
 | `input.index` | int | 1 or 2. During a replay, the input the recording came from |
 | `input.type` | string | One of `turntable`, `cd`, `line`, lowercase. A later release may add tokens; a dial treats an unknown token as "some input" and still uses `label` |
 | `input.label` | string | Display text, used verbatim: `Turntable`, `CD`, `Line`. Never empty when the object is present |
@@ -559,7 +526,6 @@ indicator, like `track_id`.
 `latency_ms` is read from a cached copy of the appliance's start buffer setting, so a status
 request never waits on the audio backend. A change made in the web interface shows on the
 next status poll; a change made any other way can take up to about a minute to appear.
-Appliances that predate the field simply omit it.
 
 `state == "hold"` is the "not currently playing" signal for the replay picker - not the
 top-level `playing` flag above, which reflects the unified session tracker and is `true`
@@ -636,7 +602,7 @@ ignores it) and, when present, must be a finite, non-negative number; it default
 | `source_active` | A live capture (or the daemon's admission window) is in progress |
 | `fading_out` | A stop is already fading out; a seek is refused until playback lands in `hold` |
 | `rate_limited` | A seek arrived less than one second after the previous one - `stop` is never rate-limited and is idempotent (the daemon acks `ok:true` in every state) |
-| `backend_unavailable` | The daemon is unreachable, or returned an error this appliance version does not recognise (for example an older daemon rejecting the command outright) |
+| `backend_unavailable` | The daemon is unreachable, or returned an error this appliance version does not recognise |
 
 This route never reads the cached repeat status from `POST /api/dial/status` - the response
 is built entirely from the daemon's own transport acknowledgement, so it can never be stale
@@ -1118,8 +1084,7 @@ poll can react without waiting for its next scheduled tick.
 this endpoint grants nothing by itself: it only causes the dial to enqueue a probe, and
 only when the source IP matches a sighting the dial currently has of that `appliance_id`,
 whether the appliance is playing or idle (see `_autostream-playing._tcp`/`_autostream._tcp`
-above). An earlier dial matched only playing appliances, so a push from an idle appliance was
-dropped and left to the dial's next scheduled check. Authorization
+above). Authorization
 truth for the dial protocol routes still comes entirely from the dial's own status poll.
 
 **Request body:**
@@ -1159,8 +1124,8 @@ appliance's warnings when it refuses the dial or leaves the network.
 
 The appliance pushes to a dial only when all of these hold: the dial is in the appliance's
 authorized list, the appliance currently sees it on the network, and the dial advertises
-`dial_proto=v3` or later. An older dial is never contacted, and nothing is sent to an address
-the appliance has not seen advertise a dial.
+`dial_proto=v3` or later. Nothing is sent to an address the appliance has not seen
+advertise a dial.
 
 **When it is sent.** The appliance checks its warning set every 30 seconds, and straight away
 after a maintenance counter is reset or a maintenance setting is saved in its Service page.
@@ -1283,7 +1248,7 @@ and come from the dial's update result record:
 | `last_run_at` | string | When the most recent update run started or last changed state, as an ISO 8601 UTC timestamp; empty when no update has run |
 
 Fields a record does not hold take neutral values (empty string, `0`, `false`), so an
-update run by older software, or no update at all, still gives a well-formed reply.
+update that has never run still gives a well-formed reply.
 
 Phase names, in the order a normal update passes through them:
 
@@ -1487,20 +1452,16 @@ names the driver currently active for `runtime.screen_type` (e.g. `adafruit_st77
 `noop` if no panel is open).
 
 **Capability gate.** `screen_type` and `bgr` are a single joint capability, advertised by
-the presence of a non-empty `supported` array in this response. See **Capability gate /
-compatibility** under `POST /screen/settings` below - this is the cross-firmware-version
-contract clients must follow before ever sending `screen.screen_type` or `screen.bgr`.
+the presence of a non-empty `supported` array in this response. See **Capability gate**
+under `POST /screen/settings` below: clients check it before ever sending
+`screen.screen_type` or `screen.bgr`.
 
 **Touch capability gate.** `supported_touch` is a **separate capability from `supported`**.
 A dial can advertise display profiles in `supported` while knowing nothing at all about
-touch - its firmware may predate touch support entirely. A client must not send
+touch. A client must not send
 `screen.touch_type` to a dial that did not advertise a non-empty `supported_touch` array,
 and must not infer touch support from the presence (or non-emptiness) of `supported` - the
-two capabilities are independent and must be checked independently. Sending `touch_type` to
-firmware that never advertised `supported_touch` hits the same strict field whitelist
-described under **Capability gate / compatibility** below, and rejects the **entire**
-request with `invalid_screen_settings` - including any otherwise-valid `fitted`/`rotate`
-changes bundled in the same request.
+two capabilities are independent and must be checked independently.
 
 **Layout-size capability gate.** `layout_sizes` is a **separate capability from
 `supported` and `supported_touch`**, gated the identical way: a client must not send
@@ -1685,18 +1646,13 @@ To let a client show this without polling blind, a second field, `restarting`, i
 `restarting` never appears when `restart_required` is `false` or absent (the
 `screen_apply_failed` path below never sets it).
 
-**Capability gate / compatibility.** `screen_type` and `bgr` form **one joint capability**,
+**Capability gate.** `screen_type` and `bgr` form **one joint capability**,
 advertised by `GET /screen/settings` returning a non-empty `supported` array (see above).
-This is the cross-version contract between clients and dial firmware:
 
 - A client **must not** send `screen.screen_type` or `screen.bgr` to a dial that did not
-  advertise a non-empty `supported` array. Older firmware validates `screen` against a
-  strict field whitelist and rejects the **entire** request with HTTP `400`
-  `invalid_screen_settings` if either field is present - including otherwise-valid
-  `fitted`/`rotate` changes bundled in the same request.
-- Conversely, newer firmware accepts a request that omits both `screen_type` and `bgr`
-  (they are optional and default), so an older client that only ever sends
-  `fitted`/`rotate` keeps working unchanged against newer dials.
+  advertise a non-empty `supported` array.
+- A request may omit both `screen_type` and `bgr` (they are optional and default), so a
+  client that only sends `fitted`/`rotate` is accepted.
 
 `touch_type` follows the identical rule as its **own, separate** capability - see **Touch
 capability gate** above: gate on `supported_touch`, not on `supported`.
@@ -1879,15 +1835,15 @@ Responses:
 |---|---|---|
 | `dial_api=v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
 | `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
-| `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume and, from 0.7.0, the `input` object |
+| `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume and the `input` object |
 | `dial_outputs=v1`; version 2 (JSON only) | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the pairing fields, the PIN submission and `retry_after_s` |
 | `dial_eq=v1`; version 2 (JSON only) | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; version 1 is bass/treble over the output EQ bands. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the six-band `bands` field on both routes |
 | `repeat=v1` | (roster only) | Advertised on `_autostream._tcp`, not `_autostream-playing._tcp` - see section 1. Gates the `repeat_capable` flag in the dial's idle-inclusive roster, not any single endpoint; a repeat command is still sent through `POST /api/dial/repeat`/`POST /api/dial/repeat/arm` above regardless of this flag, and the daemon itself rejects it (`repeat_unavailable`) if recording is disabled |
 | `dial_sdmon=v1` | `GET /sdcard-health`, `POST /sdcard-health` (dial, port 7842) | Advertised on `_autostream-dial._tcp`; gates the SD card health monitoring row on the appliance's dial card |
 | `dial_warnings=v1` (JSON only) | `POST /api/dial/warnings`, and the dial's `POST /warnings-changed` | UUID-auth; appliance-authored warnings for the dial to show. Announced only by `GET /api/dial/capabilities` (version `1`), with no TXT key |
-| (none) | the dial's `POST /state-changed` | Sent from 0.7.0 to every sighted, authorised dial of `dial_proto=v3` or later; no capability key. Advisory: the dial fetches the state itself |
+| (none) | the dial's `POST /state-changed` | Sent to every sighted, authorised dial of `dial_proto=v3` or later; no capability key. Advisory: the dial fetches the state itself |
 | `dial_proto=v3` | `GET /api/dial/capabilities` | Advertised by appliances (both records) in place of `v2`; each generation includes the earlier ones. The endpoint is the authoritative capability list, with the versions in the table above. In it, `dial_eq` is `2` (six-band `bands` on the EQ routes) while the TXT key stays `dial_eq=v1` |
-| `dial_proto=v2` | every dial route (typed refusals), status and volume replies (`muted`) | Advertised by appliances (both records) and by dials. Selects the refusal style, whether a dial relies on `muted`, and the dial's handling of an appliance without an `id` on its playing record; see **Protocol dialect** in section 1. `dial_api=v1` and `dial_status=v1` are unchanged alongside it |
+| `dial_proto=v2` | every dial route (typed refusals), status and volume replies (`muted`) | Advertised by appliances (both records) and by dials. Selects the refusal style, and whether a dial relies on `muted`; see **Protocol dialect** in section 1 |
 
 `POST /api/dial/mute` is not advertised behind its own TXT capability. It uses the same
 UUID-in-body authorization as `POST /api/dial/volume` and was added to the appliance API
@@ -1895,28 +1851,14 @@ without a new mDNS indicator, in the same manner as the `track_id` extension to
 `dial_status=v1` (see §2). A dial firmware built against this protocol version can assume
 `/api/dial/mute` is present; there is no runtime way to detect its absence via mDNS.
 
-`action` became a required field on `/api/dial/mute` after the endpoint moved from an
-implicit toggle to an explicit instruction. Strictly this is a schema break under the rules
-below, but it was taken without a `v2` bump: the endpoint had no deployed dial firmware
-relying on the old body, and there is no mDNS indicator that could have distinguished the
-two forms anyway. A dial predating the change sends no `action` and receives 400.
+`action` is a required field on `/api/dial/mute`; a body without it receives 400.
 
-The `muted` field on `POST /api/dial/status` and `POST /api/dial/volume`'s response is a
-later, purely additive change: the appliance moved from an implicit "master_volume 0 means
-muted" convention to an explicit flag, kept in process memory (see `POST /api/dial/mute`
-above). No version bump - a dial built before this change simply never reads the field, and
-falls back to inferring mute from a reported 0, which is wrong for as long as the appliance
-holds a mute (it now reports the pre-mute level, not 0) but self-corrects the moment either
-side sends an explicit mute/restore action or the appliance stops being muted. A dial built
-after this change talking to an appliance that predates it just never sees the field and
-shows no lit glyph, which volume/mute presses still work through regardless (they are
-explicit actions, not inferred from what the glyph shows). Appliances are expected to deploy
-ahead of dials for this reason.
+The `muted` field on `POST /api/dial/status` and `POST /api/dial/volume`'s response is an
+explicit flag, kept in process memory (see `POST /api/dial/mute` above). While the appliance
+is muted it reports the pre-mute level, not 0.
 
-The `dial_proto=v2` dialect (section 1) was introduced the same way, as a new key beside the
-existing `v1` indicators rather than a bump of them. It carries the changes that an older dial
-would misread (typed refusals, and `muted` being authoritative), and each side falls back to
-the older behaviour when the other does not advertise it.
+The `dial_proto` dialects (section 1) are new keys beside the existing `v1` indicators
+rather than a bump of them.
 
 Breaking changes (new `v2`):
 - Any change to request/response schema that removes or renames required fields.
@@ -1931,6 +1873,6 @@ Adding optional response fields or new endpoints does **not** require a version 
 
 1. Increment the version indicator in the mDNS TXT record (`dial_api=v2`, etc.).
 2. Announce the new indicator in `_autostream-playing._tcp` alongside the old one during a
-   transition period so older dial firmware continues to work.
+   transition period.
 3. Update this document before merging any change to a versioned endpoint.
 4. Old indicators may be removed once no deployed dial firmware references them.

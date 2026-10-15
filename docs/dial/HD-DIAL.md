@@ -9,10 +9,9 @@ board, and that browser fills the touchscreen. The browser is WPE WebKit,
 started by its `cog` launcher, which draws straight to the display with no
 desktop or compositor in between.
 
-**This is a preview.** It runs on real boards (a 512 MB Pi 3 Model A+ is
-enough), but only a few panels have been tried. Expect differences between
-panels, especially in how an HDMI panel answers its control channel. If you
-try one, please report what you see.
+A 512 MB board such as a Pi 3 Model A+ is enough. Panels differ, especially
+in how an HDMI panel answers its brightness control channel, so if yours does
+not behave as this page describes, please report what you see.
 
 ## What you need
 
@@ -135,8 +134,7 @@ then they are in name order.
   you to wait a few seconds, counting down, and the keys stay greyed out until
   it is time. Cancel closes the card, and so does leaving it alone for a
   minute and a half. The appliance's Home page waits while the dial is doing
-  this. Against an older appliance the card instead says **Pair in Autostream**,
-  asking you to enter the code in that appliance's web UI.
+  this.
 
 ### Now playing and volume
 
@@ -197,7 +195,7 @@ mean.
 
 If the followed appliance supports it, an equaliser icon sits beside the track
 line. It opens the equaliser page for that appliance: sliders for each band
-(two, Bass and Treble, on an older appliance; six on a newer one), a live
+(six bands), a live
 graph of the resulting response, and **Reset** to put every band back to flat.
 Tap the back arrow to return. The page closes by itself after a minute
 without a touch, and when the screen goes to sleep.

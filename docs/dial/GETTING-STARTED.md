@@ -173,6 +173,6 @@ them at the same time, not just one.
   revoking a dial.
 - [System Maintenance](SYSTEM-MAINTENANCE.md): firmware updates and
   recovering a dial that won't come back online.
-- [HD dial](HD-DIAL.md): a dial with a full-size touchscreen (preview).
+- [HD dial](HD-DIAL.md): a dial with a full-size touchscreen.
 - [Build Guide](BUILD-GUIDE.md): building or extending the hardware,
   including the optional screen, touch panel, and LED.

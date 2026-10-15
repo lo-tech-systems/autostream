@@ -47,7 +47,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 1. With a simple rotary encoder, to provide a physical volume control for all speakers
 2. With a touch screen, to show album artwork and provide a simple interface to control volume and replay repeat recordings available on any of your **autostream** appliances   
 
-Update every dial and appliance to 0.7 together: a 0.7 dial is not supported with a 0.6 appliance. The full-size touchscreen version (HD dial) is a preview.
+autostream 0.7 is the first release of the dial, including the full-size touchscreen version (HD dial). Update every dial and appliance to 0.7 together: a 0.7 dial is not supported with a 0.6 appliance.
 
 ---
 

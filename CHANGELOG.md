@@ -2,8 +2,9 @@
 
 ## Version 0.7.0
 
-Upgrade appliances and dials together: a 0.7 dial is not supported with a 0.6
-appliance, and several features below need both sides updated.
+This is the first release of the autostream dial; earlier versions were
+previews. Upgrade appliances and dials together: a 0.7 dial is not supported
+with a 0.6 appliance, and several features below need both sides updated.
 
 ### Inputs and playback
 
