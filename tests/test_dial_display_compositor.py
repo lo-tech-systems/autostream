@@ -196,6 +196,23 @@ _METRICS_EQUIVALENCE_CASES = [
 _RICH_METRICS = metrics_for(320, 240, 0.1778)
 _LARGE_METRICS = metrics_for(640, 480, 0.127)
 
+
+def _default_profile_metrics():
+    """Metrics for the SPI dial's default profile (st7735s_160x128), built
+    from its logical size and density the way the showcase panel does."""
+    from dial_display_profiles import layout_context_for
+
+    class _Cfg:
+        screen_type = "st7735s_160x128"
+        screen_size_inches = None
+        layout_size = None
+
+    ctx = layout_context_for(_Cfg())
+    return metrics_for(*ctx.logical_size, mm_per_px=ctx.mm_per_px, size_chosen=False)
+
+
+_BASE_METRICS = _default_profile_metrics()
+
 # The two shipped compact panels — 1.3in 240x240 and 1.44in 128x128.
 _COMPACT_240 = metrics_for(240, 240, 0.0973)
 _COMPACT_128 = metrics_for(128, 128, 0.2021)
@@ -5652,40 +5669,41 @@ class TestComposeTimerLine:
         the overlay absent, so any change is the pill or its digits)."""
         return _diff_bbox(Image.new("RGB", out.size, self._COVER), out)
 
-    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_the_default_profile_is_the_base_tier(self):
+        assert _BASE_METRICS.content_tier == CONTENT_BASE
+
+    @pytest.mark.parametrize("metrics", [_BASE_METRICS, _RICH_METRICS, _LARGE_METRICS])
     @pytest.mark.parametrize("text", ["0:05 / 1:12", "72:04 / 77:30", _LONGEST])
     def test_pill_is_top_right_and_fully_drawn(self, compositor, metrics, text):
         _, out = self._on_flat_cover(compositor, metrics, text)
         layout = layout_for(metrics.width, metrics.height, metrics=metrics)
         first = layout.album if layout.album is not None else layout.title
         x0, y0, x1, y1 = self._pill_bbox(metrics, out)
-        font = _load_font(metrics.font_readout)
-        text_w, text_h, _ = _text_size(ImageDraw.Draw(out), text, font)
         # Right edge on the header's own right margin, top one margin below the band.
         assert x1 == metrics.width - metrics.pad
         assert y0 == layout.top_band[3] + metrics.margin
-        # Padding present on both ends: the pill is wider than the digits by the
-        # padding twice, and never touches the side margin, the header or the lines.
-        assert x1 - x0 >= text_w + 2 * round(text_h * 0.55) - 1
+        # The whole pill is inside the area: it never touches the side margin,
+        # the header or the lines, so neither end is cut off.
         assert x0 >= metrics.margin
         assert y0 > layout.top_band[3] and y1 <= first[1]
         # Pill ends are dimmed to the band level, the cover beyond is untouched.
         cy = (y0 + y1) // 2
         dim = tuple(round(c * OVERLAY_DIM_FACTOR) for c in self._COVER)
-        pad_x = round(text_h * 0.55)
-        for px in (x0 + pad_x // 2, x1 - 1 - pad_x // 2):
+        # Padding on both ends: just inside each end of the pill the cover is
+        # dimmed to the band level, with no digit ink there.
+        for px in (x0 + 2, x1 - 3):
             assert all(abs(g - e) <= 2 for g, e in zip(out.getpixel((px, cy)), dim))
         assert out.getpixel((x0 - 2, cy)) == self._COVER
         assert out.getpixel((x1 + 1, cy)) == self._COVER
 
-    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("metrics", [_BASE_METRICS, _RICH_METRICS, _LARGE_METRICS])
     def test_pill_anchors_right_and_grows_left(self, compositor, metrics):
         _, short = self._on_flat_cover(compositor, metrics, "0:05 / 1:12")
         _, long_ = self._on_flat_cover(compositor, metrics, self._LONGEST)
         s, l = self._pill_bbox(metrics, short), self._pill_bbox(metrics, long_)
         assert s[2] == l[2] and s[1] == l[1] and l[0] < s[0]
 
-    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("metrics", [_BASE_METRICS, _RICH_METRICS, _LARGE_METRICS])
     def test_pill_clears_the_header_and_lines_with_the_overlay_up(self, compositor, metrics):
         overlay = OverlayState(visible=True, dots=True, name="Kitchen", volume=40)
         _, with_timer = self._compose(compositor, metrics, overlay=overlay, timer_text=self._LONGEST)
@@ -5716,6 +5734,20 @@ class TestComposeTimerLine:
         _, gone = self._compose(compositor, _RICH_METRICS, timer_text="0:07 / 3:12", timer_alpha=0.0)
         assert gone.tobytes() == plain.tobytes()
         assert half.tobytes() not in (plain.tobytes(), full.tobytes())
+
+    def test_the_compact_tier_draws_no_timer_at_any_length(self, compositor):
+        for metrics in (_COMPACT_240, _COMPACT_128):
+            assert metrics.content_tier == CONTENT_COMPACT
+            for text in ("0:05 / 1:12", self._LONGEST):
+                base, out = self._on_flat_cover(compositor, metrics, text)
+                assert out.tobytes() == base.tobytes()
+
+    def test_the_pill_is_complete_even_when_the_smallest_font_overflows_the_area(self, compositor):
+        # An area narrower than the smallest font's pill: the pill is drawn
+        # whole, extending left of the area, never clipped.
+        from dial_display_compositor import _timer_fit
+        fit = _timer_fit(self._LONGEST, 15, 40, 30)
+        assert fit is not None and fit[4] > 40
 
     def test_ignored_on_the_compact_tier(self, compositor):
         metrics = metrics_for(160, 128, 25.9 / 128)

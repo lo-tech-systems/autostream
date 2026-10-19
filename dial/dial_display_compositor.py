@@ -1841,6 +1841,7 @@ def _reset_render_caches() -> None:
     global _shrunk_base_memo
     _glyph_tile.cache_clear()
     _halo_layer.cache_clear()
+    _timer_fit.cache_clear()
     _reveal_layers.cache_clear()
     _shrunk_base_memo = None
 
@@ -2579,49 +2580,67 @@ def timer_area(width: int, height: int, metrics: LayoutMetrics) -> "tuple[int, i
     return rect if rect[2] > rect[0] and rect[3] > rect[1] else None
 
 
-def _draw_timer_pill(region: Image.Image, area: tuple, text: str, font) -> None:
-    """Dim a small capsule behind the timer *text*, right-aligned and
-    top-aligned in *area* (rect of *region*), to OVERLAY_DIM_FACTOR like
-    the top and bottom bands, then draw the digits on it. The capsule is the
-    text's size plus padding and grows leftwards; it is clamped to *area*.
-    One small crop, one brightness pass and one masked paste per frame."""
-    draw = ImageDraw.Draw(region)
-    measured = _text_size(draw, text, font)
-    if measured is None:
-        return
-    text_w, text_h, bbox = measured
-    area_w, area_h = area[2] - area[0], area[3] - area[1]
-    pad_x = round(text_h * _TIMER_PILL_PAD_X)
-    pad_y = round(text_h * _TIMER_PILL_PAD_Y)
-    w = min(area_w, text_w + 2 * pad_x)
-    h = min(area_h, text_h + 2 * pad_y)
-    if w <= 0 or h <= 0:
-        return
-    x = area[2] - w
-    y = area[1]
-    dimmed = ImageEnhance.Brightness(region.crop((x, y, x + w, y + h))).enhance(OVERLAY_DIM_FACTOR)
-    region.paste(dimmed, (x, y), _pill_mask(w, h))
-    _draw_text_safe(draw, (x + (w - text_w) // 2 - bbox[0], y + (h - text_h) // 2 - bbox[1]), text, font)
+_TIMER_MIN_FONT_PX = 8
+
+
+@functools.lru_cache(maxsize=32)
+def _timer_fit(text: str, font_px: int, area_w: int, area_h: int):
+    """How the timer *text* is drawn: (font, text_w, text_h, bbox, pill_w,
+    pill_h) for the largest font size at or below *font_px* whose text plus
+    the pill's padding fits *area_w*, stepping down a pixel at a time to a
+    floor (half the starting size, never below _TIMER_MIN_FONT_PX). At the
+    floor the pill is returned at its full width even when that is wider
+    than *area_w*: the pill is never clipped. None when the text cannot be
+    measured. Memoised, so the common case costs nothing per frame."""
+    scratch = ImageDraw.Draw(Image.new("L", (1, 1)))
+    floor = min(font_px, max(_TIMER_MIN_FONT_PX, font_px // 2))
+    for size in range(font_px, floor - 1, -1):
+        font = _load_font(size)
+        measured = _text_size(scratch, text, font)
+        if measured is None:
+            return None
+        text_w, text_h, bbox = measured
+        pill_w = text_w + 2 * round(text_h * _TIMER_PILL_PAD_X)
+        if pill_w <= area_w or size == floor:
+            pill_h = min(area_h, text_h + 2 * round(text_h * _TIMER_PILL_PAD_Y))
+            return font, text_w, text_h, bbox, pill_w, pill_h
+    return None
 
 
 def _draw_timer_line(img: Image.Image, text: str, alpha: float, metrics: LayoutMetrics) -> Image.Image:
     """The main screen's replay position line (see compose()'s timer_text):
     *text* on a dimmed capsule at the top right of the artwork, just below
     the header band and ending at the header's right margin (see
-    timer_area()), blended in at *alpha*. Returns a new image; *img* is
-    never drawn on, since it may be the caller's cached base. Never raises:
-    any failure returns *img* unchanged."""
+    timer_area()), blended in at *alpha*. The capsule is always complete:
+    the font steps down until it fits the area (see _timer_fit()). It is
+    dimmed to OVERLAY_DIM_FACTOR like the top and bottom bands, grows
+    leftwards, and costs one small crop, one brightness pass and one masked
+    paste per frame. Returns a new image; *img* is never drawn on, since it
+    may be the caller's cached base. Never raises: any failure returns *img*
+    unchanged."""
     try:
         area = timer_area(img.width, img.height, metrics)
         if area is None:
             return img
+        fit = _timer_fit(text, metrics.font_readout, area[2] - area[0], area[3] - area[1])
+        if fit is None:
+            return img
+        font, text_w, text_h, bbox, w, h = fit
+        x = max(0, area[2] - w)
+        # The paste box: the pill itself, widened left of the area only when
+        # even the smallest font's pill is wider than it.
+        box = (x, area[1], area[2], area[1] + h)
         out = img.copy()
-        region = out.crop(area)
+        region = out.crop(box)
         drawn = region.copy()
-        _draw_timer_pill(drawn, (0, 0, area[2] - area[0], area[3] - area[1]), text, _load_font(metrics.font_readout))
+        dimmed = ImageEnhance.Brightness(drawn).enhance(OVERLAY_DIM_FACTOR)
+        drawn.paste(dimmed, (0, 0), _pill_mask(box[2] - box[0], h))
+        draw = ImageDraw.Draw(drawn)
+        pw = box[2] - box[0]
+        _draw_text_safe(draw, ((pw - text_w) // 2 - bbox[0], (h - text_h) // 2 - bbox[1]), text, font)
         if alpha < 1.0:
             drawn = Image.blend(region, drawn, max(0.0, alpha))
-        out.paste(drawn, area[:2])
+        out.paste(drawn, box[:2])
         return out
     except Exception:
         return img
