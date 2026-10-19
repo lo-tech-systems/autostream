@@ -48,6 +48,8 @@ with a 0.6 appliance, and several features below need both sides updated.
   screens.
 - improvement: a dial lists the appliances it is authorised on first, then
   playing before idle, then by name.
+- improvement: the replay timer on a small screen dial now sits on a dark rounded
+  backing, so its digits stay readable over covers with printed text.
 - change: a factory reset of an appliance erases its list of authorised dials,
   and a factory reset of a dial gives it a new identity, so it has to be
   authorised again on each appliance.

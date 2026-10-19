@@ -2551,6 +2551,43 @@ def _body_repeat_line(img: Image.Image, metrics: LayoutMetrics, body: Body) -> N
     _draw_text_with_halo(img, layout.line, body.line, font, metrics, align="center")
 
 
+# The timer's backing pill: padding as fractions of the digits' height, and
+# a fully rounded end (radius is half the pill's height).
+_TIMER_PILL_PAD_X = 0.55
+_TIMER_PILL_PAD_Y = 0.35
+
+
+@functools.lru_cache(maxsize=8)
+def _pill_mask(w: int, h: int) -> Image.Image:
+    """An antialiased capsule mask of (w, h), memoised: the same pill is
+    reused every frame of a timer's life."""
+    ss = 4
+    big = Image.new("L", (w * ss, h * ss), 0)
+    ImageDraw.Draw(big).rounded_rectangle((0, 0, w * ss - 1, h * ss - 1), radius=h * ss // 2, fill=255)
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def _draw_timer_pill(region: Image.Image, local: tuple, text: str, font) -> None:
+    """Dim a small capsule behind the centred timer *text* in *region*
+    (the timer's own crop of the frame), to OVERLAY_DIM_FACTOR like the
+    top and bottom bands, so the digits read over printed cover art. The
+    capsule is the text's size plus padding, kept inside *local*. One
+    small crop, one brightness pass and one masked paste per frame."""
+    measured = _text_size(ImageDraw.Draw(region), text, font)
+    if measured is None:
+        return
+    text_w, text_h, _ = measured
+    rect_w, rect_h = local[2] - local[0], local[3] - local[1]
+    w = min(rect_w, text_w + 2 * round(text_h * _TIMER_PILL_PAD_X))
+    h = min(rect_h, text_h + 2 * round(text_h * _TIMER_PILL_PAD_Y))
+    if w <= 0 or h <= 0:
+        return
+    x = local[0] + (rect_w - w) // 2
+    y = local[1] + (rect_h - h) // 2
+    dimmed = ImageEnhance.Brightness(region.crop((x, y, x + w, y + h))).enhance(OVERLAY_DIM_FACTOR)
+    region.paste(dimmed, (x, y), _pill_mask(w, h))
+
+
 def _draw_timer_line(img: Image.Image, text: str, alpha: float, metrics: LayoutMetrics) -> Image.Image:
     """The main screen's replay position line (see compose()'s timer_text):
     *text* centred at the readout size, with its halo, in the artwork
@@ -2568,7 +2605,9 @@ def _draw_timer_line(img: Image.Image, text: str, alpha: float, metrics: LayoutM
         region = out.crop(rect)
         drawn = region.copy()
         local = (0, 0, rect[2] - rect[0], rect[3] - rect[1])
-        _draw_text_with_halo(drawn, local, text, _load_font(metrics.font_readout), metrics, align="center")
+        font = _load_font(metrics.font_readout)
+        _draw_timer_pill(drawn, local, text, font)
+        _draw_text_with_halo(drawn, local, text, font, metrics, align="center")
         if alpha < 1.0:
             drawn = Image.blend(region, drawn, max(0.0, alpha))
         out.paste(drawn, rect[:2])

@@ -21,6 +21,7 @@ import pytest
 
 Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
 ImageChops = pytest.importorskip("PIL.ImageChops", reason="Pillow not installed")
+ImageDraw = pytest.importorskip("PIL.ImageDraw", reason="Pillow not installed")
 
 REPO_ROOT = Path(__file__).parent.parent
 _DIAL = str(REPO_ROOT / "dial")
@@ -5634,6 +5635,32 @@ class TestComposeTimerLine:
         assert bbox is not None
         x0, y0, x1, y1 = self._timer_rect(metrics)
         assert x0 <= bbox[0] and y0 <= bbox[1] and bbox[2] <= x1 and bbox[3] <= y1
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_digits_sit_on_a_band_dimmed_pill(self, compositor, metrics):
+        # A bright flat cover so the pill is the only thing that darkens it.
+        w, h = metrics.width, metrics.height
+        base = Image.new("RGB", (w, h), (200, 160, 120))
+        out = compositor.compose(
+            base, w, h, rotate=False, bgr=False, is_artwork=False, overlay=None,
+            metrics=metrics, timer_text="0:07 / 3:12",
+        )
+        rx0, ry0, rx1, ry1 = self._timer_rect(metrics)
+        cy = (ry0 + ry1) // 2
+        # Centre-left of the pill, left of the digits' first glyph but inside the padding.
+        font = _load_font(metrics.font_readout)
+        text_w, text_h, _ = _text_size(ImageDraw.Draw(base), "0:07 / 3:12", font)
+        pad_x = round(text_h * 0.55)
+        x_text = (rx0 + rx1 - text_w) // 2
+        probe = (x_text - pad_x // 2, cy)
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in (200, 160, 120))
+        got = out.getpixel(probe)
+        assert all(abs(g - e) <= 2 for g, e in zip(got, expected))
+        # Just outside the pill the cover is untouched (halo aside, well clear of it).
+        far = (rx0 + 2, cy)
+        assert out.getpixel(far) == (200, 160, 120)
+        # Beyond the pill's end, in the same row, the cover is untouched.
+        assert out.getpixel((x_text - round(text_h * 0.55) - 3, cy)) == (200, 160, 120)
 
     def test_drawn_with_no_overlay_too(self, compositor):
         base, timed = self._compose(compositor, _RICH_METRICS, overlay=None, timer_text="0:07 / 3:12")
