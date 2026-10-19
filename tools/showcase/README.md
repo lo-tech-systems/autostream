@@ -26,8 +26,7 @@ Playwright and the WebKit engine installed:
     python tools/showcase/capture.py [OUT_DIR | --docs] [--engine webkit|chromium]
                                      [--only hd|spi] [--scenario NAME ...]
 
-The default folder is `showcase-shots` inside the gitignored docs/working
-folder. HD pictures go to `hd-dial/<scenario>-<width>x<height>.png` at 800x480
+The default folder is `build/showcase-shots`, which git ignores. HD pictures go to `hd-dial/<scenario>-<width>x<height>.png` at 800x480
 and 1024x600; SPI pictures go to `spi-dial/<screen>.png` (rich layout) and
 `spi-dial/compact/<screen>.png`, scaled up two times with nearest-neighbour.
 

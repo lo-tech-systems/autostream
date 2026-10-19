@@ -32,8 +32,8 @@ import showcase_scenarios as ss  # noqa: E402  (also sets up the import paths)
 import spi_shots  # noqa: E402
 
 SIZES = ((800, 480), (1024, 600))
-# The default folder is the gitignored working area under docs.
-DEFAULT_OUT = REPO_ROOT / "docs" / "working" / "showcase-shots"
+# The default folder is under the gitignored build folder.
+DEFAULT_OUT = REPO_ROOT / "build" / "showcase-shots"
 # The published pictures: the folder, the HD pictures in it and their size.
 DOCS_OUT = REPO_ROOT / "docs" / "dial" / "images" / "showcase"
 DOCS_HD = ("now-playing-jazz", "appliances", "equaliser-six-band", "pulldown")
