@@ -31,6 +31,15 @@ SIZES = ((800, 480), (1024, 600))
 # The default folder is the gitignored working area under docs.
 DEFAULT_OUT = REPO_ROOT / "docs" / "working" / "showcase-shots"
 
+# What the pull-down's "This dial" list shows, as on a real installation; the
+# preview serves FakePanel.INFO_ROWS, so it is replaced here.
+INFO_ROWS = (
+    ("Dial name", "Lounge dial"), ("Firmware", "0.7.0"), ("IPv4", "192.168.1.42"),
+    ("WiFi", "HomeNet"), ("Signal", "Strong"), ("Disk free", "21.4 GB"), ("SD health", "96%"),
+)
+PULLDOWN_BASE = "now-playing-jazz"
+PULLDOWN_NAME = "pulldown"
+
 SETTLED_JS = """() => {
     const o = id => getComputedStyle(document.getElementById(id)).opacity;
     return o('art') === '1' && o('backdrop') === '1' && o('art-prev') === '0'
@@ -40,11 +49,15 @@ SETTLED_JS = """() => {
 
 
 def capture_hd(out: Path, engine: str, only: "set | None") -> list:
-    from hd_preview import HdPreview
+    from hd_preview import FakePanel, HdPreview
     from playwright.sync_api import sync_playwright
 
     written = []
+    FakePanel.INFO_ROWS = INFO_ROWS
     chosen = [(s, a) for s, a in ss.scenarios() if not only or s.name in only]
+    # The pull-down is the jazz now-playing page with the panel opened.
+    chosen += [(s, "pulldown") for s, a in ss.scenarios()
+               if s.name == PULLDOWN_BASE and (not only or PULLDOWN_NAME in only)]
     with HdPreview() as preview, sync_playwright() as p:
         browser = getattr(p, engine).launch()
         for width, height in SIZES:
@@ -61,11 +74,18 @@ def capture_hd(out: Path, engine: str, only: "set | None") -> list:
                     page.locator("#eq-open").click()
                     page.wait_for_function(
                         "() => document.getElementById('eq').getBoundingClientRect().left === 0")
+                elif action == "pulldown":
+                    page.locator("#handle").click()
+                    page.wait_for_function(
+                        "() => document.getElementById('sheet').getBoundingClientRect().top === 0")
+                    page.wait_for_function(
+                        "() => document.querySelectorAll('#info .info-row').length === 7")
                 elif action == "scroll-speakers":
                     page.evaluate("() => { const l = document.getElementById('speakers-list');"
                                   " l.scrollTop = l.scrollHeight; }")
                 page.wait_for_timeout(600)
-                path = out / f"hd-{scenario.name}-{width}x{height}.png"
+                name = PULLDOWN_NAME if action == "pulldown" else scenario.name
+                path = out / f"hd-{name}-{width}x{height}.png"
                 page.screenshot(path=str(path))
                 written.append(path)
                 print(path, flush=True)
