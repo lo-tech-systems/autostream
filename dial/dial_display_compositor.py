@@ -2567,50 +2567,61 @@ def _pill_mask(w: int, h: int) -> Image.Image:
     return big.resize((w, h), Image.LANCZOS)
 
 
-def _draw_timer_pill(region: Image.Image, local: tuple, text: str, font) -> None:
-    """Dim a small capsule behind the centred timer *text* in *region*
-    (the timer's own crop of the frame), to OVERLAY_DIM_FACTOR like the
-    top and bottom bands, so the digits read over printed cover art. The
-    capsule is the text's size plus padding, kept inside *local*. One
-    small crop, one brightness pass and one masked paste per frame."""
-    measured = _text_size(ImageDraw.Draw(region), text, font)
+def timer_area(width: int, height: int, metrics: LayoutMetrics) -> "tuple[int, int, int, int] | None":
+    """The rect the replay timer's pill lives in, in compose space: from the
+    layout's side margin to the header's own right margin (the edge the
+    speaker glyph and volume number end at), and from one layout margin
+    below the top band to the top of the first album/title line. None when
+    the artwork has no room between them."""
+    layout = layout_for(width, height, metrics=metrics)
+    first_line = layout.album if layout.album is not None else layout.title
+    rect = (metrics.margin, layout.top_band[3] + metrics.margin, width - metrics.pad, first_line[1])
+    return rect if rect[2] > rect[0] and rect[3] > rect[1] else None
+
+
+def _draw_timer_pill(region: Image.Image, area: tuple, text: str, font) -> None:
+    """Dim a small capsule behind the timer *text*, right-aligned and
+    top-aligned in *area* (rect of *region*), to OVERLAY_DIM_FACTOR like
+    the top and bottom bands, then draw the digits on it. The capsule is the
+    text's size plus padding and grows leftwards; it is clamped to *area*.
+    One small crop, one brightness pass and one masked paste per frame."""
+    draw = ImageDraw.Draw(region)
+    measured = _text_size(draw, text, font)
     if measured is None:
         return
-    text_w, text_h, _ = measured
-    rect_w, rect_h = local[2] - local[0], local[3] - local[1]
-    w = min(rect_w, text_w + 2 * round(text_h * _TIMER_PILL_PAD_X))
-    h = min(rect_h, text_h + 2 * round(text_h * _TIMER_PILL_PAD_Y))
+    text_w, text_h, bbox = measured
+    area_w, area_h = area[2] - area[0], area[3] - area[1]
+    pad_x = round(text_h * _TIMER_PILL_PAD_X)
+    pad_y = round(text_h * _TIMER_PILL_PAD_Y)
+    w = min(area_w, text_w + 2 * pad_x)
+    h = min(area_h, text_h + 2 * pad_y)
     if w <= 0 or h <= 0:
         return
-    x = local[0] + (rect_w - w) // 2
-    y = local[1] + (rect_h - h) // 2
+    x = area[2] - w
+    y = area[1]
     dimmed = ImageEnhance.Brightness(region.crop((x, y, x + w, y + h))).enhance(OVERLAY_DIM_FACTOR)
     region.paste(dimmed, (x, y), _pill_mask(w, h))
+    _draw_text_safe(draw, (x + (w - text_w) // 2 - bbox[0], y + (h - text_h) // 2 - bbox[1]), text, font)
 
 
 def _draw_timer_line(img: Image.Image, text: str, alpha: float, metrics: LayoutMetrics) -> Image.Image:
     """The main screen's replay position line (see compose()'s timer_text):
-    *text* centred at the readout size, with its halo, in the artwork
-    between the top band and the first of the album/title lines, blended
-    in at *alpha*. Returns a new image; *img* is never drawn on, since it
-    may be the caller's cached base. Never raises: any failure returns
-    *img* unchanged."""
+    *text* on a dimmed capsule at the top right of the artwork, just below
+    the header band and ending at the header's right margin (see
+    timer_area()), blended in at *alpha*. Returns a new image; *img* is
+    never drawn on, since it may be the caller's cached base. Never raises:
+    any failure returns *img* unchanged."""
     try:
-        layout = layout_for(img.width, img.height, metrics=metrics)
-        first_line = layout.album if layout.album is not None else layout.title
-        rect = (first_line[0], layout.top_band[3], first_line[2], first_line[1])
-        if rect[3] <= rect[1]:
+        area = timer_area(img.width, img.height, metrics)
+        if area is None:
             return img
         out = img.copy()
-        region = out.crop(rect)
+        region = out.crop(area)
         drawn = region.copy()
-        local = (0, 0, rect[2] - rect[0], rect[3] - rect[1])
-        font = _load_font(metrics.font_readout)
-        _draw_timer_pill(drawn, local, text, font)
-        _draw_text_with_halo(drawn, local, text, font, metrics, align="center")
+        _draw_timer_pill(drawn, (0, 0, area[2] - area[0], area[3] - area[1]), text, _load_font(metrics.font_readout))
         if alpha < 1.0:
             drawn = Image.blend(region, drawn, max(0.0, alpha))
-        out.paste(drawn, rect[:2])
+        out.paste(drawn, area[:2])
         return out
     except Exception:
         return img

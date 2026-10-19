@@ -102,6 +102,7 @@ from dial_display_compositor import (  # noqa: E402
     _INVERTED_GLYPH_RGB,
     _LIST_BG_RGB,
     OVERLAY_DIM_FACTOR,
+    timer_area,
     _COMPACT_PICKER_TITLE,
     _COMPACT_SMALL_GLYPH_FRACTION,
     _centred_box,
@@ -5618,9 +5619,7 @@ class TestComposeTimerLine:
         )
 
     def _timer_rect(self, metrics):
-        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
-        first = layout.album if layout.album is not None else layout.title
-        return (first[0], layout.top_band[3], first[2], first[1])
+        return timer_area(metrics.width, metrics.height, metrics)
 
     def test_no_timer_is_byte_identical(self, compositor):
         _, without = self._compose(compositor, _RICH_METRICS)
@@ -5636,31 +5635,66 @@ class TestComposeTimerLine:
         x0, y0, x1, y1 = self._timer_rect(metrics)
         assert x0 <= bbox[0] and y0 <= bbox[1] and bbox[2] <= x1 and bbox[3] <= y1
 
-    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
-    def test_digits_sit_on_a_band_dimmed_pill(self, compositor, metrics):
-        # A bright flat cover so the pill is the only thing that darkens it.
+    _COVER = (200, 160, 120)
+    _LONGEST = "600:59 / 600:59"  # the replay length limit is 600 minutes
+
+    def _on_flat_cover(self, compositor, metrics, text, overlay=None):
         w, h = metrics.width, metrics.height
-        base = Image.new("RGB", (w, h), (200, 160, 120))
+        base = Image.new("RGB", (w, h), self._COVER)
         out = compositor.compose(
-            base, w, h, rotate=False, bgr=False, is_artwork=False, overlay=None,
-            metrics=metrics, timer_text="0:07 / 3:12",
+            base, w, h, rotate=False, bgr=False, is_artwork=False, overlay=overlay,
+            metrics=metrics, timer_text=text,
         )
-        rx0, ry0, rx1, ry1 = self._timer_rect(metrics)
-        cy = (ry0 + ry1) // 2
-        # Centre-left of the pill, left of the digits' first glyph but inside the padding.
+        return base, out
+
+    def _pill_bbox(self, metrics, out):
+        """Bounding box of the pixels the pill darkened (the cover is flat,
+        the overlay absent, so any change is the pill or its digits)."""
+        return _diff_bbox(Image.new("RGB", out.size, self._COVER), out)
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    @pytest.mark.parametrize("text", ["0:05 / 1:12", "72:04 / 77:30", _LONGEST])
+    def test_pill_is_top_right_and_fully_drawn(self, compositor, metrics, text):
+        _, out = self._on_flat_cover(compositor, metrics, text)
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        first = layout.album if layout.album is not None else layout.title
+        x0, y0, x1, y1 = self._pill_bbox(metrics, out)
         font = _load_font(metrics.font_readout)
-        text_w, text_h, _ = _text_size(ImageDraw.Draw(base), "0:07 / 3:12", font)
+        text_w, text_h, _ = _text_size(ImageDraw.Draw(out), text, font)
+        # Right edge on the header's own right margin, top one margin below the band.
+        assert x1 == metrics.width - metrics.pad
+        assert y0 == layout.top_band[3] + metrics.margin
+        # Padding present on both ends: the pill is wider than the digits by the
+        # padding twice, and never touches the side margin, the header or the lines.
+        assert x1 - x0 >= text_w + 2 * round(text_h * 0.55) - 1
+        assert x0 >= metrics.margin
+        assert y0 > layout.top_band[3] and y1 <= first[1]
+        # Pill ends are dimmed to the band level, the cover beyond is untouched.
+        cy = (y0 + y1) // 2
+        dim = tuple(round(c * OVERLAY_DIM_FACTOR) for c in self._COVER)
         pad_x = round(text_h * 0.55)
-        x_text = (rx0 + rx1 - text_w) // 2
-        probe = (x_text - pad_x // 2, cy)
-        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in (200, 160, 120))
-        got = out.getpixel(probe)
-        assert all(abs(g - e) <= 2 for g, e in zip(got, expected))
-        # Just outside the pill the cover is untouched (halo aside, well clear of it).
-        far = (rx0 + 2, cy)
-        assert out.getpixel(far) == (200, 160, 120)
-        # Beyond the pill's end, in the same row, the cover is untouched.
-        assert out.getpixel((x_text - round(text_h * 0.55) - 3, cy)) == (200, 160, 120)
+        for px in (x0 + pad_x // 2, x1 - 1 - pad_x // 2):
+            assert all(abs(g - e) <= 2 for g, e in zip(out.getpixel((px, cy)), dim))
+        assert out.getpixel((x0 - 2, cy)) == self._COVER
+        assert out.getpixel((x1 + 1, cy)) == self._COVER
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_pill_anchors_right_and_grows_left(self, compositor, metrics):
+        _, short = self._on_flat_cover(compositor, metrics, "0:05 / 1:12")
+        _, long_ = self._on_flat_cover(compositor, metrics, self._LONGEST)
+        s, l = self._pill_bbox(metrics, short), self._pill_bbox(metrics, long_)
+        assert s[2] == l[2] and s[1] == l[1] and l[0] < s[0]
+
+    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _LARGE_METRICS])
+    def test_pill_clears_the_header_and_lines_with_the_overlay_up(self, compositor, metrics):
+        overlay = OverlayState(visible=True, dots=True, name="Kitchen", volume=40)
+        _, with_timer = self._compose(compositor, metrics, overlay=overlay, timer_text=self._LONGEST)
+        _, without = self._compose(compositor, metrics, overlay=overlay)
+        x0, y0, x1, y1 = _diff_bbox(without, with_timer)
+        layout = layout_for(metrics.width, metrics.height, metrics=metrics)
+        first = layout.album if layout.album is not None else layout.title
+        assert y0 >= layout.top_band[3] and y1 <= first[1]
+        assert x0 >= 0 and x1 <= metrics.width - metrics.pad
 
     def test_drawn_with_no_overlay_too(self, compositor):
         base, timed = self._compose(compositor, _RICH_METRICS, overlay=None, timer_text="0:07 / 3:12")
