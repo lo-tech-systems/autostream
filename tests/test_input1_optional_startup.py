@@ -116,8 +116,8 @@ class TestStartupCarriesRateMatching:
     def test_each_input_is_configured_with_its_own_setting(self):
         from autostream_core import _configure_startup_monitors
         cfg = _cfg({
-            "audio1": {"capture_device": "hw:0,0", "dynamic_rate_matching": True},
-            "audio2": {"enabled": True, "capture_device": "hw:1,0"},
+            "audio1": {"capture_device": "hw:0,0"},
+            "audio2": {"enabled": True, "capture_device": "hw:1,0", "dynamic_rate_matching": False},
             "owntone": {"output_name": "Kitchen"},
         })
         client = _mock_client()

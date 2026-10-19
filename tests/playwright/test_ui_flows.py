@@ -642,11 +642,11 @@ class TestInputTypeAndSensitivity:
         self._open_input1(page, base_url)
         switch = page.locator("#audio1_dynamic_rate_matching")
         expect(switch).to_be_attached()
-        assert not switch.is_checked()
+        assert switch.is_checked()
         page.locator("#panel-input1 label.output-toggle:has(#audio1_dynamic_rate_matching)").click()
         expect(page.locator("#autosave-status")).to_have_text("Saved")
-        assert switch.is_checked()
-        assert _STUB_POSTS == [{"field": "audio1.dynamic_rate_matching", "value": True}]
+        assert not switch.is_checked()
+        assert _STUB_POSTS == [{"field": "audio1.dynamic_rate_matching", "value": False}]
 
     def test_rate_matching_note_follows_the_levels_reply_without_a_reload(
         self, page: "Page", base_url: str

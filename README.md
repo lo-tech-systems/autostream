@@ -71,8 +71,6 @@ autostream 0.7 is the first release of the dial, including the full-size touchsc
   * Optical audio adapter for CD players (e.g. Cubilux USB C Optical Audio Capture Adapter)
 * **AirPlay or AirPlay 2 speakers** on the same network
 
-Some S/PDIF adapters deliver audio at the rate of the source they are connected to, whatever rate autostream asks them for. If you see the message "Sample Rate Mismatch: Please enable Dynamic Rate Matching" on the Home page, enabling **Dynamic Rate Matching** for that input on the Setup page will resolve this issue.
-
 Power consumption on a Pi Zero W or Zero 2W: under 2 Watts.
 
 **autostream** automatically installs owntone-mini (a derivative of OwnTone) for speaker discovery and streaming.

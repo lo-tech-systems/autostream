@@ -521,7 +521,7 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
             "dbfs": float(lv["dbfs"]) if (lv is not None and connected) else None,
             "sample_rate_text": rate_text,
             "rate_matching_note": note_text,
-            "dynamic_rate_matching": bool(lv.get("dynamic_rate_matching", False)) if lv is not None else False,
+            "dynamic_rate_matching": bool(lv.get("dynamic_rate_matching", True)) if lv is not None else True,
             "rate_mismatch_hz": int(lv.get("rate_mismatch_hz", 0)) if lv is not None else 0,
             "negotiated_hz": int(lv.get("negotiated_hz", 0)) if lv is not None else 0,
             "monitor_supports_rate_matching": (

@@ -1000,7 +1000,7 @@ def _setup_input_card_html(
         settings_wrap_id = f"{prefix}_settings"
         input_type = normalize_input_type(getattr(parsed_input, "input_type", "line"))
         threshold = float(parsed_input.silence_threshold_dbfs)
-        rate_matching = bool(getattr(parsed_input, "dynamic_rate_matching", False))
+        rate_matching = bool(getattr(parsed_input, "dynamic_rate_matching", True))
         rate_matching_note_raw, sample_rate_line_raw = input_rate_texts(input_index)
         rate_matching_note = html.escape(rate_matching_note_raw)
         sample_rate_line = html.escape(sample_rate_line_raw)

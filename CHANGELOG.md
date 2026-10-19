@@ -8,13 +8,14 @@ with a 0.6 appliance, and several features below need both sides updated.
 
 ### Inputs and playback
 
-- new: Dynamic Rate Matching, a switch on each input's Setup card, off by
-  default. Some optical (S/PDIF) USB adapters deliver audio at the source's rate
-  whatever rate they were opened at, so a CD could play about 8 percent slow and
-  low. With the switch on, autostream finds the real rate (32, 44.1 or 48 kHz)
-  within about half a second and follows it, without interrupting playback.
-  With it off, a mismatch raises a "Sample Rate Mismatch" banner on the Home
-  page that opens the input's card, which shows the rate arriving and the rate
+- new: Dynamic Rate Matching, a switch on each input's Setup card, on by
+  default. An appliance updated from an earlier release has it on unless the
+  switch was turned off on purpose. Some optical (S/PDIF) USB adapters deliver
+  audio at the source's rate whatever rate they were opened at, so a CD could
+  play about 8 percent slow and low. With the switch on, autostream finds the
+  real rate (32, 44.1 or 48 kHz) within about half a second and follows it,
+  without interrupting playback. With it off, a mismatch raises a "Sample Rate
+  Mismatch" banner on the Home page that opens the input's card, which shows the rate arriving and the rate
   in use.
 - new: each input has a type (Turntable, CD or Line) in place of the Turntable
   switch, and a Sensitivity slider (-70 dB to -30 dB) with a live level readout.

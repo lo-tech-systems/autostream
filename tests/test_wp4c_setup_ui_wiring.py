@@ -308,14 +308,17 @@ class TestSetupPageHtmlControls:
         assert 'id="audio2_dynamic_rate_matching"' in html
 
     def test_rate_matching_switch_follows_the_config(self, tmp_path):
-        off = _SetupRenderer().render(tmp_path)
+        default = _SetupRenderer().render(tmp_path)
+        switch = default.split('id="audio1_dynamic_rate_matching"', 1)[1].split("onchange", 1)[0]
+        assert "checked" in switch
+        off = _SetupRenderer().render(tmp_path, audio1={"dynamic_rate_matching": False})
         switch = off.split('id="audio1_dynamic_rate_matching"', 1)[1].split("onchange", 1)[0]
         assert "checked" not in switch
         on = _SetupRenderer().render(tmp_path, audio1={"dynamic_rate_matching": True})
         switch = on.split('id="audio1_dynamic_rate_matching"', 1)[1].split("onchange", 1)[0]
         assert "checked" in switch
         other = on.split('id="audio2_dynamic_rate_matching"', 1)[1].split("onchange", 1)[0]
-        assert "checked" not in other
+        assert "checked" in other
 
     def test_rate_matching_switch_and_note_follow_the_level_readout(self, html):
         level = html.index('id="audio1_level_val"')

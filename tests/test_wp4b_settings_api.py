@@ -492,7 +492,7 @@ class TestDynamicRateMatchingRow:
         assert resp["ok"] is True
         assert resp["value"] is True
         assert store.snapshot().audio1.dynamic_rate_matching is True
-        assert store.snapshot().audio2.dynamic_rate_matching is False
+        assert store.snapshot().audio2.dynamic_rate_matching is True
 
     def test_turning_it_off_is_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
@@ -546,7 +546,7 @@ class TestDynamicRateMatchingRow:
         pushed = mock_client.configure_input.call_args
         assert pushed.args[0] == 2
         assert pushed.kwargs["dynamic_rate_matching"] is True
-        assert store.snapshot().audio1.dynamic_rate_matching is False
+        assert store.snapshot().audio1.dynamic_rate_matching is True
 
     def test_no_running_monitor_is_still_live(self, tmp_path):
         state, store = _make_state(str(tmp_path))
@@ -559,7 +559,7 @@ class TestDynamicRateMatchingRow:
             code, resp = _post_resp(state, "audio1.dynamic_rate_matching", bad)
             assert code == 400
             assert "Value must be true or false" in resp["error"]
-        assert store.snapshot().audio1.dynamic_rate_matching is False
+        assert store.snapshot().audio1.dynamic_rate_matching is True
 
     def test_a_later_type_change_still_sends_the_flag(self, tmp_path):
         state, store = _make_state(str(tmp_path))

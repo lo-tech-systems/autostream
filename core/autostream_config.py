@@ -427,7 +427,7 @@ class AudioInputConfig:
     eq_100hz_db: float
     eq_8khz_db: float
     input_type: str = INPUT_TYPE_DEFAULT
-    dynamic_rate_matching: bool = False
+    dynamic_rate_matching: bool = True
 
 
 @dataclass(frozen=True)
@@ -699,7 +699,7 @@ def _parse_audio_input_config(section: dict) -> AudioInputConfig:
         # Support legacy eq_10khz_db key from pre-migration INI configs.
         eq_8khz_db=float(section.get("eq_8khz_db", section.get("eq_10khz_db", 0.0)) or 0.0),
         input_type=input_type,
-        dynamic_rate_matching=bool(section.get("dynamic_rate_matching", False)),
+        dynamic_rate_matching=bool(section.get("dynamic_rate_matching", True)),
     )
 
 

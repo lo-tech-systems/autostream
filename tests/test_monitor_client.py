@@ -316,7 +316,7 @@ class TestConfigureInput:
         assert cmd["silence_seconds"] == 5
         assert cmd["track_change_silence_seconds"] == pytest.approx(1.25)
         assert cmd["minimum_playback_seconds"] == 30
-        assert cmd["dynamic_rate_matching"] is False
+        assert cmd["dynamic_rate_matching"] is True
 
     def test_sends_custom_track_change_silence_seconds(self):
         payload = {"ok": True}
@@ -383,9 +383,9 @@ class TestConfigureInput:
         raw = self._sent_raw(dynamic_rate_matching=True)
         assert b'"dynamic_rate_matching": true' in raw or b'"dynamic_rate_matching":true' in raw
 
-    def test_sends_rate_matching_as_json_false_literal_by_default(self):
+    def test_sends_rate_matching_as_json_true_literal_by_default(self):
         raw = self._sent_raw()
-        assert b'"dynamic_rate_matching": false' in raw or b'"dynamic_rate_matching":false' in raw
+        assert b'"dynamic_rate_matching": true' in raw or b'"dynamic_rate_matching":true' in raw
 
     @pytest.mark.parametrize("value", [None, 0, 1, "yes", ""])
     def test_rate_matching_is_always_a_real_bool(self, value):

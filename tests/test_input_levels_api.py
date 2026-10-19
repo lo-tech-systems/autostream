@@ -110,7 +110,7 @@ def test_input_without_a_running_monitor_gets_empty_rate_fields_and_the_note():
     code, body = _call(levels=[_level(1, -40.0)])
     second = body["inputs"][1]
     assert second["running"] is False
-    assert second["dynamic_rate_matching"] is False
+    assert second["dynamic_rate_matching"] is True
     assert second["rate_mismatch_hz"] == 0
     assert second["negotiated_hz"] == 0
     assert second["monitor_supports_rate_matching"] is False

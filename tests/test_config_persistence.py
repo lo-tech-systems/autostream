@@ -377,8 +377,13 @@ class TestDynamicRateMatching:
     def _audio1(section):
         return c.parse_config({"audio1": section}).audio1
 
-    def test_absent_key_is_off(self):
-        assert self._audio1({}).dynamic_rate_matching is False
+    def test_absent_key_is_on(self):
+        assert self._audio1({}).dynamic_rate_matching is True
+
+    def test_empty_config_is_on_for_both_inputs(self):
+        cfg = c.parse_config({})
+        assert cfg.audio1.dynamic_rate_matching is True
+        assert cfg.audio2.dynamic_rate_matching is True
 
     def test_true_and_false_are_read(self):
         assert self._audio1({"dynamic_rate_matching": True}).dynamic_rate_matching is True
@@ -387,7 +392,7 @@ class TestDynamicRateMatching:
     def test_input_2_is_read_separately(self):
         cfg = c.parse_config({"audio2": {"dynamic_rate_matching": True}})
         assert cfg.audio2.dynamic_rate_matching is True
-        assert cfg.audio1.dynamic_rate_matching is False
+        assert cfg.audio1.dynamic_rate_matching is True
 
     def test_truthy_non_bool_reads_as_on(self):
         assert self._audio1({"dynamic_rate_matching": 1}).dynamic_rate_matching is True
@@ -399,7 +404,7 @@ class TestDynamicRateMatching:
             belt_life_years=0, bearing_life_hours=0, bearing_life_years=0,
             gain_db=0.0, eq_40hz_db=0.0, eq_100hz_db=0.0, eq_8khz_db=0.0,
         )
-        assert a.dynamic_rate_matching is False
+        assert a.dynamic_rate_matching is True
 
 
 class TestSetInputType:

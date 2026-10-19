@@ -3097,7 +3097,7 @@ class MonitorClient:
         track_change_silence_seconds: float = 1.25,
         minimum_playback_seconds: int = 30,
         input_type: Optional[str] = None,
-        dynamic_rate_matching: bool = False,
+        dynamic_rate_matching: bool = True,
     ) -> bool:
         cmd = {
             "type": "configure_input",
@@ -3382,7 +3382,7 @@ class AudioMonitor:
         eq_8khz_db: float = 0.0,
         is_turntable: bool = False,
         input_type: str = INPUT_TYPE_DEFAULT,
-        dynamic_rate_matching: bool = False,
+        dynamic_rate_matching: bool = True,
     ) -> None:
         self.input_index = input_index
         self.input_device = input_device

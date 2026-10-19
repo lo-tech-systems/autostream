@@ -50,6 +50,8 @@ def _make_monitor(**overrides) -> AudioMonitor:
         owntone_base_url="http://localhost:3689",
         owntone_output_name="Test Speaker",
         owntone_volume_percent=50,
+        # Most tests here exercise the switch-off behaviour.
+        dynamic_rate_matching=False,
     )
     defaults.update(overrides)
 
@@ -1463,8 +1465,10 @@ class TestRateMatchingFlagOnEveryPush:
             core.update_live_input_type(0, "cd", -60.0)
         assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is True
 
-    def test_flag_defaults_off_on_a_new_monitor(self):
-        assert _make_monitor(input_index=0).dynamic_rate_matching is False
+    def test_flag_defaults_on_for_a_new_monitor(self):
+        import inspect
+        param = inspect.signature(AudioMonitor.__init__).parameters["dynamic_rate_matching"]
+        assert param.default is True
 
     def test_resync_sends_each_monitors_own_flag(self):
         client = MagicMock(spec=MonitorClient)
