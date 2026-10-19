@@ -12,9 +12,10 @@ generated cover art. Nothing here is collected by the test suite.
   `tests/hd_scenarios.py`, reusing its helpers, with the invented tracks and
   covers. Appliances are named for their input (Turntable, CD Player, Tape
   Deck) and speakers for their rooms.
-- `spi_shots.py`: the small SPI dial's screens, drawn by the dial's own
-  compositor at the native size of a 320x240 panel (rich layout) and a
-  240x240 panel (compact layout).
+- `spi_shots.py`: every screen of the small SPI dial, drawn by the dial's own
+  compositor for a 320x240 panel (rich layout) and a 240x240 panel (compact
+  layout), where the screen exists on that layout. Edit `screens()` to add or
+  change one.
 - `capture.py`: runs it all.
 
 ## Regenerating
@@ -22,13 +23,16 @@ generated cover art. Nothing here is collected by the test suite.
 From the repository root, with the dial's Python dependencies, Pillow,
 Playwright and the WebKit engine installed:
 
-    python tools/showcase/capture.py [OUT_DIR] [--engine webkit|chromium]
+    python tools/showcase/capture.py [OUT_DIR | --docs] [--engine webkit|chromium]
                                      [--only hd|spi] [--scenario NAME ...]
 
 The default folder is `showcase-shots` inside the gitignored docs/working
-folder. HD pictures are `hd-<scenario>-<width>x<height>.png` at 800x480 and
-1024x600; SPI pictures are `spi-<screen>-<variant>.png` at the panel's size,
-with an `@2x` copy scaled up with nearest-neighbour for print.
+folder. HD pictures go to `hd-dial/<scenario>-<width>x<height>.png` at 800x480
+and 1024x600; SPI pictures go to `spi-dial/<screen>.png` (rich layout) and
+`spi-dial/compact/<screen>.png`, scaled up two times with nearest-neighbour.
+
+`--docs` writes the published set into docs/dial/images/showcase instead:
+the HD pictures listed in `DOCS_HD` at 1024x600, and every SPI screen.
 
 WebKit is the default because the kiosk browser is WebKit-based. On a drive
 that is slow for many small files (a mounted Windows disk under WSL), copy the
