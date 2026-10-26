@@ -198,7 +198,7 @@ class TestConnectToConfiguredWifiUuid:
              patch.object(watcher.nm, "clear_restrictions") as clear, \
              patch.object(watcher.nm, "activate_ident",
                           return_value=MagicMock(returncode=0, stderr="")) as activate, \
-             patch.object(watcher, "wait_for_connection") as wait:
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection") as wait:
             ok = watcher.wifi_config.connect_to_configured_wifi(watcher.CONFIG_CTX)
         assert ok is True
         wait.assert_not_called()  # fire-and-forget: no blocking IPv4 wait in the loop

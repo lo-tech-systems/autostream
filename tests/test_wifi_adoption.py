@@ -1120,8 +1120,8 @@ class TestReconnectSavedEpisode:
              patch.object(watcher.nm, "set_bssid"), \
              patch.object(watcher.nm, "activate",
                           side_effect=lambda *a, **k: order.append("activate") or MagicMock(returncode=0, stderr="")), \
-             patch.object(watcher, "wait_for_connection", return_value=True), \
-             patch.object(watcher, "is_wifi_client_healthy", return_value=True):
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=True), \
+             patch.object(watcher.ACTIVATION_CTX, "is_wifi_client_healthy", return_value=True):
             watcher.wifi_activation._activate_profile_on(watcher.ACTIVATION_CTX, "wlan0", watcher.wifi_net.NetworkState("Home", ""))
         assert order == ["clear", "activate"]   # restrictions cleared BEFORE activation
 
@@ -1133,7 +1133,7 @@ class TestReconnectSavedEpisode:
              patch.object(watcher.nm, "clear_restrictions"), \
              patch.object(watcher.nm, "set_bssid"), \
              patch.object(watcher.nm, "activate", return_value=absent), \
-             patch.object(watcher, "wait_for_connection") as wait:
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection") as wait:
             ok = watcher.wifi_activation._activate_profile_on(
                 watcher.ACTIVATION_CTX, "wlan0", watcher.wifi_net.NetworkState("Home", "uuid-1"))
         assert ok is False

@@ -218,7 +218,7 @@ class TestActivationWorker:
         job = self._job(watcher, kind="activate_profile", profile=state)
         with patch.object(watcher.ACTIVATION_CTX, "_resolve_committed_uuid", return_value="u1"), \
              patch.object(watcher, "run_cmd", return_value=timed_out), \
-             patch.object(watcher, "wait_for_connection", return_value=False):
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection", return_value=False):
             r = watcher.wifi_activation._run_activation_job(watcher.ACTIVATION_CTX, job)
         assert r.ok is False
 
@@ -591,7 +591,7 @@ class TestCandidateValidateTail:
              patch.object(watcher.nm, "clear_restrictions"), \
              patch.object(watcher.nm, "activate", return_value=absent), \
              patch.object(watcher.nm, "delete_by_uuid") as delete_uuid, \
-             patch.object(watcher, "wait_for_connection") as wait:
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection") as wait:
             ok = watcher._try_candidate_on_adapter("SSID", "pw", target)
 
         assert ok is False
@@ -904,7 +904,7 @@ class TestProbePatience:
              patch.object(watcher.ACTIVATION_CTX, "_resolve_committed_uuid", return_value="u1"), \
              patch.object(watcher.nm, "clear_restrictions"), \
              patch.object(watcher.nm, "activate", return_value=absent), \
-             patch.object(watcher, "wait_for_connection") as waiter:
+             patch.object(watcher.ACTIVATION_CTX, "wait_for_connection") as waiter:
             result = watcher.wifi_activation._activate_committed_on(watcher.ACTIVATION_CTX, "wlan1")
         assert result is False
         waiter.assert_not_called()
