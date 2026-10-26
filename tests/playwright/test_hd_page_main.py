@@ -313,6 +313,9 @@ class TestVolume:
         expect(page.locator("#master-num")).to_have_text("64")
 
     def test_real_drag_ends_near_the_target(self, page, hd):
+        # How many requests a real drag sends depends on how fast the
+        # machine moves the mouse and answers them; the cadence itself is
+        # pinned by test_drag_cadence_and_final_value.
         sent = watch_actions(page)
         open_page(page, hd)
         box = page.locator("#master").bounding_box()
@@ -325,7 +328,6 @@ class TestVolume:
         page.wait_for_timeout(300)
         levels = [body["level"] for name, body in sent if name == "volume_set"]
         assert levels and abs(levels[-1] - 70) <= 6
-        assert len(levels) <= 14
 
     def test_confirmed_by_the_state_it_stays(self, page, hd):
         page.clock.install()
