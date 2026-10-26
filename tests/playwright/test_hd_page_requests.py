@@ -181,7 +181,7 @@ def count_replies(page) -> None:
 
 def replied(page, count=1) -> None:
     """Wait until the page has handled *count* replies."""
-    page.wait_for_function(f"window.__replies >= {count}")
+    page.wait_for_function(f"() => window.__replies >= {count}")
 
 
 def start_held(page, hd, *, answer_with=None, status=200):

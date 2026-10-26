@@ -16,6 +16,7 @@ import json
 import re
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,17 @@ def drag_input(page, selector, values, final=None):
     )
 
 
+def wait_for_state(page, test, timeout_s=5.0):
+    """Wait until the server's state passes *test*, a JavaScript expression
+    of the state `s`. wait_for_function cannot do this: a predicate that
+    returns a promise counts as true at once, before the promise settles."""
+    check = f"() => fetch('/api/v1/state').then(r => r.json()).then(s => {test})"
+    deadline = time.monotonic() + timeout_s
+    while not page.evaluate(check):
+        assert time.monotonic() < deadline, f"the state never had {test}"
+        page.wait_for_timeout(50)
+
+
 def outputs_with(*rows_):
     return OutputsState(LOUNGE, tuple(rows_), True, hs.NOW - 1)
 
@@ -111,7 +123,7 @@ class TestStates:
         art = page.locator("#art")
         expect(art).to_have_attribute("src", re.compile(r"^/api/v1/artwork/[0-9a-f]{16}$"))
         expect(art).not_to_have_class(re.compile("logo"))
-        page.wait_for_function("document.getElementById('art').complete")
+        page.wait_for_function("() => document.getElementById('art').complete")
         assert page.evaluate("document.getElementById('art').naturalWidth") == 1
         assert rows(page).count() == 1
         expect(rows(page).first.locator(".state")).to_have_text("Playing")
@@ -320,7 +332,7 @@ class TestVolume:
         open_page(page, hd)
         drag_input(page, "#master", [], final=77)
         hd.show(scenario("playing_artwork", volume_readout=("Lounge", 77)))
-        page.wait_for_function("fetch('/api/v1/state').then(r => r.json()).then(s => s.volume.level === 77)")
+        wait_for_state(page, "s.volume.level === 77")
         page.wait_for_timeout(300)
         page.clock.run_for(2500)
         expect(page.locator("#master-num")).to_have_text("77")
@@ -360,7 +372,7 @@ class TestMute:
         open_page(page, hd)
         page.locator("#mute").click()
         hd.show(dataclasses.replace(hs.SCENARIOS["playing_artwork"], muted=True))
-        page.wait_for_function("fetch('/api/v1/state').then(r => r.json()).then(s => s.volume.muted === true)")
+        wait_for_state(page, "s.volume.muted === true")
         page.wait_for_timeout(300)
         page.clock.run_for(2500)
         expect(page.locator("#mute")).to_have_attribute("aria-pressed", "true")
@@ -833,7 +845,7 @@ class TestRightColumn:
     def test_group_never_overlaps(self, page, hd, name, size):
         hd.show(hs.SCENARIOS[name])
         open_page(page, hd, size)
-        page.wait_for_function("document.getElementById('art').complete")
+        page.wait_for_function("() => document.getElementById('art').complete")
         assert_column_sound(column_boxes(page), size)
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
@@ -842,7 +854,7 @@ class TestRightColumn:
         for name in ("playing_artwork", "nothing_playing"):
             hd.show(hs.SCENARIOS[name])
             open_page(page, hd, size)
-            page.wait_for_function("document.getElementById('art').complete")
+            page.wait_for_function("() => document.getElementById('art').complete")
             sizes.append(page.locator(".art-frame").bounding_box())
         assert sizes[0] == sizes[1]
 
@@ -894,7 +906,7 @@ class TestBackdrop:
         open_page(page, hd)
         expect(page.locator("#backdrop")).to_have_attribute("src", "/api/v1/logo/backdrop")
         expect(page.locator("#art")).to_have_class(re.compile("logo"))
-        page.wait_for_function("document.getElementById('backdrop').complete")
+        page.wait_for_function("() => document.getElementById('backdrop').complete")
         assert page.evaluate("document.getElementById('backdrop').naturalWidth") > 0
 
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
@@ -910,7 +922,7 @@ class TestBackdrop:
     def test_the_picture_fills_the_frame(self, page, hd, scenario_name, share):
         hd.show(hs.SCENARIOS[scenario_name])
         open_page(page, hd)
-        page.wait_for_function("document.getElementById('art').complete")
+        page.wait_for_function("() => document.getElementById('art').complete")
         frame = page.locator(".art-frame").bounding_box()
         art = page.locator("#art").bounding_box()
         inner = frame["width"] - 16

@@ -174,7 +174,7 @@ def _open_dials(page: "Page", base: str, body: dict) -> None:
     ).first.click()
     page.wait_for_selector(".dial-card")
     page.wait_for_function(
-        "document.querySelector('.dial-card').dataset.screenLoaded === '1'"
+        "() => document.querySelector('.dial-card').dataset.screenLoaded === '1'"
     )
 
 
