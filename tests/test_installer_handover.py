@@ -169,6 +169,10 @@ class TestHandOver:
 
     @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGHUP, signal.SIGTERM])
     def test_leaving_the_terminal_early_cleans_up_and_says_the_install_goes_on(self, env, tmp_path, sig):
+        if signal.getsignal(sig) == signal.SIG_IGN:
+            # A shell started with a signal ignored cannot trap it (under
+            # nohup, say), so the hand-over would wait out the service.
+            pytest.skip(f"{signal.Signals(sig).name} is ignored by this test run")
         systemd_dir = tmp_path / "run-systemd"
         systemd_dir.mkdir()
         scratch = tmp_path / "scratch"
