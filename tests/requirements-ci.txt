@@ -10,6 +10,8 @@ pytest
 flask
 requests
 pytest-timeout
+# Spreads the suite over the runner's CPUs (pytest -n auto).
+pytest-xdist
 pillow
 # numpy is required on the dial itself (the display driver falls back to a
 # per-pixel Python frame conversion without it, which is unusably slow), and

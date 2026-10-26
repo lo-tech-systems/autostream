@@ -73,4 +73,10 @@ echo "=== WSL test suite: $REPO_ROOT ==="
 echo "=== Targets: $TARGETS ==="
 echo ""
 
-exec python3 -m pytest $TARGETS -q --ignore=tests/playwright --timeout=60
+# Spread the tests over every CPU when pytest-xdist is installed.
+PARALLEL=()
+if python3 -c "import xdist" &>/dev/null; then
+    PARALLEL=(-n auto)
+fi
+
+exec python3 -m pytest $TARGETS -q --ignore=tests/playwright --timeout=60 "${PARALLEL[@]}"

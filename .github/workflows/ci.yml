@@ -12,7 +12,7 @@ jobs:
   # -----------------------------------------------------------------------
   offline-tests:
     name: Offline test suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       # Full history: test_update_from_030.py extracts the 0.3.0 updater
@@ -29,7 +29,7 @@ jobs:
         run: pip install -r tests/requirements-ci.txt
 
       - name: Run offline test suite
-        run: python -m pytest tests/ -q --ignore=tests/playwright --timeout=60
+        run: python -m pytest tests/ -q --ignore=tests/playwright --timeout=60 -n auto
 
   # -----------------------------------------------------------------------
   # Environment-dependent suite — requires system tools that are absent on
@@ -41,7 +41,7 @@ jobs:
   # -----------------------------------------------------------------------
   env-dependent-tests:
     name: Environment-dependent tests (Linux tools)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       # Full history: needed by test_update_from_030.py (see offline-tests).
@@ -69,7 +69,7 @@ jobs:
         run: pip install -r tests/requirements-ci.txt
 
       - name: Run full test suite (env-dependent tests now active)
-        run: python -m pytest tests/ -q --ignore=tests/playwright --timeout=60
+        run: python -m pytest tests/ -q --ignore=tests/playwright --timeout=60 -n auto
 
   # -----------------------------------------------------------------------
   # WSL-equivalent test suite — same Linux tools as env-dependent-tests but
@@ -80,7 +80,7 @@ jobs:
   # -----------------------------------------------------------------------
   wsl-tests:
     name: WSL / Linux environment tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       # Full history: needed by test_update_from_030.py (see offline-tests).
@@ -117,7 +117,7 @@ jobs:
   # -----------------------------------------------------------------------
   playwright:
     name: Playwright browser tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # When AUTOSTREAM_URL is unset, test_ui_flows.py starts a local stub
     # server automatically so browser tests always execute.  Set AUTOSTREAM_URL
@@ -136,6 +136,6 @@ jobs:
         run: playwright install --with-deps chromium
 
       - name: Run Playwright tests
-        run: python -m pytest tests/playwright/ -q --timeout=60
+        run: python -m pytest tests/playwright/ -q --timeout=60 -n auto
         env:
           AUTOSTREAM_URL: ${{ vars.AUTOSTREAM_URL }}
