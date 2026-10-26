@@ -21,6 +21,7 @@ Environment-dependent (Linux CI only):
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -1003,9 +1004,29 @@ nginx_available = pytest.mark.skipif(
     reason="nginx not available",
 )
 
+def _classic_visudo() -> str | None:
+    # The appliance runs the original sudo. The Rust rewrite (visudo-rs, the
+    # default on newer Ubuntu) reads a stricter dialect, rejecting settings
+    # such as requiretty and wildcards in command arguments, so its verdict
+    # says nothing about the files as the appliance reads them. visudo lives
+    # in /usr/sbin, which an ordinary user's PATH often leaves out.
+    path = shutil.which("visudo") or shutil.which("visudo", path="/usr/sbin")
+    if path is None:
+        return None
+    try:
+        r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    if r.returncode != 0 or "visudo-rs" in r.stdout + r.stderr:
+        return None
+    return path
+
+
+VISUDO = _classic_visudo()
+
 visudo_available = pytest.mark.skipif(
-    not _tool_ok("visudo"),
-    reason="visudo not available",
+    VISUDO is None,
+    reason="the original sudo's visudo is not available",
 )
 
 
@@ -1168,7 +1189,7 @@ class TestLinuxServiceValidation:
     ], ids=["autostream_admin", "autostream_dial", "autostream_updater"])
     def test_visudo_validates_sudoers(self, sudoers):
         r = subprocess.run(
-            ["visudo", "-cf", str(sudoers)],
+            [VISUDO, "-cf", str(sudoers)],
             capture_output=True, text=True, timeout=10,
         )
         assert r.returncode == 0, (
