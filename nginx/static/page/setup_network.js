@@ -57,7 +57,7 @@
               warningEl.textContent = j.warning;
               warningEl.style.color = (j.warning_severity === 'danger')
                 ? 'var(--color-status-danger,#c00)'
-                : 'var(--color-warning,#b26b00)';
+                : 'var(--color-status-warning,#b26b00)';
               warningEl.style.display = '';
             } else {
               warningEl.style.display = 'none';

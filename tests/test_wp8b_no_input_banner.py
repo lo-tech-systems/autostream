@@ -184,7 +184,7 @@ class TestSetupPageBannerAbsent:
         fake_outputs_result(ListOutputsResult(ok=False, error="unreachable"))
         with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                send_setup_page(handler, state, auth, flash_msg="")
+                send_setup_page(handler, state, auth)
 
         store.close(save=False)
         return handler.wfile.getvalue().decode("utf-8", errors="replace")

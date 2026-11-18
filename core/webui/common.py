@@ -15,12 +15,11 @@ import json
 import logging
 import re
 from datetime import datetime
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import urlparse
 from typing import Optional
 
 from webui import static
 from autostream_settings import SettingsView
-from autostream_auth import FLASH_COOKIE_NAME, parse_cookie_header
 from autostream_bluetooth_client import classify_loopback_hw
 from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
@@ -79,71 +78,6 @@ def _effective_control_other_appliances(state) -> bool:
         return parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
     except Exception:
         return True
-
-
-# -----------------------------------------------------------------------------
-# Flash cookie -- short-lived status message passed across a POST/redirect/GET
-# cycle (e.g. "Settings saved", "Save failed").
-# -----------------------------------------------------------------------------
-
-def _set_flash_cookie(handler, message: str, *, max_age: int = 30, flash_type: str = "success") -> None:
-    """
-    Set a short-lived flash cookie to be consumed (and cleared) on the next GET.
-    Stored URL-escaped to keep it cookie-safe.
-    Non-success types are encoded as a '<type>:' prefix so the reader can
-    reconstruct the correct banner colour without a separate cookie.
-    """
-    encoded = (f"{flash_type}:{message}") if flash_type != "success" else message
-    val = quote(encoded, safe="")
-    cookie = (
-        f"{FLASH_COOKIE_NAME}={val}; Max-Age={max_age}; Path=/; HttpOnly; SameSite=Lax"
-    )
-    pending = getattr(handler, "_pending_set_cookies", None)
-    if pending is None:
-        handler._pending_set_cookies = [cookie]
-    else:
-        pending.append(cookie)
-
-
-def _route_flash_msg_and_type(handler) -> tuple:
-    """Reproduces do_GET's former shared flash-message preamble for a
-    single migrated page route: msg from ?msg=, else the one-shot flash
-    cookie (consumed on read). Only used by routes that used to fall
-    within do_GET's cookie-consuming branch (i.e. not /owntone-restarting
-    and not any /api/* path) -- see that former preamble's comment, now
-    only reachable for the handful of legacy paths still in do_GET's
-    elif chain.
-    """
-    query = urlparse(handler.path).query
-    qs = parse_qs(query)
-    msg = (qs.get("msg") or [""])[0]
-    flash_type = "success"
-    if msg:
-        colon = msg.find(":")
-        if colon > 0 and msg[:colon] in ("error", "warning"):
-            flash_type = msg[:colon]
-            msg = msg[colon + 1:]
-    if not msg:
-        cookies = parse_cookie_header(handler.headers.get("Cookie"))
-        raw = cookies.get(FLASH_COOKIE_NAME, "")
-        if raw:
-            try:
-                decoded = unquote(raw)
-            except Exception:
-                decoded = raw
-            colon = decoded.find(":")
-            if colon > 0 and decoded[:colon] in ("error", "warning"):
-                flash_type = decoded[:colon]
-                msg = decoded[colon + 1:]
-            else:
-                msg = decoded
-            clear_cookie = f"{FLASH_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
-            pending = getattr(handler, "_pending_set_cookies", None)
-            if pending is None:
-                handler._pending_set_cookies = [clear_cookie]
-            else:
-                pending.append(clear_cookie)
-    return msg, flash_type
 
 
 # -----------------------------------------------------------------------------
@@ -315,14 +249,12 @@ def send_hostname_changed_page(
     path: str = "/",
     show_nav: bool = False,
     active_tab: str = "setup",
-    flash_msg: Optional[str] = None,
-    flash_type: str = "success",
 ) -> None:
     """Render a short wait page and redirect the browser to the new .local host."""
     redirect_url = build_hostname_redirect_url(handler, hostname, path)
     safe_host = html.escape(hostname)
     safe_url = html.escape(redirect_url)
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    lic_html, lic_spacer = build_top_banner_html()
     body_html = f"""
 {logo_banner_html()}
 <h1>Hostname changed</h1>
@@ -359,16 +291,10 @@ def send_hostname_changed_page(
 # Top-of-page banner HTML
 # -----------------------------------------------------------------------------
 
-def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "success") -> tuple[str, str]:
-    """Returns (banner_html, spacer_html). Handles persistent and flash messages."""
-
-    # Priority 1: User-triggered flash messages (e.g. "Settings saved" / errors)
-    if flash_msg:
-        banner_id = "red-banner" if flash_type == "error" else "green-banner"
-        return banner_html(banner_id, html.escape(flash_msg))
-
-    # Priority 2: the critical entries of the warnings part, most severe
-    # first; with several, the first and a count of the rest.
+def build_top_banner_html() -> tuple[str, str]:
+    """Returns (banner_html, spacer_html): the critical entries of the warnings
+    part, most severe first, or two empty strings when there are none. With
+    several, the first and a count of the rest."""
     critical = [e for e in store().snapshot().warnings.entries if e.severity == "critical"]
     if not critical:
         return ("", "")
@@ -376,6 +302,14 @@ def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "su
     if len(critical) > 1:
         text += f" +{len(critical) - 1} more"
     return banner_html("red-banner", html.escape(text))
+
+
+def service_severity(snap=None) -> Optional[str]:
+    """The worst severity among the warnings that link to the Service page
+    ("critical", "warning" or "info"), or None. The entries are most severe
+    first, so it is the first one that links there."""
+    entries = (snap if snap is not None else store().snapshot()).warnings.entries
+    return next((e.severity for e in entries if e.link == "/service"), None)
 
 
 # -----------------------------------------------------------------------------
@@ -443,13 +377,14 @@ def settings_card_html(inner_html: str, *, margin_top: str = "0.75rem", warn: bo
 def build_nav_bar_html(
     active: str = "",
     *,
-    service_warn: bool = False,
+    service_severity: Optional[str] = None,
     remote_id: str = "",
 ) -> str:
     """Return the fixed bottom navigation bar HTML.
 
-    active:       one of 'home', 'equaliser', 'setup', 'service', 'about'
-    service_warn: when True the Service tab is styled red (e.g. stylus overdue)
+    active:           one of 'home', 'equaliser', 'setup', 'service', 'about'
+    service_severity: the worst severity of the warnings that link to the
+                      Service page; the tab is coloured by it
     remote_id:    when set, renders remote mode -- Home/Equaliser link to the remote
                   appliance; Service, Setup and Info are disabled (non-navigable).
     """
@@ -474,8 +409,8 @@ def build_nav_bar_html(
         classes = ["nav-tab"]
         if key == active:
             classes.append("nav-tab-active")
-        if key == "service" and service_warn and not remote_id:
-            classes.append("nav-tab-warn")
+        if key == "service" and service_severity and not remote_id:
+            classes.append(f"nav-tab-warn-{service_severity}")
         if href is None:
             classes.append("nav-tab-disabled")
         cls = " ".join(classes)
@@ -613,7 +548,7 @@ def build_page_html(
     lic_spacer: str = "",
     active_tab: str = "",
     show_nav: bool = True,
-    service_warn: bool = False,
+    service_severity: Optional[str] = None,
     dark_mode: bool = False,
     remote_id: str = "",
 ) -> str:
@@ -635,11 +570,11 @@ def build_page_html(
                   (e.g. modal dialogs, overlay divs)
     body_suffix : raw HTML injected after the closing </div> of .container and
                   before the nav bar (e.g. scripts)
-    lic_html    : from build_top_banner_html() -- the fixed flash/PSU banner
+    lic_html    : from build_top_banner_html() -- the fixed critical-warning banner
     lic_spacer  : from build_top_banner_html() -- the spacer div
     active_tab   : one of 'home', 'equaliser', 'setup', 'service', 'about'
     show_nav     : when False the nav bar is omitted (e.g. initial-setup wizard)
-    service_warn : when True the Service tab is highlighted red
+    service_severity : the Service tab is coloured by this severity (None for none)
     dark_mode    : when True the dark colour theme is applied via data-theme="dark"
     remote_id    : when set, the nav bar renders in remote mode (pass the remote
                    appliance ID)
@@ -650,7 +585,7 @@ def build_page_html(
     # query string cache-busts on every release without needing a shorter max-age.
     style_link = static.style_tag("theme.css") + "".join(static.style_tag(f) for f in style_files)
     extra_style = f'<style>{extra_css.strip()}</style>' if extra_css.strip() else ""
-    nav = build_nav_bar_html(active_tab, service_warn=service_warn, remote_id=remote_id) if show_nav else ""
+    nav = build_nav_bar_html(active_tab, service_severity=service_severity, remote_id=remote_id) if show_nav else ""
     body_cls = ' class="has-bottom-nav"' if show_nav else ""
     theme_attr = ' data-theme="dark"' if dark_mode else ' data-theme="light"'
     return (

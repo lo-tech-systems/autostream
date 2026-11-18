@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from typing import Optional
 
 from autostream_config import (
     VALID_STYLUS_LIFE_HOURS,
@@ -542,14 +541,9 @@ def _service_page_header(title: str) -> str:
 # Page renderer
 # -----------------------------------------------------------------------------
 
-def send_service_page(
-    handler,
-    state: WebUIState,
-    flash_msg: Optional[str] = None,
-    flash_type: str = "success",
-) -> None:
+def send_service_page(handler, state: WebUIState) -> None:
     """Render and send the Service page."""
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    lic_html, lic_spacer = build_top_banner_html()
 
     parsed = None
     try:
@@ -557,8 +551,8 @@ def send_service_page(
     except Exception:
         parsed = None
 
-    playback_snapshot = store().snapshot().playback
-    service_warn = playback_snapshot.has_warning
+    snap = store().snapshot()
+    playback_snapshot = snap.playback
     csrf_token = getattr(handler, "_csrf_token", None) or ""
 
     if parsed is not None:
@@ -622,7 +616,7 @@ def send_service_page(
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="service",
-        service_warn=service_warn,
+        service_severity=common.service_severity(snap),
         dark_mode=parsed.webui.dark_mode if parsed else False,
     )
     common.send_html(handler, 200, html_body)
@@ -635,5 +629,4 @@ def send_service_page(
 
 
 def _route_get_service(handler, state):
-    msg, flash_type = common._route_flash_msg_and_type(handler)
-    send_service_page(handler, state, flash_msg=msg, flash_type=flash_type)
+    send_service_page(handler, state)

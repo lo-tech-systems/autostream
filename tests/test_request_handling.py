@@ -305,6 +305,26 @@ class TestNonObjectJson:
 
 
 # ---------------------------------------------------------------------------
+# A stale CSRF token on a page route
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestStaleTokenOnAPage:
+    def test_a_post_to_setup_with_a_stale_token_is_refused_without_a_redirect_or_cookie(self):
+        auth = _make_auth()
+        tok, _csrf = _csrf_session(auth)
+        h = _make_handler("/setup", b"{}", sess_token=tok, csrf_token="stale")
+        codes = []
+        h.send_error = lambda code, *a, **k: codes.append(code)
+        h.send_response = lambda code, *a, **k: codes.append(code)
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()):
+            h.do_POST()
+        assert codes and all(c >= 400 for c in codes), codes
+        assert h._pending_set_cookies == []
+
+
+# ---------------------------------------------------------------------------
 # Factory reset — local privileged-helper failure → 500
 # ---------------------------------------------------------------------------
 

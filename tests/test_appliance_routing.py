@@ -119,6 +119,32 @@ def _make_post_handler(
 
 
 # ---------------------------------------------------------------------------
+# GET /a/<id>/ with control of other appliances off
+# ---------------------------------------------------------------------------
+
+@_skip
+class TestRemotePageWithControlOff:
+    def test_another_appliances_page_answers_a_plain_redirect_home(self):
+        other = "aabbccdd1122334455aa"
+        mgr = _make_auth(pin=None)
+        handler = _make_get_handler(f"/a/{other}/")
+        codes, headers = [], []
+        handler.send_response = lambda c, *a: codes.append(c)
+        handler.send_header = lambda k, v: headers.append((k, v))
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state()), \
+             patch("autostream_rpi.get_appliance_id", return_value="0" * 20), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("webui.browser.home.send_remote_home_page") as remote_page:
+            handler.do_GET()
+        assert codes == [302]
+        assert ("Location", "/") in headers
+        assert not [h for h in headers if h[0] == "Set-Cookie"]
+        assert handler._pending_set_cookies == []
+        remote_page.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # GET /api/appliances — list endpoint
 # ---------------------------------------------------------------------------
 

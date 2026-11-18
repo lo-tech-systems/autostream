@@ -244,49 +244,6 @@ class TestIndependentFailureCounters:
 
 
 # ---------------------------------------------------------------------------
-# ?msg= prefix parsing on the landing page
-# ---------------------------------------------------------------------------
-
-@_skip
-class TestMsgPrefixParsing:
-    """?msg=error:<text> on / must render an error-type banner, not success."""
-
-    def _get_home_with_msg(self, msg: str) -> str:
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/?msg={msg}")
-        chunks = []
-        handler.wfile.write = lambda d: chunks.append(d)
-
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", MagicMock()), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("webui.browser.home.send_airplay_page") as stub:
-            handler.do_GET()
-        if not stub.called:
-            return ""
-        kwargs = stub.call_args
-        return kwargs[1].get("flash_type", kwargs[0][3] if len(kwargs[0]) > 3 else "")
-
-    def test_error_prefix_yields_error_flash_type(self):
-        import urllib.parse
-        msg = urllib.parse.quote("error:Something went wrong")
-        flash_type = self._get_home_with_msg(msg)
-        assert flash_type == "error"
-
-    def test_plain_msg_yields_success_flash_type(self):
-        import urllib.parse
-        msg = urllib.parse.quote("Settings saved")
-        flash_type = self._get_home_with_msg(msg)
-        assert flash_type == "success"
-
-    def test_warning_prefix_yields_warning_flash_type(self):
-        import urllib.parse
-        msg = urllib.parse.quote("warning:Check your settings")
-        flash_type = self._get_home_with_msg(msg)
-        assert flash_type == "warning"
-
-
-# ---------------------------------------------------------------------------
 # Canonical equaliser redirect
 # ---------------------------------------------------------------------------
 

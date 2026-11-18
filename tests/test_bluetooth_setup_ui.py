@@ -129,7 +129,7 @@ class _SetupRenderer:
             with patch.object(
                 state, "get_monitor_devices", return_value=(monitor_devices or [])
             ):
-                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth)
 
         store.close(save=False)
         return html
@@ -233,7 +233,7 @@ class TestBluetoothDisabledGating:
         fake_outputs_result(_list_result)
         with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                send_setup_page(handler, state, auth, flash_msg="")
+                send_setup_page(handler, state, auth)
         store.close(save=False)
         html = handler.wfile.getvalue().decode("utf-8", errors="replace")
         assert "btPairingModal" not in html

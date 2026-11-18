@@ -96,8 +96,6 @@ def send_setup_page(
     auth,
     saved_ok: bool = False,
     error: Optional[str] = None,
-    flash_msg: Optional[str] = None,
-    flash_type: str = "success",
 ) -> None:
     """Render the main setup page.
 
@@ -133,7 +131,7 @@ def send_setup_page(
 
     h1 = "Setup"
 
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    lic_html, lic_spacer = build_top_banner_html()
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + static.script_tag("page/csrf_recovery.js")
     factory_reset_modal = ctx.factory_reset["modal"]
@@ -416,8 +414,7 @@ def send_setup_page(
 
 
 def _route_get_setup(handler, state):
-    msg, _flash_type = common._route_flash_msg_and_type(handler)
-    send_setup_page(handler, state, session_state.AUTH, flash_msg=msg)
+    send_setup_page(handler, state, session_state.AUTH)
 
 
 def _route_get_setup_card(handler, state):

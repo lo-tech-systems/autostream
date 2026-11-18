@@ -299,14 +299,11 @@ def _commissioning_redirect_get(handler) -> None:
 
 
 def _csrf_failure_response(handler, path: str) -> None:
-    """Same three-way branch as do_POST's existing CSRF-failure handling
-    (webui/server.py): form pages get an error-flash
-    redirect, /api/* paths get the stale-session-recovery shape, anything
-    else gets a bare 403.
+    """The same two-way branch as do_POST's CSRF-failure handling
+    (webui/server.py): /api/* paths get the stale-session-recovery shape,
+    anything else gets a bare 403.
     """
-    if path in ("/setup", "/owntone-setup", "/service"):
-        handler._redirect_with_error_flash("Settings not saved, please try again")
-    elif path.startswith("/api/"):
+    if path.startswith("/api/"):
         fresh_csrf = session_state.AUTH.ensure_session(handler)
         common.send_json(
             handler, 403, {"ok": False, "error": "csrf_stale", "csrf_token": fresh_csrf}

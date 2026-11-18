@@ -20,7 +20,6 @@ from __future__ import annotations
 import html
 import json
 import math
-from typing import Optional
 
 from autostream_appliances import get_all_appliances
 from autostream_intents import Intent, submit
@@ -287,14 +286,9 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
 # Page renderer
 # -----------------------------------------------------------------------------
 
-def send_equaliser_page(
-    handler,
-    state: WebUIState,
-    flash_msg: Optional[str] = None,
-    flash_type: str = "success",
-) -> None:
+def send_equaliser_page(handler, state: WebUIState) -> None:
     """Render and send the /equaliser page."""
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    lic_html, lic_spacer = build_top_banner_html()
 
     parsed = None
     try:
@@ -349,6 +343,7 @@ def send_equaliser_page(
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="equaliser",
+        service_severity=common.service_severity(),
         dark_mode=dark_mode,
     )
     common.send_html(handler, 200, page)
@@ -533,8 +528,7 @@ def send_output_eq_status_json(handler) -> None:
 
 
 def _route_get_equaliser(handler, state):
-    msg, flash_type = common._route_flash_msg_and_type(handler)
-    send_equaliser_page(handler, state, flash_msg=msg, flash_type=flash_type)
+    send_equaliser_page(handler, state)
 
 
 def _route_get_output_eq_status(handler, state):

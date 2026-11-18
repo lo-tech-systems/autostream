@@ -13,16 +13,20 @@ from autostream_state import WarningEntry, WarningsPart  # noqa: E402
 from webui import common  # noqa: E402
 
 
-def _entry(severity: str, title: str, message: str, kind: str = "psu") -> WarningEntry:
+def _entry(severity: str, title: str, message: str, kind: str = "psu", link=None) -> WarningEntry:
     return WarningEntry(id=kind, incident="", severity=severity, kind=kind, subject="", title=title,
-                        message=message, link=None, snooze="none")
+                        message=message, link=link, snooze="none")
 
 
-def _banner(*entries: WarningEntry, **kw) -> tuple[str, str]:
-    snap = type("Snap", (), {"warnings": WarningsPart(entries=tuple(entries))})()
+def _snap(*entries: WarningEntry):
+    return type("Snap", (), {"warnings": WarningsPart(entries=tuple(entries))})()
+
+
+def _banner(*entries: WarningEntry) -> tuple[str, str]:
+    snap = _snap(*entries)
     store = type("Store", (), {"snapshot": lambda self: snap})()
     with patch("webui.common.store", return_value=store):
-        return common.build_top_banner_html(**kw)
+        return common.build_top_banner_html()
 
 
 class TestTopBanner:
@@ -49,9 +53,9 @@ class TestTopBanner:
         banner, _ = _banner(_entry("critical", "<b>x</b>", "a & b"))
         assert html.escape("<b>x</b>: a & b") in banner
 
-    def test_a_flash_message_still_takes_the_slot(self):
-        banner, _ = _banner(_entry("critical", "A", "a"), flash_msg="Saved")
-        assert "green-banner" in banner and "red-banner" not in banner
+    def test_the_builder_takes_no_message_to_show_instead(self):
+        import inspect
+        assert not inspect.signature(common.build_top_banner_html).parameters
 
 
 class TestEveryPageCarriesTheBanner:
@@ -65,3 +69,35 @@ class TestEveryPageCarriesTheBanner:
             assert module.build_top_banner_html is common.build_top_banner_html, name
         from webui.browser.setup import page
         assert page.build_top_banner_html is common.build_top_banner_html
+
+
+class TestServiceMarker:
+    """The Service tab is coloured by the worst warning that links to the Service page."""
+
+    def test_no_warning_for_the_service_page_gives_none(self):
+        assert common.service_severity(_snap()) is None
+        assert common.service_severity(_snap(_entry("critical", "A", "a"), _entry("warning", "B", "b", link="/setup"))) is None
+
+    def test_the_worst_severity_linking_to_service_wins(self):
+        entries = (_entry("critical", "A", "a", link="/service"), _entry("warning", "B", "b", link="/service"))
+        assert common.service_severity(_snap(*entries)) == "critical"
+        assert common.service_severity(_snap(entries[1], _entry("info", "C", "c", link="/service"))) == "warning"
+
+    def test_it_reads_the_store_when_given_no_snapshot(self):
+        snap = _snap(_entry("info", "A", "a", link="/service"))
+        store = type("Store", (), {"snapshot": lambda self: snap})()
+        with patch("webui.common.store", return_value=store):
+            assert common.service_severity() == "info"
+
+    def test_the_tab_class_follows_the_severity(self):
+        for severity in ("critical", "warning", "info"):
+            nav = common.build_nav_bar_html("home", service_severity=severity)
+            assert f'class="nav-tab nav-tab-warn-{severity}" id="service-nav-tab"' in nav
+        assert "nav-tab-warn" not in common.build_nav_bar_html("home")
+
+    def test_a_remote_appliances_nav_never_carries_the_marker(self):
+        assert "nav-tab-warn" not in common.build_nav_bar_html("home", service_severity="critical", remote_id="a" * 20)
+
+    def test_a_page_renders_the_class_at_load(self):
+        page = common.build_page_html("t", "<p>x</p>", active_tab="home", service_severity="warning")
+        assert "nav-tab-warn-warning" in page

@@ -36,13 +36,8 @@ def _dark_mode(state) -> bool:
 
 
 def render_auth_page(next_path: str, nonce: str, error: bool, dark_mode: bool = False) -> str:
-    """The sign-in page. *error* shows the red "Incorrect PIN" banner."""
-    err_banner = ""
-    if error:
-        err_banner = (
-            "<div id='red-banner'>Incorrect PIN</div>"
-            "<div id='red-banner-spacer'></div>"
-        )
+    """The sign-in page. *error* shows "Incorrect PIN" inside the card."""
+    err_line = '<p class="form-error" role="alert">Incorrect PIN</p>' if error else ""
 
     # The shared theme link, plus the page-specific banner rules inline when
     # there are any.
@@ -64,11 +59,11 @@ def render_auth_page(next_path: str, nonce: str, error: bool, dark_mode: bool = 
             </head>
             <body{body_cls}>
             <div class=\"container\">
-                {err_banner}
                 {logo_banner_html()}
                 <p>Enter the device PIN to access Setup.</p>
 
                 <div class=\"card\">
+                {err_line}
                 <form id=\"auth-form\" autocomplete=\"off\">
                     <label for=\"pin\">PIN</label>
                     <input id=\"pin\" name=\"pin\" type=\"password\" inputmode=\"text\" autocapitalize=\"off\" autocomplete=\"off\" spellcheck=\"false\" required />

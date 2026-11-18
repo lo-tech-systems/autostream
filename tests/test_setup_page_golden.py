@@ -224,7 +224,7 @@ def _render_full_page(tmp_path: Path) -> str:
                 "autostream_player_service.get_capabilities",
                 return_value=_BackendCapabilities(can_set_output_offset=True),
             ):
-                send_setup_page(handler, state, auth, flash_msg="")
+                send_setup_page(handler, state, auth)
 
     store.close(save=False)
     return handler.wfile.getvalue().decode("utf-8", errors="replace")
@@ -327,7 +327,7 @@ class TestSetupPageBrokenConfigFailurePath:
             "webui.common._config_snapshot",
             side_effect=RuntimeError("broken config for characterisation test"),
         ):
-            send_setup_page(handler, state, auth, flash_msg="")
+            send_setup_page(handler, state, auth)
 
         store.close(save=False)
 

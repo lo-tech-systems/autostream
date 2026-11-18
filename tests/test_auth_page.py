@@ -58,9 +58,12 @@ def test_next_is_quoted_and_kept_to_a_local_path():
     assert _hidden(html, "next") == "/"
 
 
-def test_the_error_banner_shows_only_after_a_failed_attempt():
+def test_the_error_shows_inside_the_card_only_after_a_failed_attempt():
     assert "Incorrect PIN" not in _get()[0]
-    assert "Incorrect PIN" in _get("err=1")[0]
+    html = _get("err=1")[0]
+    card = html.split('<div class="card">', 1)[1].split("</form>", 1)[0]
+    assert '<p class="form-error" role="alert">Incorrect PIN</p>' in card
+    assert "red-banner" not in html
 
 
 def test_dark_mode_follows_the_in_memory_settings():
@@ -75,7 +78,7 @@ def test_a_view_whose_snapshot_raises_gives_the_light_theme():
 def test_the_page_links_its_script_and_has_no_other_inline_script():
     html, _m, _h = _get()
     assert _source_text.linked_static(html) == [
-        "theme.css", "page/banner_dismiss.js", "page/auth.js"]
+        "theme.css", "page/auth.js"]
     assert "<script>" not in html
 
 

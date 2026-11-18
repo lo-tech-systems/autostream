@@ -112,7 +112,7 @@ class _SetupRenderer:
         fake_outputs_result(_list_result)
         with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth)
 
         store.close(save=False)
         return html
@@ -450,7 +450,7 @@ class TestInput1EnableToggle:
         fake_outputs_result(ListOutputsResult(ok=False, error="unreachable"))
         with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth)
 
         store.close(save=False)
         return html
@@ -640,7 +640,7 @@ class TestPlaybackPanelCardSplit:
         fake_outputs_result(ListOutputsResult(ok=False, error="unreachable"))
         with setup_page_mocks(is_high_performance_pi=True):
             with patch.object(state, "get_monitor_devices", return_value=[]):
-                html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
+                html = render_full_setup_with_cards(handler, state, auth)
 
         store.close(save=False)
         panel = self._playback_panel(html)

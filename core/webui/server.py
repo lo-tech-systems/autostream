@@ -22,9 +22,9 @@ import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Optional
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 
-from autostream_auth import AuthManager, FLASH_COOKIE_NAME
+from autostream_auth import AuthManager
 import autostream_commissioning as commissioning
 from autostream_settings import SettingsView
 from autostream_state import store
@@ -260,20 +260,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         super().end_headers()
 
-    def _redirect_with_error_flash(self, message: str, location: str = "/") -> None:
-        """Send a 302 redirect and set a one-shot error flash cookie."""
-        val = quote(f"error:{message}", safe="")
-        cookie = f"{FLASH_COOKIE_NAME}={val}; Max-Age=30; Path=/; HttpOnly; SameSite=Lax"
-        pending = getattr(self, "_pending_set_cookies", None)
-        if pending is None:
-            self._pending_set_cookies = [cookie]
-        else:
-            pending.append(cookie)
-        self.send_response(302)
-        self.send_header("Location", location)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
     def _dispatch_federation(self, method: str, path: str, body_str: str = "") -> None:
         """Dispatch a federation API request before browser auth/CSRF."""
         federation.dispatch(self, method, path, body_str)
@@ -378,9 +364,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         csrf_token = self._extract_csrf_token(form, json_obj)
         if not session_state.AUTH.validate_csrf(self, csrf_token):
-            if path in ("/setup", "/owntone-setup", "/service"):
-                self._redirect_with_error_flash("Settings not saved, please try again")
-            elif path.startswith("/api/"):
+            if path.startswith("/api/"):
                 fresh_csrf = session_state.AUTH.ensure_session(self)
                 common.send_json(self, 403, {
                     "ok": False,

@@ -151,8 +151,6 @@ def safe_next_path(raw_next: str) -> str:
     # Basic normalize
     return nxt
 
-FLASH_COOKIE_NAME: str = "autostream_flash"
-
 def parse_cookie_header(cookie_header: Optional[str]) -> Dict[str, str]:
     if not cookie_header:
         return {}

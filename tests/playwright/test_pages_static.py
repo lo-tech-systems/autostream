@@ -394,7 +394,7 @@ class TestSetup:
     def test_loads_with_no_error_and_every_setup_file_answers(self, page: "Page"):
         html = _page_stub.render("setup").decode("utf-8")
         linked = re.findall(r"/static/(page/setup(?:_[a-z_]+)?\.(?:js|css))\?", html)
-        assert len(linked) == 8  # five blocks, factory reset, Bluetooth card, stylesheet
+        assert len(linked) == 7  # four blocks, factory reset, Bluetooth card, stylesheet
         server, base = _serve_setup()
         try:
             errors = _watch_errors(page)

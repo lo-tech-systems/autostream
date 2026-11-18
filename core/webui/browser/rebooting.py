@@ -40,7 +40,7 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
     # slower hardware.
     min_wait_ms = 90000
 
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=None)
+    lic_html, lic_spacer = build_top_banner_html()
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     csrf_meta = (
         f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"

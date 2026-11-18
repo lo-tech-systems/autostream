@@ -43,7 +43,6 @@
   --color-btn-bg:            #6c757d;
   /* Status (theme-invariant) */
   --color-success:           #28a745;
-  --color-danger:            #c00000;
   /* Status highlights: bars, banners, danger zones (overridden in dark mode) */
   --color-status-danger:     #dc3545;
   --color-status-success:    #28a745;
@@ -1055,42 +1054,11 @@ body {
   height: calc(3rem + constant(safe-area-inset-top));
   height: calc(3rem + env(safe-area-inset-top));
 }
-#green-banner {
-  position: fixed !important;
-  will-change: transform;
-  transform: translateY(0);
-  transition: transform 320ms ease;
-  top: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
-  background: var(--color-status-success);
-  color: #ffffff;
-  text-align: center;
-  font-weight: 700;
-  padding: 0.6rem 1rem !important;
-  padding-top: calc(0.6rem + constant(safe-area-inset-top)) !important;
-  padding-top: calc(0.6rem + env(safe-area-inset-top)) !important;
-  z-index: 10000;
+.form-error {
+  color: var(--color-status-danger);
+  font-weight: 600;
+  margin: 0 0 0.6rem;
 }
-#green-banner-spacer {
-  height: calc(3rem + constant(safe-area-inset-top));
-  height: calc(3rem + env(safe-area-inset-top));
-  transition: height 320ms ease;
-  overflow: hidden;
-}
-/* Fade-out support for flash (green) banner */
-.flash-hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-.flash-spacer-hidden {
-  height: 0 !important;
-}
-.flash-rollup {
-  /* JS sets --flash-rollup-y to the banner height (px) */
-  transform: translateY(calc(-1 * var(--flash-rollup-y, 0px)));
-}
-
 /* ── Setup page: slide-panel navigation (post-config only) ── */
 .setup-slide-viewport {
   overflow: hidden;
@@ -1237,9 +1205,6 @@ body.has-bottom-nav .container {
 .nav-tab-warn-critical { color: var(--color-status-danger); }
 .nav-tab-warn-warning { color: var(--color-status-warning); }
 .nav-tab-warn-info { color: var(--color-accent); }
-.nav-tab-warn {
-  color: var(--color-danger);
-}
 
 /* ── Mobile: match body background to --color-surface so no gap shows
    above or below the content container.  Dark mode already has

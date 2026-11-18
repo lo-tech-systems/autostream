@@ -21,7 +21,6 @@ import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from autostream_config import get_log_level_options
 
@@ -78,13 +77,8 @@ def _resolve_allowed_log_path(log_file_cfg: str) -> Path:
 # Page renderer
 # -----------------------------------------------------------------------------
 
-def send_logs_page(
-    handler,
-    state: WebUIState,
-    flash_msg: Optional[str] = None,
-    flash_type: str = "success",
-) -> None:
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+def send_logs_page(handler, state: WebUIState) -> None:
+    lic_html, lic_spacer = build_top_banner_html()
     dark_mode = False
     try:
         parsed = common._config_snapshot(state)
@@ -203,8 +197,7 @@ def handle_logs_download(handler) -> None:
 
 
 def _route_get_logs(handler, state):
-    msg, _flash_type = common._route_flash_msg_and_type(handler)
-    send_logs_page(handler, state, flash_msg=msg)
+    send_logs_page(handler, state)
 
 
 def _route_get_logs_download(handler, state):

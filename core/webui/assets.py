@@ -5,8 +5,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Web assets (e.g. CSS) to support the autostream web front-end.
 """
 
-from webui import static
-
 BANNER_LOGO_HTML = """
   <div class="banner-logo-wrap">
     <a href="/" title="autostream Home" aria-label="autostream Home" class="banner-logo-link">
@@ -18,10 +16,8 @@ BANNER_LOGO_HTML = """
 
 
 def logo_banner_html() -> str:
-    """The logo banner markup followed by the tag of the script that rolls the
-    flash banner up. A function because the tag carries the file's content hash,
-    read on first use."""
-    return BANNER_LOGO_HTML + static.script_tag("page/banner_dismiss.js")
+    """The logo banner markup."""
+    return BANNER_LOGO_HTML
 
 
 LICENSE_BANNER_CSS = ""

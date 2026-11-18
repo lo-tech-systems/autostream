@@ -130,8 +130,6 @@ def send_airplay_page(
     state: WebUIState,
     auth,
     error: Optional[str] = None,
-    flash_msg: Optional[str] = None,
-    flash_type: str = "success",
 ) -> None:
     """Render the main AirPlay control page: the shell the browser fills from
     the state it starts with and the change stream (the page-data island)."""
@@ -199,7 +197,7 @@ def send_airplay_page(
     except Exception:
         vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
 
-    lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
+    lic_html, lic_spacer = build_top_banner_html()
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
     _local_id = str(rpi.get_appliance_id() or "")
@@ -300,10 +298,11 @@ def send_airplay_page(
         style_files=_HOME_PAGE_STYLE_FILES,
         head_extra=_head_extra,
         body_prefix=_body_prefix,
-        body_suffix=static.script_tag("page/a2hs.js") + static.script_tag("page/banner_dismiss.js"),
+        body_suffix=static.script_tag("page/a2hs.js"),
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="home",
+        service_severity=common.service_severity(),
         dark_mode=parsed.webui.dark_mode,
     )
     try:
@@ -492,7 +491,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         style_files=_HOME_PAGE_STYLE_FILES,
         head_extra=_head_extra,
         body_prefix=_body_prefix,
-        body_suffix=static.script_tag("page/a2hs.js") + static.script_tag("page/banner_dismiss.js"),
+        body_suffix=static.script_tag("page/a2hs.js"),
         active_tab="home",
         dark_mode=dark_mode,
         remote_id=appliance_id,
@@ -514,8 +513,7 @@ _APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
 
 
 def _route_get_home(handler, state):
-    msg, flash_type = common._route_flash_msg_and_type(handler)
-    send_airplay_page(handler, state, session_state.AUTH, flash_msg=msg, flash_type=flash_type)
+    send_airplay_page(handler, state, session_state.AUTH)
 
 
 def _route_get_remote_page(handler, state):
@@ -536,7 +534,10 @@ def _route_get_remote_page(handler, state):
         handler.send_header("Content-Length", "0")
         handler.end_headers()
     elif not common._effective_control_other_appliances(state):
-        handler._redirect_with_error_flash("Controlling other appliances is disabled.", "/")
+        handler.send_response(302)
+        handler.send_header("Location", "/")
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
     elif sub == "equaliser":
         equaliser.send_remote_equaliser_page(handler, state, aid)
     else:
