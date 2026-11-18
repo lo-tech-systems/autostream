@@ -29,10 +29,14 @@ DIAL_INSTALL_LOG="/var/log/autostream/dial-install.log"
 UPDATE=false
 HD=false
 REINSTALL=false
+# With --update: leave the installed system packages as they are, for test
+# builds where the upgrade costs time and card wear. Not saved.
+SKIP_OS_UPGRADE=false
 for _arg in "$@"; do
     case "${_arg}" in
         --update) UPDATE=true ;;
         --hd) HD=true ;;
+        --skip-os-upgrade) SKIP_OS_UPGRADE=true ;;
     esac
 done
 # An HD dial is chosen at install time; an update reads the profile the dial

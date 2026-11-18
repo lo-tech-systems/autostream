@@ -2057,6 +2057,11 @@ system_upgrade() {
     # first, or the upgrade below is refused for it.
     recover_interrupted_packages
     refresh_package_lists
+    if [ "${SKIP_OS_UPGRADE:-false}" = true ]; then
+        # The lists are still refreshed: later steps install packages from them.
+        echo "Leaving the installed system packages as they are (--skip-os-upgrade)"
+        return 0
+    fi
     apt_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
     # Upgrading the Wi-Fi authentication service, NetworkManager, firmware or a
     # driver can drop the link for a while. Go on only once it is back, so the

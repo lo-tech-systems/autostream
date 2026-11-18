@@ -159,6 +159,7 @@ OWNTONE_MODE="mini"
 # cannot override it.
 LOW_POWER=0
 LOW_POWER_REQUESTED=0
+SKIP_OS_UPGRADE=0
 PROMPT_REBOOT_ON_EXIT=0
 # Set once the confirmation, the OS check and the PIN have been settled with
 # the person at the terminal, so a run that has no terminal does not ask them
@@ -177,13 +178,14 @@ UPDATE_RUN_AT=""
 usage() {
   cat <<EOF
 Usage: sudo ./${SCRIPT_NAME} [--unattended PIN=1234] [--sdmon[=<method>]] [--owntone=<mini|full|skip>] [--low-power] [--fetch-autostream]
-       sudo ./${SCRIPT_NAME} --update [--low-power]
+       sudo ./${SCRIPT_NAME} --update [--low-power] [--skip-os-upgrade]
 
 Modes:
   (default)               First-time install.
   --update                Update an existing installation using the choices
                           saved in ${STATE_FILE}. This must be the only flag,
-                          except that --low-power may accompany it.
+                          except that --low-power and --skip-os-upgrade may
+                          accompany it.
 
 Options:
   --unattended PIN=1234   Run non-interactively and set the PIN.
@@ -203,6 +205,10 @@ Options:
                           arm_freq=700, arm_boost=0, force_turbo=0 in config.txt).
                           Off unless given. Takes effect after a reboot. Saved,
                           and re-applied by --update.
+
+  --skip-os-upgrade       With --update: leave the installed system packages as
+                          they are instead of upgrading them. For test builds,
+                          where the upgrade costs time and card wear. Not saved.
 
   --fetch-autostream      Clone/update the autostream GitHub repository.
   --help, -h              Show this help.
@@ -320,6 +326,11 @@ parse_args() {
         LOW_POWER_REQUESTED=1
         shift
         ;;
+      --skip-os-upgrade)
+        # Allowed beside --update; a fresh install always upgrades.
+        SKIP_OS_UPGRADE=1
+        shift
+        ;;
       --fetch-autostream)
         _non_update_arg_seen=1
         FETCH_AUTOSTREAM=1
@@ -336,7 +347,7 @@ parse_args() {
   done
 
   if [[ ${_update_seen} -eq 1 && ${_non_update_arg_seen} -eq 1 ]]; then
-    error "--update must be the only flag, except that --low-power may accompany it."
+    error "--update must be the only flag, except that --low-power and --skip-os-upgrade may accompany it."
     usage
     exit 2
   fi
@@ -1008,6 +1019,11 @@ system_upgrade_phase() {
   recover_interrupted_packages
   info "Updating apt metadata"
   apt_refresh_lists env DEBIAN_FRONTEND=noninteractive
+  if [[ "${SKIP_OS_UPGRADE:-0}" -eq 1 ]]; then
+    # The lists are still refreshed: later steps install packages from them.
+    info "Leaving the installed system packages as they are (--skip-os-upgrade)"
+    return 0
+  fi
   write_update_result "in_progress" "Upgrading system packages (this may take several minutes)..." 22
   info "Upgrading installed system packages"
   network_step env NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
