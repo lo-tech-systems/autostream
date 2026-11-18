@@ -15,6 +15,12 @@ platform/, dial/, tests/) for three categories of stray reference:
   3. Tracking labels (``WP<n>[a-c]``, ``T<n>.<n>``, ``Batch <n>``) used
      as citations to something outside the repository rather than as
      product-facing terminology.
+  4. Citations of private design documents by section number ("Section
+     6.4", "plan section 5.2", "plan SS1", a section sign followed by a
+     number) or by kind (LLD, HLD). Those documents are not shipped, so
+     such a citation means nothing to a reader. A file may still point at
+     its own banner sections ("section 3 of this file"): a single number
+     is not matched.
 
 The list of the ~29 pre-existing ``test_wp*.py`` / ``test_p*.py`` files is
 grandfathered out of the *filename* check and the identifier-content check
@@ -59,6 +65,14 @@ _DESIGN_DOC_CITATION_RE = re.compile(
 _WP_ID_RE = re.compile(r"\bWP\d+[a-c]?\b")
 _T_NUMBER_RE = re.compile(r"\bT[1-4]\.\d+\b")
 _BATCH_ID_RE = re.compile(r"\bBatch\s+\d+\b")
+# Dotted section numbers (so a bare "section 3 of this file" naming an in-file
+# banner is not caught), section signs followed by a number, "plan section",
+# "plan SS1", and the LLD / HLD acronyms (case-sensitive: lower-case "lld" is
+# not a citation).
+_SECTION_DOTTED_RE = re.compile(r"\b[Ss]ection\s+\d+\.\d+")
+_SECTION_SIGN_RE = re.compile(r"§\s?\d")
+_PLAN_SECTION_RE = re.compile(r"\bplan\s+(?:section\b|SS\d)", re.IGNORECASE)
+_LLD_HLD_RE = re.compile(r"\b(?:LLD|HLD)\b")
 
 # (pattern, category, always_checked_even_for_grandfathered_files)
 _CHECKS = (
@@ -68,6 +82,10 @@ _CHECKS = (
     (_WP_ID_RE, "tracking label", False),
     (_T_NUMBER_RE, "tier/task identifier", False),
     (_BATCH_ID_RE, "batch identifier", False),
+    (_SECTION_DOTTED_RE, "private-document section citation", True),
+    (_SECTION_SIGN_RE, "private-document section citation", True),
+    (_PLAN_SECTION_RE, "private-document section citation", True),
+    (_LLD_HLD_RE, "LLD/HLD citation", True),
 )
 
 
