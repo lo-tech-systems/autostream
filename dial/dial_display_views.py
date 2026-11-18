@@ -468,11 +468,6 @@ class Frame:
     pressed: tuple[Rect, ...] = ()     # rects to wash, in the order they should be drawn
     highlights: tuple[Rect, ...] = ()  # rects to wash at the row-highlight strength, under any press
     washes: tuple[tuple[Rect, int], ...] = ()  # (rect, alpha) pairs for a persistent state wash, drawn after highlights and before pressed
-    # A card drawn over the dimmed background before any highlight/wash/
-    # pressed rect: drop shadow, flat fill, thin outline. None (the default,
-    # byte-identical to before this field existed) draws nothing. The
-    # warning and status cards off the compact tier are the users.
-    card: "Rect | None" = None
     header: Header | None = None
     body: Body = Body()
     footer: Footer = Footer()

@@ -932,31 +932,31 @@ class TestIdleWifiZone:
 
 class TestWarningLayout:
     """warning_layout_for(): a card of one, two or three cells under a
-    message row (the whole panel on compact, a centred card elsewhere)."""
+    message row, the whole panel on every tier."""
 
     def test_rich_two_cells_pinned(self):
         w = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
-        assert w.card == (41, 48, 278, 192)
-        assert w.message == (41, 48, 278, 136)
-        assert w.cells == ((41, 148, 153, 192), (166, 148, 278, 192))
-        assert (w.divider_xs, w.divider_y) == ((159,), 142)
+        assert w.card == (0, 0, 320, 240)
+        assert w.message == (0, 0, 320, 152)
+        assert w.cells == ((0, 164, 154, 240), (166, 164, 320, 240))
+        assert (w.divider_xs, w.divider_y) == ((160,), 158)
 
     def test_base_two_cells_pinned(self):
         w = warning_layout_for(160, 128, buttons=2)
-        assert w.card == (21, 25, 139, 102)
-        assert w.message == (21, 25, 139, 72)
-        assert w.cells == ((21, 79, 77, 102), (83, 79, 139, 102))
-        assert (w.divider_xs, w.divider_y) == ((80,), 75)
+        assert w.card == (0, 0, 160, 128)
+        assert w.message == (0, 0, 160, 81)
+        assert w.cells == ((0, 88, 77, 128), (83, 88, 160, 128))
+        assert (w.divider_xs, w.divider_y) == ((80,), 84)
 
     def test_base_one_cell_spans_the_whole_row(self):
         w = warning_layout_for(160, 128, buttons=1)
-        assert w.cells == ((21, 79, 139, 102),)
+        assert w.cells == ((0, 88, 160, 128),)
         assert w.divider_xs == ()
 
     def test_base_three_cells_pinned(self):
         w = warning_layout_for(160, 128, buttons=3)
-        assert w.cells == ((21, 79, 56, 102), (62, 79, 97, 102), (104, 79, 139, 102))
-        assert w.divider_xs == (59, 100)
+        assert w.cells == ((0, 88, 49, 128), (55, 88, 104, 128), (111, 88, 160, 128))
+        assert w.divider_xs == (52, 107)
 
     def test_compact_two_cells_share_the_two_by_two_columns_with_a_shorter_button_row(self):
         for metrics in (_COMPACT_240x240, _COMPACT_128x128):
@@ -975,6 +975,11 @@ class TestWarningLayout:
             two = warning_layout_for(metrics.width, metrics.height, buttons=2, metrics=metrics)
             one = warning_layout_for(metrics.width, metrics.height, buttons=1, metrics=metrics)
             assert one.cells == ((two.cells[0][0], two.cells[0][1], two.cells[1][2], two.cells[1][3]),)
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    @pytest.mark.parametrize("buttons", [0, 1, 2, 3])
+    def test_card_is_the_whole_panel_on_every_tier(self, width, height, buttons):
+        assert warning_layout_for(width, height, buttons=buttons).card == (0, 0, width, height)
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     @pytest.mark.parametrize("buttons", [1, 2, 3])
@@ -1013,7 +1018,7 @@ class TestWarningLayout:
             prev_end = cell[2]
         for i in range(len(w.cells) - 1):
             gap = w.cells[i + 1][0] - w.cells[i][2]
-            assert gap == 2 * metrics.margin
+            assert gap >= 2 * metrics.margin
 
 
 class TestCardTables:

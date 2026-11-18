@@ -2421,12 +2421,11 @@ class DialDisplay:
         self._paint_locked(self._compositor.compose_info_value, after=(view,))
 
     def _display_card_locked(self) -> None:
-        """Compose and push the card on screen (the warnings page, or a status page) over the
-        current base image (the idle logo or the last artwork, dimmed; a flat chassis when nothing
-        has been rendered). Text comes from the live bell or the status descriptor and its latest
-        reading, so a fresh reading shows on the next repaint. A card whose entries have all
-        cleared, or whose status has ended, closes the page instead. Bypasses _display_locked().
-        Caller holds self._lock."""
+        """Compose and push the card on screen (the warnings page, or a status page) on a flat
+        chassis fill (the base image is not shown). Text comes from the live bell or the status
+        descriptor and its latest reading, so a fresh reading shows on the next repaint. A card
+        whose entries have all cleared, or whose status has ended, closes the page instead.
+        Bypasses _display_locked(). Caller holds self._lock."""
         if self._screen == "warnings":
             page, card = self._warnings_card(self._bell())
             self._warnings_page = page.painted() if page is not None else None
@@ -2442,7 +2441,7 @@ class DialDisplay:
             pressed=CARD_BUTTON_ZONES.index(zone) if zone in CARD_BUTTON_ZONES else None,
             percent=card.percent, source=card.source, severity=card.severity,
         )
-        self._paint_locked(self._compositor.compose_warning, self._current_base_image, after=(view,))
+        self._paint_locked(self._compositor.compose_warning, after=(view,))
 
     def _display_restarting_locked(self) -> None:
         """Compose and push the "Restarting..." frame. Caller holds

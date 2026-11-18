@@ -72,15 +72,6 @@ INVERTED_GLYPH_RGB = (0, 0, 0)
 # wrong" that still reads against a dimmed logo.
 ALARM_RGB = (226, 62, 51)
 
-# A warning or status card off the compact tier: a flat dark surface, a thin
-# translucent white outline, and a soft dark drop shadow offset down-right —
-# sharp (rectangular) corners throughout, no rounding.
-CARD_FILL_RGB = (24, 25, 28)
-CARD_OUTLINE_RGB = (255, 255, 255)
-CARD_OUTLINE_ALPHA = 70
-CARD_SHADOW_RGB = (0, 0, 0)
-CARD_SHADOW_ALPHA = 140
-
 # The bell's fill by the worst severity it holds: the warning orange, the
 # danger red, and the accent blue for an informational entry.
 BELL_WARNING_RGB = (233, 113, 50)

@@ -437,11 +437,11 @@ reboot, there is no warning: it may simply not have joined yet.
 
 ![No WiFi card with Restart and Close](images/showcase/spi-dial/no-wifi.png)
 
-*Rich: a card over the dimmed idle screen.*
+*Rich: the card fills the panel on a plain dark background.*
 
 ![The same card on the compact panel](images/showcase/spi-dial/compact/no-wifi.png)
 
-*Compact: the same two buttons, over the whole panel.*
+*Compact: the same card and buttons.*
 
 **Close** puts the card away; the bell stays while the dial is off the
 network. Getting back on the network clears the warning by itself.

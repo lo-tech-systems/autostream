@@ -84,7 +84,7 @@ def _painted(display):
     ) as compose:
         with display._lock:
             display._display_card_locked()
-    return compose.call_args.args[3]
+    return compose.call_args.args[2]
 
 
 class TestNoWarningOpensByItself:
@@ -648,7 +648,7 @@ class TestGenericWarningCapabilities:
         ) as mock_compose:
             with display._lock:
                 display._display_card_locked()
-        return mock_compose.call_args.args[3]
+        return mock_compose.call_args.args[2]
 
     def test_the_nowifi_and_sdhealth_rows_keep_the_default_descriptor_fields(self):
         for desc in (d for d in WARNING_DESCRIPTORS if d.id in ("nowifi", "sdhealth")):
@@ -840,7 +840,7 @@ class TestUpdateWarnings:
         ) as mock_compose:
             with display._lock:
                 display._display_card_locked()
-        return mock_compose.call_args.args[3]
+        return mock_compose.call_args.args[2]
 
     def test_in_progress_view_opens_update_card_over_selector_and_wakes(self, rig):
         display = rig

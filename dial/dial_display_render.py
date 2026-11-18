@@ -43,7 +43,6 @@ from dial_display_draw import (
     _draw_plus_glyph,
     _draw_text_safe,
     _draw_text_with_halo,
-    _draw_wash,
     _fit_value_lines,
     _load_font,
     _place_label,
@@ -60,11 +59,6 @@ from dial_display_palette import (
     INVERTED_GLYPH_RGB,
     BELL_INFO_RGB,
     ALARM_RGB,
-    CARD_FILL_RGB,
-    CARD_OUTLINE_RGB,
-    CARD_OUTLINE_ALPHA,
-    CARD_SHADOW_RGB,
-    CARD_SHADOW_ALPHA,
     CORNER_DISC_RGBA,
     OVERLAY_DIM_FACTOR,
 )
@@ -105,7 +99,6 @@ from dial_layout_metrics import LayoutMetrics
 from dial_touch_layout import (
     CompactLayout,
     CompactPickerLayout,
-    Rect,
     compact_layout_for,
     compact_picker_layout_for,
     eq_layout_for,
@@ -956,14 +949,14 @@ def _cell_label_font(draw: ImageDraw.ImageDraw, label: str, width: int, metrics:
 
 
 def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
-    """A warning page's content on every tier. With no message the title
+    """A warning or status card's content on every tier. With no message the title
     is centred in the whole message row at readout size; with one, the
     title takes the upper three fifths of the row and the message the
     rest at body size. Each button label is centred in its cell at body
     size. Then the crosshair: a horizontal line at divider_y across the
     card's full width, and one vertical line per gap between cells,
-    spanning the bottom row only (the message row is never split). On
-    the compact tier the card is the whole panel, so a two-button page
+    spanning the bottom row only (the message row is never split). The
+    card is the whole panel, so a two-button page
     is exactly the 2x2's own bottom-row divider pattern and a one-button
     page has no vertical line at all. A page with no cells has no
     crosshair. With body.percent set, a progress bar takes the bottom
@@ -1121,41 +1114,6 @@ _FOOTER_RENDERERS = {
     FOOTER_LIST_BAR: _footer_list_bar,
     FOOTER_LIST_RAIL: _footer_list_rail,
 }
-
-
-def _draw_card(img: Image.Image, rect: Rect, metrics: LayoutMetrics) -> None:
-    """A sharp-cornered card: a dark translucent drop shadow offset down
-    and right by the panel's pad, a flat fill, then a thin translucent
-    white outline. The shadow and outline are each a _draw_wash-style
-    alpha composite clipped to the panel, so nothing outside the panel is
-    ever touched and the outline reads as a subtle edge rather than a hard
-    line."""
-    x0, y0, x1, y1 = rect
-    offset = max(2, metrics.pad // 2)
-    shadow = (
-        min(metrics.width, x0 + offset), min(metrics.height, y0 + offset),
-        min(metrics.width, x1 + offset), min(metrics.height, y1 + offset),
-    )
-    _draw_wash(img, shadow, CARD_SHADOW_RGB, CARD_SHADOW_ALPHA)
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=CARD_FILL_RGB)
-    _draw_card_outline(img, (x0, y0, x1, y1), metrics.divider_w)
-
-
-def _draw_card_outline(img: Image.Image, rect: Rect, width: int) -> None:
-    """The card's own thin outline, alpha-composited over its fill so it
-    reads as a subtle translucent edge rather than a flat, opaque line."""
-    x0, y0, x1, y1 = rect
-    w, h = x1 - x0, y1 - y0
-    if w <= 0 or h <= 0:
-        return
-    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rectangle(
-        [0, 0, w - 1, h - 1], outline=(*CARD_OUTLINE_RGB, CARD_OUTLINE_ALPHA), width=width,
-    )
-    region = img.crop(rect).convert("RGBA")
-    composited = Image.alpha_composite(region, layer).convert("RGB")
-    img.paste(composited, (x0, y0))
 
 
 def _with_corner_bell(image, overlay, metrics: LayoutMetrics):

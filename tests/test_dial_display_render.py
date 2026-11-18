@@ -69,7 +69,6 @@ from dial_display_palette import (  # noqa: E402
     BELL_CRITICAL_RGB,
     BELL_INFO_RGB,
     BELL_WARNING_RGB,
-    CARD_FILL_RGB,
     DIMMED_GLYPH_RGB,
     GLYPH_RGB,
     INVERTED_GLYPH_RGB,
@@ -1590,12 +1589,13 @@ class TestComposeIdleWifi:
 
 
 # ---------------------------------------------------------------------------
-# A two-button card (the No WiFi shape): dimmed base, card off compact,
-# crosshair, press wash by cell index.
+# A two-button card (the No WiFi shape): a solid chassis fill whatever was
+# showing, the card the whole panel on every tier, crosshair, press wash by
+# cell index.
 # ---------------------------------------------------------------------------
 
 class TestComposeCard:
-    """compose_warning() with two buttons: dimmed base, card off compact,
+    """compose_warning() with two buttons: solid chassis, full-panel card,
     crosshair, press wash."""
 
     @pytest.fixture(autouse=True)
@@ -1604,40 +1604,25 @@ class TestComposeCard:
         yield
         _reset_font_cache()
 
-    def _base(self, size):
-        return Image.new("RGB", size, (200, 200, 200))
-
     def _view(self, **kw):
         return WarningView(title="No WiFi", buttons=("Restart", "Close"), **kw)
 
-    def _frame(self, compositor, size, view, mm=None, base=True, **kw):
+    def _frame(self, compositor, size, view, mm=None, **kw):
         metrics = metrics_for(*size, mm) if mm is not None else None
         return compositor.compose_warning(
-            self._base(size) if base else None, size[0], size[1], view,
+            size[0], size[1], view,
             rotate=kw.get("rotate", False), bgr=kw.get("bgr", False), metrics=metrics)
 
-    def test_backdrop_outside_the_card_is_dimmed_base(self, compositor):
-        frame = self._frame(compositor, (320, 240), self._view(), 0.1778)
-        dimmed = round(200 * OVERLAY_DIM_FACTOR)
-        for xy in ((2, 2), (317, 2), (2, 237), (20, 120)):
-            assert frame.getpixel(xy) == (dimmed, dimmed, dimmed)
+    @pytest.mark.parametrize("size,mm", [((320, 240), 0.1778), ((160, 128), None), ((240, 240), 0.0973)])
+    def test_card_is_the_whole_panel_on_a_solid_chassis_fill(self, compositor, size, mm):
+        frame = self._frame(compositor, size, self._view(), mm)
+        w, h = size
+        for xy in ((1, 1), (w - 2, 1), (1, h - 2), (6, h // 3)):
+            assert frame.getpixel(xy) == LIST_BG_RGB
+        layout = warning_layout_for(w, h, buttons=2, metrics=metrics_for(w, h, mm) if mm else None)
+        assert layout.card == (0, 0, w, h)
 
-    def test_card_fill_outline_and_shadow(self, compositor):
-        frame = self._frame(compositor, (320, 240), self._view(), 0.1778)
-        card = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778)).card
-        # An interior point away from text/dividers is the flat fill.
-        assert frame.getpixel((card[0] + 6, card[1] + 6)) == CARD_FILL_RGB
-        # The outline is a thin translucent white edge on the card's own
-        # border: lighter than the fill in every channel, but not fully
-        # white (it is blended, not opaque).
-        outline_px = frame.getpixel((card[0], card[1] + 20))
-        assert all(outline_px[i] > CARD_FILL_RGB[i] for i in range(3))
-        assert outline_px != (255, 255, 255)
-        # The shadow darkens the dimmed backdrop just outside the bottom-right corner.
-        dimmed = round(200 * OVERLAY_DIM_FACTOR)
-        assert frame.getpixel((card[2] + 1, card[3] - 20))[0] < dimmed
-
-    def test_crosshair_horizontal_full_card_width_vertical_bottom_row_only(self, compositor):
+    def test_crosshair_horizontal_full_width_vertical_bottom_row_only(self, compositor):
         frame = self._frame(compositor, (320, 240), self._view(), 0.1778)
         l = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
         (divider_x,) = l.divider_xs
@@ -1645,18 +1630,18 @@ class TestComposeCard:
             assert frame.getpixel((x, l.divider_y)) == (255, 255, 255)
         assert frame.getpixel((divider_x, l.cells[0][1] + 5)) == (255, 255, 255)
         assert frame.getpixel((divider_x, l.card[3] - 2)) == (255, 255, 255)
-        # No vertical line through the message row (just inside the card fill,
-        # clear of the text: sample near the row's top-left).
-        assert frame.getpixel((divider_x, l.message[1] + 4)) == CARD_FILL_RGB
+        # No vertical line through the message row (clear of the text:
+        # sample near the row's top-left).
+        assert frame.getpixel((divider_x, l.message[1] + 4)) == LIST_BG_RGB
 
     def test_pressed_cell_washes_only_itself(self, compositor):
         plain = self._frame(compositor, (320, 240), self._view(), 0.1778)
         pressed = self._frame(compositor, (320, 240), self._view(pressed=0), 0.1778)
         l = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
         first, second = l.cells
-        assert pressed.getpixel((first[0] + 3, first[1] + 3))[0] > CARD_FILL_RGB[0]
-        assert plain.getpixel((first[0] + 3, first[1] + 3)) == CARD_FILL_RGB
-        assert pressed.getpixel((second[0] + 3, second[1] + 3)) == CARD_FILL_RGB
+        assert pressed.getpixel((first[0] + 3, first[1] + 3))[0] > LIST_BG_RGB[0]
+        assert plain.getpixel((first[0] + 3, first[1] + 3)) == LIST_BG_RGB
+        assert pressed.getpixel((second[0] + 3, second[1] + 3)) == LIST_BG_RGB
         assert list(pressed.crop(l.message).getdata()) == list(plain.crop(l.message).getdata())
 
     @pytest.mark.parametrize("stale", [2, 7, -1])
@@ -1665,20 +1650,14 @@ class TestComposeCard:
         b = self._frame(compositor, (160, 128), self._view(pressed=stale))
         assert list(a.getdata()) == list(b.getdata())
 
-    def test_none_base_falls_back_to_chassis(self, compositor):
-        frame = self._frame(compositor, (160, 128), self._view(), base=False)
-        dimmed = tuple(round(c * OVERLAY_DIM_FACTOR) for c in LIST_BG_RGB)
-        assert frame.getpixel((1, 1)) == dimmed
-
-    def test_compact_is_full_screen_two_by_two_no_card(self, compositor):
+    def test_compact_is_full_screen_two_by_two(self, compositor):
         frame = self._frame(compositor, (240, 240), self._view(), 0.0973)
-        dimmed = round(200 * OVERLAY_DIM_FACTOR)
-        assert frame.getpixel((2, 2)) == (dimmed, dimmed, dimmed)       # no card fill on compact
+        assert frame.getpixel((2, 2)) == LIST_BG_RGB
         l = warning_layout_for(240, 240, buttons=2, metrics=metrics_for(240, 240, 0.0973))
         assert (l.cells, l.divider_xs, l.divider_y) == (((0, 164, 114, 240), (126, 164, 240, 240)), (120,), 158)
         assert frame.getpixel((5, 158)) == (255, 255, 255)              # horizontal, full width
         assert frame.getpixel((120, 200)) == (255, 255, 255)            # vertical, bottom row
-        assert frame.getpixel((120, 8)) == (dimmed, dimmed, dimmed)     # none in the top row
+        assert frame.getpixel((120, 8)) == LIST_BG_RGB                  # none in the top row
 
     def test_compact_pressed_second_cell_washes_its_cell(self, compositor):
         plain = self._frame(compositor, (240, 240), self._view(), 0.0973)
@@ -1692,7 +1671,7 @@ class TestComposeCard:
         l = warning_layout_for(320, 240, buttons=1, metrics=metrics_for(320, 240, 0.1778))
         assert l.divider_xs == ()
         for x in range(l.cells[0][0] + 4, l.cells[0][2] - 4, 7):
-            assert frame.getpixel((x, l.cells[0][3] - 6)) == CARD_FILL_RGB
+            assert frame.getpixel((x, l.cells[0][3] - 6)) == LIST_BG_RGB
 
     def test_rotate_and_bgr_applied(self, compositor):
         plain = self._frame(compositor, (160, 128), self._view())
@@ -1719,13 +1698,10 @@ class TestComposeWarning:
         yield
         _reset_font_cache()
 
-    def _base(self, size):
-        return Image.new("RGB", size, (200, 200, 200))
-
     def test_three_buttons_draw_two_vertical_dividers(self, compositor):
         metrics = metrics_for(320, 240, 0.1778)
         frame = compositor.compose_warning(
-            self._base((320, 240)), 320, 240,
+            320, 240,
             WarningView(title="Three", buttons=("A", "B", "C")),
             rotate=False, bgr=False, metrics=metrics,
         )
@@ -1737,7 +1713,7 @@ class TestComposeWarning:
     def test_never_raises_without_a_font(self, compositor):
         with patch("dial_display_render._load_font", return_value=None):
             frame = compositor.compose_warning(
-                self._base((160, 128)), 160, 128,
+                160, 128,
                 WarningView(title="Hi", buttons=("Close",)),
                 rotate=False, bgr=False,
             )
@@ -3070,8 +3046,7 @@ class TestWarningGenericBody:
 
     def _compose(self, compositor, width, height, view, mm_per_px=None):
         metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else None
-        base = Image.new("RGB", (width, height), (200, 200, 200))
-        return compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        return compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
 
     @pytest.mark.parametrize("width,height", sorted(_WARNING_MM_PER_PX))
     @pytest.mark.parametrize("pressed", [False, True])
@@ -3080,7 +3055,6 @@ class TestWarningGenericBody:
         from dial_display import WARNING_DESCRIPTORS
         mm = _WARNING_MM_PER_PX[(width, height)]
         metrics = metrics_for(width, height, mm) if mm is not None else None
-        base = Image.new("RGB", (width, height), (200, 200, 200))
         for desc in (d for d in WARNING_DESCRIPTORS if d.id in ("nowifi", "sdhealth")):
             # Every shipped row leaves the generic fields at their defaults.
             assert desc.title_for is None and desc.progress_for is None
@@ -3090,10 +3064,10 @@ class TestWarningGenericBody:
                 message=desc.message_for(reading) if desc.message_for is not None else "",
                 buttons=tuple(b.label for b in desc.buttons), pressed=len(desc.buttons) - 1 if pressed else None,
             )
-            current = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+            current = compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
             with patch.dict(dial_display_render._BODY_RENDERERS, {dial_display_views.BODY_WARNING: _reference_body_warning}):
                 reference = compositor.compose_warning(
-                    base, width, height, view, rotate=False, bgr=False, metrics=metrics,
+                    width, height, view, rotate=False, bgr=False, metrics=metrics,
                 )
             assert current.tobytes() == reference.tobytes(), desc.id
 
@@ -3298,11 +3272,10 @@ class TestApplianceWarningText:
         view = WarningView(
             title=texts[1], message=texts[2], buttons=("Close",), source=texts[0], severity="critical",
         )
-        base = Image.new("RGB", (width, height), (0, 0, 0))
-        with_text = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        with_text = compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
         with patch.object(dial_display_render, "_plan_warning_text", return_value=[]), \
                 patch.object(dial_display_render, "_plan_warning_band", return_value=None):
-            without = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+            without = compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
         box = _diff_bbox(with_text, without)
         assert box is not None
         assert rect[0] <= box[0] and box[2] <= rect[2]
@@ -3318,8 +3291,7 @@ class TestApplianceWarningText:
         metrics = metrics_for(width, height, mm)
         rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
         view = WarningView(title="Power supply", buttons=("Close",), source="Lounge", severity=severity)
-        base = Image.new("RGB", (width, height), (0, 0, 0))
-        frame = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        frame = compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
         _, _, _, _, band = _fit_plan(tier, "Lounge", "Power supply", "", severity)
         _, _, band_h, rule_h = band
         assert rule_h == 2 * metrics.divider_w
@@ -3336,10 +3308,9 @@ class TestApplianceWarningText:
         width, height, mm = _APPLIANCE_TIERS[tier]
         metrics = metrics_for(width, height, mm)
         view = WarningView(title="Power supply", buttons=("Close",))
-        base = Image.new("RGB", (width, height), (0, 0, 0))
-        plain = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        plain = compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
         sourced = compositor.compose_warning(
-            base, width, height, dataclasses.replace(view, source="Lounge"),
+            width, height, dataclasses.replace(view, source="Lounge"),
             rotate=False, bgr=False, metrics=metrics,
         )
         assert plain.tobytes() != sourced.tobytes()
@@ -3347,7 +3318,7 @@ class TestApplianceWarningText:
     def test_a_font_failure_draws_no_text_and_still_returns_a_frame(self, compositor):
         with patch("dial_display_render._load_font", return_value=None):
             frame = compositor.compose_warning(
-                None, 160, 128, WarningView(title="Hi", buttons=("Close",), source="Lounge"),
+                160, 128, WarningView(title="Hi", buttons=("Close",), source="Lounge"),
                 rotate=False, bgr=False,
             )
         assert frame.size == (160, 128)

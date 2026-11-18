@@ -171,7 +171,7 @@ def info_list(panel, page=0):
 
 def warning(panel, view):
     return panel.compositor.compose_warning(
-        panel.logo_base(), panel.width, panel.height, view, **panel.kw())
+        panel.width, panel.height, view, **panel.kw())
 
 
 def nowifi(panel):

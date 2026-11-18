@@ -22,7 +22,7 @@ to the pipeline:
   compose_info_value()      the compact info page's drill-in value
   compose_idle()            the idle screen
   compose_starting()        the boot splash
-  compose_warning()         a warning page
+  compose_warning()         a warning or status card
   compose_restarting()      the restarting screen
 
 Geometry comes from dial_touch_layout, the same coordinates the touch side
@@ -80,7 +80,6 @@ from dial_display_reveal import (
 from dial_display_render import (
     _BODY_RENDERERS,
     _FOOTER_RENDERERS,
-    _draw_card,
     _draw_header,
     _draw_timer_line,
     _timer_fit,
@@ -466,21 +465,20 @@ class DialDisplayCompositor:
         )
 
     def compose_warning(
-        self, base, width: int, height: int, view: WarningView, *, rotate: bool, bgr: bool,
+        self, width: int, height: int, view: WarningView, *, rotate: bool, bgr: bool,
         metrics: LayoutMetrics | None = None,
     ):
-        """Build one display-ready frame for a warning page: the current
-        base image (*base*, or a flat chassis when None) dimmed to
-        OVERLAY_DIM_FACTOR, then, off the compact tier, a centred card
-        (Frame.card: shadow, fill, outline), and on every tier the title
-        (and message, if any) over the button cells with a white
-        crosshair: a horizontal line under the message row and a vertical
-        line between neighbouring cells (see BODY_WARNING). The pressed
-        cell, if any, carries the ordinary press wash and nothing else.
-        rotate/bgr last, as always. Never raises: a font failure leaves
-        the dividers and card without text. metrics: see compose()."""
+        """Build one display-ready frame for a warning or status card: a
+        flat, opaque chassis fill on every tier whatever artwork was
+        showing, with the card filling the whole panel: the title (and
+        message, if any) over the button cells with a white crosshair, a
+        horizontal line under the message row and a vertical line between
+        neighbouring cells (see BODY_WARNING). The pressed cell, if any,
+        carries the ordinary press wash and nothing else. rotate/bgr last,
+        as always. Never raises: a font failure leaves the dividers without
+        text. metrics: see compose()."""
         return _compose_screen(
-            base, width, height, lambda w, h, m: _warning_frame(view, w, h, m),
+            None, width, height, lambda w, h, m: _warning_frame(view, w, h, m),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -642,8 +640,6 @@ def _compose_frame(
         _dim_rect(img, layout.bottom_band)
     if frame.dim_all:
         _dim_rect(img, (0, 0, width, height))
-    if frame.card is not None:
-        _draw_card(img, frame.card, metrics)
     for rect in frame.highlights:
         _draw_row_highlight(img, rect)
     for rect, alpha in frame.washes:
@@ -827,15 +823,11 @@ def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetr
 
 
 def _warning_frame(view: WarningView, width: int, height: int, metrics: LayoutMetrics) -> Frame:
-    """Dimmed base on every tier; the card only off compact (on compact the
-    grid fills the panel and the dimmed base is the whole backdrop, the
-    same convention every other compact screen follows)."""
+    """The flat chassis fill on every tier: the card is the whole panel, so
+    it is opaque whatever the base image."""
     layout = warning_layout_for(width, height, buttons=len(view.buttons), metrics=metrics)
-    compact = metrics.content_tier == CONTENT_COMPACT
     return Frame(
-        background=BG_BASE,
-        dim_all=True,
-        card=None if compact else layout.card,
+        background=BG_CHASSIS,
         pressed=(
             (layout.cells[view.pressed],)
             if view.pressed is not None and 0 <= view.pressed < len(layout.cells) else ()

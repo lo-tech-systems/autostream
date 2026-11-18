@@ -345,19 +345,18 @@ class TestStatelessness:
 
     def test_compose_warning_holds_no_attributes_that_change_between_calls(self, compositor):
         before = dict(vars(compositor))
-        base = Image.new("RGB", (160, 128), (32, 32, 32))
         compositor.compose_warning(
-            base, 160, 128,
+            160, 128,
             WarningView(title="One", buttons=("Close",)),
             rotate=False, bgr=False,
         )
         compositor.compose_warning(
-            None, 240, 240,
+            240, 240,
             WarningView(title="Two", buttons=("Close", "Restart"), pressed=1),
             rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973),
         )
         compositor.compose_warning(
-            base, 320, 240,
+            320, 240,
             WarningView(title="Three", message="detail", buttons=("A", "B", "C")),
             rotate=False, bgr=False, metrics=metrics_for(320, 240, 0.1778),
         )
@@ -795,21 +794,21 @@ def _render_cache_corpus(width, height, metrics=None):
     cases.append((
         "warning_two",
         lambda c: c.compose_warning(
-            logo, width, height, WarningView(title="No WiFi", buttons=("Restart", "Close")),
+            width, height, WarningView(title="No WiFi", buttons=("Restart", "Close")),
             rotate=False, bgr=False, metrics=metrics,
         ),
     ))
     cases.append((
         "warning_two_pressed",
         lambda c: c.compose_warning(
-            logo, width, height, WarningView(title="No WiFi", buttons=("Restart", "Close"), pressed=0),
+            width, height, WarningView(title="No WiFi", buttons=("Restart", "Close"), pressed=0),
             rotate=False, bgr=False, metrics=metrics,
         ),
     ))
     cases.append((
         "warning_one",
         lambda c: c.compose_warning(
-            logo, width, height,
+            width, height,
             WarningView(title="microSD card", message="15% life left, replace soon", buttons=("Close",)),
             rotate=False, bgr=False, metrics=metrics,
         ),
@@ -817,7 +816,7 @@ def _render_cache_corpus(width, height, metrics=None):
     cases.append((
         "warning_three_paged",
         lambda c: c.compose_warning(
-            logo, width, height,
+            width, height,
             WarningView(title="Stylus wear", message="Over 450 hours", buttons=("Next", "Restart", "Close"),
                         source="Turntable \u00b7 1 of 2", pressed=2),
             rotate=False, bgr=False, metrics=metrics,
