@@ -1356,8 +1356,8 @@ def _validate_play_guard_seconds(value: object) -> float:
 
 
 def _live_read_at_use(state: object, value: object) -> bool:
-    """These settings are read when the Pause or Play arrives, so a stored
-    value is already in force."""
+    """These settings are read when the event arrives, so a stored value is
+    already in force."""
     return True
 
 
@@ -1376,6 +1376,11 @@ register_field(
     _validate_play_guard_seconds,
     live=_live_read_at_use, type=float, bounds=PLAY_GUARD_SECONDS_RANGE,
     default=PLAY_GUARD_SECONDS_DEFAULT, live_class=LiveClass.LIVE,
+)
+register_field(
+    "outputs.speaker_volume_applies_to_all", "outputs", "speaker_volume_applies_to_all",
+    _validate_bool,
+    live=_live_read_at_use, type=bool, default=False, live_class=LiveClass.LIVE,
 )
 
 
@@ -1465,6 +1470,10 @@ def output_policy_settings() -> OutputsConfig:
 
 def include_tv_for(unit_id: str) -> bool:
     return output_settings().include_tv.get(unit_id, True)
+
+
+def speaker_volume_applies_to_all() -> bool:
+    return output_settings().policy.speaker_volume_applies_to_all
 
 
 def reset_output_settings_for_tests() -> None:

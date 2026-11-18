@@ -123,6 +123,7 @@ class _LateFields(Mapping):
         "track_identification.track_change_silence_seconds",
         "outputs.device_pause_scope", "outputs.pause_off_seconds",
         "outputs.play_after_metadata_ignore_seconds",
+        "outputs.speaker_volume_applies_to_all",
     )
 
     def __getitem__(self, path):

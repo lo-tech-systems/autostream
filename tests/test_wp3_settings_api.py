@@ -705,6 +705,7 @@ class TestOutputPolicyFields:
         ("outputs.device_pause_scope", "output"),
         ("outputs.pause_off_seconds", 120),
         ("outputs.play_after_metadata_ignore_seconds", 4.5),
+        ("outputs.speaker_volume_applies_to_all", True),
     ])
     def test_post_accepts_and_stores_each(self, tmp_path, field, value):
         import autostream_live_config  # noqa: F401  (registers the rows)

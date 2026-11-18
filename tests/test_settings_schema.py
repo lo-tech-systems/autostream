@@ -138,6 +138,7 @@ _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
     "outputs.device_pause_scope",
     "outputs.pause_off_seconds",
     "outputs.play_after_metadata_ignore_seconds",
+    "outputs.speaker_volume_applies_to_all",
 })
 
 
@@ -342,7 +343,8 @@ class TestOutputPolicyRows:
     def test_the_rows_are_live_and_read_at_use(self):
         from autostream_settings_schema import LiveClass, get_field_spec
         for path in ("outputs.device_pause_scope", "outputs.pause_off_seconds",
-                     "outputs.play_after_metadata_ignore_seconds"):
+                     "outputs.play_after_metadata_ignore_seconds",
+                     "outputs.speaker_volume_applies_to_all"):
             spec = get_field_spec(path)
             assert spec.live_class is LiveClass.LIVE
             assert spec.live_fn(object(), spec.default) is True
@@ -353,6 +355,15 @@ class TestOutputPolicyRows:
         assert get_field_spec("outputs.device_pause_scope").default == cfg.DEVICE_PAUSE_SCOPE_DEFAULT
         assert get_field_spec("outputs.pause_off_seconds").default == cfg.PAUSE_OFF_SECONDS_DEFAULT
         assert get_field_spec("outputs.play_after_metadata_ignore_seconds").default == cfg.PLAY_GUARD_SECONDS_DEFAULT
+
+    def test_the_speaker_volume_switch_defaults_off_and_takes_only_a_boolean(self):
+        from autostream_settings_schema import get_field_spec
+        spec = get_field_spec("outputs.speaker_volume_applies_to_all")
+        assert spec.default is False
+        assert spec.validate(True) is True and spec.validate(False) is False
+        for bad in (1, "true", None):
+            with pytest.raises(ValueError, match="Value must be true or false"):
+                spec.validate(bad)
 
     def test_the_scope_must_be_one_of_the_four(self):
         from autostream_settings_schema import get_field_spec

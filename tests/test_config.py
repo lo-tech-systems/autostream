@@ -92,6 +92,17 @@ class TestOutputsSettings:
         got = self.parse({"outputs": {"play_after_metadata_ignore_seconds": value}})
         assert got.outputs.play_after_metadata_ignore_seconds == expected
 
+    def test_speaker_volume_applies_to_all_is_off_by_default(self):
+        assert c.OutputsConfig().speaker_volume_applies_to_all is False
+        assert self.parse({}).outputs.speaker_volume_applies_to_all is False
+
+    @pytest.mark.parametrize("value,expected", [
+        (True, True), (False, False), ("true", False), (1, False), ("yes", False), (None, False),
+    ])
+    def test_speaker_volume_applies_to_all_takes_only_a_json_true(self, value, expected):
+        got = self.parse({"outputs": {"speaker_volume_applies_to_all": value}})
+        assert got.outputs.speaker_volume_applies_to_all is expected
+
     def test_a_section_that_is_not_an_object_gives_the_defaults(self):
         assert self.parse({"outputs": "all"}).outputs == c.OutputsConfig()
 

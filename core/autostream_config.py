@@ -513,11 +513,14 @@ def normalize_play_guard_seconds(value: object) -> float:
 
 @dataclass(frozen=True)
 class OutputsConfig:
-    """What the appliance does about Pause and Play pressed on a speaker
-    (JSON section outputs). All three are read when the event arrives."""
+    """What the appliance does about Pause and Play pressed on a speaker,
+    and whether a volume change made at a speaker applies to the other
+    playing speakers (JSON section outputs). All are read when the event
+    arrives."""
     device_pause_scope: str = DEVICE_PAUSE_SCOPE_DEFAULT
     pause_off_seconds: int = PAUSE_OFF_SECONDS_DEFAULT
     play_after_metadata_ignore_seconds: float = PLAY_GUARD_SECONDS_DEFAULT
+    speaker_volume_applies_to_all: bool = False
 
 
 @dataclass(frozen=True)
@@ -984,6 +987,7 @@ def parse_config(
         play_after_metadata_ignore_seconds=normalize_play_guard_seconds(
             outputs_d.get("play_after_metadata_ignore_seconds", PLAY_GUARD_SECONDS_DEFAULT)
         ),
+        speaker_volume_applies_to_all=outputs_d.get("speaker_volume_applies_to_all") is True,
     )
 
     return AutostreamConfig(
