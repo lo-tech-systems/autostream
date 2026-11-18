@@ -22,7 +22,8 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_core as core
-from autostream_core import AudioMonitor, MonitorClient
+from autostream_core import AudioMonitor
+from autostream_monitor_client import MonitorClient
 from track_id.models import (
     STATE_DISABLED,
     STATE_WAITING,

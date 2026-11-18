@@ -41,7 +41,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_core as _core_mod
-from autostream_core import MonitorClient
+from autostream_monitor_client import MonitorClient
 
 
 # ---------------------------------------------------------------------------

@@ -123,7 +123,7 @@ class TestGetAvailableMonitorDevicesThreadsStatus:
 
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Deck"}}
 
-        with patch("autostream_core.MonitorClient", return_value=fake_client), \
+        with patch("autostream_monitor_client.MonitorClient", return_value=fake_client), \
              patch("autostream_core.bluetooth_installed", return_value=True):
             result = core.get_available_monitor_devices(bluetooth_status=status)
 

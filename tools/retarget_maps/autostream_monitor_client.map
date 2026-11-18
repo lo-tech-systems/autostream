@@ -1,0 +1,3 @@
+# Names that moved from the coordinator into autostream_monitor_client.
+autostream_core.MonitorClient -> autostream_monitor_client.MonitorClient  alias=monitor_client
+autostream_core._connected_monitor -> autostream_monitor_client._connected_monitor  alias=monitor_client

@@ -30,6 +30,7 @@ if _CORE not in sys.path:
 
 import autostream_core as core
 import autostream_runtime as runtime
+import autostream_monitor_client as monitor_client
 
 
 def _minimal_cfg(tmp_path: Path) -> Path:
@@ -84,7 +85,7 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         rf = stack.enter_context(patch.object(runtime, "reload_flag"))
         rf.is_set.return_value = False
         stack.enter_context(patch.object(core, "unconfigured", return_value=False))
-        stack.enter_context(patch.object(core, "MonitorClient", return_value=mock_client))
+        stack.enter_context(patch.object(monitor_client, "MonitorClient", return_value=mock_client))
         stack.enter_context(patch.object(core, "_install_signal_handlers"))
         stack.enter_context(patch.object(core, "get_install_state", return_value={}))
         stack.enter_context(patch.object(core, "_ensure_playback_tracker"))

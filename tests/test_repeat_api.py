@@ -60,7 +60,6 @@ from autostream_webui_api import (
 import autostream_core as core
 from autostream_core import (
     AudioMonitor,
-    MonitorClient,
     _dispatch_session_event,
     _replay_origin_input,
     _resync_monitor_daemon,
@@ -77,6 +76,7 @@ from autostream_core import (
     set_live_repeat_armed_ack,
     set_live_repeat_enabled,
 )
+from autostream_monitor_client import MonitorClient
 import autostream_runtime as runtime
 
 
@@ -1482,7 +1482,7 @@ class TestLiveSetters:
     def test_set_live_repeat_enabled_sends_command(self):
         mock_client = MagicMock()
         mock_client.set_repeat_enabled.return_value = True
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = mock_client
             ok = set_live_repeat_enabled(True, "mp2_160")
         assert ok is True
@@ -1491,14 +1491,14 @@ class TestLiveSetters:
     def test_set_live_repeat_enabled_forwards_target_minutes(self):
         mock_client = MagicMock()
         mock_client.set_repeat_enabled.return_value = True
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = mock_client
             ok = set_live_repeat_enabled(True, "mp2_160", 45)
         assert ok is True
         mock_client.set_repeat_enabled.assert_called_once_with(True, "mp2_160", 45)
 
     def test_set_live_repeat_enabled_no_client_returns_false(self):
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = None
             ok = set_live_repeat_enabled(True, "auto")
         assert ok is False
@@ -1509,7 +1509,7 @@ class TestLiveSetters:
         socket call itself is unchanged (one set_repeat_armed command)."""
         mock_client = MagicMock()
         mock_client.set_repeat_armed_ack.return_value = {"ok": True}
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = mock_client
             ok = set_live_repeat_armed(True)
         assert ok is True
@@ -1520,13 +1520,13 @@ class TestLiveSetters:
         ack = {"type": "ack", "command": "set_repeat_armed", "ok": True,
                "state": "hold", "armed": True, "position_seconds": 0.0}
         mock_client.set_repeat_armed_ack.return_value = ack
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = mock_client
             result = set_live_repeat_armed_ack(True)
         assert result == ack
 
     def test_set_live_repeat_armed_ack_no_client_returns_none(self):
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = None
             assert set_live_repeat_armed_ack(True) is None
 
@@ -1534,7 +1534,7 @@ class TestLiveSetters:
         mock_client = MagicMock()
         mock_client.repeat_stop.return_value = {"ok": True, "state": "hold",
                                                  "armed": False, "position_seconds": 0.0}
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = mock_client
             ack = send_live_repeat_transport("stop")
         assert ack["ok"] is True
@@ -1545,7 +1545,7 @@ class TestLiveSetters:
         mock_client = MagicMock()
         mock_client.repeat_seek.return_value = {"ok": True, "state": "replaying",
                                                  "armed": True, "position_seconds": 5.0}
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = mock_client
             ack = send_live_repeat_transport("seek", 5.0)
         assert ack["position_seconds"] == 5.0
@@ -1555,7 +1555,7 @@ class TestLiveSetters:
     def test_send_live_repeat_transport_no_client_returns_none(self):
         """The socket is down (no connected client): both transport actions
         must return None rather than raising."""
-        with patch("autostream_core._connected_monitor") as cm:
+        with patch("autostream_monitor_client._connected_monitor") as cm:
             cm.return_value.__enter__.return_value = None
             assert send_live_repeat_transport("stop") is None
             assert send_live_repeat_transport("seek", 3.0) is None
@@ -1830,7 +1830,7 @@ class TestApplyRepeatAck:
         ack = _ack("repeat_seek", "replaying")
         client = MagicMock()
         client.repeat_seek.return_value = ack
-        with patch("autostream_core._connected_monitor") as cm, \
+        with patch("autostream_monitor_client._connected_monitor") as cm, \
                 patch("autostream_core.apply_repeat_ack",
                       side_effect=lambda a: a) as apply:
             cm.return_value.__enter__.return_value = client
@@ -1841,7 +1841,7 @@ class TestApplyRepeatAck:
         ack = _ack("repeat_stop", "fading_out", armed=False)
         client = MagicMock()
         client.repeat_stop.return_value = ack
-        with patch("autostream_core._connected_monitor") as cm, \
+        with patch("autostream_monitor_client._connected_monitor") as cm, \
                 patch("autostream_core.apply_repeat_ack",
                       side_effect=lambda a: a) as apply:
             cm.return_value.__enter__.return_value = client
@@ -1849,7 +1849,7 @@ class TestApplyRepeatAck:
         apply.assert_called_once_with(ack)
 
     def test_send_live_repeat_transport_unreachable_returns_none(self):
-        with patch("autostream_core._connected_monitor") as cm, \
+        with patch("autostream_monitor_client._connected_monitor") as cm, \
                 patch("autostream_core.apply_repeat_ack") as apply:
             cm.return_value.__enter__.return_value = None
             assert send_live_repeat_transport("seek", 0.0) is None
@@ -1859,7 +1859,7 @@ class TestApplyRepeatAck:
         ack = _ack("set_repeat_armed", "replaying")
         client = MagicMock()
         client.set_repeat_armed_ack.return_value = ack
-        with patch("autostream_core._connected_monitor") as cm, \
+        with patch("autostream_monitor_client._connected_monitor") as cm, \
                 patch("autostream_core.apply_repeat_ack",
                       side_effect=lambda a: a) as apply:
             cm.return_value.__enter__.return_value = client

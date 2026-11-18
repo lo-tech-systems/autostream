@@ -23,7 +23,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_core as core
-from autostream_core import MonitorClient
+from autostream_monitor_client import MonitorClient
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ class TestConnectClose:
         old_sock = FakeSocket()
         c = _client(old_sock)
         # connect() to a non-existent path will fail, but close() should be called.
-        # Patch autostream_core.socket so AF_UNIX exists even on Windows.
+        # Patch autostream_monitor_client.socket so AF_UNIX exists even on Windows.
         import socket as _socket_mod
         fake_socket_mod = MagicMock(wraps=_socket_mod)
         fake_socket_mod.AF_UNIX = getattr(_socket_mod, "AF_UNIX", 1)
@@ -240,7 +240,7 @@ class TestConnectClose:
         fake_new_sock = MagicMock()
         fake_new_sock.connect.side_effect = OSError("no such file")
         fake_socket_mod.socket.return_value = fake_new_sock
-        with patch("autostream_core.socket", fake_socket_mod):
+        with patch("autostream_monitor_client.socket", fake_socket_mod):
             c.connect()
         assert old_sock.closed
 
@@ -253,7 +253,7 @@ class TestConnectClose:
         fake_new_sock = MagicMock()
         fake_new_sock.connect.side_effect = OSError("no such file")
         fake_socket_mod.socket.return_value = fake_new_sock
-        with patch("autostream_core.socket", fake_socket_mod):
+        with patch("autostream_monitor_client.socket", fake_socket_mod):
             result = c.connect()
         assert result is False
         assert not c.is_connected()

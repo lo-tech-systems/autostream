@@ -26,6 +26,7 @@ if _core not in sys.path:
 import autostream_core as _core_mod
 from autostream_core import _check_webui_thread
 import autostream_runtime as runtime
+import autostream_monitor_client as monitor_client
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +342,7 @@ class TestOutputUsageStartup:
              patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
              patch.object(_core_mod, "_start_output_usage_poller",
                           side_effect=lambda _cfg: calls.append("output-usage")), \
-             patch.object(_core_mod, "MonitorClient") as monitor_client, \
+             patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(_core_mod, "_cleanup_discovery"):
             # Simulate shutdown being requested before monitor startup.  The
             # poller should still be started because it now runs before the
@@ -352,7 +353,7 @@ class TestOutputUsageStartup:
             _core_mod.run_autostream("unused.json", settings=settings)
 
         assert calls == ["remove-playing", "output-usage"]
-        monitor_client.assert_not_called()
+        client_cls.assert_not_called()
 
 
 class TestStartupWifiWatcherForwarding:
@@ -381,7 +382,7 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "remove_avahi_playing_service"), \
              patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
              patch.object(_core_mod, "_start_output_usage_poller"), \
-             patch.object(_core_mod, "MonitorClient") as monitor_client, \
+             patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(_core_mod, "_cleanup_discovery"):
             mock_flag.is_set.return_value = True
             avahi_path.exists.return_value = False
@@ -393,7 +394,7 @@ class TestStartupWifiWatcherForwarding:
         # next wholesale save).
         m_apply.assert_called_once_with("unused.json", settings=settings)
         m_forward.assert_not_called()
-        monitor_client.assert_not_called()
+        client_cls.assert_not_called()
 
     def test_startup_policy_failure_does_not_raise(self):
         """apply_startup_log_level failing must not interrupt coordinator startup."""
@@ -414,14 +415,14 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "remove_avahi_playing_service"), \
              patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
              patch.object(_core_mod, "_start_output_usage_poller"), \
-             patch.object(_core_mod, "MonitorClient") as monitor_client, \
+             patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(_core_mod, "_cleanup_discovery"):
             mock_flag.is_set.return_value = True
             avahi_path.exists.return_value = False
 
             _core_mod.run_autostream("unused.json", settings=settings)  # must not raise
 
-        monitor_client.assert_not_called()
+        client_cls.assert_not_called()
 
 
 class TestStaticSystemFactsStartupAudit:

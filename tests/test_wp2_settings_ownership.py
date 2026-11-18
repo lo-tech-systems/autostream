@@ -273,7 +273,7 @@ class TestRunAutostreamFinalSave:
         with (
             patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
-            patch("autostream_core.MonitorClient") as mc,
+            patch("autostream_monitor_client.MonitorClient") as mc,
             patch("autostream_core._install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_core._ensure_playback_tracker"),
@@ -313,7 +313,7 @@ class TestRunAutostreamFinalSave:
         with (
             patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
-            patch("autostream_core.MonitorClient") as mc,
+            patch("autostream_monitor_client.MonitorClient") as mc,
             patch("autostream_core._install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_core._ensure_playback_tracker"),
@@ -371,7 +371,7 @@ class TestRunAutostreamStartupFormatReconcile:
         with (
             patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
-            patch("autostream_core.MonitorClient", return_value=mock_client),
+            patch("autostream_monitor_client.MonitorClient", return_value=mock_client),
             patch("autostream_core._install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_core._ensure_playback_tracker"),
@@ -455,7 +455,7 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
         with (
             patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
-            patch("autostream_core.MonitorClient", return_value=mock_client),
+            patch("autostream_monitor_client.MonitorClient", return_value=mock_client),
             patch("autostream_core._install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_core._ensure_playback_tracker"),

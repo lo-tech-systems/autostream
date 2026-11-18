@@ -27,9 +27,9 @@ ORDER = ["L0", "L1a", "L1b", "L2", "L3", "L4"]
 _L0 = """
 align_tone appliance_identity artwork auth bluetooth_client bluetooth_facts
 bluetooth_presentation commissioning config debounce dial_gpio dials federation
-licensing mdns mute_state nowplaying owntone owntone_mini pin_pairing
-playback_stats player_service players rpi runtime runtime_state settings
-settings_schema start_buffer_cache system_stats sysutils wifi_network
+licensing mdns monitor_client mute_state nowplaying owntone owntone_mini
+pin_pairing playback_stats player_service players rpi runtime runtime_state
+settings settings_schema start_buffer_cache system_stats sysutils wifi_network
 """.split()
 _L2 = "align appliances dial_push dial_warnings log_policy output_usage".split()
 _L3 = """

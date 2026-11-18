@@ -409,6 +409,7 @@ def _unpatched(recorder: Recorder, name: str) -> Callable:
 def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
     import autostream_appliance_models as models
+    import autostream_monitor_client as monitor_client
     import autostream_core as core
     import autostream_federation as federation
     import autostream_mute_state as mute_state
@@ -508,9 +509,9 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_active_track_identification_snapshot=lambda: scenario.track,
              get_session_source_input_index=lambda: scenario.source_input,
              get_playback_snapshot=lambda: scenario.playback,
-             _connected_monitor=connected_monitor,
              apply_repeat_ack=lambda ack: ack,
              _owntone_selfheal_state=dict(scenario.selfheal))
+    setattrs(monitor_client, _connected_monitor=connected_monitor)
     setattrs(start_buffer_cache, current_ms=lambda base_url=None: START_BUFFER_MS)
     setattrs(system_stats, _read_get_throttled_value=lambda: scenario.throttled)
     setattrs(federation, create_session=lambda ip: ("golden-token", 0))

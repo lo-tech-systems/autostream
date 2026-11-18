@@ -28,7 +28,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 import autostream_core as _core_mod
-from autostream_core import AudioMonitor, MonitorClient
+from autostream_core import AudioMonitor
+from autostream_monitor_client import MonitorClient
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
@@ -38,6 +39,7 @@ from autostream_webui_api import (
     _validate_track_id_silence,
     send_settings_post_json,
 )
+import autostream_monitor_client as monitor_client
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -353,7 +355,7 @@ class TestInputTypeRow:
         _make_live_monitor(1, silence_threshold_dbfs=-60.0)
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)), \
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
              _tracker_patched():
             code, resp = _post_resp(state, "audio1.input_type", "turntable")
@@ -368,7 +370,7 @@ class TestInputTypeRow:
     def test_push_failure_is_reported_not_reloaded(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         _make_live_monitor(1, silence_threshold_dbfs=-60.0)
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
              patch("autostream_webui_api.request_config_reload") as m_rel, \
              _tracker_patched():
@@ -393,7 +395,7 @@ class TestInputTypeRow:
     def test_failed_push_leaves_the_monitor_holding_the_new_type(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         mon = _make_live_monitor(1, silence_threshold_dbfs=-60.0)
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)), \
              _tracker_patched():
             code, resp = _post_resp(state, "audio1.input_type", "turntable")
         assert resp["live"] is False
@@ -438,7 +440,7 @@ class TestSilenceThresholdRow:
         _make_live_monitor(1, input_type="cd")
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)), \
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb:
             code, resp = _post_resp(state, "audio1.silence_threshold", -50)
         assert resp["live"] is True
@@ -450,7 +452,7 @@ class TestSilenceThresholdRow:
     def test_push_failure_is_reported_not_reloaded(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         _make_live_monitor(1)
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
              patch("autostream_webui_api.request_config_reload") as m_rel:
             code, resp = _post_resp(state, "audio1.silence_threshold", -50)
@@ -466,7 +468,7 @@ class TestSilenceThresholdRow:
         _make_live_monitor(2, input_type="cd")
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)):
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
             code, resp = _post_resp(state, "audio2.silence_threshold", -52)
         snap = store.snapshot()
         assert snap.audio2.silence_threshold_dbfs == -52.0
@@ -505,7 +507,7 @@ class TestDynamicRateMatchingRow:
         _make_live_monitor(1, input_type="cd", silence_threshold_dbfs=-55.0)
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)), \
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
              patch("autostream_webui_api.request_config_reload") as m_rel:
             code, resp = _post_resp(state, "audio1.dynamic_rate_matching", True)
@@ -522,7 +524,7 @@ class TestDynamicRateMatchingRow:
     def test_push_failure_is_reported_and_the_monitor_keeps_the_value(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         mon = _make_live_monitor(1)
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(None)), \
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)), \
              patch("autostream_core.LIVE_PUSH_RETRY_GAP_SECONDS", 0), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
              patch("autostream_webui_api.request_config_reload") as m_rel:
@@ -540,7 +542,7 @@ class TestDynamicRateMatchingRow:
         _make_live_monitor(2)
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)):
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
             code, resp = _post_resp(state, "audio2.dynamic_rate_matching", True)
         assert resp["live"] is True
         pushed = mock_client.configure_input.call_args
@@ -566,7 +568,7 @@ class TestDynamicRateMatchingRow:
         _make_live_monitor(1)
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
-        with patch.object(_core_mod, "_connected_monitor", _fake_connected(mock_client)):
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
             _post_resp(state, "audio1.dynamic_rate_matching", True)
             _post_resp(state, "audio1.silence_threshold", -50)
             _post_resp(state, "audio1.input_type", "cd")
