@@ -22,13 +22,17 @@ import autostream_core as core
 import autostream_player_service as player_service
 import autostream_runtime as runtime
 import autostream_state
-from autostream_core import AudioMonitor, _SelfHeal, _maybe_run_owntone_hang_watchdog, _OwntoneHangWatchdog
+from autostream_core import AudioMonitor
+from autostream_selfheal import maybe_run_owntone_hang_watchdog as _maybe_run_owntone_hang_watchdog
+from autostream_selfheal import OwntoneHangWatchdog as _OwntoneHangWatchdog
+from autostream_selfheal import SelfHeal as _SelfHeal
 from autostream_intents.table import Reply
 from autostream_players import ActionResult
 from autostream_state import Origin
 from autostream_state.outputs import get_authority
 from fake_store import FakeStore
 from output_fakes import row
+import autostream_selfheal as selfheal
 
 BASE_URL = "http://localhost:3689"
 DEFAULT_NAME = "Test Speaker"
@@ -76,9 +80,9 @@ def submitted(monkeypatch):
 
 @pytest.fixture
 def fifo_ok(monkeypatch):
-    monkeypatch.setattr(core, "reconcile_fifo_with_backend",
+    monkeypatch.setattr(selfheal, "reconcile_fifo_with_backend",
                         lambda *a, **k: SimpleNamespace(ok=True, message=""))
-    monkeypatch.setattr(core, "retry_pending_format_reconcile", lambda *a, **k: None)
+    monkeypatch.setattr(selfheal, "retry_pending_format_reconcile", lambda *a, **k: None)
 
 
 @pytest.fixture
@@ -226,7 +230,7 @@ class TestReapplyAfterBootChange:
     def authority_spy(self, monkeypatch):
         spy = SimpleNamespace(reapply=[])
         spy.reapply_selected = lambda **kw: spy.reapply.append(kw)
-        monkeypatch.setattr(core, "get_authority", lambda: spy)
+        monkeypatch.setattr(selfheal, "get_authority", lambda: spy)
         return spy
 
     def test_first_pass_records_the_boot_and_does_not_reapply(self, fifo_ok, authority_spy):
@@ -333,7 +337,7 @@ class TestNoRepublish:
         assert republish == []
 
     def test_the_boot_change_path_raises_no_republish_request(self, fifo_ok, republish, monkeypatch):
-        monkeypatch.setattr(core, "get_authority", lambda: SimpleNamespace(reapply_selected=lambda **k: None))
+        monkeypatch.setattr(selfheal, "get_authority", lambda: SimpleNamespace(reapply_selected=lambda **k: None))
         FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot="b1")
         mon = _make_monitor()
         mon._outputs_boot_seen = "b0"
@@ -351,8 +355,8 @@ class TestHangWatchdogReachability:
     def test_not_connected_means_not_reachable_and_no_probe(self):
         FakeStore().outputs_unreachable()
         wd = _OwntoneHangWatchdog()
-        with patch("autostream_core.list_outputs") as probe, \
-             patch("autostream_core.run_admin_cmd") as admin:
+        with patch("autostream_selfheal.list_outputs") as probe, \
+             patch("autostream_selfheal.run_admin_cmd") as admin:
             _maybe_run_owntone_hang_watchdog(wd, self._stalled(wd), True, BASE_URL, NOW)
         probe.assert_not_called()
         admin.assert_not_called()
@@ -362,8 +366,8 @@ class TestHangWatchdogReachability:
         FakeStore().outputs([])
         wd = _OwntoneHangWatchdog()
         probe_result = SimpleNamespace(ok=False)
-        with patch("autostream_core.list_outputs", return_value=probe_result) as probe, \
-             patch("autostream_core.run_admin_cmd") as admin:
+        with patch("autostream_selfheal.list_outputs", return_value=probe_result) as probe, \
+             patch("autostream_selfheal.run_admin_cmd") as admin:
             _maybe_run_owntone_hang_watchdog(wd, self._stalled(wd), True, BASE_URL, NOW)
         probe.assert_called_once()
         admin.assert_not_called()

@@ -38,11 +38,11 @@ from fake_store import FakeStore, fake_levels
 import autostream_core as core
 from autostream_core import (
     AudioMonitor,
-    _carry_forward_hang_watchdog,
-    _maybe_run_owntone_hang_watchdog,
-    _OwntoneHangWatchdog,
-    _SelfHeal,
 )
+from autostream_selfheal import maybe_run_owntone_hang_watchdog as _maybe_run_owntone_hang_watchdog
+from autostream_selfheal import carry_forward_hang_watchdog as _carry_forward_hang_watchdog
+from autostream_selfheal import OwntoneHangWatchdog as _OwntoneHangWatchdog
+from autostream_selfheal import SelfHeal as _SelfHeal
 import autostream_output_intents as output_intents
 import autostream_player_service as player_service
 import autostream_runtime as runtime
@@ -52,6 +52,7 @@ from autostream_players import ActionResult
 from autostream_state import Origin
 from autostream_state.outputs import get_authority
 from output_fakes import row
+import autostream_selfheal as selfheal
 
 
 BASE_URL = "http://localhost:3689"
@@ -83,7 +84,7 @@ def _make_monitor(**overrides) -> AudioMonitor:
 
 @pytest.fixture(autouse=True)
 def _reset_selfheal_state():
-    core._set_owntone_selfheal_state(
+    selfheal._set_owntone_selfheal_state(
         reconcile_fired_count=0,
         reconcile_last_fired_at=0.0,
         watchdog_armed=False,
@@ -310,8 +311,8 @@ class TestMaybeRunOwntoneHangWatchdogWiring:
         wd = _OwntoneHangWatchdog()
         status = {"fifo": {"stalled_seconds": wd.STALL_THRESHOLD_SECONDS + 5}}
         fake_result = MagicMock(returncode=0, stderr="")
-        with patch("autostream_core.list_outputs") as mock_list, \
-             patch("autostream_core.run_admin_cmd", return_value=fake_result) as mock_admin, \
+        with patch("autostream_selfheal.list_outputs") as mock_list, \
+             patch("autostream_selfheal.run_admin_cmd", return_value=fake_result) as mock_admin, \
              patch.object(runtime._task_pool, "submit") as mock_submit:
             mock_list.return_value = SimpleNamespace(ok=True)
             # Run the submitted worker function synchronously instead of on
@@ -331,7 +332,7 @@ class TestMaybeRunOwntoneHangWatchdogWiring:
 
     def test_absent_fifo_block_no_restart_and_reports_disarmed(self):
         wd = _OwntoneHangWatchdog()
-        with patch("autostream_core.run_admin_cmd") as mock_admin:
+        with patch("autostream_selfheal.run_admin_cmd") as mock_admin:
             _maybe_run_owntone_hang_watchdog(wd, {}, True, BASE_URL, 1000.0)
         mock_admin.assert_not_called()
         state = _selfheal_state()
@@ -340,7 +341,7 @@ class TestMaybeRunOwntoneHangWatchdogWiring:
     def test_no_session_no_restart(self):
         wd = _OwntoneHangWatchdog()
         status = {"fifo": {"stalled_seconds": wd.STALL_THRESHOLD_SECONDS + 5}}
-        with patch("autostream_core.run_admin_cmd") as mock_admin:
+        with patch("autostream_selfheal.run_admin_cmd") as mock_admin:
             _maybe_run_owntone_hang_watchdog(wd, status, False, BASE_URL, 1000.0)
         mock_admin.assert_not_called()
 
@@ -373,8 +374,8 @@ class TestSelfHealComposition:
 
         # Phase 1: stalled FIFO, OwnTone reachable.
         stalled_status = {"fifo": {"stalled_seconds": watchdog.STALL_THRESHOLD_SECONDS + 5}}
-        with patch("autostream_core.list_outputs", return_value=SimpleNamespace(ok=True)), \
-             patch("autostream_core.run_admin_cmd", side_effect=_fake_run_admin_cmd), \
+        with patch("autostream_selfheal.list_outputs", return_value=SimpleNamespace(ok=True)), \
+             patch("autostream_selfheal.run_admin_cmd", side_effect=_fake_run_admin_cmd), \
              patch.object(runtime._task_pool, "submit") as mock_submit:
             def _run_now(key, fn, *args, **kwargs):
                 fn(*args, **kwargs)
@@ -491,8 +492,8 @@ class TestMaybeRetryOwntoneRecoveryLog:
     @pytest.fixture(autouse=True)
     def _fifo_ok(self, monkeypatch):
         self.fifo = MagicMock(return_value=SimpleNamespace(ok=True, message=""))
-        monkeypatch.setattr(core, "reconcile_fifo_with_backend", self.fifo)
-        monkeypatch.setattr(core, "retry_pending_format_reconcile", lambda *a, **k: None)
+        monkeypatch.setattr(selfheal, "reconcile_fifo_with_backend", self.fifo)
+        monkeypatch.setattr(selfheal, "retry_pending_format_reconcile", lambda *a, **k: None)
 
     def _monitor(self):
         mon = _make_monitor(owntone_base_url=BASE_URL)
@@ -552,7 +553,7 @@ class TestStatusPassthrough:
     def test_owntone_selfheal_block_present_in_status_json(self):
         from autostream_webui_api import send_status_json
 
-        core._set_owntone_selfheal_state(
+        selfheal._set_owntone_selfheal_state(
             reconcile_fired_count=2, reconcile_last_fired_at=42.0,
             watchdog_armed=True, watchdog_restart_count=1,
             watchdog_last_restart_at=99.0,
@@ -586,7 +587,7 @@ class TestStatusPassthrough:
         UI while all Python-side parsing accepted it."""
         from autostream_webui_api import send_status_json
 
-        core._set_owntone_selfheal_state(
+        selfheal._set_owntone_selfheal_state(
             reconcile_fired_count=0, reconcile_last_fired_at=float("-inf"),
             watchdog_armed=True, watchdog_restart_count=0,
             watchdog_last_restart_at=float("-inf"),
@@ -672,7 +673,7 @@ class TestSelfHealGrouping:
         mon = _make_monitor()
         mon.is_capturing = False
 
-        with patch("autostream_core.reconcile_fifo_with_backend") as m_fifo:
+        with patch("autostream_selfheal.reconcile_fifo_with_backend") as m_fifo:
             _SelfHeal.maybe_retry_owntone(mon, 100.0, replay_origin=False)
 
         m_fifo.assert_not_called()
@@ -686,7 +687,7 @@ class TestSelfHealGrouping:
         mon._owntone_enabled_ok = False
         mon._owntone_last_attempt = 0.0
 
-        with patch("autostream_core.reconcile_fifo_with_backend") as m_fifo:
+        with patch("autostream_selfheal.reconcile_fifo_with_backend") as m_fifo:
             m_fifo.return_value = SimpleNamespace(ok=False, message="down")
             mon._maybe_retry_owntone(1000.0)
 

@@ -1,0 +1,13 @@
+# The OwnTone hang watchdog and output self-heal moved out of the coordinator.
+autostream_core._SelfHeal -> autostream_selfheal.SelfHeal  alias=selfheal
+autostream_core._OwntoneHangWatchdog -> autostream_selfheal.OwntoneHangWatchdog  alias=selfheal
+autostream_core._carry_forward_hang_watchdog -> autostream_selfheal.carry_forward_hang_watchdog  alias=selfheal
+autostream_core._maybe_run_owntone_hang_watchdog -> autostream_selfheal.maybe_run_owntone_hang_watchdog  alias=selfheal
+autostream_core._set_owntone_selfheal_state -> autostream_selfheal._set_owntone_selfheal_state  alias=selfheal
+autostream_core._fire_owntone_hang_restart -> autostream_selfheal._fire_owntone_hang_restart  alias=selfheal
+autostream_core._health_writer -> autostream_selfheal._health_writer  alias=selfheal
+autostream_core._clamped_output_volume -> autostream_selfheal._clamped_output_volume  alias=selfheal
+autostream_core.list_outputs -> autostream_selfheal.list_outputs  alias=selfheal
+autostream_core.run_admin_cmd -> autostream_selfheal.run_admin_cmd  alias=selfheal
+autostream_core.retry_pending_format_reconcile -> autostream_selfheal.retry_pending_format_reconcile  alias=selfheal
+autostream_core.config_airplay_mode_to_backend -> autostream_selfheal.config_airplay_mode_to_backend  alias=selfheal

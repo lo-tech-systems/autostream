@@ -503,7 +503,7 @@ def _extract_monitor_output_format(
 # second concurrent restart request for the same key is a no-op rather than
 # stacking a duplicate "sudo -n autostream_admin restart-*" subprocess call
 # on top of one already running -- mirroring the rate-limit protection
-# _OwntoneHangWatchdog already has (autostream_core.py), just keyed by
+# _OwntoneHangWatchdog already has (autostream_selfheal.py), just keyed by
 # in-flight identity instead of a time window. Checked-and-added before the
 # worker thread starts, cleared in the worker's own finally block.
 _RESTART_INFLIGHT: set = set()

@@ -1,0 +1,3 @@
+# Names the self-heal and the coordinator both import: the self-heal tests follow.
+autostream_core.reconcile_fifo_with_backend -> autostream_selfheal.reconcile_fifo_with_backend  alias=selfheal
+autostream_core.get_authority -> autostream_selfheal.get_authority  alias=selfheal

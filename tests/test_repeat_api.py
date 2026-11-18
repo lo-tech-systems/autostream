@@ -91,6 +91,7 @@ from autostream_monitor_client import MonitorClient
 import autostream_runtime as runtime
 import autostream_repeat as repeat
 import autostream_session
+import autostream_selfheal as selfheal
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
@@ -996,7 +997,7 @@ class TestMaybeRetryOwntoneReplayOrigin:
     def test_replay_origin_bypasses_is_capturing_guard(self):
         mon = _make_monitor(owntone_base_url=BASE_URL)
         mon.is_capturing = False
-        with patch.object(core, "reconcile_fifo_with_backend") as rf:
+        with patch.object(selfheal, "reconcile_fifo_with_backend") as rf:
             rf.return_value = MagicMock(ok=False, message="stop here")
             mon._maybe_retry_owntone(time.time(), replay_origin=True)
         rf.assert_called_once()  # proceeded past the is_capturing guard
@@ -1004,7 +1005,7 @@ class TestMaybeRetryOwntoneReplayOrigin:
     def test_default_false_preserves_pre_wpr6_behaviour(self):
         mon = _make_monitor(owntone_base_url=BASE_URL)
         mon.is_capturing = False
-        with patch.object(core, "reconcile_fifo_with_backend") as rf:
+        with patch.object(selfheal, "reconcile_fifo_with_backend") as rf:
             mon._maybe_retry_owntone(time.time())
         rf.assert_not_called()  # bailed out on the is_capturing guard, as before
 

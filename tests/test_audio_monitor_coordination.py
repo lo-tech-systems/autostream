@@ -550,6 +550,7 @@ import autostream_repeat as repeat
 import autostream_live_config as live_config
 import autostream_state as state
 import autostream_input_status as input_status
+import autostream_selfheal as selfheal
 
 
 def _inputs():
@@ -1083,8 +1084,8 @@ class TestDefaultOutputRequest:
         mon._owntone_enabled_ok = False
         mon._owntone_last_attempt = 0.0
         fifo_ok = MagicMock(ok=True, message="")
-        with patch.object(core, "reconcile_fifo_with_backend", return_value=fifo_ok),              patch.object(core, "retry_pending_format_reconcile"),              patch.object(core.intents, "submit") as submit_mock:
-            core._SelfHeal.maybe_retry_owntone(mon, time.time())
+        with patch.object(selfheal, "reconcile_fifo_with_backend", return_value=fifo_ok),              patch.object(selfheal, "retry_pending_format_reconcile"),              patch.object(core.intents, "submit") as submit_mock:
+            selfheal.SelfHeal.maybe_retry_owntone(mon, time.time())
         return submit_mock
 
     def test_an_unselected_default_is_asked_for_with_its_volume(self):

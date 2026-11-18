@@ -20,6 +20,7 @@ from fake_store import fake_levels
 import autostream_core as core
 import autostream_state as state
 import autostream_webui_api as api
+import autostream_selfheal as selfheal
 
 
 def snap():
@@ -60,19 +61,19 @@ class TestMonitorPart:
 
 class TestHealthPart:
     def test_a_set_merges_fields(self):
-        core._set_owntone_selfheal_state(reconcile_fired_count=2, reconcile_last_fired_at=42.0)
-        core._set_owntone_selfheal_state(watchdog_armed=True)
+        selfheal._set_owntone_selfheal_state(reconcile_fired_count=2, reconcile_last_fired_at=42.0)
+        selfheal._set_owntone_selfheal_state(watchdog_armed=True)
         h = snap().health
         assert (h.reconcile_fired_count, h.reconcile_last_fired_at, h.watchdog_armed) == (
             2, 42.0, True)
 
     def test_the_never_restarted_sentinel_is_kept_and_reads_null_in_json(self):
-        core._set_owntone_selfheal_state(watchdog_last_restart_at=float("-inf"))
+        selfheal._set_owntone_selfheal_state(watchdog_last_restart_at=float("-inf"))
         assert snap().health.watchdog_last_restart_at == -math.inf
         assert snap().health.as_json()["watchdog_last_restart_at"] is None
 
     def test_the_status_reply_carries_the_counters(self):
-        core._set_owntone_selfheal_state(
+        selfheal._set_owntone_selfheal_state(
             reconcile_fired_count=2, reconcile_last_fired_at=42.0, watchdog_armed=True,
             watchdog_restart_count=1, watchdog_last_restart_at=float("-inf"))
         handler = MagicMock()

@@ -775,7 +775,7 @@ def set_hostname(hostname: str) -> bool:
 # Timing: this verb is invoked by the coordinator as
 #   sudo -n autostream_admin restart-owntone
 # with a 20s subprocess timeout on the caller's side (see
-# core/autostream_core.py, _fire_owntone_hang_restart's run_admin_cmd call).
+# core/autostream_selfheal.py, _fire_owntone_hang_restart's run_admin_cmd call).
 # The two windows below (10s graceful + 6s post-abort = 16s worst case) are
 # sized to complete within that 20s budget with margin left over for process
 # spawn/signal/systemctl overhead, so the caller still gets a real outcome
