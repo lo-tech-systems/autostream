@@ -23,6 +23,7 @@ import autostream_state
 from autostream_artwork import ArtworkMemoryCache
 from autostream_config import (
     INPUT_TYPE_DEFAULT,
+    START_AFTER_MS_DEFAULT,
     input_type_label,
     normalize_input_type,
 )
@@ -98,12 +99,14 @@ class AudioMonitor:
         is_turntable: bool = False,
         input_type: str = INPUT_TYPE_DEFAULT,
         dynamic_rate_matching: bool = True,
+        start_after_ms: int = START_AFTER_MS_DEFAULT,
     ) -> None:
         self.input_index = input_index
         self.input_device = input_device
         self.is_turntable = is_turntable
         self.input_type = normalize_input_type(input_type)
         self.dynamic_rate_matching = bool(dynamic_rate_matching)
+        self.start_after_ms = int(start_after_ms)
         self.silence_threshold_dbfs = silence_threshold_dbfs
         self.silence_seconds = silence_seconds
         self.track_change_silence_seconds = track_change_silence_seconds

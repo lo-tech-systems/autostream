@@ -583,6 +583,66 @@ class TestDynamicRateMatchingRow:
             assert pushed.kwargs["dynamic_rate_matching"] is True
 
 
+# ── Start after row ───────────────────────────────────────────────────────────
+
+class TestStartAfterRow:
+    def test_fields_are_registered(self):
+        for f in ("audio1.start_after_ms", "audio2.start_after_ms"):
+            assert f in _SETTINGS_FIELDS
+
+    def test_stored_under_the_input_section(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.start_after_ms", 150)
+        assert resp["ok"] is True
+        assert resp["value"] == 150
+        assert store.snapshot().audio1.start_after_ms == 150
+        assert store.snapshot().audio2.start_after_ms == 60
+
+    @pytest.mark.parametrize("good", [30, 250, 60.0])
+    def test_the_ends_of_the_range_are_accepted(self, tmp_path, good):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio2.start_after_ms", good)
+        assert resp["ok"] is True
+        assert store.snapshot().audio2.start_after_ms == int(good)
+
+    @pytest.mark.parametrize("bad", [29, 251, True, "100", None])
+    def test_values_outside_the_range_are_rejected(self, tmp_path, bad):
+        state, store = _make_state(str(tmp_path))
+        code, resp = _post_resp(state, "audio1.start_after_ms", bad)
+        assert code == 400
+        assert store.snapshot().audio1.start_after_ms == 60
+
+    def test_live_push_carries_the_value_and_leaves_the_rest(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1, input_type="cd", silence_threshold_dbfs=-55.0)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)), \
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel:
+            code, resp = _post_resp(state, "audio1.start_after_ms", 120)
+        assert resp["live"] is True
+        mock_client.configure_input.assert_called_once()
+        pushed = mock_client.configure_input.call_args
+        assert pushed.args[0] == 1
+        assert pushed.args[2] == pytest.approx(-55.0)
+        assert pushed.kwargs["input_type"] == "cd"
+        assert pushed.kwargs["start_after_ms"] == 120
+        m_deb.assert_not_called()
+        m_rel.assert_not_called()
+
+    def test_a_later_threshold_change_still_sends_the_value(self, tmp_path):
+        state, store = _make_state(str(tmp_path))
+        _make_live_monitor(1)
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
+            _post_resp(state, "audio1.start_after_ms", 200)
+            _post_resp(state, "audio1.silence_threshold", -50)
+        for pushed in mock_client.configure_input.call_args_list:
+            assert pushed.kwargs["start_after_ms"] == 200
+
+
 # ── Coordinator reload debounce ───────────────────────────────────────────────
 
 class TestCoordinatorReloadDebounce:

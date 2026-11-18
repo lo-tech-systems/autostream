@@ -392,6 +392,14 @@ class TestConfigureInput:
         cmd = self._sent_cmd(dynamic_rate_matching=value)
         assert cmd["dynamic_rate_matching"] is bool(value)
 
+    def test_start_after_is_sent_with_the_default(self):
+        assert self._sent_cmd()["start_after_ms"] == 60
+
+    def test_start_after_is_sent_as_an_int(self):
+        cmd = self._sent_cmd(start_after_ms=150)
+        assert cmd["start_after_ms"] == 150
+        assert isinstance(cmd["start_after_ms"], int)
+
 
 # ---------------------------------------------------------------------------
 # set_log_level

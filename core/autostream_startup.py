@@ -309,6 +309,7 @@ def resync_monitor_daemon(
             m.minimum_playback_seconds,
             input_type=m.input_type,
             dynamic_rate_matching=m.dynamic_rate_matching,
+            start_after_ms=m.start_after_ms,
         ):
             logging.warning(
                 "configure_input(%d, %r) failed after reconnect; will retry full resync.",
@@ -452,6 +453,7 @@ def configure_startup_monitors(
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio1.input_type,
             dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
+            start_after_ms=cfg.audio1.start_after_ms,
         ):
             logging.warning(
                 "configure_input(1, %r) failed during startup; will retry.",
@@ -496,6 +498,7 @@ def configure_startup_monitors(
             is_turntable=cfg.audio1.is_turntable,
             input_type=cfg.audio1.input_type,
             dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
+            start_after_ms=cfg.audio1.start_after_ms,
         ))
 
     if (
@@ -514,6 +517,7 @@ def configure_startup_monitors(
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio2.input_type,
             dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
+            start_after_ms=cfg.audio2.start_after_ms,
         ):
             logging.error(
                 "configure_input(2, %r) failed; skipping second input.",
@@ -560,6 +564,7 @@ def configure_startup_monitors(
                 is_turntable=cfg.audio2.is_turntable,
                 input_type=cfg.audio2.input_type,
                 dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
+                start_after_ms=cfg.audio2.start_after_ms,
             ))
 
     if len(monitors) > 1:

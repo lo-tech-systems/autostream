@@ -48,6 +48,9 @@ from autostream_config import (
     REPEAT_CODEC_CHOICES,
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
+    START_AFTER_MS_DEFAULT,
+    START_AFTER_MS_MAX,
+    START_AFTER_MS_MIN,
     PAUSE_OFF_SECONDS_DEFAULT,
     PAUSE_OFF_SECONDS_RANGE,
     VALID_AIRPLAY_MODES,
@@ -57,6 +60,7 @@ from autostream_config import (
     normalize_airplay_mode,
     normalize_input_type,
     normalize_repeat_codec,
+    normalize_start_after_ms,
     normalize_track_id_analysis_lead_in_seconds,
     normalize_track_id_refresh_seconds,
     normalize_track_id_track_change_silence_seconds,
@@ -412,6 +416,7 @@ def update_live_silence_seconds(
                     monitor.minimum_playback_seconds,
                     input_type=monitor.input_type,
                     dynamic_rate_matching=monitor.dynamic_rate_matching,
+                    start_after_ms=monitor.start_after_ms,
                 ):
                     logging.warning(
                         "Live silence timeout update failed for input %d.",
@@ -457,6 +462,7 @@ def _push_input_config_with_retry(
                     monitor.minimum_playback_seconds,
                     input_type=monitor.input_type,
                     dynamic_rate_matching=monitor.dynamic_rate_matching,
+                    start_after_ms=monitor.start_after_ms,
                 ):
                     return True
         except Exception as e:
@@ -585,6 +591,30 @@ def update_live_dynamic_rate_matching(
     # The Setup note follows the switch at once, whether or not the push
     # succeeds.
     input_status.publish_inputs()
+    return _push_input_config_with_retry(target, socket_path=socket_path)
+
+
+def update_live_start_after_ms(
+    input_index: int,
+    start_after_ms: int,
+    *,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply a live Start after change to one input's running monitor.
+
+    The monitor's attribute is updated first, so the value survives a failed
+    push and goes out with the next reconnect resync. Returns True when the
+    input has no running monitor or the daemon acknowledged the push, False
+    when every push attempt failed.
+    """
+    with runtime._monitors_lock:
+        target = next(
+            (m for m in runtime.all_monitors if m.input_index == input_index), None
+        )
+    if target is None:
+        return True
+
+    target.start_after_ms = normalize_start_after_ms(start_after_ms)
     return _push_input_config_with_retry(target, socket_path=socket_path)
 
 
@@ -908,6 +938,20 @@ def _validate_silence_threshold_dbfs(value: object) -> float:
     return float(round(v))
 
 
+def _validate_start_after_ms(value: object) -> int:
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    if not math.isfinite(value):
+        raise ValueError("Value must be a number")
+    v = int(round(value))
+    if v < START_AFTER_MS_MIN or v > START_AFTER_MS_MAX:
+        raise ValueError(
+            f"Value must be between {START_AFTER_MS_MIN} and {START_AFTER_MS_MAX}"
+        )
+    return v
+
+
 def _sync_playback_input_config(snap, input_index: int) -> None:
     """Hand one input's current settings to the playback tracker."""
     a = snap.audio1 if input_index == 1 else snap.audio2
@@ -952,6 +996,14 @@ def _live_silence_threshold_1(state: object, value: object) -> bool:
 
 def _live_silence_threshold_2(state: object, value: object) -> bool:
     return update_live_silence_threshold_dbfs(2, float(value))
+
+
+def _live_start_after_ms_1(state: object, value: object) -> bool:
+    return update_live_start_after_ms(1, int(value))
+
+
+def _live_start_after_ms_2(state: object, value: object) -> bool:
+    return update_live_start_after_ms(2, int(value))
 
 
 def _live_dynamic_rate_matching_1(state: object, value: object) -> bool:
@@ -1007,6 +1059,14 @@ register_field("audio1.silence_threshold", "audio1", "silence_threshold",
 register_field("audio2.silence_threshold", "audio2", "silence_threshold",
                _validate_silence_threshold_dbfs, live=_live_silence_threshold_2,
                live_class=LiveClass.LIVE)
+register_field("audio1.start_after_ms", "audio1", "start_after_ms",
+               _validate_start_after_ms, live=_live_start_after_ms_1,
+               type=int, bounds=(START_AFTER_MS_MIN, START_AFTER_MS_MAX),
+               default=START_AFTER_MS_DEFAULT, live_class=LiveClass.LIVE)
+register_field("audio2.start_after_ms", "audio2", "start_after_ms",
+               _validate_start_after_ms, live=_live_start_after_ms_2,
+               type=int, bounds=(START_AFTER_MS_MIN, START_AFTER_MS_MAX),
+               default=START_AFTER_MS_DEFAULT, live_class=LiveClass.LIVE)
 register_field("audio1.dynamic_rate_matching", "audio1", "dynamic_rate_matching", _validate_bool,
                live=_live_dynamic_rate_matching_1, live_class=LiveClass.LIVE)
 register_field("audio2.dynamic_rate_matching", "audio2", "dynamic_rate_matching", _validate_bool,

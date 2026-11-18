@@ -75,6 +75,7 @@ class TestInput1DisabledStartup:
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio2.input_type,
             dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
+            start_after_ms=cfg.audio2.start_after_ms,
         )
 
     def test_zero_inputs_returns_empty_list_not_none(self):
@@ -109,6 +110,7 @@ class TestInput1DisabledStartup:
             cfg.general.minimum_playback_seconds,
             input_type=cfg.audio1.input_type,
             dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
+            start_after_ms=cfg.audio1.start_after_ms,
         )
 
 

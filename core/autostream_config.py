@@ -154,6 +154,12 @@ INPUT_TYPE_SILENCE_THRESHOLD_DBFS = {
 SILENCE_THRESHOLD_MIN_DBFS = -70.0
 SILENCE_THRESHOLD_MAX_DBFS = -30.0
 
+# An input's "Start after": how much sound above its sensitivity level,
+# within one second, starts playback (turntable and line inputs).
+START_AFTER_MS_DEFAULT = 60
+START_AFTER_MS_MIN = 30
+START_AFTER_MS_MAX = 250
+
 
 def normalize_input_type(value: object, default: str = INPUT_TYPE_DEFAULT) -> str:
     """Return one of INPUT_TYPES, or *default* for anything else."""
@@ -181,6 +187,20 @@ def clamp_silence_threshold_dbfs(value: object, default: float) -> float:
     if not math.isfinite(v):
         return float(default)
     return min(SILENCE_THRESHOLD_MAX_DBFS, max(SILENCE_THRESHOLD_MIN_DBFS, v))
+
+
+def normalize_start_after_ms(value: object) -> int:
+    """Return a Start after time clamped to its range; the default for a
+    missing or unusable value."""
+    if isinstance(value, bool):
+        return START_AFTER_MS_DEFAULT
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return START_AFTER_MS_DEFAULT
+    if not math.isfinite(v):
+        return START_AFTER_MS_DEFAULT
+    return int(min(START_AFTER_MS_MAX, max(START_AFTER_MS_MIN, round(v))))
 
 
 def input_type_from_section(section: dict) -> str:
@@ -428,6 +448,7 @@ class AudioInputConfig:
     eq_8khz_db: float
     input_type: str = INPUT_TYPE_DEFAULT
     dynamic_rate_matching: bool = True
+    start_after_ms: int = START_AFTER_MS_DEFAULT
 
 
 DEFAULT_OUTPUTS_MAX = 32
@@ -751,6 +772,7 @@ def _parse_audio_input_config(section: dict) -> AudioInputConfig:
         eq_8khz_db=float(section.get("eq_8khz_db", section.get("eq_10khz_db", 0.0)) or 0.0),
         input_type=input_type,
         dynamic_rate_matching=bool(section.get("dynamic_rate_matching", True)),
+        start_after_ms=normalize_start_after_ms(section.get("start_after_ms")),
     )
 
 

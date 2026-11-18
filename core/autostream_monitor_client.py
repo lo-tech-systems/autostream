@@ -145,6 +145,7 @@ class MonitorClient:
         minimum_playback_seconds: int = 30,
         input_type: Optional[str] = None,
         dynamic_rate_matching: bool = True,
+        start_after_ms: int = 60,
     ) -> bool:
         cmd = {
             "type": "configure_input",
@@ -158,6 +159,9 @@ class MonitorClient:
             # whole stored configuration on every call, so an omitted flag
             # would switch the option off.
             "dynamic_rate_matching": bool(dynamic_rate_matching),
+            # Always sent, for the same reason: an omitted value would put
+            # the input back on the default.
+            "start_after_ms": int(start_after_ms),
         }
         # The daemon's reader has no notion of null; an unnamed type is an
         # absent key.

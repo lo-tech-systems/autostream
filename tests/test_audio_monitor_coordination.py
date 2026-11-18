@@ -1334,6 +1334,54 @@ class TestConfigureInputCallSitesPassTheFlag:
         ]
         assert missing == [], f"configure_input calls without the flag at lines {missing}"
 
+    def test_every_configure_input_call_names_start_after(self):
+        import ast
+
+        calls = [
+            node for source in _source_text.core_sources().values()
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "configure_input"
+        ]
+        assert len(calls) >= 5
+        missing = [
+            node.lineno for node in calls
+            if "start_after_ms" not in {kw.arg for kw in node.keywords}
+        ]
+        assert missing == [], f"configure_input calls without start_after_ms at lines {missing}"
+
+
+class TestUpdateLiveStartAfterMs:
+    def _acking_client(self):
+        mock_client = MagicMock(spec=MonitorClient)
+        mock_client.configure_input.return_value = True
+        return mock_client
+
+    def test_returns_true_with_no_matching_monitor(self):
+        assert live_config.update_live_start_after_ms(0, 120) is True
+
+    def test_sets_the_attribute_and_pushes_it_for_that_input_only(self):
+        _make_monitor(input_index=1)
+        mon2 = _make_monitor(input_index=2)
+        mock_client = self._acking_client()
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
+            result = live_config.update_live_start_after_ms(2, 120)
+        assert result is True
+        assert mon2.start_after_ms == 120
+        assert mock_client.configure_input.call_count == 1
+        args, kwargs = mock_client.configure_input.call_args
+        assert args[0] == 2
+        assert kwargs["start_after_ms"] == 120
+
+    def test_other_pushes_carry_the_value(self):
+        mon = _make_monitor(input_index=1)
+        mon.start_after_ms = 150
+        mock_client = self._acking_client()
+        with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
+            live_config.update_live_dynamic_rate_matching(1, False)
+        assert mock_client.configure_input.call_args.kwargs["start_after_ms"] == 150
+
 
 class TestUpdateLiveDynamicRateMatching:
     def _acking_client(self):

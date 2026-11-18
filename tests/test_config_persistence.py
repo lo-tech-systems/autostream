@@ -378,6 +378,36 @@ class TestDynamicRateMatching:
         assert a.dynamic_rate_matching is True
 
 
+class TestStartAfterParse:
+    @staticmethod
+    def _audio1(section):
+        return c.parse_config({"audio1": section}).audio1
+
+    def test_absent_key_is_the_default(self):
+        cfg = c.parse_config({})
+        assert cfg.audio1.start_after_ms == 60
+        assert cfg.audio2.start_after_ms == 60
+
+    def test_a_value_in_range_is_read(self):
+        assert self._audio1({"start_after_ms": 150}).start_after_ms == 150
+
+    def test_each_input_is_read_separately(self):
+        cfg = c.parse_config({"audio2": {"start_after_ms": 200}})
+        assert cfg.audio2.start_after_ms == 200
+        assert cfg.audio1.start_after_ms == 60
+
+    def test_out_of_range_is_clamped(self):
+        assert self._audio1({"start_after_ms": 5}).start_after_ms == 30
+        assert self._audio1({"start_after_ms": 1000}).start_after_ms == 250
+
+    def test_a_float_is_rounded(self):
+        assert self._audio1({"start_after_ms": 99.6}).start_after_ms == 100
+
+    @pytest.mark.parametrize("value", [True, False, None, "fast", float("nan")])
+    def test_unusable_values_give_the_default(self, value):
+        assert self._audio1({"start_after_ms": value}).start_after_ms == 60
+
+
 class TestSetInputType:
     def test_writes_both_keys(self):
         raw = {}
