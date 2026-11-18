@@ -912,6 +912,7 @@ def main() -> None:
         mute_targets_fn=_build_mute_targets_fn(http_server, volume_targets_fn),
         on_readout_changed=core.readout_changed,
         on_mute_changed=core.mute_changed,
+        client_for=peer_pool.get,
     )
 
     # The Wi-Fi link poller: its own thread, one loopback read of the local

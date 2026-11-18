@@ -1,6 +1,6 @@
 """Tests for the mute flag and the volume level the HD page is sent: the real
 core, the real volume worker's stores and the real state builder together,
-with only the network stood in for.
+with only the appliances' clients stood in for.
 
 Covers: the state following the appliance the dial reports from after a poll
 (its level and its mute flag, whatever the readout last named), a mute toggle
@@ -29,6 +29,7 @@ from dial_core import DialCore, PollIO
 from dial_core_state import ActionResult
 from dial_hd_events import ChangeHub
 from dial_mdns import PlayingTarget
+from dial_pool_support import ok, refused
 
 DIAL_ID = "dial-1"
 
@@ -52,27 +53,12 @@ def _status(volume, muted) -> dict:
     }
 
 
-class _Reply:
-    """A urlopen() result carrying a JSON body."""
-
-    def __init__(self, body: dict) -> None:
-        self._raw = json.dumps(body).encode()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc) -> bool:
-        return False
-
-    def read(self, *args) -> bytes:
-        return self._raw
-
-
 class Appliances:
     """The appliances as the network stand-ins see them: each one's volume
     and mute flag, answering status, mute and volume requests."""
 
     def __init__(self, *targets, playing=None) -> None:
+        self.all_targets = list(targets)
         self.targets = list(targets if playing is None else playing)   # the ones playing now
         self.volume = {t.service_name: 40 for t in targets}
         self.muted = {t.service_name: False for t in targets}
@@ -83,16 +69,33 @@ class Appliances:
         name = target.service_name
         return _status(self.volume[name], self.muted[name])
 
-    def urlopen(self, request, timeout=None):
-        name = self.by_ip[request.full_url.split("/")[2].split(":")[0]]
-        body = json.loads(request.data)
-        if request.full_url.endswith("/api/dial/mute"):
-            if self.refuse_mute:
-                return _Reply({"ok": False, "error": "no_active_outputs"})
-            self.muted[name] = body["action"] == "mute"
-            return _Reply({"ok": True, "muted": self.muted[name]})
-        self.volume[name] = max(0, min(100, self.volume[name] + body["delta"]))
-        return _Reply({"ok": True, "volume": self.volume[name], "muted": self.muted[name]})
+    def client_for(self, appliance_id):
+        """The client the volume worker sends through for one appliance."""
+        name = next((t.service_name for t in self.all_targets if t.appliance_id == appliance_id), None)
+        return _Client(self, name) if name is not None else None
+
+
+class _Client:
+    """One appliance's client: its held mute flag, and the volume and mute
+    intents answered from the appliance's state."""
+
+    def __init__(self, appliances: "Appliances", name: str) -> None:
+        self.appliances = appliances
+        self.name = name
+
+    def snapshot(self):
+        return SimpleNamespace(
+            reachable=True, parts={"outputs": {"muted_all": self.appliances.muted[self.name]}})
+
+    def submit(self, intent, args, *, extra_body=None, read_s=None, backoff=True):
+        a = self.appliances
+        if intent == "mute.set":
+            if a.refuse_mute:
+                return refused("no_active_outputs")
+            a.muted[self.name] = args["action"] == "mute"
+            return ok(result={"ok": True, "muted": a.muted[self.name]})
+        a.volume[self.name] = max(0, min(100, a.volume[self.name] + args["delta"]))
+        return ok(result={"ok": True, "volume": a.volume[self.name], "muted": a.muted[self.name]})
 
 
 def _drain_queue() -> None:
@@ -154,8 +157,7 @@ class Rig:
         """Send what is queued, as the worker thread would."""
         with patch.object(dv, "_on_mute_changed", self.core.mute_changed, create=True), \
                 patch.object(dv, "_on_readout_changed", self.core.readout_changed), \
-                patch.object(dv, "fetch_target_status", self.appliances.fetch_status), \
-                patch("dial_volume.urllib.request.urlopen", self.appliances.urlopen):
+                patch.object(dv, "_client_for", self.appliances.client_for):
             while True:
                 try:
                     first = dv._queue.get_nowait()
@@ -163,11 +165,11 @@ class Rig:
                     return
                 for event in dv._coalesce(first):
                     if event[0] == "mute_all":
-                        dv._dispatch_mute_all(self.mute_targets(), DIAL_ID)
+                        dv._dispatch_mute_all(self.mute_targets())
                     elif event[0] == "mute":
-                        dv._fan_out_mute(self.mute_targets(), DIAL_ID, event[1])
+                        dv._fan_out_mute(self.mute_targets(), event[1])
                     else:
-                        dv._fan_out(self.mute_targets(), DIAL_ID, event[1])
+                        dv._fan_out(self.mute_targets(), event[1])
 
 
 # ---------------------------------------------------------------------------
@@ -324,15 +326,14 @@ class TestMuteToggleReachesTheState:
 class TestWorkerReportsMuteChanges:
     def _run(self, call, appliances, callback):
         with patch.object(dv, "_on_mute_changed", callback), \
-                patch.object(dv, "fetch_target_status", appliances.fetch_status), \
-                patch("dial_volume.urllib.request.urlopen", appliances.urlopen):
+                patch.object(dv, "_client_for", appliances.client_for):
             call()
 
     def test_a_fleet_toggle_reports_its_echo_before_any_answer(self):
         appliances = Appliances(LOUNGE)
         seen = []
         self._run(
-            lambda: dv._dispatch_mute_all([LOUNGE], DIAL_ID), appliances,
+            lambda: dv._dispatch_mute_all([LOUNGE]), appliances,
             lambda: seen.append((dv.shown_muted("Lounge"), appliances.muted["Lounge"])),
         )
         assert seen == [(True, False), (True, True)]
@@ -341,7 +342,7 @@ class TestWorkerReportsMuteChanges:
         appliances = Appliances(LOUNGE)
         seen = []
         self._run(
-            lambda: dv._send_one_mute(LOUNGE, DIAL_ID, True), appliances,
+            lambda: dv._send_one_mute(LOUNGE, True), appliances,
             lambda: seen.append((dv.shown_muted("Lounge"), "Lounge" in dv._mute_inflight)),
         )
         assert seen == [(True, False)]
@@ -350,12 +351,13 @@ class TestWorkerReportsMuteChanges:
         appliances = Appliances(LOUNGE)
         seen = []
 
-        def fail(*args, **kwargs):
-            raise OSError("no route")
+        class Down:
+            def submit(self, *args, **kwargs):
+                return refused("unreachable")
 
         with patch.object(dv, "_on_mute_changed", lambda: seen.append(1)), \
-                patch("dial_volume.urllib.request.urlopen", fail), patch("dial_volume.logging"):
-            dv._send_one_mute(LOUNGE, DIAL_ID, True)
+                patch.object(dv, "_client_for", lambda appliance_id: Down()), patch("dial_volume.logging"):
+            dv._send_one_mute(LOUNGE, True)
         assert seen == [1]
 
     def test_a_listener_that_raises_does_not_stop_the_send(self):
@@ -364,13 +366,13 @@ class TestWorkerReportsMuteChanges:
         def boom():
             raise RuntimeError("listener")
 
-        self._run(lambda: dv._dispatch_mute_all([LOUNGE], DIAL_ID), appliances, boom)
+        self._run(lambda: dv._dispatch_mute_all([LOUNGE]), appliances, boom)
         assert appliances.muted["Lounge"] is True
         assert dv.shown_muted("Lounge") is True
 
     def test_no_listener_is_fine(self):
         appliances = Appliances(LOUNGE)
-        self._run(lambda: dv._dispatch_mute_all([LOUNGE], DIAL_ID), appliances, None)
+        self._run(lambda: dv._dispatch_mute_all([LOUNGE]), appliances, None)
         assert dv.shown_muted("Lounge") is True
 
     def test_the_worker_is_started_with_the_listener(self):

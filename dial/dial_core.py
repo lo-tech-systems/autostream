@@ -111,7 +111,8 @@ from dial_update_watch import (
 )
 from dial_volume import (
     enqueue_delta, enqueue_mute, enqueue_mute_all, forget_mute_states_except,
-    observe_master_volume, observe_mute_state, shown_muted, shown_volume,
+    observe_master_volume, observe_master_volume_if_tracked, observe_mute_state, shown_muted,
+    shown_volume,
 )
 from dial_warning_text import WARNING_DESCRIPTORS, appliance_warning_descriptor, appliance_warning_key
 from dial_warnings import ACTION_DISMISS, WarningManager, WarningStore
@@ -432,6 +433,7 @@ class PollIO:
     artwork_eligible: Callable = lambda url: dial_core_poll.default_artwork_eligible(url)
     observe_mute: Callable = lambda *a, **k: observe_mute_state(*a, **k)
     observe_volume: Callable = lambda *a, **k: observe_master_volume(*a, **k)
+    observe_volume_tracked: Callable = lambda *a, **k: observe_master_volume_if_tracked(*a, **k)
     forget_mute: Callable = lambda *a, **k: forget_mute_states_except(*a, **k)
     on_artwork_error: Callable[[str], None] | None = None
     log_limiter: object = dataclasses.field(default_factory=dial_core_poll.RateLimitedLogger)
@@ -506,6 +508,7 @@ class DialCore:
         self._last_reconcile_at = 0.0
         self._reconcile_due = True          # the first tick reconciles
         self._prev_playing_ids: set[str] = set()
+        self._volume_seen: tuple | None = None         # (service, master volume) last given to the readout
         self._focus_cleared = False
         self._tick_statuses: dict = {}
         self._tick_failures: dict = {}
@@ -3368,11 +3371,12 @@ class DialCore:
 
     def _observe(self, choice, snaps: dict, now: float) -> None:
         """Tell the volume worker's store what the shown appliances report:
-        each one's mute flag, and the reporting appliance's master volume.
-        With nothing playing the store is cleared. Never with the core lock
-        held."""
+        each one's mute flag, and the reporting appliance's master volume
+        when that moves (or the reporting appliance changes). With nothing
+        playing the store is cleared. Never with the core lock held."""
         io = self._io
         if not choice.visible:
+            self._volume_seen = None
             io.observe_volume(None, None)
             io.observe_mute(None, None)
             return
@@ -3390,10 +3394,12 @@ class DialCore:
         io.forget_mute({e.service_name for e in choice.visible})
         if reporting is not None:
             volume = reporting.master_volume
-            io.observe_volume(
-                reporting.service_name,
-                volume if isinstance(volume, int) and not isinstance(volume, bool) else None,
-            )
+            volume = volume if isinstance(volume, int) and not isinstance(volume, bool) else None
+            seen = (reporting.service_name, volume)
+            if seen != self._volume_seen:
+                rekeyed = self._volume_seen is None or self._volume_seen[0] != reporting.service_name
+                self._volume_seen = seen
+                (io.observe_volume if rekeyed else io.observe_volume_tracked)(*seen)
 
     # -- artwork --
 

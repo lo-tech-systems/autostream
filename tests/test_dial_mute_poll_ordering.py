@@ -8,21 +8,21 @@ bounded expiry). Replies and the optimistic echo always apply.
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-_DIAL = str(REPO_ROOT / "dial")
-if _DIAL not in sys.path:
-    sys.path.insert(0, _DIAL)
+for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core"), str(REPO_ROOT / "tests")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import dial_volume as dv
 from dial_mdns import PlayingTarget
+from dial_pool_support import ok, refused
 
 
 @pytest.fixture
@@ -31,19 +31,31 @@ def clock(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(dv, "time", SimpleNamespace(monotonic=lambda: now[0]))
     dv.observe_mute_state(None, None)
-    return now
+    yield now
+    dv._client_for = None
 
 
 def _target(service_name: str, ip: str = "10.0.0.1") -> PlayingTarget:
     return PlayingTarget(ip=ip, port=80, name="test", dial_api=True, service_name=service_name)
 
 
-def _urlopen_mute(muted: bool):
-    resp = MagicMock()
-    resp.__enter__ = lambda s: s
-    resp.__exit__ = MagicMock(return_value=False)
-    resp.read.return_value = json.dumps({"ok": True, "muted": muted}).encode()
-    return resp
+class _Client:
+    """Answers every submit with *reply*."""
+
+    def __init__(self, reply) -> None:
+        self.reply = reply
+
+    def submit(self, name, args, **kwargs):
+        return self.reply
+
+
+def _answer(reply):
+    """Every target's client answers with *reply*; restored by the fixture."""
+    dv._client_for = lambda appliance_id: _Client(reply)
+
+
+def _mute_reply(muted: bool):
+    return ok(result={"ok": True, "muted": muted})
 
 
 class TestUnknownNeverOverwritesKnown:
@@ -116,12 +128,8 @@ class TestSettledTime:
 
     def test_volume_reply_settles_through_the_same_path(self, clock):
         clock[0] = 1000.0
-        resp = MagicMock()
-        resp.__enter__ = lambda s: s
-        resp.__exit__ = MagicMock(return_value=False)
-        resp.read.return_value = json.dumps({"ok": True, "volume": 40, "muted": True}).encode()
-        with patch("urllib.request.urlopen", return_value=resp):
-            dv._send_one(_target("svc"), "uuid", 1, [])
+        _answer(ok(result={"ok": True, "volume": 40, "muted": True}))
+        dv._send_one(_target("svc"), 1, [])
         dv.observe_mute_state("svc", False, requested_at=999.0)
         assert dv.shown_muted("svc") is True
 
@@ -153,8 +161,8 @@ class TestEnqueueMuteEcho:
         clock[0] = 1010.0
         dv.enqueue_mute(False)
         clock[0] = 1010.4
-        with patch("urllib.request.urlopen", return_value=_urlopen_mute(True)):
-            dv._send_one_mute(_target("svc"), "uuid", True)
+        _answer(_mute_reply(True))
+        dv._send_one_mute(_target("svc"), True)
         assert "svc" not in dv._mute_inflight
         clock[0] = 1011.0
         dv.observe_mute_state("svc", True, requested_at=1010.9)
@@ -195,22 +203,20 @@ class TestInflight:
 
     def test_failed_send_clears_inflight(self, clock):
         dv._mark_mute_inflight("svc")
-        with patch("urllib.request.urlopen", side_effect=OSError("down")):
-            dv._send_one_mute(_target("svc"), "uuid", True)
+        _answer(refused("unreachable"))
+        dv._send_one_mute(_target("svc"), True)
         assert "svc" not in dv._mute_inflight
 
     def test_ok_false_clears_inflight(self, clock):
         dv._mark_mute_inflight("svc")
-        resp = _urlopen_mute(True)
-        resp.read.return_value = json.dumps({"ok": False}).encode()
-        with patch("urllib.request.urlopen", return_value=resp):
-            dv._send_one_mute(_target("svc"), "uuid", True)
+        _answer(refused("all_outputs_failed"))
+        dv._send_one_mute(_target("svc"), True)
         assert "svc" not in dv._mute_inflight
 
     def test_reply_applies_while_inflight(self, clock):
         dv._mark_mute_inflight("svc")
-        with patch("urllib.request.urlopen", return_value=_urlopen_mute(True)):
-            dv._send_one_mute(_target("svc"), "uuid", True)
+        _answer(_mute_reply(True))
+        dv._send_one_mute(_target("svc"), True)
         assert dv.shown_muted("svc") is True
 
     def test_forget_prunes_the_new_stores(self, clock):
@@ -228,15 +234,14 @@ class TestMuteAll:
         t1, t2 = _target("d1", "10.0.0.1"), _target("d2", "10.0.0.2")
         seen = {}
 
-        def fake_fan_out_mute(targets, uuid, muted):
+        def fake_fan_out_mute(targets, muted):
             seen["inflight"] = set(dv._mute_inflight)
             seen["echo"] = {t.service_name: dv.shown_muted(t.service_name) for t in targets}
-            dv._send_one_mute(t1, uuid, muted)      # d1 answers, d2 never does
+            dv._send_one_mute(t1, muted)      # d1 answers, d2 never does
 
-        with patch.object(dv, "_fan_out_status", return_value=[False, False]), \
-             patch.object(dv, "_fan_out_mute", side_effect=fake_fan_out_mute), \
-             patch("urllib.request.urlopen", return_value=_urlopen_mute(True)):
-            dv._dispatch_mute_all([t1, t2], "uuid")
+        _answer(_mute_reply(True))
+        with patch.object(dv, "_fan_out_mute", side_effect=fake_fan_out_mute):
+            dv._dispatch_mute_all([t1, t2])
         assert seen["inflight"] == {"d1", "d2"}
         assert seen["echo"] == {"d1": True, "d2": True}
         assert "d1" not in dv._mute_inflight
@@ -244,17 +249,15 @@ class TestMuteAll:
 
     def test_a_poll_for_a_marked_target_is_ignored_until_it_answers(self, clock):
         t1 = _target("d1")
-        with patch.object(dv, "_fan_out_status", return_value=[False]), \
-             patch.object(dv, "_fan_out_mute"):
-            dv._dispatch_mute_all([t1], "uuid")
+        with patch.object(dv, "_fan_out_mute"):
+            dv._dispatch_mute_all([t1])
         dv.observe_mute_state("d1", False, requested_at=clock[0] + 0.1)
         assert dv.shown_muted("d1") is True
 
     def test_fan_out_clears_each_target_on_failure(self, clock):
         t1, t2 = _target("d1", "10.0.0.1"), _target("d2", "10.0.0.2")
-        with patch.object(dv, "_fan_out_status", return_value=[False, False]), \
-             patch("urllib.request.urlopen", side_effect=OSError("down")):
-            dv._dispatch_mute_all([t1, t2], "uuid")
+        _answer(refused("unreachable"))
+        dv._dispatch_mute_all([t1, t2])
         assert dv._mute_inflight == {}
 
 
@@ -288,8 +291,8 @@ class TestStatusWithoutMuteFlag:
         clock[0] = 1010.0
         dv.enqueue_mute(False)
         clock[0] = 1010.4
-        with patch("urllib.request.urlopen", return_value=_urlopen_mute(True)):
-            dv._send_one_mute(_target("svc"), "uuid", True)
+        _answer(_mute_reply(True))
+        dv._send_one_mute(_target("svc"), True)
         assert dv.shown_muted("svc") is True
         clock[0] = 1016.0
         dv.observe_mute_state("svc", None, requested_at=1015.9, status_reports_mute=False)

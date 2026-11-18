@@ -18,10 +18,10 @@ inferring its own action from its own volume.
 The observation store is exactly the same shape as the optimistic volume
 readout just below it, and for the same reason: a value the dial can show
 immediately (an optimistic echo of the just-enqueued action) that the
-appliance's own response, or the next status poll, always overwrites. Unlike
+appliance's own response, or what its stream next reports, always overwrites. Unlike
 the volume readout there is no "positive value proves it" shortcut here —
 this module never infers mute from a volume; it only ever repeats back what
-an appliance's status/mute/volume response explicitly said.
+an appliance's stream or its mute/volume response explicitly said.
 
 Volume and mute each address either a single "reporting-from" target — the
 display's chosen artwork source when it has one, else the oldest playing
@@ -40,11 +40,11 @@ always current at send time.
 The overlay's volume readout is optimistic: enqueue_delta() nudges a pending
 offset immediately so the number reacts to a press before any network round
 -trip completes, and observe_master_volume()/shown_volume() reconcile it
-against whatever the fast (per-request) or slow (status poll) source of
-truth reports next. See the "Optimistic volume readout" section below.
+against whatever the fast (per-request reply) or slow (the appliance's
+stream) source of truth reports next. See the "Optimistic volume readout" section below.
 
 Rapid encoder events are coalesced: adjacent delta events in the queue are
-summed before dispatch so a burst of detents produces one HTTP round-trip.
+summed before dispatch so a burst of detents produces one request.
 Mute events are preserved in order relative to deltas: deltas before and
 after a mute event are coalesced independently, so the sequence
 delta+delta+mute+delta dispatches as combined-delta, mute-action,
@@ -56,31 +56,32 @@ consistent too but throws away that free correction for no benefit.
 
 Fan-out is concurrent: one thread per target with a 400 ms network timeout and
 a 600 ms join timeout (200 ms headroom ensures threads finish before clamped
-is evaluated). The fan-out helpers (_fan_out/_fan_out_mute/_fan_out_status)
+is evaluated). The fan-out helpers (_fan_out/_fan_out_mute)
 accept a list of any length: exactly one target for "current" scope, every
 playing target for "all". Targets are pre-deduplicated by mDNS service name
 via get_playing_targets() so no IP-based dedup is needed here.
 
 Failure logging is rate-limited: WARNING on the first failure and then at
-most once a minute per target IP; DEBUG for the failures in between.  403 and 412
-responses (unauthorized UUID) are DEBUG-only — expected on mixed-network LAN
-— but also recorded in the auth map exactly as a status poll's refusal is, so
-a dial refused on volume or mute learns it without waiting for a poll (see
-_note_refusal()).
+most once a minute per target IP; DEBUG for the failures in between. A refusal
+that says the appliance does not take this dial's writes is DEBUG-only —
+expected on a mixed network; the target's client learns its access from the
+stream.
+
+Every send goes through the target's PeerClient (see start_volume_worker()'s
+client_for) with a short read and without the write backoff, so a burst of
+late answers costs only those steps.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import json
 import logging
 import queue
 import threading
 import time
-import urllib.error
 import os
 import sys
-import urllib.request
+from collections.abc import Mapping
 from typing import Tuple, Union
 
 # autostream_logging is deployed flat beside the dial package; in the repo it
@@ -90,13 +91,17 @@ try:
 except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
     import autostream_logging as log_setup  # noqa: E402
-from dial_auth import AUTH_UNAUTHORIZED, OUTCOME_UNAUTHORIZED, auth_map
-from dial_target_status import (
-    _is_untyped_refusal,
-    _lenient_json_object,
-    _parse_appliance_id,
-    fetch_target_status,
-)
+
+# A step or a mute is sent with a short read and without the write backoff: a
+# busy appliance can answer late, and a burst of late answers must cost only
+# those steps, never the other requests to that appliance.
+SEND_READ_S = 0.4
+
+# Refusals that say the appliance does not take this dial's writes: expected
+# on a mixed network, so debug only.
+_QUIET_REFUSALS = frozenset({
+    "dial_not_authorized", "unconfigured", "access_denied", "auth_unavailable", "protocol_mismatch",
+})
 
 # Each queue item is ("delta", int), ("mute", bool) or ("mute_all", int) —
 # for "delta" the int is the delta itself; for "mute" the bool is the
@@ -116,6 +121,9 @@ _led_ref    = None
 _mute_targets_fn = None
 _on_readout_changed = None
 _on_mute_changed = None
+# appliance id -> the PeerClient that sends to it (or None); see
+# start_volume_worker().
+_client_for = None
 
 _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failures
 
@@ -133,8 +141,8 @@ _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failure
 # The overlay needs a volume number that reacts to every source of a delta
 # (touch, encoder, control socket) on the same frame as the press, is
 # corrected by the fast source of truth (the `volume` field in each
-# /api/dial/volume response, about 0.4s after a press — see _send_one()) and
-# by the slow one (dial_display's 6s status poll — see
+# volume reply, about 0.4s after a press — see _send_one()) and
+# by the slow one (the appliance's stream — see
 # observe_master_volume()), and is readable by the display without the
 # display owning it. _readout_base is the last observed master_volume for
 # _readout_service; _readout_pending is the sum of deltas enqueued since
@@ -142,7 +150,7 @@ _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failure
 # Nothing in the wire protocol changes: deltas stay stateless — this is
 # purely a local display hint.
 #
-# Known and accepted imprecision: a poll observation landing between a press
+# Known and accepted imprecision: a stream observation landing between a press
 # and its response resets pending, so the number can briefly show the
 # pre-press value until the response arrives (under 0.5s). The response then
 # wins. No time-stamping is added for this — the next observation always
@@ -150,16 +158,15 @@ _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failure
 #
 # The mute observation store is per-service (_observed_muted), unlike the
 # single-slot volume readout above: a screened dial set to broadcast scope
-# "all" fans a push out to every playing appliance, and the poll itself now
-# records the flag of every target it walks (not only the reporting one —
-# see dial_display.py), so several services can legitimately be tracked at
+# "all" fans a push out to every playing appliance, and the core records the
+# flag of every appliance it shows (not only the reporting one), so several services can legitimately be tracked at
 # once. Keying by service means a response or observation for one target can
 # never clobber another's entry — in particular the bound/reporting
 # appliance's own glyph, which always reads back its own entry via
 # shown_muted(name) regardless of what a fan-out to OTHER targets last
 # reported. (This is a fix over the single-slot store this replaces: there,
 # every observation shared one slot, so a wide fan-out's last responder to
-# arrive could blank a different appliance's glyph until the next poll.)
+# arrive could blank a different appliance's glyph until the next observation.)
 # There is no "positive proves it" shortcut for mute the way there is for
 # volume: nothing here infers a mute state, it only ever repeats back what an
 # appliance's own response said.
@@ -170,35 +177,35 @@ _fail_counts: dict[str, int] = {}   # key: target IP; tracks consecutive failure
 # just read via shown_muted(), with no service parameter of its own. Reading
 # and enqueuing happen back-to-back on the same thread with no I/O in
 # between, so this can only go stale if an unrelated observation (another
-# thread's poll tick or fan-out response) lands in that brief window — the
+# thread's fold or fan-out response) lands in that brief window — the
 # same narrow, accepted race the single-slot store always had.
 #
-# A poll must never overwrite a state a mute reply or press has already
-# established, so poll observations are filtered (see observe_mute_state()).
-# Each poll observation carries requested_at, the monotonic time its status
-# request was SENT; replies and echoes carry none and always apply. Per
+# A stream observation must never overwrite a state a mute reply or press has already
+# established, so stream observations are filtered (see observe_mute_state()).
+# Each stream observation carries requested_at, the monotonic time the
+# appliance was last heard; replies and echoes carry none and always apply. Per
 # service the store keeps:
-#   _mute_settled_at  the time from which poll observations are trusted. A
+#   _mute_settled_at  the time from which stream observations are trusted. A
 #                     mute or volume reply carrying a bool sets it to the
 #                     RECEIVE time (the reply reflects state established
 #                     before the appliance answered, so any status request
 #                     sent after the receive must agree); enqueue_mute()'s
-#                     echo sets it to the press time. A poll observation
+#                     echo sets it to the press time. A stream observation
 #                     requested earlier is ignored.
 #   _mute_inflight    when a mute request for the service was pressed or
 #                     dispatched, until its reply is recorded or its send
-#                     fails. While fresh, poll observations are ignored. It
+#                     fails. While fresh, stream observations are ignored. It
 #                     expires after MUTE_INFLIGHT_EXPIRY_SECONDS (above the
 #                     worker's send timeout), so a lost request can never
 #                     freeze the state.
-# For an appliance whose status reports mute, a poll's unknown (non-bool)
+# For an appliance whose status reports mute, a stream's unknown (non-bool)
 # value never overwrites a known bool, so a failed or timed-out status fetch
 # cannot flip a confirmed mute to unmuted. An appliance whose status never
 # carries the flag (an earlier release) can only ever give unknown, so there
 # that rule would latch a reply's mute state on until some other event
-# replaced it; for those a poll that passes the in-flight and settled-time
+# replaced it; for those an observation that passes the in-flight and settled-time
 # checks may clear the stored state, so the highlight follows a mute made
-# elsewhere within a poll. The in-flight and settled-time checks still
+# elsewhere within a fold. The in-flight and settled-time checks still
 # protect the press itself.
 # ---------------------------------------------------------------------------
 
@@ -209,14 +216,14 @@ _readout_pending = 0                 # deltas enqueued since the base
 
 _observed_muted: dict[str, bool | None] = {}     # per-service last-reported mute flag
 _last_observed_mute_service: str | None = None   # most recently observed service
-_mute_settled_at: dict[str, float] = {}          # per-service: poll observations trusted from here
+_mute_settled_at: dict[str, float] = {}          # per-service: stream observations trusted from here
 _mute_inflight: dict[str, float] = {}            # per-service: monotonic time a mute request began
 
 MUTE_INFLIGHT_EXPIRY_SECONDS = 3.0   # above the 0.4s send timeout and the 0.6s join
 
 
 def observe_master_volume(service_name: str | None, volume: int | None) -> None:
-    """Record an observed master_volume for *service_name* (a status poll
+    """Record an observed master_volume for *service_name* (the stream
     or a volume response). Resets the pending optimistic offset: the
     observation supersedes any delta enqueued before it. volume None
     means the target has no selected outputs; service_name None clears
@@ -260,15 +267,15 @@ def observe_mute_state(
     service_name: str | None, muted, requested_at: float | None = None,
     *, status_reports_mute: bool = True,
 ) -> None:
-    """Record the mute flag an appliance reported (a status poll, a mute
+    """Record the mute flag an appliance reported (the stream, a mute
     response or a volume response) for *service_name*, in that service's own
     entry. service_name None clears every entry (nothing is playing any
     more — the dial-wide reset, not a per-target one). Anything that is not
     a plain bool is treated the same as unknown (None), exactly like
-    dial_target_status's own parsing of the field.
+    the parsing of the field everywhere else.
 
-    requested_at is the monotonic time a status poll's request was sent; it
-    marks the call as a poll observation, which is ignored while a mute
+    requested_at is the monotonic time the appliance was last heard; it
+    marks the call as a stream observation, which is ignored while a mute
     request for the service is in flight, when it was requested before the
     service's settled time, or when it is unknown and a bool is already
     known. A call without requested_at is a reply and always applies; a
@@ -276,7 +283,7 @@ def observe_mute_state(
 
     status_reports_mute says whether the service's status carries the mute
     flag at all. When it does not, the unknown-never-overwrites-known rule
-    is skipped for its poll observations (see the store's comment block)."""
+    is skipped for its stream observations (see the store's comment block)."""
     global _last_observed_mute_service
     now = time.monotonic()
     with _readout_lock:
@@ -323,7 +330,7 @@ def _clear_mute_inflight(service_name: str) -> None:
 def shown_muted(service_name: str | None) -> bool:
     """The last reported mute state for *service_name*; False when unknown
     or when nothing has been observed for it — each service has its own
-    entry, so a fan-out response or a poll observation for a DIFFERENT
+    entry, so a fan-out response or a stream observation for a DIFFERENT
     target can never leak into this one."""
     with _readout_lock:
         if service_name is None:
@@ -333,8 +340,8 @@ def shown_muted(service_name: str | None) -> bool:
 
 def forget_mute_states_except(service_names) -> None:
     """Drop every observed mute entry whose service is not in *service_names*
-    (an iterable, consumed once into a set). Called by the display poll after
-    each tick so a target that stopped playing does not accumulate a stale
+    (an iterable, consumed once into a set). Called by the core after
+    each fold so a target that stopped playing does not accumulate a stale
     entry forever. Pure hygiene — never touches the entries it keeps."""
     keep = set(service_names)
     with _readout_lock:
@@ -350,7 +357,7 @@ def forget_mute_states_except(service_names) -> None:
 # ---------------------------------------------------------------------------
 # Single-target selection (see the module docstring's "reporting-from
 # target" paragraph). Pure and lock-free: no I/O, no module state touched —
-# dial_display's poll and the volume worker's resolvers both call this so
+# the display and the volume worker's resolvers both call this so
 # they can never disagree about who the reporting-from target is.
 # ---------------------------------------------------------------------------
 
@@ -360,7 +367,7 @@ def select_volume_target(targets: list, preferred_service_name: str | None):
     targets is the display-ordered list (oldest playing first). Returns
     the entry whose service_name equals preferred_service_name when
     present, else targets[0], else None. Pure and lock-free so the
-    display poll and the worker's resolver call the same function and
+    display and the worker's resolver call the same function and
     cannot disagree about who the reporting-from target is."""
     if preferred_service_name is not None:
         for t in targets:
@@ -371,6 +378,7 @@ def select_volume_target(targets: list, preferred_service_name: str | None):
 
 def start_volume_worker(
     cfg, targets_fn, led, *, mute_targets_fn=None, on_readout_changed=None, on_mute_changed=None,
+    client_for=None,
 ) -> None:
     """Store shared state and start the background worker thread.
 
@@ -386,8 +394,12 @@ def start_volume_worker(
     after each mute request is answered or fails. A reader that only looks
     at the store when it is told to (one that is not repainting anyway)
     needs this, because the worker's writes happen well after the press.
+    client_for maps an appliance id to the PeerClient that sends to it (the
+    pool's get); an appliance with none is not sent to.
     """
     global _cfg, _targets_fn, _led_ref, _mute_targets_fn, _on_readout_changed, _on_mute_changed
+    global _client_for
+    _client_for = client_for
     _cfg, _targets_fn, _led_ref = cfg, targets_fn, led
     _mute_targets_fn = mute_targets_fn
     _on_readout_changed = on_readout_changed
@@ -422,7 +434,7 @@ def enqueue_mute(currently_muted: bool) -> bool:
     _readout_lock, held for a plain write. Echoes the resulting state into
     the observation store immediately, so the glyph updates on the same
     frame as the press even before the appliance's response (about 0.4s
-    later) or the next status poll confirms it — either of those overwrites
+    later) or the stream confirms it — either of those overwrites
     this echo. The echo targets whichever service was most recently
     observed (_last_observed_mute_service) — the same service the caller
     just read via shown_muted() moments before, with no I/O in between to
@@ -509,7 +521,7 @@ def _worker() -> None:
                 targets = _targets_fn()
                 if not targets:
                     continue
-                clamped = _fan_out(targets, _cfg.uuid, event[1])  # type: ignore[arg-type]
+                clamped = _fan_out(targets, event[1])  # type: ignore[arg-type]
                 if clamped and _led_ref:
                     _led_ref.flash_clamped()
             elif event[0] == "mute_all":
@@ -517,13 +529,13 @@ def _worker() -> None:
                 targets = resolver()
                 if not targets:
                     continue
-                _dispatch_mute_all(targets, _cfg.uuid)  # type: ignore[arg-type]
+                _dispatch_mute_all(targets)
             else:  # "mute"
                 resolver = _mute_targets_fn or _targets_fn
                 targets = resolver()
                 if not targets:
                     continue
-                _fan_out_mute(targets, _cfg.uuid, event[1])  # type: ignore[arg-type]
+                _fan_out_mute(targets, event[1])  # type: ignore[arg-type]
 
 
 def _notify_mute_changed() -> None:
@@ -539,7 +551,7 @@ def _notify_mute_changed() -> None:
         pass
 
 
-def _fan_out(targets: list, uuid: str, delta: int) -> bool:
+def _fan_out(targets: list, delta: int) -> bool:
     """Send volume delta to all targets concurrently.
 
     Returns True if any target reported a boundary volume (0 or 100).
@@ -547,7 +559,7 @@ def _fan_out(targets: list, uuid: str, delta: int) -> bool:
     """
     clamped: list[bool] = []
     threads = [
-        threading.Thread(target=_send_one, args=(t, uuid, delta, clamped))
+        threading.Thread(target=_send_one, args=(t, delta, clamped))
         for t in targets
     ]
     for t in threads:
@@ -557,10 +569,10 @@ def _fan_out(targets: list, uuid: str, delta: int) -> bool:
     return bool(clamped)
 
 
-def _fan_out_mute(targets: list, uuid: str, muted: bool) -> None:
+def _fan_out_mute(targets: list, muted: bool) -> None:
     """Send the absolute mute/restore action to all targets concurrently."""
     threads = [
-        threading.Thread(target=_send_one_mute, args=(t, uuid, muted))
+        threading.Thread(target=_send_one_mute, args=(t, muted))
         for t in targets
     ]
     for t in threads:
@@ -569,213 +581,136 @@ def _fan_out_mute(targets: list, uuid: str, muted: bool) -> None:
         t.join(timeout=0.6)
 
 
-def _fan_out_status(targets: list, uuid: str) -> list:
-    """One fetch_target_status() per target concurrently — mirrors
-    _fan_out_mute's shape (thread per target, 0.4s request timeout, 0.6s
-    join). Each slot of the returned list is the `muted` flag that target
-    reported, or None when it did not answer in time or its response carried
-    no flag at all. Never raises: fetch_target_status() itself never raises."""
-    results: list = [None] * len(targets)
-
-    def _one(i: int, target) -> None:
-        record = fetch_target_status(target, uuid, timeout_seconds=0.4)
-        muted = record.get("muted")
-        results[i] = muted if isinstance(muted, bool) else None
-
-    threads = [
-        threading.Thread(target=_one, args=(i, t))
-        for i, t in enumerate(targets)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=0.6)
-    return results
+def _held_muted(target):
+    """The appliance-level mute flag the target's client holds from its
+    stream: True or False, or None when the target has no client, is not
+    reachable, or carries no flag. No network is used."""
+    client = _client_for(target.appliance_id) if _client_for is not None else None
+    if client is None:
+        return None
+    try:
+        snap = client.snapshot()
+    except Exception:
+        return None
+    if snap is None or not snap.reachable:
+        return None
+    outputs = snap.parts.get("outputs")
+    muted = outputs.get("muted_all") if isinstance(outputs, Mapping) else None
+    return muted if isinstance(muted, bool) else None
 
 
-def _dispatch_mute_all(targets: list, uuid: str) -> None:
-    """Decide and send one fleet-wide mute/restore action, from a fresh
-    status sweep taken at this moment.
+def _dispatch_mute_all(targets: list) -> None:
+    """Decide and send one fleet-wide mute/restore action, from what each
+    target's client holds at this moment.
 
-    The observation store is not a complete-enough picture to decide this
-    from: a screenless dial runs no status poll at all, and a screened
-    dial's poll only walks targets up to the first identified one (see
-    dial_display.py) — so this reads every playing appliance itself, on the
-    worker thread, never on the touch or button thread.
-
-    An unknown flag (a timeout, no dial_status support, or a response with
-    no `muted` field at all) counts as unmuted, so any appliance this dial
-    cannot fully read makes the fleet action "mute" — the safe direction: a
-    push on a fleet the dial cannot fully confirm silences it. Only a fleet
-    where every target confirms `muted: true` gets a "restore".
+    An unknown flag (an unreachable target, or one with no client or no flag)
+    counts as unmuted, so any appliance this dial cannot read makes the fleet
+    action "mute" — the safe direction: a push on a fleet the dial cannot
+    fully confirm silences it. Only a fleet where every target holds
+    `muted_all` true gets a "restore".
     """
     if not targets:
         return
-    flags = _fan_out_status(targets, uuid)
-    muted = any(flag is not True for flag in flags)
+    muted = any(_held_muted(t) is not True for t in targets)
     for t in targets:
         # Optimistic echo, same as enqueue_mute()'s — overwritten by each
         # target's own response in _fan_out_mute() just below. Marked in
-        # flight first so a poll cannot slip in between and undo it.
+        # flight first so the stream cannot slip in between and undo it.
         _mark_mute_inflight(t.service_name)
         observe_mute_state(t.service_name, muted)
     _notify_mute_changed()
-    _fan_out_mute(targets, uuid, muted)
+    _fan_out_mute(targets, muted)
 
 
-def _send_one(target, uuid: str, delta: int, clamped: list) -> None:
-    url  = f"http://{target.ip}:{target.port}/api/dial/volume"
-    body = json.dumps({"dial_id": uuid, "delta": delta}).encode()
-    req  = urllib.request.Request(
-        url, data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=0.4) as resp:
-            data = json.loads(resp.read())
-        if not data.get("ok"):
-            _log_volume_failure(target.ip, "ok=false error=%s", data.get("error", "unknown"))
-            return
-        vol = data.get("volume", -1)
-        if (delta > 0 and vol == 100) or (delta < 0 and vol == 0):
-            clamped.append(True)
-        # The appliance's own mute state, reported alongside this response --
-        # a new appliance answers False after an unmute-by-volume-up and True
-        # after an ignored volume-down. An old appliance carries no field at
-        # all: guarded so that case leaves the store as it was, rather than
-        # overwriting a real observation (e.g. from the last status poll)
-        # with an absent one.
-        muted_field = data.get("muted")
-        if isinstance(muted_field, bool):
-            observe_mute_state(target.service_name, muted_field)
-        if isinstance(vol, int) and not isinstance(vol, bool):
-            # Fast-path reconciliation of the optimistic readout (see the
-            # "Optimistic volume readout" section above) — this response is
-            # the authoritative master_volume for the target this delta was
-            # actually applied to, about 0.4s after the press. Scope "all"
-            # can fan a delta out to several targets at once; observing only
-            # when tracked (or nothing is tracked yet) stops the LAST
-            # response to arrive from re-keying the readout away from
-            # whichever appliance it actually belongs to.
-            observe_master_volume_if_tracked(target.service_name, vol)
-            if _on_readout_changed is not None:
-                # A repaint request must never break a volume send — this
-                # runs on the fan-out thread, not the touch thread, but the
-                # same "display failure never affects volume" invariant
-                # applies here too.
-                try:
-                    _on_readout_changed()
-                except Exception:
-                    pass
-        _fail_counts.pop(target.ip, None)   # clear only on confirmed application success
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 412):
-            logging.debug("volume POST %s: %d unauthorized", target.ip, e.code)
-            _note_refusal(target, e)
+def _submit(target, name: str, args: dict):
+    """Send one intent to *target* through its client, with the short read
+    and without the write backoff. None when the target has no client."""
+    client = _client_for(target.appliance_id) if _client_for is not None else None
+    if client is None:
+        return None
+    return client.submit(name, args, read_s=SEND_READ_S, backoff=False)
+
+
+def _send_one(target, delta: int, clamped: list) -> None:
+    reply = _submit(target, "volume.step", {"delta": delta})
+    if reply is None:
+        _log_volume_failure(target.ip, "no client")
+        return
+    if not reply.ok:
+        if reply.error in _QUIET_REFUSALS:
+            logging.debug("volume step %s: %s", target.ip, reply.error)
         else:
-            _log_volume_failure(target.ip, "HTTP %d", e.code)
-    except Exception as e:
-        _log_volume_failure(target.ip, "%s", e)
+            _log_volume_failure(target.ip, "refused error=%s", reply.error or "unknown")
+        return
+    data = reply.result
+    vol = data.get("volume", -1)
+    if (delta > 0 and vol == 100) or (delta < 0 and vol == 0):
+        clamped.append(True)
+    # The appliance's own mute state, reported alongside this response -- a
+    # step up from mute answers False, an ignored step down answers True. An
+    # absent field leaves the store as it was.
+    muted_field = data.get("muted")
+    if isinstance(muted_field, bool):
+        observe_mute_state(target.service_name, muted_field)
+    if isinstance(vol, int) and not isinstance(vol, bool):
+        # Fast-path reconciliation of the optimistic readout (see the
+        # "Optimistic volume readout" section above) — this response is the
+        # authoritative master_volume for the target this delta was applied
+        # to, about 0.4s after the press. Scope "all" can fan a delta out to
+        # several targets at once; observing only when tracked (or nothing is
+        # tracked yet) stops the LAST response to arrive from re-keying the
+        # readout away from whichever appliance it actually belongs to.
+        observe_master_volume_if_tracked(target.service_name, vol)
+        if _on_readout_changed is not None:
+            # A repaint request must never break a volume send: this runs on
+            # the fan-out thread, and a display failure never affects volume.
+            try:
+                _on_readout_changed()
+            except Exception:
+                pass
+    _fail_counts.pop(target.ip, None)   # clear only on confirmed application success
 
 
-def _send_one_mute(target, uuid: str, muted: bool) -> None:
-    url    = f"http://{target.ip}:{target.port}/api/dial/mute"
+def _send_one_mute(target, muted: bool) -> None:
     action = "mute" if muted else "restore"
-    body   = json.dumps({"dial_id": uuid, "action": action}).encode()
-    req    = urllib.request.Request(
-        url, data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=0.4) as resp:
-            data = json.loads(resp.read())
-        if not data.get("ok"):
-            _log_mute_failure(target.ip, "ok=false error=%s", data.get("error", "unknown"))
+        reply = _submit(target, "mute.set", {"action": action})
+        if reply is None:
+            _log_mute_failure(target.ip, "no client")
+            return
+        if not reply.ok:
+            if reply.error in _QUIET_REFUSALS:
+                logging.debug("mute %s: %s", target.ip, reply.error)
+            else:
+                _log_mute_failure(target.ip, "refused error=%s", reply.error or "unknown")
             return
         _fail_counts.pop(target.ip, None)
         # The appliance's own authoritative mute state, reported back for the
-        # target this action was actually sent to. Guarded the same way as
-        # _send_one() above: an absent or malformed field leaves the store
-        # as it was rather than clearing a real observation to unknown.
-        muted_field = data.get("muted")
+        # target this action was sent to. An absent or malformed field leaves
+        # the store as it was rather than clearing a real observation.
+        muted_field = reply.result.get("muted")
         if isinstance(muted_field, bool):
             observe_mute_state(target.service_name, muted_field)
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 412):
-            logging.debug("mute POST %s: %d unauthorized", target.ip, e.code)
-            _note_refusal(target, e)
-        else:
-            _log_mute_failure(target.ip, "HTTP %d", e.code)
-    except Exception as e:
-        _log_mute_failure(target.ip, "%s", e)
     finally:
         # Answered or failed, the request is no longer outstanding: the
-        # reply (if any) has been recorded above, so polls resume.
+        # reply (if any) has been recorded above, so the stream resumes.
         _clear_mute_inflight(target.service_name)
         _notify_mute_changed()
-
-
-class _ErrorResponse:
-    """The one method of a response object the status helpers read."""
-
-    def __init__(self, err: urllib.error.HTTPError) -> None:
-        self._err = err
-
-    def getheader(self, name: str):
-        headers = self._err.headers
-        return headers.get(name) if headers is not None else None
-
-
-def _note_refusal(target, err: urllib.error.HTTPError) -> None:
-    """Feed a volume or mute refusal into the auth map the way a status
-    poll's refusal is fed: a typed 412 whose body id matches the target's
-    own, or, for an appliance without typed refusals, a 403 whose body is
-    exactly an empty JSON object (correlated with the id the target was
-    resolved to). Anything else is ignored. Never raises: a failed refusal
-    note must not affect the send."""
-    try:
-        raw = err.read(4096)
-        if err.code == 412:
-            data = _lenient_json_object(raw)
-            if data is None or data.get("error") != "dial_not_authorized":
-                return
-            body_id = _parse_appliance_id(data)
-        elif err.code == 403:
-            if target.typed_refusals or not _is_untyped_refusal(_ErrorResponse(err), raw):
-                return
-            body_id = target.appliance_id
-        else:
-            return
-        auth_map.apply(target.appliance_id, OUTCOME_UNAUTHORIZED, body_id, time.monotonic())
-        if (
-            auth_map.state(target.appliance_id) == AUTH_UNAUTHORIZED
-            and auth_map.record_refusal(target.appliance_id)
-        ):
-            from dial_mdns import appliance_display_name
-            logging.warning(
-                "dial volume: appliance %s refused this dial; allow it in "
-                "that appliance's web UI",
-                appliance_display_name(target.service_name or target.name),
-            )
-    except Exception:
-        logging.debug("volume refusal note failed", exc_info=True)
 
 
 def _log_volume_failure(ip: str, fmt: str, *args) -> None:
     n = _fail_counts.get(ip, 0) + 1
     _fail_counts[ip] = n
     if log_setup.log_every(("volume", ip), 60.0):
-        logging.warning("volume POST %s: " + fmt + " (failure #%d)", ip, *args, n)
+        logging.warning("volume step %s: " + fmt + " (failure #%d)", ip, *args, n)
     else:
-        logging.debug("volume POST %s: " + fmt, ip, *args)
+        logging.debug("volume step %s: " + fmt, ip, *args)
 
 
 def _log_mute_failure(ip: str, fmt: str, *args) -> None:
     n = _fail_counts.get(ip, 0) + 1
     _fail_counts[ip] = n
     if log_setup.log_every(("mute", ip), 60.0):
-        logging.warning("mute POST %s: " + fmt + " (failure #%d)", ip, *args, n)
+        logging.warning("mute %s: " + fmt + " (failure #%d)", ip, *args, n)
     else:
-        logging.debug("mute POST %s: " + fmt, ip, *args)
+        logging.debug("mute %s: " + fmt, ip, *args)
