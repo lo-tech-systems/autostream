@@ -44,6 +44,7 @@ from dial_touch_layout import metrics_for
 from dial_values import is_int, read_env_file
 
 import dial_admin
+import dial_pin_guard
 from autostream_sysutils import (
     SDCARD_HEALTH_METHODS,
     sdcard_health_check,
@@ -137,42 +138,6 @@ _BAD_CHARS = re.compile(r'[;|]')
 def _validate_dial_name(name: str) -> None:
     if not _SAFE_NAME.match(name) or _BAD_CHARS.search(name):
         raise ValueError(f"Dial name contains disallowed characters: {name!r}")
-
-
-# ---- PIN rate limiting (per-IP) ---------------------------------------------
-# PIN is stored in plaintext in the 0600 settings file — adequate for a home
-# LAN appliance. Rate limiting prevents casual brute-force from the browser.
-
-_PIN_MAX_ATTEMPTS = 5
-_PIN_BACKOFF_BASE = 5       # seconds
-_PIN_BACKOFF_MAX  = 300     # seconds
-_pin_attempts: dict[str, tuple[int, float]] = {}
-_pin_lock = threading.Lock()
-
-
-def _pin_check_rate_limit(ip: str) -> tuple[bool, int]:
-    with _pin_lock:
-        fails, blocked_until = _pin_attempts.get(ip, (0, 0.0))
-        if blocked_until and blocked_until > time.time():
-            return True, int(blocked_until - time.time()) + 1
-        return False, 0
-
-
-def _pin_record_failure(ip: str) -> None:
-    with _pin_lock:
-        fails, _ = _pin_attempts.get(ip, (0, 0.0))
-        fails += 1
-        blocked_until = 0.0
-        if fails >= _PIN_MAX_ATTEMPTS:
-            exp = min(fails - _PIN_MAX_ATTEMPTS, 6)
-            delay = min(_PIN_BACKOFF_BASE * (2 ** exp), _PIN_BACKOFF_MAX)
-            blocked_until = time.time() + delay
-        _pin_attempts[ip] = (fails, blocked_until)
-
-
-def _pin_clear_attempts(ip: str) -> None:
-    with _pin_lock:
-        _pin_attempts.pop(ip, None)
 
 
 # ---- Update state -----------------------------------------------------------
@@ -959,21 +924,21 @@ class DialHTTPServer:
                             self._send_json(403, {'ok': False, 'error': 'recovery_not_confirmed'})
                             return
                     else:
-                        blocked, wait_secs = _pin_check_rate_limit(ip)
+                        blocked, wait_secs = dial_pin_guard.blocked(ip)
                         if blocked:
                             self._send_429(wait_secs)
                             return
                         current_pin = obj.get('current_pin', '')
                         if not isinstance(current_pin, str) or current_pin != cfg.pin:
-                            _pin_record_failure(ip)
+                            dial_pin_guard.record_failure(ip)
                             # Return 429 immediately if this failure hit the threshold
-                            blocked, wait_secs = _pin_check_rate_limit(ip)
+                            blocked, wait_secs = dial_pin_guard.blocked(ip)
                             if blocked:
                                 self._send_429(wait_secs)
                             else:
                                 self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
                             return
-                        _pin_clear_attempts(ip)
+                        dial_pin_guard.clear(ip)
 
                 if 'name' in obj:
                     v = obj['name']
@@ -1101,20 +1066,20 @@ class DialHTTPServer:
 
                 # PIN auth — screen settings follow POST /configure semantics.
                 if cfg.pin:
-                    blocked, wait_secs = _pin_check_rate_limit(ip)
+                    blocked, wait_secs = dial_pin_guard.blocked(ip)
                     if blocked:
                         self._send_429(wait_secs)
                         return
                     current_pin = obj.get('current_pin', '')
                     if not isinstance(current_pin, str) or current_pin != cfg.pin:
-                        _pin_record_failure(ip)
-                        blocked, wait_secs = _pin_check_rate_limit(ip)
+                        dial_pin_guard.record_failure(ip)
+                        blocked, wait_secs = dial_pin_guard.blocked(ip)
                         if blocked:
                             self._send_429(wait_secs)
                         else:
                             self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
                         return
-                    _pin_clear_attempts(ip)
+                    dial_pin_guard.clear(ip)
 
                 status, response = dial_server.apply_screen_settings(obj.get('screen'))
                 self._send_json(status, response)
@@ -1140,20 +1105,20 @@ class DialHTTPServer:
 
                 # PIN auth: same rule as POST /screen/settings.
                 if cfg.pin:
-                    blocked, wait_secs = _pin_check_rate_limit(ip)
+                    blocked, wait_secs = dial_pin_guard.blocked(ip)
                     if blocked:
                         self._send_429(wait_secs)
                         return
                     current_pin = obj.get('current_pin', '')
                     if not isinstance(current_pin, str) or current_pin != cfg.pin:
-                        _pin_record_failure(ip)
-                        blocked, wait_secs = _pin_check_rate_limit(ip)
+                        dial_pin_guard.record_failure(ip)
+                        blocked, wait_secs = dial_pin_guard.blocked(ip)
                         if blocked:
                             self._send_429(wait_secs)
                         else:
                             self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
                         return
-                    _pin_clear_attempts(ip)
+                    dial_pin_guard.clear(ip)
 
                 enabled = obj.get('enabled')
                 if not isinstance(enabled, bool):

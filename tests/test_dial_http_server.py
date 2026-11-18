@@ -24,6 +24,7 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_admin
+import dial_pin_guard as pg
 import dial_http_server as dhs
 from dial_config import DEFAULT_PROFILE_KEY, DEFAULT_TOUCH_KEY, DialConfig, DialDisplayConfig
 from dial_http_server import DialHTTPServer, NoOpDisplayStatusProvider, RecoveryWindow
@@ -127,7 +128,7 @@ def _make_handler_cls(cfg: DialConfig | None = None) -> tuple:
     if cfg is None:
         cfg = DialConfig(uuid="test-uuid")
     server = FakeDialServer(cfg)
-    dhs._pin_attempts.clear()
+    pg.reset_for_tests()
     return server._make_handler(), server
 
 
@@ -322,7 +323,7 @@ class TestFieldBoundaries:
 
 class TestPINAuth:
     def setup_method(self):
-        dhs._pin_attempts.clear()
+        pg.reset_for_tests()
 
     def test_protected_field_no_pin_sent_returns_403(self):
         cfg = DialConfig(uuid="x", pin="9999")
@@ -346,17 +347,17 @@ class TestPINAuth:
     def test_correct_pin_clears_fail_count(self):
         cfg = DialConfig(uuid="x", pin="1234")
         # Record some failures first
-        dhs._pin_attempts["127.0.0.1"] = (3, 0.0)
+        pg._attempts["127.0.0.1"] = (3, 0.0)
         r = _call_handler("/configure",
                           body={"name": "X", "current_pin": "1234"}, cfg=cfg)
         assert r["status"] == 200
-        assert "127.0.0.1" not in dhs._pin_attempts
+        assert "127.0.0.1" not in pg._attempts
 
     def test_five_failures_trigger_rate_limit(self):
         cfg = DialConfig(uuid="x", pin="1234")
         # Re-use the same server so _pin_attempts accumulate across calls
         server = FakeDialServer(cfg)
-        for _ in range(dhs._PIN_MAX_ATTEMPTS):
+        for _ in range(pg.MAX_ATTEMPTS):
             _call_handler("/configure",
                           body={"name": "X", "current_pin": "wrong"},
                           setup_server=server)
@@ -379,7 +380,7 @@ class TestPINAuth:
 
 class TestPINRecovery:
     def setup_method(self):
-        dhs._pin_attempts.clear()
+        pg.reset_for_tests()
 
     def test_recovery_not_confirmed_returns_403(self):
         cfg = DialConfig(uuid="x", pin="9999")
@@ -1213,7 +1214,7 @@ class TestScreenSettingsGet:
 
 class TestScreenSettingsPost:
     def setup_method(self):
-        dhs._pin_attempts.clear()
+        pg.reset_for_tests()
 
     def test_post_complete_settings_replaces_config(self):
         r = _call_handler("/screen/settings", body={"screen": {"fitted": True}})
@@ -2617,7 +2618,7 @@ class TestSdCardHealthPost:
         cfg = DialConfig(uuid="x", pin="1234")
         server = FakeDialServer(cfg)
         r = {"status": None}
-        for _ in range(dhs._PIN_MAX_ATTEMPTS + 1):
+        for _ in range(pg.MAX_ATTEMPTS + 1):
             r = _call_handler(
                 "/sdcard-health", body={"enabled": True, "current_pin": "0000"},
                 cfg=cfg, setup_server=server,
@@ -3086,7 +3087,7 @@ class TestHdDevAccessConfigure:
 
 class TestApplyScreenSettings:
     def setup_method(self):
-        dhs._pin_attempts.clear()
+        pg.reset_for_tests()
 
     def _apply(self, screen, cfg=None):
         server = FakeDialServer(cfg or DialConfig(uuid="x"))

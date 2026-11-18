@@ -30,7 +30,7 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import dial_http_server
+import dial_pin_guard
 from dial_config import (
     BRIGHTNESS_MAX, BRIGHTNESS_MIN, HD_PORT_DEFAULT, SLEEP_AFTER_CHOICES_S,
 )
@@ -805,7 +805,7 @@ class HdServer:
 
     def _post_login(self, handler, rest) -> None:
         ip = handler.client_address[0]
-        blocked, wait = dial_http_server._pin_check_rate_limit(ip)
+        blocked, wait = dial_pin_guard.blocked(ip)
         if blocked:
             handler.send_too_many(wait)
             return
@@ -821,14 +821,14 @@ class HdServer:
             not isinstance(pin, str) or len(pin) > PIN_MAX_LENGTH
             or not hmac.compare_digest(pin.encode("utf-8"), expected.encode("utf-8"))
         ):
-            dial_http_server._pin_record_failure(ip)
-            blocked, wait = dial_http_server._pin_check_rate_limit(ip)
+            dial_pin_guard.record_failure(ip)
+            blocked, wait = dial_pin_guard.blocked(ip)
             if blocked:
                 handler.send_too_many(wait)
             else:
                 handler.send_json(403, {"ok": False, "error": "wrong_pin"})
             return
-        dial_http_server._pin_clear_attempts(ip)
+        dial_pin_guard.clear(ip)
         token = self._issue_session()
         handler.send_bytes(
             200, b'{"ok":true}', "application/json",

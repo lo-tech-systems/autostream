@@ -22,6 +22,7 @@ import dial_hd_events as hde
 from autostream_peer_client import PeerReply
 import dial_hd_server as hds
 import dial_http_server as dhs
+import dial_pin_guard as pg
 import hd_scenarios as hs
 from hd_http_support import (
     HEADER, error_of, post, raw, request, write_static,
@@ -58,9 +59,9 @@ def wait_until(predicate, timeout=3.0, step=0.01):
 
 @pytest.fixture(autouse=True)
 def fresh_limiter():
-    dhs._pin_attempts.clear()
+    pg.reset_for_tests()
     yield
-    dhs._pin_attempts.clear()
+    pg.reset_for_tests()
 
 
 @pytest.fixture(scope="module")
@@ -580,7 +581,7 @@ class TestLogin:
 
 class TestRateLimit:
     def test_five_wrong_pins_then_429_with_retry_after(self, dev):
-        for _ in range(dhs._PIN_MAX_ATTEMPTS - 1):
+        for _ in range(pg.MAX_ATTEMPTS - 1):
             assert login(dev, pin="0000")[0].status == 403
         response, data = login(dev, pin="0000")
         assert response.status == 429
@@ -588,42 +589,42 @@ class TestRateLimit:
         assert error_of(data) == "too_many_attempts"
 
     def test_the_right_pin_is_refused_while_blocked(self, dev):
-        for _ in range(dhs._PIN_MAX_ATTEMPTS):
+        for _ in range(pg.MAX_ATTEMPTS):
             login(dev, pin="0000")
         response, _ = login(dev, pin=PIN)
         assert response.status == 429
         assert response.getheader("Set-Cookie") is None
 
     def test_a_success_clears_the_count(self, dev):
-        for _ in range(dhs._PIN_MAX_ATTEMPTS - 1):
+        for _ in range(pg.MAX_ATTEMPTS - 1):
             login(dev, pin="0000")
         assert login(dev)[0].status == 200
-        for _ in range(dhs._PIN_MAX_ATTEMPTS - 1):
+        for _ in range(pg.MAX_ATTEMPTS - 1):
             assert login(dev, pin="0000")[0].status == 403
 
     def test_the_limiter_is_shared_with_the_management_server(self, dev):
         # Failures made on the management route count against the dev login.
-        for _ in range(dhs._PIN_MAX_ATTEMPTS):
-            dhs._pin_record_failure("127.0.0.1")
+        for _ in range(pg.MAX_ATTEMPTS):
+            pg.record_failure("127.0.0.1")
         assert login(dev)[0].status == 429
         # And the other way round.
-        dhs._pin_clear_attempts("127.0.0.1")
-        for _ in range(dhs._PIN_MAX_ATTEMPTS):
+        pg.clear("127.0.0.1")
+        for _ in range(pg.MAX_ATTEMPTS):
             login(dev, pin="0000")
-        blocked, _wait = dhs._pin_check_rate_limit("127.0.0.1")
+        blocked, _wait = pg.blocked("127.0.0.1")
         assert blocked is True
 
     def test_a_guess_costs_the_same_on_either_route(self, dev):
         # Two failures on the management route and three on the login reach
         # the limit together: the fifth is the one that is blocked.
         for _ in range(2):
-            dhs._pin_record_failure("127.0.0.1")
+            pg.record_failure("127.0.0.1")
         for _ in range(2):
             assert login(dev, pin="0000")[0].status == 403
         assert login(dev, pin="0000")[0].status == 429
 
     def test_a_blocked_client_cannot_reach_the_api_either_way(self, dev):
-        for _ in range(dhs._PIN_MAX_ATTEMPTS):
+        for _ in range(pg.MAX_ATTEMPTS):
             login(dev, pin="0000")
         assert dev_request(dev, "GET", "/api/v1/state")[0].status == 401
 

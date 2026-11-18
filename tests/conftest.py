@@ -235,9 +235,9 @@ def _reset_dial_volume_fail_counts():
 def _reset_dial_pin_attempts():
     """Clear dial PIN rate-limiting map after each test."""
     yield
-    m = _mod("dial_http_server")
+    m = _mod("dial_pin_guard")
     if m is not None:
-        m._pin_attempts.clear()
+        m.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)

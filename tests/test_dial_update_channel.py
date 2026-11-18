@@ -466,6 +466,7 @@ class TestDialHttpConfigureApi:
     ) -> dict:
         """Invoke do_GET() or _handle_configure() and return status/data/live_cfg/save_calls."""
         import dial_http_server as dhs
+        import dial_pin_guard as pg
         from dial_config import DialConfig
 
         cfg = DialConfig(**(cfg_overrides or {}))
@@ -495,7 +496,7 @@ class TestDialHttpConfigureApi:
 
         fake_server = FakeDialServer(cfg)
         # Clear any per-IP rate-limit state left by previous test calls.
-        dhs._pin_attempts.clear()
+        pg.reset_for_tests()
         Handler = fake_server._make_handler()
 
         body_bytes = json.dumps(body or {}).encode()
