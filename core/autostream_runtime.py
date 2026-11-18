@@ -25,6 +25,7 @@ import concurrent.futures
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -43,6 +44,28 @@ def request_config_reload() -> None:
     restarting the process.
     """
     reload_flag.set()
+
+
+@dataclass(frozen=True)
+class Lifecycle:
+    """The process's stop request, handed to what runs until the process
+    stops."""
+
+    stop: threading.Event
+
+    def stopping(self) -> bool:
+        return self.stop.is_set()
+
+    def wait(self, timeout: float) -> bool:
+        """Sleep up to *timeout* seconds; True as soon as the process is
+        stopping."""
+        return self.stop.wait(timeout)
+
+
+def lifecycle() -> Lifecycle:
+    """The process lifecycle over the module's current stop_flag. Built on
+    each call, so a test that replaces the event is seen by what it starts."""
+    return Lifecycle(stop_flag)
 
 
 class TaskPool:

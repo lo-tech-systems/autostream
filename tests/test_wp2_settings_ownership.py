@@ -142,14 +142,8 @@ class TestStartWebuiBackground:
 
         with (
             patch("autostream_webui.AuthManager"),
-            patch("autostream_runtime.stop_flag") as sf,
-            patch("autostream_dials.start_dial_scanner"),
-            patch("autostream_appliances.reconcile_appliance_announcement"),
-            patch("autostream_appliances.start_appliance_scanner"),
             patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
-            patch("autostream_webui._scan_monitor_devices_loop"),
         ):
-            sf.is_set.return_value = True  # stop reconcile loop immediately
 
             from autostream_webui import start_webui_background, STATE as _initial
             import autostream_webui as _wm
@@ -181,14 +175,8 @@ class TestStartWebuiBackground:
 
         with (
             patch("autostream_webui.AuthManager"),
-            patch("autostream_runtime.stop_flag") as sf,
-            patch("autostream_dials.start_dial_scanner"),
-            patch("autostream_appliances.reconcile_appliance_announcement"),
-            patch("autostream_appliances.start_appliance_scanner"),
             patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
-            patch("autostream_webui._scan_monitor_devices_loop"),
         ):
-            sf.is_set.return_value = True
             _wm.STATE = None
             t = start_webui_background(str(cfg))
             t.join(timeout=2.0)
@@ -219,19 +207,13 @@ class TestStartWebuiBackground:
 
         with (
             patch("autostream_webui.AuthManager"),
-            patch("autostream_runtime.stop_flag") as sf,
-            patch("autostream_dials.start_dial_scanner"),
-            patch("autostream_appliances.reconcile_appliance_announcement"),
-            patch("autostream_appliances.start_appliance_scanner"),
             patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
-            patch("autostream_webui._scan_monitor_devices_loop"),
             # The OwnTone push happens on a background daemon thread; stub it so
             # the test asserts only the synchronous browser configuration.
             patch("autostream_live_config._push_owntone_native_setting",
                   return_value=(True, False, "")),
             patch("autostream_appliances.set_grace_period") as m_set,
         ):
-            sf.is_set.return_value = True
             _wm.STATE = None
             t = start_webui_background(str(cfg), settings=store)
             t.join(timeout=2.0)
@@ -271,13 +253,13 @@ class TestRunAutostreamFinalSave:
             return _call_count[0] > 1
 
         with (
-            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient") as mc,
             patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
-            patch("autostream_core._start_output_usage_poller"),
+            patch("autostream_runtime.stop_flag") as sf,
+            patch("autostream_services.start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_logging.setup_logging"),
         ):
@@ -311,13 +293,13 @@ class TestRunAutostreamFinalSave:
             return _call_count[0] > 1
 
         with (
-            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient") as mc,
             patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
-            patch("autostream_core._start_output_usage_poller"),
+            patch("autostream_runtime.stop_flag") as sf,
+            patch("autostream_services.start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_logging.setup_logging"),
             patch("autostream_settings.SettingsStore", CloseSpy),
@@ -369,13 +351,13 @@ class TestRunAutostreamStartupFormatReconcile:
         mock_client.get_status.return_value = get_status_return
 
         with (
-            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient", return_value=mock_client),
             patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
-            patch("autostream_core._start_output_usage_poller"),
+            patch("autostream_runtime.stop_flag") as sf,
+            patch("autostream_services.start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_logging.setup_logging"),
             patch("autostream_startup.reconcile_fifo_with_backend") as rf,
@@ -453,13 +435,13 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
         manager = MagicMock()
 
         with (
-            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient", return_value=mock_client),
             patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
-            patch("autostream_core._start_output_usage_poller"),
+            patch("autostream_runtime.stop_flag") as sf,
+            patch("autostream_services.start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_logging.setup_logging"),
             patch("autostream_startup.is_high_performance_pi", return_value=False),

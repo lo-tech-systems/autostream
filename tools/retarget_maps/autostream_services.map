@@ -1,0 +1,10 @@
+# Background services and the device list moved out of the coordinator and the web server.
+autostream_core.normalize_monitor_devices -> autostream_services.normalize_monitor_devices  alias=services
+autostream_core.get_available_monitor_devices -> autostream_services.get_available_monitor_devices  alias=services
+autostream_core.bluetooth_installed -> autostream_services.bluetooth_installed  alias=services
+autostream_core._cleanup_discovery -> autostream_services.stop_discovery  alias=services
+autostream_core._start_output_usage_poller -> autostream_services.start_output_usage_poller  alias=services
+autostream_webui._rate_follow_check -> autostream_services._rate_follow_check  alias=services
+autostream_webui._lockout_heal_check -> autostream_services._lockout_heal_check  alias=services
+autostream_webui._bluetooth_input_configured -> autostream_services._bluetooth_input_configured  alias=services
+autostream_webui.time -> autostream_services.time  alias=services

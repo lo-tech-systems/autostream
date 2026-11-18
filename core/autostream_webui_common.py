@@ -14,6 +14,7 @@ import html
 import json
 import re
 import subprocess
+import threading
 from datetime import datetime
 from urllib.parse import quote, urlparse
 from typing import Optional
@@ -248,6 +249,10 @@ def no_input_configured_notice_html(parsed) -> str:
 # always triggers a full process restart.
 _app_version_cache: Optional[str] = None
 
+# A leaf lock: the start-up announcement and the web server's prime may both
+# ask at once; they share one helper call.
+_app_version_lock = threading.Lock()
+
 
 def get_app_version() -> str:
     """Return the installed application version via the privileged helper.
@@ -258,6 +263,11 @@ def get_app_version() -> str:
     invalid JSON, blank tag) is cached as "unknown" so repeated calls cannot
     each incur the five-second subprocess timeout.
     """
+    with _app_version_lock:
+        return _get_app_version_locked()
+
+
+def _get_app_version_locked() -> str:
     global _app_version_cache
     if _app_version_cache is not None:
         return _app_version_cache

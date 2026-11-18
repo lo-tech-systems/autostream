@@ -1,5 +1,5 @@
 """Tests for the Bluetooth device-list relabel hook in
-core/autostream_core.py's normalize_monitor_devices(), and
+core/autostream_services.py's normalize_monitor_devices(), and
 get_available_monitor_devices() threading the status through.
 
 Regression guard: with Bluetooth mode off (the default / today's
@@ -19,8 +19,8 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-import autostream_core as core
 from autostream_bluetooth_client import BLUETOOTH_CAPTURE_DEVICE, BLUETOOTH_PLAYBACK_DEVICE
+import autostream_services as services
 
 
 _RAW_DEVICES = [
@@ -36,12 +36,12 @@ _RAW_DEVICES = [
 
 class TestBluetoothOffIsUnchanged:
     def test_playback_side_not_dropped_when_off(self):
-        result = core.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
+        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
         hws = {d["hw"] for d in result}
         assert BLUETOOTH_PLAYBACK_DEVICE in hws
 
     def test_capture_side_not_relabelled_when_off(self):
-        result = core.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
+        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
         capture = next(d for d in result if d["hw"] == BLUETOOTH_CAPTURE_DEVICE)
         assert not capture["label"].startswith("Bluetooth")
         assert capture["label"] == f"Loopback - Loopback PCM ({BLUETOOTH_CAPTURE_DEVICE})"
@@ -50,19 +50,19 @@ class TestBluetoothOffIsUnchanged:
         """Calling with only the devices arg (today's call shape) must not error
         and must resolve bluetooth_enabled from bluetooth_installed() (defaults
         off in the test environment -- no unit file at the default path)."""
-        result = core.normalize_monitor_devices(_RAW_DEVICES)
+        result = services.normalize_monitor_devices(_RAW_DEVICES)
         hws = {d["hw"] for d in result}
         assert BLUETOOTH_PLAYBACK_DEVICE in hws
         assert BLUETOOTH_CAPTURE_DEVICE in hws
 
     def test_ordinary_device_untouched(self):
-        result = core.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
+        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
         usb = next(d for d in result if d["hw"] == "hw:1,0")
         assert usb["label"] == "Behringer UCA - USB Audio (hw:1,0)"
 
     def test_empty_devices_returns_empty_list(self):
-        assert core.normalize_monitor_devices(None, bluetooth_enabled=False) == []
-        assert core.normalize_monitor_devices([], bluetooth_enabled=False) == []
+        assert services.normalize_monitor_devices(None, bluetooth_enabled=False) == []
+        assert services.normalize_monitor_devices([], bluetooth_enabled=False) == []
 
 
 # ---------------------------------------------------------------------------
@@ -71,24 +71,24 @@ class TestBluetoothOffIsUnchanged:
 
 class TestBluetoothOnHidesPlaybackSide:
     def test_playback_side_dropped(self):
-        result = core.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
+        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
         hws = {d["hw"] for d in result}
         assert BLUETOOTH_PLAYBACK_DEVICE not in hws
 
     def test_other_devices_unaffected(self):
-        result = core.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
+        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
         hws = {d["hw"] for d in result}
         assert "hw:1,0" in hws
 
     def test_capture_side_still_present(self):
-        result = core.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
+        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
         hws = {d["hw"] for d in result}
         assert BLUETOOTH_CAPTURE_DEVICE in hws
 
 
 class TestBluetoothOnRelabelsCaptureSide:
     def _capture_label(self, status):
-        result = core.normalize_monitor_devices(
+        result = services.normalize_monitor_devices(
             _RAW_DEVICES, status, bluetooth_enabled=True,
         )
         return next(d for d in result if d["hw"] == BLUETOOTH_CAPTURE_DEVICE)["label"]
@@ -124,8 +124,8 @@ class TestGetAvailableMonitorDevicesThreadsStatus:
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Deck"}}
 
         with patch("autostream_monitor_client.MonitorClient", return_value=fake_client), \
-             patch("autostream_core.bluetooth_installed", return_value=True):
-            result = core.get_available_monitor_devices(bluetooth_status=status)
+             patch("autostream_services.bluetooth_installed", return_value=True):
+            result = services.get_available_monitor_devices(bluetooth_status=status)
 
         capture = next(d for d in result if d["hw"] == BLUETOOTH_CAPTURE_DEVICE)
         assert capture["label"] == "Bluetooth: My Deck"

@@ -32,7 +32,7 @@ owntone owntone_mini pin_pairing playback_stats player_service players rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal session startup".split()
+_L2 = "align announce appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup".split()
 _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
@@ -73,6 +73,9 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_startup", "autostream_monitor_control"),
     ("autostream_startup", "autostream_playback_tracking"),
     ("autostream_startup", "autostream_input_status"),
+    ("autostream_services", "autostream_appliances"),
+    ("autostream_services", "autostream_dial_warnings"),
+    ("autostream_services", "autostream_output_usage"),
     ("autostream_output_intents", "autostream_output_usage"),
 })
 

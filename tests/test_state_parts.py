@@ -438,3 +438,25 @@ class TestOutputsCapabilityFlags:
             assert d(other) != d(base)
             for sub in (outputs_list_digest, outputs_mute_digest, outputs_volume_digest):
                 assert sub(other) == sub(base)
+
+
+class TestDevicesPart:
+    def test_defaults_are_an_empty_list_and_no_status(self):
+        p = state.DevicesPart()
+        assert p.monitor_devices == ()
+        assert p.bluetooth_status is None
+        assert state.Snapshot().devices == p
+
+    def test_the_digest_moves_with_either_field(self):
+        base = DIGESTS["devices"](state.DevicesPart())
+        with_device = DIGESTS["devices"](state.DevicesPart(
+            monitor_devices=(FrozenDict({"hw": "hw:1,0"}),)))
+        with_status = DIGESTS["devices"](state.DevicesPart(
+            bluetooth_status=FrozenDict({"ok": True})))
+        assert len({base, with_device, with_status}) == 3
+        assert DIGESTS["devices"](state.DevicesPart()) == base
+
+    def test_a_status_is_deep_frozen(self):
+        status = deep_freeze({"ok": True, "paired": {"mac": "AA", "name": "N"}})
+        assert isinstance(status, FrozenDict)
+        assert isinstance(status["paired"], FrozenDict)

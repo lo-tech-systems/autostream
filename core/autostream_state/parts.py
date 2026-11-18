@@ -171,6 +171,19 @@ class EqPart:
 
 
 @dataclass(frozen=True)
+class DevicesPart:
+    """The capture devices the monitor lists and the Bluetooth daemon's status,
+    refreshed by the device scan."""
+
+    # Each device a FrozenDict with hw, card, name and label, in the order the
+    # scan returns them.
+    monitor_devices: tuple = ()
+    # The Bluetooth daemon's last status reply; None when it was not fetched or
+    # the service did not answer.
+    bluetooth_status: Optional[FrozenDict] = None
+
+
+@dataclass(frozen=True)
 class SettingsPart:
     generation: int = 0
 
@@ -273,11 +286,12 @@ class Snapshot:
     settings: SettingsPart = field(default_factory=SettingsPart)
     outputs: OutputsPart = field(default_factory=OutputsPart)
     eq: EqPart = field(default_factory=EqPart)
+    devices: DevicesPart = field(default_factory=DevicesPart)
 
 
 PART_NAMES = (
     "session", "repeat", "track", "inputs", "monitor", "playback", "health", "settings",
-    "outputs", "eq",
+    "outputs", "eq", "devices",
 )
 
 
@@ -406,6 +420,10 @@ def _eq_digest(p: EqPart) -> tuple:
     )
 
 
+def _devices_digest(p: DevicesPart) -> tuple:
+    return (p.monitor_devices, p.bluetooth_status)
+
+
 def eq_band_digest(p: EqPart) -> tuple:
     """What a dial shows of the equaliser: the output bands."""
     return p.output_bands
@@ -439,6 +457,7 @@ DIGESTS: dict[str, Callable] = {
     "settings": _settings_digest,
     "outputs": _outputs_digest,
     "eq": _eq_digest,
+    "devices": _devices_digest,
 }
 
 

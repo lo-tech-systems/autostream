@@ -23,7 +23,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,15 +40,6 @@ import json
 # so both routes resolve to the same module object.
 if __name__ == "__main__":
     sys.modules.setdefault("autostream_webui", sys.modules[__name__])
-
-from autostream_core import (
-    get_available_monitor_devices,
-    run_autostream,
-)
-import autostream_runtime as runtime
-from autostream_intents import Intent, Origin, submit
-
-from autostream_bluetooth_client import BluetoothClient, bluetooth_installed
 
 from autostream_sysutils import (
     reboot_system,
@@ -1458,153 +1448,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         self.send_error(404, "Not found")
 
 
-# Cooldown between lockout-triggered config reloads (_lockout_heal_check):
-# a reload bounces the monitor's inputs, which is disruptive if repeated
-# faster than the other end could plausibly release and re-pin the cable.
-LOCKOUT_RELOAD_COOLDOWN_SECONDS = 120.0
-
-
-def _bluetooth_input_configured(state) -> bool:
-    """True when either monitor input is configured on the Bluetooth
-    loopback's capture side."""
-    from autostream_bluetooth_client import classify_loopback_hw
-    from autostream_webui_common import _config_snapshot
-    try:
-        cfg = _config_snapshot(state)
-    except Exception:
-        return False
-    return any(
-        classify_loopback_hw(dev) == "capture"
-        for dev in (cfg.audio1.capture_device, cfg.audio2.capture_device)
-        if dev
-    )
-
-
-def _rate_follow_check(state, bluetooth_status: Optional[dict],
-                       last_cable_rate: Optional[int]) -> Optional[int]:
-    """One rate-follow step: returns the updated last-seen cable rate.
-
-    The loopback cable's rate follows the Bluetooth transport, and the
-    monitor's capture side can only renegotiate by being reopened -- so a
-    rate change while a Bluetooth input is configured triggers a
-    coordinator config reload, which bounces the inputs through the same
-    gated start-up path used at boot (the monitor reopens after the pump
-    already holds the cable at the new rate).
-
-    ``sample_rate`` is only present in the status while a transport is
-    active; polls without it (transport gaps, unreachable service) leave
-    the last-seen value untouched, so a plain reconnect at the same rate
-    never triggers a reload -- only an observed rate CHANGE does.
-    """
-    rate = (bluetooth_status or {}).get("sample_rate")
-    if not isinstance(rate, int) or isinstance(rate, bool) or rate <= 0:
-        return last_cable_rate
-    if (
-        last_cable_rate is not None
-        and rate != last_cable_rate
-        and _bluetooth_input_configured(state)
-    ):
-        logging.info(
-            "Bluetooth transport rate changed %d Hz -> %d Hz; "
-            "reloading monitor inputs to renegotiate the loopback.",
-            last_cable_rate, rate,
-        )
-        submit(Intent("settings.reload", {"reason": "bluetooth rate follow"},
-                      Origin.SYSTEM, "coordinator"))
-    return rate
-
-
-def _lockout_heal_check(state, bluetooth_status: Optional[dict],
-                        lockout_streak: int,
-                        last_heal_reload: Optional[float]) -> tuple:
-    """One lockout-healing step: returns the updated
-    ``(lockout_streak, last_heal_reload)``.
-
-    A sustained ``loopback_locked_out`` means the pump's capture-side peer
-    pinned the shared cable at incompatible parameters while the pump was
-    absent, and the pump alone cannot force a release -- only the monitor
-    reopening its capture side renegotiates the cable. Reloading on the
-    first observed lockout would over-react to a single transient poll, so
-    the reload fires only once the lockout has been seen on two consecutive
-    polls (and only while a Bluetooth input is actually configured), and no
-    more often than ``LOCKOUT_RELOAD_COOLDOWN_SECONDS``.
-    """
-    locked_out = bool((bluetooth_status or {}).get("loopback_locked_out", False))
-    if not locked_out:
-        return 0, last_heal_reload
-
-    lockout_streak += 1
-    now = time.monotonic()
-    cooldown_elapsed = (
-        last_heal_reload is None or now - last_heal_reload >= LOCKOUT_RELOAD_COOLDOWN_SECONDS
-    )
-    if (
-        lockout_streak >= 2
-        and cooldown_elapsed
-        and _bluetooth_input_configured(state)
-    ):
-        logging.info(
-            "Bluetooth loopback held at incompatible parameters with a "
-            "Bluetooth input configured; reloading monitor inputs to "
-            "renegotiate the cable.",
-        )
-        submit(Intent("settings.reload", {"reason": "bluetooth lockout heal"},
-                      Origin.SYSTEM, "coordinator"))
-        lockout_streak = 0
-        last_heal_reload = now
-    return lockout_streak, last_heal_reload
-
-
-def _scan_monitor_devices_loop() -> None:
-    """Background loop: refresh visible ALSA capture devices (and, when
-    the Bluetooth-input subsystem is installed, the autostream_bluetooth
-    daemon status) every 15 s. Each poll also runs the Bluetooth
-    rate-follow step (_rate_follow_check) and the lockout-healing step
-    (_lockout_heal_check).
-    """
-    last_cable_rate: Optional[int] = None
-    lockout_streak = 0
-    last_heal_reload: Optional[float] = None
-    while not runtime.stop_flag.is_set():
-        bluetooth_status: Optional[dict] = None
-        if bluetooth_installed():
-            try:
-                bluetooth_status = BluetoothClient().status()
-            except Exception as e:
-                logging.error(
-                    "Web UI: error querying autostream_bluetooth status: %s", e,
-                )
-                bluetooth_status = None
-
-        try:
-            devices = get_available_monitor_devices(bluetooth_status=bluetooth_status)
-        except Exception as e:
-            logging.error(
-                "Web UI: error scanning autostream_monitor devices: %s", e,
-            )
-            devices = []
-
-        state = STATE
-        if state is None:
-            return
-
-        try:
-            last_cable_rate = _rate_follow_check(state, bluetooth_status, last_cable_rate)
-        except Exception:
-            logging.debug("bluetooth rate-follow check failed", exc_info=True)
-
-        try:
-            lockout_streak, last_heal_reload = _lockout_heal_check(
-                state, bluetooth_status, lockout_streak, last_heal_reload,
-            )
-        except Exception:
-            logging.debug("bluetooth lockout-heal check failed", exc_info=True)
-
-        state.set_monitor_devices(devices)
-        state.set_bluetooth_status(bluetooth_status)
-        time.sleep(15)
-
-
 def start_webui_background(
     config_path: str,
     host: str = "127.0.0.1",
@@ -1639,81 +1482,17 @@ def start_webui_background(
         title="autostream",
     )
 
-    def _reconcile_announcement_loop() -> None:
-        """Periodically reconcile the _autostream._tcp service file (every 60 s)."""
-        from autostream_appliance_gateway import sweep_token_cache
-        from autostream_appliances import reconcile_appliance_announcement
-        from autostream_federation import sweep_sessions
-        from autostream_webui_common import _config_snapshot, get_app_version
-        while not runtime.stop_flag.is_set():
-            runtime.stop_flag.wait(60)
-            if runtime.stop_flag.is_set():
-                break
-            try:
-                sweep_sessions()
-            except Exception:
-                logging.debug("sweep_sessions: error", exc_info=True)
-            try:
-                sweep_token_cache()
-            except Exception:
-                logging.debug("sweep_token_cache: error", exc_info=True)
-            try:
-                cfg = _config_snapshot(STATE)
-                reconcile_appliance_announcement(
-                    get_app_version(), cfg.webui.advertise_appliance
-                )
-            except Exception:
-                logging.debug("reconcile_announcement_loop: error", exc_info=True)
-
     def _serve() -> None:
         try:
-            from autostream_dials import start_dial_scanner
-            from autostream_dial_warnings import start_watcher as start_dial_warnings_watcher
-            from autostream_appliances import (
-                reconcile_appliance_announcement,
-                start_appliance_scanner,
-            )
-            from autostream_webui_common import _config_snapshot, get_app_version
             import autostream_live_config
             from autostream_webui_page_owntone import start_owntone_restart_async
 
-            start_dial_scanner(shutdown_event=runtime.stop_flag)
-            start_dial_warnings_watcher(shutdown_event=runtime.stop_flag)
-            start_appliance_scanner(shutdown_event=runtime.stop_flag)
             autostream_live_config.apply_mdns_grace_period_startup(
                 STATE, on_restart=lambda state: start_owntone_restart_async(state, delay_s=0.75))
-
-            scanner_thread = threading.Thread(
-                target=_scan_monitor_devices_loop, daemon=True,
-            )
-            scanner_thread.start()
-
-            # Initial announcement reconciliation (best-effort; errors are logged)
-            try:
-                cfg = _config_snapshot(STATE)
-                reconcile_appliance_announcement(
-                    get_app_version(), cfg.webui.advertise_appliance
-                )
-            except Exception:
-                logging.debug("startup reconcile_announcement: error", exc_info=True)
-
-            reconcile_thread = threading.Thread(
-                target=_reconcile_announcement_loop, daemon=True,
-            )
-            reconcile_thread.start()
 
             # Prime the app-version cache before the HTTP server starts so the
             # first /api/about/system request never incurs the helper timeout.
             get_app_version()
-
-            # Best-effort one-shot Vibra Mini version discovery before accepting
-            # requests.  Runs in a daemon thread so it never delays startup.
-            from track_id.vibra_shazam import refresh_vibra_runtime_info
-            threading.Thread(
-                target=refresh_vibra_runtime_info,
-                name="vibra-runtime-refresh",
-                daemon=True,
-            ).start()
 
             httpd = ThreadingHTTPServer((host, port), ConfigWebHandler)
             logging.info("Web UI available at http://%s:%d", host, port)
@@ -1734,5 +1513,5 @@ if __name__ == "__main__":
         print(f"Usage: {sys.argv[0]} PATH_TO_CONFIG.json")
         sys.exit(1)
 
-    config_path = sys.argv[1]
-    run_autostream(config_path, start_webui=start_webui_background)
+    import autostream_core
+    autostream_core.run_autostream(sys.argv[1], start_webui=start_webui_background)

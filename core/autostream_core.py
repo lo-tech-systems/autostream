@@ -33,6 +33,7 @@ import autostream_playback_tracking as playback_tracking
 import autostream_repeat
 import autostream_runtime as runtime
 import autostream_selfheal as selfheal
+import autostream_services as services
 import autostream_session
 import autostream_startup as startup
 import autostream_state
@@ -41,11 +42,6 @@ from autostream_intents import Intent
 from autostream_state import Origin
 from autostream_state.outputs import WRITE_TIMEOUT_S, PlayerServiceBackend, get_authority
 import autostream_dial_push
-from autostream_bluetooth_client import (
-    bluetooth_capture_label,
-    bluetooth_installed,
-    classify_loopback_hw,
-)
 from autostream_nowplaying import OwntoneMetadataPipePublisher
 from autostream_playback_stats import DEFAULT_FLUSH_INTERVAL_SECONDS
 from autostream_sysutils import (
@@ -149,128 +145,6 @@ def _publish_settings_generation(generation: int) -> None:
     _settings_writer.update(
         lambda cur: autostream_state.SettingsPart(max(cur.generation, generation))
     ).notify()
-
-
-def _cleanup_discovery() -> None:
-    """Best-effort shutdown of all process-lifetime mDNS discovery services.
-
-    Called once after the coordinator outer loop exits (including on SIGINT,
-    SIGTERM, and unexpected exceptions).  Never called during a configuration
-    reload.  All operations are idempotent.
-    """
-    try:
-        import autostream_output_usage as _ou
-        _ou.stop()
-    except Exception:
-        logging.debug("_cleanup_discovery: output_usage.stop() raised", exc_info=True)
-    try:
-        import autostream_dials as _dials
-        _dials.stop_dial_scanner()
-    except Exception:
-        logging.debug("_cleanup_discovery: stop_dial_scanner() raised", exc_info=True)
-    try:
-        import autostream_appliances as _appliances
-        _appliances.stop_appliance_scanner()
-    except Exception:
-        logging.debug("_cleanup_discovery: stop_appliance_scanner() raised", exc_info=True)
-
-
-def _start_output_usage_poller(cfg) -> None:
-    """Best-effort start/update of the cross-appliance output usage poller."""
-    try:
-        import autostream_output_usage as _ou
-        _ou.configure(cfg.webui.output_usage_poll_interval_seconds)
-        _ou.start(shutdown_event=runtime.stop_flag)
-    except Exception:
-        logging.warning("output-usage: failed to start poller", exc_info=True)
-
-
-def normalize_monitor_devices(
-    devices: Optional[list[dict]],
-    bluetooth_status: Optional[dict] = None,
-    *,
-    bluetooth_enabled: Optional[bool] = None,
-) -> list[dict]:
-    """Normalize list_devices() results into a stable Web UI-friendly shape.
-
-    Each returned dict contains:
-      - hw: ALSA hardware identifier such as "hw:1,0"
-      - card: ALSA card description (may be empty)
-      - name: ALSA device description (may be empty)
-      - label: user-facing text combining card/device/hw
-
-    Bluetooth relabel hook, active only when the Bluetooth-input subsystem
-    is installed on this appliance: the loopback
-    playback side (``CARD=ASBT,DEV=0``) is dropped entirely (it is not a
-    selectable input), and the capture side (``CARD=ASBT,DEV=1``) is
-    relabelled to "Bluetooth: <name>" / "Bluetooth (not paired)" /
-    "Bluetooth (service unavailable)" using ``bluetooth_status`` (the
-    cached-or-live daemon status; None is treated as "service
-    unavailable").  ``bluetooth_enabled`` lets callers (tests) force the
-    on/off branch explicitly; when omitted it is resolved from whether the
-    Bluetooth-input subsystem is installed via ``bluetooth_installed()``
-    (the relabel applies whenever the loopback card can exist, regardless
-    of whether the service is currently enabled/running).  When the
-    subsystem isn't installed, behaviour is byte-identical to before this
-    hook existed -- the ASBT card cannot exist on such an appliance in any
-    case.
-    """
-    bt_on = bluetooth_enabled if bluetooth_enabled is not None else bluetooth_installed()
-
-    normalized: list[dict] = []
-
-    for dev in devices or []:
-        hw = str(dev.get("hw") or "").strip()
-        if not hw:
-            continue
-
-        loopback_kind = classify_loopback_hw(hw) if bt_on else None
-        if loopback_kind == "playback":
-            continue
-
-        card = str(dev.get("card") or "").strip()
-        name = str(dev.get("name") or "").strip()
-
-        label_parts = [part for part in (card, name) if part]
-        label = " - ".join(label_parts) if label_parts else hw
-        if hw not in label:
-            label = f"{label} ({hw})"
-
-        if loopback_kind == "capture":
-            label = bluetooth_capture_label(bluetooth_status)
-
-        normalized.append({
-            "hw": hw,
-            "card": card,
-            "name": name,
-            "label": label,
-        })
-
-    normalized.sort(key=lambda d: (d["label"].casefold(), d["hw"].casefold()))
-    return normalized
-
-
-def get_available_monitor_devices(
-    socket_path: Optional[str] = None,
-    bluetooth_status: Optional[dict] = None,
-) -> list[dict]:
-    """Return currently visible monitor devices from autostream_monitor.
-
-    Uses a short-lived MonitorClient connection so callers outside the main
-    coordinator loop can safely query available ALSA capture devices.
-    Returns an empty list if the daemon is unavailable or the command fails.
-    ``bluetooth_status`` is threaded through to ``normalize_monitor_devices()``
-    for the Bluetooth relabel hook (see there); callers that don't pass it
-    get the "service unavailable" label whenever Bluetooth mode is on.
-    """
-    try:
-        with monitor_client._connected_monitor(socket_path) as client:
-            if client is None:
-                return []
-            return normalize_monitor_devices(client.list_devices(), bluetooth_status)
-    except Exception as e:
-        logging.warning("Could not query autostream_monitor devices: %s", e)
-        return []
 
 
 # --------------------------------------------------------------------------- #
@@ -432,6 +306,11 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     # process exits nonzero and systemd can restart it.
     webui_thread = None
     if start_webui is not None:
+        import autostream_appliance_gateway
+        import autostream_webui_common
+        services.start(runtime.lifecycle(), settings,
+                       app_version=autostream_webui_common.get_app_version,
+                       sweeps=(autostream_appliance_gateway.sweep_token_cache,))
         webui_thread = start_webui(config_path, settings=settings)
 
     socket_path = monitor_client.get_monitor_socket_path()
@@ -442,7 +321,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     # sync the announced flag to filesystem truth so sync_playing_announcement
     # does not attempt a redundant remove on the first poll.
     announce.reset_at_startup()
-    _start_output_usage_poller(cfg)
+    services.start_output_usage_poller(cfg, runtime.lifecycle())
 
     return _BootstrapResult(
         settings=settings,
@@ -515,7 +394,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
 
         announce.start_reconciliation_once(version)
 
-        _start_output_usage_poller(cfg)
+        services.start_output_usage_poller(cfg, runtime.lifecycle())
 
         current: Optional[audio_monitor.AudioMonitor] = None
         reconnect_at: float = 0.0
@@ -867,7 +746,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             client.close()
             if not _reloading:
                 log_lifecycle("autostream stopped cleanly")
-                _cleanup_discovery()
+                services.stop_discovery()
 
         if not _reloading:
             break
@@ -877,8 +756,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
 
     # Final flush: persist any pending in-memory changes before process exit.
     # Also covers the case where the coordinator loop was never entered (stop_flag
-    # set during the startup phase before _cleanup_discovery ran in the finally).
-    _cleanup_discovery()
+    # set during the startup phase before stop_discovery ran in the finally).
+    services.stop_discovery()
     try:
         settings.save_now()
     except Exception:

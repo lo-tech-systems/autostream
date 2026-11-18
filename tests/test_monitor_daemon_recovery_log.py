@@ -37,6 +37,7 @@ import autostream_playback_tracking as playback_tracking
 import autostream_session
 import autostream_identification as identification
 import autostream_startup as startup
+import autostream_services as services
 
 
 def _minimal_cfg(tmp_path: Path) -> Path:
@@ -95,7 +96,7 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         stack.enter_context(patch.object(startup, "install_signal_handlers"))
         stack.enter_context(patch.object(core, "get_install_state", return_value={}))
         stack.enter_context(patch.object(playback_tracking, "ensure_playback_tracker"))
-        stack.enter_context(patch.object(core, "_start_output_usage_poller"))
+        stack.enter_context(patch.object(services, "start_output_usage_poller"))
         stack.enter_context(patch("autostream_log_policy.apply_startup_log_level"))
         stack.enter_context(patch.object(log_setup, "setup_logging"))
         stack.enter_context(patch.object(startup, "reconcile_audio_path_startup"))
@@ -119,7 +120,7 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         stack.enter_context(patch.object(autostream_session, "dispatch_session_event"))
         stack.enter_context(patch.object(announce, "sync_playing_announcement"))
         stack.enter_context(patch.object(runtime, "_playback_tracker", None))
-        stack.enter_context(patch.object(core, "_cleanup_discovery"))
+        stack.enter_context(patch.object(services, "stop_discovery"))
         stack.enter_context(patch.object(core.time, "sleep"))
 
         sf.is_set.side_effect = _is_set

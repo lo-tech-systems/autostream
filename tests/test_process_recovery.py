@@ -31,6 +31,7 @@ import autostream_logging as log_setup
 import autostream_announce as announce
 import autostream_playback_tracking as playback_tracking
 import autostream_startup as startup
+import autostream_services as services
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +159,7 @@ class TestWebuiBackgroundReturnsThread:
              patch("autostream_webui.STATE", MagicMock()), \
              patch("autostream_webui.AUTH", MagicMock()), \
              patch("autostream_webui.ThreadingHTTPServer") as mock_server, \
-             patch("autostream_dials.start_dial_scanner"), \
-             patch("autostream_live_config.apply_mdns_grace_period_startup"), \
-             patch("autostream_webui._scan_monitor_devices_loop"):
+             patch("autostream_live_config.apply_mdns_grace_period_startup"):
             # make the HTTP server block briefly then return
             instance = MagicMock()
             mock_server.return_value = instance
@@ -231,15 +230,8 @@ class TestScannerWrappers:
             _ap.stop_appliance_scanner()
         mock_stop.assert_called_once()
 
-    def test_webui_passes_stop_flag_to_both_scanners(self, tmp_path):
-        """start_webui_background() passes autostream_runtime.stop_flag to both scanner starts."""
-        cfg_path = tmp_path / "autostream.json"
-        cfg_path.write_text('{"general":{}}')
-        try:
-            from autostream_webui import start_webui_background
-        except ImportError:
-            pytest.skip("autostream_webui not importable")
-
+    def test_services_pass_the_stop_event_to_both_scanners(self):
+        """services.start() passes autostream_runtime.stop_flag to both scanner starts."""
         captured = {}
 
         def capture_dial_scanner(**kwargs):
@@ -248,27 +240,14 @@ class TestScannerWrappers:
         def capture_appliance_scanner(**kwargs):
             captured["appliance_event"] = kwargs.get("shutdown_event")
 
-        with patch("autostream_webui.WebUIState"), \
-             patch("autostream_webui.AuthManager"), \
-             patch("autostream_webui.build_nav_bar_html", return_value=""), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.AUTH", MagicMock()), \
-             patch("autostream_webui.ThreadingHTTPServer") as mock_server, \
-             patch("autostream_dials.start_dial_scanner",
+        with patch.object(services.threading, "Thread"), \
+             patch.object(services.dials, "start_dial_scanner",
                    side_effect=capture_dial_scanner), \
-             patch("autostream_appliances.start_appliance_scanner",
-                   side_effect=capture_appliance_scanner), \
-             patch("autostream_live_config.apply_mdns_grace_period_startup"), \
-             patch("autostream_webui._scan_monitor_devices_loop"):
-            instance = MagicMock()
-            mock_server.return_value = instance
-            instance.serve_forever.side_effect = lambda: time.sleep(0.05)
-            webui_thread = start_webui_background(str(cfg_path))
-            # Join while ThreadingHTTPServer is still patched: the background
-            # thread constructs the server, and letting it outlive the patch
-            # would bind a real socket on the real config port.
-            webui_thread.join(timeout=2.0)
-            assert not webui_thread.is_alive()
+             patch.object(services.dial_warnings, "start_watcher"), \
+             patch.object(services.appliances, "start_appliance_scanner",
+                   side_effect=capture_appliance_scanner):
+            services.start(runtime.lifecycle(), MagicMock(),
+                           app_version=lambda: "v", sweeps=())
 
         assert "dial_event" in captured, "start_dial_scanner was not called"
         assert captured["dial_event"] is runtime.stop_flag, (
@@ -281,47 +260,47 @@ class TestScannerWrappers:
 
 
 # ---------------------------------------------------------------------------
-# _cleanup_discovery (plan section 5, tests 7-9)
+# stop_discovery
 # ---------------------------------------------------------------------------
 
 class TestCleanupDiscovery:
     def test_cleanup_calls_all_three_stops(self):
-        """_cleanup_discovery() calls stop on output_usage, dials, and appliances."""
-        with patch("autostream_output_usage.stop") as ou_stop, \
-             patch("autostream_dials.stop_dial_scanner") as dials_stop, \
-             patch("autostream_appliances.stop_appliance_scanner") as ap_stop:
-            _core_mod._cleanup_discovery()
+        """stop_discovery() calls stop on output_usage, dials, and appliances."""
+        with patch.object(services.output_usage, "stop") as ou_stop, \
+             patch.object(services.dials, "stop_dial_scanner") as dials_stop, \
+             patch.object(services.appliances, "stop_appliance_scanner") as ap_stop:
+            services.stop_discovery()
         ou_stop.assert_called_once()
         dials_stop.assert_called_once()
         ap_stop.assert_called_once()
 
     def test_cleanup_continues_when_one_stop_raises(self):
-        """_cleanup_discovery() is best-effort: an exception in one stop does not abort others."""
-        with patch("autostream_output_usage.stop", side_effect=RuntimeError("boom")), \
-             patch("autostream_dials.stop_dial_scanner") as dials_stop, \
-             patch("autostream_appliances.stop_appliance_scanner") as ap_stop:
-            _core_mod._cleanup_discovery()  # must not raise
+        """stop_discovery() is best-effort: an exception in one stop does not abort others."""
+        with patch.object(services.output_usage, "stop", side_effect=RuntimeError("boom")), \
+             patch.object(services.dials, "stop_dial_scanner") as dials_stop, \
+             patch.object(services.appliances, "stop_appliance_scanner") as ap_stop:
+            services.stop_discovery()  # must not raise
         dials_stop.assert_called_once()
         ap_stop.assert_called_once()
 
     def test_cleanup_is_idempotent(self):
-        """Calling _cleanup_discovery() twice must not raise."""
-        with patch("autostream_output_usage.stop"), \
-             patch("autostream_dials.stop_dial_scanner"), \
-             patch("autostream_appliances.stop_appliance_scanner"):
-            _core_mod._cleanup_discovery()
-            _core_mod._cleanup_discovery()
+        """Calling stop_discovery() twice must not raise."""
+        with patch.object(services.output_usage, "stop"), \
+             patch.object(services.dials, "stop_dial_scanner"), \
+             patch.object(services.appliances, "stop_appliance_scanner"):
+            services.stop_discovery()
+            services.stop_discovery()
 
     def test_cleanup_skipped_when_reloading_flag_is_true(self):
         """The _reloading guard in the inner finally must prevent cleanup on config reload."""
         called = []
-        with patch.object(_core_mod, "_cleanup_discovery",
+        with patch.object(services, "stop_discovery",
                           side_effect=lambda: called.append(1)):
             # Replicate the inner-finally guard that run_autostream uses.
             _reloading = True
             if not _reloading:
-                _core_mod._cleanup_discovery()
-        assert not called, "_cleanup_discovery must be skipped when _reloading is True"
+                services.stop_discovery()
+        assert not called, "stop_discovery must be skipped when _reloading is True"
 
 
 class TestOutputUsageStartup:
@@ -343,10 +322,10 @@ class TestOutputUsageStartup:
              patch.object(announce, "remove_avahi_playing_service",
                           side_effect=lambda: calls.append("remove-playing")), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
-             patch.object(_core_mod, "_start_output_usage_poller",
-                          side_effect=lambda _cfg: calls.append("output-usage")), \
+             patch.object(services, "start_output_usage_poller",
+                          side_effect=lambda _cfg, _life: calls.append("output-usage")), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
-             patch.object(_core_mod, "_cleanup_discovery"):
+             patch.object(services, "stop_discovery"):
             # Simulate shutdown being requested before monitor startup.  The
             # poller should still be started because it now runs before the
             # monitor retry loop.
@@ -384,9 +363,9 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(announce, "remove_avahi_playing_service"), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
-             patch.object(_core_mod, "_start_output_usage_poller"), \
+             patch.object(services, "start_output_usage_poller"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
-             patch.object(_core_mod, "_cleanup_discovery"):
+             patch.object(services, "stop_discovery"):
             mock_flag.is_set.return_value = True
             avahi_path.exists.return_value = False
 
@@ -417,9 +396,9 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(announce, "remove_avahi_playing_service"), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
-             patch.object(_core_mod, "_start_output_usage_poller"), \
+             patch.object(services, "start_output_usage_poller"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
-             patch.object(_core_mod, "_cleanup_discovery"):
+             patch.object(services, "stop_discovery"):
             mock_flag.is_set.return_value = True
             avahi_path.exists.return_value = False
 

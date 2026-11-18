@@ -6,10 +6,11 @@ Shared state and locks for the autostream Web UI.
 
 from __future__ import annotations
 
-import copy
 import threading
 import time
 from typing import TYPE_CHECKING, Optional
+
+from autostream_state import store, thaw
 
 if TYPE_CHECKING:
     from autostream_settings import SettingsStore
@@ -32,20 +33,6 @@ class WebUIState:
         # call state.settings.snapshot() rather than re-reading the config file.
         self.settings: "Optional[SettingsStore]" = settings
 
-        # Audio device list as reported by autostream_monitor.
-        # Each entry is a dict containing at least:
-        #   hw, card, name, label
-        self.monitor_devices: list[dict[str, str]] = []
-        self.monitor_devices_lock = threading.Lock()
-
-        # Cached autostream_bluetooth daemon status (the "status" command's
-        # reply, e.g. {"ok", "adapter_present", "paired", "link", "streaming",
-        # "scanning"}), refreshed by the same background loop as
-        # monitor_devices.  None means "not fetched yet" or "service
-        # unavailable" -- both render as the same UI state.
-        self.bluetooth_status: Optional[dict] = None
-        self.bluetooth_status_lock = threading.Lock()
-
         # OwnTone restart state
         self._init_owntone_restart()
 
@@ -54,46 +41,19 @@ class WebUIState:
         from autostream_align import AlignRun
         self.align_run = AlignRun()
 
-    def set_monitor_devices(self, devices: list[dict[str, str]]) -> None:
-        """Store normalized autostream_monitor devices for the Web UI."""
-        cleaned: list[dict[str, str]] = []
-        for dev in devices:
-            if not isinstance(dev, dict):
-                continue
-            hw = str(dev.get("hw") or "").strip()
-            if not hw:
-                continue
-            cleaned.append({
-                "hw": hw,
-                "card": str(dev.get("card") or "").strip(),
-                "name": str(dev.get("name") or "").strip(),
-                "label": str(dev.get("label") or hw).strip(),
-            })
-
-        with self.monitor_devices_lock:
-            self.monitor_devices = cleaned
+    # -------------------------------------------------------------------------
+    # Devices part: capture devices and the Bluetooth daemon status
+    # -------------------------------------------------------------------------
 
     def get_monitor_devices(self) -> list[dict[str, str]]:
-        with self.monitor_devices_lock:
-            return [dict(dev) for dev in self.monitor_devices]
-
-    # -------------------------------------------------------------------------
-    # Bluetooth daemon status cache
-    # -------------------------------------------------------------------------
-
-    def set_bluetooth_status(self, status: Optional[dict]) -> None:
-        """Store the last-fetched autostream_bluetooth daemon status.
-
-        ``status`` is None when the fetch failed (service off/unreachable);
-        stored as-is (deep-copied) so callers can't mutate the cache via a
-        returned reference.
-        """
-        with self.bluetooth_status_lock:
-            self.bluetooth_status = copy.deepcopy(status) if isinstance(status, dict) else None
+        """The capture devices the last scan found, as fresh dicts."""
+        return [dict(dev) for dev in store().snapshot().devices.monitor_devices]
 
     def get_bluetooth_status(self) -> Optional[dict]:
-        with self.bluetooth_status_lock:
-            return copy.deepcopy(self.bluetooth_status) if isinstance(self.bluetooth_status, dict) else None
+        """The Bluetooth daemon's last status reply (None when it was not
+        fetched or the service did not answer), as a fresh copy."""
+        status = store().snapshot().devices.bluetooth_status
+        return thaw(status) if status is not None else None
 
     # -------------------------------------------------------------------------
     # OwnTone restart state

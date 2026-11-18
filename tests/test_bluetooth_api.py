@@ -201,12 +201,12 @@ class TestBluetoothStatusJson:
             "capture_label": "Bluetooth: BT-Turntable",
         }
 
-    def test_installed_live_fails_falls_back_to_cache(self, tmp_path):
+    def test_installed_live_fails_falls_back_to_cache(self, tmp_path, fake_store):
         from autostream_webui_api import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         cached = {"ok": True, "adapter_present": True, "paired": None, "link": "disconnected",
                   "streaming": False, "scanning": False}
-        state.set_bluetooth_status(cached)
+        fake_store.devices(bluetooth_status=cached)
         handler = _make_handler()
         try:
             with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
@@ -441,43 +441,49 @@ class TestBluetoothBufferPost:
 
 
 # ---------------------------------------------------------------------------
-# WebUIState.set/get_bluetooth_status — deep-copy isolation
+# WebUIState.get_bluetooth_status -- copy isolation
 # ---------------------------------------------------------------------------
 
-class TestBluetoothStatusDeepCopy:
-    """set/get_bluetooth_status must deep-copy: the status nests
-    paired{mac, name}, and a shallow dict() copy leaves that nested dict
-    shared with the caller, letting a caller's later mutation corrupt the
-    cache (or vice versa)."""
+class TestBluetoothStatusCopies:
+    """get_bluetooth_status reads the devices part and returns a fresh mutable
+    copy: the status nests paired{mac, name}, and a shallow copy would leave
+    that nested dict shared between callers."""
 
-    def test_mutating_input_after_set_does_not_affect_cache(self, tmp_path):
+    def test_the_status_is_what_the_part_holds(self, tmp_path, fake_store):
         from autostream_webui_state import WebUIState
         state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
-        state.set_bluetooth_status(status)
+        fake_store.devices(bluetooth_status=status)
+        assert state.get_bluetooth_status() == status
+
+    def test_mutating_the_published_dict_does_not_affect_the_part(self, tmp_path, fake_store):
+        from autostream_webui_state import WebUIState
+        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
+        status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
+        fake_store.devices(bluetooth_status=status)
         status["paired"]["name"] = "Mutated"
         status["link"] = "disconnected"
         cached = state.get_bluetooth_status()
         assert cached["paired"]["name"] == "Original"
         assert cached["link"] == "connected"
 
-    def test_mutating_returned_value_does_not_affect_cache(self, tmp_path):
+    def test_mutating_returned_value_does_not_affect_the_next_read(self, tmp_path, fake_store):
         from autostream_webui_state import WebUIState
         state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
-        state.set_bluetooth_status(status)
+        fake_store.devices(bluetooth_status=status)
         got = state.get_bluetooth_status()
         got["paired"]["name"] = "Mutated"
         got["link"] = "disconnected"
-        cached_again = state.get_bluetooth_status()
-        assert cached_again["paired"]["name"] == "Original"
-        assert cached_again["link"] == "connected"
+        again = state.get_bluetooth_status()
+        assert again["paired"]["name"] == "Original"
+        assert again["link"] == "connected"
 
-    def test_none_status_clears_cache(self, tmp_path):
+    def test_a_part_without_a_status_gives_none(self, tmp_path, fake_store):
         from autostream_webui_state import WebUIState
         state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
-        state.set_bluetooth_status({"ok": True, "paired": None})
-        state.set_bluetooth_status(None)
+        fake_store.devices(bluetooth_status={"ok": True, "paired": None})
+        fake_store.devices(bluetooth_status=None)
         assert state.get_bluetooth_status() is None
 
 

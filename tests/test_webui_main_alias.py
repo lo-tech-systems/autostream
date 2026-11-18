@@ -26,9 +26,8 @@ DRIVER = r"""
 import sys, runpy
 
 # Import the REAL autostream_core (heavy but side-effect-free at import
-# time) and replace only run_autostream, so the webui module body's other
-# `from autostream_core import ...` names all resolve; the __main__ block's
-# run_autostream() call then lands in our probe instead of starting the
+# time) and replace only run_autostream, so the __main__ block's
+# run_autostream() call lands in our probe instead of starting the
 # appliance.
 import autostream_core
 

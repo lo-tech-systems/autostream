@@ -83,3 +83,27 @@ def test_reset_for_tests_clears_the_metadata_push_stamp():
     runtime.note_metadata_push(5.0)
     runtime.reset_for_tests()
     assert runtime.last_metadata_push() is None
+
+
+def test_lifecycle_is_over_the_current_stop_event():
+    life = runtime.lifecycle()
+    assert life.stop is runtime.stop_flag
+    assert not life.stopping()
+    runtime.stop_flag.set()
+    assert life.stopping()
+    runtime.reset_for_tests()
+
+
+def test_lifecycle_follows_a_replaced_stop_event(monkeypatch):
+    import threading
+    replacement = threading.Event()
+    monkeypatch.setattr(runtime, "stop_flag", replacement)
+    assert runtime.lifecycle().stop is replacement
+
+
+def test_lifecycle_wait_returns_true_once_stopping():
+    import threading
+    life = runtime.Lifecycle(threading.Event())
+    assert life.wait(0.01) is False
+    life.stop.set()
+    assert life.wait(0.01) is True

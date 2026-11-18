@@ -1,5 +1,5 @@
-"""Tests for the webui's Bluetooth lockout-healing step
-(core/autostream_webui.py, _lockout_heal_check).
+"""Tests for the Bluetooth lockout-healing step
+(core/autostream_services.py, _lockout_heal_check).
 
 A sustained ``loopback_locked_out`` means the pump's capture-side peer
 pinned the shared loopback cable at incompatible parameters while the pump
@@ -20,8 +20,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_core as core_mod  # noqa: E402
-import autostream_webui as webui_mod
-import autostream_runtime as runtime  # noqa: E402
+import autostream_runtime as runtime
+import autostream_services as services  # noqa: E402
 
 STATE_SENTINEL = object()
 
@@ -30,16 +30,16 @@ def _patch(monkeypatch, configured: bool, now: float = 1000.0):
     calls = []
     monkeypatch.setattr(runtime, "request_config_reload", lambda: calls.append(1))
     monkeypatch.setattr(
-        webui_mod, "_bluetooth_input_configured", lambda state: configured,
+        services, "_bluetooth_input_configured", lambda state: configured,
     )
-    monkeypatch.setattr(webui_mod.time, "monotonic", lambda: now)
+    monkeypatch.setattr(services.time, "monotonic", lambda: now)
     return calls
 
 
 class TestLockoutHealCheck:
     def test_first_lockout_poll_does_not_reload(self, monkeypatch):
         calls = _patch(monkeypatch, configured=True)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, 0, None,
         )
         assert streak == 1
@@ -48,7 +48,7 @@ class TestLockoutHealCheck:
 
     def test_second_consecutive_lockout_poll_reloads(self, monkeypatch):
         calls = _patch(monkeypatch, configured=True, now=1000.0)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, 1, None,
         )
         assert streak == 0  # reset after firing
@@ -57,7 +57,7 @@ class TestLockoutHealCheck:
 
     def test_clear_poll_resets_streak(self, monkeypatch):
         calls = _patch(monkeypatch, configured=True)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": False}, 1, None,
         )
         assert streak == 0
@@ -66,7 +66,7 @@ class TestLockoutHealCheck:
 
     def test_none_status_resets_streak(self, monkeypatch):
         calls = _patch(monkeypatch, configured=True)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, None, 1, None,
         )
         assert streak == 0
@@ -75,7 +75,7 @@ class TestLockoutHealCheck:
 
     def test_no_reload_when_no_bluetooth_input_configured(self, monkeypatch):
         calls = _patch(monkeypatch, configured=False)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, 1, None,
         )
         # Streak keeps accumulating so a later-configured input sees fresh
@@ -86,7 +86,7 @@ class TestLockoutHealCheck:
 
     def test_cooldown_suppresses_second_reload(self, monkeypatch):
         calls = _patch(monkeypatch, configured=True, now=1000.0)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, 1, None,
         )
         assert calls == [1]
@@ -94,11 +94,11 @@ class TestLockoutHealCheck:
 
         # Immediately re-triggers accumulation, but the cooldown (120 s)
         # has not elapsed -- no second reload.
-        monkeypatch.setattr(webui_mod.time, "monotonic", lambda: 1010.0)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        monkeypatch.setattr(services.time, "monotonic", lambda: 1010.0)
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, streak, last_reload,
         )
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, streak, last_reload,
         )
         assert calls == [1]
@@ -106,16 +106,16 @@ class TestLockoutHealCheck:
 
     def test_reload_fires_again_after_cooldown_elapses(self, monkeypatch):
         calls = _patch(monkeypatch, configured=True, now=1000.0)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, 1, None,
         )
         assert calls == [1]
 
-        monkeypatch.setattr(webui_mod.time, "monotonic", lambda: 1000.0 + 121.0)
-        streak, last_reload = webui_mod._lockout_heal_check(
+        monkeypatch.setattr(services.time, "monotonic", lambda: 1000.0 + 121.0)
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, streak, last_reload,
         )
-        streak, last_reload = webui_mod._lockout_heal_check(
+        streak, last_reload = services._lockout_heal_check(
             STATE_SENTINEL, {"loopback_locked_out": True}, streak, last_reload,
         )
         assert calls == [1, 1]

@@ -22,6 +22,7 @@ import autostream_state as state
 from autostream_playback_stats import PlaybackSnapshot
 from autostream_players import OutputInfo
 from autostream_state import FrozenDict
+from autostream_state.freeze import deep_freeze
 
 _LEVEL_DEFAULTS = {
     "label": "Input {index}",
@@ -98,6 +99,14 @@ class FakeStore:
 
     def health(self, **fields):
         return self._put("health", state.HealthPart(**fields))
+
+    def devices(self, monitor_devices=(), bluetooth_status=None):
+        """The device scan's result: each device dict through FrozenDict, the
+        status frozen the way a publish freezes it."""
+        return self._put("devices", state.DevicesPart(
+            monitor_devices=tuple(FrozenDict(d) for d in monitor_devices),
+            bluetooth_status=(None if bluetooth_status is None
+                              else deep_freeze(bluetooth_status))))
 
     def settings(self, generation: int):
         return self._put("settings", state.SettingsPart(generation))
