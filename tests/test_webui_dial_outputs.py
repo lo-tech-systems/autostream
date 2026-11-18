@@ -650,9 +650,10 @@ class TestAvahiDialOutputs:
     def test_admin_write_appliance_service_has_dial_outputs_v1(self):
         admin_path = REPO_ROOT / "supervisor" / "autostream_admin"
         text = admin_path.read_text(encoding="utf-8")
-        idx = text.find("_write_appliance_service")
+        idx = text.find("def _write_appliance_service")
         assert idx != -1
-        fn_text = text[idx:idx + 1000]
+        end = text.find("\ndef ", idx + 1)
+        fn_text = text[idx:end if end != -1 else len(text)]
         assert "dial_outputs=v1" in fn_text
 
 
