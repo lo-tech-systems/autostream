@@ -767,6 +767,23 @@ class TestEqPage:
         assert sliders_box["x"] + sliders_box["width"] < box["x"]
         assert sliders_box["height"] > 150
 
+    def test_the_closed_page_is_primed_before_the_first_opening(self, page, hd):
+        # The first opening slides in like a later one only if the graph and
+        # the page were made beforehand: the graph is drawn, and the page,
+        # painted once off screen, is hidden again, all before any opening.
+        open_page(page, hd)
+        page.wait_for_function(
+            """() => {
+                const c = document.getElementById('eq-graph');
+                return c.width > 0 && c.getContext('2d').getImageData(0, 0, 1, 1).data[3] > 0
+                    && !document.getElementById('eq').classList.contains('priming');
+            }"""
+        )
+        expect(page.locator("#eq")).to_be_hidden()
+        open_eq(page)
+        page.locator("#eq-close").click()
+        expect(page.locator("#eq")).to_be_hidden()
+
     def test_no_capability_no_icon_and_no_page(self, page, hd):
         hd.show(hs.SCENARIOS["eq_none"])
         open_page(page, hd)

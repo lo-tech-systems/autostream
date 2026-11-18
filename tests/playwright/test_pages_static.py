@@ -572,13 +572,15 @@ HD_CEILINGS = {
     "hd-tables.js": 190,
     "hd-dom.js": 75,
     "hd-state.js": 150,
-    "hd-eq.js": 135,
+    # The graph's paint step and the page's one-off priming, so the first
+    # opening slides in like every later one.
+    "hd-eq.js": 160,
     "hd-derive.js": 300,
     "hd-requests.js": 130,
     # Volume minus and plus: their handler and bindings.
     "hd-actions.js": 318,
     # The dial bell button's paint call and its import.
-    "hd-paint.js": 428,
+    "hd-paint.js": 421,
     # The warning bells: the dial bell's button, each row bell's count and the
     # card that pages through a bell's warnings; one feature, so one module.
     "hd-bell.js": 70,

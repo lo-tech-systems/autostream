@@ -344,6 +344,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
     padding: calc(var(--top-inset) - 6px) 16px 14px;
 }
 .eq.open { transform: translateX(0); visibility: visible; transition-delay: 0s; }
+/* Painted once while it waits off screen; see paintGraph in hd-eq.js. */
+.eq.priming:not(.open) { visibility: visible; transition: none; }
 .eq-head { display: flex; align-items: center; gap: 12px; }
 .eq-title { margin: 0; flex: 1; font-size: 1.2em; color: var(--color-text-strong); }
 .eq-title .eq-for { margin-left: 6px; font-size: 0.7em; font-weight: 400; color: var(--color-text-dim); }

@@ -55,11 +55,37 @@ export function eqLabel(hz) {
     return hz >= 1000 ? hz / 1000 + "kHz" : hz + "Hz";
 }
 
-export const graph = { key: "", frame: 0 };
+export const graph = { key: "", frame: 0, primed: false };
 
 export function scheduleGraph() {
     if (graph.frame) { return; }
     graph.frame = requestAnimationFrame(() => { graph.frame = 0; drawGraph(); });
+}
+
+// The graph for the page's state. A closed page is primed once, as soon as
+// there is an equaliser to show: its graph drawn and the page painted where it
+// waits off screen, so the first opening finds the canvas, its font and the
+// page's layers already made and slides in like every later one. On opening
+// the graph is drawn at once, before the caller adds the open class: a slow
+// draw then holds the slide's start back instead of eating its frames.
+export function paintGraph(eq, opening) {
+    if (!eq.open) {
+        graph.key = "";
+        if (eq.available && !graph.primed) { prime(); }
+        return;
+    }
+    const key = JSON.stringify(eq.filters.map((f) => [f.type, f.hz, f.q, f.gain]))
+        + ":" + els.eqGraph.clientWidth + "x" + els.eqGraph.clientHeight;
+    if (key === graph.key) { return; }
+    graph.key = key;
+    if (opening) { drawGraph(); } else { scheduleGraph(); }
+}
+
+function prime() {
+    graph.primed = true;
+    drawGraph();
+    els.eqPage.classList.add("priming");
+    requestAnimationFrame(() => requestAnimationFrame(() => els.eqPage.classList.remove("priming")));
 }
 
 function drawGraph() {

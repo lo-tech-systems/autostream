@@ -15,7 +15,7 @@ import {
 } from "./hd-tables.js";
 import { make, setText, makeIcon, BELL_ICON, setLevel, syncList, els } from "./hd-dom.js";
 import { ui, dragging } from "./hd-state.js";
-import { graph, scheduleGraph } from "./hd-eq.js";
+import { paintGraph } from "./hd-eq.js";
 import { openBell, paintDialBell } from "./hd-bell.js";
 import { trackDrag } from "./hd-requests.js";
 import {
@@ -255,22 +255,14 @@ function paintSheet(vm) {
 
 function paintEq(vm) {
     const eq = vm.eq;
-    els.eqPage.classList.toggle("open", eq.open);
-    els.eqPage.inert = !eq.open;
     setText(els.eqFor, eq.name);
     paintNote(els.eqNote, eq.note);
     els.eqReset.disabled = !eq.enabled;
     syncList(els.eqBands, eq.bands.map((b) => Object.assign({ enabled: eq.enabled }, b)), createBand);
-    if (!eq.open) {
-        graph.key = "";
-        return;
-    }
-    const key = JSON.stringify(eq.filters.map((f) => [f.type, f.hz, f.q, f.gain]))
-        + ":" + els.eqGraph.clientWidth + "x" + els.eqGraph.clientHeight;
-    if (key !== graph.key) {
-        graph.key = key;
-        scheduleGraph();
-    }
+    // The graph is drawn before the class changes, so the slide starts after it.
+    paintGraph(eq, eq.open && !els.eqPage.classList.contains("open"));
+    els.eqPage.classList.toggle("open", eq.open);
+    els.eqPage.inert = !eq.open;
 }
 
 function paintModal(card) {
