@@ -19,7 +19,7 @@ if _DIAL not in sys.path:
 from dial_core_state import SEVERITY_WARNING  # noqa: E402
 from dial_warning_bell import Bell, BellEntry  # noqa: E402
 from dial_warning_page import WarningsPageState, status_card  # noqa: E402
-from dial_warning_text import _WARNING_BY_ID  # noqa: E402
+from dial_warning_text import WARNING_BY_ID  # noqa: E402
 from dial_warnings import ACTION_CLOSE, ACTION_NEXT, ACTION_RESTART  # noqa: E402
 
 
@@ -170,16 +170,16 @@ class TestTap:
 
 class TestStatusCard:
     def test_the_result_card_has_close_and_names_its_status(self):
-        card = status_card(_WARNING_BY_ID["update_result"], None)
+        card = status_card(WARNING_BY_ID["update_result"], None)
         assert card.buttons == (("Close", ACTION_CLOSE),)
         assert card.status_id == "update_result"
 
     def test_the_progress_card_has_no_buttons_and_a_percent(self):
         from dial_update_watch import UpdateView
-        card = status_card(_WARNING_BY_ID["update"], UpdateView(phase="python", percent=40))
+        card = status_card(WARNING_BY_ID["update"], UpdateView(phase="python", percent=40))
         assert card.buttons == ()
         assert card.percent == 40
 
     @pytest.mark.parametrize("wid", ["update", "update_result"])
     def test_the_source_is_blank(self, wid):
-        assert status_card(_WARNING_BY_ID[wid], None).source == ""
+        assert status_card(WARNING_BY_ID[wid], None).source == ""

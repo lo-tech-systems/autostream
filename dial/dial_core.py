@@ -68,7 +68,7 @@ from dial_core_state import (
     DialInfo, FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
     DIAL_WARNING_ID, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState,
-    _roster_entry, artwork_key, display_order, dots_active, eq_gain, newer_appliance_names,
+    roster_entry, artwork_key, display_order, dots_active, eq_gain, newer_appliance_names,
     protocol_warning, reopen_for_pin, six_band, start_failure_action,
 )
 from dial_mdns import PROTOCOL
@@ -86,7 +86,10 @@ from dial_volume import (
     observe_master_volume, observe_master_volume_if_tracked, observe_mute_state, shown_muted,
     shown_volume,
 )
-from dial_warning_text import WARNING_DESCRIPTORS, appliance_warning_descriptor, appliance_warning_key
+from dial_warning_text import (
+    NOWIFI_WARNING_ID, SDHEALTH_WARNING_ID, UPDATE_RESULT_WARNING_ID, UPDATE_WARNING_ID, WARNING_DESCRIPTORS,
+    appliance_warning_descriptor, appliance_warning_key,
+)
 from dial_warnings import KIND_STATUS, WarningManager
 
 # How often the clients are folded when nothing signals: the slowest the
@@ -535,7 +538,7 @@ class DialCore:
         persisted. Refused for an appliance that has refused this dial; an
         id that is not on the roster is taken (the next fold drops a focus
         that has gone)."""
-        entry = _roster_entry(self._state.roster, appliance_id)
+        entry = roster_entry(self._state.roster, appliance_id)
         if entry is not None and entry.auth == AUTH_UNAUTHORIZED:
             return ActionResult(False, "unauthorized")
         def mutate(state: _CoreState) -> "bool | None":
@@ -633,7 +636,7 @@ class DialCore:
         """Why a request needing *capability* cannot go to *appliance_id*, or
         None. The capability is the appliance's own state, which has every
         capability or none (one protocol)."""
-        entry = _roster_entry(state.roster, appliance_id)
+        entry = roster_entry(state.roster, appliance_id)
         if entry is None:
             return ActionResult(False, "unknown_appliance")
         if not getattr(entry, capability, False):
@@ -678,7 +681,7 @@ class DialCore:
         row = self._output_row(appliance_id, output_id)
         if row is None or row.remote_in_use or (selected is None and volume is None and pin is None):
             return ActionResult(False, "wrong_state")
-        entry = _roster_entry(self._state.roster, appliance_id)
+        entry = roster_entry(self._state.roster, appliance_id)
         if pin is not None and not pin_capable_outputs(entry.dial_outputs_version):
             return ActionResult(False, "no_capability")
         shown_selected = True if pin is not None else (row.selected if selected is None else selected)
@@ -785,7 +788,7 @@ class DialCore:
         refusal = self._refusal_in(state, appliance_id, "repeat_capable")
         if refusal is not None:
             return refusal
-        record = getattr(_roster_entry(state.roster, appliance_id), "repeat", None)
+        record = getattr(roster_entry(state.roster, appliance_id), "repeat", None)
         if record is None or not record.available:
             return ActionResult(False, "no_record")
         if record.state not in states:
@@ -807,7 +810,7 @@ class DialCore:
         refusal = self._repeat_refusal(appliance_id, ("replaying", "hold"))
         if refusal is not None:
             return refusal
-        entry = _roster_entry(self._state.roster, appliance_id)
+        entry = roster_entry(self._state.roster, appliance_id)
         self.set_focus_pending(
             appliance_id, entry.service_name, self._clock() + dial_core_focus.FOCUS_PENDING_GRACE_S)
         self._wake.set()
@@ -966,13 +969,13 @@ class DialCore:
                 changed = changed or not state.wifi_ever_connected
                 state.wifi_ever_connected = True
                 state.wifi_down_streak = 0
-                self.warnings.clear("nowifi")
-                changes.append(WarningChange("nowifi", False))
+                self.warnings.clear(NOWIFI_WARNING_ID)
+                changes.append(WarningChange(NOWIFI_WARNING_ID, False))
             elif view.link == LINK_DOWN:
                 state.wifi_down_streak += 1
                 if state.wifi_ever_connected and state.wifi_down_streak >= NOWIFI_PROMPT_STREAK:
-                    began = self.warnings.set_active("nowifi")
-                    changes.append(WarningChange("nowifi", True, began))
+                    began = self.warnings.set_active(NOWIFI_WARNING_ID)
+                    changes.append(WarningChange(NOWIFI_WARNING_ID, True, began))
             elif view.link == LINK_IGNORED:
                 state.wifi_down_streak = 0
             if self._sync_warnings_locked(state):
@@ -994,11 +997,11 @@ class DialCore:
             low = _sd_is_low(view, state.sd_low)
             state.sd_low = low
             if low:
-                began = self.warnings.set_active("sdhealth", view.percent)
-                changes.append(WarningChange("sdhealth", True, began))
+                began = self.warnings.set_active(SDHEALTH_WARNING_ID, view.percent)
+                changes.append(WarningChange(SDHEALTH_WARNING_ID, True, began))
             else:
-                self.warnings.clear("sdhealth")
-                changes.append(WarningChange("sdhealth", False))
+                self.warnings.clear(SDHEALTH_WARNING_ID)
+                changes.append(WarningChange(SDHEALTH_WARNING_ID, False))
             if self._sync_warnings_locked(state):
                 changed = True
             return None if changed else False
@@ -1021,10 +1024,10 @@ class DialCore:
         restarting = False
         if view.status == STATUS_IN_PROGRESS:
             if view.phase == PHASE_REBOOT:
-                changes.append(self.warning_cleared("update"))
+                changes.append(self.warning_cleared(UPDATE_WARNING_ID))
                 restarting = True
             elif view.phase != PHASE_VERIFY:
-                changes.append(self.warning_active("update", view))
+                changes.append(self.warning_active(UPDATE_WARNING_ID, view))
         elif view.status in (STATUS_SUCCESS, STATUS_FAILURE):
             marker = view.last_run_at or f"{view.status}-{view.tag}"
             if self._update_seen is None:
@@ -1033,8 +1036,8 @@ class DialCore:
                 return SourceEffects(signal=False)
             self._update_seen = marker
             write_seen_marker(marker, self.update_seen_path)
-            changes.append(self.warning_cleared("update"))
-            changes.append(self.warning_active("update_result", view))
+            changes.append(self.warning_cleared(UPDATE_WARNING_ID))
+            changes.append(self.warning_active(UPDATE_RESULT_WARNING_ID, view))
         return SourceEffects(tuple(changes), restarting)
 
     def tick_update_watch(self, now: float) -> SourceEffects | None:
@@ -1275,7 +1278,7 @@ class DialCore:
         focus_id = self._snapshot.focus.manual_id
         if not focus_id:
             return None
-        entry = _roster_entry(self._state.roster, focus_id)
+        entry = roster_entry(self._state.roster, focus_id)
         if entry is None or entry.auth == AUTH_UNAUTHORIZED:
             return None
         return entry

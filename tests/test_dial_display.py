@@ -9116,7 +9116,7 @@ class TestGenericWarningCapabilities:
                 warnings=WarningManager(WARNING_DESCRIPTORS + (notice,), clock=clock.now),
             )
             for p in (
-                patch.dict(dwt._WARNING_BY_ID, {notice.id: notice}),
+                patch.dict(dwt.WARNING_BY_ID, {notice.id: notice}),
                 patch.dict(dd.SCREEN_POLICIES, {notice.screen: dd._status_policy_row(notice)}),
             ):
                 p.start()
@@ -9383,10 +9383,10 @@ class TestUpdateWarnings:
     def test_update_card_has_no_buttons_and_the_inert_surface(self):
         from dial_touch import _GEOMETRY_FOR_SURFACE
         from dial_touch_layout import GEOMETRY_NONE
-        desc = dwt._WARNING_BY_ID["update"]
+        desc = dwt.WARNING_BY_ID["update"]
         assert desc.buttons == ()
         assert desc.interrupting is True and desc.auto_clear_after_s is None
-        assert desc.priority > dwt._WARNING_BY_ID["update_result"].priority
+        assert desc.priority > dwt.WARNING_BY_ID["update_result"].priority
         assert _GEOMETRY_FOR_SURFACE[dd.SCREEN_POLICIES["update"].surface[0]] == GEOMETRY_NONE
 
     def test_reboot_phase_switches_to_restarting_without_requesting_reboot(self, rig):

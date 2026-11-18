@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dial_core_state import (
     APPLIANCE_WARNING_MESSAGE_MAX, ApplianceWarning, DIAL_WARNING_ID, SEVERITY_CRITICAL,
-    SEVERITY_INFO, SEVERITY_WARNING, _clean_text,
+    SEVERITY_INFO, SEVERITY_WARNING, clean_text,
 )
 from dial_update_watch import STATUS_SUCCESS, UpdateView
 from dial_warnings import (
@@ -34,8 +34,13 @@ NEXT_TEXT = "Next"
 RESTART_TEXT = "Restart"
 BUTTON_TEXT = {ACTION_CLOSE: CLOSE_TEXT, ACTION_NEXT: NEXT_TEXT, ACTION_RESTART: RESTART_TEXT}
 
-# The No-WiFi warning's fixed title.
+# The ids of the warnings and statuses the dial itself raises.
 NOWIFI_WARNING_ID = "nowifi"
+SDHEALTH_WARNING_ID = "sdhealth"
+UPDATE_WARNING_ID = "update"
+UPDATE_RESULT_WARNING_ID = "update_result"
+
+# The No-WiFi warning's fixed title.
 NOWIFI_MESSAGE_TEXT = "No WiFi"
 # The SD card warning's fixed strings: a title at readout size and a body
 # line at body size (the percent is filled in).
@@ -130,7 +135,7 @@ UPDATE_DIAL_TITLE_TEXT = "Update this dial"
 def _update_dial_message_for(names) -> str:
     names = tuple(names or ())
     verb = "needs" if len(names) == 1 else "need"
-    return _clean_text(f"{', '.join(names)} {verb} a newer dial", APPLIANCE_WARNING_MESSAGE_MAX)
+    return clean_text(f"{', '.join(names)} {verb} a newer dial", APPLIANCE_WARNING_MESSAGE_MAX)
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +167,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
         ),
     ),
     WarningDescriptor(
-        id="sdhealth", kind=KIND_WARNING,
+        id=SDHEALTH_WARNING_ID, kind=KIND_WARNING,
         title=SDHEALTH_TITLE_TEXT, message_for=_sdhealth_message_for,
         severity_for=_sdhealth_severity_for,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
@@ -179,7 +184,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     # nothing), shown over whatever is up and waking the panel; its source
     # clears it.
     WarningDescriptor(
-        id="update", kind=KIND_STATUS, priority=200, screen="update",
+        id=UPDATE_WARNING_ID, kind=KIND_STATUS, priority=200, screen=UPDATE_WARNING_ID,
         title=UPDATING_TEXT, message_for=_update_message_for, severity_for=_info_severity,
         buttons=(),
         title_for=_update_title_for, progress_for=_update_progress_for,
@@ -188,7 +193,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     # How an update ended: one Close, clears itself after
     # UPDATE_RESULT_SECONDS.
     WarningDescriptor(
-        id="update_result", kind=KIND_STATUS, priority=150, screen="update_result",
+        id=UPDATE_RESULT_WARNING_ID, kind=KIND_STATUS, priority=150, screen=UPDATE_RESULT_WARNING_ID,
         title=UPDATED_TEXT, message_for=_update_result_message_for,
         severity_for=_info_severity,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
@@ -196,7 +201,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
         interrupting=True, auto_clear_after_s=UPDATE_RESULT_SECONDS,
     ),
 )
-_WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIPTORS}
+WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIPTORS}
 
 
 # ---------------------------------------------------------------------------

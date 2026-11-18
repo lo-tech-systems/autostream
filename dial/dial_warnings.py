@@ -87,6 +87,24 @@ class WarningDescriptor:
     screen: str = ""
     priority: int = 0
 
+    def title_text(self, reading) -> str:
+        """The readout-size line for *reading*: title_for's when it gives
+        one, else the fixed title."""
+        title = self.title_for(reading) if self.title_for is not None else None
+        return title if isinstance(title, str) and title else self.title
+
+    def message_text(self, reading) -> str:
+        """The body-size line for *reading*; "" when there is none."""
+        message = self.message_for(reading) if self.message_for is not None else None
+        return message if isinstance(message, str) else ""
+
+    def severity(self, reading) -> str:
+        return self.severity_for(reading)
+
+    def progress(self, reading):
+        """The bar percent for *reading*, or None for no bar."""
+        return self.progress_for(reading) if self.progress_for is not None else None
+
 
 @dataclass
 class _WarningRuntime:

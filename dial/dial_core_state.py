@@ -374,7 +374,7 @@ def parse_start_failure(raw) -> StartFailureReport | None:
         if not isinstance(name, str):
             return None
         return StartFailureReport(
-            boot, seq, unit_id, _clean_text(name, START_FAILURE_NAME_MAX), reason, mine, age_s,
+            boot, seq, unit_id, clean_text(name, START_FAILURE_NAME_MAX), reason, mine, age_s,
         )
     except Exception:
         return None
@@ -562,7 +562,7 @@ class ApplianceWarning:
     appliance_name: str = ""  # the roster's display name, set by the core
 
 
-def _clean_text(value, limit: int) -> str:
+def clean_text(value, limit: int) -> str:
     """*value* as plain display text of at most *limit* characters, or ""
     for anything that is not a string. Control, format (which includes the
     bidirectional overrides and isolates), surrogate, private-use and
@@ -632,7 +632,7 @@ def protocol_warning(entry, own_protocol: int) -> ApplianceWarning | None:
     name = _entry_name(entry)
     return ApplianceWarning(
         id=PROTOCOL_WARNING_ID, severity=SEVERITY_WARNING,
-        title=_clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
+        title=clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
         message=_PROTOCOL_WARNING_MESSAGE, appliance_name=name,
     )
 
@@ -668,7 +668,7 @@ def appliance_warning_entries(entries, limit: int) -> tuple[ApplianceWarning, ..
                 or warning_id in seen
             ):
                 continue
-            title = _clean_text(entry.get("title"), APPLIANCE_WARNING_TITLE_MAX)
+            title = clean_text(entry.get("title"), APPLIANCE_WARNING_TITLE_MAX)
             if not title:
                 continue
             seen.add(warning_id)
@@ -679,7 +679,7 @@ def appliance_warning_entries(entries, limit: int) -> tuple[ApplianceWarning, ..
                     APPLIANCE_WARNING_DEFAULT_SEVERITY,
                 ),
                 title=title,
-                message=_clean_text(entry.get("message"), APPLIANCE_WARNING_MESSAGE_MAX),
+                message=clean_text(entry.get("message"), APPLIANCE_WARNING_MESSAGE_MAX),
             ))
         return tuple(out)
     except Exception:
@@ -969,7 +969,7 @@ def eq_gain(bands: Iterable, band_id: str) -> int | None:
     return next((b.gain_db for b in bands if b.id == band_id), None)
 
 
-def _roster_entry(roster: Iterable, appliance_id: str | None):
+def roster_entry(roster: Iterable, appliance_id: str | None):
     if not appliance_id:
         return None
     return next((r for r in roster if r.appliance_id == appliance_id), None)

@@ -81,9 +81,9 @@ class TestProtocolWarning:
         assert warning.title.startswith("Update xxx")
 
     def test_a_long_name_is_fitted_to_the_message_of_the_dial_warning(self):
-        from dial_warning_text import _WARNING_BY_ID
+        from dial_warning_text import WARNING_BY_ID
         names = cs.newer_appliance_names((entry("x" * 300, proto=5),), OWN)
-        assert len(_WARNING_BY_ID["update_dial"].message_for(names)) <= cs.APPLIANCE_WARNING_MESSAGE_MAX
+        assert len(WARNING_BY_ID["update_dial"].message_for(names)) <= cs.APPLIANCE_WARNING_MESSAGE_MAX
 
     def test_a_name_from_the_network_is_cleaned(self):
         warning = cs.protocol_warning(entry("Lo‮unge\x07"), OWN)

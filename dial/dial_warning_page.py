@@ -118,10 +118,10 @@ class WarningsPageState:
 def status_card(desc: WarningDescriptor, reading) -> Card:
     """The card of a status descriptor from its latest reading."""
     return Card(
-        title=desc.title_for(reading) if desc.title_for is not None else desc.title,
-        message=desc.message_for(reading) if desc.message_for is not None else "",
+        title=desc.title_text(reading),
+        message=desc.message_text(reading),
         source=desc.source_name,
-        percent=desc.progress_for(reading) if desc.progress_for is not None else None,
+        percent=desc.progress(reading),
         buttons=tuple((b.label, b.action) for b in desc.buttons),
         status_id=desc.id,
     )

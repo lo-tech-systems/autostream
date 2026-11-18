@@ -20,7 +20,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Iterable, Mapping
 
 from dial_core_state import (
     AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_WARNING,
@@ -75,12 +75,6 @@ def descriptor_map(descriptors: "Mapping | Iterable | None") -> dict:
     return {d.id: d for d in descriptors}
 
 
-def _text(fn, reading: Any) -> str:
-    """What a descriptor's text function says for *reading*; "" for none."""
-    value = fn(reading) if fn is not None else None
-    return value if isinstance(value, str) else ""
-
-
 def dial_bell(snapshot, descriptors) -> Bell:
     """The dial's own active warnings: every active KIND_WARNING descriptor
     that is not an appliance's, in registry order."""
@@ -92,13 +86,12 @@ def dial_bell(snapshot, descriptors) -> Bell:
             continue
         if state.id.startswith(APPLIANCE_WARNING_PREFIX):
             continue
-        title = desc.title_for(state.reading) if desc.title_for is not None else desc.title
         entries.append(BellEntry(
             key=state.id,
             source=DIAL_SOURCE,
-            severity=desc.severity_for(state.reading),
-            title=title,
-            message=_text(desc.message_for, state.reading),
+            severity=desc.severity(state.reading),
+            title=desc.title_text(state.reading),
+            message=desc.message_text(state.reading),
             actions=tuple(b.action for b in desc.buttons if b.action != ACTION_CLOSE),
         ))
     return Bell(_worst_first(entries))

@@ -207,13 +207,12 @@ def _status_block(snapshot, descriptors: dict) -> dict | None:
     descriptor = descriptors.get(state.id) if state is not None else None
     if descriptor is None:
         return None
-    message = _call(descriptor.message_for, state.reading)
     return {
         "id": state.id,
-        "severity": descriptor.severity_for(state.reading),
-        "title": _call(descriptor.title_for, state.reading) or descriptor.title,
-        "message": message if isinstance(message, str) else "",
-        "progress": _card_progress(_call(descriptor.progress_for, state.reading)),
+        "severity": descriptor.severity(state.reading),
+        "title": _call(descriptor.title_text, state.reading) or descriptor.title,
+        "message": _call(descriptor.message_text, state.reading) or "",
+        "progress": _card_progress(_call(descriptor.progress, state.reading)),
         "buttons": [
             {"label": b.label, "action": STATUS_CLOSE_ACTION if b.action == ACTION_CLOSE else b.action}
             for b in descriptor.buttons
