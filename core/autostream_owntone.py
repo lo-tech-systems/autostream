@@ -6,7 +6,9 @@ Player backend implementation for the official OwnTone JSON API.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import threading
 from typing import Any, Optional
 
 from autostream_players import (
@@ -29,6 +31,101 @@ from autostream_players import (
 
 
 LOG = logging.getLogger(__name__)
+
+
+class _MuteEmulation:
+    """Upstream OwnTone has no mute, so a muted output is set to volume 0 and
+    the level it returns to is kept here, and laid over the rows read back so
+    that the output reads muted at that level, as owntone-mini reports it.
+
+    One table for the process, keyed by the player's address and the output
+    id, because a backend object is built for every call. It lives in memory
+    only: after autostream restarts, an output muted before reads as unmuted
+    at 0, which is what the player then has. A full listing that leaves an
+    output out (it dropped off the network for a moment) forgets its kept
+    level too; when it returns it reads unmuted at 0 and is muted again with
+    0 kept.
+
+    The lock is a leaf. It is held only to read or change the table, never
+    across a request to the player, and nothing is logged under it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._kept: dict[tuple[str, str], int] = {}     # muted output -> the level it returns to
+        self._listed: dict[tuple[str, str], int] = {}   # each unmuted output's level as last listed or written
+
+    def kept(self, base: str, oid: str) -> Optional[int]:
+        with self._lock:
+            return self._kept.get((base, oid))
+
+    def keep(self, base: str, oid: str, level: int) -> None:
+        with self._lock:
+            self._kept[(base, oid)] = int(level)
+
+    def forget(self, base: str, oid: str) -> Optional[int]:
+        """Ends the output's mute; returns the level it kept, or None."""
+        with self._lock:
+            return self._kept.pop((base, oid), None)
+
+    def forget_except(self, base: str, ids) -> None:
+        """Ends the mute of every output of *base* not in *ids*."""
+        keep = {str(i) for i in ids}
+        with self._lock:
+            for key in [k for k in self._kept if k[0] == base and k[1] not in keep]:
+                del self._kept[key]
+
+    def last_listed(self, base: str, oid: str) -> Optional[int]:
+        with self._lock:
+            return self._listed.get((base, oid))
+
+    def note_written(self, base: str, oid: str, level: int) -> None:
+        """A level PUT to an unmuted output succeeded."""
+        with self._lock:
+            self._listed[(base, oid)] = int(level)
+
+    def overlay(self, base: str, rows, *, complete: bool) -> tuple:
+        """The rows as autostream should see them: a kept output that is
+        still selected reads muted at its kept level; one listed unselected
+        was switched off, which ends its mute. With *complete* (a full
+        listing), an output not listed is forgotten."""
+        out = []
+        with self._lock:
+            for row in rows:
+                key = (base, row.id)
+                kept = self._kept.get(key)
+                if kept is None:
+                    self._listed[key] = row.volume_percent
+                    out.append(row)
+                elif not row.selected:
+                    del self._kept[key]
+                    self._listed[key] = row.volume_percent
+                    out.append(row)
+                else:
+                    out.append(dataclasses.replace(row, muted=True, volume_percent=kept))
+            if complete:
+                listed = {row.id for row in rows}
+                for key in [k for k in self._kept if k[0] == base and k[1] not in listed]:
+                    del self._kept[key]
+        return tuple(out)
+
+    def reset_for_tests(self) -> None:
+        with self._lock:
+            self._kept.clear()
+            self._listed.clear()
+
+
+_MUTED = _MuteEmulation()
+
+
+def reset_mute_emulation_for_tests() -> None:
+    _MUTED.reset_for_tests()
+
+
+def _level(value) -> int:
+    try:
+        return max(0, min(100, int(value)))
+    except Exception:
+        return 0
 
 
 class OwnToneBackend(OwnToneHttpBackendBase):
@@ -166,14 +263,8 @@ class OwnToneBackend(OwnToneHttpBackendBase):
         outputs = payload.get("outputs", [])
         if not isinstance(outputs, list):
             return ListOutputsResult(ok=False, error="Invalid outputs payload", error_code="invalid_payload")
-        return ListOutputsResult(
-            ok=True,
-            outputs=tuple(
-                self._normalize_output_info(output)
-                for output in outputs
-                if isinstance(output, dict)
-            ),
-        )
+        rows = [self._normalize_output_info(output) for output in outputs if isinstance(output, dict)]
+        return ListOutputsResult(ok=True, outputs=_MUTED.overlay(self._base_url, rows, complete=True))
 
     def get_output(self, output_id: str) -> GetOutputResult:
         out_id = str(output_id or "").strip()
@@ -190,9 +281,13 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             return GetOutputResult(ok=False, error=f"Backend returned HTTP {resp.status_code}", error_code="http_error")
         if not isinstance(payload, dict):
             return GetOutputResult(ok=False, error="Invalid output payload", error_code="invalid_payload")
-        return GetOutputResult(ok=True, output=self._normalize_output_info(payload))
+        row = self._normalize_output_info(payload)
+        return GetOutputResult(ok=True, output=_MUTED.overlay(self._base_url, [row], complete=False)[0])
 
     def set_output_enabled(self, output_id: str, enabled: bool) -> ActionResult:
+        if not enabled:
+            # The mute ends with the selection, as on owntone-mini
+            _MUTED.forget(self._base_url, str(output_id))
         return self._put_output_fields(
             output_id,
             {"selected": bool(enabled)},
@@ -201,15 +296,57 @@ class OwnToneBackend(OwnToneHttpBackendBase):
 
     def set_selected_outputs(self, output_ids: list[str]) -> ActionResult:
         ids = [str(output_id).strip() for output_id in (output_ids or []) if str(output_id).strip()]
+        _MUTED.forget_except(self._base_url, ids)
         return self._put_json("/api/outputs/set", {"outputs": ids}, success_statuses=(204,))
 
     def set_output_volume(self, output_id: str, volume_percent: int) -> ActionResult:
-        try:
-            volume = int(volume_percent)
-        except Exception:
-            volume = 0
-        volume = max(0, min(100, volume))
-        return self._put_output_fields(output_id, {"volume": volume})
+        base, oid, volume = self._base_url, str(output_id), _level(volume_percent)
+        if _MUTED.kept(base, oid) is not None:
+            # A level for a muted output is the one it returns to: kept, not sent
+            _MUTED.keep(base, oid, volume)
+            return ActionResult(ok=True)
+        result = self._put_output_fields(output_id, {"volume": volume})
+        if result.ok:
+            _MUTED.note_written(base, oid, volume)
+        return result
+
+    def _level_to_keep(self, output_id: str):
+        """The level a mute keeps: the one last listed or written, else the
+        output's own as read now. (level, None), or (None, failed result)."""
+        level = _MUTED.last_listed(self._base_url, str(output_id))
+        if level is not None:
+            return level, None
+        got = self.get_output(output_id)
+        if not got.ok or got.output is None:
+            return None, ActionResult(ok=False, error=got.error or "Output not found",
+                                      error_code=got.error_code or "not_found")
+        return got.output.volume_percent, None
+
+    def set_output_muted(self, output_id: str, muted: bool) -> ActionResult:
+        """Upstream has no mute: a muted output is set to volume 0 and its
+        level is kept, and unmuting puts that level back."""
+        base, oid = self._base_url, str(output_id)
+        if muted:
+            if _MUTED.kept(base, oid) is not None:
+                return ActionResult(ok=True)
+            level, failed = self._level_to_keep(output_id)
+            if failed is not None:
+                return failed
+            _MUTED.keep(base, oid, level)
+            result = self._put_output_fields(output_id, {"volume": 0})
+            if not result.ok:
+                _MUTED.forget(base, oid)
+            return result
+        level = _MUTED.forget(base, oid)
+        if level is None:
+            return ActionResult(ok=True)
+        result = self._put_output_fields(output_id, {"volume": level})
+        if result.ok:
+            _MUTED.note_written(base, oid, level)
+        else:
+            # Still at 0 on the player, so still muted
+            _MUTED.keep(base, oid, level)
+        return result
 
     def set_output_offset(self, output_id: str, offset_ms: int) -> ActionResult:
         try:
@@ -232,17 +369,35 @@ class OwnToneBackend(OwnToneHttpBackendBase):
     ) -> ActionResult:
         # include_tv belongs to owntone-mini's Apple TV groups; upstream has
         # no such option, so it is accepted and left out of the request.
-        if muted is not None:
-            return self._unsupported_action("muted")
+        base, oid = self._base_url, str(output_id)
+        volume = None if volume_percent is None else _level(volume_percent)
+        was = _MUTED.kept(base, oid)
+        if enabled is False:
+            # The mute ends with the selection
+            _MUTED.forget(base, oid)
+        elif muted is True:
+            level = volume if volume is not None else was
+            if level is None:
+                level, failed = self._level_to_keep(output_id)
+                if failed is not None:
+                    return failed
+            _MUTED.keep(base, oid, level)
+            volume = 0
+        elif muted is False:
+            kept = _MUTED.forget(base, oid)
+            if volume is None:
+                # Unmuting sends the level the output returns to
+                volume = kept
+        elif was is not None and volume is not None:
+            # A level for a muted output is the one it returns to: kept, not sent
+            _MUTED.keep(base, oid, volume)
+            volume = None
+
         payload: dict[str, Any] = {}
         if enabled is not None:
             payload["selected"] = bool(enabled)
-        if volume_percent is not None:
-            try:
-                volume = int(volume_percent)
-            except Exception:
-                volume = 0
-            payload["volume"] = max(0, min(100, volume))
+        if volume is not None:
+            payload["volume"] = volume
         if offset_ms is not None:
             # Upstream OwnTone's /api/outputs handler has no offset_ms field
             # (see can_set_output_offset=False above); silently absorbed here
@@ -260,15 +415,26 @@ class OwnToneBackend(OwnToneHttpBackendBase):
                 mode,
             )
         if not payload:
+            if volume_percent is not None or muted is not None:
+                # Only a kept level moved, or the mute was already as asked
+                return ActionResult(ok=True)
             return ActionResult(ok=False, error="No output fields provided", error_code="missing_fields")
-        return self._put_output_fields(
+        result = self._put_output_fields(
             output_id,
             payload,
             allow_pin_required=bool(enabled),
         )
-
-    def set_output_muted(self, output_id: str, muted: bool) -> ActionResult:
-        return self._unsupported_action("set_output_muted")
+        if not result.ok and enabled is not False and muted is not None:
+            # The player did not take the level, so the table goes back to
+            # what it was
+            if was is None:
+                _MUTED.forget(base, oid)
+            else:
+                _MUTED.keep(base, oid, was)
+        elif result.ok and volume is not None and muted is not True:
+            # A mute made before the next listing keeps this level
+            _MUTED.note_written(base, oid, volume)
+        return result
 
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
         pin_text = str(pin or "").strip()

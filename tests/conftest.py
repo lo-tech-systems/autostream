@@ -263,6 +263,15 @@ def _reset_log_every():
 
 
 @pytest.fixture(autouse=True)
+def _reset_owntone_mute_emulation():
+    """Forget the levels the upstream OwnTone mute emulation keeps."""
+    yield
+    m = _mod("autostream_owntone")
+    if m is not None:
+        m.reset_mute_emulation_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _reset_audio_status_fail_count():
     """Reset the audio-status failure counter after each test."""
     yield

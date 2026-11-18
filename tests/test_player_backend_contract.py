@@ -457,12 +457,13 @@ class TestPutOutputFields:
             assert _mini().update_output("12", enabled=True, volume_percent=30, muted=True).ok is True
         assert put.call_args.kwargs.get("json") == {"selected": True, "volume": 30, "muted": True}
 
-    def test_upstream_has_no_mute_of_its_own(self):
-        with patch("autostream_players._session.put") as put:
-            b = self._b()
-            assert b.set_output_muted("12", True).error_code == "unsupported"
-            assert b.update_output("12", enabled=True, muted=True).error_code == "unsupported"
-        put.assert_not_called()
+    def test_upstream_mutes_by_setting_volume_zero(self):
+        row = _resp(json_data={"id": "12", "selected": True, "volume": 35})
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players._session.put", return_value=r) as put, \
+                patch("autostream_players._session.get", return_value=row):
+            assert self._b().set_output_muted("12", True).ok is True
+        assert put.call_args.kwargs.get("json") == {"volume": 0}
 
 
 # ---------------------------------------------------------------------------
