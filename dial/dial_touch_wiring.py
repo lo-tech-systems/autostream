@@ -56,6 +56,7 @@ class TouchWiring:
         self._confirm = confirm_presence
         self._overlay_state = overlay_state
         self._source = None
+        self._zone_actions = dict(self._zone_action_pairs())
 
     def attach(self, source) -> None:
         """Give the wiring the touch source it reports back to. Called before
@@ -126,74 +127,73 @@ class TouchWiring:
         self._display.set_overlay(self._overlay_state(visible=True))
 
     def on_zone_tap(self, zone, index) -> None:
-        # NAME opens the appliance selector (from either the main, repeat
-        # or EQ screen); the LIST_* zones act on whichever list-chassis
-        # screen (selector, picker or outputs) is open; DOTS cycles the
-        # pages (main -> repeat -> eq -> main, skipping one with nothing to
-        # show — closing back to main also reveals the main screen's volume
-        # overlay on return — see display.cycle_pages()); REPEAT_* act on
-        # the repeat screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own
-        # bars; IDLE_REPLAY opens the replay picker; any bell (BELL_ZONES) opens the
-        # warnings card; IDLE_WIFI opens the idle screen's read-only info
-        # page; any card button (CARD_BUTTON_ZONES) goes to the display's
-        # card dispatch; OUTPUTS
-        # opens the outputs list; OUTPUT_* act on the per-output detail
-        # page; ARTWORK hides the main screen's own bands for a few
-        # seconds — see dial_touch.py's SURFACES paragraph for how a press
-        # ever reaches one of these zones in the first place.
         self._confirm()
-        display = self._display
-        display.notify_touch_activity()
-        if zone == TouchZone.NAME:
-            display.open_selector()
-        elif zone == TouchZone.LIST_BACK:
-            display.close_list()
-        elif zone == TouchZone.LIST_DOWN:
-            display.list_page(+1)
-        elif zone == TouchZone.LIST_UP:
-            display.list_page(-1)
-        elif zone == TouchZone.LIST_ROW:
-            display.list_row_tap(index)
-        elif zone == TouchZone.DOTS:
-            display.cycle_pages()
-        elif zone == TouchZone.EQ_BASS_DOWN:
-            display.eq_step("bass", -1)
-        elif zone == TouchZone.EQ_BASS_UP:
-            display.eq_step("bass", +1)
-        elif zone == TouchZone.EQ_TREBLE_DOWN:
-            display.eq_step("treble", -1)
-        elif zone == TouchZone.EQ_TREBLE_UP:
-            display.eq_step("treble", +1)
-        elif zone == TouchZone.REPEAT_PLAY:
-            display.repeat_toggle_tap()
-        elif zone == TouchZone.REPEAT_START:
-            display.repeat_start_tap()
-        elif zone == TouchZone.REPEAT_STOP:
-            display.repeat_stop_tap()
-        elif zone == TouchZone.IDLE_REPLAY:
-            display.open_picker()
-        elif zone in BELL_ZONES:
-            display.open_warnings()
-        elif zone == TouchZone.IDLE_WIFI:
-            display.open_info()
-        elif zone in CARD_BUTTON_ZONES:
-            display.card_button_tap(zone)
-        elif zone == TouchZone.OUTPUTS:
-            display.open_outputs()
-        elif zone == TouchZone.OUTPUT_BACK:
-            display.close_list()
-        elif zone == TouchZone.OUTPUT_TOGGLE:
-            display.output_toggle_tap()
-        elif zone == TouchZone.OUTPUT_UP:
-            display.output_volume_tap(+self._step())
-        elif zone == TouchZone.OUTPUT_DOWN:
-            display.output_volume_tap(-self._step())
-        elif zone == TouchZone.ARTWORK:
-            display.hide_controls()
-            # The session must know the controls are gone: with the
-            # controls revealed by touch nothing else would tell it, and a
-            # finger must never arm against bands that are no longer drawn.
-            self._source.overlay_hidden()
+        self._display.notify_touch_activity()
+        action = self._zone_actions.get(zone)
+        if action is not None:
+            action(zone, index)
+
+    def _zone_action_pairs(self) -> list:
+        """The (zone, action) pairs behind on_zone_tap; each action takes
+        (zone, index) and finds its display method when it runs.
+
+        NAME opens the appliance selector (from either the main, repeat or
+        EQ screen); the LIST_* zones act on whichever list-chassis screen
+        (selector, picker or outputs) is open; DOTS cycles the pages
+        (main -> repeat -> eq -> main, skipping one with nothing to show;
+        closing back to main also reveals the main screen's volume overlay
+        on return, see display.cycle_pages()); REPEAT_* act on the repeat
+        screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own bars;
+        IDLE_REPLAY opens the replay picker; any bell (BELL_ZONES) opens the
+        warnings card; IDLE_WIFI opens the idle screen's read-only info
+        page; any card button (CARD_BUTTON_ZONES) goes to the display's
+        card dispatch; OUTPUTS opens the outputs list; OUTPUT_* act on the
+        per-output detail page; ARTWORK hides the main screen's own bands
+        for a few seconds. See dial_touch.py's SURFACES paragraph for how a
+        press ever reaches one of these zones in the first place.
+
+        A zone appears once. The table is built with dict(), which keeps the
+        last of a duplicate, so a repeated zone is a mistake to remove, not
+        a precedence rule.
+        """
+        def display():
+            return self._display
+
+        pairs = [
+            (TouchZone.NAME, lambda zone, index: display().open_selector()),
+            (TouchZone.LIST_BACK, lambda zone, index: display().close_list()),
+            (TouchZone.LIST_DOWN, lambda zone, index: display().list_page(+1)),
+            (TouchZone.LIST_UP, lambda zone, index: display().list_page(-1)),
+            (TouchZone.LIST_ROW, lambda zone, index: display().list_row_tap(index)),
+            (TouchZone.DOTS, lambda zone, index: display().cycle_pages()),
+            (TouchZone.EQ_BASS_DOWN, lambda zone, index: display().eq_step("bass", -1)),
+            (TouchZone.EQ_BASS_UP, lambda zone, index: display().eq_step("bass", +1)),
+            (TouchZone.EQ_TREBLE_DOWN, lambda zone, index: display().eq_step("treble", -1)),
+            (TouchZone.EQ_TREBLE_UP, lambda zone, index: display().eq_step("treble", +1)),
+            (TouchZone.REPEAT_PLAY, lambda zone, index: display().repeat_toggle_tap()),
+            (TouchZone.REPEAT_START, lambda zone, index: display().repeat_start_tap()),
+            (TouchZone.REPEAT_STOP, lambda zone, index: display().repeat_stop_tap()),
+            (TouchZone.IDLE_REPLAY, lambda zone, index: display().open_picker()),
+        ]
+        pairs += [(z, lambda zone, index: display().open_warnings()) for z in BELL_ZONES]
+        pairs.append((TouchZone.IDLE_WIFI, lambda zone, index: display().open_info()))
+        pairs += [(z, lambda zone, index: display().card_button_tap(zone)) for z in CARD_BUTTON_ZONES]
+        pairs += [
+            (TouchZone.OUTPUTS, lambda zone, index: display().open_outputs()),
+            (TouchZone.OUTPUT_BACK, lambda zone, index: display().close_list()),
+            (TouchZone.OUTPUT_TOGGLE, lambda zone, index: display().output_toggle_tap()),
+            (TouchZone.OUTPUT_UP, lambda zone, index: display().output_volume_tap(+self._step())),
+            (TouchZone.OUTPUT_DOWN, lambda zone, index: display().output_volume_tap(-self._step())),
+            (TouchZone.ARTWORK, self._hide_controls),
+        ]
+        return pairs
+
+    def _hide_controls(self, zone, index) -> None:
+        self._display.hide_controls()
+        # The session must know the controls are gone: with the
+        # controls revealed by touch nothing else would tell it, and a
+        # finger must never arm against bands that are no longer drawn.
+        self._source.overlay_hidden()
 
 
 def build_touch_source(cfg, display, core, confirm_presence=None, step_percent=None):
