@@ -491,7 +491,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_live_output_eq_status=lambda: scenario.eq_status,
              update_output=update_output,
              notify_state_changed=_quiet)
-    setattrs(models, **{k: v for k, v in shared.items() if k != "get_app_version"},
+    setattrs(models, **{k: v for k, v in shared.items() if k not in ("get_app_version", "list_outputs")},
              get_app_version=lambda: FIXED_APP_VERSION,
              get_setting=get_setting,
              get_system_hostname=lambda: "golden.local",
@@ -522,6 +522,8 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     for name in ("list_outputs", "get_setting", "update_output", "set_output_enabled",
                  "submit_output_pin"):
         monkeypatch.setattr(player_service, name, _unpatched(rec, name))
+    # The output authority makes its writes here; the case records them.
+    monkeypatch.setattr(player_service, "update_output", update_output)
     return rec
 
 

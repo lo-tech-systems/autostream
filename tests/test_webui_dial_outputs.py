@@ -16,7 +16,7 @@ Covers:
     volume passes it through (clamped by the sanitiser); disabling passes
     selected False untouched; missing id -> 400 missing_output_id; a body
     lacking selected -> 400 invalid_request_body; per-output offset/mode
-    derivation; initiated_by is always "user"; the mutation's own result
+    derivation; the requester is always the dial; the change's own result
     dict is returned as-is with appliance_id attached.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ if _core not in sys.path:
 
 from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
-from autostream_players import ListOutputsResult, OutputInfo
+from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 from fake_store import FakeStore
 from autostream_webui_api import (
     send_dial_outputs_post_json,
@@ -163,7 +163,7 @@ def _invoke_set(
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
-        patch("autostream_webui_api.apply_output_mutation", mutation_mock),
+        patch("autostream_webui_api.submit_output_change", mutation_mock),
         patch("autostream_player_service.config_airplay_mode_to_backend", mode_mock),
     ):
         send_dial_outputs_set_post_json(handler, state, json_obj)
@@ -400,30 +400,30 @@ class TestOutputsSetValidation:
         assert body == {"ok": False, "error": "invalid_request_body"}
         mutation.assert_not_called()
 
-    def test_op_pin_with_digits_reaches_the_mutation_with_the_dial_as_requester(self):
+    def test_op_pin_with_digits_reaches_the_change_with_the_dial_as_pin_requester(self):
         for extra in ({}, {"pin_capable": True}):
             code, body, mutation, mode_mock = _invoke_set(
                 {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "1234", **extra},
             )
             assert code == 200
             args, kwargs = mutation.call_args
-            assert args[2] == {"id": "1", "op": "pin", "pin": "1234"}
-            assert kwargs["requester"] == f"dial:{DIAL_ID}"
+            assert args[0] == {"id": "1", "op": "pin", "pin": "1234"}
+            assert kwargs["pin_requester"] == f"dial:{DIAL_ID}"
 
-    def test_a_plain_enable_has_a_requester_only_when_pin_capable(self):
+    def test_a_plain_enable_has_a_pin_requester_only_when_pin_capable(self):
         _, _, mutation, _ = _invoke_set({"dial_id": DIAL_ID, "id": "1", "selected": True})
-        assert mutation.call_args.kwargs["requester"] is None
+        assert mutation.call_args.kwargs["pin_requester"] is None
         _, _, mutation, _ = _invoke_set(
             {"dial_id": DIAL_ID, "id": "1", "selected": True, "pin_capable": True},
         )
-        assert mutation.call_args.kwargs["requester"] == f"dial:{DIAL_ID}"
+        assert mutation.call_args.kwargs["pin_requester"] == f"dial:{DIAL_ID}"
 
     def test_pin_capable_must_be_the_bool_true(self):
         for value in ("true", 1, "yes", None, [True]):
             _, _, mutation, _ = _invoke_set(
                 {"dial_id": DIAL_ID, "id": "1", "selected": True, "pin_capable": value},
             )
-            assert mutation.call_args.kwargs["requester"] is None, value
+            assert mutation.call_args.kwargs["pin_requester"] is None, value
 
     def test_a_malformed_pin_is_400_invalid_request_body(self):
         hostile = ["123", "123456789", "12a4", "１２３４", " 1234", "1234\n",
@@ -468,8 +468,8 @@ class TestOutputsSetValidation:
             parsed=_parsed(volume_percent=63),
         )
         args, _ = mutation.call_args
-        assert args[2]["volume"] == 63
-        assert args[2]["selected"] is True and args[2]["pin"] == "1234"
+        assert args[0]["volume"] == 63
+        assert args[0]["selected"] is True and args[0]["pin"] == "1234"
 
     def test_pin_then_selected_keeps_an_explicit_volume(self):
         _, _, mutation, _ = _invoke_set(
@@ -477,15 +477,15 @@ class TestOutputsSetValidation:
              "volume": 30},
             parsed=_parsed(volume_percent=63),
         )
-        assert mutation.call_args.args[2]["volume"] == 30
+        assert mutation.call_args.args[0]["volume"] == 30
 
     def test_older_dial_bodies_get_the_same_call_as_before(self):
         _, body, mutation, _ = _invoke_set(
             {"dial_id": DIAL_ID, "id": "1", "selected": False},
         )
         args, kwargs = mutation.call_args
-        assert args[2]["selected"] is False and "op" not in args[2] and "pin" not in args[2]
-        assert kwargs["requester"] is None
+        assert args[0]["selected"] is False and "op" not in args[0] and "pin" not in args[0]
+        assert kwargs["pin_requester"] is None
         assert body == {"ok": True, "id": "1", "appliance_id": TEST_APPLIANCE_ID}
 
     def test_the_real_mutation_never_logs_the_pin(self, caplog):
@@ -497,10 +497,11 @@ class TestOutputsSetValidation:
             patch("autostream_webui_api.dial_speaks_v2", return_value=True),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("autostream_webui_api._config_snapshot", return_value=_parsed()),
-            patch("autostream_appliance_models.submit_output_pin") as submit,
+            patch("autostream_player_service.submit_output_pin") as submit,
             caplog.at_level(_logging.DEBUG),
         ):
-            submit.return_value = MagicMock(ok=False, error_code="pin_invalid", message="bad")
+            FakeStore().outputs([FakeStore.output_row("1", "Kitchen", selected=False)])
+            submit.return_value = ActionResult(ok=False, error_code="pin_invalid", error="bad")
             send_dial_outputs_set_post_json(
                 handler, state, {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": "918273"},
             )
@@ -530,8 +531,8 @@ class TestOutputsSetMutation:
         assert code == 200
         mutation.assert_called_once()
         args, kwargs = mutation.call_args
-        assert args[2]["volume"] == 77
-        assert args[2]["selected"] is True
+        assert args[0]["volume"] == 77
+        assert args[0]["selected"] is True
 
     def test_enable_with_volume_passes_through_clamped(self):
         code, body, mutation, mode_mock = _invoke_set(
@@ -539,20 +540,20 @@ class TestOutputsSetMutation:
             parsed=_parsed(volume_percent=77),
         )
         args, kwargs = mutation.call_args
-        assert args[2]["volume"] == 100  # sanitize_output_body clamps to [0, 100]
+        assert args[0]["volume"] == 100  # sanitize_output_body clamps to [0, 100]
 
     def test_disable_does_not_apply_the_configured_default(self):
         """The sender's own default-volume fill only applies to an enable
         with no volume in the raw body; a disable is untouched by it (the
         sanitiser's own unconditional volume default is harmless here since
-        apply_output_mutation never reads volume for a disable)."""
+        the output change never reads volume for a disable)."""
         code, body, mutation, mode_mock = _invoke_set(
             {"dial_id": DIAL_ID, "id": "1", "selected": False},
             parsed=_parsed(volume_percent=77),
         )
         args, kwargs = mutation.call_args
-        assert args[2]["selected"] is False
-        assert args[2].get("volume") != 77
+        assert args[0]["selected"] is False
+        assert args[0].get("volume") != 77
 
     def test_offset_and_mode_derived_per_output_id(self):
         code, body, mutation, mode_mock = _invoke_set(
@@ -570,10 +571,11 @@ class TestOutputsSetMutation:
         assert kwargs["offset_ms"] is None
         mode_mock.assert_called_once_with(DEFAULT_AIRPLAY_MODE)
 
-    def test_initiated_by_is_always_user(self):
-        code, body, mutation, mode_mock = _invoke_set({"dial_id": DIAL_ID, "id": "1", "selected": False})
-        args, kwargs = mutation.call_args
-        assert kwargs["initiated_by"] == "user"
+    def test_the_requester_is_always_the_dial(self):
+        for extra in ({}, {"pin_capable": True}):
+            _, _, mutation, _ = _invoke_set(
+                {"dial_id": DIAL_ID, "id": "1", "selected": False, **extra})
+            assert mutation.call_args.kwargs["requester"] == f"dial:{DIAL_ID}"
 
     def test_ok_result_returned_as_is_with_appliance_id(self):
         code, body, mutation, mode_mock = _invoke_set(

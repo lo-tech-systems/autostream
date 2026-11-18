@@ -90,6 +90,8 @@ def _row(name, args, required, origins, wait=0.0, limit=None) -> Row:
 
 def _output_fields() -> dict:
     return {
+        # Echoed in a PIN prompt's reply; never used to find the speaker.
+        "name": v.optional(v.text(error=_BAD_BODY, max_len=256, allow_empty=True)),
         "volume": v.optional(v.integer(0, 100, error=_BAD_BODY, clamp=True)),
         "offset_ms": v.optional(v.integer(-2000, 2000, error=_BAD_BODY, clamp=True)),
         "mode": v.optional(v.text(error=_BAD_BODY, max_len=64)),

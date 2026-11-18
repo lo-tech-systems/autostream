@@ -45,7 +45,7 @@ from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_appliance_models import (
     apply_eq_field,
     apply_eq_reset,
-    apply_output_mutation,
+    submit_output_change,
     build_equaliser_state,
     build_home_state,
     sanitize_output_body,
@@ -776,7 +776,6 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
         try:
             cfg = locked_load_config(state.config_path)
             parsed = parse_config(cfg)
-            base_url = parsed.owntone.base_url.rstrip("/")
             offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
             offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
             mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE)
@@ -785,9 +784,9 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
             logging.error("gateway output (bound): config error: %s", e)
             send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
-        result = apply_output_mutation(
-            base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
-        requester=REQUESTER_WEBUI,
+        result = submit_output_change(
+            sanitized, requester="webui", pin_requester=REQUESTER_WEBUI,
+            offset_ms=offset_ms, mode=mode,
         )
         send_json(handler, 200, result)
         return

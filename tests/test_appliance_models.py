@@ -23,7 +23,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_appliance_models as models
-from autostream_players import OutputInfo
+from autostream_players import ActionResult, OutputInfo
 from fake_store import FakeStore, fake_outputs
 
 
@@ -770,7 +770,7 @@ from fake_store import fake_levels, fake_playback, fake_repeat, fake_session
 
 
 def _result(ok: bool, error_code: str = "", message: str = ""):
-    return SimpleNamespace(ok=ok, error_code=error_code, message=message)
+    return ActionResult(ok=ok, error_code=error_code, error=message)
 
 
 _BAD_PINS = [
@@ -841,22 +841,18 @@ class TestPinClaimInList:
 
 
 class TestPinMutation:
-    _BASE = "http://x"
-
     def _run(self, body, *, requester=None, pin_result=None, update_result=None):
-        with patch("autostream_appliance_models.submit_output_pin",
-                   return_value=pin_result or _result(True)) as pin_mock, \
-             patch("autostream_appliance_models.update_output",
-                   return_value=update_result or _result(True)) as upd_mock, \
-             patch("autostream_appliance_models._resolve_output_info",
-                   return_value=("Speaker", False)), \
-             patch("autostream_appliance_models._update_cached_selected"), \
-             patch("autostream_appliance_models.request_nowplaying_republish"), \
-             patch("autostream_appliance_models.clear_user_silence_latch"), \
-             patch("autostream_appliance_models.note_user_output_action"):
-            res = models.apply_output_mutation(
-                self._BASE, body.get("id", "o1"), body, initiated_by="user",
-                requester=requester)
+        """Submit *body* as the Web UI; *requester* is the pairing identity
+        that may enter a PIN (None when the caller cannot)."""
+        import autostream_player_service as ps
+        FakeStore().outputs([FakeStore.output_row(i, "Speaker " + i, selected=False, volume_percent=0)
+                             for i in ("o1", "o2", "o3")])
+        pin_mock = MagicMock(return_value=pin_result or _result(True))
+        upd_mock = MagicMock(return_value=update_result or _result(True))
+        with patch.object(ps, "submit_output_pin", pin_mock), \
+             patch.object(ps, "update_output", upd_mock):
+            res = models.submit_output_change(
+                body, requester="webui", pin_requester=requester)
         return res, pin_mock, upd_mock
 
     def test_pin_required_records_the_claim_for_a_requester_and_not_for_none(self):

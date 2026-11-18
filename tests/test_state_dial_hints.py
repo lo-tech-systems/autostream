@@ -229,3 +229,74 @@ def test_a_cycle_that_raises_still_closes_its_batch_and_delivers_one_change(tmp_
     assert state.store()._batches == {}
     batch_changes = [c for c in seen if c.batch]
     assert len(batch_changes) == 1
+
+
+# ---------------------------------------------------------------------------
+# The outputs part: the speaker list, the volumes and the mutes
+# ---------------------------------------------------------------------------
+
+class OutputRig:
+    def __init__(self, rig):
+        from autostream_state.outputs import get_authority
+        from output_fakes import FakeBackend, row
+
+        self.rig = rig
+        self.authority = get_authority()
+        self.authority.start(FakeBackend(self.authority))
+        self.row = row
+        rig.fake.outputs([row("1", "Speaker A"), row("2", "Speaker B")])
+        self.mark = 0
+
+    @property
+    def calls(self):
+        return self.rig.calls[self.mark:]
+
+    def forget(self):
+        """Count only the calls made from here on."""
+        self.mark = len(self.rig.calls)
+
+
+@pytest.fixture
+def outputs(rig):
+    return OutputRig(rig)
+
+
+def test_the_first_reading_of_the_outputs_is_the_baseline(outputs):
+    assert outputs.calls == []
+
+
+def test_a_read_that_changes_nothing_makes_no_call(outputs):
+    outputs.rig.fake.outputs([outputs.row("1", "Speaker A"), outputs.row("2", "Speaker B")])
+    assert outputs.calls == []
+
+
+def test_a_read_that_moves_the_list_hints_everyone(outputs):
+    outputs.rig.fake.outputs([outputs.row("1", "Speaker A", selected=True), outputs.row("2", "Speaker B")])
+    assert outputs.calls == [(("outputs",), None)]
+
+
+def test_a_dial_s_own_switch_on_hints_the_list_then_the_volume_and_not_that_dial(outputs):
+    outputs.authority.select("1", state.Origin.USER, volume=30, requester="dial:abc-1").outcome.result(1)
+    # The write that follows marks the speaker as starting, which every dial is told.
+    assert outputs.calls == [(("outputs",), "abc-1"), (("volume",), "abc-1"), (("outputs",), None)]
+
+
+def test_a_volume_change_alone_hints_only_the_volume(outputs):
+    outputs.rig.fake.outputs([outputs.row("1", "Speaker A", selected=True, volume_percent=20),
+                              outputs.row("2", "Speaker B")])
+    outputs.forget()
+    outputs.authority.set_volume("1", 45, state.Origin.USER, requester="dial:abc-1")
+    assert outputs.calls == [(("volume",), "abc-1")]
+
+
+def test_a_mute_alone_hints_only_the_mute(outputs):
+    outputs.rig.fake.outputs([outputs.row("1", "Speaker A", selected=True, volume_percent=20),
+                              outputs.row("2", "Speaker B")])
+    outputs.forget()
+    outputs.authority.mute_all(state.Origin.USER, requester="dial:abc-1")
+    assert outputs.calls == [(("mute",), "abc-1")]
+
+
+def test_a_browser_s_change_excludes_nobody(outputs):
+    outputs.authority.select("2", state.Origin.USER, volume=10, requester="webui")
+    assert outputs.calls and {except_dial for _, except_dial in outputs.calls} == {None}

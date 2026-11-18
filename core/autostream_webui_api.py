@@ -138,7 +138,7 @@ from autostream_appliance_models import (
     apply_eq_field,
     apply_eq_fields,
     apply_eq_reset,
-    apply_output_mutation,
+    submit_output_change,
     bass_treble_from_eq,
     build_equaliser_state,
     build_home_state,
@@ -1381,7 +1381,6 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
     requester = dial_requester(dial_id) if pin_capable else None
     try:
         parsed = _config_snapshot(state)
-        base_url = parsed.owntone.base_url.rstrip("/")
         out_id = sanitized["id"]
         offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
         offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
@@ -1394,9 +1393,9 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
         logging.warning("dial outputs: config load failed: %s", e)
         send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
-    result = apply_output_mutation(
-        base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
-        requester=requester,
+    result = submit_output_change(
+        sanitized, requester=dial_requester(dial_id), pin_requester=requester,
+        offset_ms=offset_ms, mode=mode,
     )
     result["appliance_id"] = get_appliance_id()
     send_json(handler, 200, result)
@@ -1681,7 +1680,6 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
 
     try:
         parsed = _config_snapshot(state)
-        base_url = parsed.owntone.base_url.rstrip("/")
         from autostream_player_service import config_airplay_mode_to_backend
         from autostream_config import DEFAULT_AIRPLAY_MODE
         offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
@@ -1701,9 +1699,9 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
         send_json(handler, 400, {"ok": False, "error": sanitize_error})
         return
 
-    result = apply_output_mutation(
-        base_url, out_id, sanitized, offset_ms=offset_ms, mode=mode, initiated_by="user",
-        requester=REQUESTER_WEBUI,
+    result = submit_output_change(
+        sanitized, requester="peer", pin_requester=REQUESTER_WEBUI,
+        offset_ms=offset_ms, mode=mode,
     )
     send_json(handler, 200, result)
 

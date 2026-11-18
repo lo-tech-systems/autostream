@@ -316,6 +316,22 @@ def user_silence_latch_active() -> bool:
         return _user_silence_latch
 
 
+def _bind_intent_handlers() -> None:
+    """Import the modules that handle intents (each binds its rows when
+    imported) and hand the output handler the two records above, which it
+    cannot import."""
+    import autostream_output_intents
+
+    autostream_output_intents.bind_latch(
+        note=note_user_output_action,
+        set_=set_user_silence_latch,
+        clear=clear_user_silence_latch,
+    )
+
+
+_bind_intent_handlers()
+
+
 # ── OwnTone-restart reconcile + hang-watchdog status cache ──────────────────
 # Exposed via /api/status (autostream_webui_api.py) for observability; never
 # authoritative for coordinator decisions (that state lives on the tracker
@@ -4306,6 +4322,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     )
 
     autostream_dial_push.install_state_hints(autostream_state.store())
+    _bind_intent_handlers()
     _start_output_authority(cfg)
 
     # Optionally start the web UI.  Let any startup failure propagate so the

@@ -32,7 +32,7 @@ owntone owntone_mini pin_pairing playback_stats player_service players rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliances dial_push dial_warnings log_policy output_usage repeat session".split()
+_L2 = "align announce appliances dial_push dial_warnings log_policy output_intents output_usage repeat session".split()
 _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
@@ -64,6 +64,7 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_audio_monitor", "autostream_selfheal"),
     ("autostream_selfheal", "autostream_session"),
     ("autostream_live_config", "autostream_session"),
+    ("autostream_output_intents", "autostream_output_usage"),
 })
 
 # What an L3 module may import, besides the standard library, other L3 modules
@@ -332,14 +333,10 @@ def l2_cycle(edges) -> list[str] | None:
 
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_appliance_gateway', 'autostream_core', 'get_live_output_eq_status'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'clear_user_silence_latch'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_live_output_eq_status'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'note_user_output_action'),
-    ('C', 'autostream_appliance_models', 'autostream_runtime', 'request_nowplaying_republish'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_auto_trim'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_eq'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_gain'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'set_user_silence_latch'),
     ('A', 'autostream_auth', 'autostream_webui_common', 'send_html'),
     ('A', 'autostream_dial_push', 'autostream_webui_dials', 'enqueue_fanout'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
@@ -384,14 +381,9 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('C', 'autostream_appliance_models', 'autostream_eq_bands', 'OUTPUT_PEQ_BANDS'),
     ('C', 'autostream_appliance_models', 'autostream_mute_state', '*'),
     ('C', 'autostream_appliance_models', 'autostream_output_usage', 'annotate_outputs'),
-    ('C', 'autostream_appliance_models', 'autostream_output_usage', 'usage_for_output'),
     ('C', 'autostream_appliance_models', 'autostream_pin_pairing', '*'),
     ('C', 'autostream_appliance_models', 'autostream_player_service', 'config_airplay_mode_to_backend'),
     ('C', 'autostream_appliance_models', 'autostream_player_service', 'get_setting'),
-    ('C', 'autostream_appliance_models', 'autostream_player_service', 'list_outputs'),
-    ('C', 'autostream_appliance_models', 'autostream_player_service', 'set_output_enabled'),
-    ('C', 'autostream_appliance_models', 'autostream_player_service', 'submit_output_pin'),
-    ('C', 'autostream_appliance_models', 'autostream_player_service', 'update_output'),
     ('C', 'autostream_appliance_models', 'autostream_players', 'SETTING_START_BUFFER_MS'),
     ('C', 'autostream_appliance_models', 'autostream_players', 'SETTING_START_BUFFER_MS_DEFAULT'),
     ('C', 'autostream_appliance_models', 'autostream_settings', 'SettingsStore'),
@@ -475,7 +467,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('E', 'autostream_dial_push', 'autostream_webui_dials', 'enqueue_fanout'),
     ('E', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
     ('E', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
-    ('F', 'autostream_appliance_models', '.claim()', '*'),
 })
 
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import math
-import threading
 import time
 from typing import Optional
 
@@ -23,109 +22,24 @@ from autostream_config import (
     save_config,
 )
 from autostream_core import (
-    clear_user_silence_latch,
     get_live_output_eq_status,
-    note_user_output_action,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
-    set_user_silence_latch,
 )
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_dial_push import notify_state_changed
-from autostream_runtime import request_nowplaying_republish
-from autostream_state import active_track, store
+from autostream_intents import Intent, submit
+from autostream_state import Origin, active_track, store
 from autostream_player_service import (
     config_airplay_mode_to_backend,
     get_setting,
-    list_outputs,
-    set_output_enabled,
-    submit_output_pin,
-    update_output,
 )
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_rpi import get_appliance_id
 from autostream_settings_schema import register_field
 from autostream_sysutils import get_system_hostname
 from autostream_webui_common import get_app_version, locked_load_config
-
-# ---------------------------------------------------------------------------
-# Output info cache (server-side; never populated from browser input)
-#
-# Keyed by owntone_base_url to avoid cross-appliance contamination.
-# Each entry maps output id → (display_name, locally_selected).
-# ---------------------------------------------------------------------------
-
-# url -> {out_id -> (name, selected)}
-_OUTPUT_INFO_CACHE: dict[str, dict[str, tuple[str, bool]]] = {}
-# url -> monotonic timestamp of last successful list_outputs
-_OUTPUT_INFO_CACHE_TIME: dict[str, float] = {}
-_OUTPUT_INFO_CACHE_TTL: float = 30.0
-_output_info_cache_lock = threading.Lock()
-
-# Keep old names as aliases so existing tests that reset these still work.
-_OUTPUT_NAME_CACHE: dict[str, str] = {}
-_OUTPUT_NAME_CACHE_TIME: float = 0.0
-
-
-def _refresh_output_info_cache(owntone_base_url: str) -> dict[str, tuple[str, bool]]:
-    """Call list_outputs and update the per-URL cache.  Returns the new mapping."""
-    try:
-        lr = list_outputs(owntone_base_url, timeout=1.0)
-    except Exception:
-        logging.debug("_refresh_output_info_cache: list_outputs failed for %s", owntone_base_url)
-        return {}
-    if not lr.ok:
-        return {}
-    mapping: dict[str, tuple[str, bool]] = {
-        str(o.id): (str(o.name or ""), bool(o.selected))
-        for o in lr.outputs
-    }
-    url = owntone_base_url.rstrip("/")
-    with _output_info_cache_lock:
-        _OUTPUT_INFO_CACHE[url] = mapping
-        _OUTPUT_INFO_CACHE_TIME[url] = time.monotonic()
-    return mapping
-
-
-def _update_cached_selected(owntone_base_url: str, out_id: str, selected: bool) -> None:
-    """Update the locally_selected flag for one output in the per-URL cache in-place."""
-    url = owntone_base_url.rstrip("/")
-    with _output_info_cache_lock:
-        mapping = _OUTPUT_INFO_CACHE.get(url)
-        if mapping and out_id in mapping:
-            name, _ = mapping[out_id]
-            mapping[out_id] = (name, selected)
-
-
-def _invalidate_output_info_cache(owntone_base_url: str) -> None:
-    """Expire the per-URL cache so the next call refreshes from OwnTone."""
-    url = owntone_base_url.rstrip("/")
-    with _output_info_cache_lock:
-        _OUTPUT_INFO_CACHE_TIME.pop(url, None)
-
-
-def _resolve_output_info(owntone_base_url: str, out_id: str) -> tuple[str, bool]:
-    """Return (display_name, locally_selected) for *out_id* using a per-URL cache.
-
-    Browser-supplied names are never used here. If the cache is fresh but does
-    not contain *out_id* (newly appeared output), a single refresh is done before
-    failing open so occupancy is enforced for new IDs too. Returns ("", False)
-    when resolution fails; callers must treat that as fail-open.
-    """
-    url = owntone_base_url.rstrip("/")
-    now = time.monotonic()
-    with _output_info_cache_lock:
-        cache_time = _OUTPUT_INFO_CACHE_TIME.get(url, 0.0)
-        if now - cache_time < _OUTPUT_INFO_CACHE_TTL:
-            mapping = _OUTPUT_INFO_CACHE.get(url, {})
-            if out_id in mapping:
-                return mapping[out_id]
-            # Cache is fresh but ID absent — fall through to refresh once.
-
-    fresh = _refresh_output_info_cache(owntone_base_url)
-    return fresh.get(out_id, ("", False))
-
 
 # ---------------------------------------------------------------------------
 # Output-list builder (shared between Home page and federation)
@@ -732,258 +646,49 @@ def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
     return sanitized, None
 
 
-def apply_output_mutation(
-    owntone_base_url: str,
-    out_id: str,
+def submit_output_change(
     body: dict,
     *,
+    requester: str,
+    pin_requester: Optional[str],
     offset_ms: Optional[int] = None,
     mode: Optional[str] = None,
-    output_name: str = "",
-    initiated_by: str,
-    requester: Optional[str] = None,
+    origin: Origin = Origin.USER,
 ) -> dict:
-    """Apply an output toggle/volume change or PIN submission.
+    """Switch a speaker on or off, change its volume, or submit its PIN, and
+    return the reply body the output routes send.
 
-    *body* must contain at least {"id": ..., "op": ...} or {"id": ..., "selected": bool}.
-    *offset_ms* and *mode* come from the per-output config (not from the browser body).
-    *output_name* is optional; when provided (or resolved internally) the occupancy
-    cache is checked before enabling. If the name cannot be resolved the check is
-    skipped (fail-open) and a debug message is logged.
-
-    initiated_by: "user" or "system". Supplied by trusted internal code only.
-        Selects whether the per-user-action bookkeeping below runs:
-
-        - note_user_output_action() is called at function entry whenever
-          initiated_by == "user", regardless of the op (including "pin") and
-          regardless of whether the mutation goes on to succeed or fail. This
-          mirrors the pre-centralisation local handler's behaviour, which
-          noted the action unconditionally before attempting the mutation; a
-          false-conservative widening of the coordinator's reconcile
-          suppression window is harmless, a missed marker is not.
-        - The user-chosen-silence latch is only touched for non-pin ops that
-          carry a "selected" field, and only once the mutation has
-          succeeded: selected=True clears the latch; selected=False re-fetches
-          the live output list and sets the latch iff zero outputs remain
-          selected. A failed re-fetch leaves the latch untouched (fail open).
-
-        System-initiated calls (initiated_by="system", e.g. the coordinator's
-        own auto-select/reconcile paths) perform none of the above.
-
-    requester: the identity that can enter a PIN for this mutation
-        (pairing.REQUESTER_WEBUI or pairing.dial_requester(...)); None when
-        the caller cannot. Supplied by trusted route code only. A PIN
-        attempt without one is counted against the WebUI's budget; an enable
-        that needs a PIN records the requester as the one pairing the output.
-
-    A "pin" op that also carries "selected" enables the output (using
-    "volume") straight after the PIN is accepted, in the same call.
-
-    Raises ValueError if initiated_by is not "user" or "system".
-
-    Returns a result dict with keys: ok, id, and optional
-    error/pin_required/pin_invalid/retry_after_s (error is "invalid_pin" for a
-    PIN that is not 4 to 8 digits and "rate_limited" when too many PINs were
-    tried, with retry_after_s the seconds to wait; error is "encoder_capacity"
-    when the appliance's buffered-encode admission control declines the enable).
-
-    A change that went through is hinted to the dials.
+    *body* is {"id", "selected"[, "volume"]}, or {"id", "op": "pin", "pin"[,
+    "selected", "volume"]}; *offset_ms* and *mode* come from the per-output
+    configuration, never from the browser. *requester* names the caller for
+    the intent path ("webui", "dial:<uuid>", "peer"); *pin_requester* is the
+    identity that can enter a PIN for the speaker (None when the caller
+    cannot). A pin op that also carries "selected" switches the speaker on
+    straight after the PIN is accepted.
     """
-    result = _apply_output_mutation(
-        owntone_base_url,
-        out_id,
-        body,
-        offset_ms=offset_ms,
-        mode=mode,
-        output_name=output_name,
-        initiated_by=initiated_by,
-        requester=requester,
-    )
-    if result.get("ok"):
-        notify_state_changed("outputs")
-    return result
-
-
-def _apply_output_mutation(
-    owntone_base_url: str,
-    out_id: str,
-    body: dict,
-    *,
-    offset_ms: Optional[int] = None,
-    mode: Optional[str] = None,
-    output_name: str = "",
-    initiated_by: str,
-    requester: Optional[str] = None,
-) -> dict:
-    """The mutation behind apply_output_mutation, without the hint."""
-    initiated_by_text = str(initiated_by or "").strip().lower()
-    if initiated_by_text not in ("user", "system"):
-        raise ValueError(f"Invalid initiated_by value: {initiated_by!r}")
-    is_user_initiated = initiated_by_text == "user"
-
-    op = (body.get("op") or "").strip().lower()
-    out_id_text = str(out_id or "").strip()
-
-    if is_user_initiated:
-        # Record that a user-initiated output change was attempted, so the
-        # coordinator's OwnTone-restart reconcile (autostream_core.py,
-        # _OwntoneReconcileTracker) can tell "OwnTone forgot everything" apart
-        # from "the user deselected everything on purpose". Recorded
-        # unconditionally (including "pin" ops and failed mutations) since a
-        # false-conservative widening of the suppression window is harmless;
-        # only a missed marker would matter.
-        note_user_output_action()
-
-    if not out_id_text:
+    out_id = str(body.get("id") or "").strip()
+    if not out_id:
         return {"ok": False, "error": "Missing output id"}
-
+    op = str(body.get("op") or "").strip().lower()
+    args: dict = {"id": out_id}
+    name = body.get("name")
+    if name:
+        args["name"] = str(name)[:256]
     if op == "pin":
-        pin = body.get("pin")
-        if not isinstance(pin, str) or not pairing.PIN_RE.match(pin):
-            return {"ok": False, "error": "invalid_pin", "id": out_id_text}
-        allowed, wait = pairing.note_attempt(requester or pairing.REQUESTER_WEBUI, out_id_text)
-        if not allowed:
-            return {
-                "ok": False,
-                "error": "rate_limited",
-                "retry_after_s": wait,
-                "id": out_id_text,
-            }
-        pin_result = submit_output_pin(owntone_base_url, out_id_text, pin, timeout=3)
-        if not pin_result.ok and pin_result.error_code == "pin_invalid":
-            return {
-                "ok": False,
-                "id": out_id_text,
-                "pin_invalid": True,
-                "error": pin_result.message,
-            }
-        if not pin_result.ok:
-            return {"ok": False, "id": out_id_text, "error": pin_result.message}
-        pairing.release(out_id_text)
-        if not body.get("selected"):
-            return {"ok": True, "id": out_id_text}
-
-    selected = bool(body.get("selected", False))
-    if selected:
-        # Resolve trusted name and local selection state from OwnTone.
-        # body.get("name") is intentionally ignored to prevent bypass.
-        resolved_name, locally_selected = _resolve_output_info(owntone_base_url, out_id_text)
-        name_to_check = output_name or resolved_name
-        # Only block enables of outputs not already locally selected.
-        # Volume changes on already-on outputs are always allowed.
-        if name_to_check and not locally_selected:
-            try:
-                from autostream_output_usage import usage_for_output
-                usage = usage_for_output(name_to_check)
-                if usage is not None:
-                    return {
-                        "ok": False,
-                        "id": out_id_text,
-                        "error": "output_in_use",
-                        "owner": usage.owner_name,
-                    }
-            except Exception:
-                logging.debug("apply_output_mutation: usage check failed for %s", name_to_check)
-
-        volume = max(0, min(100, int(body.get("volume", 50))))
-
-        if locally_selected and is_user_initiated and mute_state.is_muted():
-            # The WebUI has no dedicated unmute control: an explicit,
-            # user-initiated volume change on an already-selected output
-            # while muted IS the unmute path -- end the mute here and fall
-            # through to the normal write below so the output actually
-            # sounds at the level the user just chose (not the level that
-            # was remembered when the mute began). When the master slider
-            # writes several outputs in one gesture, only the first write
-            # sees is_muted() True; the rest already see it unmuted and
-            # simply write normally, which is fine.
-            mute_state.end_mute()
-        elif locally_selected and mute_state.remember_level(out_id_text, volume):
-            # A volume-only change on an output that is already selected,
-            # made by something other than the user (coordinator/reconcile)
-            # while the appliance is muted: the level it will return to on
-            # restore moves, but the output itself must stay silent, so the
-            # OwnTone write is skipped entirely -- muted keeps meaning
-            # silent no matter which non-user caller last touched a level.
-            return {"ok": True, "id": out_id_text}
-
-        update_result = update_output(
-            owntone_base_url,
-            out_id_text,
-            enabled=True,
-            volume_percent=volume,
-            offset_ms=offset_ms,
-            mode=mode,
-            timeout=3,
-        )
-        if not update_result.ok and update_result.error_code == "pin_required":
-            # Output was NOT enabled; cache state is unchanged.
-            if requester:
-                pairing.claim(out_id_text, requester)
-            return {
-                "ok": False,
-                "pin_required": True,
-                "id": out_id_text,
-                "output_name": str(body.get("name") or ""),
-                "error": update_result.message,
-            }
-        if not update_result.ok and update_result.error_code == "encoder_capacity":
-            # Output was NOT enabled; cached selection state is unchanged.
-            return {"ok": False, "id": out_id_text, "error": "encoder_capacity"}
-        if not update_result.ok:
-            # OwnTone rejected; state uncertain — expire cache so next call re-fetches.
-            _invalidate_output_info_cache(owntone_base_url)
-            return {
-                "ok": False,
-                "id": out_id_text,
-                "error": update_result.message,
-                "pin_invalid": False,
-            }
-        _update_cached_selected(owntone_base_url, out_id_text, True)
-        if not locally_selected and mute_state.remember_level(out_id_text, volume):
-            # Enabling an output while muted: it just joined the session at
-            # its requested volume, but a mute in effect means silent, so it
-            # is immediately silenced too. Its requested level is what the
-            # restore action brings it to (see autostream_mute_state.py). A
-            # failure here is logged and leaves the output audible --
-            # fail-open, and this function never raises.
-            silence_result = update_output(owntone_base_url, out_id_text, volume_percent=0, timeout=3)
-            if not silence_result.ok:
-                logging.warning(
-                    "apply_output_mutation: could not silence newly-enabled output %s under mute: %s",
-                    out_id_text, silence_result.message,
-                )
-        if is_user_initiated:
-            # User enabled an output: any prior "chose silence" latch no
-            # longer applies to the current output selection.
-            clear_user_silence_latch()
-        # A newly enabled output joins the session knowing only the queue
-        # defaults -- it never saw the bundle published at session start.
-        # Ask the coordinator to re-send the current now-playing metadata so
-        # the receiver shows the proper title/artwork immediately rather
-        # than at the next natural push (e.g. the next track change).
-        request_nowplaying_republish()
-        return {"ok": True, "id": out_id_text}
-
-    disable_result = set_output_enabled(owntone_base_url, out_id_text, False, timeout=3)
-    if not disable_result.ok:
-        _invalidate_output_info_cache(owntone_base_url)
-        return {"ok": False, "id": out_id_text, "error": disable_result.message}
-    _update_cached_selected(owntone_base_url, out_id_text, False)
-    mute_state.forget_output(out_id_text)
-    if is_user_initiated:
-        # User disabled an output. If that was the last selected output,
-        # latch the resulting zero-output state as user-chosen so the
-        # coordinator's reconcile/retry don't fight it. Re-fetch outputs
-        # rather than trust local state, since other outputs' selection is
-        # not known to this call. On fetch failure the state is unknown, so
-        # fail open (do not set the latch) rather than risk latching a
-        # zero-output state that may not actually be all-zero.
-        try:
-            list_result = list_outputs(owntone_base_url, timeout=3)
-        except Exception:
-            list_result = None
-        if list_result is not None and getattr(list_result, "ok", False):
-            if not any(bool(o.selected) for o in list_result.outputs):
-                set_user_silence_latch()
-    return {"ok": True, "id": out_id_text}
+        args["pin"] = body.get("pin")
+        if "selected" in body:
+            args["selected"] = bool(body.get("selected"))
+        row = "output.pin.submit"
+    else:
+        args["selected"] = bool(body.get("selected", False))
+        row = "outputs.set"
+    if args.get("selected"):
+        args["volume"] = max(0, min(100, int(body.get("volume", 50))))
+        if offset_ms is not None:
+            args["offset_ms"] = offset_ms
+        if mode:
+            args["mode"] = mode
+    reply = submit(Intent(row, args, origin, requester, context=pin_requester))
+    if reply.result:
+        return dict(reply.result)
+    return {"ok": False, "error": reply.error, "id": out_id}

@@ -16,7 +16,9 @@ without an import cycle.
 
 Some state is changed only by the coordinator (the daemon's repeat block, the
 identified track, a session starting or ending). StateHints, a subscriber to
-the state store, notices those once per coordinator cycle.
+the state store, notices those once per coordinator cycle. A change to the
+outputs part is hinted as what moved in it: the speaker list, the volumes, the
+mutes.
 """
 from __future__ import annotations
 
@@ -24,7 +26,15 @@ import logging
 import threading
 import time
 
-from autostream_state import active_track, repeat_digest, store as _state_store, track_digest
+from autostream_state import (
+    active_track,
+    outputs_list_digest,
+    outputs_mute_digest,
+    outputs_volume_digest,
+    repeat_digest,
+    store as _state_store,
+    track_digest,
+)
 
 
 STATE_PUSH_PATH = "/state-changed"
@@ -163,7 +173,13 @@ class StateHints:
     and the identification workers, are ignored here: the ack path hints
     repeat directly, and comparing them too would hint a seek twice. Kinds are
     sent one call each, session first, then repeat, then track, as the
-    coordinator did."""
+    coordinator did.
+
+    A Change that moved the outputs part, batch or not, is compared in three
+    pieces (the speaker list, the volumes, the mutes) with their values at the
+    previous comparison, the first being the baseline; each that moved is sent
+    as "outputs", "volume" or "mute", in that order, after the session and
+    tags and before the repeat and track."""
 
     def __init__(self, notify=None) -> None:
         # None means notify_state_changed, looked up when a hint is sent.
@@ -183,6 +199,15 @@ class StateHints:
         for tag in sorted(change.tags - {"session"}):
             if tag in CHANGE_KINDS:
                 self._send(tag, except_dial)
+        if "outputs" in change.parts:
+            outputs = _state_store().snapshot().outputs
+            for kind, digest in (
+                ("outputs", outputs_list_digest),
+                ("volume", outputs_volume_digest),
+                ("mute", outputs_mute_digest),
+            ):
+                if self._moved(kind, lambda digest=digest: digest(outputs)):
+                    self._send(kind, except_dial)
         if not change.batch:
             return
         snap = _state_store().snapshot()

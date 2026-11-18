@@ -72,17 +72,16 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
 
         cfg = locked_load_config(state.config_path)
         parsed = parse_config(cfg)
-        base_url = parsed.owntone.base_url.rstrip("/")
 
         offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id) if out_id else None
         offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
         mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE) if out_id else DEFAULT_AIRPLAY_MODE
         mode = config_airplay_mode_to_backend(mode_text)
 
-        from autostream_appliance_models import apply_output_mutation
-        result = apply_output_mutation(
-            base_url, out_id, payload, offset_ms=offset_ms, mode=mode, initiated_by="user",
-            requester=REQUESTER_WEBUI,
+        from autostream_appliance_models import submit_output_change
+        result = submit_output_change(
+            payload, requester="webui", pin_requester=REQUESTER_WEBUI,
+            offset_ms=offset_ms, mode=mode,
         )
         send_json(handler, 200, result)
     except Exception as e:

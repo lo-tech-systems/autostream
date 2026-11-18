@@ -25,7 +25,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -785,43 +785,55 @@ class TestCallSites:
     """Each call site hints with the literal kinds, after its change, and
     never when nothing changed."""
 
-    def test_an_output_mutation_that_succeeds_hints_outputs_once(self):
+    @staticmethod
+    def _hinted_change(requester, pin_requester, *, answer, body=None):
+        """Submit a speaker switch-on and return what the store's dial hints
+        sent while it ran."""
         import autostream_appliance_models as models
-        with patch("autostream_appliance_models._apply_output_mutation",
-                   return_value={"ok": True, "id": "o"}) as inner, \
-             patch("autostream_appliance_models.notify_state_changed") as notify:
-            result = models.apply_output_mutation(
-                "http://x", "o", {"id": "o", "selected": True},
-                offset_ms=5, mode="m", output_name="n",
-                initiated_by="user", requester="r")
+        import autostream_player_service as ps
+        from fake_store import FakeStore
+        FakeStore().outputs([FakeStore.output_row("o", "Speaker", selected=False, volume_percent=0)])
+        calls = []
+        handle = state.store().subscribe(
+            dp.StateHints(notify=lambda *k, **kw: calls.append((k, kw.get("except_dial")))))
+        FakeStore().outputs([FakeStore.output_row("o", "Speaker", selected=False, volume_percent=0)])
+        calls.clear()  # the first reading is only the baseline
+        try:
+            with patch.object(ps, "update_output", MagicMock(return_value=answer)):
+                result = models.submit_output_change(
+                    body or {"id": "o", "selected": True, "volume": 30},
+                    requester=requester, pin_requester=pin_requester)
+        finally:
+            state.store().unsubscribe(handle)
+        return result, calls
+
+    def test_an_output_change_from_a_dial_hints_the_list(self):
+        from autostream_players import ActionResult
+        result, calls = self._hinted_change("dial:abc-1", None, answer=ActionResult(ok=True))
         assert result == {"ok": True, "id": "o"}
-        notify.assert_called_once_with("outputs")
-        inner.assert_called_once_with(
-            "http://x", "o", {"id": "o", "selected": True},
-            offset_ms=5, mode="m", output_name="n",
-            initiated_by="user", requester="r")
+        assert ("outputs",) in [k for k, _ in calls]
 
-    def test_an_output_mutation_that_fails_does_not_hint(self):
-        import autostream_appliance_models as models
-        failed = {"ok": False, "id": "o", "error": "x"}
-        with patch("autostream_appliance_models._apply_output_mutation",
-                   return_value=failed), \
-             patch("autostream_appliance_models.notify_state_changed") as notify:
-            result = models.apply_output_mutation(
-                "http://x", "o", {"id": "o", "selected": True}, initiated_by="system")
-        assert result is failed
-        notify.assert_not_called()
+    def test_an_output_change_from_the_web_ui_hints_every_dial(self):
+        from autostream_players import ActionResult
+        _, calls = self._hinted_change("webui", None, answer=ActionResult(ok=True))
+        assert ("outputs",) in [k for k, _ in calls]
 
-    def test_an_output_mutation_that_raises_does_not_hint(self):
+    def test_an_output_change_that_changes_nothing_does_not_hint(self):
         import autostream_appliance_models as models
-        with patch("autostream_appliance_models.notify_state_changed") as notify:
-            try:
-                models.apply_output_mutation("http://x", "o", {}, initiated_by="bogus")
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("expected ValueError")
-        notify.assert_not_called()
+        from fake_store import FakeStore
+        FakeStore().outputs([FakeStore.output_row("o", "Speaker", selected=False, volume_percent=0)])
+        calls = []
+        handle = state.store().subscribe(dp.StateHints(notify=lambda *k, **kw: calls.append(k)))
+        FakeStore().outputs([FakeStore.output_row("o", "Speaker", selected=False, volume_percent=0)])
+        calls.clear()  # the first reading is only the baseline
+        try:
+            # Refused before anything is written: the speaker is not listed.
+            result = models.submit_output_change(
+                {"id": "other", "selected": True}, requester="webui", pin_requester=None)
+        finally:
+            state.store().unsubscribe(handle)
+        assert result["ok"] is False
+        assert calls == []
 
     def _mute(self, body, status=200):
         import autostream_webui_api as api

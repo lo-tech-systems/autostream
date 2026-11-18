@@ -43,49 +43,64 @@ def _make_state(tmp_path: Path) -> MagicMock:
 
 
 def _make_result_ok():
-    r = MagicMock()
-    r.ok = True
-    r.error_code = None
-    r.message = ""
-    return r
+    from autostream_players import ActionResult
+    return ActionResult(ok=True)
 
 
 def _make_result_err(code: str, msg: str = "err"):
-    r = MagicMock()
-    r.ok = False
-    r.error_code = code
-    r.message = msg
-    return r
+    from autostream_players import ActionResult
+    return ActionResult(ok=False, error=msg, error_code=code)
 
 
 def _call_output_update(body: dict, *, tmp_path: Path,
                         update_result=None, disable_result=None,
-                        pin_result=None) -> dict:
+                        pin_result=None, speakers=None,
+                        offsets=None, modes=None) -> dict:
+    """Run the output route's handler against a patched player.
+
+    *speakers* are the OutputInfo rows the authority knows; by default the
+    body's own id is arranged as a speaker that is off. The reply is in
+    "calls"; every write the player received is in "writes"."""
+    from autostream_players import ActionResult
+    from fake_store import FakeStore
+
     sent = []
+    writes = []
     handler = MagicMock()
     state = _make_state(tmp_path)
 
     def fake_send_json(h, code, data):
         sent.append((code, data))
 
-    ok_result = _make_result_ok()
+    ok_result = ActionResult(ok=True)
+
+    def fake_update_output(base_url, out_id, **kwargs):
+        writes.append(("update_output", out_id, kwargs))
+        if kwargs.get("enabled") is False:
+            return disable_result or ok_result
+        return update_result or ok_result
+
+    def fake_submit_output_pin(base_url, out_id, pin, timeout=None):
+        writes.append(("submit_output_pin", out_id, pin))
+        return pin_result or ok_result
+
+    if speakers is None:
+        out_id = str(body.get("id") or "") or "0"
+        speakers = [FakeStore.output_row(out_id, "Kitchen", selected=False, volume_percent=0)]
+    FakeStore().outputs(speakers)
 
     with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
          patch("autostream_webui_post_handlers.locked_load_config",
                return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
          patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
-         patch("autostream_appliance_models.update_output",
-               return_value=update_result or ok_result), \
-         patch("autostream_appliance_models.set_output_enabled",
-               return_value=disable_result or ok_result), \
-         patch("autostream_appliance_models.submit_output_pin",
-               return_value=pin_result or ok_result):
+         patch("autostream_player_service.update_output", side_effect=fake_update_output), \
+         patch("autostream_player_service.submit_output_pin", side_effect=fake_submit_output_pin):
         mock_parse.return_value.owntone.base_url = "http://localhost:3689"
-        mock_parse.return_value.owntone.output_offsets_ms = {}
-        mock_parse.return_value.owntone.output_airplay_modes = {}
+        mock_parse.return_value.owntone.output_offsets_ms = offsets or {}
+        mock_parse.return_value.owntone.output_airplay_modes = modes or {}
         handle_output_update(handler, state, json.dumps(body))
 
-    return {"calls": sent}
+    return {"calls": sent, "writes": writes}
 
 
 def _call_eq(body: str | dict, tmp_path: Path) -> dict:
@@ -484,39 +499,15 @@ class TestLiveInputGainValidation:
 class TestOutputUpdateForwarding:
     def test_offset_and_mode_forwarded_to_update_output(self, tmp_path):
         """update_output receives the per-output offset_ms and mode from config."""
-        sent = []
-        handler = MagicMock()
-        state = _make_state(tmp_path)
-        update_calls = []
-
-        def fake_send_json(h, code, data):
-            sent.append((code, data))
-
-        def fake_update_output(base_url, out_id, enabled, volume_percent,
-                               offset_ms=None, mode=None, timeout=3):
-            update_calls.append({
-                "offset_ms": offset_ms,
-                "mode": mode,
-            })
-            return _make_result_ok()
-
-        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_post_handlers.locked_load_config",
-                   return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
-             patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
-             patch("autostream_appliance_models.update_output", side_effect=fake_update_output), \
-             patch("autostream_appliance_models.set_output_enabled",
-                   return_value=_make_result_ok()), \
-             patch("autostream_appliance_models.submit_output_pin",
-                   return_value=_make_result_ok()):
-            mock_parse.return_value.owntone.base_url = "http://localhost:3689"
-            mock_parse.return_value.owntone.output_offsets_ms = {"99": 200}
-            mock_parse.return_value.owntone.output_airplay_modes = {"99": "alac"}
-            handle_output_update(handler, state, json.dumps({"id": "99", "selected": True, "volume": 75}))
-
-        assert update_calls, "update_output must be called"
-        assert update_calls[0]["offset_ms"] == 200
-        assert update_calls[0]["mode"] is not None
+        r = _call_output_update(
+            {"id": "99", "selected": True, "volume": 75}, tmp_path=tmp_path,
+            offsets={"99": 200}, modes={"99": "alac"},
+        )
+        (name, out_id, kwargs), = r["writes"]
+        assert (name, out_id) == ("update_output", "99")
+        assert kwargs["offset_ms"] == 200
+        assert kwargs["mode"] is not None
+        assert kwargs["volume_percent"] == 75
 
 
 # ---------------------------------------------------------------------------
@@ -1208,25 +1199,17 @@ class TestSetupPostOutputUsagePollInterval:
 
 
 # ---------------------------------------------------------------------------
-# apply_output_mutation — occupancy protection (Commit 6)
+# Output changes: occupancy protection
 # ---------------------------------------------------------------------------
 
 import autostream_appliance_models as _am
+from autostream_state import Origin
 
 
-def _make_fake_output(id_: str, name: str, *, selected: bool = False):
-    o = MagicMock()
-    o.id = id_
-    o.name = name
-    o.selected = selected
-    return o
-
-
-def _make_list_outputs_ok(outputs):
-    r = MagicMock()
-    r.ok = True
-    r.outputs = outputs
-    return r
+def _speaker(id_: str, name: str, *, selected: bool = False):
+    from fake_store import FakeStore
+    return FakeStore.output_row(
+        id_, name, selected=selected, volume_percent=40 if selected else 0)
 
 
 def _make_usage(owner_name: str = "living-room"):
@@ -1244,331 +1227,167 @@ def _make_usage(owner_name: str = "living-room"):
     )
 
 
+@pytest.fixture
+def player_writes(monkeypatch):
+    """Record every write the player service receives; all succeed unless
+    the test queues an answer."""
+    import autostream_player_service as ps
+    from types import SimpleNamespace
+    rec = SimpleNamespace(calls=[], answers=[])
+
+    def answer():
+        return rec.answers.pop(0) if rec.answers else _make_result_ok()
+
+    def update_output(base_url, out_id, **kwargs):
+        rec.calls.append(("update_output", out_id, kwargs))
+        return answer()
+
+    def submit_output_pin(base_url, out_id, pin, timeout=None):
+        rec.calls.append(("submit_output_pin", out_id, pin))
+        return answer()
+
+    monkeypatch.setattr(ps, "update_output", update_output)
+    monkeypatch.setattr(ps, "submit_output_pin", submit_output_pin)
+    return rec
+
+
+def _coordinator_change(body):
+    return _am.submit_output_change(
+        body, requester="coordinator", pin_requester=None, origin=Origin.SYSTEM)
+
+
 class TestOutputMutationOccupancyProtection:
-    def setup_method(self):
-        # Force cache expiry so each test starts with a cold server-side cache.
-        _am._OUTPUT_INFO_CACHE.clear()
-        _am._OUTPUT_INFO_CACHE_TIME.clear()
-        # Keep old aliases in sync for any stray references.
-        _am._OUTPUT_NAME_CACHE_TIME = 0.0
-        _am._OUTPUT_NAME_CACHE = {}
+    def _call(self, body, *, usage=None, speakers=None):
+        from fake_store import FakeStore
+        FakeStore().outputs(speakers if speakers is not None else [_speaker("42", "Kitchen")])
+        with patch("autostream_output_usage.usage_for_output", return_value=usage):
+            return _coordinator_change(body)
 
-    def _call(self, body, *, usage=None, list_outputs_result=None, update_result=None):
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=list_outputs_result or _make_list_outputs_ok([])), \
-             patch("autostream_appliance_models.update_output",
-                   return_value=update_result or ok), \
-             patch("autostream_appliance_models.set_output_enabled",
-                   return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin",
-                   return_value=ok), \
-             patch("autostream_output_usage.usage_for_output",
-                   return_value=usage):
-            return _am.apply_output_mutation("http://localhost:3689", "42", body, initiated_by="system")
-
-    def test_enabling_occupied_output_returns_output_in_use(self, tmp_path):
-        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
-        usage = _make_usage("living-room")
+    def test_enabling_occupied_output_returns_output_in_use(self, player_writes):
         result = self._call({"id": "42", "selected": True, "volume": 50},
-                            usage=usage, list_outputs_result=lr)
+                            usage=_make_usage("living-room"))
         assert result["ok"] is False
         assert result["error"] == "output_in_use"
         assert result["owner"] == "living-room"
+        assert player_writes.calls == []
 
-    def test_disabling_occupied_output_is_allowed(self, tmp_path):
-        usage = _make_usage("living-room")
+    def test_disabling_occupied_output_is_allowed(self, player_writes):
         result = self._call({"id": "42", "selected": False},
-                            usage=usage)
+                            usage=_make_usage("living-room"),
+                            speakers=[_speaker("42", "Kitchen", selected=True)])
         assert result["ok"] is True
 
-    def test_pin_op_bypasses_occupancy_check(self, tmp_path):
-        usage = _make_usage("living-room")
-        result = self._call({"id": "42", "op": "pin", "pin": "1234"},
-                            usage=usage)
+    def test_pin_op_bypasses_occupancy_check(self, player_writes):
+        from fake_store import FakeStore
+        FakeStore().outputs([_speaker("42", "Kitchen")])
+        with patch("autostream_output_usage.usage_for_output",
+                   return_value=_make_usage("living-room")):
+            result = _am.submit_output_change(
+                {"id": "42", "op": "pin", "pin": "1234"},
+                requester="webui", pin_requester="webui")
+        assert result["ok"] is True, result
+
+    def test_enabling_unoccupied_output_succeeds(self, player_writes):
+        result = self._call({"id": "42", "selected": True, "volume": 50}, usage=None)
         assert result["ok"] is True
 
-    def test_enabling_unoccupied_output_succeeds(self, tmp_path):
-        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
-        result = self._call({"id": "42", "selected": True, "volume": 50},
-                            usage=None, list_outputs_result=lr)
+    def test_failing_occupancy_check_fails_open(self, player_writes):
+        """When the usage check raises, the enable proceeds."""
+        from fake_store import FakeStore
+        FakeStore().outputs([_speaker("42", "Kitchen")])
+        with patch("autostream_output_usage.usage_for_output",
+                   side_effect=RuntimeError("timeout")):
+            result = _coordinator_change({"id": "42", "selected": True, "volume": 50})
         assert result["ok"] is True
 
-    def test_name_resolution_failure_fails_open(self, tmp_path):
-        """When list_outputs raises, the enable proceeds (fail-open)."""
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.list_outputs", side_effect=RuntimeError("timeout")), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
-            result = _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
-                initiated_by="system",
-            )
-        assert result["ok"] is True
-
-    def test_occupancy_check_is_cache_only_no_refresh(self, tmp_path):
+    def test_occupancy_check_is_cache_only_no_refresh(self, player_writes):
         """usage_for_output is called but refresh_now is never called."""
-        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
-        ok = _make_result_ok()
+        from fake_store import FakeStore
+        FakeStore().outputs([_speaker("42", "Kitchen")])
         refresh_calls = []
-        with patch("autostream_appliance_models.list_outputs", return_value=lr), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=None), \
-             patch("autostream_output_usage.refresh_now", side_effect=lambda *a, **k: refresh_calls.append(1)):
-            _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
-                initiated_by="system",
-            )
+        with patch("autostream_output_usage.usage_for_output", return_value=None), \
+             patch("autostream_output_usage.refresh_now",
+                   side_effect=lambda *a, **k: refresh_calls.append(1)):
+            _coordinator_change({"id": "42", "selected": True, "volume": 50})
         assert refresh_calls == [], "refresh_now must not be called from mutation path"
 
-    def test_browser_supplied_name_cannot_bypass_occupancy(self, tmp_path):
-        """Browser body.name is ignored; server always resolves via OwnTone."""
-        usage = _make_usage("living-room")
-        list_calls = []
-        ok = _make_result_ok()
-        # OwnTone returns the real name "Kitchen" for id 42.
-        real_lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
-        with patch("autostream_appliance_models.list_outputs",
-                   side_effect=lambda *a, **k: (list_calls.append(1), real_lr)[1]), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=usage):
-            # Client tries to bypass by supplying a different (unoccupied) name.
-            result = _am.apply_output_mutation(
-                "http://localhost:3689", "42",
-                {"id": "42", "selected": True, "volume": 50, "name": "not-occupied"},
-                initiated_by="system",
-            )
-        # Occupancy is still detected because the real name "Kitchen" was resolved.
+    def test_browser_supplied_name_cannot_bypass_occupancy(self, player_writes):
+        """The browser's body.name is ignored; the check uses the name the
+        appliance has for the speaker."""
+        from fake_store import FakeStore
+        FakeStore().outputs([_speaker("42", "Kitchen")])
+        asked = []
+
+        def usage_for(name):
+            asked.append(name)
+            return _make_usage("living-room")
+
+        with patch("autostream_output_usage.usage_for_output", side_effect=usage_for):
+            result = _coordinator_change(
+                {"id": "42", "selected": True, "volume": 50, "name": "not-occupied"})
         assert result["error"] == "output_in_use"
-        assert list_calls == [1], "list_outputs must be called to resolve trusted name"
+        assert asked == ["Kitchen"]
 
-    def test_name_cache_avoids_repeat_list_outputs_call(self, tmp_path):
-        """Second enable within TTL uses cached name without calling list_outputs."""
-        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen")])
-        ok = _make_result_ok()
-        list_calls = []
-        with patch("autostream_appliance_models.list_outputs",
-                   side_effect=lambda *a, **k: (list_calls.append(1), lr)[1]), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
-                initiated_by="system",
-            )
-            _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True, "volume": 50},
-                initiated_by="system",
-            )
-        assert list_calls == [1], "list_outputs called once; second call uses cache"
-
-    def test_volume_change_on_already_selected_output_is_allowed(self, tmp_path):
+    def test_volume_change_on_already_selected_output_is_allowed(self, player_writes):
         """selected:true for an already-on output must not be blocked by occupancy."""
-        # OwnTone reports output 42 is already selected (locally on).
-        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen", selected=True)])
-        usage = _make_usage("living-room")  # remote says Kitchen is in use
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.list_outputs", return_value=lr), \
-             patch("autostream_appliance_models.update_output", return_value=ok) as mock_update, \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=usage):
-            result = _am.apply_output_mutation(
-                "http://localhost:3689", "42",
-                {"id": "42", "selected": True, "volume": 80},
-                initiated_by="system",
-            )
-        # Must pass through to OwnTone even though remote reports it occupied.
+        result = self._call({"id": "42", "selected": True, "volume": 80},
+                            usage=_make_usage("living-room"),
+                            speakers=[_speaker("42", "Kitchen", selected=True)])
         assert result["ok"] is True
-        mock_update.assert_called_once()
+        assert player_writes.calls == [
+            ("update_output", "42", dict(volume_percent=80, timeout=3.0))]
 
-    def test_cache_miss_on_fresh_cache_triggers_refresh(self, tmp_path):
-        """If cache is warm but out_id absent, list_outputs is called again."""
-        import time as _time
-        # Pre-populate cache with a different ID so it is considered fresh.
-        url = "http://localhost:3689"
-        _am._OUTPUT_INFO_CACHE[url] = {"99": ("Other Speaker", False)}
-        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
+    def test_successful_enable_shows_the_speaker_selected(self, player_writes):
+        from output_fakes import snap
+        self._call({"id": "42", "selected": True, "volume": 50})
+        assert snap().unit("42").selected is True
 
-        # Now request ID 42 which is NOT in the warm cache.
-        lr_refresh = _make_list_outputs_ok([
-            _make_fake_output("99", "Other Speaker"),
-            _make_fake_output("42", "Kitchen"),
-        ])
-        usage = _make_usage("living-room")
-        ok = _make_result_ok()
-        list_calls = []
-        with patch("autostream_appliance_models.list_outputs",
-                   side_effect=lambda *a, **k: (list_calls.append(1), lr_refresh)[1]), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=usage):
-            result = _am.apply_output_mutation(
-                url, "42", {"id": "42", "selected": True, "volume": 50},
-                initiated_by="system",
-            )
-        # Occupancy was enforced because a refresh was triggered.
-        assert result["error"] == "output_in_use"
-        assert list_calls == [1], "must refresh when out_id absent from fresh cache"
+    def test_successful_disable_shows_the_speaker_not_selected(self, player_writes):
+        from output_fakes import snap
+        self._call({"id": "42", "selected": False},
+                   speakers=[_speaker("42", "Kitchen", selected=True)])
+        assert snap().unit("42").selected is False
 
-    def test_cache_keyed_by_owntone_url(self, tmp_path):
-        """Cache entries for different URLs do not contaminate each other."""
-        import time as _time
-        url_a = "http://owntone-a:3689"
-        url_b = "http://owntone-b:3689"
-        # Pre-populate URL A's cache with output 42 named Kitchen (not selected).
-        _am._OUTPUT_INFO_CACHE[url_a] = {"42": ("Kitchen", False)}
-        _am._OUTPUT_INFO_CACHE_TIME[url_a] = _time.monotonic()
+    def test_failed_enable_leaves_the_speaker_not_selected(self, player_writes):
+        from output_fakes import snap
+        player_writes.answers.append(_make_result_err("owntone_error", "OwnTone refused"))
+        result = self._call({"id": "42", "selected": True, "volume": 50})
+        assert result == {"ok": False, "id": "42", "error": "OwnTone refused",
+                          "pin_invalid": False}
+        assert snap().unit("42").selected is False
 
-        # URL B should not reuse URL A's cache; it must call list_outputs.
-        lr_b = _make_list_outputs_ok([_make_fake_output("42", "Bedroom")])
-        ok = _make_result_ok()
-        list_calls = []
-        with patch("autostream_appliance_models.list_outputs",
-                   side_effect=lambda *a, **k: (list_calls.append(1), lr_b)[1]), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(
-                url_b, "42", {"id": "42", "selected": True, "volume": 50},
-                initiated_by="system",
-            )
-        assert list_calls == [1], "URL B must not reuse URL A cache"
+    def test_failed_disable_reports_the_player_error(self, player_writes):
+        player_writes.answers.append(_make_result_err("owntone_error", "OwnTone refused"))
+        result = self._call({"id": "42", "selected": False},
+                            speakers=[_speaker("42", "Kitchen", selected=True)])
+        assert result["ok"] is False
+        assert result["error"] == "OwnTone refused"
 
-    def test_successful_enable_updates_cache_to_selected_true(self, tmp_path):
-        """After a successful enable, cache must reflect locally_selected=True."""
-        url = "http://localhost:3689"
-        lr = _make_list_outputs_ok([_make_fake_output("42", "Kitchen", selected=False)])
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.list_outputs", return_value=lr), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
+    def test_pin_required_replies_with_the_flag_and_leaves_the_speaker_off(self, player_writes):
+        from output_fakes import snap
+        player_writes.answers.append(_make_result_err("pin_required", "PIN required"))
+        result = self._call({"id": "42", "selected": True, "volume": 50})
+        assert result == {"ok": False, "pin_required": True, "id": "42",
+                          "output_name": "", "error": "PIN required"}
+        assert snap().unit("42").selected is False
 
-        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", True)
-
-    def test_successful_disable_updates_cache_to_selected_false(self, tmp_path):
-        """After a successful disable, cache must reflect locally_selected=False."""
-        import time as _time
-        url = "http://localhost:3689"
-        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", True)}
-        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False}, initiated_by="system")
-
-        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
-
-    def test_failed_enable_invalidates_cache(self, tmp_path):
-        """Non-PIN enable failure expires the per-URL cache."""
-        import time as _time
-        url = "http://localhost:3689"
-        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", False)}
-        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
-        err = _make_result_err("owntone_error", "OwnTone refused")
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.list_outputs", return_value=_make_list_outputs_ok([])), \
-             patch("autostream_appliance_models.update_output", return_value=err), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
-
-        assert url not in _am._OUTPUT_INFO_CACHE_TIME, "cache must be expired after non-PIN failure"
-
-    def test_failed_disable_invalidates_cache(self, tmp_path):
-        """Disable failure expires the per-URL cache."""
-        import time as _time
-        url = "http://localhost:3689"
-        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", True)}
-        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
-        err = _make_result_err("owntone_error", "OwnTone refused")
-        with patch("autostream_appliance_models.set_output_enabled", return_value=err), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=_make_result_ok()):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False}, initiated_by="system")
-
-        assert url not in _am._OUTPUT_INFO_CACHE_TIME, "cache must be expired after disable failure"
-
-    def test_pin_required_does_not_change_cache(self, tmp_path):
-        """PIN-required response leaves cache unchanged (output not enabled)."""
-        import time as _time
-        url = "http://localhost:3689"
-        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", False)}
-        stamp = _time.monotonic()
-        _am._OUTPUT_INFO_CACHE_TIME[url] = stamp
-
-        pin_req = _make_result_err("pin_required", "PIN required")
-        pin_req.error_code = "pin_required"
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=_make_list_outputs_ok([_make_fake_output("42", "Kitchen")])), \
-             patch("autostream_appliance_models.update_output", return_value=pin_req), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=None):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
-
-        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
-        assert _am._OUTPUT_INFO_CACHE_TIME.get(url) == stamp, "cache timestamp must not change"
-
-    def test_encoder_capacity_maps_to_error_and_leaves_cache_unchanged(self, tmp_path):
+    def test_encoder_capacity_maps_to_error_and_leaves_the_speaker_off(self, player_writes):
         """Encoder-capacity rejection maps to {ok:False, error:"encoder_capacity"} (output not enabled)."""
-        import time as _time
-        url = "http://localhost:3689"
-        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", False)}
-        stamp = _time.monotonic()
-        _am._OUTPUT_INFO_CACHE_TIME[url] = stamp
-
-        capacity_err = _make_result_err("encoder_capacity", "Output declined: appliance CPU cannot encode another stream")
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=_make_list_outputs_ok([_make_fake_output("42", "Kitchen")])), \
-             patch("autostream_appliance_models.update_output", return_value=capacity_err), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=None):
-            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
-
+        from output_fakes import snap
+        player_writes.answers.append(_make_result_err(
+            "encoder_capacity", "Output declined: appliance CPU cannot encode another stream"))
+        result = self._call({"id": "42", "selected": True, "volume": 50})
         assert result == {"ok": False, "id": "42", "error": "encoder_capacity"}
-        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
-        assert _am._OUTPUT_INFO_CACHE_TIME.get(url) == stamp, "cache timestamp must not change"
+        assert snap().unit("42").selected is False
 
-    def test_subsequent_enable_after_disable_blocked_when_occupied(self, tmp_path):
-        """Disable then re-enable: occupancy check fires because disable set selected=False."""
-        import time as _time
-        url = "http://localhost:3689"
-        ok = _make_result_ok()
-
-        # Seed cache: output 42 is currently selected (it was on before this sequence).
-        _am._OUTPUT_INFO_CACHE[url] = {"42": ("Kitchen", True)}
-        _am._OUTPUT_INFO_CACHE_TIME[url] = _time.monotonic()
-
-        # Disable: cache updated in-place to selected=False.
-        with patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
-            _am.apply_output_mutation(url, "42", {"id": "42", "selected": False}, initiated_by="system")
-
-        assert _am._OUTPUT_INFO_CACHE.get(url, {}).get("42") == ("Kitchen", False)
-
-        # Re-enable: cache still warm with selected=False, occupancy check fires.
-        usage = _make_usage("living-room")
-        with patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok), \
-             patch("autostream_output_usage.usage_for_output", return_value=usage):
-            result = _am.apply_output_mutation(url, "42", {"id": "42", "selected": True, "volume": 50}, initiated_by="system")
-
+    def test_subsequent_enable_after_disable_blocked_when_occupied(self, player_writes):
+        """Disable then re-enable: the occupancy check fires because the
+        disable left the speaker not selected."""
+        self._call({"id": "42", "selected": False},
+                   speakers=[_speaker("42", "Kitchen", selected=True)])
+        with patch("autostream_output_usage.usage_for_output",
+                   return_value=_make_usage("living-room")):
+            result = _coordinator_change({"id": "42", "selected": True, "volume": 50})
         assert result["error"] == "output_in_use"
 
 
@@ -1594,13 +1413,11 @@ class TestOutputUpdateUserSilenceLatch:
         clear_user_silence_latch()
 
     def test_disable_to_zero_outputs_sets_latch(self, tmp_path):
-        """Disabling the last selected output (post-disable list_outputs shows
-        nothing selected) must latch the zero-output state as user-chosen."""
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=_make_list_outputs_ok([
-                       _make_fake_output("42", "Kitchen", selected=False),
-                   ])):
-            r = _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path)
+        """Disabling the last selected output (the list then shows nothing
+        selected) must latch the zero-output state as user-chosen."""
+        r = _call_output_update(
+            {"id": "42", "selected": False}, tmp_path=tmp_path,
+            speakers=[_speaker("42", "Kitchen", selected=True)])
         _, data = r["calls"][0]
         assert data["ok"] is True
         assert user_silence_latch_active() is True
@@ -1608,12 +1425,10 @@ class TestOutputUpdateUserSilenceLatch:
     def test_disable_with_another_output_still_selected_does_not_set_latch(self, tmp_path):
         """Disabling one of several outputs, leaving another selected, must
         not latch -- the zero-output condition never actually occurred."""
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=_make_list_outputs_ok([
-                       _make_fake_output("42", "Kitchen", selected=False),
-                       _make_fake_output("43", "Bedroom", selected=True),
-                   ])):
-            r = _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path)
+        r = _call_output_update(
+            {"id": "42", "selected": False}, tmp_path=tmp_path,
+            speakers=[_speaker("42", "Kitchen", selected=True),
+                      _speaker("43", "Bedroom", selected=True)])
         _, data = r["calls"][0]
         assert data["ok"] is True
         assert user_silence_latch_active() is False
@@ -1630,26 +1445,13 @@ class TestOutputUpdateUserSilenceLatch:
         assert data["ok"] is True
         assert user_silence_latch_active() is False
 
-    def test_disable_does_not_set_latch_when_outputs_fetch_fails(self, tmp_path):
-        """Unknown post-disable state (outputs fetch failed) must fail open:
-        never set the latch on a guess."""
-        with patch("autostream_appliance_models.list_outputs",
-                   side_effect=Exception("network error")):
-            r = _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path)
-        _, data = r["calls"][0]
-        assert data["ok"] is True
-        assert user_silence_latch_active() is False
-
     def test_disable_does_not_set_latch_when_mutation_fails(self, tmp_path):
         """The latch must only ever be set on the success path."""
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=_make_list_outputs_ok([
-                       _make_fake_output("42", "Kitchen", selected=False),
-                   ])):
-            r = _call_output_update(
-                {"id": "42", "selected": False}, tmp_path=tmp_path,
-                disable_result=_make_result_err("error", "backend rejected"),
-            )
+        r = _call_output_update(
+            {"id": "42", "selected": False}, tmp_path=tmp_path,
+            speakers=[_speaker("42", "Kitchen", selected=True)],
+            disable_result=_make_result_err("error", "backend rejected"),
+        )
         _, data = r["calls"][0]
         assert data["ok"] is False
         assert user_silence_latch_active() is False
@@ -1670,65 +1472,50 @@ class TestOutputUpdateUserSilenceLatch:
 
 
 # ---------------------------------------------------------------------------
-# apply_output_mutation: initiated_by contract
+# Output changes: who is acting (origin) decides the bookkeeping
 #
-# initiated_by is a required, keyword-only, trusted-caller-only parameter
-# (mirrors autostream_log_policy.set_log_level's changed_by convention).
-# Only "user" and "system" are accepted; only "user" performs bookkeeping.
+# A user's change notes the action for the coordinator and may set or clear
+# the silence latch; a change the coordinator makes itself does none of it.
+# A PIN submission counts as a user action but never touches the latch.
 # ---------------------------------------------------------------------------
 
-class TestApplyOutputMutationInitiatedBy:
-    def test_missing_initiated_by_raises_type_error(self):
-        with pytest.raises(TypeError):
-            _am.apply_output_mutation("http://localhost:3689", "42", {"id": "42", "selected": True})
+class TestOutputChangeOrigin:
+    @pytest.fixture
+    def latch(self, monkeypatch):
+        import autostream_output_intents as oi
+        seen = []
+        monkeypatch.setitem(oi._latch, "note", lambda: seen.append("note"))
+        monkeypatch.setitem(oi._latch, "set", lambda: seen.append("set"))
+        monkeypatch.setitem(oi._latch, "clear", lambda: seen.append("clear"))
+        return seen
 
-    def test_invalid_initiated_by_raises_value_error(self):
-        with pytest.raises(ValueError):
-            _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": True},
-                initiated_by="not-a-real-actor",
-            )
-
-    def test_system_initiated_performs_no_bookkeeping(self, tmp_path):
-        """System-initiated mutations (coordinator auto-select/reconcile) must
-        not touch the reconcile timestamp or the user-silence latch."""
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.note_user_output_action") as note_mock, \
-             patch("autostream_appliance_models.set_user_silence_latch") as set_latch_mock, \
-             patch("autostream_appliance_models.clear_user_silence_latch") as clear_latch_mock, \
-             patch("autostream_appliance_models.list_outputs",
-                   return_value=_make_list_outputs_ok([
-                       _make_fake_output("42", "Kitchen", selected=False),
-                   ])), \
-             patch("autostream_appliance_models.update_output", return_value=ok), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
-            # Disable-to-zero would set the latch under initiated_by="user".
-            result = _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "selected": False},
-                initiated_by="system",
-            )
+    def test_system_initiated_performs_no_bookkeeping(self, player_writes, latch):
+        """Coordinator mutations (auto-select/reconcile) must not touch the
+        reconcile timestamp or the user-silence latch."""
+        from fake_store import FakeStore
+        FakeStore().outputs([_speaker("42", "Kitchen", selected=True)])
+        # Disable-to-zero would set the latch for a user.
+        result = _coordinator_change({"id": "42", "selected": False})
         assert result["ok"] is True
-        note_mock.assert_not_called()
-        set_latch_mock.assert_not_called()
-        clear_latch_mock.assert_not_called()
+        assert latch == []
 
-    def test_user_initiated_pin_op_notes_action_but_not_latch(self, tmp_path):
-        """Per the deliberate asymmetry: pin submissions count toward the
-        reconcile grace timestamp but never touch the latch."""
-        ok = _make_result_ok()
-        with patch("autostream_appliance_models.note_user_output_action") as note_mock, \
-             patch("autostream_appliance_models.set_user_silence_latch") as set_latch_mock, \
-             patch("autostream_appliance_models.clear_user_silence_latch") as clear_latch_mock, \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok):
-            result = _am.apply_output_mutation(
-                "http://localhost:3689", "42", {"id": "42", "op": "pin", "pin": "1234"},
-                initiated_by="user",
-            )
+    def test_user_initiated_pin_op_notes_action_but_not_latch(self, player_writes, latch):
+        """Pin submissions count toward the reconcile grace timestamp but
+        never touch the latch."""
+        from fake_store import FakeStore
+        FakeStore().outputs([_speaker("42", "Kitchen")])
+        result = _am.submit_output_change(
+            {"id": "42", "op": "pin", "pin": "1234"},
+            requester="webui", pin_requester="webui")
         assert result["ok"] is True
-        note_mock.assert_called_once()
-        set_latch_mock.assert_not_called()
-        clear_latch_mock.assert_not_called()
+        assert latch == ["note"]
+
+    def test_user_disable_to_zero_notes_then_sets_the_latch(self, player_writes, latch):
+        from fake_store import FakeStore
+        FakeStore().outputs([_speaker("42", "Kitchen", selected=True)])
+        _am.submit_output_change(
+            {"id": "42", "selected": False}, requester="webui", pin_requester="webui")
+        assert latch == ["note", "set"]
 
 
 # ---------------------------------------------------------------------------
@@ -1758,14 +1545,14 @@ class TestOutputRequesterPassed:
              patch("autostream_webui_post_handlers.locked_load_config",
                    return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
              patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
-             patch("autostream_appliance_models.apply_output_mutation",
+             patch("autostream_appliance_models.submit_output_change",
                    return_value={"ok": True}) as mut:
             mock_parse.return_value.owntone.base_url = "http://localhost:3689"
             mock_parse.return_value.owntone.output_offsets_ms = {}
             mock_parse.return_value.owntone.output_airplay_modes = {}
             handle_output_update(MagicMock(), state, json.dumps({"id": "1", "selected": True}))
         assert mut.call_args.kwargs["requester"] == "webui"
-        assert mut.call_args.kwargs["initiated_by"] == "user"
+        assert mut.call_args.kwargs["pin_requester"] == "webui"
 
     def test_the_federation_route_names_the_webui_as_requester(self):
         import autostream_webui_api as api
@@ -1775,11 +1562,12 @@ class TestOutputRequesterPassed:
         parsed.owntone.output_airplay_modes = {}
         with patch("autostream_webui_api.send_json"), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.apply_output_mutation",
+             patch("autostream_webui_api.submit_output_change",
                    return_value={"ok": True}) as mut:
             api.send_federation_output_json(
                 MagicMock(), MagicMock(), json.dumps({"id": "1", "selected": True}))
-        assert mut.call_args.kwargs["requester"] == "webui"
+        assert mut.call_args.kwargs["requester"] == "peer"
+        assert mut.call_args.kwargs["pin_requester"] == "webui"
 
 
 # ---------------------------------------------------------------------------

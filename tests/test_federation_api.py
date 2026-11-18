@@ -29,8 +29,10 @@ try:
 except ImportError:
     _HAS_WEBUI = False
 
-from fake_store import fake_levels, fake_playback
+from fake_store import FakeStore, fake_levels, fake_playback
 import autostream_federation as fed
+from autostream_pin_pairing import REQUESTER_WEBUI
+from autostream_players import ActionResult
 
 _skip = pytest.mark.skipif(not _HAS_WEBUI, reason="autostream_webui import chain unavailable")
 
@@ -361,8 +363,6 @@ class TestFederationHome:
              fake_playback(playback), \
              patch("autostream_appliance_models.get_setting",
                    return_value=MagicMock(ok=True, value="100")), \
-             patch("autostream_appliance_models.list_outputs",
-                   return_value=MagicMock(ok=True, outputs=[])), \
              patch("autostream_appliance_models.get_appliance_id", return_value="aabb"), \
              patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
              patch("autostream_appliance_models.get_app_version", return_value="1.0"):
@@ -567,10 +567,9 @@ class TestFederationOutput:
         h = _make_handler("POST", "/api/federation/v1/output",
                           body=json.dumps(body).encode(),
                           headers={"Authorization": bearer})
-        ok_result = MagicMock(ok=True, error_code=None, message="")
-        with patch("autostream_appliance_models.update_output", return_value=ok_result), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok_result), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok_result):
+        FakeStore().outputs([FakeStore.output_row("99", "Kitchen", selected=False)])
+        with patch("autostream_player_service.update_output", return_value=ActionResult(ok=True)), \
+             patch("autostream_player_service.submit_output_pin", return_value=ActionResult(ok=True)):
             return _call(h, state)
 
     def test_output_toggle_returns_ok_true(self, tmp_path):
@@ -601,18 +600,16 @@ class TestFederationOutput:
         h = _make_handler("POST", "/api/federation/v1/output",
                           body=body.encode(),
                           headers={"Authorization": bearer})
-        mutation_calls = []
-        ok_result = MagicMock(ok=True, error_code=None, message="")
-        with patch("autostream_appliance_models.update_output",
-                   side_effect=lambda base_url, out_id, **kw: (
-                       mutation_calls.append(kw) or ok_result
-                   )), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok_result), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok_result):
-            _call(h, state)
-        # The mutation was called — verify no csrf_token forwarded (not in kwargs)
-        # apply_output_mutation receives the sanitized body dict
-        # We check that apply_output_mutation was called with the right args through the chain
+        with patch("autostream_webui_api.submit_output_change",
+                   return_value={"ok": True, "id": "99"}) as change:
+            code, data = _call(h, state)
+        assert code == 200
+        change.assert_called_once()
+        sent_body = change.call_args.args[0]
+        assert "csrf_token" not in sent_body
+        assert sent_body["id"] == "99"
+        assert change.call_args.kwargs["requester"] == "peer"
+        assert change.call_args.kwargs["pin_requester"] == REQUESTER_WEBUI
 
     def test_unknown_federation_post_route_returns_400_invalid_endpoint(self, tmp_path):
         state = _fake_state(tmp_path)
@@ -630,73 +627,49 @@ class TestFederationOutput:
         assert sent[0][1]["error"] == "invalid_endpoint"
 
     # -------------------------------------------------------------------
-    # Per-user-action bookkeeping (apply_output_mutation initiated_by="user")
-    #
-    # send_federation_output_json is one of three callers of
-    # apply_output_mutation() that must all get identical bookkeeping: the
-    # reconcile grace timestamp (note_user_output_action) and the
-    # user-chosen-silence latch. Previously this federation path did not
-    # feed the latch/timestamp at all -- these tests cover that gap.
+    # Per-user-action bookkeeping: a switch made by a peer feeds the
+    # reconcile grace timestamp and the user-chosen-silence latch exactly
+    # as a switch made on the local web page does.
     # -------------------------------------------------------------------
 
     @staticmethod
-    def _make_fake_output(id_: str, name: str, *, selected: bool = False):
-        o = MagicMock()
-        o.id = id_
-        o.name = name
-        o.selected = selected
-        return o
+    def _post_output(tmp_path, body: dict, speakers):
+        state = _fake_state(tmp_path)
+        h = _make_handler("POST", "/api/federation/v1/output",
+                          body=json.dumps(body).encode(),
+                          headers={"Authorization": _get_bearer()})
+        FakeStore().outputs(speakers)
+        with patch("autostream_player_service.update_output", return_value=ActionResult(ok=True)), \
+             patch("autostream_player_service.submit_output_pin", return_value=ActionResult(ok=True)):
+            return _call(h, state)
 
-    @classmethod
-    def _make_list_outputs_ok(cls, outputs):
-        r = MagicMock(ok=True, outputs=outputs)
-        return r
-
-    def test_disable_to_zero_outputs_sets_latch(self, tmp_path):
+    def test_disable_to_zero_outputs_sets_latch(self, tmp_path, monkeypatch):
+        import autostream_output_intents as intents_mod
         from autostream_core import clear_user_silence_latch, user_silence_latch_active
         clear_user_silence_latch()
-        state = _fake_state(tmp_path)
-        bearer = _get_bearer()
-        body = json.dumps({"id": "42", "selected": False})
-        h = _make_handler("POST", "/api/federation/v1/output",
-                          body=body.encode(),
-                          headers={"Authorization": bearer})
-        ok_result = MagicMock(ok=True, error_code=None, message="")
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=self._make_list_outputs_ok([
-                       self._make_fake_output("42", "Kitchen", selected=False),
-                   ])), \
-             patch("autostream_appliance_models.update_output", return_value=ok_result), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok_result), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok_result), \
-             patch("autostream_appliance_models.note_user_output_action") as note_mock:
-            code, data = _call(h, state)
+        noted = []
+        monkeypatch.setitem(intents_mod._latch, "note", lambda: noted.append("note"))
+        code, data = self._post_output(
+            tmp_path, {"id": "42", "selected": False},
+            [FakeStore.output_row("42", "Kitchen", selected=True, volume_percent=40)])
         assert code == 200
         assert data["ok"] is True
         assert user_silence_latch_active() is True
-        note_mock.assert_called_once()
+        assert noted == ["note"]
 
-    def test_enable_clears_latch(self, tmp_path):
+    def test_enable_clears_latch(self, tmp_path, monkeypatch):
+        import autostream_output_intents as intents_mod
         from autostream_core import set_user_silence_latch, user_silence_latch_active
         set_user_silence_latch()
-        state = _fake_state(tmp_path)
-        bearer = _get_bearer()
-        body = json.dumps({"id": "42", "selected": True, "volume": 50})
-        h = _make_handler("POST", "/api/federation/v1/output",
-                          body=body.encode(),
-                          headers={"Authorization": bearer})
-        ok_result = MagicMock(ok=True, error_code=None, message="")
-        with patch("autostream_appliance_models.list_outputs",
-                   return_value=self._make_list_outputs_ok([])), \
-             patch("autostream_appliance_models.update_output", return_value=ok_result), \
-             patch("autostream_appliance_models.set_output_enabled", return_value=ok_result), \
-             patch("autostream_appliance_models.submit_output_pin", return_value=ok_result), \
-             patch("autostream_appliance_models.note_user_output_action") as note_mock:
-            code, data = _call(h, state)
+        noted = []
+        monkeypatch.setitem(intents_mod._latch, "note", lambda: noted.append("note"))
+        code, data = self._post_output(
+            tmp_path, {"id": "42", "selected": True, "volume": 50},
+            [FakeStore.output_row("42", "Kitchen", selected=False)])
         assert code == 200
         assert data["ok"] is True
         assert user_silence_latch_active() is False
-        note_mock.assert_called_once()
+        assert noted == ["note"]
 
     def test_unknown_federation_get_route_returns_400_invalid_endpoint(self, tmp_path):
         state = _fake_state(tmp_path)

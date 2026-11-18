@@ -14,7 +14,7 @@ Covers:
     restores with no step added and reports muted:false; the unmuted path
     is unchanged apart from carrying muted:false.
 4.  POST /api/dial/status: master_volume/muted while muted and unmuted.
-5.  apply_output_mutation(): enable-while-muted stays silent and remembers
+5.  submit_output_change(): enable-while-muted stays silent and remembers
     the requested level; a non-user volume-only write on an already-selected
     output while muted skips the OwnTone write and remembers instead; an
     explicit user-initiated volume write on an already-selected output
@@ -53,7 +53,7 @@ from fake_store import (
     FakeStore, fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_repeat,
     fake_session, fake_track,
 )
-from autostream_players import OutputInfo
+from autostream_players import ActionResult, OutputInfo
 
 
 @pytest.fixture(autouse=True)
@@ -443,93 +443,91 @@ class TestStatusMuteAware:
 
 
 # ---------------------------------------------------------------------------
-# 5. apply_output_mutation() hooks
+# 5. Output changes and the mute state
 # ---------------------------------------------------------------------------
 
-class TestApplyOutputMutationMuteHooks:
-    def test_enable_while_muted_writes_real_then_silences_and_remembers(self):
-        import autostream_appliance_models as models
-        mute_state.begin_mute({})
+class TestOutputChangeMuteHooks:
+    @staticmethod
+    def _arrange(selected: bool, volume: int = 30):
+        FakeStore().outputs([FakeStore.output_row("o1", "Speaker", selected=selected, volume_percent=volume)])
+
+    @pytest.fixture
+    def writes(self, monkeypatch):
+        import autostream_player_service as ps
         calls = []
 
-        def fake_update_output(base_url, out_id, **kwargs):
-            calls.append(kwargs.get("volume_percent"))
-            return _update_result(True)
+        def update_output(base_url, out_id, **kwargs):
+            calls.append(kwargs)
+            return ActionResult(ok=True)
 
-        with patch("autostream_appliance_models._resolve_output_info", return_value=("Speaker", False)), \
-             patch("autostream_appliance_models.update_output", side_effect=fake_update_output), \
-             patch("autostream_appliance_models.request_nowplaying_republish"), \
-             patch("autostream_appliance_models.clear_user_silence_latch"), \
-             patch("autostream_appliance_models._update_cached_selected"), \
-             patch("autostream_appliance_models.note_user_output_action"):
-            result = models.apply_output_mutation(
-                "http://x", "o1", {"selected": True, "volume": 55}, initiated_by="system",
-            )
+        monkeypatch.setattr(ps, "update_output", update_output)
+        return calls
+
+    def test_enable_while_muted_writes_real_then_silences_and_remembers(self, writes):
+        import autostream_appliance_models as models
+        from autostream_state import Origin
+        self._arrange(selected=False)
+        mute_state.begin_mute({})
+        result = models.submit_output_change(
+            {"id": "o1", "selected": True, "volume": 55},
+            requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
+        )
         assert result == {"ok": True, "id": "o1"}
-        assert calls == [55, 0]  # real enable write, then the silencing write
+        # real enable write, then the silencing write
+        assert [w.get("volume_percent") for w in writes] == [55, 0]
         assert mute_state.intended_level("o1", 0) == 55
 
-    def test_slider_write_while_muted_skips_owntone_and_remembers(self):
+    def test_slider_write_while_muted_skips_owntone_and_remembers(self, writes):
         """A non-user (system) write on an already-selected output while
         muted keeps the old sticky behaviour: remember and skip."""
         import autostream_appliance_models as models
+        from autostream_state import Origin
+        self._arrange(selected=True)
         mute_state.begin_mute({"o1": 40})
-        with patch("autostream_appliance_models._resolve_output_info", return_value=("Speaker", True)), \
-             patch("autostream_appliance_models.update_output") as mock_update, \
-             patch("autostream_appliance_models.note_user_output_action"):
-            result = models.apply_output_mutation(
-                "http://x", "o1", {"selected": True, "volume": 12}, initiated_by="system",
-            )
+        result = models.submit_output_change(
+            {"id": "o1", "selected": True, "volume": 12},
+            requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
+        )
         assert result == {"ok": True, "id": "o1"}
-        mock_update.assert_not_called()
+        assert writes == []
         assert mute_state.intended_level("o1", 0) == 12
         assert mute_state.is_muted() is True
 
-    def test_user_slider_write_while_muted_ends_mute_and_writes(self):
+    def test_user_slider_write_while_muted_ends_mute_and_writes(self, writes):
         """The WebUI has no unmute control: an explicit user-initiated
         volume set on an already-selected output while muted is the unmute
         path -- the mute ends and the OwnTone write happens for real,
         instead of being remembered and skipped."""
         import autostream_appliance_models as models
+        self._arrange(selected=True)
         mute_state.begin_mute({"o1": 40})
-        with patch("autostream_appliance_models._resolve_output_info", return_value=("Speaker", True)), \
-             patch("autostream_appliance_models.update_output", return_value=_update_result(True)) as mock_update, \
-             patch("autostream_appliance_models.request_nowplaying_republish"), \
-             patch("autostream_appliance_models.clear_user_silence_latch"), \
-             patch("autostream_appliance_models._update_cached_selected"), \
-             patch("autostream_appliance_models.note_user_output_action"):
-            result = models.apply_output_mutation(
-                "http://x", "o1", {"selected": True, "volume": 65}, initiated_by="user",
-            )
+        result = models.submit_output_change(
+            {"id": "o1", "selected": True, "volume": 65},
+            requester="webui", pin_requester=None,
+        )
         assert result == {"ok": True, "id": "o1"}
-        mock_update.assert_called_once()
-        assert mock_update.call_args.kwargs.get("volume_percent") == 65
+        assert len(writes) == 1
+        assert writes[0].get("volume_percent") == 65
         assert mute_state.is_muted() is False
 
-    def test_slider_write_while_unmuted_is_unchanged(self):
+    def test_slider_write_while_unmuted_is_unchanged(self, writes):
         import autostream_appliance_models as models
-        with patch("autostream_appliance_models._resolve_output_info", return_value=("Speaker", True)), \
-             patch("autostream_appliance_models.update_output", return_value=_update_result(True)) as mock_update, \
-             patch("autostream_appliance_models.request_nowplaying_republish"), \
-             patch("autostream_appliance_models.clear_user_silence_latch"), \
-             patch("autostream_appliance_models._update_cached_selected"), \
-             patch("autostream_appliance_models.note_user_output_action"):
-            result = models.apply_output_mutation(
-                "http://x", "o1", {"selected": True, "volume": 12}, initiated_by="system",
-            )
+        from autostream_state import Origin
+        self._arrange(selected=True)
+        result = models.submit_output_change(
+            {"id": "o1", "selected": True, "volume": 12},
+            requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
+        )
         assert result == {"ok": True, "id": "o1"}
-        mock_update.assert_called_once()
+        assert len(writes) == 1
 
-    def test_disable_forgets_remembered_level(self):
+    def test_disable_forgets_remembered_level(self, writes):
         import autostream_appliance_models as models
+        self._arrange(selected=True)
         mute_state.begin_mute({"o1": 40})
-        with patch("autostream_appliance_models.set_output_enabled", return_value=_update_result(True)), \
-             patch("autostream_appliance_models._update_cached_selected"), \
-             patch("autostream_appliance_models.note_user_output_action"), \
-             patch("autostream_appliance_models.list_outputs", return_value=_list_result([])):
-            result = models.apply_output_mutation(
-                "http://x", "o1", {"selected": False}, initiated_by="user",
-            )
+        result = models.submit_output_change(
+            {"id": "o1", "selected": False}, requester="webui", pin_requester=None,
+        )
         assert result == {"ok": True, "id": "o1"}
         assert mute_state.intended_level("o1", 77) == 77  # forgotten -> falls back to actual
 
