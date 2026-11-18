@@ -177,7 +177,6 @@ CONTENT_COMPACT = "compact"
 CONTENT_BASE = "base"
 CONTENT_RICH = "rich"
 CONTENT_LARGE = "large"
-_CONTENT_TIERS = (CONTENT_COMPACT, CONTENT_BASE, CONTENT_RICH, CONTENT_LARGE)
 
 RICH_MIN_SHORT_SIDE_PX = 200   # logical short side at/above which the rich tier applies
 LARGE_MIN_SHORT_SIDE_PX = 400  # logical short side at/above which the large tier applies

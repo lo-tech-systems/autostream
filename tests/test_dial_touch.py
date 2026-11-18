@@ -190,10 +190,10 @@ class TestAlreadyVisibleArmsAtTouchDown:
 class TestRevealOnlyFirstTouch:
     def test_touch_down_while_hidden_only_reveals(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        assert sm.overlay_visible is False
+        assert sm._overlay_visible is False
         actions = sm.on_filter_event(press_event(UP_XY), now=0.0)
         assert kinds(actions) == [ACTION_REVEAL_OVERLAY]
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
         # No zone sampled / armed yet.
         assert sm.pressed_zone is None
 
@@ -218,7 +218,7 @@ class TestRevealOnlyFirstTouch:
         # is. It just returns the session to idle.
         assert actions == []
         assert sm.pressed_zone is None
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
     def test_reveal_only_contact_never_actuates_however_long_held(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -248,7 +248,7 @@ class TestRevealOnlyFirstTouch:
         sm.on_filter_event(press_event(UP_XY), now=0.0)
         sm.overlay_live(now=0.1)
         sm.on_filter_event(release_event(UP_XY), now=0.2)
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
         assert sm.pressed_zone is None
 
         # A second, deliberate press while the overlay is still visible arms
@@ -272,7 +272,7 @@ class TestDismiss:
         assert sm.tick(now=1.0 + DISMISS_S - 0.01) == []
         actions = sm.tick(now=1.0 + DISMISS_S)
         assert kinds(actions) == [ACTION_DISMISS_OVERLAY]
-        assert sm.overlay_visible is False
+        assert sm._overlay_visible is False
 
     def test_contact_sample_resets_dismiss_even_during_long_hold(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -287,7 +287,7 @@ class TestDismiss:
             actions = sm.tick(now=t)
             assert ACTION_DISMISS_OVERLAY not in kinds(actions)
         assert t > DISMISS_S  # proves the hold really did outlast the timer
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
     def test_cap_starts_dismiss_clock_as_implicit_release(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -311,8 +311,8 @@ class TestHeldVisible:
     def test_press_while_held_arms_immediately_no_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         assert sm.set_held_visible(True, now=0.0) == []
-        assert sm.held_visible is True
-        assert sm.overlay_visible is True
+        assert sm._held is True
+        assert sm._overlay_visible is True
 
         actions = sm.on_filter_event(press_event(UP_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_VOLUME_UP]
@@ -327,7 +327,7 @@ class TestHeldVisible:
 
         actions = sm.tick(now=0.2 + DISMISS_S + 1.0)
         assert ACTION_DISMISS_OVERLAY not in kinds(actions)
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
     def test_unheld_after_visible_dismisses_and_next_press_only_reveals(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -335,8 +335,8 @@ class TestHeldVisible:
 
         actions = sm.set_held_visible(False, now=1.0)
         assert kinds(actions) == [ACTION_DISMISS_OVERLAY]
-        assert sm.overlay_visible is False
-        assert sm.held_visible is False
+        assert sm._overlay_visible is False
+        assert sm._held is False
 
         actions = sm.on_filter_event(press_event(UP_XY), now=1.1)
         assert kinds(actions) == [ACTION_REVEAL_OVERLAY]
@@ -735,28 +735,28 @@ class TestTouchEventSourceHeldPolling:
         )
 
         source._poll_held_visible()  # False -> baseline, not held
-        assert sm.held_visible is False
+        assert sm._held is False
 
         source._poll_held_visible()  # False -> False, no change
-        assert sm.held_visible is False
+        assert sm._held is False
 
         source._poll_held_visible()  # False -> True
-        assert sm.held_visible is True
-        assert sm.overlay_visible is True
+        assert sm._held is True
+        assert sm._overlay_visible is True
 
         source._poll_held_visible()  # True -> True, no change
-        assert sm.held_visible is True
+        assert sm._held is True
 
         source._poll_held_visible()  # True -> False
-        assert sm.held_visible is False
-        assert sm.overlay_visible is False
+        assert sm._held is False
+        assert sm._overlay_visible is False
 
     def test_raising_getter_is_treated_as_false(self):
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_held_visible(True, now=0.0)
-        assert sm.held_visible is True
+        assert sm._held is True
 
         def boom():
             raise RuntimeError("display gone")
@@ -765,7 +765,7 @@ class TestTouchEventSourceHeldPolling:
             driver, touch_filter, sm, get_persistent_overlay=boom,
         )
         source._poll_held_visible()
-        assert sm.held_visible is False
+        assert sm._held is False
 
     def test_no_getter_injected_is_a_no_op(self):
         driver = FakeDriver()
@@ -773,7 +773,7 @@ class TestTouchEventSourceHeldPolling:
         sm = TouchStateMachine(WIDTH, HEIGHT)
         source = TouchEventSource(driver, touch_filter, sm)
         source._poll_held_visible()  # must not raise, must not change anything
-        assert sm.held_visible is False
+        assert sm._held is False
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +795,7 @@ class TestOverlayHidden:
         sm._dismiss_deadline = 5.0
         actions = sm.overlay_hidden(now=1.0)
         assert kinds(actions) == [ACTION_DISMISS_OVERLAY]
-        assert sm.overlay_visible is False
+        assert sm._overlay_visible is False
         assert sm._dismiss_deadline is None
         assert sm._phase == "idle"
 
@@ -816,8 +816,8 @@ class TestOverlayHidden:
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_held_visible(True, now=0.0)
         assert sm.overlay_hidden(now=1.0) == []
-        assert sm.overlay_visible is True
-        assert sm.held_visible is True
+        assert sm._overlay_visible is True
+        assert sm._held is True
 
     def test_not_visible_is_a_noop(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1330,17 +1330,17 @@ class TestSetSurface:
     def test_change_to_hidden_emits_dismiss(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_HELD, False, now=0.0)
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
         actions = sm.set_surface(SURFACE_HIDDEN, False, now=0.1)
         assert any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
-        assert sm.overlay_visible is False
+        assert sm._overlay_visible is False
 
     def test_change_to_held_or_selector_counts_as_visible(self):
         for target in (SURFACE_HELD, SURFACE_SELECTOR):
             sm = TouchStateMachine(WIDTH, HEIGHT)
             sm.set_surface(target, False, now=0.0)
-            assert sm.overlay_visible is True
-            assert sm.held_visible is True
+            assert sm._overlay_visible is True
+            assert sm._held is True
 
     def test_dismiss_clock_disabled_on_selector(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1351,7 +1351,7 @@ class TestSetSurface:
         # tick() — far past DISMISS_S, the overlay stays "visible".
         actions = sm.tick(now=DISMISS_S * 10)
         assert not any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
 
 class TestTouchEventSourceSurfacePolling:
@@ -1419,11 +1419,11 @@ class TestTouchEventSourceSurfacePolling:
         # exactly the "byte for byte" guarantee: existing wiring that only
         # ever polled get_persistent_overlay must see no new behaviour.
         source._poll_surface()
-        assert sm.held_visible is False
+        assert sm._held is False
         source._poll_surface()
-        assert sm.held_visible is True
+        assert sm._held is True
         source._poll_surface()
-        assert sm.held_visible is False
+        assert sm._held is False
 
     def test_no_getter_at_all_is_a_no_op(self):
         driver = FakeDriver()
@@ -1432,7 +1432,7 @@ class TestTouchEventSourceSurfacePolling:
         source = TouchEventSource(driver, touch_filter, sm)
         source._poll_surface()  # must not raise, must not change anything
         assert sm.surface == SURFACE_HIDDEN
-        assert sm.held_visible is False
+        assert sm._held is False
 
 
 class TestZoneTapDispatch:
@@ -1546,8 +1546,8 @@ class TestNewSurfacesArmImmediately:
     def test_surface_counts_as_visible_and_held(self, surface):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(surface, False, now=0.0, dots_active=True)
-        assert sm.overlay_visible is True
-        assert sm.held_visible is True
+        assert sm._overlay_visible is True
+        assert sm._held is True
 
     def test_repeat_play_arms_immediately_without_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1611,7 +1611,7 @@ class TestNewSurfacesArmImmediately:
             sm.set_surface(surface, False, now=0.0)
             actions = sm.tick(now=DISMISS_S * 10)
             assert not any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
-            assert sm.overlay_visible is True
+            assert sm._overlay_visible is True
 
 
 class TestInfoSurface:
@@ -1668,8 +1668,8 @@ class TestInfoValueSurface:
     def test_arms_immediately_like_every_other_held_surface(self):
         sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
         sm.set_surface(SURFACE_INFO_VALUE, False, now=0.0)
-        assert sm.overlay_visible is True
-        assert sm.held_visible is True
+        assert sm._overlay_visible is True
+        assert sm._held is True
 
     @pytest.mark.parametrize("xy", [(0, 0), (120, 120), (239, 239)])
     def test_a_press_anywhere_reports_list_back(self, xy):
@@ -1897,7 +1897,7 @@ class TestForceOverlayVisible:
         sm = TouchStateMachine(WIDTH, HEIGHT)
         actions = sm.force_overlay_visible(now=0.0)
         assert actions == [TouchAction(ACTION_REVEAL_OVERLAY)]
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
     def test_undoes_a_surface_change_dismiss_within_the_same_tick(self):
         """The exact sequence _poll_surface() drives: the repeat surface's
@@ -1906,14 +1906,14 @@ class TestForceOverlayVisible:
         after must bring it straight back."""
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_REPEAT, True, now=0.0, dots_active=True)
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
         dismiss_actions = sm.set_surface(SURFACE_HIDDEN, False, now=1.0)
         assert any(a.kind == ACTION_DISMISS_OVERLAY for a in dismiss_actions)
-        assert sm.overlay_visible is False
+        assert sm._overlay_visible is False
 
         reveal_actions = sm.force_overlay_visible(now=1.0)
         assert reveal_actions == [TouchAction(ACTION_REVEAL_OVERLAY)]
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
     def test_auto_dismisses_normally_afterwards(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1927,7 +1927,7 @@ class TestForceOverlayVisible:
         sm.force_overlay_visible(now=0.0)
         actions = sm.tick(now=DISMISS_S * 10)
         assert not any(a.kind == ACTION_DISMISS_OVERLAY for a in actions)
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
 
 class TestRepeatCloseRevealWiring:
@@ -1951,7 +1951,7 @@ class TestRepeatCloseRevealWiring:
         source._poll_surface()  # -> SURFACE_REPEAT (held visible, no reveal action)
         source._poll_surface()  # -> SURFACE_HIDDEN: dismissed, then force-revealed
         assert len(reveal_calls) == 1
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
     def test_no_extra_reveal_when_flag_not_set(self):
         driver = FakeDriver()
@@ -1968,7 +1968,7 @@ class TestRepeatCloseRevealWiring:
         source._poll_surface()  # -> SURFACE_REPEAT (held visible, no reveal action)
         source._poll_surface()  # -> SURFACE_HIDDEN, flag clear: dismissed, stays hidden
         assert reveal_calls == []
-        assert sm.overlay_visible is False
+        assert sm._overlay_visible is False
 
     def test_not_consulted_for_a_transition_that_is_not_away_from_repeat(self):
         driver = FakeDriver()
@@ -2020,8 +2020,8 @@ class TestNewSurfaceMapsToGeometryRepeatReplay:
     def test_arms_immediately_like_every_other_held_surface(self):
         sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
         sm.set_surface(SURFACE_REPEAT_REPLAY, True, now=0.0, dots_active=True)
-        assert sm.overlay_visible is True
-        assert sm.held_visible is True
+        assert sm._overlay_visible is True
+        assert sm._held is True
 
     def test_bl_arms_repeat_start(self):
         sm = TouchStateMachine(240, 240, metrics=_COMPACT_METRICS)
@@ -2102,7 +2102,7 @@ class TestRepeatSurfacesFormOneSet:
         source._poll_surface()  # -> SURFACE_REPEAT_REPLAY
         source._poll_surface()  # -> SURFACE_HIDDEN: leaves the set, reveals
         assert len(reveal_calls) == 1
-        assert sm.overlay_visible is True
+        assert sm._overlay_visible is True
 
     def test_repeat_replay_to_held_does_fire_the_close_reveal(self):
         driver = FakeDriver()
@@ -2152,7 +2152,7 @@ class TestCardAndRestartingSurfaces:
     def test_restarting_surface_is_held_but_inert(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_RESTARTING, False, now=0.0)
-        assert sm.held_visible is True
+        assert sm._held is True
         for xy in (UP_XY, DOWN_XY, MUTE_XY, (WIDTH // 2, HEIGHT // 2)):
             assert sm.on_filter_event(press_event(xy), now=0.1) == []
             sm.on_filter_event(release_event(), now=0.2)
@@ -2228,8 +2228,8 @@ class TestOutputsSurfaceMapping:
     def test_surface_outputs_counts_as_visible_and_held(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_OUTPUTS, False, now=0.0)
-        assert sm.overlay_visible is True
-        assert sm.held_visible is True
+        assert sm._overlay_visible is True
+        assert sm._held is True
 
     def test_surface_output_maps_to_geometry_output(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -2241,8 +2241,8 @@ class TestOutputsSurfaceMapping:
     def test_surface_output_counts_as_visible_and_held(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_OUTPUT, False, now=0.0)
-        assert sm.overlay_visible is True
-        assert sm.held_visible is True
+        assert sm._overlay_visible is True
+        assert sm._held is True
 
     def test_name_zone_reused_on_the_output_surface(self):
         """NAME is reused from the main surface on the output detail page —
@@ -2491,10 +2491,10 @@ class TestAsleepTouchOnlyWakes:
     def test_press_emits_only_wake_and_contact_is_inert(self, surface, overlay_visible, xy):
         sleep = _Sleep(True)
         sm = self._sm(surface, overlay_visible, sleep)
-        visible_before = sm.overlay_visible
+        visible_before = sm._overlay_visible
         assert kinds(sm.on_filter_event(press_event(xy), now=1.0)) == [ACTION_WAKE]
         assert sm.pressed_zone is None
-        assert sm.overlay_visible == visible_before
+        assert sm._overlay_visible == visible_before
         # Held well past the repeat delay and the dismiss time, dragging,
         # even if the panel wakes mid-contact: nothing acts.
         t = 1.0
@@ -2617,7 +2617,7 @@ class TestArtworkBell:
         actions = sm.on_filter_event(press_event(CORNER_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
         assert _tap_kinds(actions) == [TouchZone.ARTWORK_BELL]
-        assert sm.overlay_visible is False          # nothing was revealed
+        assert sm._overlay_visible is False          # nothing was revealed
 
     def test_every_other_first_touch_still_only_reveals(self):
         for xy in (UP_XY, MUTE_XY, NAME_XY, ARTWORK_XY, (3, HEIGHT - 3)):

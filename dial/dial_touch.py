@@ -354,22 +354,8 @@ class TouchStateMachine:
     # -- read-only state, for a compositor/UI to consult -------------------
 
     @property
-    def overlay_visible(self) -> bool:
-        return self._overlay_visible
-
-    @property
-    def held_visible(self) -> bool:
-        return self._held
-
-    @property
     def pressed_zone(self) -> TouchZone | None:
         return self._armed_zone if self._pressed_lit else None
-
-    @property
-    def pressed_index(self) -> int | None:
-        """The row index alongside pressed_zone, for LIST_ROW; None for
-        every other zone or when nothing is pressed."""
-        return self._armed_index if self._pressed_lit else None
 
     @property
     def surface(self) -> str:
