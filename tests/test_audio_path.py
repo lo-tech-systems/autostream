@@ -31,6 +31,7 @@ import autostream_player_service as svc
 import autostream_players as ap
 import autostream_live_config as live_config
 import autostream_startup as startup
+import webui.browser.api_settings as webui_api_settings
 
 
 # ---------------------------------------------------------------------------
@@ -657,8 +658,8 @@ class TestLiveAudioPath:
 
     def test_field_registered_with_correct_validator_and_live_fn(self):
         import autostream_webui_api as api
-        assert "general.audio_path" in api._SETTINGS_FIELDS
-        section, key, validator, live_fn = api._SETTINGS_FIELDS["general.audio_path"]
+        assert "general.audio_path" in webui_api_settings._SETTINGS_FIELDS
+        section, key, validator, live_fn = webui_api_settings._SETTINGS_FIELDS["general.audio_path"]
         assert section == "general"
         assert key == "audio_path"
         assert validator is live_config._validate_audio_path

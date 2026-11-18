@@ -48,13 +48,11 @@ from autostream_config import (
     REPEAT_TARGET_MINUTES_MAX,
 )
 from autostream_settings import SettingsStore, as_view
-from autostream_webui_api import (
-    _SETTINGS_FIELDS,
-    send_repeat_post_json,
-    send_settings_get_json,
-    send_settings_post_json,
-    send_status_json,
-)
+from webui.browser.home_api import send_status_json
+from webui.browser.api_settings import send_settings_post_json
+from webui.browser.api_settings import send_settings_get_json
+from webui.repeat import send_repeat_post_json
+from webui.browser.api_settings import _SETTINGS_FIELDS
 from autostream_live_config import _validate_repeat_target_minutes
 from autostream_live_config import _validate_repeat_codec
 import autostream_core as core

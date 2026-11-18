@@ -31,10 +31,8 @@ import autostream_core as _core_mod
 from autostream_audio_monitor import AudioMonitor
 from autostream_monitor_client import MonitorClient
 from autostream_settings import SettingsStore, as_view
-from autostream_webui_api import (
-    _SETTINGS_FIELDS,
-    send_settings_post_json,
-)
+from webui.browser.api_settings import send_settings_post_json
+from webui.browser.api_settings import _SETTINGS_FIELDS
 from autostream_live_config import _validate_track_id_silence
 from autostream_live_config import _validate_track_id_refresh
 from autostream_live_config import _validate_track_id_lead_in

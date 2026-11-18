@@ -23,6 +23,7 @@ import autostream_logging as log_setup
 import autostream_webui_api as api
 from fake_store import FakeStore
 import webui.common as webui_common
+import webui.browser.home_api as webui_home_api
 
 
 @pytest.fixture
@@ -45,7 +46,7 @@ def _call(reachable: bool):
     handler.wfile = io.BytesIO()
     cfg = SimpleNamespace(owntone=SimpleNamespace(base_url="http://localhost:3689"))
     with patch.object(webui_common, "_config_snapshot", return_value=cfg),          patch.object(webui_common, "_session_playing", return_value=False):
-        api.send_audio_status_json(handler, MagicMock())
+        webui_home_api.send_audio_status_json(handler, MagicMock())
 
 
 def _levels(caplog):

@@ -376,7 +376,7 @@ def dispatch(handler, method: str, path: str) -> bool:
         # caller (a test, or a future addition) that pre-populates
         # ``_parsed_body`` itself. Either way, the result is (re-)stashed on
         # the transient attribute so same-request helpers that read it after
-        # the fact (e.g. autostream_webui._route_post_json_obj) keep seeing
+        # the fact (e.g. webui.common._route_post_json_obj) keep seeing
         # it, matching this attribute's original contract.
         cached = getattr(handler, "_parsed_body", None)
         if cached is not None:

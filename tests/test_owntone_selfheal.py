@@ -549,7 +549,7 @@ class TestMaybeRetryOwntoneRecoveryLog:
 
 class TestStatusPassthrough:
     def test_owntone_selfheal_block_present_in_status_json(self):
-        from autostream_webui_api import send_status_json
+        from webui.browser.home_api import send_status_json
 
         selfheal._set_owntone_selfheal_state(
             reconcile_fired_count=2, reconcile_last_fired_at=42.0,
@@ -583,7 +583,7 @@ class TestStatusPassthrough:
         -Infinity (invalid JSON) which every browser's JSON.parse rejects
         wholesale, silently breaking every /api/status consumer in the web
         UI while all Python-side parsing accepted it."""
-        from autostream_webui_api import send_status_json
+        from webui.browser.home_api import send_status_json
 
         selfheal._set_owntone_selfheal_state(
             reconcile_fired_count=0, reconcile_last_fired_at=float("-inf"),

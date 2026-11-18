@@ -22,6 +22,7 @@ if _CORE not in sys.path:
 import autostream_webui_api as api
 from autostream_settings import SettingsStore, as_view
 from fake_store import FakeStore, fake_levels
+import webui.browser.home_api as webui_home_api
 
 
 @pytest.fixture
@@ -70,7 +71,7 @@ def _backend_down() -> ExitStack:
     return stack
 
 
-@pytest.mark.parametrize("route", [api.send_status_json, api.send_owntone_outputs_state_json])
+@pytest.mark.parametrize("route", [webui_home_api.send_status_json, webui_home_api.send_owntone_outputs_state_json])
 def test_a_reply_is_the_same_whether_or_not_the_backend_answers(route, state):
     _arrange()
     expected = _reply(route, state)
@@ -81,7 +82,7 @@ def test_a_reply_is_the_same_whether_or_not_the_backend_answers(route, state):
 
 def test_the_speaker_list_follows_the_in_memory_settings(state):
     _arrange()
-    code, body = _reply(api.send_owntone_outputs_state_json, state)
+    code, body = _reply(webui_home_api.send_owntone_outputs_state_json, state)
     assert code == 200
     names = [o["name"] for o in body["outputs"]]
     # The default speaker leads and the hidden one is left out.
@@ -92,13 +93,13 @@ def test_the_speaker_list_follows_the_in_memory_settings(state):
 
 def test_the_speaker_list_is_empty_while_the_player_is_unreachable(state):
     FakeStore().outputs_unreachable()
-    code, body = _reply(api.send_owntone_outputs_state_json, state)
+    code, body = _reply(webui_home_api.send_owntone_outputs_state_json, state)
     assert (code, body["outputs"]) == (200, [])
 
 
 def test_the_status_reply_carries_its_fields_from_the_snapshot(state):
     _arrange()
-    code, body = _reply(api.send_status_json, state)
+    code, body = _reply(webui_home_api.send_status_json, state)
     assert code == 200
     for key in ("input_levels", "playback", "track_identification", "playback_banner_text",
                 "belt_banner_text", "bearing_banner_text", "dial_update_banner_text",

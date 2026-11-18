@@ -1139,7 +1139,7 @@ class TestRouteRegistration:
 
 class TestDoubleAssignmentGuard:
     def test_second_input_rejected_when_first_already_bluetooth(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(
             tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
         )
@@ -1157,7 +1157,7 @@ class TestDoubleAssignmentGuard:
         assert "bluetooth" in body["error"].lower() or "assigned" in body["error"].lower()
 
     def test_first_input_rejected_when_second_already_bluetooth(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(
             tmp_path, audio2={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
         )
@@ -1174,7 +1174,7 @@ class TestDoubleAssignmentGuard:
         assert body["ok"] is False
 
     def test_assigning_bluetooth_to_first_input_when_free_succeeds(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -1189,7 +1189,7 @@ class TestDoubleAssignmentGuard:
         assert body["ok"] is True
 
     def test_different_device_from_bluetooth_still_succeeds(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(
             tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
         )
@@ -1208,7 +1208,7 @@ class TestDoubleAssignmentGuard:
     def test_ordinary_duplicate_device_rejected(self, tmp_path):
         """The guard is not Bluetooth-specific -- any device already
         assigned to the other input is rejected, e.g. two USB devices."""
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(
             tmp_path, audio1={"capture_device": "hw:1,0"},
         )
@@ -1226,7 +1226,7 @@ class TestDoubleAssignmentGuard:
         assert "assigned" in body["error"].lower()
 
     def test_ordinary_device_free_to_assign_when_not_taken(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(
             tmp_path, audio1={"capture_device": "hw:1,0"},
         )
@@ -1257,7 +1257,7 @@ class TestDoubleAssignmentGuard:
         Bluetooth (as if a concurrent request had just landed it).  Only the
         mutator-level check -- not the fast path -- can catch this.
         """
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         stale_snapshot = store.snapshot()  # audio1 not yet Bluetooth
 
@@ -1285,7 +1285,7 @@ class TestDoubleAssignmentGuard:
     def test_reassigning_same_input_to_bluetooth_is_not_a_double_assignment(self, tmp_path):
         """Re-saving audio1 as Bluetooth while audio1 itself already holds it
         must not be rejected as a conflict with 'the other input'."""
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(
             tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
         )
@@ -1310,7 +1310,7 @@ class TestDoubleAssignmentGuard:
 
 class TestCaptureDeviceRejectsLoopbackPlayback:
     def test_rejected_when_bluetooth_enabled(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -1328,7 +1328,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         assert "loopback" in body["error"].lower() or "internal" in body["error"].lower()
 
     def test_rejected_for_second_input_too_when_bluetooth_enabled(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -1347,7 +1347,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         """Byte-identical validator behaviour when Bluetooth mode is off --
         the raw hw: string is just an (unusual but well-formed) capture
         device value with no special meaning."""
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -1365,7 +1365,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
     def test_capture_side_still_accepted_when_bluetooth_enabled(self, tmp_path):
         """The CAPTURE side (BLUETOOTH_CAPTURE_DEVICE) is the valid Bluetooth
         input entry -- must not be caught by the playback-side guard."""
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -1381,7 +1381,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         assert body["ok"] is True
 
     def test_ordinary_device_still_accepted_when_bluetooth_enabled(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:

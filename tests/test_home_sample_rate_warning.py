@@ -28,7 +28,7 @@ from fake_store import FakeStore, fake_levels, fake_outputs, fake_playback, fake
 import webui.browser.home_model as models
 from autostream_state import store
 from autostream_input_status import SAMPLE_RATE_MISMATCH_BANNER_TEXT
-from autostream_webui_api import send_status_json
+from webui.browser.home_api import send_status_json
 from webui.browser.home import send_airplay_page
 import webui.browser.home_model as webui_home_model
 

@@ -83,7 +83,7 @@ def _make_handler():
 
 class TestOutputVisibility:
     def test_hide_output_adds_to_hidden(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_visibility_json
+        from webui.browser.api_owntone import send_owntone_output_visibility_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -96,7 +96,7 @@ class TestOutputVisibility:
         assert "Kitchen" in (snap.webui.hidden_outputs or [])
 
     def test_show_output_removes_from_hidden(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_visibility_json
+        from webui.browser.api_owntone import send_owntone_output_visibility_json
         config_path = _make_config(str(tmp_path), extra={"webui": {"hidden_outputs": ["Kitchen"]}})
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -109,7 +109,7 @@ class TestOutputVisibility:
         assert "Kitchen" not in (snap.webui.hidden_outputs or [])
 
     def test_known_output_updated_when_id_provided(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_visibility_json
+        from webui.browser.api_owntone import send_owntone_output_visibility_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -125,7 +125,7 @@ class TestOutputVisibility:
         assert saved_state["owntone"]["known_outputs"].get("42") == "Kitchen"
 
     def test_missing_output_name_returns_400(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_visibility_json
+        from webui.browser.api_owntone import send_owntone_output_visibility_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -136,7 +136,7 @@ class TestOutputVisibility:
         assert sent["code"] == 400
 
     def test_non_bool_visible_returns_400(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_visibility_json
+        from webui.browser.api_owntone import send_owntone_output_visibility_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -147,7 +147,7 @@ class TestOutputVisibility:
         assert sent["code"] == 400
 
     def test_no_store_returns_error_not_500(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_visibility_json
+        from webui.browser.api_owntone import send_owntone_output_visibility_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         state = _make_state(config_path, state_path, None)
@@ -162,7 +162,7 @@ class TestOutputVisibility:
 
 class TestOutputMode:
     def test_valid_mode_stored(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -176,7 +176,7 @@ class TestOutputMode:
         assert snap.owntone.output_airplay_modes.get("42") == "raop"
 
     def test_invalid_mode_returns_400(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -187,7 +187,7 @@ class TestOutputMode:
         assert sent["code"] == 400
 
     def test_missing_output_id_returns_400(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -198,7 +198,7 @@ class TestOutputMode:
         assert sent["code"] == 400
 
     def test_live_runtime_updated(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -221,7 +221,7 @@ class TestBufferedModeGuard:
     _NON_BUFFERED_MODES = ("default", "raop", "airplay2")
 
     def test_buffered_modes_rejected_when_buffered_audio_off(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         for mode in self._BUFFERED_MODES:
             config_path = _make_config(str(tmp_path))
             state_path = _make_state_file(str(tmp_path))
@@ -240,7 +240,7 @@ class TestBufferedModeGuard:
             assert "42" not in (snap.owntone.output_airplay_modes or {})
 
     def test_buffered_modes_succeed_when_buffered_audio_on(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         for mode in self._BUFFERED_MODES:
             config_path = _make_config(str(tmp_path))
             state_path = _make_state_file(str(tmp_path))
@@ -256,7 +256,7 @@ class TestBufferedModeGuard:
             assert snap.owntone.output_airplay_modes.get("42") == mode
 
     def test_non_buffered_modes_unaffected_regardless_of_buffered_audio_state(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         for mode in self._NON_BUFFERED_MODES:
             for buffered_state in (False, True):
                 config_path = _make_config(str(tmp_path))
@@ -274,7 +274,7 @@ class TestBufferedModeGuard:
     def test_non_buffered_mode_does_not_probe_buffered_audio(self, tmp_path):
         """The guard checks `mode in BUFFERED_AIRPLAY_MODES` first, so a non-buffered
         mode must never trigger the (network-bound) buffered-audio probe."""
-        from autostream_webui_api import send_owntone_output_mode_json
+        from webui.browser.api_owntone import send_owntone_output_mode_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -338,7 +338,7 @@ class TestBufferedAudioIsEnabledHelper:
 
 class TestOutputOffset:
     def test_offset_stored(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -352,7 +352,7 @@ class TestOutputOffset:
         assert snap.owntone.output_offsets_ms.get("42") == 250
 
     def test_offset_clamped_to_range(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -364,7 +364,7 @@ class TestOutputOffset:
         assert sent["body"]["offset_ms"] == 2000
 
     def test_non_numeric_offset_returns_400(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -377,7 +377,7 @@ class TestOutputOffset:
     def test_live_push_attempted_and_reported_when_capability_true(self, tmp_path):
         """capability + live-offset both true -> update_output is called and
         applied_live reflects its result; the store write still happens."""
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         from autostream_players import ActionResult, BackendCapabilities
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
@@ -401,7 +401,7 @@ class TestOutputOffset:
         assert snap.owntone.output_offsets_ms.get("42") == 300
 
     def test_live_push_skipped_when_capability_false(self, tmp_path):
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         from autostream_players import BackendCapabilities
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
@@ -422,7 +422,7 @@ class TestOutputOffset:
     def test_ok_and_applied_live_false_when_backend_unreachable(self, tmp_path):
         """Store write must succeed even when the live push blows up entirely
         (owntone down / connection refused) -- ok stays True, applied_live False."""
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -440,7 +440,7 @@ class TestOutputOffset:
 
     def test_negative_offset_clamped_to_start_buffer_derived_floor(self, tmp_path):
         """start_buffer_ms=1000 -> floor is -(1000-250) = -750, tighter than -2000."""
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -460,7 +460,7 @@ class TestOutputOffset:
     def test_negative_offset_not_clamped_when_start_buffer_wide_enough(self, tmp_path):
         """start_buffer_ms=2250 (default) -> floor is -2000, not -(2250-250)=-2000
         either way; a mid-range negative offset must pass through unchanged."""
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -478,7 +478,7 @@ class TestOutputOffset:
     def test_start_buffer_lookup_skipped_for_non_negative_offset(self, tmp_path):
         """The extra backend round trip for the clamp floor is only worth
         paying when the request is actually negative."""
-        from autostream_webui_api import send_owntone_output_offset_json
+        from webui.browser.api_owntone import send_owntone_output_offset_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -499,7 +499,7 @@ class TestOutputOffset:
 class TestOutputIncludeTv:
     @staticmethod
     def _call(tmp_path, body):
-        from autostream_webui_api import send_owntone_output_include_tv_json
+        from webui.browser.api_owntone import send_owntone_output_include_tv_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -554,7 +554,7 @@ class TestNativeOwntoneSettings:
         )
 
     def test_uncompressed_calls_save_setting(self, tmp_path):
-        from autostream_webui_api import send_owntone_uncompressed_json
+        from webui.browser.api_owntone import send_owntone_uncompressed_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -570,7 +570,7 @@ class TestNativeOwntoneSettings:
         assert sent["body"]["ok"] is True
 
     def test_uncompressed_restart_required_triggers_restart(self, tmp_path):
-        from autostream_webui_api import send_owntone_uncompressed_json
+        from webui.browser.api_owntone import send_owntone_uncompressed_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -587,7 +587,7 @@ class TestNativeOwntoneSettings:
         assert sent["body"]["restart_required"] is True
 
     def test_uncompressed_failure_no_restart(self, tmp_path):
-        from autostream_webui_api import send_owntone_uncompressed_json
+        from webui.browser.api_owntone import send_owntone_uncompressed_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -604,7 +604,7 @@ class TestNativeOwntoneSettings:
         assert sent["body"]["ok"] is False
 
     def test_non_bool_uncompressed_returns_400(self, tmp_path):
-        from autostream_webui_api import send_owntone_uncompressed_json
+        from webui.browser.api_owntone import send_owntone_uncompressed_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -615,7 +615,7 @@ class TestNativeOwntoneSettings:
         assert sent["code"] == 400
 
     def test_start_buffer_clamped(self, tmp_path):
-        from autostream_webui_api import send_owntone_start_buffer_json
+        from webui.browser.api_owntone import send_owntone_start_buffer_json
         from autostream_players import SETTING_START_BUFFER_MS_MAX
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
@@ -632,7 +632,7 @@ class TestNativeOwntoneSettings:
         assert call_value <= SETTING_START_BUFFER_MS_MAX
 
     def test_grace_period_compat_endpoint_converts_minutes_to_seconds(self, tmp_path):
-        from autostream_webui_api import send_owntone_grace_period_json
+        from webui.browser.api_owntone import send_owntone_grace_period_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -651,7 +651,7 @@ class TestNativeOwntoneSettings:
         assert store.raw_snapshot()["general"]["mdns_grace_period_seconds"] == 300
 
     def test_unsupported_setting_succeeds_without_restart(self, tmp_path):
-        from autostream_webui_api import send_owntone_uncompressed_json
+        from webui.browser.api_owntone import send_owntone_uncompressed_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -670,7 +670,7 @@ class TestNativeOwntoneSettings:
     def test_buffered_audio_unsupported_returns_ok_false(self, tmp_path):
         """reject_unsupported=True: a write against an unsupported backend must fail,
         not report the fake success that the uncompressed-setting path tolerates."""
-        from autostream_webui_api import send_owntone_buffered_audio_json
+        from webui.browser.api_owntone import send_owntone_buffered_audio_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -687,7 +687,7 @@ class TestNativeOwntoneSettings:
         assert sent["body"]["ok"] is False
 
     def test_buffered_audio_succeeds_when_supported(self, tmp_path):
-        from autostream_webui_api import send_owntone_buffered_audio_json
+        from webui.browser.api_owntone import send_owntone_buffered_audio_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -715,7 +715,7 @@ class TestUserAgentSetting:
         )
 
     def test_valid_value_saved(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         from autostream_players import SETTING_USER_AGENT
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
@@ -734,7 +734,7 @@ class TestUserAgentSetting:
         assert sent["body"]["ok"] is True
 
     def test_whitespace_stripped_before_save(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -749,7 +749,7 @@ class TestUserAgentSetting:
         assert m_save.call_args[0][2] == "AirPlay/950.7.1"
 
     def test_embedded_crlf_rejected(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -762,7 +762,7 @@ class TestUserAgentSetting:
         assert sent["code"] == 400
 
     def test_del_byte_rejected(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -775,7 +775,7 @@ class TestUserAgentSetting:
         assert sent["code"] == 400
 
     def test_over_length_rejected(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -788,7 +788,7 @@ class TestUserAgentSetting:
         assert sent["code"] == 400
 
     def test_max_length_accepted(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -804,7 +804,7 @@ class TestUserAgentSetting:
         assert sent["body"]["ok"] is True
 
     def test_empty_string_passed_through_as_reset(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -821,7 +821,7 @@ class TestUserAgentSetting:
         assert sent["body"]["ok"] is True
 
     def test_non_string_value_returns_400(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -834,7 +834,7 @@ class TestUserAgentSetting:
         assert sent["code"] == 400
 
     def test_backend_failure_surfaced(self, tmp_path):
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -852,7 +852,7 @@ class TestUserAgentSetting:
     def test_unsupported_backend_surfaced_as_failure(self, tmp_path):
         """reject_unsupported=True: a backend that lacks the key must fail, not
         report the fake success that non-gated native settings tolerate."""
-        from autostream_webui_api import send_owntone_user_agent_json
+        from webui.browser.api_owntone import send_owntone_user_agent_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -897,7 +897,7 @@ class TestBufferedAudioResetOutputs:
         )
 
     def test_turning_off_resets_buffered_and_surround_modes(self, tmp_path):
-        from autostream_webui_api import send_owntone_buffered_audio_json
+        from webui.browser.api_owntone import send_owntone_buffered_audio_json
         config_path = _make_config(str(tmp_path), extra={"owntone": {"airplay_modes": {
             "1": "airplay2_buffered",
             "2": "airplay2_surround_stereo",
@@ -929,7 +929,7 @@ class TestBufferedAudioResetOutputs:
         assert snap.owntone.output_airplay_modes["6"] == "default"
 
     def test_turning_on_does_not_reset_stored_modes(self, tmp_path):
-        from autostream_webui_api import send_owntone_buffered_audio_json
+        from webui.browser.api_owntone import send_owntone_buffered_audio_json
         config_path = _make_config(str(tmp_path), extra={"owntone": {"airplay_modes": {
             "1": "airplay2_buffered",
         }}})
@@ -951,7 +951,7 @@ class TestBufferedAudioResetOutputs:
         assert snap.owntone.output_airplay_modes["1"] == "airplay2_buffered"
 
     def test_reset_skipped_gracefully_when_store_unavailable(self, tmp_path):
-        from autostream_webui_api import send_owntone_buffered_audio_json
+        from webui.browser.api_owntone import send_owntone_buffered_audio_json
         config_path = _make_config(str(tmp_path), extra={"owntone": {"airplay_modes": {
             "1": "airplay2_buffered",
         }}})

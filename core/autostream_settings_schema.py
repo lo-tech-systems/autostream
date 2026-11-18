@@ -146,7 +146,7 @@ class FieldSpec:
       live_fn:     ``Callable[[state, value], bool]`` -- the existing
                    per-field live-push side effect used by
                    ``send_settings_post_json``. Defined in
-                   ``autostream_webui_api`` (these closures depend on
+                   the web package (these closures depend on
                    handler-layer globals that would create an import cycle
                    if defined in this module) and passed in when the row is
                    registered.
@@ -181,8 +181,8 @@ class FieldSpec:
     store: str = "settings"  # "settings" | "runtime_state"
 
 
-# The shared table. Populated by autostream_webui_api (POST /api/settings,
-# POST /api/service/config), webui/browser/home_model.py (POST
+# The shared table. Populated by webui/browser/api_settings.py (POST /api/settings,
+# webui/browser/api_service.py POST /api/service/config), webui/browser/home_model.py (POST
 # /api/output_eq/config), and webui/browser/post_handlers.py (POST /setup)
 # at their own import time / call time -- see each module's own
 # "settings-schema registration" section.

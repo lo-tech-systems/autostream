@@ -142,7 +142,7 @@ def _setup_audio_processing_card_html(parsed) -> str:
     # list on non-Pi4/5-class hardware -- mandatory, not cosmetic, since the
     # top SRC tier is unaffordable there;
     # the server-side validator (_validate_audio_path in
-    # autostream_webui_api.py) is the enforcement backstop for a stale
+    # the live-config module) is the enforcement backstop for a stale
     # browser tab or a hand-crafted request.
     _audio_path_options = []
     if is_high_performance_pi():

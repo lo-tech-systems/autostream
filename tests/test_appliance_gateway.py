@@ -1181,7 +1181,7 @@ class TestSendGatewayRepeatJson:
 
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=(resolution, sighting)), \
-             patch("autostream_appliance_gateway.apply_repeat_arm_request",
+             patch("webui.repeat.apply_repeat_arm_request",
                    return_value=apply_result) as apply_mock, \
              patch.object(gw, "_remote_request", return_value=remote_result) as remote_mock, \
              patch("webui.common.send_json", side_effect=fake_send_json), \

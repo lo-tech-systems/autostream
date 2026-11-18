@@ -63,7 +63,7 @@ from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_state.live import get_live_output_eq_status
 from autostream_player_service import config_airplay_mode_to_backend
 import autostream_rpi as rpi
-from autostream_webui_api import apply_repeat_arm_request
+from webui import repeat
 from webui import common
 from webui.system import updates
 
@@ -920,7 +920,7 @@ def send_gateway_repeat_json(handler, state, appliance_id: str, body_str: str) -
     """POST /api/appliances/<id>/repeat (browser CSRF already validated by caller).
 
     Same {"armed": bool} request/response contract as POST /api/repeat --
-    see autostream_webui_api.apply_repeat_arm_request().
+    see webui/repeat.py apply_repeat_arm_request().
     """
     resolution, sighting = resolve_appliance(appliance_id)
     if resolution not in ("bound", "remote"):
@@ -928,7 +928,7 @@ def send_gateway_repeat_json(handler, state, appliance_id: str, body_str: str) -
         return
 
     if resolution == "bound":
-        status, resp = apply_repeat_arm_request(body_str)
+        status, resp = repeat.apply_repeat_arm_request(body_str)
         common.send_json(handler, status, resp)
         return
 

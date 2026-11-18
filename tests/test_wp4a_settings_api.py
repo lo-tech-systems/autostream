@@ -27,10 +27,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from autostream_settings import SettingsStore, as_view
-from autostream_webui_api import (
-    _SETTINGS_FIELDS,
-    send_settings_post_json,
-)
+from webui.browser.api_settings import send_settings_post_json
+from webui.browser.api_settings import _SETTINGS_FIELDS
 from autostream_live_config import _validate_output_name
 from autostream_live_config import _validate_silence_seconds
 from autostream_live_config import _validate_volume_percent

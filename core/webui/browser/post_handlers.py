@@ -22,7 +22,7 @@ from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_player_service import config_airplay_mode_to_backend
 
 from webui.session_state import WebUIState
-from autostream_webui_api import send_settings_post_json
+from webui.browser.api_settings import send_settings_post_json
 from webui import common
 from webui.browser import home_model
 

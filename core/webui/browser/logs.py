@@ -35,7 +35,6 @@ from webui.common import (
 
 from webui.session_state import WebUIState
 from webui import common
-from webui import session_state
 
 
 # -----------------------------------------------------------------------------

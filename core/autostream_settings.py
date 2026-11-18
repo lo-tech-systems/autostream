@@ -231,7 +231,7 @@ class SettingsStore:
         ``state`` is the Web UI's ``WebUIState``-shaped object each existing
         ``live_fn`` closure already expects (see
         ``autostream_settings_schema.py``'s module docstring for why those
-        closures live in ``autostream_webui_api``, not here) -- pass it
+        closures live in the web package, not here) -- pass it
         whenever a LIVE-class field's adapter push should actually run.
         Omitting it (the default) still validates, commits, and reports
         ``reload_scheduled`` correctly; only the live push is skipped, with

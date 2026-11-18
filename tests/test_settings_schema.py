@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 import autostream_monitor_control as monitor_control
 import autostream_eq_bands as eq_bands
+import webui.browser.api_service as webui_api_service
+import webui.browser.api_settings as webui_api_settings
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -149,7 +151,7 @@ class TestSettingsFieldsMigration:
         import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
-        assert set(api._SETTINGS_FIELDS.keys()) == _EXPECTED_SETTINGS_FIELD_PATHS
+        assert set(webui_api_settings._SETTINGS_FIELDS.keys()) == _EXPECTED_SETTINGS_FIELD_PATHS
         for path in _EXPECTED_SETTINGS_FIELD_PATHS:
             assert path in SETTINGS_SCHEMA, f"{path} missing from SETTINGS_SCHEMA"
 
@@ -157,7 +159,7 @@ class TestSettingsFieldsMigration:
         import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
-        for path, (section, key, validate, live) in api._SETTINGS_FIELDS.items():
+        for path, (section, key, validate, live) in webui_api_settings._SETTINGS_FIELDS.items():
             spec = SETTINGS_SCHEMA[path]
             assert spec.section == section
             assert spec.key == key
@@ -207,15 +209,15 @@ class TestServiceFieldMapMigration:
         import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
-        assert len(api._SERVICE_FIELD_MAP) == 10  # stylus x2 + (belt + bearing) x2 x2
-        for path in api._SERVICE_FIELD_MAP:
+        assert len(webui_api_service._SERVICE_FIELD_MAP) == 10  # stylus x2 + (belt + bearing) x2 x2
+        for path in webui_api_service._SERVICE_FIELD_MAP:
             assert path in SETTINGS_SCHEMA, f"{path} missing from SETTINGS_SCHEMA"
 
     def test_schema_row_matches_service_field_map_tuple(self):
         import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
-        for path, (section, key, normaliser) in api._SERVICE_FIELD_MAP.items():
+        for path, (section, key, normaliser) in webui_api_service._SERVICE_FIELD_MAP.items():
             spec = SETTINGS_SCHEMA[path]
             assert spec.section == section
             assert spec.key == key

@@ -21,11 +21,11 @@ if _CORE not in sys.path:
 
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
-    send_output_eq_config_json,
-    send_output_eq_reset_json,
     send_update_check_json,
     send_update_status_json,
 )
+from webui.browser.equaliser import send_output_eq_reset_json
+from webui.browser.equaliser import send_output_eq_config_json
 
 
 # ---------------------------------------------------------------------------

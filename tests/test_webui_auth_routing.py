@@ -122,7 +122,7 @@ _PROTECTED = [
 # and must not be gated by a PIN session.
 _PUBLIC = [
     ("/api/output",          "autostream_webui.handle_output_update"),
-    ("/api/output_eq/reset", "autostream_webui.send_output_eq_reset_json"),
+    ("/api/output_eq/reset", "webui.browser.equaliser.send_output_eq_reset_json"),
     ("/api/service/reset",   "autostream_webui.send_service_reset_json"),
     # Home-page repeat button: playback action, same sensitivity class as
     # /api/output's enable/volume -- must work without a PIN session (an

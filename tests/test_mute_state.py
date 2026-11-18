@@ -53,6 +53,7 @@ from autostream_players import ActionResult, OutputInfo
 from autostream_state import Origin, store
 from autostream_state.outputs import PlayerServiceBackend, get_authority
 import webui.browser.home_model as webui_home_model
+import webui.browser.home_api as webui_home_api
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +531,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
             webui=SimpleNamespace(hidden_outputs=()),
         )
         with patch("webui.common._config_snapshot", return_value=parsed),              patch("webui.common.send_json", side_effect=fake_send_json):
-            api.send_owntone_outputs_state_json(_handler(), MagicMock())
+            webui_home_api.send_owntone_outputs_state_json(_handler(), MagicMock())
         assert captured["code"] == 200
         assert captured["body"]["muted"] is True
         assert [o["id"] for o in captured["body"]["outputs"]] == ["o1"]

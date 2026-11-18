@@ -50,7 +50,6 @@ from webui.common import (
 from webui.session_state import WebUIState
 from webui import common
 from webui.system import services, updates
-from webui import session_state
 
 _log = logging.getLogger(__name__)
 

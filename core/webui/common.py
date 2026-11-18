@@ -849,3 +849,17 @@ def render_license_md(text: str) -> str:
     close_ul()
     flush_para()
     return "\n".join(out)
+
+
+def _route_post_json_obj(handler):
+    """The JSON body object already parsed by do_POST's shared body-parse
+    step (stashed on the handler as ``_parsed_body`` for dispatch()'s
+    duration -- see dispatch()'s and do_POST's own comments), for adapters
+    whose sender takes json_obj rather than body_str. Falls back to None if
+    no cached parse is present (a caller invoking dispatch() directly
+    without pre-populating _parsed_body, e.g. a test).
+    """
+    cached = getattr(handler, "_parsed_body", None)
+    if cached is not None:
+        return cached[2]
+    return None

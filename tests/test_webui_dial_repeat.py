@@ -104,7 +104,7 @@ def _invoke_arm(
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_monitor_control.set_live_repeat_armed_ack", arm_mock),
-        patch("autostream_webui_api.apply_repeat_arm_request", legacy_mock),
+        patch("webui.repeat.apply_repeat_arm_request", legacy_mock),
     ):
         send_dial_repeat_arm_post_json(handler, MagicMock(), json_obj)
     code, body = _response(handler)

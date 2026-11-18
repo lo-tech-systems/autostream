@@ -52,7 +52,6 @@ from webui.browser.service_schema import (
 
 from webui.session_state import WebUIState
 from webui import common
-from webui import session_state
 
 
 # Confirm modal HTML (rendered once per request, referenced by SERVICE_JS).

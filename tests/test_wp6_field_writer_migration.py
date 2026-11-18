@@ -91,7 +91,7 @@ class TestApplyEqFieldBoolViaStore:
         assert snap.output_eq.auto_trim_enabled is True
 
     def test_no_store_answers_500(self, tmp_path):
-        from autostream_webui_api import send_service_config_json
+        from webui.browser.api_service import send_service_config_json
         config_path = _make_config(str(tmp_path))
         state = _make_state(config_path, None)
         state.settings = fixed_view()
@@ -106,7 +106,7 @@ class TestApplyEqFieldBoolViaStore:
         assert sent["body"] == {"ok": False, "error": "Settings store unavailable"}
 
     def test_unknown_field_returns_400(self, tmp_path):
-        from autostream_webui_api import send_service_config_json
+        from webui.browser.api_service import send_service_config_json
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
         state = _make_state(config_path, store)
@@ -124,7 +124,7 @@ class TestCallerPassSettings:
 
     def test_send_output_eq_config_passes_settings(self, tmp_path):
         """send_output_eq_config_json passes settings=getattr(state,'settings',None)."""
-        from autostream_webui_api import send_output_eq_config_json
+        from webui.browser.equaliser import send_output_eq_config_json
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
         state = _make_state(config_path, store)
@@ -138,7 +138,7 @@ class TestCallerPassSettings:
 
     def test_send_output_eq_reset_passes_settings(self, tmp_path):
         """send_output_eq_reset_json passes settings=getattr(state,'settings',None)."""
-        from autostream_webui_api import send_output_eq_reset_json
+        from webui.browser.equaliser import send_output_eq_reset_json
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
         state = _make_state(config_path, store)

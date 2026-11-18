@@ -209,7 +209,7 @@ def _session_and_repeat_fields(snap) -> dict:
     """Return the "session" (always present) and "repeat" (present only when
     the daemon has reported one) fields for build_home_state()'s dict.
 
-    Sourced identically to send_status_json (autostream_webui_api.py): the
+    Sourced identically to send_status_json (webui/browser/home_api.py): the
     session comes from the caller's snapshot, and the repeat block is passed
     through verbatim when present -- omitted entirely (not a KeyError) when
     the daemon has never reported one, so an older backend degrades by

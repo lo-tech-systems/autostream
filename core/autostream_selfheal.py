@@ -27,7 +27,7 @@ from autostream_sysutils import run_admin_cmd
 
 
 # ── Self-heal status cache ───────────────────────────────────────────────────
-# Exposed via /api/status (autostream_webui_api.py) for observability; never
+# Exposed via /api/status (webui/browser/home_api.py) for observability; never
 # authoritative for coordinator decisions (the hang watchdog's state lives on
 # its own instance, which is coordinator-thread-only).
 

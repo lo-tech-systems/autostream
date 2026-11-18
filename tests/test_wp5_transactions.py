@@ -81,10 +81,10 @@ def _make_state(tmp_path: Path):
 
 class TestHostnameEndpoint:
     def test_same_hostname_returns_ok_not_changed(self, tmp_path):
-        from autostream_webui_api import send_hostname_post_json
+        from webui.browser.api_settings import send_hostname_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.get_system_hostname", return_value="autostream"):
+        with patch("webui.browser.api_settings.get_system_hostname", return_value="autostream"):
             send_hostname_post_json(handler, state, json.dumps({"value": "autostream"}))
         code, data = _response(handler)
         assert code == 200
@@ -93,21 +93,21 @@ class TestHostnameEndpoint:
         store.close(save=False)
 
     def test_new_hostname_calls_set_system_hostname(self, tmp_path):
-        from autostream_webui_api import send_hostname_post_json
+        from webui.browser.api_settings import send_hostname_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler("autostream.local")
-        with patch("autostream_webui_api.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_api.set_system_hostname") as mock_set:
+        with patch("webui.browser.api_settings.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.api_settings.set_system_hostname") as mock_set:
             send_hostname_post_json(handler, state, json.dumps({"value": "newname"}))
         mock_set.assert_called_once_with("newname")
         store.close(save=False)
 
     def test_success_returns_redirect_url(self, tmp_path):
-        from autostream_webui_api import send_hostname_post_json
+        from webui.browser.api_settings import send_hostname_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler("autostream.local")
-        with patch("autostream_webui_api.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_api.set_system_hostname"):
+        with patch("webui.browser.api_settings.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.api_settings.set_system_hostname"):
             send_hostname_post_json(handler, state, json.dumps({"value": "newname"}))
         code, data = _response(handler)
         assert code == 200
@@ -119,18 +119,18 @@ class TestHostnameEndpoint:
         store.close(save=False)
 
     def test_redirect_url_includes_port_when_present(self, tmp_path):
-        from autostream_webui_api import send_hostname_post_json
+        from webui.browser.api_settings import send_hostname_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler("autostream.local:8080")
-        with patch("autostream_webui_api.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_api.set_system_hostname"):
+        with patch("webui.browser.api_settings.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.api_settings.set_system_hostname"):
             send_hostname_post_json(handler, state, json.dumps({"value": "newname"}))
         _, data = _response(handler)
         assert "8080" in data["redirect_url"]
         store.close(save=False)
 
     def test_empty_hostname_returns_400(self, tmp_path):
-        from autostream_webui_api import send_hostname_post_json
+        from webui.browser.api_settings import send_hostname_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_hostname_post_json(handler, state, json.dumps({"value": ""}))
@@ -140,11 +140,11 @@ class TestHostnameEndpoint:
         store.close(save=False)
 
     def test_set_system_hostname_failure_does_not_report_success(self, tmp_path):
-        from autostream_webui_api import send_hostname_post_json
+        from webui.browser.api_settings import send_hostname_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_api.set_system_hostname", side_effect=RuntimeError("perm denied")):
+        with patch("webui.browser.api_settings.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.api_settings.set_system_hostname", side_effect=RuntimeError("perm denied")):
             send_hostname_post_json(handler, state, json.dumps({"value": "newname"}))
         code, data = _response(handler)
         assert code == 200
@@ -153,7 +153,7 @@ class TestHostnameEndpoint:
         store.close(save=False)
 
     def test_invalid_json_returns_400(self, tmp_path):
-        from autostream_webui_api import send_hostname_post_json
+        from webui.browser.api_settings import send_hostname_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_hostname_post_json(handler, state, "not json")
@@ -169,7 +169,7 @@ class TestHostnameEndpoint:
 
 class TestAdvertisementEndpoint:
     def _call(self, tmp_path, value: bool, *, reconcile_ok: bool = True):
-        from autostream_webui_api import send_advertisement_post_json
+        from webui.browser.api_settings import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("webui.system.updates.get_app_version", return_value="1.0.0"), \
@@ -180,7 +180,7 @@ class TestAdvertisementEndpoint:
         return code, data, state, store
 
     def test_non_bool_value_returns_400(self, tmp_path):
-        from autostream_webui_api import send_advertisement_post_json
+        from webui.browser.api_settings import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_advertisement_post_json(handler, state, json.dumps({"value": "yes"}))
@@ -190,7 +190,7 @@ class TestAdvertisementEndpoint:
         store.close(save=False)
 
     def test_int_value_returns_400(self, tmp_path):
-        from autostream_webui_api import send_advertisement_post_json
+        from webui.browser.api_settings import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_advertisement_post_json(handler, state, json.dumps({"value": 1}))
@@ -199,7 +199,7 @@ class TestAdvertisementEndpoint:
         store.close(save=False)
 
     def test_invalid_json_returns_400(self, tmp_path):
-        from autostream_webui_api import send_advertisement_post_json
+        from webui.browser.api_settings import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_advertisement_post_json(handler, state, "bad json")
@@ -208,7 +208,7 @@ class TestAdvertisementEndpoint:
         store.close(save=False)
 
     def test_success_persists_to_store(self, tmp_path):
-        from autostream_webui_api import send_advertisement_post_json
+        from webui.browser.api_settings import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
 
@@ -229,7 +229,7 @@ class TestAdvertisementEndpoint:
         store.close(save=False)
 
     def test_failed_admin_call_does_not_commit(self, tmp_path):
-        from autostream_webui_api import send_advertisement_post_json
+        from webui.browser.api_settings import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
 
@@ -251,7 +251,7 @@ class TestAdvertisementEndpoint:
 
     def test_store_commit_failure_returns_warning(self, tmp_path):
         """When admin call succeeds but store update fails, return ok with a warning."""
-        from autostream_webui_api import send_advertisement_post_json
+        from webui.browser.api_settings import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         store.update = MagicMock(side_effect=RuntimeError("store full"))
@@ -281,7 +281,7 @@ class TestAutoUpdateEndpoint:
         return r
 
     def test_non_bool_value_returns_400(self, tmp_path):
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_auto_update_post_json(handler, state, json.dumps({"value": 1}))
@@ -291,7 +291,7 @@ class TestAutoUpdateEndpoint:
         store.close(save=False)
 
     def test_invalid_json_returns_400(self, tmp_path):
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_auto_update_post_json(handler, state, "bad json")
@@ -300,7 +300,7 @@ class TestAutoUpdateEndpoint:
         store.close(save=False)
 
     def test_enable_calls_toggle_update_timer_enable(self, tmp_path):
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result()) as mock_cmd:
@@ -309,7 +309,7 @@ class TestAutoUpdateEndpoint:
         store.close(save=False)
 
     def test_disable_calls_toggle_update_timer_disable(self, tmp_path):
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result()) as mock_cmd:
@@ -318,7 +318,7 @@ class TestAutoUpdateEndpoint:
         store.close(save=False)
 
     def test_success_persists_to_store(self, tmp_path):
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result()):
@@ -331,7 +331,7 @@ class TestAutoUpdateEndpoint:
         store.close(save=False)
 
     def test_failed_admin_call_does_not_commit(self, tmp_path):
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result(returncode=1, stderr="fail")):
@@ -344,7 +344,7 @@ class TestAutoUpdateEndpoint:
         store.close(save=False)
 
     def test_failed_admin_returns_useful_error(self, tmp_path):
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result(returncode=1)):
@@ -356,7 +356,7 @@ class TestAutoUpdateEndpoint:
 
     def test_store_commit_failure_returns_warning(self, tmp_path):
         """When the admin command succeeds but the store update fails, return ok with warning."""
-        from autostream_webui_api import send_auto_update_post_json
+        from webui.browser.api_settings import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         store.update = MagicMock(side_effect=RuntimeError("store full"))
@@ -375,7 +375,7 @@ class TestAutoUpdateEndpoint:
 
 class TestMdnsGracePeriodEndpoint:
     def test_success_persists_and_applies_browser_grace(self, tmp_path):
-        from autostream_webui_api import send_settings_mdns_grace_period_json
+        from webui.browser.api_owntone import send_settings_mdns_grace_period_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("autostream_live_config.save_setting") as m_save, \
@@ -395,7 +395,7 @@ class TestMdnsGracePeriodEndpoint:
         store.close(save=False)
 
     def test_owntone_forward_failure_returns_warning_without_reverting(self, tmp_path):
-        from autostream_webui_api import send_settings_mdns_grace_period_json
+        from webui.browser.api_owntone import send_settings_mdns_grace_period_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch("autostream_live_config.save_setting") as m_save, \
@@ -420,7 +420,7 @@ class TestMdnsGracePeriodEndpoint:
         store.close(save=False)
 
     def test_invalid_json_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_mdns_grace_period_json
+        from webui.browser.api_owntone import send_settings_mdns_grace_period_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         send_settings_mdns_grace_period_json(handler, state, "bad json")
@@ -436,7 +436,7 @@ class TestMdnsGracePeriodEndpoint:
 
 class TestSaveNowEndpoint:
     def test_save_now_called_on_store(self, tmp_path):
-        from autostream_webui_api import send_save_now_json
+        from webui.browser.api_settings import send_save_now_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         with patch.object(store, "save_now") as mock_save:
@@ -447,7 +447,7 @@ class TestSaveNowEndpoint:
         store.close(save=False)
 
     def test_save_failure_returns_error(self, tmp_path):
-        from autostream_webui_api import send_save_now_json
+        from webui.browser.api_settings import send_save_now_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         # save_now returns False on failure; it never raises

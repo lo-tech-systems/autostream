@@ -291,10 +291,10 @@ def _reset_log_every():
 
 
 @pytest.fixture(autouse=True)
-def _reset_webui_api_fail_counts():
-    """Reset web-UI API failure counters after each test."""
+def _reset_audio_status_fail_count():
+    """Reset the audio-status failure counter after each test."""
     yield
-    m = _mod("autostream_webui_api")
+    m = _mod("webui.browser.home_api")
     if m is not None:
         m._audio_status_fail_count = 0
 

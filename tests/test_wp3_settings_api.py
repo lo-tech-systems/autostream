@@ -113,7 +113,7 @@ class TestMdnsGraceFanout:
 
 class TestSettingsGetJson:
     def test_returns_ok_true_with_values(self, tmp_path):
-        from autostream_webui_api import send_settings_get_json
+        from webui.browser.api_settings import send_settings_get_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -126,7 +126,7 @@ class TestSettingsGetJson:
         assert isinstance(body["values"], dict)
 
     def test_returns_all_expected_fields(self, tmp_path):
-        from autostream_webui_api import send_settings_get_json
+        from webui.browser.api_settings import send_settings_get_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -144,7 +144,7 @@ class TestSettingsGetJson:
         assert "updates.update_channel" in values
 
     def test_values_match_config(self, tmp_path):
-        from autostream_webui_api import send_settings_get_json
+        from webui.browser.api_settings import send_settings_get_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -161,7 +161,7 @@ class TestSettingsGetJson:
         assert v["updates.update_channel"] == "stable"
 
     def test_get_reflects_store_mutations(self, tmp_path):
-        from autostream_webui_api import send_settings_get_json
+        from webui.browser.api_settings import send_settings_get_json
         state, store = _make_state(tmp_path)
         try:
             store.update(lambda raw: raw.setdefault("webui", {}).__setitem__("dark_mode", True))
@@ -173,7 +173,7 @@ class TestSettingsGetJson:
         assert body["values"]["webui.dark_mode"] is True
 
     def test_config_error_returns_ok_false(self, tmp_path):
-        from autostream_webui_api import send_settings_get_json
+        from webui.browser.api_settings import send_settings_get_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -192,7 +192,7 @@ class TestSettingsGetJson:
 
 class TestSettingsPostJsonSuccess:
     def test_sets_bool_field_true(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -204,7 +204,7 @@ class TestSettingsPostJsonSuccess:
         assert body == {"ok": True, "field": "webui.dark_mode", "value": True}
 
     def test_sets_bool_field_false(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -217,7 +217,7 @@ class TestSettingsPostJsonSuccess:
         assert body["value"] is False
 
     def test_sets_poll_interval(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -233,7 +233,7 @@ class TestSettingsPostJsonSuccess:
         assert body["value"] == 10
 
     def test_sets_update_channel_dev(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -249,7 +249,7 @@ class TestSettingsPostJsonSuccess:
         assert body["value"] == "dev"
 
     def test_sets_update_channel_stable(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -265,7 +265,7 @@ class TestSettingsPostJsonSuccess:
         assert body["value"] == "stable"
 
     def test_mutation_persists_in_store(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -285,7 +285,7 @@ class TestSettingsPostJsonSuccess:
 
 class TestHostnameControlDependency:
     def test_disabling_hostname_clears_control_other(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         from autostream_settings import SettingsStore
         from webui.session_state import WebUIState
 
@@ -312,7 +312,7 @@ class TestHostnameControlDependency:
 
     def test_enabling_hostname_does_not_force_control_on(self, tmp_path):
         """Enabling hostname display must not override existing control_other_appliances."""
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         from autostream_settings import SettingsStore
         from webui.session_state import WebUIState
 
@@ -345,7 +345,7 @@ class TestHostnameControlDependency:
 class TestLastWriteWins:
     def test_second_write_wins_for_same_field(self, tmp_path):
         """Sequential writes to the same field: final value is the last one."""
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         try:
             h1, h2 = _make_handler(), _make_handler()
@@ -362,7 +362,7 @@ class TestLastWriteWins:
 
     def test_independent_fields_do_not_interfere(self, tmp_path):
         """Writing field A then field B leaves both with their own values."""
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         try:
             send_settings_post_json(
@@ -386,7 +386,7 @@ class TestLastWriteWins:
 
 class TestSettingsPostJsonValidation:
     def test_missing_field_key_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -398,7 +398,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_empty_field_name_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -410,7 +410,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_unknown_field_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -423,7 +423,7 @@ class TestSettingsPostJsonValidation:
         assert body["field"] == "unknown.field"
 
     def test_missing_value_key_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -435,7 +435,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_string_for_bool_field_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -450,7 +450,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_int_for_bool_field_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -465,7 +465,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_poll_interval_below_min_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -480,7 +480,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_poll_interval_above_max_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -495,7 +495,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_invalid_update_channel_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -510,7 +510,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_non_string_update_channel_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -525,7 +525,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_non_dict_body_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -537,7 +537,7 @@ class TestSettingsPostJsonValidation:
         assert body["ok"] is False
 
     def test_bool_for_poll_interval_returns_400(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -558,7 +558,7 @@ class TestSettingsPostJsonValidation:
 
 class TestStoreUnavailable:
     def test_no_store_returns_ok_false(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, _ = _make_state(tmp_path, with_store=False)
         handler = _make_handler()
         send_settings_post_json(handler, state, {"field": "webui.dark_mode", "value": True})
@@ -574,7 +574,7 @@ class TestStoreUnavailable:
 
 class TestNormalisation:
     def test_poll_interval_float_truncated_to_int(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -592,7 +592,7 @@ class TestNormalisation:
         assert snapshot.webui.output_usage_poll_interval_seconds == 5
 
     def test_update_channel_dev_case_insensitive(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -610,7 +610,7 @@ class TestNormalisation:
         assert snapshot.updates.update_channel == "dev"
 
     def test_update_channel_stable_case_insensitive(self, tmp_path):
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -782,7 +782,7 @@ class TestOutputPolicyFields:
     ])
     def test_post_accepts_and_stores_each(self, tmp_path, field, value):
         import autostream_live_config  # noqa: F401  (registers the rows)
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -797,7 +797,7 @@ class TestOutputPolicyFields:
 
     def test_post_refuses_a_value_out_of_range(self, tmp_path):
         import autostream_live_config  # noqa: F401
-        from autostream_webui_api import send_settings_post_json
+        from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
@@ -808,7 +808,7 @@ class TestOutputPolicyFields:
         assert code == 400 and body["ok"] is False
 
     def test_get_does_not_list_them(self, tmp_path):
-        from autostream_webui_api import send_settings_get_json
+        from webui.browser.api_settings import send_settings_get_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:

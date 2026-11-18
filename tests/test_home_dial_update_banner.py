@@ -25,7 +25,7 @@ from fake_store import fake_levels, fake_outputs, fake_playback, fake_playback_m
 import webui.browser.home_model as models
 from autostream_state import store
 import autostream_dials as dials
-from autostream_webui_api import send_status_json
+from webui.browser.home_api import send_status_json
 from webui.browser.home import send_airplay_page
 import webui.browser.setup.cards_dials as cards_dials
 import webui.browser.home_model as webui_home_model

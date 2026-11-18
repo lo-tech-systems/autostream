@@ -23,6 +23,7 @@ import autostream_runtime as runtime
 from autostream_intents import Intent, submit
 from autostream_playback_stats import MaintenanceResetResult
 from autostream_state import Origin
+import webui.browser.api_service as webui_api_service
 
 APPLIED = MaintenanceResetResult(applied=True, persisted=True, last_service_at="1999-12-31T00:00:00")
 NOT_APPLIED = MaintenanceResetResult(applied=False, persisted=False)
@@ -145,12 +146,11 @@ def test_bad_settings_are_refused_before_any_call(settings):
 
 
 def test_the_service_route_logs_a_refused_settings_submit_at_debug(caplog):
-    import autostream_webui_api as api
     from unittest.mock import MagicMock
     refused = MagicMock(ok=False, error="invalid_args")
-    with patch.object(api, "submit", return_value=refused), \
+    with patch.object(webui_api_service, "submit", return_value=refused), \
             caplog.at_level(logging.DEBUG):
-        api._submit_playback_config(1, **SETTINGS)
+        webui_api_service._submit_playback_config(1, **SETTINGS)
     assert any(
         r.levelno == logging.DEBUG
         and r.getMessage() == "playback settings for input 1 not applied: invalid_args"

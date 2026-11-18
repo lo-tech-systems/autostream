@@ -21,6 +21,7 @@ if _CORE not in sys.path:
 import autostream_output_usage as ou
 from fake_store import fake_session
 from settings_fixtures import fixed_view
+import webui.browser.home_api as webui_home_api
 
 
 # ---------------------------------------------------------------------------
@@ -1056,7 +1057,7 @@ class TestAudioStatusPlayingFromSession:
             FakeStore().outputs_unreachable()
         with patch("webui.common._config_snapshot", return_value=parsed), \
              fake_session(session_state):
-            api_mod.send_audio_status_json(handler, state)
+            webui_home_api.send_audio_status_json(handler, state)
         return _json.loads(handler.wfile.getvalue())
 
     def test_replay_session_reports_playing_with_outputs(self):

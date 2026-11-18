@@ -20,7 +20,8 @@ if _CORE not in sys.path:
 
 from autostream_settings import SettingsStore, as_view
 from fake_store import fake_playback
-from autostream_webui_api import send_service_config_json, send_service_reset_json
+from webui.browser.api_service import send_service_reset_json
+from webui.browser.api_service import send_service_config_json
 
 
 # ---------------------------------------------------------------------------

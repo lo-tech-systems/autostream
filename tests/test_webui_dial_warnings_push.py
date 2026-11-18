@@ -34,6 +34,7 @@ from fake_store import fake_playback
 import autostream_dial_warnings as dw
 from autostream_dials import DialSighting
 import autostream_dial_push as dial_push
+import webui.browser.api_service as webui_api_service
 
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
 
@@ -352,7 +353,7 @@ class TestPokeSites:
             patch("webui.common.send_json"),
             patch("autostream_dial_warnings.poke") as poke,
         ):
-            api.send_service_reset_json(
+            webui_api_service.send_service_reset_json(
                 handler, MagicMock(), json.dumps({"item": "stylus", "input": 1}))
         poke.assert_called_once_with()
 
@@ -367,7 +368,7 @@ class TestPokeSites:
             patch("webui.common.send_json"),
             patch("autostream_dial_warnings.poke") as poke,
         ):
-            api.send_service_reset_json(
+            webui_api_service.send_service_reset_json(
                 MagicMock(), MagicMock(), json.dumps({"item": "stylus", "input": 1}))
         poke.assert_not_called()
 
@@ -395,7 +396,7 @@ class TestPokeSites:
             patch("webui.common.send_json"),
             patch("autostream_dial_warnings.poke") as poke,
         ):
-            api.send_service_config_json(
+            webui_api_service.send_service_config_json(
                 MagicMock(), state,
                 json.dumps({"field": "service_stylus_life_hours_input1", "value": "300"}))
         poke.assert_called_once_with()

@@ -17,7 +17,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-from autostream_webui_api import send_input_levels_json
+from webui.browser.home_api import send_input_levels_json
 from webui.session_state import WebUIState
 import autostream_state as _state
 from fake_store import FakeStore

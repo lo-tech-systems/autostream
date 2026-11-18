@@ -50,7 +50,6 @@ from webui import session_state
 from webui.browser import first_boot
 from autostream_webui_api import (
     run_updater,
-    send_audio_status_json,
     send_dial_capabilities_json,
     send_dial_eq_post_json,
     send_dial_eq_set_post_json,
@@ -70,40 +69,11 @@ from autostream_webui_api import (
     send_federation_output_json,
     send_federation_repeat_json,
     send_federation_session_json,
-    send_output_eq_config_json,
-    send_output_eq_reset_json,
-    send_output_eq_status_json,
-    send_owntone_outputs_json,
-    send_owntone_outputs_state_json,
-    send_service_config_json,
-    send_service_reset_json,
-    send_advertisement_post_json,
-    send_auto_update_post_json,
-    send_hostname_post_json,
-    send_settings_mdns_grace_period_json,
-    send_save_now_json,
-    send_settings_get_json,
-    send_settings_post_json,
-    send_status_json,
-    send_input_levels_json,
     send_update_check_json,
     send_update_status_json,
-    send_owntone_output_visibility_json,
-    send_owntone_output_include_tv_json,
-    send_owntone_output_mode_json,
-    send_owntone_output_offset_json,
-    send_owntone_uncompressed_json,
-    send_owntone_buffered_audio_json,
-    send_owntone_start_buffer_json,
-    send_owntone_user_agent_json,
-    send_owntone_grace_period_json,
-    send_log_level_get_json,
-    send_log_level_put_json,
     send_network_setup_json,
     send_network_status_json,
     send_network_roaming_json,
-    send_playing_status_json,
-    send_repeat_post_json,
     send_bluetooth_status_json,
     send_bluetooth_scan_results_json,
     send_bluetooth_pair_status_json,
@@ -117,6 +87,12 @@ from autostream_webui_api import (
     send_sdcard_health_enable_post_json,
     send_sdcard_health_disable_post_json,
 )
+from webui.browser.home_api import _route_get_playing_status, send_audio_status_json, send_input_levels_json, send_owntone_outputs_json, send_owntone_outputs_state_json, send_playing_status_json, send_status_json
+from webui.browser.equaliser import _route_get_equaliser, _route_get_output_eq_status, _route_post_output_eq_reset, send_output_eq_config_json, send_output_eq_reset_json, send_output_eq_status_json
+from webui.browser.api_service import send_service_config_json, send_service_reset_json
+from webui.browser.api_settings import _route_get_log_level, _route_post_settings, _route_post_settings_save, _route_put_log_level, send_advertisement_post_json, send_auto_update_post_json, send_hostname_post_json, send_log_level_get_json, send_log_level_put_json, send_save_now_json, send_settings_get_json, send_settings_post_json
+from webui.browser.api_owntone import send_owntone_buffered_audio_json, send_owntone_grace_period_json, send_owntone_output_include_tv_json, send_owntone_output_mode_json, send_owntone_output_offset_json, send_owntone_output_visibility_json, send_owntone_start_buffer_json, send_owntone_uncompressed_json, send_owntone_user_agent_json, send_settings_mdns_grace_period_json
+from webui.repeat import send_repeat_post_json
 import autostream_federation
 from autostream_webui_dials import (
     dispatch_dial_management_post,
@@ -137,7 +113,6 @@ from autostream_webui_routes import (
 )
 from webui.browser.setup.page import _route_get_setup, _route_get_setup_card, _route_post_setup_form
 from webui.browser.home import _route_get_home, _route_get_remote_page
-from webui.browser.equaliser import _route_get_equaliser
 from webui.browser.service import _route_get_service
 from webui.browser.logs import _route_get_logs, _route_get_logs_download
 from webui.browser.owntone import _route_get_owntone_setup, _route_post_owntone_setup_form, send_owntone_ready_json, send_owntone_restarting_page
@@ -215,10 +190,6 @@ def _settings_save_barrier(state) -> bool:
 # handler names stay greppable back to their real sender.
 
 
-def _route_get_output_eq_status(handler, state):
-    send_output_eq_status_json(handler)
-
-
 def _route_get_network_status(handler, state):
     send_network_status_json(handler)
 
@@ -245,54 +216,20 @@ def _route_get_update_status(handler, state):
 # /api/update/apply).
 
 
-def _route_post_json_obj(handler):
-    """The JSON body object already parsed by do_POST's shared body-parse
-    step (stashed on the handler as ``_parsed_body`` for dispatch()'s
-    duration -- see dispatch()'s and do_POST's own comments), for adapters
-    whose sender takes json_obj rather than body_str. Falls back to None if
-    no cached parse is present (a caller invoking dispatch() directly
-    without pre-populating _parsed_body, e.g. a test).
-    """
-    cached = getattr(handler, "_parsed_body", None)
-    if cached is not None:
-        return cached[2]
-    return None
-
-
-def _route_post_settings(handler, state, body_str):
-    # Legacy inline check (do_POST's former /api/settings arm): unlike the
-    # generic requires_body gate (which only rejects an *empty* body), this
-    # route requires the body to have parsed as a JSON object -- a
-    # form-urlencoded body (json_obj stays None) is rejected too.
-    json_obj = _route_post_json_obj(handler)
-    if not isinstance(json_obj, dict):
-        handler.send_error(400, "JSON object required")
-        return
-    send_settings_post_json(handler, state, json_obj)
-
-
-def _route_post_settings_save(handler, state, body_str):
-    send_save_now_json(handler, state)
-
-
-def _route_post_output_eq_reset(handler, state, body_str):
-    send_output_eq_reset_json(handler, state)
-
-
 def _route_post_network_setup(handler, state, body_str):
-    send_network_setup_json(handler, _route_post_json_obj(handler))
+    send_network_setup_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_network_roaming(handler, state, body_str):
-    send_network_roaming_json(handler, _route_post_json_obj(handler))
+    send_network_roaming_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_bluetooth_scan(handler, state, body_str):
-    send_bluetooth_scan_post_json(handler, _route_post_json_obj(handler))
+    send_bluetooth_scan_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_bluetooth_pair(handler, state, body_str):
-    send_bluetooth_pair_post_json(handler, _route_post_json_obj(handler))
+    send_bluetooth_pair_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_bluetooth_forget(handler, state, body_str):
@@ -300,15 +237,15 @@ def _route_post_bluetooth_forget(handler, state, body_str):
 
 
 def _route_post_bluetooth_services(handler, state, body_str):
-    send_bluetooth_services_post_json(handler, _route_post_json_obj(handler))
+    send_bluetooth_services_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_bluetooth_onboard(handler, state, body_str):
-    send_bluetooth_onboard_post_json(handler, _route_post_json_obj(handler))
+    send_bluetooth_onboard_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_bluetooth_buffer(handler, state, body_str):
-    send_bluetooth_buffer_post_json(handler, _route_post_json_obj(handler))
+    send_bluetooth_buffer_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_get_sdcard_health(handler, state):
@@ -316,11 +253,11 @@ def _route_get_sdcard_health(handler, state):
 
 
 def _route_post_sdcard_health_enable(handler, state, body_str):
-    send_sdcard_health_enable_post_json(handler, _route_post_json_obj(handler))
+    send_sdcard_health_enable_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_sdcard_health_disable(handler, state, body_str):
-    send_sdcard_health_disable_post_json(handler, _route_post_json_obj(handler))
+    send_sdcard_health_disable_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_update_apply(handler, state, body_str):
@@ -495,82 +432,6 @@ def _route_post_dial_warnings(handler, state):
 # --- Loopback-aware fast paths ----------------------------------------------
 
 
-def _route_get_playing_status(handler, state):
-    if handler._is_direct_local():
-        send_playing_status_json(handler)
-        return
-    # Proxied caller: reproduce the commissioning gate and the general "gate
-    # protected pages" redirect-to-auth check that a proxied request used to
-    # fall through to (this path is not in AUTH.ALLOWLIST_PATHS).
-    if handler._commissioning_required():
-        first_boot._route_commissioning_redirect_get(handler, state)
-        return
-    if session_state.AUTH.requires_auth("/api/playing-status") and not session_state.AUTH.is_authenticated(handler.headers):
-        session_state.AUTH.redirect_to_auth(handler, next_path=handler.path)
-        return
-    handler._csrf_token = session_state.AUTH.ensure_session(handler)
-    send_playing_status_json(handler)
-
-
-def _route_get_log_level(handler, state):
-    if handler._is_direct_local():
-        send_log_level_get_json(handler, state)
-        return
-    # Proxied caller: reproduce the commissioning gate. No auth gate --
-    # "/api/log-level" is in AUTH.ALLOWLIST_PATHS, so requires_auth() is
-    # always False for it.
-    if handler._commissioning_required():
-        first_boot._route_commissioning_redirect_get(handler, state)
-        return
-    handler._csrf_token = session_state.AUTH.ensure_session(handler)
-    send_log_level_get_json(handler, state)
-
-
-def _route_put_log_level(handler, state):
-    # Reproduces do_PUT verbatim: its own bespoke body-read (Content-Type
-    # must be application/json -> 415, distinct from every other route's
-    # parse), no commissioning gate at all, and CSRF-only (no PIN) for a
-    # proxied caller.
-    body_bytes = handler._read_post_body_bytes()
-    if body_bytes is None:
-        return
-    try:
-        body_str = body_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        handler.send_error(400, "Request body is not valid UTF-8")
-        return
-
-    ct = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    if ct != "application/json":
-        handler.send_error(415, "Content-Type must be application/json")
-        return
-
-    if not body_str:
-        handler.send_error(400, "Missing request body")
-        return
-
-    try:
-        json_obj = json.loads(body_str)
-    except json.JSONDecodeError:
-        handler.send_error(400, "Invalid JSON")
-        return
-
-    if not isinstance(json_obj, dict):
-        handler.send_error(400, "JSON object required")
-        return
-
-    if handler._is_direct_local():
-        send_log_level_put_json(handler, state, json_obj, "system")
-        return
-
-    csrf_token = handler._extract_csrf_token(None, json_obj)
-    if not session_state.AUTH.validate_csrf(handler, csrf_token):
-        common.send_browser_api_error(handler, 403, "CSRF validation failed")
-        return
-
-    send_log_level_put_json(handler, state, json_obj, "user")
-
-
 # --- Gateway (browser session surface) --------------------------------------
 
 
@@ -646,7 +507,7 @@ def _route_post_gateway(handler, state, body_str):
 
 
 def _route_post_dial_management(handler, state, body_str):
-    dispatch_dial_management_post(handler, handler._normalized_path(), _route_post_json_obj(handler))
+    dispatch_dial_management_post(handler, handler._normalized_path(), common._route_post_json_obj(handler))
 
 
 def _route_post_dial_update(handler, state, body_str):
@@ -659,12 +520,12 @@ def _route_post_dial_update(handler, state, body_str):
 
 
 def _route_post_dial_screen_settings(handler, state, body_str):
-    json_obj = _route_post_json_obj(handler)
+    json_obj = common._route_post_json_obj(handler)
     handle_dial_screen_settings_post(handler, json_obj if isinstance(json_obj, dict) else {})
 
 
 def _route_post_dial_sdcard_health(handler, state, body_str):
-    json_obj = _route_post_json_obj(handler)
+    json_obj = common._route_post_json_obj(handler)
     handle_dial_sdcard_health_post(handler, json_obj if isinstance(json_obj, dict) else {})
 
 

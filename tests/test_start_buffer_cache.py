@@ -23,6 +23,7 @@ from autostream_players import (
     SETTING_START_BUFFER_MS_MIN,
 )
 import autostream_live_config as live_config
+import webui.browser.api_owntone as webui_api_owntone
 
 BASE = "http://localhost:3689"
 
@@ -196,7 +197,7 @@ def test_webui_save_updates_cache_and_failed_save_does_not():
     with patch.object(live_config, "save_setting", return_value=ok), \
             patch.object(live_config, "_config_snapshot",
                          return_value=MagicMock(owntone=MagicMock(base_url=BASE))):
-        api.send_owntone_start_buffer_json(handler, MagicMock(), json.dumps({"value": 1000}))
+        webui_api_owntone.send_owntone_start_buffer_json(handler, MagicMock(), json.dumps({"value": 1000}))
     assert json.loads(handler.wfile.getvalue())["ok"] is True
     assert cache.current_ms(None) == 1000
 
@@ -206,6 +207,6 @@ def test_webui_save_updates_cache_and_failed_save_does_not():
     with patch.object(live_config, "save_setting", return_value=bad), \
             patch.object(live_config, "_config_snapshot",
                          return_value=MagicMock(owntone=MagicMock(base_url=BASE))):
-        api.send_owntone_start_buffer_json(handler2, MagicMock(), json.dumps({"value": 3000}))
+        webui_api_owntone.send_owntone_start_buffer_json(handler2, MagicMock(), json.dumps({"value": 3000}))
     assert json.loads(handler2.wfile.getvalue())["ok"] is False
     assert cache.current_ms(None) == 1000
