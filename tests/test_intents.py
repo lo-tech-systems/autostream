@@ -147,6 +147,7 @@ class TestRows:
             "outputs.set", "output.pin.submit", "outputs.select_default",
             "outputs.deselect_all", "volume.step", "mute.set",
             "repeat.arm", "repeat.transport", "repeat.seek", "input.eq.set",
+            "output.eq.set", "output.eq.reset",
         }
 
     @pytest.mark.parametrize("name", sorted(table.ROWS))

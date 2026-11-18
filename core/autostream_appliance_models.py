@@ -14,16 +14,9 @@ import time
 from typing import Optional
 
 import autostream_pin_pairing as pairing
-from autostream_config import (
-    CONFIG_IO_LOCK,
-    load_config,
-    parse_config,
-    save_config,
-)
-import autostream_monitor_control as monitor_control
+from autostream_config import parse_config
 from autostream_core import get_live_output_eq_status
-from autostream_eq_bands import OUTPUT_PEQ_BANDS
-from autostream_dial_push import notify_state_changed
+from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, store
 from autostream_player_service import (
@@ -32,63 +25,12 @@ from autostream_player_service import (
 )
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_rpi import get_appliance_id
-from autostream_settings_schema import register_field
 from autostream_sysutils import get_system_hostname
 from autostream_webui_common import get_app_version, locked_load_config
 
 # ---------------------------------------------------------------------------
 # Output-list builder (shared between Home page and federation)
 # ---------------------------------------------------------------------------
-
-_OUTPUT_EQ_DB_FIELDS = frozenset({
-    "gain_db", "peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db",
-})
-_OUTPUT_EQ_BAND_FIELDS = frozenset({
-    "peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db",
-})
-_OUTPUT_EQ_BOOL_FIELDS = frozenset({"auto_trim_enabled"})
-_OUTPUT_EQ_ALL_FIELDS = _OUTPUT_EQ_DB_FIELDS | _OUTPUT_EQ_BOOL_FIELDS
-_OUTPUT_EQ_DB_MIN = -12.0
-_OUTPUT_EQ_DB_MAX = 12.0
-
-
-# -----------------------------------------------------------------------------
-# Settings schema registration: the third of the four dispatch paths this
-# consolidates. apply_eq_field()/apply_eq_reset() below used to clamp/normalise each of
-# these seven output_eq fields inline; that clamp/normalise logic now lives
-# in one place per field (_clamp_output_eq_db / _normalize_output_eq_bool,
-# both verbatim extractions of the previous inline bodies -- same clamp
-# bounds, same "Value must be numeric" error message), registered into the
-# shared SETTINGS_SCHEMA table so apply_eq_field looks them up by path
-# instead of branching on field name inline.
-# -----------------------------------------------------------------------------
-
-def _clamp_output_eq_db(value_raw: object) -> float:
-    """Coerce+clamp one output_eq dB-valued field. Same body as the inline
-    logic apply_eq_field() used before this migration: non-numeric input
-    raises "Value must be numeric"; any numeric input is silently clamped to
-    [_OUTPUT_EQ_DB_MIN, _OUTPUT_EQ_DB_MAX] rather than rejected.
-    """
-    try:
-        value = float(value_raw)
-    except ValueError:
-        raise ValueError("Value must be numeric")
-    return max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, value))
-
-
-def _normalize_output_eq_bool(value_raw: object) -> bool:
-    """Coerce one output_eq bool-valued field (currently just
-    auto_trim_enabled). Same body as apply_eq_field()'s previous inline
-    ``value_raw.lower() in ("true", "1", "yes")`` check.
-    """
-    return value_raw.lower() in ("true", "1", "yes")
-
-
-for _eq_field in _OUTPUT_EQ_DB_FIELDS:
-    register_field(f"output_eq.{_eq_field}", "output_eq", _eq_field, _clamp_output_eq_db)
-for _eq_field in _OUTPUT_EQ_BOOL_FIELDS:
-    register_field(f"output_eq.{_eq_field}", "output_eq", _eq_field, _normalize_output_eq_bool)
-
 
 def build_output_list(parsed, units) -> list[dict]:
     """Filter and sort the output authority's units into the standard dict
@@ -342,85 +284,6 @@ def build_equaliser_state(config_path: str) -> dict:
 # Shared EQ mutations
 # ---------------------------------------------------------------------------
 
-def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=None) -> tuple[bool, str, str]:
-    """Save and apply one output EQ field.
-
-    Returns (ok, normalised_str, error_message).
-    Raises ValueError for unknown fields or non-numeric dB values.
-
-    When *settings* is a SettingsStore instance, it is used as the sole
-    persistence mechanism (store -> background disk write). The config_path
-    is only used as a fallback when no store is available.
-
-    Dials are told when a band changes: they show the bands, not the output
-    gain or auto-trim.
-    """
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = settings if isinstance(settings, _SettingsStore) else None
-
-    if field not in _OUTPUT_EQ_ALL_FIELDS:
-        raise ValueError(f"Unknown field: {field!r}")
-
-    from autostream_settings_schema import SETTINGS_SCHEMA
-    _spec = SETTINGS_SCHEMA[f"output_eq.{field}"]
-
-    if field in _OUTPUT_EQ_BOOL_FIELDS:
-        normalised_bool = _spec.validate(value_raw)
-        normalised_str = "true" if normalised_bool else "false"
-        try:
-            if _store is not None:
-                _store.update(lambda raw: raw.setdefault("output_eq", {}).update({field: normalised_bool}))
-            else:
-                with CONFIG_IO_LOCK:
-                    cfg = load_config(config_path)
-                    cfg.setdefault("output_eq", {})[field] = normalised_bool
-                    save_config(config_path, cfg)
-            monitor_control.set_live_output_auto_trim(normalised_bool)
-        except Exception as e:
-            logging.exception("apply_eq_field: save failed")
-            return False, normalised_str, str(e)
-        return True, normalised_str, ""
-
-    value = _spec.validate(value_raw)
-    normalised_str = f"{value:.1f}"
-    band_applied = False
-
-    try:
-        if _store is not None:
-            pre_snap = _store.snapshot()
-            _store.update(lambda raw: raw.setdefault("output_eq", {}).update({field: value}))
-            oeq = pre_snap.output_eq
-        else:
-            with CONFIG_IO_LOCK:
-                cfg = load_config(config_path)
-                p = parse_config(cfg)
-                cfg.setdefault("output_eq", {})[field] = value
-                save_config(config_path, cfg)
-            oeq = p.output_eq
-
-        if field == "gain_db":
-            monitor_control.set_live_output_gain(value)
-        else:
-            band_vals = {b: float(getattr(oeq, b)) for b in _OUTPUT_EQ_DB_FIELDS if b != "gain_db"}
-            band_vals[field] = value
-            monitor_control.set_live_output_eq(
-                band_vals["peq1_db"],
-                band_vals["peq2_db"],
-                band_vals["peq3_db"],
-                band_vals["peq4_db"],
-                band_vals["peq5_db"],
-                band_vals["peq6_db"],
-            )
-            band_applied = True
-    except Exception as e:
-        logging.exception("apply_eq_field: save failed")
-        return False, normalised_str, str(e)
-
-    if band_applied:
-        notify_state_changed("eq")
-    return True, normalised_str, ""
-
-
 # ---------------------------------------------------------------------------
 # Dial bass/treble mapping onto the six output_eq bands
 #
@@ -469,8 +332,8 @@ def dial_eq_bands(oeq) -> list:
             "frequency_hz": int(b["freq_hz"]),
             "type": b["type"],
             "gain_db": float(getattr(oeq, b["key"])),
-            "min_db": int(_OUTPUT_EQ_DB_MIN),
-            "max_db": int(_OUTPUT_EQ_DB_MAX),
+            "min_db": int(OUTPUT_EQ_DB_MIN),
+            "max_db": int(OUTPUT_EQ_DB_MAX),
         }
         for b in OUTPUT_PEQ_BANDS
     ]
@@ -491,90 +354,8 @@ def eq_fields_for_bands(bands) -> Optional[dict]:
             return None
         if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
             return None
-        fields[f"{band_id}_db"] = max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, float(raw)))
+        fields[f"{band_id}_db"] = max(OUTPUT_EQ_DB_MIN, min(OUTPUT_EQ_DB_MAX, float(raw)))
     return fields
-
-
-def apply_eq_fields(config_path: str, values: dict, *, settings=None) -> tuple:
-    """Save and apply several output EQ band fields in one update: one store
-    write, one live apply of the merged six bands -- unlike calling
-    apply_eq_field() once per field, this never re-applies live or re-writes
-    the store more than once for a single dial tap that moves two bands at
-    once. Each field in *values* is validated through the same schema
-    apply_eq_field() uses; a field absent from *values* keeps its currently
-    stored value untouched (peq3/peq4 are never in *values* -- the dial never
-    writes them).
-
-    When *settings* is a SettingsStore instance, it is used as the sole
-    persistence mechanism, same as apply_eq_field().
-
-    Returns (ok, error_message).
-    """
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = settings if isinstance(settings, _SettingsStore) else None
-
-    from autostream_settings_schema import SETTINGS_SCHEMA
-    normalised: dict = {}
-    for field, value_raw in values.items():
-        if field not in _OUTPUT_EQ_BAND_FIELDS:
-            raise ValueError(f"Unknown field: {field!r}")
-        normalised[field] = SETTINGS_SCHEMA[f"output_eq.{field}"].validate(value_raw)
-
-    try:
-        if _store is not None:
-            pre_snap = _store.snapshot()
-            _store.update(lambda raw: raw.setdefault("output_eq", {}).update(normalised))
-            oeq = pre_snap.output_eq
-        else:
-            with CONFIG_IO_LOCK:
-                cfg = load_config(config_path)
-                p = parse_config(cfg)
-                cfg.setdefault("output_eq", {}).update(normalised)
-                save_config(config_path, cfg)
-            oeq = p.output_eq
-
-        band_vals = {b: float(getattr(oeq, b)) for b in _OUTPUT_EQ_BAND_FIELDS}
-        band_vals.update(normalised)
-        monitor_control.set_live_output_eq(
-            band_vals["peq1_db"], band_vals["peq2_db"], band_vals["peq3_db"],
-            band_vals["peq4_db"], band_vals["peq5_db"], band_vals["peq6_db"],
-        )
-    except Exception as e:
-        logging.exception("apply_eq_fields: save failed")
-        return False, str(e)
-
-    notify_state_changed("eq")
-    return True, ""
-
-
-def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
-    """Zero all EQ band fields (peq1-peq6). Does not change output gain or auto-trim.
-
-    When *settings* is a SettingsStore instance, uses it for atomic persistence.
-    """
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = settings if isinstance(settings, _SettingsStore) else None
-
-    try:
-        if _store is not None:
-            def _zero(raw: dict) -> None:
-                eq = raw.setdefault("output_eq", {})
-                for f in _OUTPUT_EQ_BAND_FIELDS:
-                    eq[f] = 0.0
-            _store.update(_zero)
-        else:
-            with CONFIG_IO_LOCK:
-                cfg = load_config(config_path)
-                eq = cfg.setdefault("output_eq", {})
-                for f in _OUTPUT_EQ_BAND_FIELDS:
-                    eq[f] = 0.0
-                save_config(config_path, cfg)
-        monitor_control.set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    except Exception as e:
-        logging.exception("apply_eq_reset: reset failed")
-        return False, str(e)
-    notify_state_changed("eq")
-    return True, ""
 
 
 # ---------------------------------------------------------------------------

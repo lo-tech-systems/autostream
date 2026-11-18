@@ -47,6 +47,7 @@ import autostream_appliance_models as models
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_webui_api import send_dial_eq_post_json, send_dial_eq_set_post_json
 from autostream_webui_state import WebUIState
+import autostream_monitor_control as monitor_control
 
 DIAL_ID = "test-dial-uuid-1234"
 TEST_APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"  # 20 lowercase hex-shaped chars
@@ -123,7 +124,7 @@ def _invoke_set(
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", return_value=parsed),
-        patch("autostream_webui_api.apply_eq_fields", apply_mock),
+        patch("autostream_monitor_control.apply_eq_fields", apply_mock),
     ):
         send_dial_eq_set_post_json(handler, state, json_obj)
     code, body = _response(handler)
@@ -190,8 +191,8 @@ class TestApplyEqFields:
         }), encoding="utf-8")
         eq_calls = []
         with patch("autostream_monitor_control.set_live_output_eq",
-                   side_effect=lambda *a: eq_calls.append(a)):
-            ok, err = models.apply_eq_fields(str(cfg_path), models.eq_fields_for_bass(3))
+                   side_effect=lambda *a, **kw: eq_calls.append(a)):
+            ok, err = monitor_control.apply_eq_fields(str(cfg_path), models.eq_fields_for_bass(3))
         assert ok is True
         assert eq_calls, "set_live_output_eq must be called"
         peq1, peq2, peq3, peq4, peq5, peq6 = eq_calls[0]
@@ -203,9 +204,9 @@ class TestApplyEqFields:
         cfg_path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
         eq_calls = []
         with patch("autostream_monitor_control.set_live_output_eq",
-                   side_effect=lambda *a: eq_calls.append(a)):
+                   side_effect=lambda *a, **kw: eq_calls.append(a)):
             values = {**models.eq_fields_for_bass(2), **models.eq_fields_for_treble(4)}
-            ok, err = models.apply_eq_fields(str(cfg_path), values)
+            ok, err = monitor_control.apply_eq_fields(str(cfg_path), values)
         assert ok is True
         assert len(eq_calls) == 1
         assert len(eq_calls[0]) == 6
@@ -215,7 +216,7 @@ class TestApplyEqFields:
         cfg_path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
         with patch("autostream_monitor_control.set_live_output_eq"):
             values = {**models.eq_fields_for_bass(2), **models.eq_fields_for_treble(4)}
-            ok, err = models.apply_eq_fields(str(cfg_path), values)
+            ok, err = monitor_control.apply_eq_fields(str(cfg_path), values)
         assert ok is True
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         eq = saved["output_eq"]
@@ -224,8 +225,8 @@ class TestApplyEqFields:
     def test_save_failure_returns_ok_false(self, tmp_path):
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
-        with patch("autostream_appliance_models.save_config", side_effect=OSError("disk full")):
-            ok, err = models.apply_eq_fields(str(cfg_path), models.eq_fields_for_bass(1))
+        with patch("autostream_monitor_control.save_config", side_effect=OSError("disk full")):
+            ok, err = monitor_control.apply_eq_fields(str(cfg_path), models.eq_fields_for_bass(1))
         assert ok is False
         assert err
 

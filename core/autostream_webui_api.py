@@ -120,12 +120,6 @@ from autostream_core import (
 from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
 from autostream_appliance_models import (
     _dial_update_banner_text,
-    _OUTPUT_EQ_ALL_FIELDS,
-    _OUTPUT_EQ_BOOL_FIELDS,
-    _OUTPUT_EQ_DB_FIELDS,
-    apply_eq_field,
-    apply_eq_fields,
-    apply_eq_reset,
     submit_output_change,
     bass_treble_from_eq,
     build_equaliser_state,
@@ -751,27 +745,24 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
         return
 
-    try:
-        ok, normalised_str, err = apply_eq_field(
-            state.config_path, field, value_raw,
-            settings=getattr(state, "settings", None),
-        )
-    except ValueError as e:
-        send_json(handler, 400, {"ok": False, "error": str(e)})
+    reply = submit(Intent(
+        "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "webui", context=state))
+    if "invalid" in reply.result:
+        send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
         return
 
-    if not ok:
-        send_json(handler, 200, {"ok": False, "error": err})
+    if not reply.ok:
+        send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
         return
 
-    send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
+    send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
 
 
 def send_output_eq_reset_json(handler, state) -> None:
     """POST /api/output_eq/reset — zero all EQ bands; does not change output gain or auto-trim."""
-    ok, err = apply_eq_reset(state.config_path, settings=getattr(state, "settings", None))
-    if not ok:
-        send_json(handler, 200, {"ok": False, "error": err})
+    reply = submit(Intent("output.eq.reset", {}, Origin.USER, "webui", context=state))
+    if not reply.ok:
+        send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
         return
     send_json(handler, 200, {"ok": True})
 
@@ -1371,7 +1362,8 @@ def send_dial_eq_set_post_json(handler, state: WebUIState, json_obj: dict) -> No
     regardless of what the dial sent. peq3/peq4 are never touched by the
     bass/treble fields.
     """
-    if _dial_auth_gate(handler, json_obj) is None:
+    dial_id = _dial_auth_gate(handler, json_obj)
+    if dial_id is None:
         return
     values: dict = {}
     for key, validate in _EQ_SET_FIELDS:
@@ -1385,9 +1377,11 @@ def send_dial_eq_set_post_json(handler, state: WebUIState, json_obj: dict) -> No
     if not values:
         send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
-    ok, err = apply_eq_fields(state.config_path, values, settings=getattr(state, "settings", None))
-    if not ok:
-        logging.warning("dial eq set: apply failed: %s", err)
+    reply = submit(Intent(
+        "output.eq.set", {"fields": tuple(values.items())}, Origin.USER, f"dial:{dial_id}",
+        context=state))
+    if not reply.ok:
+        logging.warning("dial eq set: apply failed: %s", reply.result.get("error", reply.error))
         send_json(handler, 200, {"ok": False, "error": "eq_apply_failed", "appliance_id": get_appliance_id()})
         return
     parsed = _config_snapshot(state)
@@ -1544,25 +1538,22 @@ def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) ->
         return
     field = str(payload.get("field", "")).strip()
     value_raw = str(payload.get("value", "")).strip()
-    try:
-        ok, normalised_str, err = apply_eq_field(
-            state.config_path, field, value_raw,
-            settings=getattr(state, "settings", None),
-        )
-    except ValueError as e:
-        send_json(handler, 400, {"ok": False, "error": str(e)})
+    reply = submit(Intent(
+        "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "peer", context=state))
+    if "invalid" in reply.result:
+        send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
         return
-    if not ok:
-        send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
+    if not reply.ok:
+        send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
         return
-    send_json(handler, 200, {"ok": True, "field": field, "value": normalised_str})
+    send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
 
 
 def send_federation_eq_reset_json(handler, state: WebUIState) -> None:
     """POST /api/federation/v1/equaliser/reset — zero all EQ bands; does not change output gain or auto-trim."""
-    ok, err = apply_eq_reset(state.config_path, settings=getattr(state, "settings", None))
-    if not ok:
-        send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
+    reply = submit(Intent("output.eq.reset", {}, Origin.USER, "peer", context=state))
+    if not reply.ok:
+        send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
         return
     send_json(handler, 200, {"ok": True})
 

@@ -1,0 +1,15 @@
+# The output equaliser changes moved from the shared models into the monitor control module.
+autostream_appliance_models.apply_eq_field -> autostream_monitor_control.apply_eq_field  alias=monitor_control
+autostream_appliance_models.apply_eq_fields -> autostream_monitor_control.apply_eq_fields  alias=monitor_control
+autostream_appliance_models.apply_eq_reset -> autostream_monitor_control.apply_eq_reset  alias=monitor_control
+autostream_appliance_models._OUTPUT_EQ_ALL_FIELDS -> autostream_monitor_control._OUTPUT_EQ_ALL_FIELDS  alias=monitor_control
+autostream_appliance_models._OUTPUT_EQ_BAND_FIELDS -> autostream_monitor_control._OUTPUT_EQ_BAND_FIELDS  alias=monitor_control
+autostream_appliance_models._OUTPUT_EQ_DB_MAX -> autostream_eq_bands.OUTPUT_EQ_DB_MAX  alias=eq_bands
+autostream_appliance_models._OUTPUT_EQ_DB_MIN -> autostream_eq_bands.OUTPUT_EQ_DB_MIN  alias=eq_bands
+autostream_webui_api.apply_eq_field -> autostream_monitor_control.apply_eq_field  alias=monitor_control
+autostream_webui_api.apply_eq_fields -> autostream_monitor_control.apply_eq_fields  alias=monitor_control
+autostream_webui_api.apply_eq_reset -> autostream_monitor_control.apply_eq_reset  alias=monitor_control
+autostream_appliance_gateway.apply_eq_field -> autostream_monitor_control.apply_eq_field  alias=monitor_control
+autostream_appliance_gateway.apply_eq_reset -> autostream_monitor_control.apply_eq_reset  alias=monitor_control
+autostream_appliance_models.save_config -> autostream_monitor_control.save_config  alias=monitor_control
+autostream_appliance_models.load_config -> autostream_monitor_control.load_config  alias=monitor_control

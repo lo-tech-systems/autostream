@@ -41,10 +41,9 @@ import threading
 import time
 from typing import Optional
 
+from autostream_intents import Intent, Origin, submit
 from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_appliance_models import (
-    apply_eq_field,
-    apply_eq_reset,
     submit_output_change,
     build_equaliser_state,
     build_home_state,
@@ -868,18 +867,15 @@ def send_gateway_eq_config_json(handler, state, appliance_id: str, body_str: str
         return
 
     if resolution == "bound":
-        try:
-            ok, norm, err = apply_eq_field(
-                state.config_path, field, value_raw,
-                settings=getattr(state, "settings", None),
-            )
-        except ValueError as e:
-            send_json(handler, 400, {"ok": False, "error": str(e)})
+        reply = submit(Intent(
+            "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "webui", context=state))
+        if "invalid" in reply.result:
+            send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
             return
-        if not ok:
-            send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
+        if not reply.ok:
+            send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
             return
-        send_json(handler, 200, {"ok": True, "field": field, "value": norm})
+        send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
         return
 
     if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
@@ -900,9 +896,9 @@ def send_gateway_eq_reset_json(handler, state, appliance_id: str) -> None:
         return
 
     if resolution == "bound":
-        ok, err = apply_eq_reset(state.config_path, settings=getattr(state, "settings", None))
-        if not ok:
-            send_json(handler, 500, {"ok": False, "error": err or "internal_error"})
+        reply = submit(Intent("output.eq.reset", {}, Origin.USER, "webui", context=state))
+        if not reply.ok:
+            send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
             return
         send_json(handler, 200, {"ok": True})
         return

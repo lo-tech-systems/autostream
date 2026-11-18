@@ -275,44 +275,44 @@ class TestApplyEqField:
     def test_unknown_field_raises_value_error(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with pytest.raises(ValueError, match="Unknown field"):
-            models.apply_eq_field(str(cfg_path), "no_such_field", "1.0")
+            monitor_control.apply_eq_field(str(cfg_path), "no_such_field", "1.0")
 
     def test_non_numeric_db_raises_value_error(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with pytest.raises(ValueError, match="numeric"):
-            models.apply_eq_field(str(cfg_path), "gain_db", "abc")
+            monitor_control.apply_eq_field(str(cfg_path), "gain_db", "abc")
 
     def test_gain_clamped_to_max(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_monitor_control.set_live_output_gain"), \
-             patch("autostream_appliance_models.save_config"):
-            ok, norm, err = models.apply_eq_field(str(cfg_path), "gain_db", "99")
+             patch("autostream_monitor_control.save_config"):
+            ok, norm, err = monitor_control.apply_eq_field(str(cfg_path), "gain_db", "99")
         assert ok is True
         assert float(norm) <= 12.0
 
     def test_gain_clamped_to_min(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_monitor_control.set_live_output_gain"), \
-             patch("autostream_appliance_models.save_config"):
-            ok, norm, err = models.apply_eq_field(str(cfg_path), "gain_db", "-99")
+             patch("autostream_monitor_control.save_config"):
+            ok, norm, err = monitor_control.apply_eq_field(str(cfg_path), "gain_db", "-99")
         assert float(norm) >= -12.0
 
     def test_gain_change_calls_set_live_output_gain(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         gain_calls = []
         with patch("autostream_monitor_control.set_live_output_gain",
-                   side_effect=lambda v: gain_calls.append(v)), \
-             patch("autostream_appliance_models.save_config"):
-            models.apply_eq_field(str(cfg_path), "gain_db", "2.5")
+                   side_effect=lambda v, **kw: gain_calls.append(v)), \
+             patch("autostream_monitor_control.save_config"):
+            monitor_control.apply_eq_field(str(cfg_path), "gain_db", "2.5")
         assert gain_calls == [pytest.approx(2.5)]
 
     def test_peq_change_calls_set_live_output_eq(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         eq_calls = []
         with patch("autostream_monitor_control.set_live_output_eq",
-                   side_effect=lambda *a: eq_calls.append(a)), \
-             patch("autostream_appliance_models.save_config"):
-            models.apply_eq_field(str(cfg_path), "peq3_db", "4.0")
+                   side_effect=lambda *a, **kw: eq_calls.append(a)), \
+             patch("autostream_monitor_control.save_config"):
+            monitor_control.apply_eq_field(str(cfg_path), "peq3_db", "4.0")
         assert eq_calls, "set_live_output_eq must be called"
         assert len(eq_calls[0]) == 6
 
@@ -320,33 +320,33 @@ class TestApplyEqField:
         cfg_path = _make_config_file(tmp_path)
         gain_calls = []
         with patch("autostream_monitor_control.set_live_output_gain",
-                   side_effect=lambda v: gain_calls.append(v)), \
+                   side_effect=lambda v, **kw: gain_calls.append(v)), \
              patch("autostream_monitor_control.set_live_output_eq"), \
-             patch("autostream_appliance_models.save_config"):
-            models.apply_eq_field(str(cfg_path), "peq1_db", "1.0")
+             patch("autostream_monitor_control.save_config"):
+            monitor_control.apply_eq_field(str(cfg_path), "peq1_db", "1.0")
         assert not gain_calls
 
     def test_auto_trim_true_string_parsed(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_monitor_control.set_live_output_auto_trim"), \
-             patch("autostream_appliance_models.save_config"):
-            ok, norm, err = models.apply_eq_field(str(cfg_path), "auto_trim_enabled", "true")
+             patch("autostream_monitor_control.save_config"):
+            ok, norm, err = monitor_control.apply_eq_field(str(cfg_path), "auto_trim_enabled", "true")
         assert ok is True
         assert norm == "true"
 
     def test_auto_trim_false_string_parsed(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_monitor_control.set_live_output_auto_trim"), \
-             patch("autostream_appliance_models.save_config"):
-            ok, norm, err = models.apply_eq_field(str(cfg_path), "auto_trim_enabled", "0")
+             patch("autostream_monitor_control.save_config"):
+            ok, norm, err = monitor_control.apply_eq_field(str(cfg_path), "auto_trim_enabled", "0")
         assert norm == "false"
 
     def test_save_failure_returns_ok_false(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_monitor_control.set_live_output_gain"), \
-             patch("autostream_appliance_models.save_config",
+             patch("autostream_monitor_control.save_config",
                    side_effect=OSError("disk full")):
-            ok, norm, err = models.apply_eq_field(str(cfg_path), "gain_db", "1.0")
+            ok, norm, err = monitor_control.apply_eq_field(str(cfg_path), "gain_db", "1.0")
         assert ok is False
         assert err
 
@@ -360,7 +360,7 @@ class TestApplyEqReset:
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_monitor_control.set_live_output_eq"):
-            ok, err = models.apply_eq_reset(str(cfg_path))
+            ok, err = monitor_control.apply_eq_reset(str(cfg_path))
         assert ok is True
         assert err == ""
 
@@ -370,7 +370,7 @@ class TestApplyEqReset:
         })
         with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_monitor_control.set_live_output_eq"):
-            models.apply_eq_reset(str(cfg_path))
+            monitor_control.apply_eq_reset(str(cfg_path))
         saved = json.loads(cfg_path.read_text())
         for f in ("peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db"):
             assert saved["output_eq"][f] == 0.0, f"{f} not zeroed"
@@ -380,9 +380,9 @@ class TestApplyEqReset:
         cfg_path = _make_config_file(tmp_path)
         gain_calls = []
         with patch("autostream_monitor_control.set_live_output_gain",
-                   side_effect=lambda v: gain_calls.append(v)), \
+                   side_effect=lambda v, **kw: gain_calls.append(v)), \
              patch("autostream_monitor_control.set_live_output_eq"):
-            models.apply_eq_reset(str(cfg_path))
+            monitor_control.apply_eq_reset(str(cfg_path))
         assert gain_calls == [], "set_live_output_gain must not be called by Flat reset"
 
     def test_reset_calls_set_live_output_eq_all_zeros(self, tmp_path):
@@ -390,15 +390,15 @@ class TestApplyEqReset:
         eq_calls = []
         with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_monitor_control.set_live_output_eq",
-                   side_effect=lambda *a: eq_calls.append(a)):
-            models.apply_eq_reset(str(cfg_path))
+                   side_effect=lambda *a, **kw: eq_calls.append(a)):
+            monitor_control.apply_eq_reset(str(cfg_path))
         assert eq_calls and all(v == 0.0 for v in eq_calls[0])
 
     def test_save_failure_returns_ok_false(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.save_config",
+        with patch("autostream_monitor_control.save_config",
                    side_effect=OSError("disk full")):
-            ok, err = models.apply_eq_reset(str(cfg_path))
+            ok, err = monitor_control.apply_eq_reset(str(cfg_path))
         assert ok is False
         assert err
 
@@ -767,6 +767,7 @@ import logging as _logging
 
 import autostream_pin_pairing as _pairing
 from fake_store import fake_levels, fake_playback, fake_repeat, fake_session
+import autostream_monitor_control as monitor_control
 
 
 def _result(ok: bool, error_code: str = "", message: str = ""):

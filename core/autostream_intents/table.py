@@ -169,6 +169,13 @@ def _build_rows() -> dict:
             {Origin.USER},
         ),
         _row(
+            "output.eq.set",
+            {"fields": v.pairs(error=_BAD_BODY)},
+            {"fields"},
+            {Origin.USER},
+        ),
+        _row("output.eq.reset", {}, (), {Origin.USER}),
+        _row(
             "repeat.arm",
             {"armed": v.boolean(error="invalid_armed")},
             {"armed"},

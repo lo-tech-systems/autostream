@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 
 import pytest
+import autostream_monitor_control as monitor_control
+import autostream_eq_bands as eq_bands
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -235,7 +237,7 @@ class TestOutputEqMigration:
         import autostream_appliance_models as am
         from autostream_settings_schema import SETTINGS_SCHEMA
 
-        for field in am._OUTPUT_EQ_ALL_FIELDS:
+        for field in monitor_control._OUTPUT_EQ_ALL_FIELDS:
             path = f"output_eq.{field}"
             assert path in SETTINGS_SCHEMA, f"{path} missing from SETTINGS_SCHEMA"
             spec = SETTINGS_SCHEMA[path]
@@ -252,8 +254,8 @@ class TestOutputEqMigration:
         # Out-of-range values are clamped, not rejected -- same as the
         # inline `max(_OUTPUT_EQ_DB_MIN, min(_OUTPUT_EQ_DB_MAX, value))`
         # apply_eq_field() used before this migration.
-        assert spec.validate("999") == pytest.approx(am._OUTPUT_EQ_DB_MAX)
-        assert spec.validate("-999") == pytest.approx(am._OUTPUT_EQ_DB_MIN)
+        assert spec.validate("999") == pytest.approx(eq_bands.OUTPUT_EQ_DB_MAX)
+        assert spec.validate("-999") == pytest.approx(eq_bands.OUTPUT_EQ_DB_MIN)
 
     def test_db_field_non_numeric_error_message_unchanged(self):
         import autostream_appliance_models as am  # noqa: F401

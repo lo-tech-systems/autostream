@@ -434,7 +434,7 @@ class TestFederationEqConfig:
                           body=json.dumps(body).encode(),
                           headers={"Authorization": bearer})
         with patch("autostream_monitor_control.set_live_output_gain"), \
-             patch("autostream_appliance_models.save_config"):
+             patch("autostream_monitor_control.save_config"):
             return _call(h, state)
 
     def test_valid_gain_field_accepted(self, tmp_path):

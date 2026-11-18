@@ -98,8 +98,8 @@ def _call_eq_config(body: dict | str, tmp_path: Path,
                side_effect=live_exc) if live_exc else patch("autostream_monitor_control.set_live_output_gain"), \
          patch("autostream_monitor_control.set_live_output_eq"), \
          patch("autostream_monitor_control.set_live_output_auto_trim"), \
-         (patch("autostream_appliance_models.save_config", side_effect=save_exc)
-          if save_exc else patch("autostream_appliance_models.save_config")):
+         (patch("autostream_monitor_control.save_config", side_effect=save_exc)
+          if save_exc else patch("autostream_monitor_control.save_config")):
         send_output_eq_config_json(MagicMock(), state, body_str)
 
     return sent[0] if sent else (None, {})
@@ -116,8 +116,8 @@ def _call_eq_reset(tmp_path: Path, save_exc=None) -> tuple[int, dict]:
     with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
          patch("autostream_monitor_control.set_live_output_gain"), \
          patch("autostream_monitor_control.set_live_output_eq"), \
-         (patch("autostream_appliance_models.save_config", side_effect=save_exc)
-          if save_exc else patch("autostream_appliance_models.save_config")):
+         (patch("autostream_monitor_control.save_config", side_effect=save_exc)
+          if save_exc else patch("autostream_monitor_control.save_config")):
         send_output_eq_reset_json(MagicMock(), state)
 
     return sent[0] if sent else (None, {})
@@ -203,7 +203,7 @@ class TestOutputEQConfigAllBandReconstruction:
              patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_monitor_control.set_live_output_auto_trim"), \
              patch("autostream_monitor_control.set_live_output_eq",
-                   side_effect=lambda *a: eq_calls.append(a)):
+                   side_effect=lambda *a, **kw: eq_calls.append(a)):
             send_output_eq_config_json(
                 MagicMock(), state,
                 json.dumps({"field": "peq2_db", "value": "3.0"}),
@@ -220,9 +220,9 @@ class TestOutputEQConfigAllBandReconstruction:
         with patch("autostream_webui_api.send_json"), \
              patch("autostream_monitor_control.set_live_output_auto_trim"), \
              patch("autostream_monitor_control.set_live_output_gain",
-                   side_effect=lambda v: gain_calls.append(v)), \
+                   side_effect=lambda v, **kw: gain_calls.append(v)), \
              patch("autostream_monitor_control.set_live_output_eq",
-                   side_effect=lambda *a: eq_calls.append(a)):
+                   side_effect=lambda *a, **kw: eq_calls.append(a)):
             send_output_eq_config_json(
                 MagicMock(), state,
                 json.dumps({"field": "gain_db", "value": "2.0"}),
@@ -288,9 +288,9 @@ class TestOutputEQReset:
 
         with patch("autostream_webui_api.send_json"), \
              patch("autostream_monitor_control.set_live_output_gain",
-                   side_effect=lambda v: gain_calls.append(v)), \
+                   side_effect=lambda v, **kw: gain_calls.append(v)), \
              patch("autostream_monitor_control.set_live_output_eq",
-                   side_effect=lambda *a: eq_calls.append(a)):
+                   side_effect=lambda *a, **kw: eq_calls.append(a)):
             send_output_eq_reset_json(MagicMock(), state)
 
         assert gain_calls == [], "set_live_output_gain must not be called by Flat reset"

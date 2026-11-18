@@ -19,6 +19,10 @@ OUTPUT_PEQ_BANDS: list[dict] = [
     {"key": "peq6_db", "label": "10kHz",  "type": "high_shelf", "freq_hz": 10000.0, "q": 0.5},
 ]
 
+# The range, in dB, that one output band or the output gain is clamped to.
+OUTPUT_EQ_DB_MIN = -12.0
+OUTPUT_EQ_DB_MAX = 12.0
+
 
 def build_monitor_eq_bands(
     eq_40hz_db: float,
