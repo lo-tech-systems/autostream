@@ -18,8 +18,6 @@ import logging
 
 from autostream_intents import Intent, Origin, submit
 from autostream_pin_pairing import REQUESTER_WEBUI
-from autostream_config import DEFAULT_AIRPLAY_MODE
-from autostream_player_service import config_airplay_mode_to_backend
 
 from webui.session_state import WebUIState
 from webui.browser.api_settings import send_settings_post_json
@@ -36,16 +34,11 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
         payload = json.loads(body)
         out_id = str(payload.get("id") or "").strip()
 
-        parsed = common._config_snapshot(state)
-
-        offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id) if out_id else None
-        offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
-        mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE) if out_id else DEFAULT_AIRPLAY_MODE
-        mode = config_airplay_mode_to_backend(mode_text)
+        start = common.output_start_args(state, out_id) if out_id else {}
 
         result = home_model.submit_output_change(
             payload, requester="webui", pin_requester=REQUESTER_WEBUI,
-            offset_ms=offset_ms, mode=mode,
+            offset_ms=start.get("offset_ms"), mode=start.get("mode"),
         )
         common.send_json(handler, 200, result)
     except Exception as e:

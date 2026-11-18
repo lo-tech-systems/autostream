@@ -50,6 +50,7 @@ import webui.dial.management
 import webui.peer.federation
 import webui.peer.gateway
 import webui.protocol.hub
+import webui.protocol.intents
 import webui.protocol.state
 import webui.protocol.stream
 import webui.repeat

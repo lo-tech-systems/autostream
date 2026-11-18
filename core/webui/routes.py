@@ -84,13 +84,15 @@ class Route:
     # Caller-authentication scheme. "browser" (the default) is the full
     # stage sequence dispatch() applies: session/CSRF/commissioning/
     # FULL-auth stages, as documented on dispatch() itself.
-    # The other three opt a route OUT of every one of those stages --
+    # The others opt a route OUT of every one of those stages --
     # dispatch() just resolves and calls the handler, exactly mirroring the
     # early-dispatch branches these routes used to be in do_GET/do_POST
     # (before route-table dispatch even ran): "bearer" is the federation
     # API (source-IP-bound bearer tokens, its own 401s, never a browser
     # session), "dial" is the dial-device protocol endpoints (UUID/allow-
-    # list auth inside the sender), "loopback_aware" is a route whose
+    # list auth inside the sender), "protocol" is the client protocol's
+    # intents route, which identifies its caller from the request body
+    # itself, "loopback_aware" is a route whose
     # handler itself distinguishes a direct-loopback caller (full access)
     # from an NGINX-proxied one (its own, usually lighter-weight, gate --
     # see the /api/playing-status and /api/log-level adapters in
@@ -141,9 +143,9 @@ class Route:
             raise ValueError("Route requires at least one HTTP method")
         if self.kind not in ("page", "api"):
             raise ValueError(f"Route.kind must be 'page' or 'api', got {self.kind!r}")
-        if self.scheme not in ("browser", "bearer", "dial", "loopback_aware"):
+        if self.scheme not in ("browser", "bearer", "dial", "loopback_aware", "protocol"):
             raise ValueError(
-                f"Route.scheme must be one of browser/bearer/dial/loopback_aware, got {self.scheme!r}"
+                f"Route.scheme must be one of browser/bearer/dial/loopback_aware/protocol, got {self.scheme!r}"
             )
 
 
@@ -745,6 +747,19 @@ register(
         kind="api",
         allow_unconfigured=True,
         poll_log=True,
+    )
+)
+
+register(
+    Route(
+        prefix="/api/v1/intents/",
+        methods=("POST",),
+        handler="webui.protocol.intents.post_intent",
+        auth=AuthRequirement.NONE,
+        scheme="protocol",
+        kind="api",
+        allow_unconfigured=True,
+        comment="The caller is identified from the body, and the intent is refused unconfigured by the handler.",
     )
 )
 

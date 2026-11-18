@@ -23,9 +23,11 @@ from autostream_settings import SettingsView
 from autostream_auth import FLASH_COOKIE_NAME, parse_cookie_header
 from autostream_bluetooth_client import classify_loopback_hw
 from autostream_config import (
+    DEFAULT_AIRPLAY_MODE,
     DEFAULT_STYLUS_LIFE_HOURS,
     normalize_input_type,
 )
+from autostream_player_service import config_airplay_mode_to_backend
 from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
 from autostream_state import store
@@ -49,6 +51,21 @@ def _config_snapshot(state):
     if not isinstance(settings, SettingsView):
         raise TypeError("the web pages need a settings view on their state")
     return settings.snapshot()
+
+
+def output_start_args(state, out_id: Optional[str] = None) -> dict:
+    """What the configuration says about starting a speaker: always the level
+    a volume change falls back to (``default_level``), and for *out_id* its
+    configured ``offset_ms`` and AirPlay ``mode`` (None when not configured).
+    These come from the configuration, never from the caller."""
+    parsed = _config_snapshot(state)
+    args: dict = {"default_level": max(0, min(100, int(parsed.owntone.volume_percent)))}
+    if out_id is not None:
+        offset_raw = parsed.owntone.output_offsets_ms.get(out_id)
+        args["offset_ms"] = int(offset_raw) if offset_raw is not None else None
+        args["mode"] = config_airplay_mode_to_backend(
+            parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE))
+    return args
 
 
 def _effective_control_other_appliances(state) -> bool:

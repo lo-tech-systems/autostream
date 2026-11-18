@@ -106,6 +106,11 @@ def _disable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
 def _outputs_set(intent: Intent, wait: float) -> Outcome:
     user = intent.origin == Origin.USER
     out_id = intent.args["id"]
+    if out_id == store().snapshot().outputs.placeholder_id:
+        # The default speaker's card while the player has no row for it: the
+        # tap is a choice for the session, with nothing to send yet.
+        get_authority().want_default(bool(intent.args["selected"]))
+        return Outcome(ok=True, result={"ok": True})
     if intent.args["selected"]:
         result = _enable(intent, wait, out_id, user)
     else:

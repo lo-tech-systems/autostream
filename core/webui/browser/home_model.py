@@ -16,7 +16,7 @@ from autostream_pin_pairing import PIN_RE
 from autostream_state.live import get_live_output_eq_status, pin_claim, start_buffer_ms
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
-from autostream_state import Origin, active_track, store
+from autostream_state import Origin, active_track
 import autostream_rpi as rpi
 from autostream_sysutils import format_hostname, get_system_hostname
 from webui.system import updates
@@ -436,15 +436,6 @@ def submit_output_change(
     if not out_id:
         return {"ok": False, "error": "Missing output id"}
     op = str(body.get("op") or "").strip().lower()
-    if op != "pin" and out_id == store().snapshot().outputs.placeholder_id:
-        # The default speaker's card while the player has no row for it:
-        # the tap is a choice for the session, with nothing to send yet.
-        reply = submit(Intent(
-            "outputs.want_default", {"wanted": bool(body.get("selected", False))}, origin, requester,
-        ))
-        if reply.result:
-            return dict(reply.result)
-        return {"ok": False, "error": reply.error, "id": out_id}
     args: dict = {"id": out_id}
     name = body.get("name")
     if name:

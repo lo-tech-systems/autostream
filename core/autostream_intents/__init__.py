@@ -7,6 +7,6 @@ the reply carries the outcome and the store version that shows the change.
 """
 from autostream_state import Origin
 
-from .table import Intent, IntentNotBound, Reply, Role, submit
+from .table import ROWS, Intent, IntentNotBound, Reply, Role, submit
 
-__all__ = ["Intent", "Reply", "Origin", "Role", "submit", "IntentNotBound"]
+__all__ = ["Intent", "Reply", "Origin", "Role", "ROWS", "submit", "IntentNotBound"]
