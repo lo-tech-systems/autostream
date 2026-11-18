@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
 """dial_main.py — autostream dial service entry point.
 
+Sections, in file order: logging and the update timer; the headless display
+and the peer pool; the volume and mute target resolvers; the display and
+input builders; the startup steps; main().
+
+main() runs the startup steps in a fixed order. The core is built first,
+because it does no I/O and starts no thread; the splash is shown before any
+slow step; and the core is started before the view, so the first fold is not
+held up by the panel. Teardown in the finally block runs in this order:
+marker, HD page, touch, core, peers, display, control socket,
+management server.
+
+Every name main() calls is imported into this module, so tests patch
+dial_main and not the module a name came from.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
@@ -212,13 +226,18 @@ def _build_mute_targets_fn(http_server, volume_targets_fn, get_all_targets=get_p
     return resolve
 
 
+def _kiosk_surface(cfg) -> bool:
+    """Whether the configured profile is shown by a browser on an HD panel."""
+    return get_profile_or_default(cfg.display.screen_type).surface == "kiosk"
+
+
 def _build_display(cfg, core):
     """The display manager for the configured profile. A kiosk-surface profile
     (a browser on an HD panel) has no SPI view, so the headless stand-in runs
     the core for it. Otherwise the SPI display stack is imported lazily so a
     Pillow/display-stack import failure (e.g. an incomplete apt install)
     degrades to the same stand-in rather than taking the service down."""
-    if get_profile_or_default(cfg.display.screen_type).surface == "kiosk":
+    if _kiosk_surface(cfg):
         return _HeadlessDisplay(cfg.display)
     try:
         from dial_display import create_dial_display
@@ -273,13 +292,10 @@ def _build_inputs(core, http_server, view_hooks):
     return nudge_up, nudge_down, nudge_delta, on_press
 
 
-def main() -> None:
-    log_level = _configure_logging()
-
-    shutdown_event = threading.Event()
-
-    # Start and stop are always logged, whatever the level (see
-    # log_lifecycle()): a log bundle must say which version was running.
+def _install_signal_handlers(shutdown_event: threading.Event) -> None:
+    """Make SIGTERM and SIGINT end the main loop. Start and stop are always
+    logged, whatever the level (see log_lifecycle()): a log bundle must say
+    which version was running."""
     def _on_sigterm(sig, frame):
         log_lifecycle("autostream-dial stopping")
         shutdown_event.set()
@@ -291,53 +307,49 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _on_sigterm)
     signal.signal(signal.SIGINT, _on_sigint)
 
-    cfg = load_config()
-    log_lifecycle(
-        "autostream-dial starting (version %s, uuid %s, python %s, log level %s)",
-        VERSION, cfg.uuid, sys.version.split()[0], log_level,
-    )
 
-    recovery_armed = begin_run(cfg.pin)
+def _start_display(cfg, core):
+    """Build the display and paint the boot splash.
 
-    # The core is built first: it does no I/O and starts no thread here, and
-    # everything below that acts on appliances (the display, the workers,
-    # the inputs) is handed it. It is started further down, after the
-    # splash, and stopped in the finally block.
-    core = create_dial_core(cfg)
-
-    # The display is built and lit before anything else that costs time
-    # (the update-timer reconcile and the announce verb both fork
-    # subprocesses), so the panel shows "Starting..." as early as the
-    # process can manage. Imported lazily so a Pillow/display-stack import
-    # failure (e.g. an incomplete apt install) degrades to a screenless
-    # display, with the core still running, rather than taking down the
-    # whole service — volume control must not depend on Pillow.
+    The display is built and lit before anything else that costs time
+    (the update-timer reconcile and the announce verb both fork
+    subprocesses), so the panel shows "Starting..." as early as the
+    process can manage. Imported lazily so a Pillow/display-stack import
+    failure (e.g. an incomplete apt install) degrades to a screenless
+    display, with the core still running, rather than taking down the
+    whole service — volume control must not depend on Pillow.
+    """
     display = _build_display(cfg, core)
     # The boot splash: opens the manager's one backend and paints
     # "Starting..." now, before any display thread exists; display.start()
-    # below reuses that open and the first fold replaces the splash.
+    # reuses that open and the first fold replaces the splash.
     # getattr guards the NoOpDisplayStatusProvider fallback, which has no
     # screen. show_starting() never raises.
     show_starting = getattr(display, "show_starting", None)
     if show_starting is not None:
         show_starting()
+    return display
 
-    _reconcile_update_timer(cfg.auto_update)
-    _announce_self(cfg)
 
-    led = DialLED(cfg.led_gpio)
+def _info_rows(cfg, http_server):
+    """Zero-arg callable giving the info page's rows for this dial."""
+    return lambda: gather_dial_info(
+        http_server.get_runtime_status()["name"], VERSION,
+        network=network_latest(), sd_health=dial_sdhealth.info_value(), uuid=cfg.uuid,
+    )
 
-    http_server = DialHTTPServer(cfg, display_status_provider=display)
-    http_server.start()
 
-    # The HD page's loopback server runs on every dial. A port that cannot be
-    # bound costs the page, never the dial.
+def _start_hd(cfg, core, http_server):
+    """Start the HD page's loopback server, its change hub and its panel, and
+    return (hd_server, hd_hub, hd_panel). The server runs on every dial. A
+    port that cannot be bound costs the page, never the dial: all three come
+    back None."""
     hd_server = None
     hd_hub = None
     hd_panel = None
     try:
         hd_hub = ChangeHub(core)
-        kiosk_surface = get_profile_or_default(cfg.display.screen_type).surface == "kiosk"
+        kiosk_surface = _kiosk_surface(cfg)
 
         def panel_inputs() -> tuple[bool, bool, bool]:
             due = core.warnings.due_status()
@@ -359,10 +371,7 @@ def main() -> None:
         )
         hd_server = HdServer(
             cfg, core, http_server=http_server, panel=hd_panel, hub=hd_hub, port=cfg.hd_port,
-            info_fn=lambda: gather_dial_info(
-                http_server.get_runtime_status()["name"], VERSION,
-                network=network_latest(), sd_health=dial_sdhealth.info_value(), uuid=cfg.uuid,
-            ),
+            info_fn=_info_rows(cfg, http_server),
         )
         hd_hub.start()
         hd_server.start()
@@ -384,41 +393,23 @@ def main() -> None:
         hd_server = None
         hd_hub = None
         hd_panel = None
+    return hd_server, hd_hub, hd_panel
 
-    # What the core publishes about this dial, and how far a mute reaches,
-    # read live from the HTTP server so a /configure or /screen/settings
-    # change applies without a restart. Set once the server exists, before
-    # the core thread starts.
+
+def _wire_core(cfg, core, http_server) -> None:
+    """Tell the core what it publishes about this dial, and how far a mute
+    reaches, read live from the HTTP server so a /configure or
+    /screen/settings change applies without a restart. Set once the server
+    exists, before the core thread starts."""
     core.set_mute_scope(lambda: http_server.effective_mute_scope)
     core.set_volume_scope(lambda: http_server.effective_volume_scope)
     core.set_identity(lambda: http_server.get_runtime_status()["name"], VERSION, cfg.port)
     core.set_address_source(current_ipv4)
 
-    if recovery_armed:
-        http_server.begin_recovery_window()
 
-    # Wired here, after the HTTP server exists (its get_runtime_status()
-    # supplies the dial's live name) and before display.start() (so the
-    # provider is in place before the repeat thread can ever open the info
-    # page). hasattr guards the screenless fallback above, which has no
-    # screen and so no provider to set.
-    if hasattr(display, "set_info_provider"):
-        display.set_info_provider(
-            lambda: gather_dial_info(
-                http_server.get_runtime_status()["name"], VERSION,
-                network=network_latest(), sd_health=dial_sdhealth.info_value(), uuid=cfg.uuid,
-            )
-        )
-    # Every sighted appliance is held by its own client in the pool, and the
-    # core reads them all from there; its request lane, the one sender of the
-    # screens' speaker, EQ and repeat requests, starts with the core.
-    peer_registry, peer_pool = _start_peer_pool(cfg, core, shutdown_event)
-    # The core's thread starts before the view's, so the first fold is not
-    # held up by the panel; what the core publishes in between is folded in
-    # by the view when it starts.
-    core.start()
-    display.start()
-
+def _start_workers(cfg, core, http_server, led, peer_pool) -> None:
+    """Start the volume worker, the SD card health reader and the Wi-Fi
+    link poller."""
     # Volume/mute broadcast scope (see dial_volume.py's module docstring):
     # each addresses the core's single reporting-from target, unless the
     # dial's live effective scope is "all" (a screenless dial, or a screened
@@ -444,6 +435,10 @@ def main() -> None:
     dial_sdhealth.start(on_view=core.on_sd_health_view)
     start_network_worker(on_view=core.on_network_view, on_tick=dial_sdhealth.tick)
 
+
+def _start_touch(cfg, display, core, http_server):
+    """Build and start the touch source, and return (touch_source,
+    touch_runtime). touch_source is None when touch is off or failed."""
     # Touch requires a screen (a product decision) — built AFTER the display
     # and only when the config says both a screen is fitted and a touch
     # controller is selected. `hasattr(display, "set_overlay")` excludes the
@@ -477,6 +472,119 @@ def main() -> None:
             touch_source = None
             touch_runtime = "failed"
     http_server.set_touch_runtime(touch_runtime)
+    return touch_source, touch_runtime
+
+
+def _gpio_setup():
+    """The GPIO helpers, or (None, None) on a host without them. Imported
+    lazily — non-Pi hosts can still run the HTTP service."""
+    try:
+        from autostream_dial_gpio import setup_rotary_encoder, setup_button  # type: ignore[import]
+    except ImportError:
+        return None, None
+    return setup_rotary_encoder, setup_button
+
+
+def _start_inputs(
+    cfg, core, http_server, touch_source, touch_runtime,
+    nudge_up, nudge_down, on_press, setup_rotary_encoder, setup_button,
+):
+    """Set up the encoder and the button, then tell the core and the HTTP
+    server which inputs are really present. Returns (encoder, button); the
+    caller must keep both alive."""
+    encoder = None
+    if cfg.clk_gpio is None or cfg.dt_gpio is None:
+        # A screen-only build has no rotary encoder wired up — this is a
+        # deliberate config choice, not a hardware fault, so it gets an
+        # INFO line rather than the GPIO-init warning below.
+        logging.info("rotary encoder not configured; skipping")
+    elif setup_rotary_encoder is not None:
+        encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
+
+    button = None
+    if cfg.sw_gpio is None:
+        logging.info("button not configured; skipping")
+    elif setup_button is not None:
+        button = setup_button(cfg.sw_gpio, on_press)
+
+    # Runtime-derived, not config-derived: a dial with clk/dt/sw_gpio set
+    # but whose GPIO init failed (setup_rotary_encoder/setup_button
+    # returning None) must not claim it can confirm presence, and
+    # neither must a dial whose touch stack raised above (touch_source
+    # stays None on that path). See DialHTTPServer.set_can_confirm_presence.
+    http_server.set_touch_source(touch_source)
+    inputs = []
+    if encoder is not None:
+        inputs.append("encoder")
+    if button is not None:
+        inputs.append("button")
+    if touch_source is not None:
+        inputs.append("touch:" + touch_runtime)
+    # An HD page can confirm presence itself.
+    if _kiosk_surface(cfg):
+        inputs.append("touch:hd")
+    core.set_inputs(inputs)
+    http_server.set_can_confirm_presence(bool(inputs))
+    return encoder, button
+
+
+def main() -> None:
+    log_level = _configure_logging()
+
+    shutdown_event = threading.Event()
+    _install_signal_handlers(shutdown_event)
+
+    cfg = load_config()
+    log_lifecycle(
+        "autostream-dial starting (version %s, uuid %s, python %s, log level %s)",
+        VERSION, cfg.uuid, sys.version.split()[0], log_level,
+    )
+
+    recovery_armed = begin_run(cfg.pin)
+
+    # The core is built first: it does no I/O and starts no thread here, and
+    # everything below that acts on appliances (the display, the workers,
+    # the inputs) is handed it. It is started further down, after the
+    # splash, and stopped in the finally block.
+    core = create_dial_core(cfg)
+
+    display = _start_display(cfg, core)
+
+    _reconcile_update_timer(cfg.auto_update)
+    _announce_self(cfg)
+
+    led = DialLED(cfg.led_gpio)
+
+    http_server = DialHTTPServer(cfg, display_status_provider=display)
+    http_server.start()
+
+    hd_server, hd_hub, hd_panel = _start_hd(cfg, core, http_server)
+
+    _wire_core(cfg, core, http_server)
+
+    if recovery_armed:
+        http_server.begin_recovery_window()
+
+    # Wired here, after the HTTP server exists (its get_runtime_status()
+    # supplies the dial's live name) and before display.start() (so the
+    # provider is in place before the repeat thread can ever open the info
+    # page). hasattr guards the screenless fallback above, which has no
+    # screen and so no provider to set.
+    if hasattr(display, "set_info_provider"):
+        display.set_info_provider(_info_rows(cfg, http_server))
+    # Every sighted appliance is held by its own client in the pool, and the
+    # core reads them all from there; its request lane, the one sender of the
+    # screens' speaker, EQ and repeat requests, starts with the core.
+    peer_registry, peer_pool = _start_peer_pool(cfg, core, shutdown_event)
+    # The core's thread starts before the view's, so the first fold is not
+    # held up by the panel; what the core publishes in between is folded in
+    # by the view when it starts.
+    core.start()
+    display.start()
+
+    _start_workers(cfg, core, http_server, led, peer_pool)
+
+    touch_source, touch_runtime = _start_touch(cfg, display, core, http_server)
 
     # ---- Shared nudge callbacks (passed to both encoder and control socket) ----
 
@@ -497,12 +605,7 @@ def main() -> None:
         software_version=VERSION,
     )
 
-    # Import GPIO helpers lazily — non-Pi hosts can still run the HTTP service.
-    try:
-        from autostream_dial_gpio import setup_rotary_encoder, setup_button  # type: ignore[import]
-    except ImportError:
-        setup_rotary_encoder = None  # type: ignore[assignment]
-        setup_button = None  # type: ignore[assignment]
+    setup_rotary_encoder, setup_button = _gpio_setup()
 
     # Socket startup failures are fatal — let them escape so systemd can retry.
     # The finally block stops the control server and HTTP server on any exit.
@@ -512,39 +615,10 @@ def main() -> None:
         # Store encoder and button in long-lived locals — prevents GC from
         # finalising the underlying lgpio device handle and silently stopping
         # interrupts.
-        encoder = None
-        if cfg.clk_gpio is None or cfg.dt_gpio is None:
-            # A screen-only build has no rotary encoder wired up — this is a
-            # deliberate config choice, not a hardware fault, so it gets an
-            # INFO line rather than the GPIO-init warning below.
-            logging.info("rotary encoder not configured; skipping")
-        elif setup_rotary_encoder is not None:
-            encoder = setup_rotary_encoder(cfg.clk_gpio, cfg.dt_gpio, nudge_up, nudge_down)
-
-        button = None
-        if cfg.sw_gpio is None:
-            logging.info("button not configured; skipping")
-        elif setup_button is not None:
-            button = setup_button(cfg.sw_gpio, on_press)
-
-        # Runtime-derived, not config-derived: a dial with clk/dt/sw_gpio set
-        # but whose GPIO init failed (setup_rotary_encoder/setup_button
-        # returning None) must not claim it can confirm presence, and
-        # neither must a dial whose touch stack raised above (touch_source
-        # stays None on that path). See DialHTTPServer.set_can_confirm_presence.
-        http_server.set_touch_source(touch_source)
-        inputs = []
-        if encoder is not None:
-            inputs.append("encoder")
-        if button is not None:
-            inputs.append("button")
-        if touch_source is not None:
-            inputs.append("touch:" + touch_runtime)
-        # An HD page can confirm presence itself.
-        if get_profile_or_default(cfg.display.screen_type).surface == "kiosk":
-            inputs.append("touch:hd")
-        core.set_inputs(inputs)
-        http_server.set_can_confirm_presence(bool(inputs))
+        encoder, button = _start_inputs(
+            cfg, core, http_server, touch_source, touch_runtime,
+            nudge_up, nudge_down, on_press, setup_rotary_encoder, setup_button,
+        )
 
         while not shutdown_event.wait(5):
             led.set_playing() if get_playing_targets() else led.set_idle()
