@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_auth.py
+"""webui/browser/auth.py
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -21,6 +21,8 @@ from webui import static
 from webui.assets import LICENSE_BANNER_CSS, logo_banner_html
 from webui.common import build_nav_bar_html
 from webui import common
+from webui import session_state
+from urllib.parse import urlparse
 
 _TITLE = "autostream"
 
@@ -93,3 +95,28 @@ def send_auth_page(handler, state, auth, query: str) -> None:
     nonce = auth.issue_nonce(handler)
 
     common.send_html(handler, 200, render_auth_page(next_path, nonce, bool(err), _dark_mode(state)))
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_auth(handler, state):
+    if not session_state.AUTH.is_enabled():
+        handler.send_response(302)
+        handler.send_header("Location", "/")
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+        return
+    query = urlparse(handler.path).query
+    send_auth_page(handler, state, session_state.AUTH, query)
+
+
+def _route_post_auth_verify(handler, state, body_str):
+    session_state.AUTH.handle_auth_verify(handler, body_str.encode("utf-8"))
+
+
+def _route_post_pin_change(handler, state, body_str):
+    session_state.AUTH.handle_pin_change(handler, body_str.encode("utf-8"))

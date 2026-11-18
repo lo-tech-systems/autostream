@@ -17,11 +17,9 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 from autostream_playback_stats import make_fallback_input_snapshot
-from autostream_webui_service_schema import (
-    _card_display,
-    _hours_display,
-    _time_display,
-)
+from webui.browser.service_schema import _time_display
+from webui.browser.service_schema import _hours_display
+from webui.browser.service_schema import _card_display
 
 _STYLUS_LIFE = 500
 _BELT_LIFE_H = 1000

@@ -220,7 +220,7 @@ class AlignRun:
         Does NOT itself check whether the backend advertises per-output
         offset support (the UNSUPPORTED_BACKEND precondition) -- that gate
         already exists one layer up, in
-        autostream_webui_page_align.py's _offsets_supported()/
+        webui/browser/align.py's _offsets_supported()/
         "Authoritative capability gate" check ahead of this call, and in
         the page-render path itself, so an unsupported backend never
         reaches here in practice.

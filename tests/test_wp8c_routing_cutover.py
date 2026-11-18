@@ -120,7 +120,7 @@ class TestCommissioningRouting:
         assert "/first-boot/appliance" in headers.get("Location", "")
 
     def test_first_boot_path_allowed_during_commissioning(self, tmp_path):
-        from autostream_webui_page_first_boot import send_first_boot_owntone_page
+        from webui.browser.first_boot import send_first_boot_owntone_page
         state = _fake_state(tmp_path)
         auth = MagicMock()
         auth.is_enabled.return_value = False
@@ -134,7 +134,7 @@ class TestCommissioningRouting:
         with patch("webui.session_state.AUTH", auth), \
              patch("webui.session_state.STATE", state), \
              patch("autostream_commissioning.is_commissioning_required", return_value=True), \
-             patch("autostream_webui.send_first_boot_owntone_page") as mock_page:
+             patch("webui.browser.first_boot.send_first_boot_owntone_page") as mock_page:
             handler.do_GET()
 
         mock_page.assert_called_once()
@@ -201,7 +201,7 @@ class TestFirstBootPinRedirect:
              patch("webui.session_state.STATE", _fake_state(tmp_path)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("webui.common.send_json") as mock_json, \
-             patch(f"autostream_webui.{page}") as mock_page:
+             patch(f"webui.browser.first_boot.{page}") as mock_page:
             handler.do_GET()
 
         return codes, headers, mock_json, mock_page
@@ -278,7 +278,7 @@ class TestSetupPageNoInitialSetupMode:
 @_skip
 class TestOwntonPageNoInitialSetupMode:
     def _render(self, tmp_path) -> str:
-        from autostream_webui_page_owntone import send_owntone_setup_page
+        from webui.browser.owntone import send_owntone_setup_page
         from autostream_settings import SettingsStore
         from webui.session_state import WebUIState
 
@@ -304,10 +304,10 @@ class TestOwntonPageNoInitialSetupMode:
         _sett = MagicMock(ok=False, unsupported=True)
         _outs = MagicMock(ok=False, outputs=[])
 
-        with patch("autostream_webui_page_owntone.list_outputs", return_value=_outs), \
-             patch("autostream_webui_page_owntone.get_capabilities", return_value=_cap), \
-             patch("autostream_webui_page_owntone.get_setting", return_value=_sett), \
-             patch("autostream_webui_page_owntone.load_state", return_value={}):
+        with patch("webui.browser.owntone.list_outputs", return_value=_outs), \
+             patch("webui.browser.owntone.get_capabilities", return_value=_cap), \
+             patch("webui.browser.owntone.get_setting", return_value=_sett), \
+             patch("webui.browser.owntone.load_state", return_value={}):
             send_owntone_setup_page(handler, state, auth)
 
         store.close(save=False)

@@ -63,7 +63,7 @@ def _backend_down() -> ExitStack:
     for target in (
         "autostream_player_service.get_setting",
         "autostream_config.load_config",
-        "autostream_appliance_models.get_system_hostname",
+        "webui.browser.home_model.get_system_hostname",
         "autostream_sysutils.get_system_hostname",
     ):
         stack.enter_context(patch(target, side_effect=boom))

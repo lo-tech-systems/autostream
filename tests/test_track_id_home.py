@@ -21,7 +21,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from fake_store import fake_levels, fake_outputs, fake_playback, fake_track
-import autostream_appliance_models as models
+import webui.browser.home_model as models
 from autostream_config import parse_config
 from autostream_state import store
 import autostream_core as core
@@ -36,6 +36,7 @@ from track_id.models import (
     waiting_snapshot,
 )
 import autostream_runtime as runtime
+import webui.browser.home_model as webui_home_model
 
 
 # ---------------------------------------------------------------------------
@@ -95,14 +96,14 @@ def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
         fake_levels([]),
         fake_playback(playback),
         patch("autostream_rpi.get_appliance_id", return_value="aabbcc"),
-        patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
+        patch("webui.browser.home_model.get_system_hostname", return_value="test-host"),
         patch("webui.system.updates.get_app_version", return_value="1.0.0"),
         fake_track(snap),
     ]
     with ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)
-        return models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+        return webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
 
 # ---------------------------------------------------------------------------

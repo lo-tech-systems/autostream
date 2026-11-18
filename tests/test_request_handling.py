@@ -36,6 +36,7 @@ except ImportError:
     _HAS_WEBUI = False
 
 from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME, PIN_STATUS_MISSING
+import webui.system.power as webui_power
 
 _skip = pytest.mark.skipif(not _HAS_WEBUI, reason="autostream_webui import chain unavailable")
 
@@ -330,15 +331,14 @@ class TestFactoryResetFailure:
 
     def test_factory_reset_helper_failure_json_schema(self, tmp_path):
         """factory_reset_system() failure returns 500 with ok=false and error fields."""
-        import autostream_webui_post_handlers as ph
         handler = MagicMock()
         sent = []
         def fake_send_json(h, code, data):
             sent.append((code, data))
         with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_post_handlers.factory_reset_system",
+             patch("webui.system.power.factory_reset_system",
                    side_effect=RuntimeError("helper failed")):
-            ph.handle_factory_reset_post(handler, MagicMock(), MagicMock())
+            webui_power.handle_factory_reset_post(handler, MagicMock(), MagicMock())
         assert len(sent) == 1
         code, data = sent[0]
         assert code == 500

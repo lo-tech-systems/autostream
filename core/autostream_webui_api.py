@@ -15,7 +15,7 @@ Contents:
   - send_input_levels_json      -- GET /api/inputs/levels
   - send_service_config_json     -- POST /api/service/config
   - send_service_reset_json      -- POST /api/service/reset
-  Display/card logic imported from autostream_webui_service_schema (shared with page renderer).
+  Display/card logic imported from webui/browser/service_schema.py (shared with page renderer).
   - send_update_check_json       -- GET /api/update/check
   - send_update_status_json      -- GET /api/update/status
   - send_output_eq_config_json   -- POST /api/output_eq/config
@@ -91,11 +91,11 @@ from autostream_state.live import (
     warnings_payload,
 )
 from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
-from autostream_appliance_models import (
+from webui.browser import home_model
+from webui.browser.home_model import (
     home_outputs_reply,
     home_status_fields,
     start_failure_reply,
-    submit_output_change,
     bass_treble_from_eq,
     build_equaliser_state,
     build_home_state,
@@ -125,7 +125,7 @@ from webui.common import (
     _fallback_input_snapshot,
     render_license_md,
 )
-from autostream_webui_service_schema import (
+from webui.browser.service_schema import (
     _SERVICE_ITEMS,
     _card_display,
     _format_reset_timestamp,
@@ -1168,7 +1168,7 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
         logging.warning("dial outputs: config load failed: %s", e)
         common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
-    result = submit_output_change(
+    result = home_model.submit_output_change(
         sanitized, requester=dial_requester(dial_id), pin_requester=requester,
         offset_ms=offset_ms, mode=mode,
     )
@@ -1381,7 +1381,7 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
         common.send_json(handler, 400, {"ok": False, "error": sanitize_error})
         return
 
-    result = submit_output_change(
+    result = home_model.submit_output_change(
         sanitized, requester="peer", pin_requester=REQUESTER_WEBUI,
         offset_ms=offset_ms, mode=mode,
     )
@@ -1934,7 +1934,7 @@ def _start_owntone_restart_if_required(state: WebUIState, reply, restart_thresho
     whether it was asked for."""
     required = bool(reply.result.get("restart_required"))
     if required:
-        from autostream_webui_page_owntone import start_owntone_restart_async
+        from webui.browser.owntone import start_owntone_restart_async
         start_owntone_restart_async(state, delay_s=restart_threshold_s)
     return required
 

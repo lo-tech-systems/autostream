@@ -26,6 +26,8 @@ if _CORE not in sys.path:
 from autostream_bluetooth_client import BLUETOOTH_CAPTURE_DEVICE, BLUETOOTH_PLAYBACK_DEVICE
 from settings_fixtures import fixed_view
 import webui.session_state as session_state
+import webui.system.services as webui_services
+import webui.browser.about as webui_about
 
 
 # ---------------------------------------------------------------------------
@@ -1401,49 +1403,49 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
 
 class TestAboutPageBluetoothRow:
     def _render(self):
-        import autostream_webui_page_about as _about
+        import webui.browser.about as _about
         handler = MagicMock()
         buf = io.BytesIO()
         handler.wfile = buf
         state = MagicMock()
         with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
-             patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
+             patch("webui.browser.about.build_top_banner_html", return_value=("", "")), \
              patch("webui.common._config_snapshot", return_value=None), \
-             patch("autostream_webui_page_about.load_license_text", return_value=""), \
-             patch("autostream_webui_page_about.render_license_md", return_value=""):
-            _about.send_about_page(handler, state)
+             patch("webui.browser.about.load_license_text", return_value=""), \
+             patch("webui.browser.about.render_license_md", return_value=""):
+            webui_about.send_about_page(handler, state)
         return buf.getvalue().decode("utf-8")
 
     def test_row_absent_when_disabled(self):
-        import autostream_webui_page_about as _about
-        with patch("autostream_webui_page_about.bluetooth_installed", return_value=False):
+        import webui.browser.about as _about
+        with patch("webui.system.services.bluetooth_installed", return_value=False):
             html = self._render()
         assert "autostream_bluetooth.service" not in html
 
     def test_row_present_when_enabled(self):
-        import autostream_webui_page_about as _about
-        with patch("autostream_webui_page_about.bluetooth_installed", return_value=True):
+        import webui.browser.about as _about
+        with patch("webui.system.services.bluetooth_installed", return_value=True):
             html = self._render()
         assert "data-service-unit='autostream_bluetooth.service'" in html or \
                'data-service-unit="autostream_bluetooth.service"' in html
         assert "Bluetooth Service" in html
 
     def test_collect_service_states_includes_row_when_enabled(self):
-        import autostream_webui_page_about as _about
-        with patch("autostream_webui_page_about.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_page_about.subprocess.run",
+        import webui.browser.about as _about
+        with patch("webui.system.services.bluetooth_installed", return_value=True), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            services = _about._collect_service_states("owntone", {})
+            services = webui_services._collect_service_states("owntone", {})
         units = [s["unit"] for s in services]
         assert "autostream_bluetooth.service" in units
         assert len(services) == 7
 
     def test_collect_service_states_excludes_row_when_disabled(self):
-        import autostream_webui_page_about as _about
-        with patch("autostream_webui_page_about.bluetooth_installed", return_value=False), \
-             patch("autostream_webui_page_about.subprocess.run",
+        import webui.browser.about as _about
+        with patch("webui.system.services.bluetooth_installed", return_value=False), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            services = _about._collect_service_states("owntone", {})
+            services = webui_services._collect_service_states("owntone", {})
         units = [s["unit"] for s in services]
         assert "autostream_bluetooth.service" not in units
         assert len(services) == 6

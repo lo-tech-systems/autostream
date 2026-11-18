@@ -1553,7 +1553,7 @@ class TestGatewayOutputRequester:
                    return_value=("bound", None)), \
              patch("webui.common._config_snapshot", return_value=parsed), \
              patch("webui.common.send_json"), \
-             patch("autostream_appliance_gateway.submit_output_change",
+             patch("webui.browser.home_model.submit_output_change",
                    return_value={"ok": True}) as mut:
             gw.send_gateway_output_json(
                 MagicMock(), MagicMock(), "a" * 20,

@@ -164,7 +164,7 @@ def _invoke_set(
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
-        patch("autostream_webui_api.submit_output_change", mutation_mock),
+        patch("webui.browser.home_model.submit_output_change", mutation_mock),
         patch("autostream_player_service.config_airplay_mode_to_backend", mode_mock),
     ):
         send_dial_outputs_set_post_json(handler, state, json_obj)
@@ -265,7 +265,7 @@ class TestOutputsList:
         assert flags == [("Zulu", True), ("Alpha", False)]
 
     def test_is_default_is_always_a_bool(self):
-        from autostream_appliance_models import build_output_list as real_build
+        from webui.browser.home_model import build_output_list as real_build
 
         def _without_flag(*args, **kwargs):
             rows = real_build(*args, **kwargs)
@@ -299,7 +299,7 @@ class TestOutputsList:
         assert rows["Kitchen"]["pin_claim"] == ""
 
     def test_pairing_fields_are_always_bools_and_a_string(self):
-        from autostream_appliance_models import build_output_list as real_build
+        from webui.browser.home_model import build_output_list as real_build
 
         def _odd(*args, **kwargs):
             rows = real_build(*args, **kwargs)

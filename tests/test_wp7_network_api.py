@@ -836,10 +836,10 @@ class TestRouteWiring:
             "autostream_mdns", "autostream_commissioning",
             "autostream_log_policy",
             "webui.common", "autostream_webui_dials",
-            "autostream_webui_page_about", "autostream_webui_page_equaliser",
-            "autostream_webui_page_airplay", "autostream_webui_page_logs",
-            "autostream_webui_page_owntone", "webui.browser.setup.page",
-            "autostream_webui_page_first_boot",
+            "webui.browser.about", "webui.browser.equaliser",
+            "webui.browser.home", "webui.browser.logs",
+            "webui.browser.owntone", "webui.browser.setup.page",
+            "webui.browser.first_boot",
         ]
         for name in stubs:
             if name not in sys.modules:
@@ -855,21 +855,21 @@ class TestRouteWiring:
         # Provide minimal symbols that autostream_webui imports from stubs
         sys.modules["webui.common"].build_nav_bar_html = MagicMock(return_value="")  # type: ignore[attr-defined]
         for attr in ("send_about_page", "send_about_system_json"):
-            setattr(sys.modules["autostream_webui_page_about"], attr, MagicMock())
+            setattr(sys.modules["webui.browser.about"], attr, MagicMock())
         for attr in ("send_equaliser_page", "send_remote_equaliser_page"):
-            setattr(sys.modules["autostream_webui_page_equaliser"], attr, MagicMock())
+            setattr(sys.modules["webui.browser.equaliser"], attr, MagicMock())
         for attr in ("send_airplay_page", "send_remote_home_page"):
-            setattr(sys.modules["autostream_webui_page_airplay"], attr, MagicMock())
+            setattr(sys.modules["webui.browser.home"], attr, MagicMock())
         for attr in ("handle_logs_download", "send_logs_page"):
-            setattr(sys.modules["autostream_webui_page_logs"], attr, MagicMock())
+            setattr(sys.modules["webui.browser.logs"], attr, MagicMock())
         for attr in ("send_owntone_ready_json", "send_owntone_restarting_page", "send_owntone_setup_page"):
-            setattr(sys.modules["autostream_webui_page_owntone"], attr, MagicMock())
+            setattr(sys.modules["webui.browser.owntone"], attr, MagicMock())
         for attr in ("dispatch_dial_management_post", "handle_dial_configure_get",
                      "handle_dial_pin_recovery_status", "handle_dial_update_post",
                      "handle_dial_update_status"):
             setattr(sys.modules["autostream_webui_dials"], attr, MagicMock())
         for attr in ("send_first_boot_owntone_page",):
-            setattr(sys.modules["autostream_webui_page_first_boot"], attr, MagicMock())
+            setattr(sys.modules["webui.browser.first_boot"], attr, MagicMock())
 
         # Stub out the heavy imports inside autostream_webui_api path
         for name in ("flask", "urllib3"):

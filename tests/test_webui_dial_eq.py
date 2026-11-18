@@ -43,12 +43,12 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-import autostream_appliance_models as models
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_webui_api import send_dial_eq_post_json, send_dial_eq_set_post_json
 from webui.session_state import WebUIState
 import autostream_monitor_control as monitor_control
 from settings_fixtures import fixed_view
+import webui.browser.home_model as webui_home_model
 
 DIAL_ID = "test-dial-uuid-1234"
 TEST_APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"  # 20 lowercase hex-shaped chars
@@ -138,29 +138,29 @@ def _invoke_set(
 
 class TestEqMappingHelpers:
     def test_eq_fields_for_bass_sets_peq1_and_peq2_equally(self):
-        assert models.eq_fields_for_bass(3) == {"peq1_db": 3.0, "peq2_db": 3.0}
+        assert webui_home_model.eq_fields_for_bass(3) == {"peq1_db": 3.0, "peq2_db": 3.0}
 
     def test_eq_fields_for_bass_negative(self):
-        assert models.eq_fields_for_bass(-6) == {"peq1_db": -6.0, "peq2_db": -6.0}
+        assert webui_home_model.eq_fields_for_bass(-6) == {"peq1_db": -6.0, "peq2_db": -6.0}
 
     def test_eq_fields_for_treble_sets_peq6_full_and_peq5_half(self):
-        assert models.eq_fields_for_treble(4) == {"peq6_db": 4.0, "peq5_db": 2.0}
+        assert webui_home_model.eq_fields_for_treble(4) == {"peq6_db": 4.0, "peq5_db": 2.0}
 
     def test_eq_fields_for_treble_odd_value_is_half_db_on_peq5(self):
-        fields = models.eq_fields_for_treble(3)
+        fields = webui_home_model.eq_fields_for_treble(3)
         assert fields["peq6_db"] == 3.0
         assert fields["peq5_db"] == 1.5
 
     def test_bass_treble_from_eq_rounds(self):
-        bass, treble = models.bass_treble_from_eq(_oeq(peq1=2.6, peq6=1.4))
+        bass, treble = webui_home_model.bass_treble_from_eq(_oeq(peq1=2.6, peq6=1.4))
         assert (bass, treble) == (3, 1)
 
     def test_bass_treble_from_eq_clamps_high(self):
-        bass, treble = models.bass_treble_from_eq(_oeq(peq1=9.0, peq6=9.0))
+        bass, treble = webui_home_model.bass_treble_from_eq(_oeq(peq1=9.0, peq6=9.0))
         assert (bass, treble) == (6, 6)
 
     def test_bass_treble_from_eq_clamps_low(self):
-        bass, treble = models.bass_treble_from_eq(_oeq(peq1=-8.0, peq6=-8.0))
+        bass, treble = webui_home_model.bass_treble_from_eq(_oeq(peq1=-8.0, peq6=-8.0))
         assert (bass, treble) == (-6, -6)
 
 
@@ -171,16 +171,16 @@ class TestEqMappingHelpers:
 class TestBandHelpers:
     def test_dial_eq_bands_follows_the_band_table(self):
         from autostream_eq_bands import OUTPUT_PEQ_BANDS
-        bands = models.dial_eq_bands(_oeq(peq3=1.25))
+        bands = webui_home_model.dial_eq_bands(_oeq(peq3=1.25))
         assert [b["id"] for b in bands] == [b["key"][:-3] for b in OUTPUT_PEQ_BANDS]
         assert bands[2]["gain_db"] == 1.25
 
     def test_eq_fields_for_bands_accepts_ints_and_floats(self):
-        assert models.eq_fields_for_bands({"peq2": 3, "peq5": -0.5}) == {"peq2_db": 3.0, "peq5_db": -0.5}
+        assert webui_home_model.eq_fields_for_bands({"peq2": 3, "peq5": -0.5}) == {"peq2_db": 3.0, "peq5_db": -0.5}
 
     def test_eq_fields_for_bands_refuses_empty_and_unknown(self):
-        assert models.eq_fields_for_bands({}) is None
-        assert models.eq_fields_for_bands({"treble": 1}) is None
+        assert webui_home_model.eq_fields_for_bands({}) is None
+        assert webui_home_model.eq_fields_for_bands({"treble": 1}) is None
 
 
 class TestApplyEqFields:
@@ -193,7 +193,7 @@ class TestApplyEqFields:
         eq_calls = []
         with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a, **kw: eq_calls.append(a)):
-            ok, err = monitor_control.apply_eq_fields(str(cfg_path), models.eq_fields_for_bass(3))
+            ok, err = monitor_control.apply_eq_fields(str(cfg_path), webui_home_model.eq_fields_for_bass(3))
         assert ok is True
         assert eq_calls, "set_live_output_eq must be called"
         peq1, peq2, peq3, peq4, peq5, peq6 = eq_calls[0]
@@ -206,7 +206,7 @@ class TestApplyEqFields:
         eq_calls = []
         with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a, **kw: eq_calls.append(a)):
-            values = {**models.eq_fields_for_bass(2), **models.eq_fields_for_treble(4)}
+            values = {**webui_home_model.eq_fields_for_bass(2), **webui_home_model.eq_fields_for_treble(4)}
             ok, err = monitor_control.apply_eq_fields(str(cfg_path), values)
         assert ok is True
         assert len(eq_calls) == 1
@@ -216,7 +216,7 @@ class TestApplyEqFields:
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
         with patch("autostream_monitor_control.set_live_output_eq"):
-            values = {**models.eq_fields_for_bass(2), **models.eq_fields_for_treble(4)}
+            values = {**webui_home_model.eq_fields_for_bass(2), **webui_home_model.eq_fields_for_treble(4)}
             ok, err = monitor_control.apply_eq_fields(str(cfg_path), values)
         assert ok is True
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -227,7 +227,7 @@ class TestApplyEqFields:
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
         with patch("autostream_monitor_control.save_config", side_effect=OSError("disk full")):
-            ok, err = monitor_control.apply_eq_fields(str(cfg_path), models.eq_fields_for_bass(1))
+            ok, err = monitor_control.apply_eq_fields(str(cfg_path), webui_home_model.eq_fields_for_bass(1))
         assert ok is False
         assert err
 

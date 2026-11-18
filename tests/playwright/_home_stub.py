@@ -92,7 +92,7 @@ def render_home(
         raise ValueError(f"unknown banner name(s): {sorted(unknown)}")
 
     sys.path.insert(0, str(REPO_ROOT / "core"))
-    from autostream_webui_page_airplay import send_airplay_page  # noqa: PLC0415
+    from webui.browser.home import send_airplay_page  # noqa: PLC0415
     from track_id.models import disabled_snapshot  # noqa: PLC0415
 
     handler, chunks = _fake_handler()
@@ -129,16 +129,16 @@ def render_home(
             patch("webui.common._config_snapshot",
                   return_value=_parsed_config(show_input_detail)),
             patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
-            patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-            patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+            patch("webui.browser.home.get_all_appliances", return_value=[]),
+            patch("webui.browser.home.get_system_hostname", return_value="autostream"),
             fake_playback(snap),
-            patch("autostream_webui_page_airplay._dial_update_banner_text",
+            patch("webui.browser.home._dial_update_banner_text",
                   return_value=banners.get("dial_update", "")),
             fake_outputs_result(MagicMock(ok=False, outputs=[])),
-            patch("autostream_webui_page_airplay.get_setting",
+            patch("webui.browser.home.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
             fake_track(disabled_snapshot()),
-            patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+            patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
         ):
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
@@ -148,7 +148,7 @@ def render_home(
 def render_remote_home(appliance_id: str = REMOTE_APPLIANCE_ID) -> bytes:
     """Render the remote (federated) Home shell for ``appliance_id``."""
     sys.path.insert(0, str(REPO_ROOT / "core"))
-    from autostream_webui_page_airplay import send_remote_home_page  # noqa: PLC0415
+    from webui.browser.home import send_remote_home_page  # noqa: PLC0415
 
     handler, chunks = _fake_handler()
     state = MagicMock()
@@ -156,8 +156,8 @@ def render_remote_home(appliance_id: str = REMOTE_APPLIANCE_ID) -> bytes:
     with patch("webui.common._config_snapshot",
                return_value=_parsed_config(False)), \
          patch("autostream_rpi.get_appliance_id", return_value="0" * 20), \
-         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
-         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"):
+         patch("webui.browser.home.get_all_appliances", return_value=[]), \
+         patch("webui.browser.home.get_system_hostname", return_value="autostream"):
         send_remote_home_page(handler, state, appliance_id)
     return b"".join(chunks)
 

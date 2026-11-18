@@ -19,6 +19,7 @@ import tempfile
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import webui.browser.about as webui_about
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 STATIC_ROOT = REPO_ROOT / "nginx" / "static"
@@ -122,17 +123,17 @@ def _render_remote_home(**fakes) -> bytes:
 
 
 def _render_equaliser(*, eq_fs: int = 96000, **_fakes) -> bytes:
-    from autostream_webui_page_equaliser import send_equaliser_page  # noqa: PLC0415
+    from webui.browser.equaliser import send_equaliser_page  # noqa: PLC0415
 
     handler, chunks = _handler("/equaliser")
     with tempfile.TemporaryDirectory() as tmp:
         state = _scratch_state(tmp)
         with ExitStack() as stack:
             for p in (
-                *_banner_patches("autostream_webui_page_equaliser"),
+                *_banner_patches("webui.browser.equaliser"),
                 patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID),
-                patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]),
-                patch("autostream_webui_page_equaliser.get_system_hostname", return_value="autostream"),
+                patch("webui.browser.equaliser.get_all_appliances", return_value=[]),
+                patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"),
             ):
                 stack.enter_context(p)
             send_equaliser_page(handler, state)
@@ -140,7 +141,7 @@ def _render_equaliser(*, eq_fs: int = 96000, **_fakes) -> bytes:
 
 
 def _render_remote_equaliser(*, appliance_id: str = REMOTE_APPLIANCE_ID, **_fakes) -> bytes:
-    from autostream_webui_page_equaliser import send_remote_equaliser_page  # noqa: PLC0415
+    from webui.browser.equaliser import send_remote_equaliser_page  # noqa: PLC0415
 
     handler, chunks = _handler()
     state = MagicMock()
@@ -149,28 +150,28 @@ def _render_remote_equaliser(*, appliance_id: str = REMOTE_APPLIANCE_ID, **_fake
     parsed.webui.dark_mode = False
     with patch("webui.common._config_snapshot", return_value=parsed), \
          patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID), \
-         patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
-         patch("autostream_webui_page_equaliser.get_system_hostname", return_value="autostream"):
+         patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
+         patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"):
         send_remote_equaliser_page(handler, state, appliance_id)
     return b"".join(chunks)
 
 
 def _render_about(*, license_text: str = "", **_fakes) -> bytes:
-    import autostream_webui_page_about as about  # noqa: PLC0415
+    import webui.browser.about as about  # noqa: PLC0415
 
     handler, chunks = _handler("/about")
     state = MagicMock()
     with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
-         patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
+         patch("webui.browser.about.build_top_banner_html", return_value=("", "")), \
          patch("webui.common._config_snapshot", return_value=None), \
-         patch("autostream_webui_page_about.load_license_text", return_value=license_text), \
-         patch("autostream_webui_page_about.render_license_md", return_value=""):
-        about.send_about_page(handler, state)
+         patch("webui.browser.about.load_license_text", return_value=license_text), \
+         patch("webui.browser.about.render_license_md", return_value=""):
+        webui_about.send_about_page(handler, state)
     return b"".join(chunks)
 
 
 def _render_align(**_fakes) -> bytes:
-    from autostream_webui_page_align import send_align_page  # noqa: PLC0415
+    from webui.browser.align import send_align_page  # noqa: PLC0415
 
     handler, chunks = _handler("/align")
     with tempfile.TemporaryDirectory() as tmp:
@@ -180,8 +181,8 @@ def _render_align(**_fakes) -> bytes:
         run.snapshots.return_value = []
         with ExitStack() as stack:
             for p in (
-                *_banner_patches("autostream_webui_page_align"),
-                patch("autostream_webui_page_align._offsets_supported", return_value=True),
+                *_banner_patches("webui.browser.align"),
+                patch("webui.browser.align._offsets_supported", return_value=True),
                 patch("autostream_align._RUN", run),
             ):
                 stack.enter_context(p)
@@ -190,33 +191,33 @@ def _render_align(**_fakes) -> bytes:
 
 
 def _render_service(**_fakes) -> bytes:
-    from autostream_webui_page_service import send_service_page  # noqa: PLC0415
+    from webui.browser.service import send_service_page  # noqa: PLC0415
 
     handler, chunks = _handler("/service")
     with tempfile.TemporaryDirectory() as tmp:
         state = _scratch_state(tmp)
         with ExitStack() as stack:
-            for p in _banner_patches("autostream_webui_page_service"):
+            for p in _banner_patches("webui.browser.service"):
                 stack.enter_context(p)
             send_service_page(handler, state)
     return b"".join(chunks)
 
 
 def _render_logs(**_fakes) -> bytes:
-    from autostream_webui_page_logs import send_logs_page  # noqa: PLC0415
+    from webui.browser.logs import send_logs_page  # noqa: PLC0415
 
     handler, chunks = _handler("/logs")
     with tempfile.TemporaryDirectory() as tmp:
         state = _scratch_state(tmp)
         with ExitStack() as stack:
-            for p in _banner_patches("autostream_webui_page_logs"):
+            for p in _banner_patches("webui.browser.logs"):
                 stack.enter_context(p)
             send_logs_page(handler, state)
     return b"".join(chunks)
 
 
 def _render_owntone(*, outputs: list | None = None, **_fakes) -> bytes:
-    from autostream_webui_page_owntone import send_owntone_setup_page  # noqa: PLC0415
+    from webui.browser.owntone import send_owntone_setup_page  # noqa: PLC0415
     from fake_store import fake_outputs  # noqa: PLC0415
 
     handler, chunks = _handler("/owntone-setup")
@@ -229,9 +230,9 @@ def _render_owntone(*, outputs: list | None = None, **_fakes) -> bytes:
         with ExitStack() as stack:
             for p in (
                 fake_outputs(list(outputs or []), connected=True),
-                patch("autostream_webui_page_owntone.get_capabilities", return_value=cap),
-                patch("autostream_webui_page_owntone.get_setting", return_value=unsupported),
-                *_banner_patches("autostream_webui_page_owntone"),
+                patch("webui.browser.owntone.get_capabilities", return_value=cap),
+                patch("webui.browser.owntone.get_setting", return_value=unsupported),
+                *_banner_patches("webui.browser.owntone"),
             ):
                 stack.enter_context(p)
             send_owntone_setup_page(handler, state, _auth())
@@ -240,7 +241,7 @@ def _render_owntone(*, outputs: list | None = None, **_fakes) -> bytes:
 
 def _render_owntone_restarting(*, next_path: str | None = None, **_fakes) -> bytes:
     from urllib.parse import quote  # noqa: PLC0415
-    from autostream_webui_page_owntone import send_owntone_restarting_page  # noqa: PLC0415
+    from webui.browser.owntone import send_owntone_restarting_page  # noqa: PLC0415
 
     handler, chunks = _handler(
         "/owntone-restarting" + (f"?next={quote(next_path)}" if next_path else ""))
@@ -249,16 +250,16 @@ def _render_owntone_restarting(*, next_path: str | None = None, **_fakes) -> byt
 
 
 def _render_rebooting(**_fakes) -> bytes:
-    from autostream_webui_page_rebooting import send_rebooting_page  # noqa: PLC0415
+    from webui.browser.rebooting import send_rebooting_page  # noqa: PLC0415
 
     handler, chunks = _handler("/rebooting")
-    with patch("autostream_webui_page_rebooting.build_top_banner_html", return_value=("", "")):
+    with patch("webui.browser.rebooting.build_top_banner_html", return_value=("", "")):
         send_rebooting_page(handler, MagicMock(), _auth())
     return b"".join(chunks)
 
 
 def _render_first_boot_owntone(**_fakes) -> bytes:
-    from autostream_webui_page_first_boot import send_first_boot_owntone_page  # noqa: PLC0415
+    from webui.browser.first_boot import send_first_boot_owntone_page  # noqa: PLC0415
     from fake_store import fake_outputs  # noqa: PLC0415
 
     handler, chunks = _handler("/first-boot/owntone")
@@ -270,12 +271,12 @@ def _render_first_boot_owntone(**_fakes) -> bytes:
 
 
 def _render_first_boot_appliance(**_fakes) -> bytes:
-    from autostream_webui_page_first_boot import send_first_boot_appliance_page  # noqa: PLC0415
+    from webui.browser.first_boot import send_first_boot_appliance_page  # noqa: PLC0415
 
     handler, chunks = _handler("/first-boot/appliance")
     with tempfile.TemporaryDirectory() as tmp:
         state = _scratch_state(tmp)
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"):
             send_first_boot_appliance_page(handler, state, _auth())
     return b"".join(chunks)
 
@@ -292,7 +293,7 @@ def _render_hostname_changed(*, hostname: str = "autostream", **_fakes) -> bytes
 def _render_auth(*, next_path: str = "/", **_fakes) -> bytes:
     from urllib.parse import quote  # noqa: PLC0415
     from autostream_auth import AuthManager  # noqa: PLC0415
-    from autostream_webui_page_auth import send_auth_page  # noqa: PLC0415
+    from webui.browser.auth import send_auth_page  # noqa: PLC0415
 
     handler, chunks = _handler("/auth")
     manager = AuthManager(config_path="dummy.ini")

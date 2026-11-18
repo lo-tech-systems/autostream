@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import webui.browser.logs as webui_logs
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -50,7 +51,7 @@ def _mock_heavy_deps():
     teardown touches only the keys this fixture owns, leaving every other
     entry in sys.modules undisturbed.
     """
-    _owned = _HEAVY_DEPS + ["autostream_webui_page_logs"]
+    _owned = _HEAVY_DEPS + ["webui.browser.logs"]
 
     # Save pre-fixture state of each key we are about to touch.
     _saved = {k: sys.modules.get(k, _ABSENT) for k in _owned}
@@ -58,7 +59,7 @@ def _mock_heavy_deps():
     # Install mocks and evict any cached real import of the module under test.
     for m in _HEAVY_DEPS:
         sys.modules[m] = MagicMock()
-    sys.modules.pop("autostream_webui_page_logs", None)
+    sys.modules.pop("webui.browser.logs", None)
 
     yield
 
@@ -110,7 +111,7 @@ class _MockHandler:
 class TestLogsDownloadHandler:
     def test_produces_valid_zip(self) -> None:
         """Response body must be a valid ZIP file."""
-        from autostream_webui_page_logs import handle_logs_download
+        from webui.browser.logs import handle_logs_download
 
         handler = _MockHandler()
         handle_logs_download(handler)
@@ -120,7 +121,7 @@ class TestLogsDownloadHandler:
         assert zipfile.is_zipfile(io.BytesIO(data)), "Response body is not a valid ZIP"
 
     def test_content_type_is_octet_stream(self) -> None:
-        from autostream_webui_page_logs import handle_logs_download
+        from webui.browser.logs import handle_logs_download
 
         handler = _MockHandler()
         handle_logs_download(handler)
@@ -129,7 +130,7 @@ class TestLogsDownloadHandler:
 
     def test_content_length_matches_body(self) -> None:
         """Content-Length header must match the actual bytes written."""
-        from autostream_webui_page_logs import handle_logs_download
+        from webui.browser.logs import handle_logs_download
 
         handler = _MockHandler()
         handle_logs_download(handler)
@@ -149,7 +150,7 @@ class TestLogsDownloadHandler:
           assertion fails.
         - The final assertion confirms the temp file is cleaned up afterwards.
         """
-        from autostream_webui_page_logs import handle_logs_download
+        from webui.browser.logs import handle_logs_download
 
         temp_paths: list[str] = []
         file_alive_on_write: list[bool] = []
@@ -172,7 +173,7 @@ class TestLogsDownloadHandler:
         handler = _MockHandler()
         handler.wfile = _ObservingWfile(handler._buf)
 
-        with patch("autostream_webui_page_logs.tempfile.mkstemp",
+        with patch("webui.browser.logs.tempfile.mkstemp",
                    side_effect=_tracking_mkstemp):
             handle_logs_download(handler)
 
@@ -241,7 +242,7 @@ class TestLogsDownloadRouting:
 
 class TestLogsBundleMembers:
     def _names(self, tmp_path):
-        from autostream_webui_page_logs import _bundle_members
+        from webui.browser.logs import _bundle_members
         log_dir = tmp_path / "autostream"
         return {name for _, name in _bundle_members(log_dir, tmp_path / "owntone.log")}
 
@@ -271,14 +272,14 @@ class TestLogsBundleMembers:
         assert self._names(tmp_path) == {"owntone/owntone.log.1"}
 
     def test_zip_carries_the_bundle_members(self, tmp_path, monkeypatch):
-        import autostream_webui_page_logs as logs
+        import webui.browser.logs as logs
         log_dir = tmp_path / "autostream"
         log_dir.mkdir()
         (log_dir / "autostream.log").write_text("x\n")
         (tmp_path / "owntone.log.1").write_text("y\n")
-        monkeypatch.setattr(logs, "BUNDLE_LOG_DIR", log_dir)
-        monkeypatch.setattr(logs, "BUNDLE_OWNTONE_LOG", tmp_path / "owntone.log")
+        monkeypatch.setattr(webui_logs, "BUNDLE_LOG_DIR", log_dir)
+        monkeypatch.setattr(webui_logs, "BUNDLE_OWNTONE_LOG", tmp_path / "owntone.log")
         handler = _MockHandler()
-        logs.handle_logs_download(handler)
+        webui_logs.handle_logs_download(handler)
         names = set(zipfile.ZipFile(io.BytesIO(handler.response_bytes)).namelist())
         assert names == {"autostream/autostream.log", "owntone/owntone.log.1"}

@@ -18,7 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests" / "playwright"))
 
 import _page_stub  # noqa: E402
-import _source_text  # noqa: E402
+import _source_text
+import webui.browser.equaliser as webui_equaliser  # noqa: E402
 
 _INLINE = re.compile(r"<script\b([^>]*)>(.*?)</script>", re.DOTALL | re.IGNORECASE)
 
@@ -235,12 +236,11 @@ def test_an_island_value_cannot_end_its_script_element():
 
 @pytest.mark.parametrize("page", ("equaliser", "remote_equaliser"))
 def test_the_equaliser_island_holds_the_curve_geometry_and_the_bands(page):
-    import autostream_webui_page_equaliser as eq  # noqa: PLC0415
     from autostream_eq_bands import OUTPUT_PEQ_BANDS  # noqa: PLC0415
     island = _source_text.page_data(_render(page))
     assert island["curve"] == {
-        "w": eq._CURVE_W, "h": eq._CURVE_H, "f_min": eq._CURVE_F_MIN, "f_max": eq._CURVE_F_MAX,
-        "db_range": eq._CURVE_DB_RANGE, "pad_y": eq._CURVE_PAD_Y, "n_pts": eq._CURVE_N_PTS}
+        "w": webui_equaliser._CURVE_W, "h": webui_equaliser._CURVE_H, "f_min": webui_equaliser._CURVE_F_MIN, "f_max": webui_equaliser._CURVE_F_MAX,
+        "db_range": webui_equaliser._CURVE_DB_RANGE, "pad_y": webui_equaliser._CURVE_PAD_Y, "n_pts": webui_equaliser._CURVE_N_PTS}
     assert [b["key"] for b in island["eq_bands"]] == [b["key"] for b in OUTPUT_PEQ_BANDS]
     assert all(set(b) == {"key", "type", "freq_hz", "q", "label"} for b in island["eq_bands"])
     assert isinstance(island["eq_fs"], int) and island["eq_fs"] > 0

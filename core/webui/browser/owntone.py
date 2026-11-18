@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_owntone.py
+"""webui/browser/owntone.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -50,6 +50,7 @@ from webui.common import build_page_html, build_top_banner_html
 from webui.assets import RESTART_MODAL_HTML
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
 
 
 # -----------------------------------------------------------------------------
@@ -666,3 +667,18 @@ def send_owntone_setup_page(
         head_extra=csrf_meta + static.page_data_island({"live_enabled": True}),
     )
     common.send_html(handler, 200, html_body)
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_owntone_setup(handler, state):
+    msg, _flash_type = common._route_flash_msg_and_type(handler)
+    send_owntone_setup_page(handler, state, session_state.AUTH, flash_msg=msg)
+
+
+def _route_post_owntone_setup_form(handler, state, body_str):
+    common.send_json(handler, 405, {"ok": False, "error": "form_post_disabled"})

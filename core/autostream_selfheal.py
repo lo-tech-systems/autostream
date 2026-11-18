@@ -49,7 +49,7 @@ def _set_owntone_selfheal_state(**fields) -> None:
 # write-failure seconds while a source wants to write, 0.0 when healthy. This
 # watchdog requests an OwnTone restart via the supervisor (autostream_admin
 # restart-owntone, the same path the Web UI's owntone-setup restart button
-# uses -- see autostream_webui_page_owntone.py's _restart_owntone_worker) when
+# uses -- see webui/browser/owntone.py's _restart_owntone_worker) when
 # the pipe is stuck long enough that OwnTone itself is very unlikely to
 # recover unaided.
 #
@@ -144,7 +144,7 @@ def _fire_owntone_hang_restart(base_url: str, stalled_seconds: float) -> None:
     Runs run_admin_cmd() via the process-wide task pool under the
     single-flight key "owntone-restart" -- the same "sudo -n
     autostream_admin restart-owntone" invocation the Web UI's owntone-setup
-    restart button uses (autostream_webui_page_owntone.py's
+    restart button uses (webui/browser/owntone.py's
     _restart_owntone_worker) -- so the coordinator poll loop (0.5 s cadence)
     is never blocked on the up-to-20 s subprocess call. The output authority
     notices the restart on a later read and selects the speakers again; this

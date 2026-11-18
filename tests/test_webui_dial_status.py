@@ -66,6 +66,7 @@ import autostream_state
 from fake_store import FakeStore, fake_repeat, fake_session, fake_track
 import autostream_repeat as repeat
 from settings_fixtures import fixed_view
+import webui.browser.home_model as webui_home_model
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -480,8 +481,8 @@ class TestStartFailureField:
 
     @pytest.fixture(autouse=True)
     def _clock(self, monkeypatch):
-        import autostream_appliance_models as models
-        monkeypatch.setattr(models, "_wall", lambda: 1004.9)
+        import webui.browser.home_model as models
+        monkeypatch.setattr(webui_home_model, "_wall", lambda: 1004.9)
 
     def test_no_key_without_a_failure(self):
         _, body, _ = _invoke({"dial_id": DIAL_ID})

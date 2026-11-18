@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_logs.py
+"""webui/browser/logs.py
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -35,6 +35,7 @@ from webui.common import (
 
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
 
 
 # -----------------------------------------------------------------------------
@@ -194,3 +195,18 @@ def handle_logs_download(handler) -> None:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_logs(handler, state):
+    msg, _flash_type = common._route_flash_msg_and_type(handler)
+    send_logs_page(handler, state, flash_msg=msg)
+
+
+def _route_get_logs_download(handler, state):
+    handle_logs_download(handler)

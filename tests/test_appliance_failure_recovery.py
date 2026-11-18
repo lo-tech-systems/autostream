@@ -76,7 +76,7 @@ def _make_get(path: str) -> "ConfigWebHandler":
 
 
 def _render_remote_home(aid: str = _REMOTE_ID) -> str:
-    from autostream_webui_page_airplay import send_remote_home_page
+    from webui.browser.home import send_remote_home_page
     state = MagicMock()
     state.config_path = "dummy.ini"
     handler = MagicMock()
@@ -91,14 +91,14 @@ def _render_remote_home(aid: str = _REMOTE_ID) -> str:
     parsed.webui.control_other_appliances = False
     with patch("webui.common._config_snapshot", return_value=parsed), \
          patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
-         patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound"):
+         patch("webui.browser.home.get_all_appliances", return_value=[]), \
+         patch("webui.browser.home.get_system_hostname", return_value="bound"):
         send_remote_home_page(handler, state, aid)
     return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 def _render_remote_equaliser(aid: str = _REMOTE_ID) -> str:
-    from autostream_webui_page_equaliser import send_remote_equaliser_page
+    from webui.browser.equaliser import send_remote_equaliser_page
     state = MagicMock()
     state.config_path = "dummy.ini"
     handler = MagicMock()
@@ -110,8 +110,8 @@ def _render_remote_equaliser(aid: str = _REMOTE_ID) -> str:
     parsed.webui.dark_mode = False
     with patch("webui.common._config_snapshot", return_value=parsed), \
          patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-         patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
-         patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound"):
+         patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
+         patch("webui.browser.equaliser.get_system_hostname", return_value="bound"):
         send_remote_equaliser_page(handler, state, aid)
     return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
@@ -260,7 +260,7 @@ class TestMsgPrefixParsing:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_airplay_page") as stub:
+             patch("webui.browser.home.send_airplay_page") as stub:
             handler.do_GET()
         if not stub.called:
             return ""

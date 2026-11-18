@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_service.py
+"""webui/browser/service.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -14,7 +14,7 @@ Responsibilities:
 
 Schema / display logic:
   All maintenance-item metadata and display calculations live in
-  autostream_webui_service_schema so they are shared with autostream_webui_api
+  webui/browser/service_schema.py so they are shared with autostream_webui_api
   without either module depending on the other.
 """
 
@@ -41,7 +41,7 @@ from webui.common import (
     build_top_banner_html,
 )
 
-from autostream_webui_service_schema import (
+from webui.browser.service_schema import (
     _SERVICE_ITEMS,
     _SNAP_TIME_ATTRS,
     _card_display,
@@ -52,6 +52,7 @@ from autostream_webui_service_schema import (
 
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
 
 
 # Confirm modal HTML (rendered once per request, referenced by SERVICE_JS).
@@ -626,3 +627,14 @@ def send_service_page(
         dark_mode=parsed.webui.dark_mode if parsed else False,
     )
     common.send_html(handler, 200, html_body)
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_service(handler, state):
+    msg, flash_type = common._route_flash_msg_and_type(handler)
+    send_service_page(handler, state, flash_msg=msg, flash_type=flash_type)

@@ -59,7 +59,7 @@ def _files_and_player_fail(*, cached_buffer: bool = True) -> ExitStack:
         "autostream_config.load_config",
     ):
         stack.enter_context(patch(target, side_effect=boom))
-    stack.enter_context(patch("autostream_appliance_models.get_live_output_eq_status", return_value=None))
+    stack.enter_context(patch("webui.browser.home_model.get_live_output_eq_status", return_value=None))
     if cached_buffer:
         stack.enter_context(patch("autostream_start_buffer_cache.current_ms", return_value=2250))
     return stack
@@ -127,7 +127,7 @@ def test_the_gateway_bound_equaliser_reads_no_file(state):
 def test_the_gateway_bound_output_reads_the_settings_view(state):
     _arrange()
     with _files_and_player_fail(), \
-         patch("autostream_appliance_gateway.submit_output_change",
+         patch("webui.browser.home_model.submit_output_change",
                return_value={"ok": True}) as change:
         code, body = _reply(gw.send_gateway_output_json, state, APPLIANCE_ID,
                             json.dumps({"id": "o1", "selected": True}))

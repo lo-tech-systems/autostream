@@ -52,6 +52,7 @@ from fake_store import (
 from autostream_players import ActionResult, OutputInfo
 from autostream_state import Origin, store
 from autostream_state.outputs import PlayerServiceBackend, get_authority
+import webui.browser.home_model as webui_home_model
 
 
 # ---------------------------------------------------------------------------
@@ -402,14 +403,14 @@ class TestOutputChangeMuteHooks:
         FakeStore().outputs([FakeStore.output_row("o1", "Speaker", selected=selected, volume_percent=volume)])
 
     def test_enable_while_muted_comes_on_silent_and_remembers_the_level(self, writes):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         FakeStore().outputs([
             FakeStore.output_row("o2", "Other", selected=True, volume_percent=30),
             FakeStore.output_row("o1", "Speaker", selected=False, volume_percent=0),
         ])
         get_authority().mute_all(Origin.USER)
         writes.calls.clear()
-        result = models.submit_output_change(
+        result = webui_home_model.submit_output_change(
             {"id": "o1", "selected": True, "volume": 55},
             requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
         )
@@ -418,11 +419,11 @@ class TestOutputChangeMuteHooks:
         assert snap().unit("o1").volume == 55 and snap().unit("o1").muted is True
 
     def test_a_system_level_write_while_muted_is_remembered_and_not_sent(self, writes):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         self._arrange_one(selected=True, volume=40)
         get_authority().mute_all(Origin.USER)
         writes.calls.clear()
-        result = models.submit_output_change(
+        result = webui_home_model.submit_output_change(
             {"id": "o1", "selected": True, "volume": 12},
             requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
         )
@@ -433,11 +434,11 @@ class TestOutputChangeMuteHooks:
     def test_a_user_level_write_while_muted_ends_the_mute_and_writes(self, writes):
         """The WebUI has no unmute control: an explicit user volume set on a
         muted speaker is its unmute; the write is made for real."""
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         self._arrange_one(selected=True, volume=40)
         get_authority().mute_all(Origin.USER)
         writes.calls.clear()
-        result = models.submit_output_change(
+        result = webui_home_model.submit_output_change(
             {"id": "o1", "selected": True, "volume": 65}, requester="webui", pin_requester=None,
         )
         assert result == {"ok": True, "id": "o1"}
@@ -445,9 +446,9 @@ class TestOutputChangeMuteHooks:
         assert snap().muted_all is False
 
     def test_a_level_write_while_unmuted_is_unchanged(self, writes):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         self._arrange_one(selected=True)
-        result = models.submit_output_change(
+        result = webui_home_model.submit_output_change(
             {"id": "o1", "selected": True, "volume": 12},
             requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
         )
@@ -455,10 +456,10 @@ class TestOutputChangeMuteHooks:
         assert len(writes.calls) == 1
 
     def test_disable_forgets_the_mute(self, writes):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         self._arrange_one(selected=True, volume=40)
         get_authority().mute_all(Origin.USER)
-        result = models.submit_output_change(
+        result = webui_home_model.submit_output_change(
             {"id": "o1", "selected": False}, requester="webui", pin_requester=None,
         )
         assert result == {"ok": True, "id": "o1"}
@@ -471,28 +472,28 @@ class TestOutputChangeMuteHooks:
 
 class TestBuildOutputListAndHomeStateMuteAware:
     def test_build_output_list_reports_the_intended_level_while_muted(self, writes):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
         get_authority().mute_all(Origin.USER)
         parsed = SimpleNamespace(
             owntone=SimpleNamespace(output_name="Speaker"),
             webui=SimpleNamespace(hidden_outputs=()),
         )
-        rows = models.build_output_list(parsed, snap().units)
+        rows = webui_home_model.build_output_list(parsed, snap().units)
         assert rows[0]["volume"] == 40
 
     def test_build_output_list_reports_the_actual_level_while_unmuted(self, writes):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         parsed = SimpleNamespace(
             owntone=SimpleNamespace(output_name="Speaker"),
             webui=SimpleNamespace(hidden_outputs=()),
         )
         out = OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=33)
-        rows = models.build_output_list(parsed, FakeStore().outputs([out]).outputs.units)
+        rows = webui_home_model.build_output_list(parsed, FakeStore().outputs([out]).outputs.units)
         assert rows[0]["volume"] == 33
 
     def test_build_home_state_carries_the_muted_flag(self, writes):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
         get_authority().mute_all(Origin.USER)
         parsed = SimpleNamespace(
@@ -502,17 +503,17 @@ class TestBuildOutputListAndHomeStateMuteAware:
         with patch("autostream_start_buffer_cache.current_ms", return_value=2250), \
              fake_levels([]), \
              fake_playback_mock() as mock_playback, \
-             patch("autostream_appliance_models.active_track") as mock_ti, \
+             patch("webui.browser.home_model.active_track") as mock_ti, \
              fake_session({"active": False, "source": None}), \
              fake_repeat(None), \
-             patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
+             patch("webui.browser.home_model.get_system_hostname", return_value="host"), \
              patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_rpi.get_appliance_id", return_value="id"):
             mock_playback.return_value = SimpleNamespace(
                 to_public_dict=lambda: {}, stylus_banner_text="", belt_banner_text="", bearing_banner_text="",
             )
             mock_ti.return_value = SimpleNamespace(to_public_dict=lambda: {})
-            home = models.build_home_state(store().snapshot(), parsed)
+            home = webui_home_model.build_home_state(store().snapshot(), parsed)
         assert home["muted"] is True
 
     def test_owntone_outputs_state_route_carries_muted(self, writes):
@@ -588,7 +589,7 @@ class TestWebUIMuteControlRemoved:
         assert "unmuteMaster" not in src
 
     def test_page_airplay_js_no_longer_calls_mute_indicator_functions(self):
-        import autostream_webui_page_airplay as page_airplay
+        import webui.browser.home as page_airplay
         src = inspect_source(page_airplay)
         assert "updateMuteIndicator" not in src
         assert "unmuteMaster" not in src
@@ -619,7 +620,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
     """Invoke send_airplay_page() with every external dependency mocked and
     return the rendered HTML — trimmed down from test_track_id_home_render.py's
     own helper, this module's own copy so it stands on its own."""
-    from autostream_webui_page_airplay import send_airplay_page
+    from webui.browser.home import send_airplay_page
 
     handler = MagicMock()
     chunks: list[bytes] = []
@@ -663,14 +664,14 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
-        patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-        patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        patch("webui.browser.home.get_all_appliances", return_value=[]),
+        patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels(input_levels),
         fake_playback(playback),
         fake_outputs([], connected=False),
-        patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+        patch("webui.browser.home.get_setting", return_value=buf_result),
         fake_track(_disabled_ti_snapshot()),
-        patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+        patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
     ]
     with ExitStack() as stack:
         for p in patches:
@@ -689,7 +690,7 @@ def _disabled_ti_snapshot():
 
 
 def _render_remote_home_html() -> str:
-    from autostream_webui_page_airplay import send_remote_home_page
+    from webui.browser.home import send_remote_home_page
 
     handler = MagicMock()
     chunks: list[bytes] = []
@@ -710,8 +711,8 @@ def _render_remote_home_html() -> str:
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value="1" * 20),
-        patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-        patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        patch("webui.browser.home.get_all_appliances", return_value=[]),
+        patch("webui.browser.home.get_system_hostname", return_value="autostream"),
     ]
     with ExitStack() as stack:
         for p in patches:

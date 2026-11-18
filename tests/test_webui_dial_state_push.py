@@ -40,6 +40,7 @@ import autostream_repeat as repeat
 import autostream_monitor_control as monitor_control
 import autostream_dial_push as dial_push
 import autostream_rpi as rpi
+import webui.browser.home_model as webui_home_model
 
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
 PATH = "/state-changed"
@@ -790,7 +791,7 @@ class TestCallSites:
     def _hinted_change(requester, pin_requester, *, answer, body=None):
         """Submit a speaker switch-on and return what the store's dial hints
         sent while it ran."""
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         import autostream_player_service as ps
         from fake_store import FakeStore
         FakeStore().outputs([FakeStore.output_row("o", "Speaker", selected=False, volume_percent=0)])
@@ -801,7 +802,7 @@ class TestCallSites:
         calls.clear()  # the first reading is only the baseline
         try:
             with patch.object(ps, "update_output", MagicMock(return_value=answer)):
-                result = models.submit_output_change(
+                result = webui_home_model.submit_output_change(
                     body or {"id": "o", "selected": True, "volume": 30},
                     requester=requester, pin_requester=pin_requester)
         finally:
@@ -820,7 +821,7 @@ class TestCallSites:
         assert ("outputs",) in [k for k, _ in calls]
 
     def test_an_output_change_that_changes_nothing_does_not_hint(self):
-        import autostream_appliance_models as models
+        import webui.browser.home_model as models
         from fake_store import FakeStore
         FakeStore().outputs([FakeStore.output_row("o", "Speaker", selected=False, volume_percent=0)])
         calls = []
@@ -829,7 +830,7 @@ class TestCallSites:
         calls.clear()  # the first reading is only the baseline
         try:
             # Refused before anything is written: the speaker is not listed.
-            result = models.submit_output_change(
+            result = webui_home_model.submit_output_change(
                 {"id": "other", "selected": True}, requester="webui", pin_requester=None)
         finally:
             state.store().unsubscribe(handle)

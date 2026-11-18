@@ -182,8 +182,8 @@ class FieldSpec:
 
 
 # The shared table. Populated by autostream_webui_api (POST /api/settings,
-# POST /api/service/config), autostream_appliance_models (POST
-# /api/output_eq/config), and autostream_webui_post_handlers (POST /setup)
+# POST /api/service/config), webui/browser/home_model.py (POST
+# /api/output_eq/config), and webui/browser/post_handlers.py (POST /setup)
 # at their own import time / call time -- see each module's own
 # "settings-schema registration" section.
 SETTINGS_SCHEMA: dict[str, FieldSpec] = {}

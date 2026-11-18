@@ -62,7 +62,7 @@ def module_text(name: str) -> str:
     return module_path(name).read_text(encoding="utf-8")
 
 
-_WEB_FLAT_MODULES = ("autostream_webui*.py", "autostream_appliance_models.py", "autostream_appliance_gateway.py")
+_WEB_FLAT_MODULES = ("autostream_webui*.py", "autostream_appliance_gateway.py")
 
 
 def web_source() -> str:

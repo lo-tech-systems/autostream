@@ -23,12 +23,9 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_webui_post_handlers as ph
-from autostream_webui_post_handlers import (
-    handle_live_input_eq_update,
-    handle_live_input_gain_update,
-    handle_output_update,
-)
+from webui.browser.post_handlers import handle_output_update
+from webui.browser.post_handlers import handle_live_input_gain_update
+from webui.browser.post_handlers import handle_live_input_eq_update
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +299,8 @@ class TestLiveInputEQValidation:
         sent = []
         mock_eq = MagicMock(return_value=True)
 
-        import autostream_webui_post_handlers as _ph
-        orig_loads = _ph.json.loads
+        import webui.browser.post_handlers as _ph
+        orig_loads = webui_post_handlers.json.loads
 
         def patched_loads(s, **kw):
             result = orig_loads(s, **kw)
@@ -314,7 +311,7 @@ class TestLiveInputEQValidation:
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
-             patch.object(_ph.json, "loads", side_effect=patched_loads):
+             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0]
@@ -327,8 +324,8 @@ class TestLiveInputEQValidation:
         body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
         sent = []
         mock_eq = MagicMock(return_value=True)
-        import autostream_webui_post_handlers as _ph
-        orig_loads = _ph.json.loads
+        import webui.browser.post_handlers as _ph
+        orig_loads = webui_post_handlers.json.loads
 
         def patched_loads(s, **kw):
             result = orig_loads(s, **kw)
@@ -339,7 +336,7 @@ class TestLiveInputEQValidation:
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
-             patch.object(_ph.json, "loads", side_effect=patched_loads):
+             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0]
@@ -350,8 +347,8 @@ class TestLiveInputEQValidation:
         body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
         sent = []
         mock_eq = MagicMock(return_value=True)
-        import autostream_webui_post_handlers as _ph
-        orig_loads = _ph.json.loads
+        import webui.browser.post_handlers as _ph
+        orig_loads = webui_post_handlers.json.loads
 
         def patched_loads(s, **kw):
             result = orig_loads(s, **kw)
@@ -362,7 +359,7 @@ class TestLiveInputEQValidation:
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
-             patch.object(_ph.json, "loads", side_effect=patched_loads):
+             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0]
@@ -450,8 +447,8 @@ class TestLiveInputGainValidation:
     def test_gain_nan_rejected(self, tmp_path):
         body = json.dumps({"input": 1, "gain_db": 0})
         sent = []
-        import autostream_webui_post_handlers as _ph
-        orig_loads = _ph.json.loads
+        import webui.browser.post_handlers as _ph
+        orig_loads = webui_post_handlers.json.loads
 
         def patched_loads(s, **kw):
             result = orig_loads(s, **kw)
@@ -462,7 +459,7 @@ class TestLiveInputGainValidation:
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
-             patch.object(_ph.json, "loads", side_effect=patched_loads):
+             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0]
@@ -472,8 +469,8 @@ class TestLiveInputGainValidation:
     def test_gain_infinity_rejected(self, tmp_path):
         body = json.dumps({"input": 1, "gain_db": 0})
         sent = []
-        import autostream_webui_post_handlers as _ph
-        orig_loads = _ph.json.loads
+        import webui.browser.post_handlers as _ph
+        orig_loads = webui_post_handlers.json.loads
 
         def patched_loads(s, **kw):
             result = orig_loads(s, **kw)
@@ -484,7 +481,7 @@ class TestLiveInputGainValidation:
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
-             patch.object(_ph.json, "loads", side_effect=patched_loads):
+             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0]
@@ -523,8 +520,9 @@ class TestOutputUpdateForwarding:
 # Output changes: occupancy protection
 # ---------------------------------------------------------------------------
 
-import autostream_appliance_models as _am
 from autostream_state import Origin
+import webui.browser.home_model as webui_home_model
+import webui.browser.post_handlers as webui_post_handlers
 
 
 def _speaker(id_: str, name: str, *, selected: bool = False):
@@ -573,7 +571,7 @@ def player_writes(monkeypatch):
 
 
 def _coordinator_change(body):
-    return _am.submit_output_change(
+    return webui_home_model.submit_output_change(
         body, requester="coordinator", pin_requester=None, origin=Origin.SYSTEM)
 
 
@@ -603,7 +601,7 @@ class TestOutputMutationOccupancyProtection:
         FakeStore().outputs([_speaker("42", "Kitchen")])
         with patch("autostream_output_usage.usage_for_output",
                    return_value=_make_usage("living-room")):
-            result = _am.submit_output_change(
+            result = webui_home_model.submit_output_change(
                 {"id": "42", "op": "pin", "pin": "1234"},
                 requester="webui", pin_requester="webui")
         assert result["ok"] is True, result
@@ -787,7 +785,7 @@ class TestOutputChangeOrigin:
         from fake_store import FakeStore
         from output_fakes import snap
         FakeStore().outputs([_speaker("42", "Kitchen")])
-        result = _am.submit_output_change(
+        result = webui_home_model.submit_output_change(
             {"id": "42", "op": "pin", "pin": "1234"},
             requester="webui", pin_requester="webui")
         assert result["ok"] is True
@@ -797,7 +795,7 @@ class TestOutputChangeOrigin:
         from fake_store import FakeStore
         from output_fakes import snap
         FakeStore().outputs([_speaker("42", "Kitchen", selected=True)])
-        _am.submit_output_change(
+        webui_home_model.submit_output_change(
             {"id": "42", "selected": False}, requester="webui", pin_requester="webui")
         assert snap().silence_chosen is True
 
@@ -823,7 +821,7 @@ class TestOutputRequesterPassed:
     def test_the_local_handler_names_the_webui_as_requester(self, tmp_path):
         state = _make_state(tmp_path)
         with patch("webui.common.send_json"), \
-             patch("autostream_appliance_models.submit_output_change",
+             patch("webui.browser.home_model.submit_output_change",
                    return_value={"ok": True}) as mut:
             handle_output_update(MagicMock(), state, json.dumps({"id": "1", "selected": True}))
         assert mut.call_args.kwargs["requester"] == "webui"
@@ -837,7 +835,7 @@ class TestOutputRequesterPassed:
         parsed.owntone.output_airplay_modes = {}
         with patch("webui.common.send_json"), \
              patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.submit_output_change",
+             patch("webui.browser.home_model.submit_output_change",
                    return_value={"ok": True}) as mut:
             api.send_federation_output_json(
                 MagicMock(), MagicMock(), json.dumps({"id": "1", "selected": True}))
@@ -867,7 +865,7 @@ class TestHomePinDialogScript:
         assert "'webui'" in body
 
     def test_pin_dialog_input_is_numeric_and_bounded(self):
-        import autostream_webui_page_airplay as page
+        import webui.browser.home as page
         src = inspect.getsource(page)
         assert src.count('pattern="[0-9]*" maxlength="8"') == 2
         assert 'id="pinModalNote"' in src

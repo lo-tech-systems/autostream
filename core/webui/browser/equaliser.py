@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_equaliser.py
+"""webui/browser/equaliser.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -33,6 +33,7 @@ from webui.common import (
 )
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
 
 
 def _build_eq_appliances_for_selector() -> list:
@@ -457,3 +458,14 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         common.send_html(handler, 200, page)
     except Exception:
         pass
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_equaliser(handler, state):
+    msg, flash_type = common._route_flash_msg_and_type(handler)
+    send_equaliser_page(handler, state, flash_msg=msg, flash_type=flash_type)

@@ -92,7 +92,7 @@ class TestRemoteHomeRouting:
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("autostream_webui.send_remote_home_page") as stub:
+             patch("webui.browser.home.send_remote_home_page") as stub:
             handler.do_GET()
         stub.assert_called_once()
 
@@ -104,7 +104,7 @@ class TestRemoteHomeRouting:
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("autostream_webui.send_remote_home_page") as stub:
+             patch("webui.browser.home.send_remote_home_page") as stub:
             handler.do_GET()
         stub.assert_called_once()
 
@@ -157,7 +157,7 @@ class TestRemoteHomeRouting:
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("autostream_webui.send_remote_home_page"):
+             patch("webui.browser.home.send_remote_home_page"):
             handler.do_GET()
         assert 302 not in redirect_codes
 
@@ -172,7 +172,7 @@ class TestRemoteHomeRouting:
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("autostream_webui.send_remote_home_page", side_effect=_stub):
+             patch("webui.browser.home.send_remote_home_page", side_effect=_stub):
             handler.do_GET()
         assert called_with.get("aid") == _REMOTE_ID
 
@@ -208,7 +208,7 @@ class TestRemoteHomePageContent:
     """Verify that send_remote_home_page embeds required bootstrap variables."""
 
     def _render(self, aid: str = _REMOTE_ID) -> str:
-        from autostream_webui_page_airplay import send_remote_home_page
+        from webui.browser.home import send_remote_home_page
 
         state = viewed_state(CONTROLS_OTHER_APPLIANCES)
         state.config_path = "dummy.ini"
@@ -231,8 +231,8 @@ class TestRemoteHomePageContent:
         parsed.webui.control_other_appliances = False
         with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
-             patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound-host"):
+             patch("webui.browser.home.get_all_appliances", return_value=[]), \
+             patch("webui.browser.home.get_system_hostname", return_value="bound-host"):
             send_remote_home_page(handler, state, aid)
 
         return page_with_static(b"".join(written_chunks).decode("utf-8", errors="replace"))

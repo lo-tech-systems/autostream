@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_first_boot.py
+"""webui/browser/first_boot.py
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -44,6 +44,8 @@ from webui.common import (
 )
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
+import autostream_commissioning as commissioning
 
 
 # ---------------------------------------------------------------------------
@@ -432,3 +434,33 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     handler.send_header("Location", "/")
     handler.send_header("Content-Length", "0")
     handler.end_headers()
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_commissioning_redirect_get(handler, state):
+    step = commissioning.required_first_boot_step(state.config_path, state.state_path)
+    location = f"/first-boot/{step}" if step else "/first-boot/owntone"
+    handler.send_response(302)
+    handler.send_header("Location", location)
+    handler.end_headers()
+
+
+def _route_get_first_boot_owntone(handler, state):
+    send_first_boot_owntone_page(handler, state, session_state.AUTH)
+
+
+def _route_get_first_boot_appliance(handler, state):
+    send_first_boot_appliance_page(handler, state, session_state.AUTH)
+
+
+def _route_post_first_boot_continue(handler, state, body_str):
+    handle_first_boot_continue_post(handler, state, session_state.AUTH, body_str)
+
+
+def _route_post_first_boot_finish(handler, state, body_str):
+    handle_first_boot_finish_post(handler, state, session_state.AUTH, body_str)

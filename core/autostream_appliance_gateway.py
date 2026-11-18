@@ -44,8 +44,8 @@ from typing import Optional
 from autostream_intents import Intent, Origin, submit
 from autostream_state import store
 from autostream_pin_pairing import REQUESTER_WEBUI
-from autostream_appliance_models import (
-    submit_output_change,
+from webui.browser import home_model
+from webui.browser.home_model import (
     build_equaliser_state,
     build_home_state,
     sanitize_output_body,
@@ -781,7 +781,7 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
             logging.error("gateway output (bound): config error: %s", e)
             common.send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
-        result = submit_output_change(
+        result = home_model.submit_output_change(
             sanitized, requester="webui", pin_requester=REQUESTER_WEBUI,
             offset_ms=offset_ms, mode=mode,
         )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_airplay.py
+"""webui/browser/home.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -13,7 +13,7 @@ import logging
 
 from typing import Optional
 
-from autostream_appliance_models import _dial_update_banner_text, build_output_list
+from webui.browser.home_model import _dial_update_banner_text, build_output_list
 from autostream_appliances import get_all_appliances
 from autostream_state import active_track, format_khz, store
 from autostream_state.live import get_setting
@@ -40,6 +40,9 @@ from webui.common import (
 )
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
+import re
+from webui.browser import equaliser
 
 
 # Wall-clock tolerance, in seconds, for transient emptiness of the backend's
@@ -757,3 +760,43 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         common.send_html(handler, 200, html_body)
     except Exception:
         logging.exception("Failed sending remote home page response.")
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+_REMOTE_PAGE_PREFIX = "/a/"
+_APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
+
+
+def _route_get_home(handler, state):
+    msg, flash_type = common._route_flash_msg_and_type(handler)
+    send_airplay_page(handler, state, session_state.AUTH, flash_msg=msg, flash_type=flash_type)
+
+
+def _route_get_remote_page(handler, state):
+    path = handler._normalized_path()
+    tail = path[len(_REMOTE_PAGE_PREFIX):]
+    parts = tail.split("/", 1)
+    aid = parts[0]
+    sub = parts[1] if len(parts) > 1 else ""
+    if not _APPLIANCE_ID_RE.match(aid):
+        handler.send_error(404, "Not found")
+        return
+    local_id = rpi.get_appliance_id() or ""
+    if aid == local_id:
+        # Canonical redirect for bound appliance
+        location = "/equaliser" if sub == "equaliser" else "/"
+        handler.send_response(302)
+        handler.send_header("Location", location)
+        handler.send_header("Content-Length", "0")
+        handler.end_headers()
+    elif not common._effective_control_other_appliances(state):
+        handler._redirect_with_error_flash("Controlling other appliances is disabled.", "/")
+    elif sub == "equaliser":
+        equaliser.send_remote_equaliser_page(handler, state, aid)
+    else:
+        send_remote_home_page(handler, state, aid)

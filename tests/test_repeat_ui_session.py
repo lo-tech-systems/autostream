@@ -71,7 +71,7 @@ def _make_playback_snapshot():
 
 
 def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
-    from autostream_webui_page_airplay import send_airplay_page
+    from webui.browser.home import send_airplay_page
     from track_id.models import disabled_snapshot
 
     handler = MagicMock()
@@ -94,14 +94,14 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-        patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        patch("webui.browser.home.get_all_appliances", return_value=[]),
+        patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels([]),
         fake_playback(playback),
         fake_outputs_result(list_result),
-        patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+        patch("webui.browser.home.get_setting", return_value=buf_result),
         fake_track(disabled_snapshot()),
-        patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+        patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
     ]
 
     with ExitStack() as stack:
@@ -661,7 +661,7 @@ class TestClientRendersTrackIdDuringReplay:
 
 def _render_remote_home_page() -> str:
     """Render send_remote_home_page's markup."""
-    from autostream_webui_page_airplay import send_remote_home_page
+    from webui.browser.home import send_remote_home_page
 
     handler = MagicMock()
     chunks: list = []
@@ -676,8 +676,8 @@ def _render_remote_home_page() -> str:
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("autostream_webui_page_airplay._build_appliances_for_selector", return_value=[]),
-        patch("autostream_webui_page_airplay.build_appliance_selector_html", return_value=""),
+        patch("webui.browser.home._build_appliances_for_selector", return_value=[]),
+        patch("webui.browser.home.build_appliance_selector_html", return_value=""),
     ]
     with ExitStack() as stack:
         for p in patches:

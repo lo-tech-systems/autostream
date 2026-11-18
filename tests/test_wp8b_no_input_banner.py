@@ -111,7 +111,7 @@ def _make_playback_snapshot():
 
 class TestMainPageBanner:
     def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
-        from autostream_webui_page_airplay import send_airplay_page
+        from webui.browser.home import send_airplay_page
         from autostream_settings import SettingsStore
         from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
@@ -132,14 +132,14 @@ class TestMainPageBanner:
         buf_result = MagicMock(ok=True, value="2250")
 
         patches = [
-            patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+            patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
             patch("autostream_rpi.get_appliance_id", return_value="local-id"),
-            patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-            patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+            patch("webui.browser.home.get_all_appliances", return_value=[]),
+            patch("webui.browser.home.get_system_hostname", return_value="autostream"),
             fake_levels([]),
             fake_playback(_make_playback_snapshot()),
             fake_outputs_result(ListOutputsResult(ok=False, error="unreachable")),
-            patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+            patch("webui.browser.home.get_setting", return_value=buf_result),
             fake_track(disabled_snapshot()),
         ]
 
@@ -180,7 +180,7 @@ class TestMainPageBanner:
 
 class TestEqualiserPageBannerAbsent:
     def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
-        from autostream_webui_page_equaliser import send_equaliser_page
+        from webui.browser.equaliser import send_equaliser_page
         from autostream_settings import SettingsStore
         from webui.session_state import WebUIState
 
@@ -192,9 +192,9 @@ class TestEqualiserPageBannerAbsent:
         handler.wfile = io.BytesIO()
         handler._csrf_token = "tok"
 
-        with patch("autostream_webui_page_equaliser.build_top_banner_html", return_value=("", "")), \
+        with patch("webui.browser.equaliser.build_top_banner_html", return_value=("", "")), \
              patch("autostream_rpi.get_appliance_id", return_value="local-id"), \
-             patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]):
+             patch("webui.browser.equaliser.get_all_appliances", return_value=[]):
             send_equaliser_page(handler, state)
 
         store.close(save=False)

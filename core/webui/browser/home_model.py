@@ -1,4 +1,4 @@
-"""autostream_appliance_models.py -- shared Home and Equaliser state models.
+"""webui/browser/home_model.py -- shared Home and Equaliser state models.
 
 Provides build_home_state() and build_equaliser_state() plus shared
 output and EQ mutation helpers used by both local API endpoints and

@@ -18,7 +18,7 @@ import _page_stub  # noqa: E402
 import _source_text  # noqa: E402
 from autostream_auth import AuthManager  # noqa: E402
 from autostream_settings import SettingsView  # noqa: E402
-from autostream_webui_page_auth import send_auth_page  # noqa: E402
+from webui.browser.auth import send_auth_page  # noqa: E402
 
 
 def _get(query: str = "", config_extra: dict | None = None, settings=True):

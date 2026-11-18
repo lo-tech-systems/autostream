@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_align.py
+"""webui/browser/align.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -41,6 +41,8 @@ from webui.common import (
 )
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
+from urllib.parse import parse_qs, urlparse
 
 _log = logging.getLogger(__name__)
 
@@ -385,3 +387,25 @@ def send_align_apply_json(handler, state: WebUIState, body: str) -> None:
 def send_align_discard_json(handler, state: WebUIState) -> None:
     submit(Intent("align.discard", {}, Origin.USER, "webui"))
     common.send_json(handler, 200, {"ok": True})
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_align_result(handler, state):
+    # self.path, not a normalized path: the measurement payload arrives in
+    # the query string and must survive a login round-trip (dispatch()'s
+    # kind="page" redirect already uses handler.path for the same reason).
+    qs = parse_qs(urlparse(handler.path).query)
+    send_align_result_get(handler, state, qs)
+
+
+def _route_post_align_abort(handler, state, body_str):
+    send_align_abort_json(handler, state)
+
+
+def _route_post_align_discard(handler, state, body_str):
+    send_align_discard_json(handler, state)

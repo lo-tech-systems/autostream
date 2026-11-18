@@ -35,10 +35,8 @@ from autostream_live_config import _validate_output_name
 from autostream_live_config import _validate_silence_seconds
 from autostream_live_config import _validate_volume_percent
 from autostream_live_config import _validate_gain_db
-from autostream_webui_post_handlers import (
-    handle_live_input_eq_update,
-    handle_live_input_gain_update,
-)
+from webui.browser.post_handlers import handle_live_input_gain_update
+from webui.browser.post_handlers import handle_live_input_eq_update
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────

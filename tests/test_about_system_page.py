@@ -19,9 +19,10 @@ from fake_store import fake_playback
 import autostream_player_service as _ps
 import autostream_state as _state
 from autostream_sysutils import StaticSystemFacts
-import autostream_webui_page_about as _about
 from _source_text import page_with_static
 import webui.system.updates as updates
+import webui.system.services as webui_services
+import webui.browser.about as webui_about
 
 
 # ---------------------------------------------------------------------------
@@ -124,18 +125,18 @@ def _collect_with_mocks(
 
     _state.store().publish_for_tests("monitor", monitor_info)
     with patch("webui.system.updates.get_app_version", return_value=autostream_version), \
-         patch("autostream_webui_page_about._get_wifi_watcher_version", return_value=wifi_watcher_version), \
-         patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=owntone_info), \
-         patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=vibra_info), \
+         patch("webui.browser.about._get_wifi_watcher_version", return_value=wifi_watcher_version), \
+         patch("webui.browser.about.get_owntone_runtime_info", return_value=owntone_info), \
+         patch("webui.browser.about.get_vibra_runtime_info", return_value=vibra_info), \
          fake_playback(playback_snap), \
-         patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=cpu_temp), \
-         patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=cpu_load_percent), \
-         patch("autostream_webui_page_about.get_effective_memory_info", return_value=memory_info), \
-         patch("autostream_webui_page_about.get_root_disk_usage", return_value=disk_usage), \
-         patch("autostream_webui_page_about.sdcard_health_display", return_value=sd_health), \
-         patch("autostream_webui_page_about.get_static_system_facts", return_value=static_facts), \
-         patch("autostream_webui_page_about.subprocess.run", side_effect=fake_systemctl):
-        return _about._collect_system_info()
+         patch("webui.browser.about.get_cpu_temperature_c", return_value=cpu_temp), \
+         patch("webui.browser.about.get_cpu_busy_percent", return_value=cpu_load_percent), \
+         patch("webui.browser.about.get_effective_memory_info", return_value=memory_info), \
+         patch("webui.browser.about.get_root_disk_usage", return_value=disk_usage), \
+         patch("webui.browser.about.sdcard_health_display", return_value=sd_health), \
+         patch("webui.browser.about.get_static_system_facts", return_value=static_facts), \
+         patch("webui.system.services.subprocess.run", side_effect=fake_systemctl):
+        return webui_about._collect_system_info()
 
 
 _ACTIVE_SYSTEMCTL = """\
@@ -495,17 +496,17 @@ class TestMissingDiskAndSd:
 
     def test_cpu_temperature_read_failure_does_not_sink_payload(self):
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            result = _about._collect_system_info()
+            result = webui_about._collect_system_info()
         assert result["ok"] is True
         assert result["cpu_temperature"] == {"available": False}
         assert result["cpu_temperature_c"] is None
@@ -528,33 +529,33 @@ class TestMissingDiskAndSd:
         """A raising collector helper must degrade only its own field, mirroring
         how a None cpu_temperature_c never sets ok=false."""
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", side_effect=Exception("boom")), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", side_effect=Exception("boom")), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            result = _about._collect_system_info()
+            result = webui_about._collect_system_info()
         assert result["ok"] is True
         assert result["cpu_load"] == {"available": False}
 
     def test_memory_failure_does_not_sink_payload(self):
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", side_effect=Exception("boom")), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", side_effect=Exception("boom")), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            result = _about._collect_system_info()
+            result = webui_about._collect_system_info()
         assert result["ok"] is True
         assert result["memory"] == {"available": False}
 
@@ -645,9 +646,9 @@ class TestBluetoothServiceRow:
         )
         mock_client = MagicMock()
         mock_client.status.return_value = client_status
-        with patch("autostream_webui_page_about.bluetooth_installed", return_value=installed), \
-             patch("autostream_webui_page_about.bluetooth_services_enabled", return_value=enabled), \
-             patch("autostream_webui_page_about.BluetoothClient", return_value=mock_client):
+        with patch("webui.system.services.bluetooth_installed", return_value=installed), \
+             patch("webui.system.services.bluetooth_services_enabled", return_value=enabled), \
+             patch("webui.browser.about.BluetoothClient", return_value=mock_client):
             return _collect_with_mocks(systemctl_stdout=stdout)
 
     def _bt_row(self, result):
@@ -719,7 +720,7 @@ class TestSystemdParsing:
             "Id=nginx.service\nActiveState=active\n\n"
             "Id=autostream.service\nActiveState=failed\n\n"
         )
-        parsed = _about._parse_systemctl_output(stdout)
+        parsed = webui_services._parse_systemctl_output(stdout)
         assert parsed["nginx.service"]["ActiveState"] == "active"
         assert parsed["autostream.service"]["ActiveState"] == "failed"
 
@@ -728,7 +729,7 @@ class TestSystemdParsing:
             "malformed line without equals\n"
             "Id=autostream.service\nActiveState=active\n\n"
         )
-        parsed = _about._parse_systemctl_output(stdout)
+        parsed = webui_services._parse_systemctl_output(stdout)
         assert "autostream.service" in parsed
 
     def test_parse_handles_missing_blocks(self):
@@ -740,7 +741,7 @@ class TestSystemdParsing:
 
     def test_parse_last_block_without_trailing_blank(self):
         stdout = "Id=autostream.service\nActiveState=active"
-        parsed = _about._parse_systemctl_output(stdout)
+        parsed = webui_services._parse_systemctl_output(stdout)
         assert "autostream.service" in parsed
         assert parsed["autostream.service"]["ActiveState"] == "active"
 
@@ -798,16 +799,16 @@ class TestSystemctlCommandSecurity:
             return r
 
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
-            _about._collect_system_info()
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run", side_effect=capture_run):
+            webui_about._collect_system_info()
 
         assert captured_args, "subprocess.run was not called"
         cmd = captured_args[0]
@@ -836,16 +837,16 @@ class TestSystemctlCommandSecurity:
             return r
 
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run", side_effect=capture_run):
-            _about._collect_system_info()
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run", side_effect=capture_run):
+            webui_about._collect_system_info()
 
         assert captured_kwargs.get("shell") is not True
 
@@ -858,31 +859,31 @@ class TestPartialFailureDegradation:
 
     def test_cpu_failure_does_not_set_ok_false(self):
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", side_effect=Exception("no thermal")), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            result = _about._collect_system_info()
+            result = webui_about._collect_system_info()
         assert result["ok"] is True
         assert result["cpu_temperature_c"] is None
 
     def test_disk_failure_does_not_set_ok_false(self):
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", side_effect=Exception("fail")), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", side_effect=Exception("fail")), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            result = _about._collect_system_info()
+            result = webui_about._collect_system_info()
         assert result["ok"] is True
         assert result["disk"] == {"available": False}
 
@@ -904,17 +905,17 @@ class TestCollectorNoIO:
     def test_does_not_call_resolve_backend(self):
         with patch("autostream_player_service.resolve_backend") as mock_rb, \
              patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            _about._collect_system_info()
+            webui_about._collect_system_info()
         mock_rb.assert_not_called()
 
     def test_get_owntone_called_with_refresh_if_stale_false(self):
@@ -925,17 +926,17 @@ class TestCollectorNoIO:
             return _owntone_info()
 
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", side_effect=fake_owntone), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", side_effect=fake_owntone), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            _about._collect_system_info()
+            webui_about._collect_system_info()
         assert captured_kwargs.get("refresh_if_stale") is False
 
 
@@ -950,17 +951,17 @@ class TestSnapshotReadsAreMemoryOnly:
     def test_monitor_read_is_not_live_io(self):
         _state.store().publish_for_tests("monitor", _monitor_info(build="9.9"))
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            result = _about._collect_system_info()
+            result = webui_about._collect_system_info()
         assert "9.9" in result["builds"]["monitor"]
 
 
@@ -1153,17 +1154,17 @@ class TestSendJsonHeaders:
         handler.send_header.side_effect = lambda k, v: sent_headers.update({k: v})
 
         with patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
-             patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
+             patch("webui.browser.about.get_owntone_runtime_info", return_value=_owntone_info()), \
+             patch("webui.browser.about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
-             patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+             patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            _about.send_about_system_json(handler)
+            webui_about.send_about_system_json(handler)
 
         assert 200 in sent_responses
         assert "no-store" in sent_headers.get("Cache-Control", "")
@@ -1183,9 +1184,9 @@ class TestTopLevelExceptionHandling:
         handler.send_response.side_effect = lambda code: sent_responses.append(code)
         handler.send_header.side_effect = lambda k, v: None
 
-        with patch("autostream_webui_page_about._collect_system_info",
+        with patch("webui.browser.about._collect_system_info",
                    side_effect=RuntimeError("unexpected")):
-            _about.send_about_system_json(handler)
+            webui_about.send_about_system_json(handler)
 
         assert 500 in sent_responses
 
@@ -1197,9 +1198,9 @@ class TestTopLevelExceptionHandling:
         handler.send_response.side_effect = lambda code: None
         handler.send_header.side_effect = lambda k, v: None
 
-        with patch("autostream_webui_page_about._collect_system_info",
+        with patch("webui.browser.about._collect_system_info",
                    side_effect=RuntimeError("internal secret")):
-            _about.send_about_system_json(handler)
+            webui_about.send_about_system_json(handler)
 
         body = buf.getvalue()
         decoded = json.loads(body) if body else {}
@@ -1237,7 +1238,7 @@ _REQUIRED_IDS = [
     "aboutServices",
 ]
 
-_FIXED_UNITS = [unit for unit, _ in _about._SERVICES]
+_FIXED_UNITS = [unit for unit, _ in webui_services._SERVICES]
 
 
 def _render_about_page_html() -> str:
@@ -1249,11 +1250,11 @@ def _render_about_page_html() -> str:
     state = MagicMock()
 
     with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
-         patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
+         patch("webui.browser.about.build_top_banner_html", return_value=("", "")), \
          patch("webui.common._config_snapshot", return_value=None), \
-         patch("autostream_webui_page_about.load_license_text", return_value=""), \
-         patch("autostream_webui_page_about.render_license_md", return_value=""):
-        _about.send_about_page(handler, state)
+         patch("webui.browser.about.load_license_text", return_value=""), \
+         patch("webui.browser.about.render_license_md", return_value=""):
+        webui_about.send_about_page(handler, state)
 
     return page_with_static(buf.getvalue().decode("utf-8"))
 
@@ -1401,18 +1402,18 @@ class TestAboutPageNoLiveData:
         state = MagicMock()
 
         with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
-             patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
+             patch("webui.browser.about.build_top_banner_html", return_value=("", "")), \
              patch("webui.common._config_snapshot", return_value=None), \
-             patch("autostream_webui_page_about.load_license_text", return_value=""), \
-             patch("autostream_webui_page_about.render_license_md", return_value=""), \
-             patch("autostream_webui_page_about.store") as m_mon, \
-             patch("autostream_webui_page_about.get_cpu_temperature_c") as m_cpu, \
-             patch("autostream_webui_page_about.get_owntone_runtime_info") as m_owntone, \
-             patch("autostream_webui_page_about.get_root_disk_usage") as m_disk, \
-             patch("autostream_webui_page_about.sdcard_health_display") as m_sd, \
-             patch("autostream_webui_page_about.get_cpu_busy_percent") as m_load, \
-             patch("autostream_webui_page_about.get_effective_memory_info") as m_mem:
-            _about.send_about_page(handler, state)
+             patch("webui.browser.about.load_license_text", return_value=""), \
+             patch("webui.browser.about.render_license_md", return_value=""), \
+             patch("webui.browser.about.store") as m_mon, \
+             patch("webui.browser.about.get_cpu_temperature_c") as m_cpu, \
+             patch("webui.browser.about.get_owntone_runtime_info") as m_owntone, \
+             patch("webui.browser.about.get_root_disk_usage") as m_disk, \
+             patch("webui.browser.about.sdcard_health_display") as m_sd, \
+             patch("webui.browser.about.get_cpu_busy_percent") as m_load, \
+             patch("webui.browser.about.get_effective_memory_info") as m_mem:
+            webui_about.send_about_page(handler, state)
 
         m_mon.assert_not_called()
         m_cpu.assert_not_called()
@@ -1482,11 +1483,11 @@ class TestSnapshotExceptionIsolation:
         patches = {
             "webui.system.updates.get_app_version":
                 (boom if raise_at == "app_version" else "1.0"),
-            "autostream_webui_page_about._get_wifi_watcher_version":
+            "webui.browser.about._get_wifi_watcher_version":
                 (boom if raise_at == "wifi_watcher" else "1.0.0"),
-            "autostream_webui_page_about.get_owntone_runtime_info":
+            "webui.browser.about.get_owntone_runtime_info":
                 (boom if raise_at == "owntone" else _owntone_info()),
-            "autostream_webui_page_about.get_vibra_runtime_info":
+            "webui.browser.about.get_vibra_runtime_info":
                 (boom if raise_at == "vibra" else _vibra_info()),
         }
 
@@ -1505,27 +1506,27 @@ class TestSnapshotExceptionIsolation:
                 raise boom
 
         if raise_at == "monitor":
-            ctx["monitor"] = patch("autostream_webui_page_about.store", side_effect=boom)
+            ctx["monitor"] = patch("webui.browser.about.store", side_effect=boom)
         elif raise_at == "playback":
             ctx["monitor"] = patch(
-                "autostream_webui_page_about.store",
+                "webui.browser.about.store",
                 return_value=SimpleNamespace(snapshot=lambda: _PlaybackBoom()))
         else:
             ctx["monitor"] = fake_playback(_playback_snap())
 
-        with patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
-             patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
-             patch("autostream_webui_page_about.get_effective_memory_info", return_value=None), \
-             patch("autostream_webui_page_about.get_root_disk_usage", return_value=None), \
-             patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
-             patch("autostream_webui_page_about.subprocess.run",
+        with patch("webui.browser.about.get_cpu_temperature_c", return_value=None), \
+             patch("webui.browser.about.get_cpu_busy_percent", return_value=None), \
+             patch("webui.browser.about.get_effective_memory_info", return_value=None), \
+             patch("webui.browser.about.get_root_disk_usage", return_value=None), \
+             patch("webui.browser.about.sdcard_health_display", return_value=None), \
+             patch("webui.system.services.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
             with ctx["webui.system.updates.get_app_version"], \
-                 ctx["autostream_webui_page_about._get_wifi_watcher_version"], \
+                 ctx["webui.browser.about._get_wifi_watcher_version"], \
                  ctx["monitor"], \
-                 ctx["autostream_webui_page_about.get_owntone_runtime_info"], \
-                 ctx["autostream_webui_page_about.get_vibra_runtime_info"]:
-                return _about._collect_system_info()
+                 ctx["webui.browser.about.get_owntone_runtime_info"], \
+                 ctx["webui.browser.about.get_vibra_runtime_info"]:
+                return webui_about._collect_system_info()
 
     @pytest.mark.parametrize("field", [
         "app_version", "wifi_watcher", "monitor", "owntone", "vibra", "playback",

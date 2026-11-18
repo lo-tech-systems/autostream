@@ -374,7 +374,7 @@ class TestFederationHome:
              fake_playback(playback), \
              patch("autostream_start_buffer_cache.current_ms", return_value=100), \
              patch("autostream_rpi.get_appliance_id", return_value="aabb"), \
-             patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
+             patch("webui.browser.home_model.get_system_hostname", return_value="host"), \
              patch("webui.system.updates.get_app_version", return_value="1.0"):
             code, data = _call(h, state)
         assert code == 200
@@ -397,7 +397,7 @@ class TestFederationHome:
         playback.stylus_banner_text = ""
         playback.belt_banner_text = ""
         playback.bearing_banner_text = ""
-        with fake_levels([]),              fake_playback(playback),              patch("autostream_appliance_models._wall", return_value=103.2),              patch("autostream_start_buffer_cache.current_ms", return_value=100),              patch("autostream_rpi.get_appliance_id", return_value="aabb"),              patch("autostream_appliance_models.get_system_hostname", return_value="host"),              patch("webui.system.updates.get_app_version", return_value="1.0"):
+        with fake_levels([]),              fake_playback(playback),              patch("webui.browser.home_model._wall", return_value=103.2),              patch("autostream_start_buffer_cache.current_ms", return_value=100),              patch("autostream_rpi.get_appliance_id", return_value="aabb"),              patch("webui.browser.home_model.get_system_hostname", return_value="host"),              patch("webui.system.updates.get_app_version", return_value="1.0"):
             code, data = _call(h, state)
         assert code == 200
         f = data["start_failure"]
@@ -416,7 +416,7 @@ class TestFederationEqualiser:
         bearer = _get_bearer()
         h = _make_handler("GET", "/api/federation/v1/equaliser",
                           headers={"Authorization": bearer})
-        with patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
+        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=None):
             code, data = _call(h, state)
         assert code == 200
         assert data["ok"] is True
@@ -638,7 +638,7 @@ class TestFederationOutput:
         h = _make_handler("POST", "/api/federation/v1/output",
                           body=body.encode(),
                           headers={"Authorization": bearer})
-        with patch("autostream_webui_api.submit_output_change",
+        with patch("webui.browser.home_model.submit_output_change",
                    return_value={"ok": True, "id": "99"}) as change:
             code, data = _call(h, state)
         assert code == 200

@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 from autostream_settings import SettingsStore
 from _source_text import page_data, page_scripts, static_text
 from fake_store import fake_outputs_result
+import webui.browser.owntone as webui_owntone
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -578,7 +579,7 @@ class TestNativeOwntoneSettings:
         body = json.dumps({"value": False})
         with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_live_config._config_snapshot") as m_snap, \
-             patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
+             patch("webui.browser.owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(restart_required=True)
             send_owntone_uncompressed_json(handler, state, body)
@@ -595,7 +596,7 @@ class TestNativeOwntoneSettings:
         body = json.dumps({"value": True})
         with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_live_config._config_snapshot") as m_snap, \
-             patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
+             patch("webui.browser.owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False)
             send_owntone_uncompressed_json(handler, state, body)
@@ -659,7 +660,7 @@ class TestNativeOwntoneSettings:
         body = json.dumps({"value": True})
         with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_live_config._config_snapshot") as m_snap, \
-             patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
+             patch("webui.browser.owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False, unsupported=True)
             send_owntone_uncompressed_json(handler, state, body)
@@ -678,7 +679,7 @@ class TestNativeOwntoneSettings:
         body = json.dumps({"value": True})
         with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_live_config._config_snapshot") as m_snap, \
-             patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
+             patch("webui.browser.owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False, unsupported=True)
             send_owntone_buffered_audio_json(handler, state, body)
@@ -860,7 +861,7 @@ class TestUserAgentSetting:
         body = json.dumps({"value": "AirPlay/1"})
         with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_live_config._config_snapshot") as m_snap, \
-             patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
+             patch("webui.browser.owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False, unsupported=True)
             send_owntone_user_agent_json(handler, state, body)
@@ -993,7 +994,7 @@ class TestOwntoneSetupPage:
         similarly toggles the offset slider; `config_extra` is passed through to
         `_make_config` (e.g. to pre-seed `owntone.airplay_modes`).
         """
-        from autostream_webui_page_owntone import send_owntone_setup_page
+        from webui.browser.owntone import send_owntone_setup_page
         from autostream_players import SaveSettingResult, SettingValueResult
         config_path = _make_config(str(tmp_path), extra=config_extra)
         state_path = _make_state_file(str(tmp_path))
@@ -1025,9 +1026,9 @@ class TestOwntoneSetupPage:
             return _results_by_key.get(setting_key, _default_result)
 
         with fake_outputs_result(_list_result), \
-             patch("autostream_webui_page_owntone.get_capabilities", return_value=_cap), \
-             patch("autostream_webui_page_owntone.get_setting", side_effect=_fake_get_setting), \
-             patch("autostream_webui_page_owntone.load_state", return_value={}):
+             patch("webui.browser.owntone.get_capabilities", return_value=_cap), \
+             patch("webui.browser.owntone.get_setting", side_effect=_fake_get_setting), \
+             patch("webui.browser.owntone.load_state", return_value={}):
             send_owntone_setup_page(handler, state, auth)
 
         return b"".join(written).decode("utf-8")
@@ -1281,34 +1282,34 @@ class TestOwntoneRestartDebounce:
     """start_owntone_restart_async coalesces rapid calls into a single restart."""
 
     def setup_method(self):
-        import autostream_webui_page_owntone as _mod
+        import webui.browser.owntone as _mod
         # Reset module-level timer state between tests
-        with _mod._restart_timer_lock:
-            if _mod._restart_timer is not None:
-                _mod._restart_timer.cancel()
-                _mod._restart_timer = None
+        with webui_owntone._restart_timer_lock:
+            if webui_owntone._restart_timer is not None:
+                webui_owntone._restart_timer.cancel()
+                webui_owntone._restart_timer = None
 
     def test_rapid_calls_fire_once(self):
         """Two calls within the debounce window must trigger exactly one restart."""
-        import autostream_webui_page_owntone as _mod
+        import webui.browser.owntone as _mod
         state = MagicMock()
         state.begin_owntone_restart = MagicMock(return_value=1)
 
-        with patch("autostream_webui_page_owntone._restart_owntone_worker"):
-            _mod.start_owntone_restart_async(state, delay_s=0.05)
-            _mod.start_owntone_restart_async(state, delay_s=0.05)
+        with patch("webui.browser.owntone._restart_owntone_worker"):
+            webui_owntone.start_owntone_restart_async(state, delay_s=0.05)
+            webui_owntone.start_owntone_restart_async(state, delay_s=0.05)
             import time; time.sleep(0.15)
 
         state.begin_owntone_restart.assert_called_once()
 
     def test_single_call_fires(self):
         """A single call must eventually trigger the restart."""
-        import autostream_webui_page_owntone as _mod
+        import webui.browser.owntone as _mod
         state = MagicMock()
         state.begin_owntone_restart = MagicMock(return_value=1)
 
-        with patch("autostream_webui_page_owntone._restart_owntone_worker"):
-            _mod.start_owntone_restart_async(state, delay_s=0.05)
+        with patch("webui.browser.owntone._restart_owntone_worker"):
+            webui_owntone.start_owntone_restart_async(state, delay_s=0.05)
             import time; time.sleep(0.15)
 
         state.begin_owntone_restart.assert_called_once()

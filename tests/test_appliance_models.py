@@ -20,7 +20,6 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_appliance_models as models
 from autostream_config import parse_config
 from autostream_state import store
 from autostream_players import ActionResult, OutputInfo
@@ -154,55 +153,55 @@ def _deep_update(d: dict, u: dict) -> dict:
 
 class TestBuildOutputList:
     def test_empty_owntone_outputs_returns_empty(self):
-        assert models.build_output_list(_parsed(), _units([])) == []
+        assert webui_home_model.build_output_list(_parsed(), _units([])) == []
 
     def test_output_without_id_or_name_excluded(self):
         raw = [_out("", ""), _out("1", ""), _out("", "AirPlay")]
-        result = models.build_output_list(_parsed(), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert result == []
 
     def test_all_valid_outputs_included(self):
         raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert len(result) == 2
 
     def test_hidden_unselected_non_default_excluded(self):
         raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
         assert len(result) == 1
         assert result[0]["name"] == "Kitchen"
 
     def test_hidden_but_selected_still_included(self):
         raw = [_out("1", "Bedroom", selected=True), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
         assert any(o["name"] == "Bedroom" for o in result)
 
     def test_hidden_case_insensitive(self):
         raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(hidden_outputs=["BEDROOM"]), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(hidden_outputs=["BEDROOM"]), _units(raw))
         assert all(o["name"] != "Bedroom" for o in result)
 
     def test_default_output_sorted_first(self):
         raw = [_out("2", "Zulu"), _out("1", "Alpha"), _out("3", "Garden")]
-        result = models.build_output_list(_parsed(output_name="Zulu"), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(output_name="Zulu"), _units(raw))
         assert result[0]["name"] == "Zulu"
         assert result[0]["is_default"] is True
 
     def test_non_default_alphabetical_after_default(self):
         raw = [_out("3", "Zulu"), _out("1", "Charlie"), _out("2", "Alpha")]
-        result = models.build_output_list(_parsed(output_name="Zulu"), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(output_name="Zulu"), _units(raw))
         assert result[0]["name"] == "Zulu"
         assert [o["name"] for o in result[1:]] == ["Alpha", "Charlie"]
 
     def test_volume_clamped_to_0_100(self):
         raw = [_out("1", "A", volume=200), _out("2", "B", volume=-5)]
-        result = models.build_output_list(_parsed(), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert result[0]["volume"] == 100
         assert result[1]["volume"] == 0
 
     def test_result_dict_has_required_keys(self):
         raw = [_out("1", "Room")]
-        result = models.build_output_list(_parsed(), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert set(result[0].keys()) == {
             "id", "name", "selected", "volume", "is_default",
             "needs_auth_key", "requires_auth", "pin_pending", "pin_claim",
@@ -210,19 +209,19 @@ class TestBuildOutputList:
 
     def test_selected_flag_preserved(self):
         raw = [_out("1", "Room", selected=True)]
-        result = models.build_output_list(_parsed(), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert result[0]["selected"] is True
 
     def test_needs_auth_key_true_passed_through(self):
         raw = [_out("1", "Apple TV", needs_auth_key=True, requires_auth=True, pin_pending=True)]
-        result = models.build_output_list(_parsed(), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert result[0]["needs_auth_key"] is True
         assert result[0]["requires_auth"] is True
         assert result[0]["pin_pending"] is True
 
     def test_needs_auth_key_false_passed_through(self):
         raw = [_out("1", "Room")]
-        result = models.build_output_list(_parsed(), _units(raw))
+        result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert result[0]["needs_auth_key"] is False
         assert result[0]["requires_auth"] is False
         assert result[0]["pin_pending"] is False
@@ -235,30 +234,30 @@ class TestBuildOutputList:
 class TestBuildEqualizerState:
     def test_ok_true_on_valid_config(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
-            result = models.build_equaliser_state(_parsed_from(cfg_path))
+        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=None):
+            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
         assert result["ok"] is True
 
     def test_required_keys_present(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
-            result = models.build_equaliser_state(_parsed_from(cfg_path))
+        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=None):
+            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
         for field in ("gain_db", "auto_trim_enabled", "peq1_db", "peq2_db",
                       "peq3_db", "peq4_db", "peq5_db", "peq6_db"):
             assert field in result, f"Missing key: {field}"
 
     def test_config_values_returned(self, tmp_path):
         cfg_path = _make_config_file(tmp_path, {"output_eq": {"gain_db": 3.5, "peq2_db": -1.0}})
-        with patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
-            result = models.build_equaliser_state(_parsed_from(cfg_path))
+        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=None):
+            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
         assert result["gain_db"] == pytest.approx(3.5)
         assert result["peq2_db"] == pytest.approx(-1.0)
 
     def test_live_status_merged_when_available(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         live = {"output_auto_trim_enabled": True, "output_auto_trim_db": -1.2}
-        with patch("autostream_appliance_models.get_live_output_eq_status", return_value=live):
-            result = models.build_equaliser_state(_parsed_from(cfg_path))
+        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=live):
+            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
         assert result.get("output_auto_trim_enabled") is True
         assert result.get("output_auto_trim_db") == pytest.approx(-1.2)
 
@@ -416,7 +415,7 @@ class TestBuildHomeStateLocal:
             fake_levels([]),
             fake_playback(playback),
             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"),
-            patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
+            patch("webui.browser.home_model.get_system_hostname", return_value="test-host"),
             patch("webui.system.updates.get_app_version", return_value="2.0.0"),
         )
 
@@ -425,7 +424,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["ok"] is True
 
     def test_required_keys_present(self, tmp_path):
@@ -433,7 +432,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         for key in ("appliance", "preferences", "playback", "input_levels",
                     "warnings", "outputs", "vu_delay_ms"):
             assert key in result, f"Missing key: {key}"
@@ -444,7 +443,7 @@ class TestBuildHomeStateLocal:
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6], \
              fake_levels([], banner="banner text"):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["warnings"]["sample_rate"] == "banner text"
 
     def test_sample_rate_warning_is_empty_with_no_mismatch(self, tmp_path):
@@ -452,7 +451,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["warnings"]["sample_rate"] == ""
 
     def test_vu_delay_ms_from_owntone_setting(self, tmp_path):
@@ -460,7 +459,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path, vu_ms=350)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["vu_delay_ms"] == 350
 
     def test_appliance_info_shape(self, tmp_path):
@@ -468,7 +467,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         app = result["appliance"]
         assert "id" in app and "hostname" in app and "version" in app
         assert app["hostname"] == "test-host"
@@ -480,9 +479,9 @@ class TestBuildHomeStateLocal:
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], \
              patch("webui.system.updates.get_app_version", return_value="1.0"):
-            with patch("autostream_appliance_models.get_system_hostname",
+            with patch("webui.browser.home_model.get_system_hostname",
                        return_value="mybox.local"):
-                result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+                result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["appliance"]["hostname"] == "mybox"
 
     def test_session_key_always_present(self, tmp_path):
@@ -493,7 +492,7 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session(session), \
              fake_repeat(None):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["session"] == session
 
     def test_repeat_key_present_when_daemon_reports_it(self, tmp_path):
@@ -504,7 +503,7 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
              fake_repeat(repeat_block):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["repeat"] == repeat_block
 
     def test_repeat_requested_minutes_survives_passthrough(self, tmp_path):
@@ -522,7 +521,7 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
              fake_repeat(repeat_block):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["repeat"]["requested_minutes"] == 80
         assert result["repeat"] == repeat_block
 
@@ -533,7 +532,7 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
              fake_repeat(None):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert "repeat" not in result
 
 
@@ -557,11 +556,11 @@ class TestBuildHomeStateNoPlayerCall:
              fake_levels([]), \
              fake_playback(playback), \
              patch("autostream_rpi.get_appliance_id", return_value=""), \
-             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
+             patch("webui.browser.home_model.get_system_hostname", return_value=""), \
              patch("webui.system.updates.get_app_version", return_value=""):
             cache.note_saved(1500)
             try:
-                result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+                result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
             finally:
                 cache.reset()
 
@@ -618,7 +617,7 @@ class TestBuildHomeStateAnnotation:
                  fake_levels([]), \
                  fake_playback(playback), \
                  patch("autostream_rpi.get_appliance_id", return_value=""), \
-                 patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
+                 patch("webui.browser.home_model.get_system_hostname", return_value="host"), \
                  patch("webui.system.updates.get_app_version", return_value="1.0"), \
                  patch("autostream_output_usage.get_usage_snapshot", return_value=snapshot), \
                  patch("autostream_output_usage.annotate_outputs", side_effect=_fake_annotate):
@@ -641,7 +640,7 @@ class TestBuildHomeStateAnnotation:
 
         outputs = [self._make_out("1", "Kitchen", selected=False)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         assert result["ok"] is True
         out_dict = result["outputs"][0]
@@ -660,7 +659,7 @@ class TestBuildHomeStateAnnotation:
 
         outputs = [self._make_out("1", "Kitchen", selected=True)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         out_dict = result["outputs"][0]
         assert out_dict["remote_in_use"] is False
@@ -669,7 +668,7 @@ class TestBuildHomeStateAnnotation:
         cfg_path = _make_config_file(tmp_path)
         outputs = [self._make_out("1", "Bedroom", selected=False)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         out_dict = result["outputs"][0]
         assert out_dict["remote_in_use"] is False
@@ -685,7 +684,7 @@ class TestBuildHomeStateAnnotation:
             self._make_out("2", "Mango"),
         ]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         names = [o["name"] for o in result["outputs"]]
         assert names[0] == "Zulu"
@@ -701,7 +700,7 @@ class TestBuildHomeStateAnnotation:
         try:
             outputs = [self._make_out("1", "Kitchen")]
             with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-                models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+                webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         finally:
             ou.refresh_now = orig_refresh
         assert not refresh_calls, "build_home_state must not trigger refresh_now"
@@ -716,6 +715,7 @@ import logging as _logging
 import autostream_pin_pairing as _pairing
 from fake_store import fake_levels, fake_playback, fake_repeat, fake_session
 import autostream_monitor_control as monitor_control
+import webui.browser.home_model as webui_home_model
 
 
 def _result(ok: bool, error_code: str = "", message: str = ""):
@@ -731,48 +731,48 @@ _BAD_PINS = [
 class TestSanitizePin:
     def test_sanitize_pin_accepts_digits_and_rejects_everything_else(self):
         for pin in ("1234", "0000", "12345678"):
-            assert models.sanitize_output_body({"id": "1", "op": "pin", "pin": pin}) == (
+            assert webui_home_model.sanitize_output_body({"id": "1", "op": "pin", "pin": pin}) == (
                 {"id": "1", "op": "pin", "pin": pin}, None)
         for pin in _BAD_PINS:
-            assert models.sanitize_output_body(
+            assert webui_home_model.sanitize_output_body(
                 {"id": "1", "op": "pin", "pin": pin}) == (None, "invalid_request_body"), repr(pin)
-        assert models.sanitize_output_body({"id": "1", "op": "pin"}) == (
+        assert webui_home_model.sanitize_output_body({"id": "1", "op": "pin"}) == (
             None, "invalid_request_body")
 
     def test_sanitize_pin_keeps_selected_and_volume_when_given(self):
-        assert models.sanitize_output_body(
+        assert webui_home_model.sanitize_output_body(
             {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 30, "x": 1},
         ) == ({"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 30}, None)
-        s, err = models.sanitize_output_body(
+        s, err = webui_home_model.sanitize_output_body(
             {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 500})
         assert err is None and s["volume"] == 100
-        s, _ = models.sanitize_output_body(
+        s, _ = webui_home_model.sanitize_output_body(
             {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": "x"})
         assert s["volume"] == 50
-        s, _ = models.sanitize_output_body(
+        s, _ = webui_home_model.sanitize_output_body(
             {"id": "1", "op": "pin", "pin": "1234", "selected": True})
         assert s["volume"] == 50
-        s, _ = models.sanitize_output_body({"id": "1", "op": "pin", "pin": "1234"})
+        s, _ = webui_home_model.sanitize_output_body({"id": "1", "op": "pin", "pin": "1234"})
         assert "selected" not in s and "volume" not in s
 
     def test_sanitize_pin_rejects_a_non_bool_selected(self):
         for sel in ("true", 1, 0, None, []):
-            assert models.sanitize_output_body(
+            assert webui_home_model.sanitize_output_body(
                 {"id": "1", "op": "pin", "pin": "1234", "selected": sel},
             ) == (None, "invalid_request_body"), repr(sel)
 
     def test_sanitize_plain_shape_is_unchanged(self):
-        assert models.sanitize_output_body({"id": " 7 ", "selected": True, "volume": 20}) == (
+        assert webui_home_model.sanitize_output_body({"id": " 7 ", "selected": True, "volume": 20}) == (
             {"id": "7", "selected": True, "volume": 20}, None)
-        assert models.sanitize_output_body({"id": "7", "selected": False}) == (
+        assert webui_home_model.sanitize_output_body({"id": "7", "selected": False}) == (
             {"id": "7", "selected": False, "volume": 50}, None)
-        assert models.sanitize_output_body({"id": "7", "selected": True, "volume": 999}) == (
+        assert webui_home_model.sanitize_output_body({"id": "7", "selected": True, "volume": 999}) == (
             {"id": "7", "selected": True, "volume": 100}, None)
-        assert models.sanitize_output_body({"id": "7", "selected": "yes"}) == (
+        assert webui_home_model.sanitize_output_body({"id": "7", "selected": "yes"}) == (
             None, "invalid_request_body")
-        assert models.sanitize_output_body({"id": "", "selected": True}) == (
+        assert webui_home_model.sanitize_output_body({"id": "", "selected": True}) == (
             None, "missing_output_id")
-        assert models.sanitize_output_body({"id": "7", "op": "weird"}) == (
+        assert webui_home_model.sanitize_output_body({"id": "7", "op": "weird"}) == (
             None, "invalid_request_body")
 
 
@@ -782,7 +782,7 @@ class TestPinClaimInList:
         fresh = _pairing.PairingState(clock=lambda: clock.t)
         fresh.claim("1", "dial:abc")
         with patch.object(_pairing, "STATE", fresh):
-            rows = models.build_output_list(
+            rows = webui_home_model.build_output_list(
                 _parsed(), _units([_out("1", "Bedroom"), _out("2", "Kitchen")]))
         by_id = {r["id"]: r for r in rows}
         assert by_id["1"]["pin_claim"] == "dial:abc"
@@ -800,7 +800,7 @@ class TestPinMutation:
         upd_mock = MagicMock(return_value=update_result or _result(True))
         with patch.object(ps, "submit_output_pin", pin_mock), \
              patch.object(ps, "update_output", upd_mock):
-            res = models.submit_output_change(
+            res = webui_home_model.submit_output_change(
                 body, requester="webui", pin_requester=requester)
         return res, pin_mock, upd_mock
 

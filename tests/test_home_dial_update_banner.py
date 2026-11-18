@@ -22,12 +22,13 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from fake_store import fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_track
-import autostream_appliance_models as models
+import webui.browser.home_model as models
 from autostream_state import store
 import autostream_dials as dials
 from autostream_webui_api import send_status_json
-from autostream_webui_page_airplay import send_airplay_page
+from webui.browser.home import send_airplay_page
 import webui.browser.setup.cards_dials as cards_dials
+import webui.browser.home_model as webui_home_model
 
 _BANNER = "Dial updates required"
 _BANNER_OPEN = "<a id='dial-update-warning-banner' href='/setup#dials' style='display:"
@@ -125,11 +126,11 @@ def _home_state(tmp_path) -> dict:
             fake_levels([]),
             fake_playback(playback),
             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"),
-            patch("autostream_appliance_models.get_system_hostname", return_value="host"),
+            patch("webui.browser.home_model.get_system_hostname", return_value="host"),
             patch("webui.system.updates.get_app_version", return_value="2.0.0"),
         ):
             stack.enter_context(p)
-        return models.build_home_state(store().snapshot(), MagicMock())
+        return webui_home_model.build_home_state(store().snapshot(), MagicMock())
 
 
 class TestHomeState:
@@ -185,15 +186,15 @@ def _render_home() -> str:
         for p in (
             patch("webui.common._config_snapshot", return_value=parsed),
             patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
-            patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-            patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+            patch("webui.browser.home.get_all_appliances", return_value=[]),
+            patch("webui.browser.home.get_system_hostname", return_value="autostream"),
             fake_levels([]),
             fake_playback(snap),
             fake_outputs([], connected=False),
-            patch("autostream_webui_page_airplay.get_setting",
+            patch("webui.browser.home.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
             fake_track(disabled_snapshot()),
-            patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+            patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
         ):
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)

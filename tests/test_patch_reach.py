@@ -421,12 +421,10 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_update_apply_async.py', 1, 'autostream_webui', '_UPDATE_RESULT_FILE'),
     ('test_webui_dial_outputs.py', 1, 'autostream_player_service', 'config_airplay_mode_to_backend'),
     ('test_webui_dial_outputs.py', 2, 'autostream_player_service', 'config_airplay_mode_to_backend'),
-    ('test_webui_post_handlers.py', 1, 'autostream_appliance_models', 'submit_output_change'),
-    ('test_webui_post_handlers.py', 2, 'autostream_appliance_models', 'submit_output_change'),
     ('test_wp2_settings_ownership.py', 2, 'autostream_settings', 'SettingsStore'),
-    ('test_wp7_owntone_autosave.py', 1, 'autostream_webui_page_owntone', 'start_owntone_restart_async'),
+    ('test_wp7_owntone_autosave.py', 1, 'webui.browser.owntone', 'start_owntone_restart_async'),
     ('test_wp7_owntone_autosave.py', 2, 'autostream_player_service', 'get_setting'),
-    ('test_wp8b_first_boot_pages.py', 1, 'autostream_webui_page_first_boot', 'mark_configured'),
+    ('test_wp8b_first_boot_pages.py', 1, 'webui.browser.first_boot', 'mark_configured'),
 })
 
 

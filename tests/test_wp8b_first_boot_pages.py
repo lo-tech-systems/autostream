@@ -94,7 +94,7 @@ def _render(handler, written) -> str:
 
 class TestFirstBootOwtonePage:
     def _get_html(self, tmp_path):
-        from autostream_webui_page_first_boot import send_first_boot_owntone_page
+        from webui.browser.first_boot import send_first_boot_owntone_page
         store = _make_store(_make_config(str(tmp_path)))
         state = _make_state(str(tmp_path), store)
         auth = _make_auth()
@@ -125,7 +125,7 @@ class TestFirstBootOwtonePage:
         assert "Refresh" in html
 
     def test_shows_error_when_provided(self, tmp_path):
-        from autostream_webui_page_first_boot import send_first_boot_owntone_page
+        from webui.browser.first_boot import send_first_boot_owntone_page
         store = _make_store(_make_config(str(tmp_path)))
         state = _make_state(str(tmp_path), store)
         auth = _make_auth()
@@ -141,12 +141,12 @@ class TestFirstBootOwtonePage:
 
 class TestFirstBootAppliancePage:
     def _get_html(self, tmp_path):
-        from autostream_webui_page_first_boot import send_first_boot_appliance_page
+        from webui.browser.first_boot import send_first_boot_appliance_page
         store = _make_store(_make_config(str(tmp_path)))
         state = _make_state(str(tmp_path), store)
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"):
             send_first_boot_appliance_page(handler, state, auth)
         return _render(handler, written)
 
@@ -183,7 +183,7 @@ class TestFirstBootAppliancePage:
 
 class TestFirstBootContinuePost:
     def test_blank_output_shows_error_page(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_continue_post
+        from webui.browser.first_boot import handle_first_boot_continue_post
         store = _make_store(_make_config(str(tmp_path)))
         state = _make_state(str(tmp_path), store)
         auth = _make_auth()
@@ -196,7 +196,7 @@ class TestFirstBootContinuePost:
         assert "Please select an output" in html
 
     def test_valid_output_saved_to_store(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_continue_post
+        from webui.browser.first_boot import handle_first_boot_continue_post
         store = _make_store(_make_config(str(tmp_path)))
         state = _make_state(str(tmp_path), store)
         auth = _make_auth()
@@ -206,7 +206,7 @@ class TestFirstBootContinuePost:
         assert snap.owntone.output_name == "MyOutput"
 
     def test_valid_output_redirects_to_appliance(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_continue_post
+        from webui.browser.first_boot import handle_first_boot_continue_post
         store = _make_store(_make_config(str(tmp_path)))
         state = _make_state(str(tmp_path), store)
         auth = _make_auth()
@@ -218,7 +218,7 @@ class TestFirstBootContinuePost:
         assert any("/first-boot/appliance" in str(c) for c in loc_calls)
 
     def test_no_store_shows_error_page(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_continue_post
+        from webui.browser.first_boot import handle_first_boot_continue_post
         state = _make_state(str(tmp_path), None)
         auth = _make_auth()
         handler, written = _make_handler()
@@ -258,75 +258,75 @@ class TestFirstBootFinishPost:
         })
 
     def test_invalid_alsa_shows_error(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
         from urllib.parse import urlencode
         body = urlencode({"audio1_capture_device": "bad-device", "volume_percent": "20", "hostname": "h"})
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="h"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="h"):
             handle_first_boot_finish_post(handler, state, auth, body)
         html = _render(handler, written)
         assert "Invalid ALSA" in html
 
     def test_valid_finish_calls_save_now(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=True), \
+             patch("webui.browser.first_boot.mark_commissioning_complete") as m_mark, \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, self._valid_body())
         store.save_now.assert_called_once()
 
     def test_save_now_failure_shows_error(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"):
             store.save_now = MagicMock(return_value=False)
             handle_first_boot_finish_post(handler, state, auth, self._valid_body())
         html = _render(handler, written)
         assert "could not be saved" in html.lower()
 
     def test_technically_incomplete_after_save_shows_error(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=False):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=False):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, self._valid_body())
         html = _render(handler, written)
         assert "incomplete" in html.lower()
 
     def test_mark_commissioning_complete_called_after_save(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=True), \
+             patch("webui.browser.first_boot.mark_commissioning_complete") as m_mark, \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, self._valid_body())
         m_mark.assert_called_once_with(state.state_path)
 
     def test_redirect_to_home_on_success(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=True), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, self._valid_body())
         handler.send_response.assert_called_with(303)
@@ -334,7 +334,7 @@ class TestFirstBootFinishPost:
         assert any("/" == str(c[0][1]) for c in loc_calls)
 
     def test_hostname_change_shows_wait_page_to_new_local_name(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
@@ -345,11 +345,11 @@ class TestFirstBootFinishPost:
             "volume_percent": "20",
             "hostname": "living-room",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.set_system_hostname") as m_set_hn, \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.set_system_hostname") as m_set_hn, \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=True), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         m_set_hn.assert_called_once_with("living-room")
@@ -362,18 +362,18 @@ class TestFirstBootFinishPost:
         assert 'content="5;url=http://living-room.local:8080/"' in html
 
     def test_no_output_name_shows_error(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path), output_name="")
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, self._valid_body())
         html = _render(handler, written)
         assert "output" in html.lower()
 
     def _finish_with(self, tmp_path, fields):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
@@ -384,10 +384,10 @@ class TestFirstBootFinishPost:
             "hostname": "autostream",
             **fields,
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=True), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         return store.snapshot()
@@ -417,7 +417,7 @@ class TestFirstBootFinishPost:
         assert snap.audio1.input_type == "line"
 
     def test_finish_pushes_live_config_to_monitor(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
@@ -428,10 +428,10 @@ class TestFirstBootFinishPost:
             "volume_percent": "20",
             "hostname": "autostream",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"), \
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=True), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"), \
              patch("autostream_playback_tracking.update_playback_input_config") as m_update, \
              patch("autostream_runtime.request_config_reload") as m_reload:
             store.save_now = MagicMock()
@@ -443,12 +443,12 @@ class TestFirstBootFinishPost:
         m_reload.assert_called_once()
 
     def test_skip_button_present_in_appliance_page(self, tmp_path):
-        from autostream_webui_page_first_boot import send_first_boot_appliance_page
+        from webui.browser.first_boot import send_first_boot_appliance_page
         store = _make_store(_make_config(str(tmp_path)))
         state = _make_state(str(tmp_path), store)
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"):
             send_first_boot_appliance_page(handler, state, auth)
         html = _render(handler, written)
         assert 'value="skip"' in html
@@ -456,7 +456,7 @@ class TestFirstBootFinishPost:
         assert "configure later" in html.lower()
 
     def test_skip_does_not_require_valid_device(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         from urllib.parse import urlencode
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
@@ -467,9 +467,9 @@ class TestFirstBootFinishPost:
             "volume_percent": "20",
             "hostname": "autostream",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.mark_commissioning_complete") as m_mark, \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         html = _render(handler, written)
@@ -477,7 +477,7 @@ class TestFirstBootFinishPost:
         m_mark.assert_called_once_with(state.state_path)
 
     def test_skip_writes_audio1_disabled(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         from urllib.parse import urlencode
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
@@ -488,16 +488,16 @@ class TestFirstBootFinishPost:
             "volume_percent": "20",
             "hostname": "autostream",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         snap = store.snapshot()
         assert snap.audio1_enabled is False
 
     def test_skip_leaves_capture_device_unchanged(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         from urllib.parse import urlencode
         # _make_finish_state's underlying config already carries VALID_ALSA
         # as audio1.capture_device (see _make_config); the skip path must not
@@ -511,16 +511,16 @@ class TestFirstBootFinishPost:
             "volume_percent": "20",
             "hostname": "autostream",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         snap = store.snapshot()
         assert snap.audio1.capture_device == VALID_ALSA
 
     def test_skip_completes_commissioning_and_redirects_home(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         from urllib.parse import urlencode
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
@@ -531,9 +531,9 @@ class TestFirstBootFinishPost:
             "volume_percent": "20",
             "hostname": "autostream",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.mark_commissioning_complete") as m_mark, \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         m_mark.assert_called_once_with(state.state_path)
@@ -542,7 +542,7 @@ class TestFirstBootFinishPost:
         assert any("/" == str(c[0][1]) for c in loc_calls)
 
     def test_skip_still_honours_hostname_and_volume(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         from urllib.parse import urlencode
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
@@ -553,16 +553,16 @@ class TestFirstBootFinishPost:
             "volume_percent": "77",
             "hostname": "autostream",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"):
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         snap = store.snapshot()
         assert snap.owntone.volume_percent == 77
 
     def test_skip_pushes_disabled_live_config(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         from urllib.parse import urlencode
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
@@ -573,9 +573,9 @@ class TestFirstBootFinishPost:
             "volume_percent": "20",
             "hostname": "autostream",
         })
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
-             patch("autostream_webui_page_first_boot.mark_configured"), \
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.mark_commissioning_complete"), \
+             patch("webui.browser.first_boot.mark_configured"), \
              patch("autostream_playback_tracking.update_playback_input_config") as m_update, \
              patch("autostream_runtime.request_config_reload") as m_reload:
             store.save_now = MagicMock()
@@ -588,26 +588,26 @@ class TestFirstBootFinishPost:
     def test_normal_path_still_rejects_invalid_device_with_skip_absent(self, tmp_path):
         """Sanity check: omitting action=skip keeps the strict validation
         path unchanged, regardless of the skip feature's addition."""
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         from urllib.parse import urlencode
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
         body = urlencode({"audio1_capture_device": "bad-device", "volume_percent": "20", "hostname": "h"})
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="h"):
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="h"):
             handle_first_boot_finish_post(handler, state, auth, body)
         html = _render(handler, written)
         assert "Invalid ALSA" in html
 
     def test_finish_push_failure_does_not_break_commissioning(self, tmp_path):
-        from autostream_webui_page_first_boot import handle_first_boot_finish_post
+        from webui.browser.first_boot import handle_first_boot_finish_post
         state, store, cfg_path, state_path = self._make_finish_state(str(tmp_path))
         auth = _make_auth()
         handler, written = _make_handler()
-        with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
-             patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
-             patch("autostream_webui_page_first_boot.mark_configured"), \
+        with patch("webui.browser.first_boot.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.first_boot.is_technically_complete", return_value=True), \
+             patch("webui.browser.first_boot.mark_commissioning_complete") as m_mark, \
+             patch("webui.browser.first_boot.mark_configured"), \
              patch(
                  "autostream_playback_tracking.update_playback_input_config",
                  side_effect=RuntimeError("boom"),

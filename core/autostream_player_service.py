@@ -520,7 +520,7 @@ def _restart_owntone_backend_async(base_url: str) -> None:
     not enough to make a format change take effect. Mirrors the coordinator's
     OwnTone-hang-watchdog restart trigger (autostream_selfheal.py
     _fire_owntone_hang_restart) and the Web UI's owntone-setup restart button
-    (autostream_webui_page_owntone.py _restart_owntone_worker): both
+    (webui/browser/owntone.py _restart_owntone_worker): both
     ultimately run "sudo -n autostream_admin restart-owntone" via
     run_admin_cmd(); this does the same directly, without depending on
     WebUIState (out of scope for this module).

@@ -121,9 +121,9 @@ def _make_handler():
 
 class TestAlignStart:
     def test_success_returns_launch_url(self, tmp_path, monkeypatch):
-        import autostream_webui_page_align as page_mod
-        from autostream_webui_page_align import send_align_start_json
-        monkeypatch.setattr(page_mod, "_offsets_supported", lambda state: True)
+        import webui.browser.align as page_mod
+        from webui.browser.align import send_align_start_json
+        monkeypatch.setattr(webui_align, "_offsets_supported", lambda state: True)
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -145,9 +145,9 @@ class TestAlignStart:
         assert kwargs["volume_percent"] == 65
 
     def test_refusal_passthrough(self, tmp_path, monkeypatch):
-        import autostream_webui_page_align as page_mod
-        from autostream_webui_page_align import send_align_start_json
-        monkeypatch.setattr(page_mod, "_offsets_supported", lambda state: True)
+        import webui.browser.align as page_mod
+        from webui.browser.align import send_align_start_json
+        monkeypatch.setattr(webui_align, "_offsets_supported", lambda state: True)
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -164,7 +164,7 @@ class TestAlignStart:
         assert "two outputs" in sent["body"]["error"]
 
     def test_rejects_volume_zero(self, tmp_path):
-        from autostream_webui_page_align import send_align_start_json
+        from webui.browser.align import send_align_start_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -181,7 +181,7 @@ class TestAlignStart:
         align_run.start.assert_not_called()
 
     def test_rejects_volume_out_of_range(self, tmp_path):
-        from autostream_webui_page_align import send_align_start_json
+        from webui.browser.align import send_align_start_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -197,7 +197,7 @@ class TestAlignStart:
         align_run.start.assert_not_called()
 
     def test_rejects_fewer_than_two_output_ids(self, tmp_path):
-        from autostream_webui_page_align import send_align_start_json
+        from webui.browser.align import send_align_start_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -213,7 +213,7 @@ class TestAlignStart:
         align_run.start.assert_not_called()
 
     def test_rejects_malformed_output_ids_structure(self, tmp_path):
-        from autostream_webui_page_align import send_align_start_json
+        from webui.browser.align import send_align_start_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -229,7 +229,7 @@ class TestAlignStart:
         align_run.start.assert_not_called()
 
     def test_rejects_invalid_json(self, tmp_path):
-        from autostream_webui_page_align import send_align_start_json
+        from webui.browser.align import send_align_start_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -247,7 +247,7 @@ class TestAlignStart:
 # ── POST /api/align/abort ────────────────────────────────────────────────────
 
 def test_abort_calls_run_abort(tmp_path):
-    from autostream_webui_page_align import send_align_abort_json
+    from webui.browser.align import send_align_abort_json
     config_path = _make_config(str(tmp_path))
     state_path = _make_state_file(str(tmp_path))
     store = _make_store(config_path)
@@ -264,7 +264,7 @@ def test_abort_calls_run_abort(tmp_path):
 # ── GET /api/align/status ────────────────────────────────────────────────────
 
 def test_status_returns_run_status_verbatim(tmp_path):
-    from autostream_webui_page_align import send_align_status_json
+    from webui.browser.align import send_align_status_json
     config_path = _make_config(str(tmp_path))
     state_path = _make_state_file(str(tmp_path))
     store = _make_store(config_path)
@@ -286,7 +286,7 @@ def test_status_returns_run_status_verbatim(tmp_path):
 
 class TestAlignResultGet:
     def test_valid_handoff_calls_finish_with_parsed_result(self, tmp_path):
-        from autostream_webui_page_align import send_align_result_get
+        from webui.browser.align import send_align_result_get
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -308,7 +308,7 @@ class TestAlignResultGet:
         assert sent["code"] == 200  # renders the /align page, not a redirect
 
     def test_malformed_entries_dropped_without_failing_whole_parse(self, tmp_path):
-        from autostream_webui_page_align import send_align_result_get
+        from webui.browser.align import send_align_result_get
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -326,7 +326,7 @@ class TestAlignResultGet:
         assert result.arrivals == (AlignArrival("out-b", 12, 3),)
 
     def test_missing_ref_still_stops_run_without_result(self, tmp_path):
-        from autostream_webui_page_align import send_align_result_get
+        from webui.browser.align import send_align_result_get
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -343,7 +343,7 @@ class TestAlignResultGet:
         align_run.finish.assert_called_once_with(None)
 
     def test_wrong_version_still_stops_run_without_result(self, tmp_path):
-        from autostream_webui_page_align import send_align_result_get
+        from webui.browser.align import send_align_result_get
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -364,7 +364,7 @@ class TestAlignResultGet:
 
 class TestReviewSection:
     def test_proposed_offset_is_stored_minus_delta_clamped(self, tmp_path):
-        from autostream_webui_page_align import _render_review_section
+        from webui.browser.align import _render_review_section
         align_run = MagicMock()
         align_run.snapshots.return_value = [
             AlignOutputSnapshot(id="out-a", name="A", volume_percent=30, stored_offset_ms=100, freq_hz=1000),
@@ -384,7 +384,7 @@ class TestReviewSection:
         assert ">-1500 ms<" in html_out
 
     def test_proposed_offset_clamped_to_2000(self, tmp_path):
-        from autostream_webui_page_align import _render_review_section
+        from webui.browser.align import _render_review_section
         align_run = MagicMock()
         align_run.snapshots.return_value = [
             AlignOutputSnapshot(id="out-a", name="A", volume_percent=30, stored_offset_ms=1900, freq_hz=1000),
@@ -402,7 +402,7 @@ class TestReviewSection:
         assert ">2000 ms<" in html_out
 
     def test_noisy_spread_warns_but_still_shows(self, tmp_path):
-        from autostream_webui_page_align import _render_review_section
+        from webui.browser.align import _render_review_section
         align_run = MagicMock()
         align_run.snapshots.return_value = [
             AlignOutputSnapshot(id="out-a", name="A", volume_percent=30, stored_offset_ms=0, freq_hz=1000),
@@ -420,14 +420,14 @@ class TestReviewSection:
         assert "align-warn" in html_out
 
     def test_no_pending_result_renders_nothing(self):
-        from autostream_webui_page_align import _render_review_section
+        from webui.browser.align import _render_review_section
         align_run = MagicMock()
         align_run.pending_result.return_value = None
         state = _state_with_run(align_run)
         assert _render_review_section(state) == ""
 
     def test_apply_and_rerun_buttons_are_equal_sized_and_labelled(self, tmp_path):
-        from autostream_webui_page_align import _render_review_section
+        from webui.browser.align import _render_review_section
         align_run = MagicMock()
         align_run.snapshots.return_value = [
             AlignOutputSnapshot(id="out-a", name="A", volume_percent=30, stored_offset_ms=0, freq_hz=1000),
@@ -457,7 +457,7 @@ class TestReviewSection:
 
 class TestAlignApply:
     def test_applies_offsets_via_shared_clamp_store_push_path(self, tmp_path):
-        from autostream_webui_page_align import send_align_apply_json
+        from webui.browser.align import send_align_apply_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -477,7 +477,7 @@ class TestAlignApply:
         align_run.discard_result.assert_called_once()
 
     def test_missing_offsets_returns_400(self, tmp_path):
-        from autostream_webui_page_align import send_align_apply_json
+        from webui.browser.align import send_align_apply_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -489,7 +489,7 @@ class TestAlignApply:
         assert sent["code"] == 400
 
     def test_invalid_json_returns_400(self, tmp_path):
-        from autostream_webui_page_align import send_align_apply_json
+        from webui.browser.align import send_align_apply_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -504,7 +504,7 @@ class TestAlignApply:
 # ── POST /api/align/discard ──────────────────────────────────────────────────
 
 def test_discard_calls_run_discard_result(tmp_path):
-    from autostream_webui_page_align import send_align_discard_json
+    from webui.browser.align import send_align_discard_json
     config_path = _make_config(str(tmp_path))
     state_path = _make_state_file(str(tmp_path))
     store = _make_store(config_path)
@@ -522,7 +522,7 @@ def test_discard_calls_run_discard_result(tmp_path):
 
 class TestAlignPageSelectionVisibility:
     def test_selection_and_start_hidden_when_result_pending(self, tmp_path):
-        from autostream_webui_page_align import send_align_page
+        from webui.browser.align import send_align_page
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -545,7 +545,7 @@ class TestAlignPageSelectionVisibility:
         assert "id='alignVolume'" not in body
 
     def test_selection_and_start_shown_when_no_pending_result(self, tmp_path):
-        from autostream_webui_page_align import send_align_page
+        from webui.browser.align import send_align_page
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -566,7 +566,7 @@ class TestAlignPageSelectionVisibility:
 
 class TestAlignPagePrivacyAndTitle:
     def test_title_and_heading_are_speaker_synchronisation(self, tmp_path):
-        from autostream_webui_page_align import send_align_page
+        from webui.browser.align import send_align_page
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -583,7 +583,7 @@ class TestAlignPagePrivacyAndTitle:
         assert "Align Outputs" not in body
 
     def test_privacy_button_and_modal_present(self, tmp_path):
-        from autostream_webui_page_align import send_align_page
+        from webui.browser.align import send_align_page
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -620,6 +620,7 @@ except ImportError:
     _HAS_WEBUI = False
 
 from autostream_auth import AuthManager, PIN_STATUS_MISSING
+import webui.browser.align as webui_align
 
 _skip_no_webui = pytest.mark.skipif(
     not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
@@ -665,9 +666,9 @@ def _make_post_handler(path: str, csrf_token: Optional[str]) -> "ConfigWebHandle
 @_skip_no_webui
 @pytest.mark.parametrize("path,stub_target", [
     ("/api/align/start", "autostream_webui.send_align_start_json"),
-    ("/api/align/abort", "autostream_webui.send_align_abort_json"),
+    ("/api/align/abort", "webui.browser.align.send_align_abort_json"),
     ("/api/align/apply", "autostream_webui.send_align_apply_json"),
-    ("/api/align/discard", "autostream_webui.send_align_discard_json"),
+    ("/api/align/discard", "webui.browser.align.send_align_discard_json"),
 ])
 def test_align_post_routes_require_csrf(path, stub_target):
     """No PIN configured (so PIN gate doesn't interfere), no CSRF token
@@ -686,8 +687,8 @@ def test_align_post_routes_require_csrf(path, stub_target):
 
 class TestAlignCapabilityGate:
     def test_start_refused_without_offset_support(self, tmp_path, monkeypatch):
-        import autostream_webui_page_align as page_mod
-        from autostream_webui_page_align import send_align_start_json
+        import webui.browser.align as page_mod
+        from webui.browser.align import send_align_start_json
         config_path = _make_config(str(tmp_path))
         state_path = _make_state_file(str(tmp_path))
         store = _make_store(config_path)
@@ -695,7 +696,7 @@ class TestAlignCapabilityGate:
         state = _make_state(config_path, state_path, store, align_run=align_run)
         handler, sent = _make_handler()
         handler.headers = {"Host": "autostream.local"}
-        monkeypatch.setattr(page_mod, "_offsets_supported", lambda state: False)
+        monkeypatch.setattr(webui_align, "_offsets_supported", lambda state: False)
 
         body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 65})
         send_align_start_json(handler, state, body)

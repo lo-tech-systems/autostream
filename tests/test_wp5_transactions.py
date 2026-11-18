@@ -474,14 +474,14 @@ class TestSaveNowEndpoint:
 
 class TestFactoryResetDiscardsDirty:
     def test_factory_reset_closes_store_without_saving(self, tmp_path):
-        from autostream_webui_post_handlers import handle_factory_reset_post
+        from webui.system.power import handle_factory_reset_post
         state, store = _make_state(tmp_path)
         auth = MagicMock()
         handler = _make_handler()
         # Make a dirty change
         store.update(lambda raw: raw.setdefault("general", {}).update({"log_level": "debug"}))
 
-        with patch("autostream_webui_post_handlers.factory_reset_system"), \
+        with patch("webui.system.power.factory_reset_system"), \
              patch.object(store, "close") as mock_close:
             handle_factory_reset_post(handler, state, auth)
 
@@ -489,12 +489,12 @@ class TestFactoryResetDiscardsDirty:
         store.close(save=False)
 
     def test_factory_reset_proceeds_after_store_close(self, tmp_path):
-        from autostream_webui_post_handlers import handle_factory_reset_post
+        from webui.system.power import handle_factory_reset_post
         state, store = _make_state(tmp_path)
         auth = MagicMock()
         handler = _make_handler()
 
-        with patch("autostream_webui_post_handlers.factory_reset_system") as mock_reset:
+        with patch("webui.system.power.factory_reset_system") as mock_reset:
             handle_factory_reset_post(handler, state, auth)
 
         mock_reset.assert_called_once()

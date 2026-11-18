@@ -22,7 +22,6 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_appliance_models as models
 import autostream_output_intents as intents_mod
 import autostream_pin_pairing as pairing
 import autostream_runtime as runtime
@@ -33,6 +32,7 @@ from autostream_state import Origin
 from autostream_state.outputs import get_authority
 from fake_store import FakeStore
 from output_fakes import FakeBackend, row, snap
+import webui.browser.home_model as webui_home_model
 
 ID = "42"
 
@@ -75,7 +75,7 @@ def arrange(*rows):
 def change(body, **kw):
     kw.setdefault("requester", "webui")
     kw.setdefault("pin_requester", pairing.REQUESTER_WEBUI)
-    return models.submit_output_change(body, **kw)
+    return webui_home_model.submit_output_change(body, **kw)
 
 
 def on(**extra):

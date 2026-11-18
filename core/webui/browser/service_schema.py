@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_service_schema.py
+"""webui/browser/service_schema.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -192,7 +192,7 @@ def _format_due_date(service_at: Optional[str], life_years: int) -> str:
 # Display-dict helpers
 #
 # These are the single source of truth for all display calculations.  Both the
-# initial HTML render (autostream_webui_page_service) and the live JSON update
+# initial HTML render (webui/browser/service.py) and the live JSON update
 # payloads (autostream_webui_api) call these functions so the displayed values
 # are always identical, regardless of how the data reaches the browser.
 #

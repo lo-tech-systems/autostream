@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-import autostream_appliance_models as models
 from autostream_state import store
 from fake_store import FakeStore
+import webui.browser.home_model as webui_home_model
 
 CLOCK = 5000.0
 
@@ -15,7 +15,7 @@ def fake(monkeypatch):
     store().reset_for_tests(boot="test-boot")
     from autostream_state.outputs import get_authority
     get_authority().reset_for_tests()
-    monkeypatch.setattr(models, "_wall", lambda: CLOCK)
+    monkeypatch.setattr(webui_home_model, "_wall", lambda: CLOCK)
     return FakeStore()
 
 
@@ -24,7 +24,7 @@ def _rows():
 
 
 def _reply(snap):
-    return models.home_outputs_reply(snap, _parsed())
+    return webui_home_model.home_outputs_reply(snap, _parsed())
 
 
 def _parsed():
@@ -58,5 +58,5 @@ def test_a_failure_stamped_in_the_future_has_age_zero(fake):
 
 def test_the_age_follows_the_clock(fake, monkeypatch):
     snap = fake.outputs(_rows(), start_failure={"unit_id": "1001", "reason": "timed_out", "at": CLOCK})
-    monkeypatch.setattr(models, "_wall", lambda: CLOCK + 125)
+    monkeypatch.setattr(webui_home_model, "_wall", lambda: CLOCK + 125)
     assert _reply(snap)["start_failure"]["age_s"] == 125

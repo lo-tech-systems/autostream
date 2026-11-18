@@ -27,6 +27,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Optional
 from unittest.mock import MagicMock
 from settings_fixtures import fixed_view
+import webui.browser.home as webui_home
 
 _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
@@ -426,7 +427,7 @@ def _unpatched(recorder: Recorder, name: str) -> Callable:
 
 def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
-    import autostream_appliance_models as models
+    import webui.browser.home_model as models
     import autostream_appliance_gateway as gateway
     import autostream_dial_warnings  # noqa: F401  binds the live warnings reads
     import autostream_monitor_client as monitor_client
@@ -437,7 +438,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_start_buffer_cache as start_buffer_cache
     import autostream_system_stats as system_stats
     import autostream_webui_api as api
-    import autostream_webui_page_airplay as airplay
+    import webui.browser.home as airplay
     from autostream_dials import AUTH_AUTHORIZED
     from autostream_players import ActionResult
     from autostream_state.outputs import get_authority
@@ -583,7 +584,7 @@ def _dial(extra: Optional[dict] = None) -> dict:
 
 def routes() -> list[Route]:
     import autostream_webui_api as api
-    import autostream_webui_page_airplay as airplay
+    import webui.browser.home as airplay
 
     state = make_state()
 
@@ -609,7 +610,7 @@ def routes() -> list[Route]:
         Route("status", "GET /api/federation/v1/home",
               lambda h: api.send_federation_home_json(h, state)),
         Route("status", "GET /",
-              lambda h: airplay.send_airplay_page(h, state, make_auth()), html=True),
+              lambda h: webui_home.send_airplay_page(h, state, make_auth()), html=True),
         Route("outputs", "GET /api/owntone/outputs",
               lambda h: api.send_owntone_outputs_json(h, state)),
         Route("outputs", "GET /api/owntone/outputs_state",

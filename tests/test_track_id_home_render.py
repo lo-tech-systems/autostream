@@ -21,7 +21,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 try:
-    from autostream_webui_page_airplay import send_airplay_page, send_remote_home_page
+    from webui.browser.home import send_remote_home_page
+    from webui.browser.home import send_airplay_page
     from track_id.models import (
         STATE_ANALYSING,
         STATE_ERROR,
@@ -36,7 +37,7 @@ except ImportError:
     _HAS_IMPORTS = False
 
 _skip = pytest.mark.skipif(
-    not _HAS_IMPORTS, reason="autostream_webui_page_airplay import chain unavailable"
+    not _HAS_IMPORTS, reason="webui.browser.home import chain unavailable"
 )
 
 _LOCAL_ID = "00000000000000000000"
@@ -98,14 +99,14 @@ def _render_airplay_page(ti_snapshot=None, playback_snapshot=None, levels=None) 
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-        patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        patch("webui.browser.home.get_all_appliances", return_value=[]),
+        patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels(levels or []),
         fake_playback(playback),
         fake_outputs_result(list_result),
-        patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+        patch("webui.browser.home.get_setting", return_value=buf_result),
         fake_track(ti_snapshot),
-        patch("autostream_webui_page_airplay.build_top_banner_html",
+        patch("webui.browser.home.build_top_banner_html",
               return_value=("", "")),
     ]
 
@@ -138,8 +139,8 @@ def _render_remote_home() -> str:
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-        patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        patch("webui.browser.home.get_all_appliances", return_value=[]),
+        patch("webui.browser.home.get_system_hostname", return_value="autostream"),
     ]
 
     from contextlib import ExitStack

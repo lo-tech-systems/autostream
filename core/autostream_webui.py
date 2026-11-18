@@ -47,6 +47,7 @@ from autostream_sysutils import (
 from autostream_auth import AuthManager, FLASH_COOKIE_NAME
 
 from webui import session_state
+from webui.browser import first_boot
 from autostream_webui_api import (
     run_updater,
     send_audio_status_json,
@@ -134,40 +135,19 @@ from autostream_webui_routes import (
     is_poll_log as _route_is_poll_log,
     _read_and_parse_body as _route_read_and_parse_body,
 )
-from autostream_webui_page_about import send_about_page, send_about_system_json
-import autostream_webui_page_auth
-from autostream_webui_page_align import (
-    send_align_abort_json,
-    send_align_apply_json,
-    send_align_discard_json,
-    send_align_page,
-    send_align_result_get,
-    send_align_start_json,
-    send_align_status_json,
-)
-from autostream_webui_page_equaliser import send_equaliser_page, send_remote_equaliser_page
-from autostream_webui_page_airplay import send_airplay_page, send_remote_home_page
-from autostream_webui_page_logs import handle_logs_download, send_logs_page
-from autostream_webui_page_owntone import (
-    send_owntone_ready_json,
-    send_owntone_restarting_page,
-    send_owntone_setup_page,
-)
-from autostream_webui_page_first_boot import (
-    send_first_boot_owntone_page,
-    send_first_boot_appliance_page,
-    handle_first_boot_continue_post,
-    handle_first_boot_finish_post,
-)
-from autostream_webui_page_rebooting import send_rebooting_page
-from autostream_webui_page_service import send_service_page
 from webui.browser.setup.page import _route_get_setup, _route_get_setup_card, _route_post_setup_form
-from autostream_webui_post_handlers import (
-    handle_factory_reset_post,
-    handle_live_input_eq_update,
-    handle_live_input_gain_update,
-    handle_output_update,
-)
+from webui.browser.home import _route_get_home, _route_get_remote_page
+from webui.browser.equaliser import _route_get_equaliser
+from webui.browser.service import _route_get_service
+from webui.browser.logs import _route_get_logs, _route_get_logs_download
+from webui.browser.owntone import _route_get_owntone_setup, _route_post_owntone_setup_form, send_owntone_ready_json, send_owntone_restarting_page
+from webui.browser.align import _route_get_align_result, _route_post_align_abort, _route_post_align_discard, send_align_apply_json, send_align_page, send_align_start_json, send_align_status_json
+from webui.browser.rebooting import _route_get_rebooting
+from webui.browser.about import _route_get_about_system, send_about_page
+from webui.browser.auth import _route_get_auth, _route_post_auth_verify, _route_post_pin_change
+from webui.browser.first_boot import _route_get_first_boot_appliance, _route_get_first_boot_owntone, _route_post_first_boot_continue, _route_post_first_boot_finish
+from webui.browser.post_handlers import handle_live_input_eq_update, handle_live_input_gain_update, handle_output_update
+from webui.system.power import handle_factory_reset_post
 
 from autostream_config import STATE_PATH
 import autostream_commissioning as commissioning
@@ -235,47 +215,6 @@ def _settings_save_barrier(state) -> bool:
 # handler names stay greppable back to their real sender.
 
 
-def _route_get_home(handler, state):
-    msg, flash_type = common._route_flash_msg_and_type(handler)
-    send_airplay_page(handler, state, session_state.AUTH, flash_msg=msg, flash_type=flash_type)
-
-
-def _route_get_equaliser(handler, state):
-    msg, flash_type = common._route_flash_msg_and_type(handler)
-    send_equaliser_page(handler, state, flash_msg=msg, flash_type=flash_type)
-
-
-def _route_get_service(handler, state):
-    msg, flash_type = common._route_flash_msg_and_type(handler)
-    send_service_page(handler, state, flash_msg=msg, flash_type=flash_type)
-
-
-def _route_get_logs(handler, state):
-    msg, _flash_type = common._route_flash_msg_and_type(handler)
-    send_logs_page(handler, state, flash_msg=msg)
-
-
-def _route_get_owntone_setup(handler, state):
-    msg, _flash_type = common._route_flash_msg_and_type(handler)
-    send_owntone_setup_page(handler, state, session_state.AUTH, flash_msg=msg)
-
-
-def _route_get_align_result(handler, state):
-    # self.path, not a normalized path: the measurement payload arrives in
-    # the query string and must survive a login round-trip (dispatch()'s
-    # kind="page" redirect already uses handler.path for the same reason).
-    qs = parse_qs(urlparse(handler.path).query)
-    send_align_result_get(handler, state, qs)
-
-
-def _route_get_rebooting(handler, state):
-    send_rebooting_page(handler, state, session_state.AUTH)
-
-
-def _route_get_about_system(handler, state):
-    send_about_system_json(handler)
-
-
 def _route_get_output_eq_status(handler, state):
     send_output_eq_status_json(handler)
 
@@ -338,14 +277,6 @@ def _route_post_settings_save(handler, state, body_str):
 
 def _route_post_output_eq_reset(handler, state, body_str):
     send_output_eq_reset_json(handler, state)
-
-
-def _route_post_align_abort(handler, state, body_str):
-    send_align_abort_json(handler, state)
-
-
-def _route_post_align_discard(handler, state, body_str):
-    send_align_discard_json(handler, state)
 
 
 def _route_post_network_setup(handler, state, body_str):
@@ -564,14 +495,6 @@ def _route_post_dial_warnings(handler, state):
 # --- Loopback-aware fast paths ----------------------------------------------
 
 
-def _route_commissioning_redirect_get(handler, state):
-    step = commissioning.required_first_boot_step(state.config_path, state.state_path)
-    location = f"/first-boot/{step}" if step else "/first-boot/owntone"
-    handler.send_response(302)
-    handler.send_header("Location", location)
-    handler.end_headers()
-
-
 def _route_get_playing_status(handler, state):
     if handler._is_direct_local():
         send_playing_status_json(handler)
@@ -580,7 +503,7 @@ def _route_get_playing_status(handler, state):
     # protected pages" redirect-to-auth check that a proxied request used to
     # fall through to (this path is not in AUTH.ALLOWLIST_PATHS).
     if handler._commissioning_required():
-        _route_commissioning_redirect_get(handler, state)
+        first_boot._route_commissioning_redirect_get(handler, state)
         return
     if session_state.AUTH.requires_auth("/api/playing-status") and not session_state.AUTH.is_authenticated(handler.headers):
         session_state.AUTH.redirect_to_auth(handler, next_path=handler.path)
@@ -597,7 +520,7 @@ def _route_get_log_level(handler, state):
     # "/api/log-level" is in AUTH.ALLOWLIST_PATHS, so requires_auth() is
     # always False for it.
     if handler._commissioning_required():
-        _route_commissioning_redirect_get(handler, state)
+        first_boot._route_commissioning_redirect_get(handler, state)
         return
     handler._csrf_token = session_state.AUTH.ensure_session(handler)
     send_log_level_get_json(handler, state)
@@ -707,84 +630,16 @@ def _route_post_gateway(handler, state, body_str):
 # --- Remote pages -------------------------------------------------------------
 
 
-def _route_get_remote_page(handler, state):
-    path = handler._normalized_path()
-    tail = path[len(_REMOTE_PAGE_PREFIX):]
-    parts = tail.split("/", 1)
-    aid = parts[0]
-    sub = parts[1] if len(parts) > 1 else ""
-    if not _APPLIANCE_ID_RE.match(aid):
-        handler.send_error(404, "Not found")
-        return
-    local_id = rpi.get_appliance_id() or ""
-    if aid == local_id:
-        # Canonical redirect for bound appliance
-        location = "/equaliser" if sub == "equaliser" else "/"
-        handler.send_response(302)
-        handler.send_header("Location", location)
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
-    elif not common._effective_control_other_appliances(state):
-        handler._redirect_with_error_flash("Controlling other appliances is disabled.", "/")
-    elif sub == "equaliser":
-        send_remote_equaliser_page(handler, state, aid)
-    else:
-        send_remote_home_page(handler, state, aid)
-
-
 # --- Auth flow ----------------------------------------------------------------
-
-
-def _route_get_auth(handler, state):
-    if not session_state.AUTH.is_enabled():
-        handler.send_response(302)
-        handler.send_header("Location", "/")
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
-        return
-    query = urlparse(handler.path).query
-    autostream_webui_page_auth.send_auth_page(handler, state, session_state.AUTH, query)
-
-
-def _route_post_auth_verify(handler, state, body_str):
-    session_state.AUTH.handle_auth_verify(handler, body_str.encode("utf-8"))
-
-
-def _route_post_pin_change(handler, state, body_str):
-    session_state.AUTH.handle_pin_change(handler, body_str.encode("utf-8"))
 
 
 # --- Stateful pages: setup / owntone-setup form posts ------------------------
 
 
-def _route_post_owntone_setup_form(handler, state, body_str):
-    common.send_json(handler, 405, {"ok": False, "error": "form_post_disabled"})
-
-
 # --- Stateful pages: first-boot GET + POST pairs ------------------------------
 
 
-def _route_get_first_boot_owntone(handler, state):
-    send_first_boot_owntone_page(handler, state, session_state.AUTH)
-
-
-def _route_get_first_boot_appliance(handler, state):
-    send_first_boot_appliance_page(handler, state, session_state.AUTH)
-
-
-def _route_post_first_boot_continue(handler, state, body_str):
-    handle_first_boot_continue_post(handler, state, session_state.AUTH, body_str)
-
-
-def _route_post_first_boot_finish(handler, state, body_str):
-    handle_first_boot_finish_post(handler, state, session_state.AUTH, body_str)
-
-
 # --- Logs download -------------------------------------------------------------
-
-
-def _route_get_logs_download(handler, state):
-    handle_logs_download(handler)
 
 
 # --- Dial management (browser, PIN-gated) --------------------------------------
@@ -1390,7 +1245,7 @@ def start_webui_background(
     def _serve() -> None:
         try:
             import autostream_live_config
-            from autostream_webui_page_owntone import start_owntone_restart_async
+            from webui.browser.owntone import start_owntone_restart_async
 
             autostream_live_config.apply_mdns_grace_period_startup(
                 session_state.STATE, on_restart=lambda state: start_owntone_restart_async(state, delay_s=0.75))

@@ -213,7 +213,7 @@ class TestSelectorDisplayOnly:
 class TestEquiliserLocalStripping:
     def _build(self, peers):
         """Call _build_eq_appliances_for_selector with mocked dependencies."""
-        from autostream_webui_page_equaliser import _build_eq_appliances_for_selector
+        from webui.browser.equaliser import _build_eq_appliances_for_selector
 
         peer_objs = []
         for (pid, phostname) in peers:
@@ -223,8 +223,8 @@ class TestEquiliserLocalStripping:
             peer_objs.append(s)
 
         with patch("autostream_rpi.get_appliance_id", return_value=_BOUND_ID), \
-             patch("autostream_webui_page_equaliser.get_system_hostname", return_value="my-device"), \
-             patch("autostream_webui_page_equaliser.get_all_appliances", return_value=peer_objs):
+             patch("webui.browser.equaliser.get_system_hostname", return_value="my-device"), \
+             patch("webui.browser.equaliser.get_all_appliances", return_value=peer_objs):
             return _build_eq_appliances_for_selector()
 
     def test_peer_local_suffix_stripped(self):
@@ -243,11 +243,11 @@ class TestEquiliserLocalStripping:
         assert peer["hostname"] == "peer-device"
 
     def test_bound_local_suffix_also_stripped(self):
-        from autostream_webui_page_equaliser import _build_eq_appliances_for_selector
+        from webui.browser.equaliser import _build_eq_appliances_for_selector
         with patch("autostream_rpi.get_appliance_id", return_value=_BOUND_ID), \
-             patch("autostream_webui_page_equaliser.get_system_hostname",
+             patch("webui.browser.equaliser.get_system_hostname",
                    return_value="my-device.local"), \
-             patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]):
+             patch("webui.browser.equaliser.get_all_appliances", return_value=[]):
             result = _build_eq_appliances_for_selector()
         bound = result[0]
         assert bound["hostname"] == "my-device"
@@ -285,7 +285,7 @@ class TestRemotePageGuard:
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
-             patch("autostream_webui.send_remote_home_page") as stub:
+             patch("webui.browser.home.send_remote_home_page") as stub:
             handler.do_GET()
         stub.assert_not_called()
 
@@ -297,7 +297,7 @@ class TestRemotePageGuard:
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=True), \
-             patch("autostream_webui.send_remote_home_page") as stub:
+             patch("webui.browser.home.send_remote_home_page") as stub:
             handler.do_GET()
         stub.assert_called_once()
 
@@ -309,7 +309,7 @@ class TestRemotePageGuard:
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
-             patch("autostream_webui.send_remote_equaliser_page") as stub:
+             patch("webui.browser.equaliser.send_remote_equaliser_page") as stub:
             handler.do_GET()
         stub.assert_not_called()
         codes = [c for (c,) in [handler.send_response.call_args_list[i][0]
@@ -467,7 +467,7 @@ class TestGatewayPostGuard:
 @_skip_webui
 class TestRemoteHomeMasterVolumeLabel:
     def _render(self, remote_hostname: str = "music-room") -> str:
-        from autostream_webui_page_airplay import send_remote_home_page
+        from webui.browser.home import send_remote_home_page
 
         state = MagicMock()
         state.config_path = "dummy.ini"
@@ -499,9 +499,9 @@ class TestRemoteHomeMasterVolumeLabel:
         parsed.webui.control_other_appliances = False
         with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("autostream_webui_page_airplay._build_appliances_for_selector",
+             patch("webui.browser.home._build_appliances_for_selector",
                    return_value=[local_appliance, remote_appliance]), \
-             patch("autostream_webui_page_airplay.get_system_hostname", return_value="local-host"):
+             patch("webui.browser.home.get_system_hostname", return_value="local-host"):
             send_remote_home_page(handler, state, _REMOTE_ID)
 
         return page_with_static(b"".join(written_chunks).decode("utf-8", errors="replace"))
@@ -526,14 +526,14 @@ class TestRemoteHomeMasterVolumeLabel:
 # ---------------------------------------------------------------------------
 
 try:
-    from autostream_webui_page_airplay import send_airplay_page as _send_airplay_page
+    from webui.browser.home import send_airplay_page as _send_airplay_page
     _HAS_AIRPLAY = True
 except ImportError:
     _HAS_AIRPLAY = False
 
 _skip_airplay = pytest.mark.skipif(
     not (_HAS_WEBUI and _HAS_AIRPLAY),
-    reason="autostream_webui_page_airplay import chain unavailable",
+    reason="webui.browser.home import chain unavailable",
 )
 
 
@@ -589,16 +589,16 @@ class TestLocalHomeInUseCardHTML:
 
         with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
-             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"), \
+             patch("webui.browser.home.get_all_appliances", return_value=[]), \
+             patch("webui.browser.home.get_system_hostname", return_value="autostream"), \
              fake_levels([]), \
              fake_playback(playback), \
              fake_outputs_result(list_result), \
-             patch("autostream_webui_page_airplay.build_output_list",
+             patch("webui.browser.home.build_output_list",
                    return_value=[self._IN_USE_OUTPUT]), \
              patch("autostream_output_usage.annotate_outputs", side_effect=lambda x: x), \
-             patch("autostream_webui_page_airplay.get_setting", return_value=buf_result), \
-             patch("autostream_webui_page_airplay.build_top_banner_html",
+             patch("webui.browser.home.get_setting", return_value=buf_result), \
+             patch("webui.browser.home.build_top_banner_html",
                    return_value=("", "")):
             _send_airplay_page(handler, state, auth)
 

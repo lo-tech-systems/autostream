@@ -237,7 +237,7 @@ class TestServiceFieldMapMigration:
 
 class TestOutputEqMigration:
     def test_all_seven_output_eq_fields_registered(self):
-        import autostream_appliance_models as am
+        import webui.browser.home_model as am
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         for field in monitor_control._OUTPUT_EQ_ALL_FIELDS:
@@ -249,7 +249,7 @@ class TestOutputEqMigration:
             assert spec.validate is not None
 
     def test_db_field_clamps_same_as_before_migration(self):
-        import autostream_appliance_models as am  # noqa: F401
+        import webui.browser.home_model as am  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         spec = SETTINGS_SCHEMA["output_eq.gain_db"]
@@ -261,7 +261,7 @@ class TestOutputEqMigration:
         assert spec.validate("-999") == pytest.approx(eq_bands.OUTPUT_EQ_DB_MIN)
 
     def test_db_field_non_numeric_error_message_unchanged(self):
-        import autostream_appliance_models as am  # noqa: F401
+        import webui.browser.home_model as am  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         spec = SETTINGS_SCHEMA["output_eq.peq1_db"]
@@ -269,7 +269,7 @@ class TestOutputEqMigration:
             spec.validate("not-a-number")
 
     def test_bool_field_normalises_same_truthy_strings_as_before_migration(self):
-        import autostream_appliance_models as am  # noqa: F401
+        import webui.browser.home_model as am  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         spec = SETTINGS_SCHEMA["output_eq.auto_trim_enabled"]
@@ -289,7 +289,7 @@ class TestOutputEqMigration:
 
 class TestSetupPostMigration:
     def test_setup_post_module_reaches_form_coerce_rows_via_schema(self):
-        import autostream_webui_post_handlers as post_handlers  # noqa: F401
+        import webui.browser.post_handlers as post_handlers  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         for path in (
@@ -304,7 +304,7 @@ class TestSetupPostMigration:
         # Matches normalize_output_usage_poll_interval()'s own documented
         # "out-of-range -> normalized to default (3)" contract, now reached
         # via the schema row instead of a direct import.
-        import autostream_webui_post_handlers as post_handlers  # noqa: F401
+        import webui.browser.post_handlers as post_handlers  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         spec = SETTINGS_SCHEMA["webui.output_usage_poll_interval_seconds"]

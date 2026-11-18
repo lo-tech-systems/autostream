@@ -185,7 +185,7 @@ def _render_local_home_html() -> str:
     from unittest.mock import MagicMock
     from contextlib import ExitStack
     from unittest.mock import patch as _patch
-    from autostream_webui_page_airplay import send_airplay_page
+    from webui.browser.home import send_airplay_page
     from track_id.models import disabled_snapshot
 
     handler = MagicMock()
@@ -228,14 +228,14 @@ def _render_local_home_html() -> str:
     patches = [
         _patch("webui.common._config_snapshot", return_value=parsed),
         _patch("autostream_rpi.get_appliance_id", return_value="00000000000000000000"),
-        _patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
-        _patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
+        _patch("webui.browser.home.get_all_appliances", return_value=[]),
+        _patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels([]),
         fake_playback(playback),
         fake_outputs_result(list_result),
-        _patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
+        _patch("webui.browser.home.get_setting", return_value=buf_result),
         fake_track(disabled_snapshot()),
-        _patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
+        _patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
     ]
 
     with ExitStack() as stack:
@@ -253,7 +253,7 @@ def local_home_html() -> str:
 
 class TestOutputsEmptyToleranceConstant:
     def test_tolerance_constant_defined_in_python(self):
-        from autostream_webui_page_airplay import OUTPUTS_EMPTY_TOLERANCE_SECONDS
+        from webui.browser.home import OUTPUTS_EMPTY_TOLERANCE_SECONDS
         assert OUTPUTS_EMPTY_TOLERANCE_SECONDS == 6.0
 
     def test_tolerance_injected_into_local_script(self, local_home_html):
@@ -264,7 +264,7 @@ class TestOutputsEmptyToleranceConstant:
         from unittest.mock import MagicMock
         from contextlib import ExitStack
         from unittest.mock import patch as _patch
-        from autostream_webui_page_airplay import send_remote_home_page
+        from webui.browser.home import send_remote_home_page
 
         handler = MagicMock()
         chunks: list = []
@@ -286,8 +286,8 @@ class TestOutputsEmptyToleranceConstant:
         patches = [
             _patch("webui.common._config_snapshot", return_value=parsed),
             _patch("autostream_rpi.get_appliance_id", return_value="00000000000000000000"),
-            _patch("autostream_webui_page_airplay._build_appliances_for_selector", return_value=[]),
-            _patch("autostream_webui_page_airplay.build_appliance_selector_html", return_value=""),
+            _patch("webui.browser.home._build_appliances_for_selector", return_value=[]),
+            _patch("webui.browser.home.build_appliance_selector_html", return_value=""),
         ]
         with ExitStack() as stack:
             for p in patches:

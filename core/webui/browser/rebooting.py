@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_page_rebooting.py
+"""webui/browser/rebooting.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -20,6 +20,7 @@ from webui.assets import VIEWPORT_META
 from webui.common import build_top_banner_html
 from webui.session_state import WebUIState
 from webui import common
+from webui import session_state
 
 
 def send_rebooting_page(handler, state: WebUIState, auth) -> None:
@@ -71,3 +72,13 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
       </html>
     """
     common.send_html(handler, 200, body)
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_rebooting(handler, state):
+    send_rebooting_page(handler, state, session_state.AUTH)
