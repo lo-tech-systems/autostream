@@ -1094,6 +1094,17 @@ register(
 
 register(
     Route(
+        path="/api/owntone/output-include-tv",
+        methods=("POST",),
+        handler="send_owntone_output_include_tv_json",
+        auth=AuthRequirement.FULL,
+        kind="api",
+        allow_unconfigured=True,
+    )
+)
+
+register(
+    Route(
         path="/api/owntone/output-mode",
         methods=("POST",),
         handler="send_owntone_output_mode_json",

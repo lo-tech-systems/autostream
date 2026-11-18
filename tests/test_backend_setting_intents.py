@@ -186,6 +186,63 @@ def test_an_offset_without_an_output_is_reported_as_missing_one(ctx):
     assert (reply.ok, reply.error) == (False, "output_id required")
 
 
+
+# ------------------------------------------------------------ include_tv
+
+def _tv_units(playing=True, supported=True):
+    """The outputs part of a player whose rows say whether HomePods are present."""
+    from fake_store import FakeStore
+    from autostream_players import OutputInfo
+    rows = [OutputInfo(id="7", name="TV A", selected=playing,
+                       session_state="streaming" if playing else "stopped",
+                       has_homepods=True if supported else None)]
+    FakeStore().outputs(rows)
+
+
+def test_an_include_tv_change_is_stored_and_restarts_a_playing_group(ctx, store):
+    from autostream_state.outputs import get_authority
+    _tv_units()
+    with patch.object(get_authority(), "reselect") as reselect:
+        reselect.return_value = SimpleNamespace(refused=None)
+        reply = _set(ctx, "output_include_tv", False, "7")
+    assert reply.result == {"output_id": "7", "include_tv": False, "reselected": True}
+    assert store.snapshot().owntone.include_tv == {"7": False}
+    reselect.assert_called_once_with("7", Origin.USER, requester="webui")
+
+
+def test_an_include_tv_change_on_a_group_that_is_not_playing_restarts_nothing(ctx, store):
+    from autostream_state.outputs import get_authority
+    _tv_units(playing=False)
+    with patch.object(get_authority(), "reselect") as reselect:
+        reply = _set(ctx, "output_include_tv", False, "7")
+    assert reply.result["reselected"] is False
+    assert store.snapshot().owntone.include_tv == {"7": False}
+    reselect.assert_not_called()
+
+
+def test_an_unchanged_include_tv_choice_restarts_nothing(ctx, store):
+    from autostream_state.outputs import get_authority
+    _tv_units()
+    with patch.object(get_authority(), "reselect") as reselect:
+        reply = _set(ctx, "output_include_tv", True, "7")
+    assert reply.result["reselected"] is False
+    reselect.assert_not_called()
+    assert store.snapshot().owntone.include_tv == {}
+
+
+def test_include_tv_is_refused_when_the_player_cannot_do_it(ctx, store):
+    _tv_units(playing=False, supported=False)
+    reply = _set(ctx, "output_include_tv", False, "7")
+    assert (reply.ok, reply.error) == (False, "Not supported by the connected player")
+    assert store.snapshot().owntone.include_tv == {}
+
+
+def test_include_tv_without_an_output_is_reported_as_missing_one(ctx):
+    _tv_units(playing=False)
+    reply = _set(ctx, "output_include_tv", False, "")
+    assert (reply.ok, reply.error) == (False, "output_id required")
+
+
 # ------------------------------------------------------------ the row
 
 def test_a_value_that_cannot_be_frozen_is_refused_not_raised(ctx):

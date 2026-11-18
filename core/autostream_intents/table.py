@@ -241,6 +241,7 @@ def _build_rows() -> dict:
                 "setting": v.choice(
                     "uncompressed_audio", "buffered_audio", "start_buffer_ms", "user_agent",
                     "mdns_grace_period", "output_mode", "output_visibility", "output_offset",
+                    "output_include_tv",
                     error="invalid_setting"),
                 # Each setting's route has already checked its own value.
                 "value": v.anything(),

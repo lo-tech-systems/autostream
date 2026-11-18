@@ -2070,6 +2070,40 @@ def send_owntone_output_visibility_json(handler, state: WebUIState, body: str) -
     send_json(handler, 200, {"ok": True, "output_name": output_name, "visible": visible})
 
 
+def send_owntone_output_include_tv_json(handler, state: WebUIState, body: str) -> None:
+    """POST /api/owntone/output-include-tv -- play an Apple TV's HomePods with
+    or without the Apple TV.
+
+    Body: {"output_id": "<id>", "include_tv": true|false}
+    Reply: {"ok": true, "output_id": ..., "include_tv": ..., "reselected": ...}
+    """
+    try:
+        payload = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        return
+
+    output_id = str(payload.get("output_id") or "").strip()
+    if not output_id:
+        send_json(handler, 400, {"ok": False, "error": "output_id required"})
+        return
+    include_tv = payload.get("include_tv")
+    if not isinstance(include_tv, bool):
+        send_json(handler, 400, {"ok": False, "error": "include_tv must be a boolean"})
+        return
+
+    reply = _submit_backend_setting(state, "output_include_tv", include_tv, output_id)
+    if not reply.ok:
+        send_json(handler, 200, {"ok": False, "error": reply.error})
+        return
+    send_json(handler, 200, {
+        "ok": True,
+        "output_id": reply.result["output_id"],
+        "include_tv": reply.result["include_tv"],
+        "reselected": reply.result["reselected"],
+    })
+
+
 def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/owntone/output-mode -- set AirPlay mode for a specific output.
 

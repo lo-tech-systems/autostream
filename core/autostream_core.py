@@ -3286,6 +3286,7 @@ def _start_output_authority(cfg, settings) -> None:
     policy = autostream_output_policy.get_policy()
     policy.bind_settings(autostream_live_config.output_policy_settings)
     get_authority().set_policy(policy)
+    get_authority().set_include_tv_reader(autostream_live_config.include_tv_for)
     get_authority().start(PlayerServiceBackend(cfg.owntone.base_url))
 
 

@@ -263,6 +263,8 @@ class UnitState:
     diff_since: dict = field(default_factory=dict)
     requester: Optional[str] = None   # who asked for the current attempt
     select_seq: int = 0               # +1 each time the desired selection goes from off to on
+    held_until: float = 0.0           # a select the player cannot take yet is not tried again before this
+    reselect_retry: bool = False      # a restart's select was refused: send it once more when the unit reads off
 
 
 class _OwnedLock:
@@ -685,6 +687,8 @@ class OutputAuthority:
             u.start_pending_until = 0.0
             u.retry_at = None
             u.retry_backoff = RETRY_MIN_S
+            u.held_until = 0.0
+            u.reselect_retry = False
             u.diff_since.clear()
             u.requester = requester
             self._stamp(u, cause, now)
@@ -705,8 +709,41 @@ class OutputAuthority:
         u.retry_at = None
         u.start_pending_until = 0.0
         u.failure_reported = False
+        u.held_until = 0.0
+        u.reselect_retry = False
         u.diff_since.clear()
         self._stamp(u, cause, now)
+
+    def reselect(self, unit_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
+        """Restart a selected output: switch it off and on again with the
+        current include-Apple-TV choice. What the user wants is not changed
+        (selection, level, mute), and a restart is not a choice to be silent
+        or to play, so the mute and the silence choice are left alone."""
+        self._touched = True
+        now = self._clock()
+        with self._lock:
+            u = self._units.get(unit_id)
+            if u is None:
+                return self._refused("unknown_output")
+            if not u.desired.selected:
+                return self._refused("not_selected")
+            u.attempt = True
+            u.failure_reported = False
+            u.start_pending_until = 0.0
+            u.held_until = 0.0
+            u.reselect_retry = False
+            u.diff_since.clear()
+            u.requester = requester
+            self._stamp(u, cause, now)
+            batch = _Batch(2)
+            self._enqueue(_Write("deselect", unit_id, u.desired_seq, {}, [(batch, 0)]))
+            self._enqueue(_Write(
+                "select", unit_id, u.desired_seq,
+                {"volume": None, "offset_ms": None, "mode": None, "cause": None, "reselect": True},
+                [(batch, 1)], requester=requester,
+            ))
+            pending = self._publish_locked(cause, requester)
+        return self._finish_intent(pending, batch.future)
 
     def deselect(self, unit_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
         self._touched = True
@@ -1313,6 +1350,8 @@ class OutputAuthority:
         u.attempt = False
         u.retry_at = None
         u.start_pending_until = 0.0
+        u.held_until = 0.0
+        u.reselect_retry = False
         u.desired_seq += 1
         d.changed_at = now
 
@@ -1369,6 +1408,12 @@ class OutputAuthority:
                 )
                 self._units[uid] = u
             else:
+                if row.has_homepods and u.held_until > 0.0 and not (u.reported is not None and u.reported.has_homepods):
+                    # The HomePods the select was waiting for have appeared.
+                    u.held_until = 0.0
+                    u.retry_backoff = RETRY_MIN_S
+                    if u.desired.selected and not row.selected:
+                        self._queue_reapply_select_locked(u)
                 u.reported = row
                 u.name = row.name
                 u.seen_at = now
@@ -1409,6 +1454,11 @@ class OutputAuthority:
         u.availability = avail
         if row.selected == sel:
             u.after_boot = False
+        if u.reselect_retry and sel and not row.selected:
+            # A restart's select was refused while the unit was still on; it
+            # reads off now, which is the state that select needed.
+            u.reselect_retry = False
+            self._queue_select_again_locked(u, None, None)
         if sel and avail == "ok" and result_shown and u.attempt:
             # The start the authority made has shown its result.
             u.attempt = False
@@ -1472,11 +1522,14 @@ class OutputAuthority:
         u.attempt = True
         u.retry_allowed = True
         u.requester = None
+        self._queue_select_again_locked(u, u.desired.volume, u.desired.cause)
+
+    def _queue_select_again_locked(self, u: UnitState, volume: Optional[int], cause: Optional[Origin]) -> None:
         batch = _Batch(1)
         self._enqueue(_Write(
             "select", u.id, u.desired_seq,
-            {"volume": u.desired.volume, "offset_ms": None, "mode": None, "cause": u.desired.cause},
-            [(batch, 0)],
+            {"volume": volume, "offset_ms": None, "mode": None, "cause": cause},
+            [(batch, 0)], requester=u.requester,
         ))
 
     def _due(self, u: UnitState, key: str, now: float) -> bool:
@@ -1511,6 +1564,10 @@ class OutputAuthority:
                     if u.retry_at is not None and now >= u.retry_at and self._session_active:
                         u.retry_at = None
                         self._queue_reapply_select_locked(u)
+                elif now < u.held_until:
+                    # The player cannot take this select yet; it is tried
+                    # again when the hold ends or its HomePods appear.
+                    u.diff_since.setdefault("select", now)
                 elif self._rows_carry_session:
                     if self._due(u, "select", now):
                         u.diff_since.pop("select", None)
@@ -1646,11 +1703,16 @@ class OutputAuthority:
             except Exception:
                 include = None
         with self._lock:
+            held_unit = self._units.get(w.unit_id) if w.unit_id is not None else None
+            availability_before = held_unit.availability if held_unit is not None else None
             runner = self._build_locked(w, include)
             if runner is None or runner is _HOLD:
                 fx = _Effects()
                 outcome = WriteOutcome(ok=True, pending=runner is _HOLD)
-                pending = self._publish_locked(Origin.BACKEND, None) if runner is _HOLD else None
+                # A held select changes nothing a page shows after the first
+                # time, so it publishes only when the unit's availability moved.
+                moved = held_unit is not None and held_unit.availability != availability_before
+                pending = self._publish_locked(Origin.BACKEND, None) if runner is _HOLD and moved else None
                 return ([pending] if pending is not None else []), (lambda: (fx.run(), self._complete(w, outcome)))
             self._inflight += 1
         backend = self._backend
@@ -1688,6 +1750,8 @@ class OutputAuthority:
                 elif include is False:
                     # The Apple TV is never selected alone: wait for its group.
                     u.availability = "starting"
+                    u.held_until = self._clock() + u.retry_backoff
+                    u.retry_backoff = min(u.retry_backoff * 2, RETRY_MAX_S)
                     return _HOLD
             return lambda b: [b.update_output(uid, **kwargs)]
         if kind == "deselect":
@@ -1775,6 +1839,11 @@ class OutputAuthority:
                 u.retry_allowed = True
             return WriteOutcome(ok=True, error_code="timeout", pending=True)
         if code == "reselect_required":
+            if w.params.get("reselect") and u is not None and not stale:
+                # The switch-off did not take, so the unit was still on when
+                # this select arrived; send it again once the unit reads off.
+                u.reselect_retry = True
+                return WriteOutcome(ok=False, error_code=code, error=r.message)
             fx.log(logging.WARNING, "include_tv change refused on a selected output (%s)", w.unit_id)
             return WriteOutcome(ok=False, error_code=code, error=r.message)
         if code == "group_not_present":

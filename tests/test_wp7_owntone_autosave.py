@@ -492,6 +492,53 @@ class TestOutputOffset:
         assert sent["body"]["offset_ms"] == 900
 
 
+# ── Output include-TV ─────────────────────────────────────────────────────────
+
+class TestOutputIncludeTv:
+    @staticmethod
+    def _call(tmp_path, body):
+        from autostream_webui_api import send_owntone_output_include_tv_json
+        config_path = _make_config(str(tmp_path))
+        state_path = _make_state_file(str(tmp_path))
+        store = _make_store(config_path)
+        state = _make_state(config_path, state_path, store)
+        handler, sent = _make_handler()
+        send_owntone_output_include_tv_json(handler, state, body)
+        return sent, store
+
+    @staticmethod
+    def _player_with_homepods():
+        from autostream_players import OutputInfo
+        from fake_store import FakeStore
+        FakeStore().outputs([OutputInfo(id="42", name="TV A", has_homepods=True, session_state="stopped")])
+
+    def test_choice_stored_and_reported(self, tmp_path):
+        self._player_with_homepods()
+        sent, store = self._call(tmp_path, json.dumps({"output_id": "42", "include_tv": False}))
+        assert sent["code"] == 200
+        assert sent["body"] == {"ok": True, "output_id": "42", "include_tv": False, "reselected": False}
+        assert store.snapshot().owntone.include_tv == {"42": False}
+
+    def test_invalid_json_returns_400(self, tmp_path):
+        sent, _ = self._call(tmp_path, "{nope")
+        assert sent["code"] == 400
+
+    def test_missing_output_id_returns_400(self, tmp_path):
+        sent, _ = self._call(tmp_path, json.dumps({"include_tv": True}))
+        assert sent["code"] == 400 and sent["body"]["error"] == "output_id required"
+
+    @pytest.mark.parametrize("value", ["no", 0, None])
+    def test_non_boolean_returns_400(self, tmp_path, value):
+        sent, _ = self._call(tmp_path, json.dumps({"output_id": "42", "include_tv": value}))
+        assert sent["code"] == 400 and sent["body"]["error"] == "include_tv must be a boolean"
+
+    def test_a_player_without_the_feature_replies_ok_false(self, tmp_path):
+        sent, store = self._call(tmp_path, json.dumps({"output_id": "42", "include_tv": False}))
+        assert sent["code"] == 200
+        assert sent["body"] == {"ok": False, "error": "Not supported by the connected player"}
+        assert store.snapshot().owntone.include_tv == {}
+
+
 # ── Native OwnTone settings ───────────────────────────────────────────────────
 
 class TestNativeOwntoneSettings:
@@ -1380,6 +1427,58 @@ class TestStartBufferSelect:
         assert "onchange=" in select_html
         assert "/api/owntone/start-buffer" in select_html
 
+
+
+class TestIncludeTvSwitch:
+    LABEL = "Play on the Apple TV as well as its HomePods"
+    HELP = ("Off: the HomePods play as a stereo pair and the Apple TV shows nothing. "
+            "Changing this while they are playing restarts them.")
+    NOTE = "Playing an Apple TV's HomePods without the Apple TV needs owntone-mini 1.6 or above."
+
+    @staticmethod
+    def _page(tmp_path, outputs, **kw):
+        return TestOwntoneSetupPage()._render_page(str(tmp_path), outputs=outputs, **kw)
+
+    @staticmethod
+    def _out(id, name, has_homepods):
+        from autostream_players import OutputInfo
+        return OutputInfo(id=id, name=name, session_state="stopped", has_homepods=has_homepods)
+
+    def test_shown_for_an_apple_tv_with_its_homepods_and_checked_by_default(self, tmp_path):
+        html = self._page(tmp_path, [self._out("42", "TV A", True), self._out("43", "Speaker A", False)])
+        assert html.count(self.LABEL) == 1
+        assert html.count(self.HELP) == 1
+        assert "/api/owntone/output-include-tv" in html
+        block = html[html.index(self.LABEL) - 400:html.index(self.LABEL)]
+        assert 'type="checkbox" checked' in block and " name=" not in block.split("<input", 1)[1].split(">")[0]
+        assert self.NOTE not in html
+
+    def test_unchecked_when_the_stored_choice_is_off(self, tmp_path):
+        html = self._page(tmp_path, [self._out("42", "TV A", True)],
+                          config_extra={"owntone": {"include_tv": {"42": False}}})
+        block = html[html.index(self.LABEL) - 400:html.index(self.LABEL)]
+        assert 'type="checkbox" checked' not in block and 'type="checkbox"' in block
+
+    def test_still_shown_for_a_stored_off_choice_whose_homepods_are_away(self, tmp_path):
+        html = self._page(tmp_path, [self._out("42", "TV A", False), self._out("43", "Speaker A", False)],
+                          config_extra={"owntone": {"include_tv": {"42": False}}})
+        assert html.count(self.LABEL) == 1
+
+    def test_not_shown_when_nothing_has_homepods(self, tmp_path):
+        html = self._page(tmp_path, [self._out("42", "TV A", False)])
+        assert self.LABEL not in html and self.NOTE not in html
+
+    def test_a_player_without_has_homepods_says_what_it_needs(self, tmp_path):
+        from autostream_players import OutputInfo
+        html = self._page(tmp_path, [OutputInfo(id="42", name="Speaker A")])
+        assert self.LABEL not in html
+        assert self.NOTE.replace("'", "&#x27;") in html or self.NOTE in html
+
+    def test_the_text_has_no_em_dash_and_is_latin_1(self, tmp_path):
+        html = self._page(tmp_path, [self._out("42", "TV A", True)])
+        segment = html[html.index(self.LABEL) - 600:html.index(self.HELP) + 200]
+        assert "—" not in segment and "&mdash;" not in segment
+        segment.encode("latin-1")
 
 # ── Restart modal ───────────────────────────────────────────────────────────
 

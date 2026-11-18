@@ -7,6 +7,7 @@ do. A scenario is a JSON file in tests/fixtures/policy:
     {
       "outputs": [ rows as the player lists them ],
       "settings": { the outputs part of the settings file },
+      "owntone": { the owntone part of the settings file, e.g. include_tv },
       "session": true,
       "steps": [ {"at": seconds, one of the keys below}, ... ],
       "expect": { "writes": [...], "units": {...}, "silence_chosen": bool, "log": [...] }
@@ -108,7 +109,9 @@ def _writes(fb: FakeBackend) -> list:
 def replay(name: str, tmp_path, monkeypatch) -> SimpleNamespace:
     scenario = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({"outputs": scenario.get("settings", {})}), encoding="utf-8")
+    config.write_text(
+        json.dumps({"outputs": scenario.get("settings", {}), "owntone": scenario.get("owntone", {})}),
+        encoding="utf-8")
     settings = SettingsStore(str(config), _save_interval_seconds=9999, _writer=lambda p, d: None)
     live_config.bind_settings_store(settings)
     policy = autostream_output_policy.get_policy()
@@ -120,6 +123,7 @@ def replay(name: str, tmp_path, monkeypatch) -> SimpleNamespace:
     fb = PlayerModel(authority, scenario["outputs"])
     authority.start(fb)
     authority.set_policy(policy)
+    authority.set_include_tv_reader(live_config.include_tv_for)
     runtime.reset_for_tests()
 
     collect = _Collect()
@@ -145,7 +149,7 @@ def replay(name: str, tmp_path, monkeypatch) -> SimpleNamespace:
                 authority.merge_for_tests(fb.rows, now=now)
             if "user" in step:
                 intent, args = step["user"]
-                reply = submit(Intent(intent, args, Origin.USER, "webui"))
+                reply = submit(Intent(intent, args, Origin.USER, "webui", context=SimpleNamespace(settings=settings)))
                 assert reply.ok, (intent, reply.error)
             if step.get("session") is False:
                 authority.note_session(False)

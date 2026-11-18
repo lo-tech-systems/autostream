@@ -259,6 +259,7 @@ _BROWSER_POST_EXPECTED = [
     ("/api/owntone/output-visibility",  AuthRequirement.FULL, True, False),
     ("/api/owntone/output-mode",        AuthRequirement.FULL, True, False),
     ("/api/owntone/output-offset",      AuthRequirement.FULL, True, False),
+    ("/api/owntone/output-include-tv",  AuthRequirement.FULL, True, False),
     ("/api/owntone/uncompressed-audio", AuthRequirement.FULL, True, False),
     ("/api/owntone/buffered-audio",     AuthRequirement.FULL, True, False),
     ("/api/owntone/start-buffer",       AuthRequirement.FULL, True, False),

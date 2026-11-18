@@ -295,6 +295,7 @@ def _every_intent(a, merge):
     a.unmute("1", Origin.POLICY, default_level=50)
     a.mute("1", Origin.DEVICE)
     a.unmute("1", Origin.DEVICE, default_level=0, only_token=1)
+    a.reselect("1", Origin.USER)
     a.deselect("3", Origin.USER)
     a.submit_pin("3", "1234")
     a.reapply_selected(recovery_volume=40)
@@ -595,3 +596,32 @@ def test_a_pause_timeout_turn_off_breaks_no_rule(authority, monkeypatch):
     assert a.held_when_told and all(h == frozenset() for h in a.held_when_told)
     assert lockcheck.ORDER_VIOLATIONS == []
     assert lockcheck.ACQUIRED_UNDER_STORE == []
+
+
+def test_the_include_tv_reader_runs_without_the_authority_lock(authority, tmp_path):
+    import json
+    import autostream_live_config as lc
+    from autostream_settings import SettingsStore
+    from autostream_state import Origin
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"owntone": {"include_tv": {"1": False}}}))
+    settings = SettingsStore(str(path), _save_interval_seconds=9999, _writer=lambda p, d: None)
+    held_in_reader = []
+
+    def reader(unit_id):
+        held_in_reader.append(lockcheck.held())
+        return lc.include_tv_for(unit_id)
+
+    try:
+        lc.bind_settings_store(settings)
+        authority.set_include_tv_reader(reader)
+        authority.merge_for_tests([row(1, selected=True, volume_percent=40)], boot="b0")
+        authority.select("1", Origin.USER, volume=30)
+        authority.reselect("1", Origin.USER)
+    finally:
+        lc.bind_settings_store(None)
+        settings.close(save=False)
+    assert held_in_reader
+    assert all(h <= {"apply"} for h in held_in_reader)
+    assert lockcheck.ORDER_VIOLATIONS == []

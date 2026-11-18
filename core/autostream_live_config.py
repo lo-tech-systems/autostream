@@ -89,6 +89,7 @@ from autostream_settings_schema import (
     register_field,
 )
 from autostream_state import Origin, store
+from autostream_state.outputs import get_authority
 from autostream_sysutils import run_admin_cmd
 
 _OWNER = "autostream_live_config"
@@ -1717,6 +1718,35 @@ def _set_output_offset(state: object, raw_offset: object, output_id: str) -> Out
     })
 
 
+def _set_output_include_tv(state: object, value: object, output_id: str) -> Outcome:
+    """Store whether an Apple TV's HomePods play with the Apple TV, and restart
+    the group when it is playing so the change takes effect now."""
+    if not store().snapshot().outputs.include_tv_supported:
+        return Outcome(ok=False, error="Not supported by the connected player")
+    if not output_id:
+        return Outcome(ok=False, error="output_id required")
+    settings = _store_of(state)
+    if settings is None:
+        return Outcome(ok=False, error="Settings store unavailable")
+    wanted = bool(value)
+    changed = wanted != include_tv_for(output_id)
+    if changed:
+        path = f"owntone.include_tv.{output_id}"
+        try:
+            settings._set_normalized(get_field_spec(path), wanted, path=path)
+        except Exception:
+            logging.exception("backend.setting.set: include_tv store update failed")
+            return Outcome(ok=False, error="Internal error")
+    reselected = False
+    if changed:
+        unit = store().snapshot().outputs.unit(output_id)
+        # A group that is not playing, or is waiting for its HomePods, takes
+        # the new value at its next start.
+        if unit is not None and unit.selected and unit.reported is not None and unit.reported.selected:
+            reselected = get_authority().reselect(output_id, Origin.USER, requester="webui").refused is None
+    return Outcome(ok=True, result={"output_id": output_id, "include_tv": wanted, "reselected": reselected})
+
+
 _BACKEND_SETTINGS = {
     "uncompressed_audio": lambda state, value, output_id: _native_setting(
         state, SETTING_UNCOMPRESSED_ALAC, value),
@@ -1728,6 +1758,7 @@ _BACKEND_SETTINGS = {
     "output_mode": lambda state, value, output_id: _set_output_mode(state, value, output_id),
     "output_visibility": lambda state, value, output_id: _set_output_visibility(state, value, output_id),
     "output_offset": lambda state, value, output_id: _set_output_offset(state, value, output_id),
+    "output_include_tv": lambda state, value, output_id: _set_output_include_tv(state, value, output_id),
 }
 
 

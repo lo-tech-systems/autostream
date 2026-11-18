@@ -1,0 +1,41 @@
+{
+ "outputs": [
+  {
+   "id": "1020",
+   "name": "TV A",
+   "type": "AirPlay 2",
+   "selected": false,
+   "volume": 40,
+   "session": {"state": "stopped", "failure": "none"},
+   "has_homepods": false
+  }
+ ],
+ "owntone": {"include_tv": {"1020": false}},
+ "session": true,
+ "steps": [
+  {"at": 0, "user": ["outputs.set", {"id": "1020", "selected": true, "volume": 40}]},
+  {"at": 3, "tick": true},
+  {"at": 5, "outputs": [
+   {
+    "id": "1020",
+    "name": "TV A",
+    "type": "AirPlay 2",
+    "selected": false,
+    "volume": 40,
+    "session": {"state": "stopped", "failure": "none"},
+    "has_homepods": true
+   }
+  ]}
+ ],
+ "expect": {
+  "writes": [
+   ["update_output", "1020", {"enabled": true, "include_tv": false}]
+  ],
+  "units": {
+   "1020": {"selected": true, "muted": false, "volume": 40}
+  },
+  "silence_chosen": false,
+  "paused": [],
+  "log": []
+ }
+}

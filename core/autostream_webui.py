@@ -106,6 +106,7 @@ from autostream_webui_api import (
     send_update_check_json,
     send_update_status_json,
     send_owntone_output_visibility_json,
+    send_owntone_output_include_tv_json,
     send_owntone_output_mode_json,
     send_owntone_output_offset_json,
     send_owntone_uncompressed_json,

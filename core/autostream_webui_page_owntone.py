@@ -367,6 +367,13 @@ def send_owntone_setup_page(
     user_agent_shown = not user_agent_result.unsupported
     user_agent_value = str(user_agent_result.value) if user_agent_result.ok and user_agent_result.value is not None else ""
 
+    include_tv_note_html = ""
+    if outputs_part.connected and not outputs_part.include_tv_supported:
+        include_tv_note_html = (
+            "<div class='storage-meta'>Playing an Apple TV's HomePods without the Apple TV "
+            "needs owntone-mini 1.6 or above.</div>"
+        )
+
     speakers_html = ""
     for i, row in enumerate(row_specs):
         spk = str(row["name"])
@@ -480,6 +487,25 @@ def send_owntone_setup_page(
                 f'<input type="hidden" name="mode_{i}" value="{current_mode}">{mode_note_html}'
             )
 
+        include_tv_html = ""
+        if out_id and outputs_part.include_tv_supported:
+            _stored_tv = parsed.owntone.include_tv.get(out_id)
+            if (output is not None and output.has_homepods) or _stored_tv is False:
+                _tv_change = (
+                    f"if(liveEnabled) settingsTransact('/api/owntone/output-include-tv',"
+                    f"{{output_id:{_out_id_js},include_tv:this.checked}});"
+                )
+                include_tv_html = f"""
+            <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.5rem;">
+              <label class="output-toggle" style="margin:0;">
+                <input type="checkbox"{' checked' if _stored_tv is not False else ''}
+                       onchange="{html.escape(_tv_change)}">
+                <span class="switch"></span>
+              </label>
+              <span>Play on the Apple TV as well as its HomePods</span>
+            </div>
+            <div class="helptext">Off: the HomePods play as a stereo pair and the Apple TV shows nothing. Changing this while they are playing restarts them.</div>"""
+
         _vis_change = (
             f"onShowToggle({i}, this.checked);"
             f"if(liveEnabled) settingsTransact('/api/owntone/output-visibility',"
@@ -500,6 +526,7 @@ def send_owntone_setup_page(
           <div id="spk_settings_{i}" style="display:{'block' if show else 'none'};">
             {mode_html}
             {offset_html}
+            {include_tv_html}
           </div>
           </fieldset>
         """
@@ -650,6 +677,7 @@ def send_owntone_setup_page(
         + f"<div>"
         + _audio_fieldset_html
         + speakers_html
+        + include_tv_note_html
         + f"</div>"
     )
     _body_suffix = f"""\

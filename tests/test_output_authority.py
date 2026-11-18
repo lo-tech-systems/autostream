@@ -12,6 +12,7 @@ started_authority fixture and a backend whose calls wait on an Event.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 import threading
@@ -942,6 +943,141 @@ class TestIncludeTv:
         assert calls == []
         assert snap().unit("1").selected is True and w.fb.calls == []
 
+    def test_a_held_select_is_tried_again_on_the_back_off_without_publishing(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        rows = self.tv_rows(has_homepods=False)
+        merge(w, rows)
+        w.a.select("1", Origin.USER, volume=30)
+        assert w.fb.calls == []
+        version = state.store().snapshot().version
+        tries = []
+        for t in range(1, 80):
+            w.t[0] = T0 + t
+            before = w.a._units["1"].held_until
+            merge(w, rows)
+            w.a.step(now=T0 + t)
+            if w.a._units["1"].held_until != before:
+                tries.append(t)
+        assert tries == [10, 30, 70]
+        assert w.fb.calls == []
+        assert state.store().snapshot().version == version
+        assert snap().unit("1").selected is True and snap().unit("1").availability == "starting"
+
+    def test_a_held_select_is_sent_at_once_when_the_homepods_appear(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, self.tv_rows(has_homepods=False))
+        w.a.select("1", Origin.USER, volume=30)
+        w.t[0] = T0 + 3
+        merge(w, self.tv_rows(has_homepods=True))
+        assert w.fb.updates()[0][1]["include_tv"] is False
+        assert w.fb.updates()[0][1]["enabled"] is True
+
+    def test_group_not_present_is_not_held_by_the_back_off(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, self.tv_rows())
+        w.fb.results = [error("group_not_present")]
+        out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out.pending is True and w.a._units["1"].held_until == 0.0
+
+
+class TestReselect:
+    def tv(self, **fields):
+        return [homepods_row(1, "streaming", selected=True, volume_percent=40, **fields)]
+
+    def test_it_switches_the_unit_off_and_on_with_the_current_choice(self, w):
+        choice = {"1": True}
+        w.a.set_include_tv_reader(lambda uid: choice[uid])
+        merge(w, self.tv())
+        choice["1"] = False
+        applied = w.a.reselect("1", Origin.USER, requester="webui")
+        assert applied.refused is None
+        first, second = w.fb.updates()
+        assert first[1]["enabled"] is False
+        assert second[1]["enabled"] is True and second[1]["include_tv"] is False
+        assert snap().unit("1").selected is True and snap().unit("1").volume == 40
+
+    def test_it_keeps_the_mute_and_does_not_touch_the_silence_choice(self, w):
+        w.a.set_include_tv_reader(lambda uid: True)
+        merge(w, self.tv())
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        silence = snap().silence_chosen
+        w.a.reselect("1", Origin.USER)
+        select = w.fb.updates()[-1][1]
+        assert select["volume_percent"] == 0
+        assert snap().unit("1").muted is True
+        assert snap().silence_chosen == silence
+
+    def test_it_is_refused_for_an_unknown_or_an_unselected_unit(self, w):
+        merge(w, [homepods_row(2)])
+        assert w.a.reselect("9", Origin.USER).refused == "unknown_output"
+        assert w.a.reselect("2", Origin.USER).refused == "not_selected"
+        assert w.fb.calls == []
+
+    def test_reconcile_stays_quiet_between_the_two_writes(self, w):
+        w.a.set_include_tv_reader(lambda uid: True)
+        merge(w, self.tv())
+        seen = []
+
+        def between(output_id, fields):
+            if fields.get("enabled") is False:
+                unit = w.a._units["1"]
+                unit.reported = dataclasses.replace(unit.reported, selected=False)
+                with w.a._lock:
+                    queued = len(w.a._wq)
+                    w.a._reconcile_locked(T0 + 30, outputs._Effects())
+                    seen.append((queued, len(w.a._wq)))
+
+        w.fb.on_update = between
+        w.a.reselect("1", Origin.USER)
+        enables = [f for _, f in w.fb.updates() if f.get("enabled") is True]
+        assert seen == [(1, 1)]
+        assert len(enables) == 1
+
+    def test_a_refused_switch_off_gets_one_more_select_once_the_unit_reads_off(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, self.tv())
+        w.fb.results = [error("http_error"), error("reselect_required")]
+        w.a.reselect("1", Origin.USER)
+        assert len(w.fb.updates()) == 2
+        merge(w, self.tv())
+        assert len(w.fb.updates()) == 2
+        merge(w, [homepods_row(1, "stopped", selected=False)])
+        assert len(w.fb.updates()) == 3
+        assert w.fb.updates()[2][1]["include_tv"] is False
+
+    def test_a_second_reselect_required_is_only_logged(self, w, caplog):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, self.tv())
+        w.fb.results = [error("http_error"), error("reselect_required"), error("reselect_required")]
+        w.a.reselect("1", Origin.USER)
+        with caplog.at_level(logging.WARNING, logger="autostream.outputs"):
+            merge(w, [homepods_row(1, "stopped", selected=False)])
+        assert len(w.fb.updates()) == 3
+        assert any("include_tv change refused" in r.getMessage() for r in caplog.records)
+        merge(w, [homepods_row(1, "stopped", selected=False)])
+        assert len(w.fb.updates()) == 3
+
+    def test_a_refused_switch_on_of_a_user_selection_reverts_and_says_why(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, self.tv())
+        w.fb.results = [ActionResult(ok=True), error("http_error")]
+        w.a.reselect("1", Origin.USER)
+        assert snap().unit("1").selected is False
+        assert snap().start_failure.reason == "refused" and snap().start_failure.unit_id == "1"
+
+    def test_a_new_boot_resends_the_stored_choice(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, self.tv(), boot="b0")
+        w.a.select("1", Origin.USER, volume=40)
+        w.fb.calls.clear()
+        merge(w, [homepods_row(1, "stopped", selected=False)], boot="b1")
+        for t in (3, 6):
+            w.t[0] = T0 + t
+            w.a.step(now=T0 + t)
+            merge(w, [homepods_row(1, "stopped", selected=False)], boot="b1")
+        assert any(f.get("include_tv") is False for _, f in w.fb.updates())
+
 
 class TestWaitOutcome:
     def test_a_finished_write_answers_at_once(self, w):
@@ -1415,6 +1551,24 @@ class TestRealThreads:
         live.fb.gate.set()
         assert wait_for(lambda: not any(
             t.name in ("outputs-authority", "outputs-apply") and t.is_alive() for t in threading.enumerate()))
+
+    def test_a_reselect_sends_its_two_writes_back_to_back_with_other_writes_around_it(self, live):
+        live.fb.rows = [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=40)]
+        live.a.set_include_tv_reader(lambda uid: True)
+        live.a.on_outputs_changed()
+        assert wait_for(lambda: snap().unit("2") is not None)
+        live.fb.calls.clear()
+        live.fb.gate = threading.Event()
+        first = live.a.set_volume("2", 10, Origin.USER)
+        assert live.fb.entered.wait(5)
+        again = live.a.reselect("1", Origin.USER)
+        other = live.a.set_volume("2", 12, Origin.USER)
+        live.fb.gate.set()
+        for applied in (first, again, other):
+            applied.outcome.result(5)
+        order = [(uid, f.get("enabled")) for uid, f in live.fb.updates() if uid == "1"]
+        assert order == [("1", False), ("1", True)]
+        assert snap().unit("1").selected is True
 
     def test_a_change_pushed_by_the_source_is_read_and_merged(self, live):
         live.fb.rows = [row(1, selected=True, volume_percent=55), row(2)]
