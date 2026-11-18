@@ -1025,9 +1025,9 @@ class TestP6ResyncRepush:
     def test_resync_pushes_set_repeat_enabled_with_current_config(self):
         client = self._mock_client_for_resync()
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             ok = _resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
@@ -1041,9 +1041,9 @@ class TestP6ResyncRepush:
         MonitorClient.set_repeat_enabled's target_minutes argument."""
         client = self._mock_client_for_resync()
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             ok = _resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
@@ -1060,9 +1060,9 @@ class TestP6ResyncRepush:
             _make_monitor(input_index=2, input_type="turntable"),
         ]
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             ok = _resync_monitor_daemon(
                 client, monitors, "/tmp/test.fifo", "http://localhost:3689",
@@ -1080,9 +1080,9 @@ class TestP6ResyncRepush:
         client = self._mock_client_for_resync()
         client.set_repeat_enabled.return_value = False
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             ok = _resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
@@ -1107,9 +1107,9 @@ class TestP6ResyncRepush:
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
              patch("autostream_core.reconcile_monitor_format") as monfmt, \
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             monfmt.return_value = MagicMock(ok=True, error="", error_code="")
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
@@ -1145,9 +1145,9 @@ class TestP6ResyncRepush:
         client.get_status.return_value = None
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
             ok = _resync_monitor_daemon(
@@ -1165,9 +1165,9 @@ class TestP6ResyncRepush:
         client = self._mock_client_for_resync()
         client.get_status.return_value = None
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True), \
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \
              patch("autostream_player_service.resolve_backend") as resolve_mock:
             rf.return_value = MagicMock(ok=True, message="")
             ok = _resync_monitor_daemon(
@@ -1210,9 +1210,9 @@ class TestMonitorFormatReconcileWiring:
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
              patch("autostream_core.push_resample_quality"), \
              patch("autostream_core.sync_monitor_args_for_audio_path"), \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             monfmt.return_value = MagicMock(ok=True, error="", error_code="")
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
@@ -1239,9 +1239,9 @@ class TestMonitorFormatReconcileWiring:
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
              patch("autostream_core.push_resample_quality"), \
              patch("autostream_core.sync_monitor_args_for_audio_path"), \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             monfmt.return_value = MagicMock(ok=True, error="", error_code="")
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
@@ -1265,9 +1265,9 @@ class TestMonitorFormatReconcileWiring:
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
              patch("autostream_core.push_resample_quality"), \
              patch("autostream_core.sync_monitor_args_for_audio_path"), \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             monfmt.return_value = MagicMock(ok=True, error="", error_code="")
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
@@ -1305,9 +1305,9 @@ class TestMonitorFormatReconcileWiring:
         client = self._mock_client_for_resync()
         client.get_status.return_value = None
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True), \
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \
              patch("autostream_player_service.resolve_backend") as resolve_mock:
             rf.return_value = MagicMock(ok=True, message="")
             ok = _resync_monitor_daemon(

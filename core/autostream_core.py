@@ -29,9 +29,9 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import autostream_announce as announce
-import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
+import autostream_monitor_control as monitor_control
 import autostream_repeat
 import autostream_runtime as runtime
 import autostream_session
@@ -238,7 +238,6 @@ def _bind_intent_handlers() -> None:
     """Import the modules that handle intents; each binds its rows when
     imported."""
     import autostream_live_config  # noqa: F401
-    import autostream_monitor_control  # noqa: F401
     import autostream_output_intents  # noqa: F401
 
 
@@ -1565,164 +1564,6 @@ def get_available_monitor_devices(
     except Exception as e:
         logging.warning("Could not query autostream_monitor devices: %s", e)
         return []
-
-
-def apply_input_eq(
-    client: "monitor_client.MonitorClient",
-    input_index: int,
-    eq_40hz_db: float,
-    eq_100hz_db: float,
-    eq_8khz_db: float,
-) -> bool:
-    """Push one input's EQ settings to autostream_monitor."""
-    return client.set_eq(
-        input_index,
-        eq_bands.build_monitor_eq_bands(eq_40hz_db, eq_100hz_db, eq_8khz_db),
-    )
-
-
-def apply_input_gain(
-    client: "monitor_client.MonitorClient",
-    input_index: int,
-    gain_db: float,
-) -> bool:
-    """Push one input's gain setting to autostream_monitor."""
-    return client.set_gain(input_index, float(gain_db))
-
-
-def set_live_input_eq(
-    input_index: int,
-    eq_40hz_db: float,
-    eq_100hz_db: float,
-    eq_8khz_db: float,
-    socket_path: Optional[str] = None,
-) -> bool:
-    """Apply one input's EQ immediately to the running autostream_monitor.
-
-    Uses a short-lived monitor connection so the Web UI can update EQ live
-    without depending on the coordinator loop's persistent client.
-    Also updates any matching in-process AudioMonitor cache so reconnect replay
-    continues to use the most recent live values until the INI is saved.
-    """
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return False
-        ok = apply_input_eq(client, input_index, eq_40hz_db, eq_100hz_db, eq_8khz_db)
-        if ok:
-            with runtime._monitors_lock:
-                for mon in runtime.all_monitors:
-                    if mon.input_index == input_index:
-                        mon.eq_40hz_db = float(eq_40hz_db)
-                        mon.eq_100hz_db = float(eq_100hz_db)
-                        mon.eq_8khz_db = float(eq_8khz_db)
-        return ok
-
-
-def set_live_input_gain(
-    input_index: int,
-    gain_db: float,
-    socket_path: Optional[str] = None,
-) -> bool:
-    """Apply one input's gain immediately to the running autostream_monitor."""
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return False
-        ok = apply_input_gain(client, input_index, gain_db)
-        if ok:
-            with runtime._monitors_lock:
-                for mon in runtime.all_monitors:
-                    if mon.input_index == input_index:
-                        mon.gain_db = float(gain_db)
-        return ok
-
-
-def apply_output_eq(
-    client: "monitor_client.MonitorClient",
-    peq1_db: float,
-    peq2_db: float,
-    peq3_db: float,
-    peq4_db: float,
-    peq5_db: float,
-    peq6_db: float,
-) -> bool:
-    """Push shared output EQ bands to autostream_monitor."""
-    return client.set_output_eq(
-        eq_bands.build_output_eq_bands(peq1_db, peq2_db, peq3_db, peq4_db, peq5_db, peq6_db)
-    )
-
-
-def apply_output_gain(client: "monitor_client.MonitorClient", gain_db: float) -> bool:
-    """Push shared output gain to autostream_monitor."""
-    return client.set_output_gain(float(gain_db))
-
-
-def apply_output_auto_trim(client: "monitor_client.MonitorClient", enabled: bool) -> bool:
-    """Push shared output auto-trim enable state to autostream_monitor."""
-    return client.set_output_auto_trim(bool(enabled))
-
-
-def _apply_output_eq_config(
-    client: "monitor_client.MonitorClient",
-    output_eq: OutputEqConfig,
-) -> bool:
-    """Push all persisted [output_eq] settings to the running monitor daemon.
-
-    Applies gain, EQ bands, and auto-trim in one call.  Used during both
-    initial startup and reconnect resync so the daemon always reflects the INI.
-    """
-    if not apply_output_gain(client, output_eq.gain_db):
-        return False
-    if not apply_output_eq(
-        client,
-        output_eq.peq1_db,
-        output_eq.peq2_db,
-        output_eq.peq3_db,
-        output_eq.peq4_db,
-        output_eq.peq5_db,
-        output_eq.peq6_db,
-    ):
-        return False
-    if not apply_output_auto_trim(client, output_eq.auto_trim_enabled):
-        return False
-    return True
-
-
-def set_live_output_eq(
-    peq1_db: float,
-    peq2_db: float,
-    peq3_db: float,
-    peq4_db: float,
-    peq5_db: float,
-    peq6_db: float,
-    socket_path: Optional[str] = None,
-) -> bool:
-    """Apply shared output EQ immediately to the running autostream_monitor."""
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return False
-        return apply_output_eq(client, peq1_db, peq2_db, peq3_db, peq4_db, peq5_db, peq6_db)
-
-
-def set_live_output_gain(
-    gain_db: float,
-    socket_path: Optional[str] = None,
-) -> bool:
-    """Apply shared output gain immediately to the running autostream_monitor."""
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return False
-        return apply_output_gain(client, gain_db)
-
-
-def set_live_output_auto_trim(
-    enabled: bool,
-    socket_path: Optional[str] = None,
-) -> bool:
-    """Apply shared output auto-trim enable state immediately to the running monitor."""
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return False
-        return apply_output_auto_trim(client, enabled)
 
 
 def get_live_output_eq_status(
@@ -3344,7 +3185,7 @@ def _resync_monitor_daemon(
             return False
 
     for m in monitors:
-        if not apply_input_gain(client, m.input_index, m.gain_db):
+        if not monitor_control.apply_input_gain(client, m.input_index, m.gain_db):
             logging.warning(
                 "set_gain(%d, %.1f) failed after reconnect; will retry full resync.",
                 m.input_index,
@@ -3354,7 +3195,7 @@ def _resync_monitor_daemon(
             return False
 
     for m in monitors:
-        if not apply_input_eq(
+        if not monitor_control.apply_input_eq(
             client,
             m.input_index,
             m.eq_40hz_db,
@@ -3379,7 +3220,7 @@ def _resync_monitor_daemon(
             return False
         m._allow_capture_sent = m._allow_capture
 
-    if not _apply_output_eq_config(client, output_eq):
+    if not monitor_control._apply_output_eq_config(client, output_eq):
         logging.warning("Output EQ config failed after reconnect; will retry full resync.")
         client.close()
         return False
@@ -3480,11 +3321,11 @@ def _configure_startup_monitors(
             logging.warning("start_input(1) failed during startup; will retry.")
             return None
 
-        if not apply_input_gain(client, 1, cfg.audio1.gain_db):
+        if not monitor_control.apply_input_gain(client, 1, cfg.audio1.gain_db):
             logging.warning("set_gain(1) failed during startup; will retry.")
             return None
 
-        if not apply_input_eq(
+        if not monitor_control.apply_input_eq(
             client,
             1,
             cfg.audio1.eq_40hz_db,
@@ -3545,11 +3386,11 @@ def _configure_startup_monitors(
             logging.error("start_input(2) failed; skipping second input.")
             audio2_ok = False
 
-        if audio2_ok and not apply_input_gain(client, 2, cfg.audio2.gain_db):
+        if audio2_ok and not monitor_control.apply_input_gain(client, 2, cfg.audio2.gain_db):
             logging.error("set_gain(2) failed; skipping second input.")
             audio2_ok = False
 
-        if audio2_ok and not apply_input_eq(
+        if audio2_ok and not monitor_control.apply_input_eq(
             client,
             2,
             cfg.audio2.eq_40hz_db,
@@ -3589,7 +3430,7 @@ def _configure_startup_monitors(
     for m in monitors:
         m.apply_allow_capture(client)
 
-    if not _apply_output_eq_config(client, cfg.output_eq):
+    if not monitor_control._apply_output_eq_config(client, cfg.output_eq):
         logging.warning("Output EQ config failed during startup; will retry.")
         return None
 

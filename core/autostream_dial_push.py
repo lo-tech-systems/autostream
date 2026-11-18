@@ -28,6 +28,7 @@ import time
 
 from autostream_state import (
     active_track,
+    eq_band_digest,
     outputs_list_digest,
     outputs_mute_digest,
     outputs_volume_digest,
@@ -180,7 +181,9 @@ class StateHints:
     pieces (the speaker list, the volumes, the mutes) with their values at the
     previous comparison, the first being the baseline; each that moved is sent
     as "outputs", "volume" or "mute", in that order, after the session and
-    tags and before the repeat and track."""
+    tags and before the repeat and track. A Change that touched the equaliser
+    part sends "eq" when the output bands moved, compared the same way; the
+    gains, the auto-trim and the input equalisers are not shown on a dial."""
 
     def __init__(self, notify=None) -> None:
         # None means notify_state_changed, looked up when a hint is sent.
@@ -209,6 +212,10 @@ class StateHints:
             ):
                 if self._moved(kind, lambda digest=digest: digest(outputs)):
                     self._send(kind, except_dial)
+        if "eq" in change.parts:
+            eq = _state_store().snapshot().eq
+            if self._moved("eq", lambda: eq_band_digest(eq)):
+                self._send("eq", except_dial)
         if not change.batch:
             return
         snap = _state_store().snapshot()

@@ -20,12 +20,8 @@ from autostream_config import (
     parse_config,
     save_config,
 )
-from autostream_core import (
-    get_live_output_eq_status,
-    set_live_output_auto_trim,
-    set_live_output_eq,
-    set_live_output_gain,
-)
+import autostream_monitor_control as monitor_control
+from autostream_core import get_live_output_eq_status
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_dial_push import notify_state_changed
 from autostream_intents import Intent, submit
@@ -379,7 +375,7 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
                     cfg = load_config(config_path)
                     cfg.setdefault("output_eq", {})[field] = normalised_bool
                     save_config(config_path, cfg)
-            set_live_output_auto_trim(normalised_bool)
+            monitor_control.set_live_output_auto_trim(normalised_bool)
         except Exception as e:
             logging.exception("apply_eq_field: save failed")
             return False, normalised_str, str(e)
@@ -403,11 +399,11 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
             oeq = p.output_eq
 
         if field == "gain_db":
-            set_live_output_gain(value)
+            monitor_control.set_live_output_gain(value)
         else:
             band_vals = {b: float(getattr(oeq, b)) for b in _OUTPUT_EQ_DB_FIELDS if b != "gain_db"}
             band_vals[field] = value
-            set_live_output_eq(
+            monitor_control.set_live_output_eq(
                 band_vals["peq1_db"],
                 band_vals["peq2_db"],
                 band_vals["peq3_db"],
@@ -539,7 +535,7 @@ def apply_eq_fields(config_path: str, values: dict, *, settings=None) -> tuple:
 
         band_vals = {b: float(getattr(oeq, b)) for b in _OUTPUT_EQ_BAND_FIELDS}
         band_vals.update(normalised)
-        set_live_output_eq(
+        monitor_control.set_live_output_eq(
             band_vals["peq1_db"], band_vals["peq2_db"], band_vals["peq3_db"],
             band_vals["peq4_db"], band_vals["peq5_db"], band_vals["peq6_db"],
         )
@@ -573,7 +569,7 @@ def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
                 for f in _OUTPUT_EQ_BAND_FIELDS:
                     eq[f] = 0.0
                 save_config(config_path, cfg)
-        set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        monitor_control.set_live_output_eq(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     except Exception as e:
         logging.exception("apply_eq_reset: reset failed")
         return False, str(e)

@@ -110,11 +110,6 @@ from autostream_core import (
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
-    set_live_input_eq,
-    set_live_input_gain,
-    set_live_output_auto_trim,
-    set_live_output_eq,
-    set_live_output_gain,
     update_live_dynamic_rate_matching,
     update_live_input_type,
     update_live_owntone_runtime,
@@ -1611,16 +1606,6 @@ def _validate_update_channel(value: object) -> str:
     return normalize_update_channel(value)
 
 
-def _validate_gain_db(value: object) -> float:
-    import math
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    v = float(value)
-    if not math.isfinite(v) or v < -10.0 or v > 10.0:
-        raise ValueError("Value must be between -10 and 10")
-    return v
-
-
 def _validate_volume_percent(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("Value must be a number")
@@ -1646,42 +1631,6 @@ def _validate_output_name(value: object) -> str:
     if not v:
         raise ValueError("Value must be a non-empty string")
     return v
-
-
-def _live_gain_1(state: object, value: object) -> bool:
-    return bool(set_live_input_gain(1, float(value)))
-
-
-def _live_gain_2(state: object, value: object) -> bool:
-    return bool(set_live_input_gain(2, float(value)))
-
-
-def _live_eq_1(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    return bool(set_live_input_eq(
-        1,
-        eq_40hz_db=snap.audio1.eq_40hz_db,
-        eq_100hz_db=snap.audio1.eq_100hz_db,
-        eq_8khz_db=snap.audio1.eq_8khz_db,
-    ))
-
-
-def _live_eq_2(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    return bool(set_live_input_eq(
-        2,
-        eq_40hz_db=snap.audio2.eq_40hz_db,
-        eq_100hz_db=snap.audio2.eq_100hz_db,
-        eq_8khz_db=snap.audio2.eq_8khz_db,
-    ))
 
 
 def _live_owntone_name(state: object, value: object) -> bool:
@@ -2032,14 +1981,6 @@ _SETTINGS_FIELDS: dict = {
     "webui.output_usage_poll_interval_seconds": _reg_settings_field("webui.output_usage_poll_interval_seconds", "webui", "output_usage_poll_interval_seconds", _validate_poll_interval, form_coerce=normalize_output_usage_poll_interval),
     "updates.update_channel":                   _reg_settings_field("updates.update_channel", "updates", "update_channel", _validate_update_channel),
     # Audio input gain/EQ (live: monitor)
-    "audio1.gain_db":                           _reg_settings_field("audio1.gain_db", "audio1", "gain_db", _validate_gain_db, _live_gain_1, live_class=LiveClass.LIVE),
-    "audio2.gain_db":                           _reg_settings_field("audio2.gain_db", "audio2", "gain_db", _validate_gain_db, _live_gain_2, live_class=LiveClass.LIVE),
-    "audio1.eq_40hz_db":                        _reg_settings_field("audio1.eq_40hz_db", "audio1", "eq_40hz_db", _validate_gain_db, _live_eq_1, live_class=LiveClass.LIVE),
-    "audio1.eq_100hz_db":                       _reg_settings_field("audio1.eq_100hz_db", "audio1", "eq_100hz_db", _validate_gain_db, _live_eq_1, live_class=LiveClass.LIVE),
-    "audio1.eq_8khz_db":                        _reg_settings_field("audio1.eq_8khz_db", "audio1", "eq_8khz_db", _validate_gain_db, _live_eq_1, live_class=LiveClass.LIVE),
-    "audio2.eq_40hz_db":                        _reg_settings_field("audio2.eq_40hz_db", "audio2", "eq_40hz_db", _validate_gain_db, _live_eq_2, live_class=LiveClass.LIVE),
-    "audio2.eq_100hz_db":                       _reg_settings_field("audio2.eq_100hz_db", "audio2", "eq_100hz_db", _validate_gain_db, _live_eq_2, live_class=LiveClass.LIVE),
-    "audio2.eq_8khz_db":                        _reg_settings_field("audio2.eq_8khz_db", "audio2", "eq_8khz_db", _validate_gain_db, _live_eq_2, live_class=LiveClass.LIVE),
     # OwnTone playback defaults (live: owntone runtime)
     "owntone.output_name":                      _reg_settings_field("owntone.output_name", "owntone", "output_name", _validate_output_name, _live_owntone_name, live_class=LiveClass.LIVE),
     "owntone.volume_percent":                   _reg_settings_field("owntone.volume_percent", "owntone", "volume_percent", _validate_volume_percent, _live_owntone_volume, live_class=LiveClass.LIVE),
@@ -2076,7 +2017,12 @@ class _LateFields(Mapping):
     autostream_live_config, which the web layer does not import: each row is
     read from the schema when asked, so it is there once that module is."""
 
-    _PATHS = ("repeat.enabled", "repeat.codec", "repeat.target_minutes")
+    _PATHS = (
+        "audio1.gain_db", "audio2.gain_db",
+        "audio1.eq_40hz_db", "audio1.eq_100hz_db", "audio1.eq_8khz_db",
+        "audio2.eq_40hz_db", "audio2.eq_100hz_db", "audio2.eq_8khz_db",
+        "repeat.enabled", "repeat.codec", "repeat.target_minutes",
+    )
 
     def __getitem__(self, path):
         spec = get_field_spec(path) if path in self._PATHS else None

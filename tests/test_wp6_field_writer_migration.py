@@ -78,7 +78,7 @@ class TestApplyEqFieldBoolViaStore:
         from autostream_appliance_models import apply_eq_field
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
-        with patch("autostream_appliance_models.set_live_output_auto_trim") as m_trim, \
+        with patch("autostream_monitor_control.set_live_output_auto_trim") as m_trim, \
              patch("autostream_appliance_models.save_config") as m_save:
             ok, norm, err = apply_eq_field(config_path, "auto_trim_enabled", "true", settings=store)
         assert ok is True
@@ -92,7 +92,7 @@ class TestApplyEqFieldBoolViaStore:
     def test_fallback_uses_save_config(self, tmp_path):
         from autostream_appliance_models import apply_eq_field
         config_path = _make_config(str(tmp_path))
-        with patch("autostream_appliance_models.set_live_output_auto_trim"), \
+        with patch("autostream_monitor_control.set_live_output_auto_trim"), \
              patch("autostream_appliance_models.save_config") as m_save, \
              patch("autostream_appliance_models.load_config") as m_load:
             m_load.return_value = {"output_eq": {"auto_trim_enabled": False}}
@@ -115,7 +115,7 @@ class TestApplyEqFieldDbViaStore:
         from autostream_appliance_models import apply_eq_field
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
-        with patch("autostream_appliance_models.set_live_output_gain") as m_gain, \
+        with patch("autostream_monitor_control.set_live_output_gain") as m_gain, \
              patch("autostream_appliance_models.save_config") as m_save:
             ok, norm, err = apply_eq_field(config_path, "gain_db", "3.5", settings=store)
         assert ok is True
@@ -129,7 +129,7 @@ class TestApplyEqFieldDbViaStore:
         from autostream_appliance_models import apply_eq_field
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
-        with patch("autostream_appliance_models.set_live_output_eq") as m_eq, \
+        with patch("autostream_monitor_control.set_live_output_eq") as m_eq, \
              patch("autostream_appliance_models.save_config"):
             ok, norm, err = apply_eq_field(config_path, "peq1_db", "2.0", settings=store)
         assert ok is True
@@ -143,7 +143,7 @@ class TestApplyEqFieldDbViaStore:
         from autostream_appliance_models import apply_eq_field, _OUTPUT_EQ_DB_MAX
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
-        with patch("autostream_appliance_models.set_live_output_gain"):
+        with patch("autostream_monitor_control.set_live_output_gain"):
             ok, norm, err = apply_eq_field(config_path, "gain_db", "9999", settings=store)
         assert ok is True
         assert float(norm) == pytest.approx(_OUTPUT_EQ_DB_MAX)
@@ -158,7 +158,7 @@ class TestApplyEqFieldDbViaStore:
     def test_fallback_uses_save_config(self, tmp_path):
         from autostream_appliance_models import apply_eq_field
         config_path = _make_config(str(tmp_path))
-        with patch("autostream_appliance_models.set_live_output_gain"), \
+        with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_appliance_models.save_config") as m_save, \
              patch("autostream_appliance_models.load_config") as m_load, \
              patch("autostream_appliance_models.parse_config") as m_parse:
@@ -176,7 +176,7 @@ class TestApplyEqResetViaStore:
         from autostream_appliance_models import apply_eq_reset, _OUTPUT_EQ_BAND_FIELDS
         config_path = _make_config(str(tmp_path), extra={"output_eq": {"peq1_db": 5.0, "peq2_db": 3.0}})
         store = _make_store(config_path)
-        with patch("autostream_appliance_models.set_live_output_eq") as m_eq, \
+        with patch("autostream_monitor_control.set_live_output_eq") as m_eq, \
              patch("autostream_appliance_models.save_config") as m_save:
             ok, err = apply_eq_reset(config_path, settings=store)
         assert ok is True
@@ -190,7 +190,7 @@ class TestApplyEqResetViaStore:
     def test_fallback_uses_save_config(self, tmp_path):
         from autostream_appliance_models import apply_eq_reset
         config_path = _make_config(str(tmp_path))
-        with patch("autostream_appliance_models.set_live_output_eq"), \
+        with patch("autostream_monitor_control.set_live_output_eq"), \
              patch("autostream_appliance_models.save_config") as m_save, \
              patch("autostream_appliance_models.load_config") as m_load:
             m_load.return_value = {"output_eq": {}}

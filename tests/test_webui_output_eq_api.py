@@ -94,10 +94,10 @@ def _call_eq_config(body: dict | str, tmp_path: Path,
     state = _make_state(tmp_path)
 
     with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-         patch("autostream_appliance_models.set_live_output_gain",
-               side_effect=live_exc) if live_exc else patch("autostream_appliance_models.set_live_output_gain"), \
-         patch("autostream_appliance_models.set_live_output_eq"), \
-         patch("autostream_appliance_models.set_live_output_auto_trim"), \
+         patch("autostream_monitor_control.set_live_output_gain",
+               side_effect=live_exc) if live_exc else patch("autostream_monitor_control.set_live_output_gain"), \
+         patch("autostream_monitor_control.set_live_output_eq"), \
+         patch("autostream_monitor_control.set_live_output_auto_trim"), \
          (patch("autostream_appliance_models.save_config", side_effect=save_exc)
           if save_exc else patch("autostream_appliance_models.save_config")):
         send_output_eq_config_json(MagicMock(), state, body_str)
@@ -114,8 +114,8 @@ def _call_eq_reset(tmp_path: Path, save_exc=None) -> tuple[int, dict]:
     state = _make_state(tmp_path)
 
     with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-         patch("autostream_appliance_models.set_live_output_gain"), \
-         patch("autostream_appliance_models.set_live_output_eq"), \
+         patch("autostream_monitor_control.set_live_output_gain"), \
+         patch("autostream_monitor_control.set_live_output_eq"), \
          (patch("autostream_appliance_models.save_config", side_effect=save_exc)
           if save_exc else patch("autostream_appliance_models.save_config")):
         send_output_eq_reset_json(MagicMock(), state)
@@ -200,9 +200,9 @@ class TestOutputEQConfigAllBandReconstruction:
         eq_calls = []
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_appliance_models.set_live_output_gain"), \
-             patch("autostream_appliance_models.set_live_output_auto_trim"), \
-             patch("autostream_appliance_models.set_live_output_eq",
+             patch("autostream_monitor_control.set_live_output_gain"), \
+             patch("autostream_monitor_control.set_live_output_auto_trim"), \
+             patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: eq_calls.append(a)):
             send_output_eq_config_json(
                 MagicMock(), state,
@@ -218,10 +218,10 @@ class TestOutputEQConfigAllBandReconstruction:
         eq_calls = []
 
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_appliance_models.set_live_output_auto_trim"), \
-             patch("autostream_appliance_models.set_live_output_gain",
+             patch("autostream_monitor_control.set_live_output_auto_trim"), \
+             patch("autostream_monitor_control.set_live_output_gain",
                    side_effect=lambda v: gain_calls.append(v)), \
-             patch("autostream_appliance_models.set_live_output_eq",
+             patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: eq_calls.append(a)):
             send_output_eq_config_json(
                 MagicMock(), state,
@@ -273,7 +273,7 @@ class TestOutputEQReset:
         state.config_path.write_text(json.dumps(cfg))
 
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_appliance_models.set_live_output_eq"):
+             patch("autostream_monitor_control.set_live_output_eq"):
             send_output_eq_reset_json(MagicMock(), state)
 
         saved = json.loads(state.config_path.read_text())
@@ -287,9 +287,9 @@ class TestOutputEQReset:
         state = _make_state(tmp_path)
 
         with patch("autostream_webui_api.send_json"), \
-             patch("autostream_appliance_models.set_live_output_gain",
+             patch("autostream_monitor_control.set_live_output_gain",
                    side_effect=lambda v: gain_calls.append(v)), \
-             patch("autostream_appliance_models.set_live_output_eq",
+             patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: eq_calls.append(a)):
             send_output_eq_reset_json(MagicMock(), state)
 

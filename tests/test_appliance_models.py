@@ -284,7 +284,7 @@ class TestApplyEqField:
 
     def test_gain_clamped_to_max(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.set_live_output_gain"), \
+        with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_appliance_models.save_config"):
             ok, norm, err = models.apply_eq_field(str(cfg_path), "gain_db", "99")
         assert ok is True
@@ -292,7 +292,7 @@ class TestApplyEqField:
 
     def test_gain_clamped_to_min(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.set_live_output_gain"), \
+        with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_appliance_models.save_config"):
             ok, norm, err = models.apply_eq_field(str(cfg_path), "gain_db", "-99")
         assert float(norm) >= -12.0
@@ -300,7 +300,7 @@ class TestApplyEqField:
     def test_gain_change_calls_set_live_output_gain(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         gain_calls = []
-        with patch("autostream_appliance_models.set_live_output_gain",
+        with patch("autostream_monitor_control.set_live_output_gain",
                    side_effect=lambda v: gain_calls.append(v)), \
              patch("autostream_appliance_models.save_config"):
             models.apply_eq_field(str(cfg_path), "gain_db", "2.5")
@@ -309,7 +309,7 @@ class TestApplyEqField:
     def test_peq_change_calls_set_live_output_eq(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         eq_calls = []
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: eq_calls.append(a)), \
              patch("autostream_appliance_models.save_config"):
             models.apply_eq_field(str(cfg_path), "peq3_db", "4.0")
@@ -319,16 +319,16 @@ class TestApplyEqField:
     def test_peq_change_does_not_call_set_live_output_gain(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         gain_calls = []
-        with patch("autostream_appliance_models.set_live_output_gain",
+        with patch("autostream_monitor_control.set_live_output_gain",
                    side_effect=lambda v: gain_calls.append(v)), \
-             patch("autostream_appliance_models.set_live_output_eq"), \
+             patch("autostream_monitor_control.set_live_output_eq"), \
              patch("autostream_appliance_models.save_config"):
             models.apply_eq_field(str(cfg_path), "peq1_db", "1.0")
         assert not gain_calls
 
     def test_auto_trim_true_string_parsed(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.set_live_output_auto_trim"), \
+        with patch("autostream_monitor_control.set_live_output_auto_trim"), \
              patch("autostream_appliance_models.save_config"):
             ok, norm, err = models.apply_eq_field(str(cfg_path), "auto_trim_enabled", "true")
         assert ok is True
@@ -336,14 +336,14 @@ class TestApplyEqField:
 
     def test_auto_trim_false_string_parsed(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.set_live_output_auto_trim"), \
+        with patch("autostream_monitor_control.set_live_output_auto_trim"), \
              patch("autostream_appliance_models.save_config"):
             ok, norm, err = models.apply_eq_field(str(cfg_path), "auto_trim_enabled", "0")
         assert norm == "false"
 
     def test_save_failure_returns_ok_false(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.set_live_output_gain"), \
+        with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_appliance_models.save_config",
                    side_effect=OSError("disk full")):
             ok, norm, err = models.apply_eq_field(str(cfg_path), "gain_db", "1.0")
@@ -358,8 +358,8 @@ class TestApplyEqField:
 class TestApplyEqReset:
     def test_ok_true_on_success(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.set_live_output_gain"), \
-             patch("autostream_appliance_models.set_live_output_eq"):
+        with patch("autostream_monitor_control.set_live_output_gain"), \
+             patch("autostream_monitor_control.set_live_output_eq"):
             ok, err = models.apply_eq_reset(str(cfg_path))
         assert ok is True
         assert err == ""
@@ -368,8 +368,8 @@ class TestApplyEqReset:
         cfg_path = _make_config_file(tmp_path, {
             "output_eq": {"gain_db": 5.0, "peq1_db": 3.0, "peq6_db": -2.0}
         })
-        with patch("autostream_appliance_models.set_live_output_gain"), \
-             patch("autostream_appliance_models.set_live_output_eq"):
+        with patch("autostream_monitor_control.set_live_output_gain"), \
+             patch("autostream_monitor_control.set_live_output_eq"):
             models.apply_eq_reset(str(cfg_path))
         saved = json.loads(cfg_path.read_text())
         for f in ("peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db"):
@@ -379,17 +379,17 @@ class TestApplyEqReset:
     def test_reset_does_not_call_set_live_output_gain(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         gain_calls = []
-        with patch("autostream_appliance_models.set_live_output_gain",
+        with patch("autostream_monitor_control.set_live_output_gain",
                    side_effect=lambda v: gain_calls.append(v)), \
-             patch("autostream_appliance_models.set_live_output_eq"):
+             patch("autostream_monitor_control.set_live_output_eq"):
             models.apply_eq_reset(str(cfg_path))
         assert gain_calls == [], "set_live_output_gain must not be called by Flat reset"
 
     def test_reset_calls_set_live_output_eq_all_zeros(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         eq_calls = []
-        with patch("autostream_appliance_models.set_live_output_gain"), \
-             patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_gain"), \
+             patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: eq_calls.append(a)):
             models.apply_eq_reset(str(cfg_path))
         assert eq_calls and all(v == 0.0 for v in eq_calls[0])

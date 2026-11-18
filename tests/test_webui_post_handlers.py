@@ -112,7 +112,7 @@ def _call_eq(body: str | dict, tmp_path: Path) -> dict:
         sent.append((code, data))
 
     with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
-         patch("autostream_webui_post_handlers.set_live_input_eq", return_value=True):
+         patch("autostream_monitor_control.set_live_input_eq", return_value=True):
         handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
     return sent[0] if sent else (None, {})
@@ -141,7 +141,7 @@ def _call_gain(body: str | dict, tmp_path: Path) -> tuple:
         state.settings = store
         with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.set_live_input_gain", return_value=True):
+             patch("autostream_monitor_control.set_live_input_gain", return_value=True):
             handle_live_input_gain_update(MagicMock(), state, body)
     finally:
         store.close(save=False)
@@ -273,7 +273,7 @@ class TestLiveInputEQValidation:
             sent.append((code, data))
 
         with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_post_handlers.set_live_input_eq", mock_fn):
+             patch("autostream_monitor_control.set_live_input_eq", mock_fn):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0] if sent else (None, {})
@@ -314,7 +314,7 @@ class TestLiveInputEQValidation:
 
         with patch("autostream_webui_post_handlers.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_post_handlers.set_live_input_eq", mock_eq), \
+             patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
@@ -339,7 +339,7 @@ class TestLiveInputEQValidation:
 
         with patch("autostream_webui_post_handlers.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_post_handlers.set_live_input_eq", mock_eq), \
+             patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
@@ -362,7 +362,7 @@ class TestLiveInputEQValidation:
 
         with patch("autostream_webui_post_handlers.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_post_handlers.set_live_input_eq", mock_eq), \
+             patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
@@ -434,7 +434,7 @@ class TestLiveInputGainValidation:
 
         # Delegate path now goes through autostream_webui_api; patch there.
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.set_live_input_gain", mock_fn):
+             patch("autostream_monitor_control.set_live_input_gain", mock_fn):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
         code, data = sent[0] if sent else (None, {})
@@ -462,7 +462,7 @@ class TestLiveInputGainValidation:
 
         with patch("autostream_webui_api.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.set_live_input_gain", return_value=True), \
+             patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
@@ -484,7 +484,7 @@ class TestLiveInputGainValidation:
 
         with patch("autostream_webui_api.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.set_live_input_gain", return_value=True), \
+             patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 

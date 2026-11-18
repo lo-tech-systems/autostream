@@ -1,0 +1,10 @@
+# The input and output equaliser and gain commands moved from the coordinator into the monitor control module.
+autostream_core.apply_input_eq -> autostream_monitor_control.apply_input_eq  alias=monitor_control
+autostream_core.apply_input_gain -> autostream_monitor_control.apply_input_gain  alias=monitor_control
+autostream_core._apply_output_eq_config -> autostream_monitor_control._apply_output_eq_config  alias=monitor_control
+autostream_webui_api.set_live_input_eq -> autostream_monitor_control.set_live_input_eq  alias=monitor_control
+autostream_webui_api.set_live_input_gain -> autostream_monitor_control.set_live_input_gain  alias=monitor_control
+autostream_webui_post_handlers.set_live_input_eq -> autostream_monitor_control.set_live_input_eq  alias=monitor_control
+autostream_appliance_models.set_live_output_eq -> autostream_monitor_control.set_live_output_eq  alias=monitor_control
+autostream_appliance_models.set_live_output_gain -> autostream_monitor_control.set_live_output_gain  alias=monitor_control
+autostream_appliance_models.set_live_output_auto_trim -> autostream_monitor_control.set_live_output_auto_trim  alias=monitor_control

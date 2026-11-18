@@ -433,7 +433,7 @@ class TestFederationEqConfig:
         h = _make_handler("POST", "/api/federation/v1/equaliser/config",
                           body=json.dumps(body).encode(),
                           headers={"Authorization": bearer})
-        with patch("autostream_appliance_models.set_live_output_gain"), \
+        with patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_appliance_models.save_config"):
             return _call(h, state)
 
@@ -478,8 +478,8 @@ class TestFederationEqReset:
         h = _make_handler("POST", "/api/federation/v1/equaliser/reset",
                           body=b"",
                           headers={"Authorization": bearer})
-        with patch("autostream_appliance_models.set_live_output_gain"), \
-             patch("autostream_appliance_models.set_live_output_eq"):
+        with patch("autostream_monitor_control.set_live_output_gain"), \
+             patch("autostream_monitor_control.set_live_output_eq"):
             code, data = _call(h, state)
         assert code == 200
         assert data["ok"] is True

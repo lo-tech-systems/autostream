@@ -416,9 +416,9 @@ class TestResyncAudioPathFreshness:
              patch("autostream_core.reconcile_monitor_format") as monfmt, \
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
              patch("autostream_core._sync_audio_path_backend") as sync_backend, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True), \
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \
              caplog.at_level("WARNING"):
             rf.return_value = MagicMock(ok=True, message="")
             monfmt.return_value = MagicMock(ok=True, error="", error_code="")
@@ -469,9 +469,9 @@ class TestResyncAudioPathFreshness:
                  patch("autostream_core.reconcile_monitor_format") as monfmt, \
                  patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
                  patch("autostream_core.push_resample_quality"), \
-                 patch("autostream_core.apply_input_gain", return_value=True), \
-                 patch("autostream_core.apply_input_eq", return_value=True), \
-                 patch("autostream_core._apply_output_eq_config", return_value=True):
+                 patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+                 patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+                 patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
                 rf.return_value = MagicMock(ok=True, message="")
                 monfmt.return_value = MagicMock(ok=True, error="", error_code="")
                 fmt.return_value = MagicMock(ok=True, error="", error_code="")
@@ -521,9 +521,9 @@ class TestResyncAudioPathFreshness:
                  patch("autostream_core.reconcile_monitor_format") as monfmt, \
                  patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
                  patch("autostream_core.push_resample_quality"), \
-                 patch("autostream_core.apply_input_gain", return_value=True), \
-                 patch("autostream_core.apply_input_eq", return_value=True), \
-                 patch("autostream_core._apply_output_eq_config", return_value=True):
+                 patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+                 patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+                 patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
                 rf.return_value = MagicMock(ok=True, message="")
                 monfmt.return_value = MagicMock(ok=True, error="", error_code="")
                 fmt.return_value = MagicMock(ok=True, error="", error_code="")
@@ -561,9 +561,9 @@ class TestResyncAudioPathFreshness:
              patch("autostream_core.reconcile_monitor_format") as monfmt, \
              patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
              patch("autostream_core.push_resample_quality"), \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True), \
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \
              caplog.at_level("WARNING"):
             rf.return_value = MagicMock(ok=True, message="")
             monfmt.return_value = MagicMock(ok=True, error="", error_code="")

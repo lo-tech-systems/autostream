@@ -22,6 +22,7 @@ import threading
 from typing import Optional
 from urllib.parse import parse_qs, quote
 
+from autostream_intents import Intent, Origin, submit
 from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_config import (
     CONFIG_IO_LOCK,
@@ -34,8 +35,6 @@ from autostream_config import (
 )
 from autostream_core import (
     apply_track_id_config_live,
-    set_live_input_eq,
-    set_live_input_gain,
     update_live_owntone_runtime,
     update_live_silence_seconds,
     update_playback_input_config,
@@ -463,28 +462,12 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
             send_json(handler, 400, {"ok": False, "error": "EQ gain must be between -10 and 10 dB"})
             return
 
-    # Persist all three bands atomically to the store (all bands or none).
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
-        section = f"audio{input_index}"
-        try:
-            def _mutate(raw: dict) -> None:
-                s = raw.setdefault(section, {})
-                s["eq_40hz_db"] = eq_40hz_db
-                s["eq_100hz_db"] = eq_100hz_db
-                s["eq_8khz_db"] = eq_8khz_db
-            settings.update(_mutate)
-        except Exception:
-            logging.warning("handle_live_input_eq_update: store write failed", exc_info=True)
-
-    ok = set_live_input_eq(
-        input_index=input_index,
-        eq_40hz_db=eq_40hz_db,
-        eq_100hz_db=eq_100hz_db,
-        eq_8khz_db=eq_8khz_db,
-    )
-    if not ok:
+    reply = submit(Intent(
+        "input.eq.set",
+        {"input": input_index, "eq_40hz_db": eq_40hz_db, "eq_100hz_db": eq_100hz_db,
+         "eq_8khz_db": eq_8khz_db},
+        Origin.USER, "webui", context=state))
+    if not reply.ok:
         send_json(handler, 200, {"ok": False, "error": "Could not update live EQ"})
         return
 

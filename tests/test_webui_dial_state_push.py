@@ -1035,7 +1035,7 @@ class TestEqualiserCallSites:
     def test_apply_eq_fields_hints_eq_once_after_the_live_apply(self, tmp_path):
         import autostream_appliance_models as models
         order = []
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: order.append("live")), \
              patch("autostream_appliance_models.notify_state_changed",
                    side_effect=lambda *k: order.append(k)) as notify:
@@ -1047,7 +1047,7 @@ class TestEqualiserCallSites:
 
     def test_apply_eq_fields_does_not_hint_when_the_live_apply_raises(self, tmp_path):
         import autostream_appliance_models as models
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=RuntimeError("no mixer")), \
              patch("autostream_appliance_models.notify_state_changed") as notify:
             ok, err = models.apply_eq_fields(self._config(tmp_path), {"peq1_db": 2.0})
@@ -1076,7 +1076,7 @@ class TestEqualiserCallSites:
     def test_apply_eq_reset_hints_eq_once_after_the_live_apply(self, tmp_path):
         import autostream_appliance_models as models
         order = []
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: order.append("live")), \
              patch("autostream_appliance_models.notify_state_changed",
                    side_effect=lambda *k: order.append(k)) as notify:
@@ -1087,7 +1087,7 @@ class TestEqualiserCallSites:
 
     def test_apply_eq_reset_does_not_hint_when_the_live_apply_raises(self, tmp_path):
         import autostream_appliance_models as models
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=RuntimeError("no mixer")), \
              patch("autostream_appliance_models.notify_state_changed") as notify:
             ok, err = models.apply_eq_reset(self._config(tmp_path))
@@ -1097,7 +1097,7 @@ class TestEqualiserCallSites:
     def test_apply_eq_field_hints_eq_for_a_band_after_the_live_apply(self, tmp_path):
         import autostream_appliance_models as models
         order = []
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: order.append("live")), \
              patch("autostream_appliance_models.notify_state_changed",
                    side_effect=lambda *k: order.append(k)) as notify:
@@ -1108,7 +1108,7 @@ class TestEqualiserCallSites:
 
     def test_apply_eq_field_does_not_hint_for_a_gain_change(self, tmp_path):
         import autostream_appliance_models as models
-        with patch("autostream_appliance_models.set_live_output_gain") as live, \
+        with patch("autostream_monitor_control.set_live_output_gain") as live, \
              patch("autostream_appliance_models.notify_state_changed") as notify:
             ok, norm, err = models.apply_eq_field(self._config(tmp_path), "gain_db", "-2")
         assert ok is True
@@ -1117,7 +1117,7 @@ class TestEqualiserCallSites:
 
     def test_apply_eq_field_does_not_hint_for_an_auto_trim_change(self, tmp_path):
         import autostream_appliance_models as models
-        with patch("autostream_appliance_models.set_live_output_auto_trim") as live, \
+        with patch("autostream_monitor_control.set_live_output_auto_trim") as live, \
              patch("autostream_appliance_models.notify_state_changed") as notify:
             ok, norm, err = models.apply_eq_field(
                 self._config(tmp_path), "auto_trim_enabled", "true")
@@ -1131,7 +1131,7 @@ class TestEqualiserCallSites:
                 ("peq1_db", "3", "set_live_output_eq"),
                 ("gain_db", "-2", "set_live_output_gain"),
                 ("auto_trim_enabled", "true", "set_live_output_auto_trim")):
-            with patch(f"autostream_appliance_models.{target}",
+            with patch(f"autostream_monitor_control.{target}",
                        side_effect=RuntimeError("no mixer")), \
                  patch("autostream_appliance_models.notify_state_changed") as notify:
                 ok, norm, err = models.apply_eq_field(self._config(tmp_path), field, value)

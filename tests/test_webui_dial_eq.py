@@ -189,7 +189,7 @@ class TestApplyEqFields:
                            "peq5_db": 0.0, "peq6_db": 0.0},
         }), encoding="utf-8")
         eq_calls = []
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: eq_calls.append(a)):
             ok, err = models.apply_eq_fields(str(cfg_path), models.eq_fields_for_bass(3))
         assert ok is True
@@ -202,7 +202,7 @@ class TestApplyEqFields:
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
         eq_calls = []
-        with patch("autostream_appliance_models.set_live_output_eq",
+        with patch("autostream_monitor_control.set_live_output_eq",
                    side_effect=lambda *a: eq_calls.append(a)):
             values = {**models.eq_fields_for_bass(2), **models.eq_fields_for_treble(4)}
             ok, err = models.apply_eq_fields(str(cfg_path), values)
@@ -213,7 +213,7 @@ class TestApplyEqFields:
     def test_set_with_both_keys_writes_four_fields_in_one_store_update(self, tmp_path):
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
-        with patch("autostream_appliance_models.set_live_output_eq"):
+        with patch("autostream_monitor_control.set_live_output_eq"):
             values = {**models.eq_fields_for_bass(2), **models.eq_fields_for_treble(4)}
             ok, err = models.apply_eq_fields(str(cfg_path), values)
         assert ok is True

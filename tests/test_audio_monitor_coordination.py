@@ -26,6 +26,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_core as core
+import autostream_monitor_control as monitor_control
 import autostream_state
 from autostream_core import AudioMonitor
 from autostream_monitor_client import MonitorClient
@@ -564,7 +565,7 @@ def _fake_connected(client):
 class TestSetLiveInputEq:
     def test_returns_false_when_monitor_unavailable(self):
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            result = core.set_live_input_eq(1, 0.0, 0.0, 0.0)
+            result = monitor_control.set_live_input_eq(1, 0.0, 0.0, 0.0)
         assert result is False
 
     def test_cache_updated_on_success(self):
@@ -573,7 +574,7 @@ class TestSetLiveInputEq:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_eq.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_input_eq(1, 2.5, -1.0, 3.0)
+            monitor_control.set_live_input_eq(1, 2.5, -1.0, 3.0)
         assert mon.eq_40hz_db == pytest.approx(2.5)
         assert mon.eq_100hz_db == pytest.approx(-1.0)
         assert mon.eq_8khz_db == pytest.approx(3.0)
@@ -584,7 +585,7 @@ class TestSetLiveInputEq:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_eq.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.set_live_input_eq(1, 9.0, 9.0, 9.0)
+            result = monitor_control.set_live_input_eq(1, 9.0, 9.0, 9.0)
         assert result is False
         assert mon.eq_40hz_db == pytest.approx(1.0)  # unchanged
 
@@ -592,7 +593,7 @@ class TestSetLiveInputEq:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_eq.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_input_eq(2, 1.0, 2.0, 3.0)
+            monitor_control.set_live_input_eq(2, 1.0, 2.0, 3.0)
         mock_client.set_eq.assert_called_once()
         idx, bands = mock_client.set_eq.call_args[0]
         assert idx == 2
@@ -610,7 +611,7 @@ class TestSetLiveInputEq:
             close_calls.append(True)
 
         with patch.object(monitor_client, "_connected_monitor", tracking_cm):
-            core.set_live_input_eq(1, 0.0, 0.0, 0.0)
+            monitor_control.set_live_input_eq(1, 0.0, 0.0, 0.0)
         assert close_calls, "context manager must exit (client closed) on success"
 
     def test_client_closed_on_failure(self):
@@ -624,14 +625,14 @@ class TestSetLiveInputEq:
             close_calls.append(True)
 
         with patch.object(monitor_client, "_connected_monitor", tracking_cm):
-            core.set_live_input_eq(1, 0.0, 0.0, 0.0)
+            monitor_control.set_live_input_eq(1, 0.0, 0.0, 0.0)
         assert close_calls, "context manager must exit (client closed) on failure"
 
 
 class TestSetLiveInputGain:
     def test_returns_false_when_monitor_unavailable(self):
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            assert core.set_live_input_gain(1, 3.0) is False
+            assert monitor_control.set_live_input_gain(1, 3.0) is False
 
     def test_cache_updated_on_success(self):
         mon = _make_monitor(input_index=2)
@@ -639,7 +640,7 @@ class TestSetLiveInputGain:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_gain.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_input_gain(2, 4.5)
+            monitor_control.set_live_input_gain(2, 4.5)
         assert mon.gain_db == pytest.approx(4.5)
 
     def test_cache_not_updated_on_failure(self):
@@ -648,27 +649,27 @@ class TestSetLiveInputGain:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_gain.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_input_gain(2, 9.0)
+            monitor_control.set_live_input_gain(2, 9.0)
         assert mon.gain_db == pytest.approx(1.0)  # unchanged
 
     def test_sends_correct_index_and_gain(self):
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_gain.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_input_gain(1, -3.5)
+            monitor_control.set_live_input_gain(1, -3.5)
         mock_client.set_gain.assert_called_once_with(1, -3.5)
 
 
 class TestSetLiveOutputEq:
     def test_returns_false_when_unavailable(self):
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            assert core.set_live_output_eq(0, 0, 0, 0, 0, 0) is False
+            assert monitor_control.set_live_output_eq(0, 0, 0, 0, 0, 0) is False
 
     def test_sends_six_bands_to_set_output_eq(self):
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_output_eq.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_output_eq(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+            monitor_control.set_live_output_eq(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
         mock_client.set_output_eq.assert_called_once()
         bands = mock_client.set_output_eq.call_args[0][0]
         assert len(bands) == 6
@@ -677,33 +678,33 @@ class TestSetLiveOutputEq:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_output_eq.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.set_live_output_eq(0, 0, 0, 0, 0, 0)
+            result = monitor_control.set_live_output_eq(0, 0, 0, 0, 0, 0)
         assert result is False
 
 
 class TestSetLiveOutputGain:
     def test_returns_false_when_unavailable(self):
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            assert core.set_live_output_gain(2.0) is False
+            assert monitor_control.set_live_output_gain(2.0) is False
 
     def test_sends_gain_to_set_output_gain(self):
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_output_gain.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_output_gain(3.5)
+            monitor_control.set_live_output_gain(3.5)
         mock_client.set_output_gain.assert_called_once_with(pytest.approx(3.5))
 
 
 class TestSetLiveOutputAutoTrim:
     def test_returns_false_when_unavailable(self):
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            assert core.set_live_output_auto_trim(True) is False
+            assert monitor_control.set_live_output_auto_trim(True) is False
 
     def test_sends_enabled_flag(self):
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_output_auto_trim.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.set_live_output_auto_trim(True)
+            monitor_control.set_live_output_auto_trim(True)
         mock_client.set_output_auto_trim.assert_called_once_with(True)
 
 
@@ -1385,9 +1386,9 @@ class TestRateMatchingFlagOnEveryPush:
             _make_monitor(input_index=2, dynamic_rate_matching=False),
         ]
         with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.apply_input_gain", return_value=True), \
-             patch("autostream_core.apply_input_eq", return_value=True), \
-             patch("autostream_core._apply_output_eq_config", return_value=True):
+             patch("autostream_monitor_control.apply_input_gain", return_value=True), \
+             patch("autostream_monitor_control.apply_input_eq", return_value=True), \
+             patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
             ok = core._resync_monitor_daemon(
                 client, monitors, "/tmp/test.fifo", "http://localhost:3689",

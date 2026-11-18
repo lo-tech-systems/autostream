@@ -1,9 +1,9 @@
 """autostream_live_config -- settings whose change takes effect while running.
 
 A settings field with a live effect names a function that applies the new
-value to the running appliance. The repeat policy fields are registered here:
-each change is validated, stored by the settings route, and then pushed to the
-audio monitor daemon without a reload.
+value to the running appliance. The repeat policy, input gain and input
+equaliser fields are registered here: each change is validated, stored by the
+settings route, and then pushed to the audio monitor daemon without a reload.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -19,6 +19,52 @@ def _validate_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     raise ValueError("Value must be true or false")
+
+
+def _validate_gain_db(value: object) -> float:
+    import math
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a number")
+    v = float(value)
+    if not math.isfinite(v) or v < -10.0 or v > 10.0:
+        raise ValueError("Value must be between -10 and 10")
+    return v
+
+
+def _live_gain_1(state: object, value: object) -> bool:
+    return bool(monitor_control.set_live_input_gain(1, float(value)))
+
+
+def _live_gain_2(state: object, value: object) -> bool:
+    return bool(monitor_control.set_live_input_gain(2, float(value)))
+
+
+def _live_eq_1(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(monitor_control.set_live_input_eq(
+        1,
+        eq_40hz_db=snap.audio1.eq_40hz_db,
+        eq_100hz_db=snap.audio1.eq_100hz_db,
+        eq_8khz_db=snap.audio1.eq_8khz_db,
+    ))
+
+
+def _live_eq_2(state: object, value: object) -> bool:
+    from autostream_settings import SettingsStore as _SettingsStore
+    settings = getattr(state, "settings", None)
+    if not isinstance(settings, _SettingsStore):
+        return False
+    snap = settings.snapshot()
+    return bool(monitor_control.set_live_input_eq(
+        2,
+        eq_40hz_db=snap.audio2.eq_40hz_db,
+        eq_100hz_db=snap.audio2.eq_100hz_db,
+        eq_8khz_db=snap.audio2.eq_8khz_db,
+    ))
 
 
 def _validate_repeat_codec(value: object) -> str:
@@ -157,3 +203,11 @@ register_field("repeat.codec", "repeat", "codec", _validate_repeat_codec, live=_
                live_class=LiveClass.LIVE)
 register_field("repeat.target_minutes", "repeat", "target_minutes", _validate_repeat_target_minutes,
                live=_live_repeat_target_minutes, live_class=LiveClass.LIVE)
+register_field("audio1.gain_db", "audio1", "gain_db", _validate_gain_db, live=_live_gain_1, live_class=LiveClass.LIVE)
+register_field("audio2.gain_db", "audio2", "gain_db", _validate_gain_db, live=_live_gain_2, live_class=LiveClass.LIVE)
+register_field("audio1.eq_40hz_db", "audio1", "eq_40hz_db", _validate_gain_db, live=_live_eq_1, live_class=LiveClass.LIVE)
+register_field("audio1.eq_100hz_db", "audio1", "eq_100hz_db", _validate_gain_db, live=_live_eq_1, live_class=LiveClass.LIVE)
+register_field("audio1.eq_8khz_db", "audio1", "eq_8khz_db", _validate_gain_db, live=_live_eq_1, live_class=LiveClass.LIVE)
+register_field("audio2.eq_40hz_db", "audio2", "eq_40hz_db", _validate_gain_db, live=_live_eq_2, live_class=LiveClass.LIVE)
+register_field("audio2.eq_100hz_db", "audio2", "eq_100hz_db", _validate_gain_db, live=_live_eq_2, live_class=LiveClass.LIVE)
+register_field("audio2.eq_8khz_db", "audio2", "eq_8khz_db", _validate_gain_db, live=_live_eq_2, live_class=LiveClass.LIVE)

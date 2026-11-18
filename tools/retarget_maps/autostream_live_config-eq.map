@@ -1,0 +1,2 @@
+# The input gain and equaliser settings validator moved from the web API into the live configuration module.
+autostream_webui_api._validate_gain_db -> autostream_live_config._validate_gain_db  alias=live_config

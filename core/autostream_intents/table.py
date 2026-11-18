@@ -83,6 +83,7 @@ Handler = Callable[[Intent, float], Outcome]
 _BAD_BODY = "invalid_request_body"
 _PIN = v.text(error="invalid_pin", max_len=16, pattern=pairing.PIN_RE)
 _MAX_REPEAT_POSITION_S = 1e7
+_EQ_DB = v.number(-10, 10, error="EQ gain must be between -10 and 10 dB")
 
 
 def _row(name, args, required, origins, wait=0.0, limit=None) -> Row:
@@ -155,6 +156,17 @@ def _build_rows() -> dict:
             {"action", "default_level"},
             {Origin.USER},
             wait=3.0,
+        ),
+        _row(
+            "input.eq.set",
+            {
+                "input": v.choice(1, 2, error="input must be 1 or 2"),
+                "eq_40hz_db": _EQ_DB,
+                "eq_100hz_db": _EQ_DB,
+                "eq_8khz_db": _EQ_DB,
+            },
+            {"input", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db"},
+            {Origin.USER},
         ),
         _row(
             "repeat.arm",

@@ -148,6 +148,17 @@ class HealthPart:
 
 
 @dataclass(frozen=True)
+class EqPart:
+    """The equaliser values the monitor daemon last acknowledged."""
+
+    input_bands: FrozenDict = field(default_factory=FrozenDict)   # input index -> (40 Hz, 100 Hz, 8 kHz) dB
+    input_gain: FrozenDict = field(default_factory=FrozenDict)    # input index -> dB
+    output_bands: tuple = ()                # (peq1 .. peq6) dB; () before the first push
+    output_gain_db: Optional[float] = None
+    auto_trim_enabled: Optional[bool] = None
+
+
+@dataclass(frozen=True)
 class SettingsPart:
     generation: int = 0
 
@@ -247,11 +258,12 @@ class Snapshot:
     health: HealthPart = field(default_factory=HealthPart)
     settings: SettingsPart = field(default_factory=SettingsPart)
     outputs: OutputsPart = field(default_factory=OutputsPart)
+    eq: EqPart = field(default_factory=EqPart)
 
 
 PART_NAMES = (
     "session", "repeat", "track", "inputs", "monitor", "playback", "health", "settings",
-    "outputs",
+    "outputs", "eq",
 )
 
 
@@ -371,6 +383,19 @@ def _outputs_digest(p: OutputsPart) -> tuple:
     )
 
 
+def _eq_digest(p: EqPart) -> tuple:
+    return (
+        tuple(sorted(p.input_bands.items())),
+        tuple(sorted(p.input_gain.items())),
+        p.output_bands, p.output_gain_db, p.auto_trim_enabled,
+    )
+
+
+def eq_band_digest(p: EqPart) -> tuple:
+    """What a dial shows of the equaliser: the output bands."""
+    return p.output_bands
+
+
 def outputs_list_digest(p: OutputsPart) -> tuple:
     """What a speaker list shows: each unit's name, whether it is on, whether
     it is starting or failed, its PIN fields, and whether the player answers."""
@@ -398,6 +423,7 @@ DIGESTS: dict[str, Callable] = {
     "health": _health_digest,
     "settings": _settings_digest,
     "outputs": _outputs_digest,
+    "eq": _eq_digest,
 }
 
 

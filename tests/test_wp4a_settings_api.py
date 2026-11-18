@@ -29,12 +29,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
-    _validate_gain_db,
     _validate_output_name,
     _validate_silence_seconds,
     _validate_volume_percent,
     send_settings_post_json,
 )
+from autostream_live_config import _validate_gain_db
 from autostream_webui_post_handlers import (
     handle_live_input_eq_update,
     handle_live_input_gain_update,
@@ -274,21 +274,21 @@ class TestSettingsFieldsWp4aPresent:
 class TestWp4aStorePersistence:
     def test_gain_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=True):
             resp = _post(state, "audio1.gain_db", 3.5)
         assert resp["ok"] is True
         assert store.snapshot().audio1.gain_db == 3.5
 
     def test_eq_40hz_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_eq", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True):
             resp = _post(state, "audio1.eq_40hz_db", -2.0)
         assert resp["ok"] is True
         assert store.snapshot().audio1.eq_40hz_db == -2.0
 
     def test_eq_100hz_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_eq", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True):
             resp = _post(state, "audio2.eq_100hz_db", 1.5)
         assert resp["ok"] is True
         assert store.snapshot().audio2.eq_100hz_db == 1.5
@@ -320,14 +320,14 @@ class TestWp4aStorePersistence:
 class TestWp4aLiveEffects:
     def test_gain1_calls_set_live_input_gain(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=True) as m:
             resp = _post(state, "audio1.gain_db", 2.0)
         m.assert_called_once_with(1, 2.0)
         assert resp["live"] is True
 
     def test_gain2_calls_set_live_input_gain(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=True) as m:
             resp = _post(state, "audio2.gain_db", -1.0)
         m.assert_called_once_with(2, -1.0)
         assert resp["live"] is True
@@ -339,7 +339,7 @@ class TestWp4aLiveEffects:
             raw.setdefault("audio1", {})["eq_100hz_db"] = 1.5
             raw.setdefault("audio1", {})["eq_8khz_db"] = -0.5
         store.update(_setup)
-        with patch("autostream_webui_api.set_live_input_eq", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True) as m:
             resp = _post(state, "audio1.eq_40hz_db", 3.0)
         # Should call with all 3 bands from the post-mutation snapshot
         m.assert_called_once_with(1, eq_40hz_db=3.0, eq_100hz_db=1.5, eq_8khz_db=-0.5)
@@ -351,7 +351,7 @@ class TestWp4aLiveEffects:
             raw.setdefault("audio2", {})["eq_40hz_db"] = 0.0
             raw.setdefault("audio2", {})["eq_8khz_db"] = 2.0
         store.update(_setup)
-        with patch("autostream_webui_api.set_live_input_eq", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True) as m:
             resp = _post(state, "audio2.eq_100hz_db", -1.0)
         m.assert_called_once_with(2, eq_40hz_db=0.0, eq_100hz_db=-1.0, eq_8khz_db=2.0)
         assert resp["live"] is True
@@ -391,7 +391,7 @@ class TestWp4aLiveEffects:
 class TestWp4aLiveFailure:
     def test_live_returns_false_sets_live_false(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=False):
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=False):
             resp = _post(state, "audio1.gain_db", 1.0)
         assert resp["ok"] is True          # store write succeeded
         assert resp["live"] is False
@@ -399,7 +399,7 @@ class TestWp4aLiveFailure:
 
     def test_live_raises_exception_sets_live_false(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", side_effect=RuntimeError("monitor down")):
+        with patch("autostream_monitor_control.set_live_input_gain", side_effect=RuntimeError("monitor down")):
             resp = _post(state, "audio1.gain_db", 1.0)
         assert resp["ok"] is True
         assert resp["live"] is False
@@ -407,7 +407,7 @@ class TestWp4aLiveFailure:
 
     def test_store_still_persists_when_live_fails(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=False):
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=False):
             _post(state, "audio1.gain_db", 4.0)
         assert store.snapshot().audio1.gain_db == 4.0
 
@@ -453,14 +453,14 @@ class TestLegacyGainAdapter:
 
     def test_valid_gain_persists_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=True):
             resp = self._call(state, {"input": 1, "gain_db": 2.5})
         assert resp["ok"] is True
         assert store.snapshot().audio1.gain_db == 2.5
 
     def test_valid_gain_input2(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=True):
             resp = self._call(state, {"input": 2, "gain_db": -1.0})
         assert resp["ok"] is True
         assert store.snapshot().audio2.gain_db == -1.0
@@ -484,7 +484,7 @@ class TestLegacyGainAdapter:
 
     def test_live_gain_called(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_input_gain", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_input_gain", return_value=True) as m:
             self._call(state, {"input": 1, "gain_db": 3.0})
         m.assert_called_once_with(1, 3.0)
 
@@ -500,7 +500,7 @@ class TestLegacyEqAdapter:
 
     def test_valid_eq_persists_all_bands_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_post_handlers.set_live_input_eq", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True):
             resp = self._call(state, {
                 "input": 1,
                 "eq_40hz_db": 1.0, "eq_100hz_db": -2.0, "eq_8khz_db": 0.5,
@@ -513,7 +513,7 @@ class TestLegacyEqAdapter:
 
     def test_valid_eq_input2(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_post_handlers.set_live_input_eq", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True):
             resp = self._call(state, {
                 "input": 2,
                 "eq_40hz_db": -3.0, "eq_100hz_db": 0.0, "eq_8khz_db": 2.0,
@@ -524,7 +524,7 @@ class TestLegacyEqAdapter:
 
     def test_live_eq_called(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_post_handlers.set_live_input_eq", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True) as m:
             self._call(state, {
                 "input": 1,
                 "eq_40hz_db": 1.0, "eq_100hz_db": 2.0, "eq_8khz_db": 3.0,
@@ -536,7 +536,7 @@ class TestLegacyEqAdapter:
 
     def test_live_eq_failure_returns_error(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_post_handlers.set_live_input_eq", return_value=False):
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=False):
             resp = self._call(state, {
                 "input": 1,
                 "eq_40hz_db": 0.0, "eq_100hz_db": 0.0, "eq_8khz_db": 0.0,
@@ -577,7 +577,7 @@ class TestLegacyEqAdapter:
             return original_update(mutator)
 
         store.update = _spy
-        with patch("autostream_webui_post_handlers.set_live_input_eq", return_value=True):
+        with patch("autostream_monitor_control.set_live_input_eq", return_value=True):
             self._call(state, {
                 "input": 1,
                 "eq_40hz_db": 1.0, "eq_100hz_db": 2.0, "eq_8khz_db": 3.0,
