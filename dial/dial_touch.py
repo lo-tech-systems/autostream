@@ -933,7 +933,7 @@ class TouchEventSource:
         """
         now = self._clock()
         self._dispatch(
-            self._state_machine.on_filter_event(TouchEvent(TouchEventType.RELEASE, 0, 0, None), now)
+            self._state_machine.on_filter_event(TouchEvent(TouchEventType.RELEASE, 0, 0), now)
         )
 
     def _poll_noncomposited(self) -> None:

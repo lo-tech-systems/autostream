@@ -271,17 +271,15 @@ class TestMaxHoldCap:
 
 
 # ---------------------------------------------------------------------------
-# Zone latch
+# Live position
 # ---------------------------------------------------------------------------
 
-class TestZoneLatch:
-    def test_zone_latched_at_press_survives_slide_into_another_zone(self):
+class TestLivePosition:
+    def test_repeat_reports_the_current_position_after_a_slide(self):
         f = make_filter()
         press_time, events = press_to_confirmed(f, UP_XY, 0.0)
-        press = events[0]
-        assert press.zone == TouchZone.UP
 
-        # Slide across the boundary into DOWN's zone, well before the first
+        # Slide across to another spot, well before the first
         # repeat fires — feed enough samples at the new position for the
         # median-of-N window to fully converge on it before checking the
         # position reported on the eventual REPEAT.
@@ -296,15 +294,8 @@ class TestZoneLatch:
         assert len(events) == 1
         repeat = events[0]
         assert repeat.type == TouchEventType.REPEAT
-        # Zone stays UP — latched at press, not re-derived.
-        assert repeat.zone == TouchZone.UP
-        # But position tracks the live, current location.
+        # Position tracks the live, current location.
         assert (repeat.x, repeat.y) == (slide_x, slide_y)
-
-    def test_mute_zone_latch(self):
-        f = make_filter()
-        _, events = press_to_confirmed(f, MUTE_XY, 0.0)
-        assert events[0].zone == TouchZone.MUTE
 
 
 # ---------------------------------------------------------------------------

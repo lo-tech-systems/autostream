@@ -20,22 +20,16 @@ Pipeline per feed() call, in order:
   4. debounce: the contact/no-contact edge must hold for DEBOUNCE_S before
      it is trusted; a bounce back within that window aborts the pending
      transition with no event at all,
-  5. press lifecycle: PRESS (zone latched from the confirming sample's
-     position) -> REPEAT (first at FIRST_REPEAT_S after PRESS, then every
+  5. press lifecycle: PRESS (at the confirming sample's position) -> REPEAT (first at FIRST_REPEAT_S after PRESS, then every
      REPEAT_INTERVAL_S) -> RELEASE, or CAP if MAX_HOLD_S is reached while
      still held (auto-stops repeating; a fresh contact is required to
      resume — no further REPEAT or RELEASE is emitted for that press after
      CAP fires).
 
-ZONE LATCH: the zone reported on every event of one press (PRESS, REPEAT,
-CAP) is decided exactly once, from the position at the moment PRESS fires,
-and never re-derived even if the finger slides into a different zone
-afterwards. The *position* (x, y) reported on later events is still the
-live, current smoothed position — only the zone field is frozen. This lets
-a consumer that needs "the current physical position" (e.g. a reveal-then-
-arm session that samples the zone later, from wherever the finger currently
-is) read event.x/event.y, while a consumer that just wants "which zone was
-this press" reads event.zone.
+POSITION: every event carries the live, current smoothed position (x, y);
+no zone is decided here. A consumer that needs the zone under the finger
+hit-tests that position itself, at the moment it needs it (a reveal-then-
+arm session samples from wherever the finger currently is).
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -45,7 +39,6 @@ import statistics
 from dataclasses import dataclass
 from enum import Enum
 
-from dial_touch_layout import TouchZone, zone_at
 
 # Number of raw samples averaged (component-wise median) per accepted
 # reading. Odd so there is always a single middle value.
@@ -91,7 +84,6 @@ class TouchEvent:
     type: TouchEventType
     x: int
     y: int
-    zone: TouchZone | None  # latched at PRESS; see module docstring
 
 
 # Internal filter phases.
@@ -155,7 +147,6 @@ class TouchFilter:
         self._edge_since: float | None = None  # when the current pending edge began
         self._press_time: float | None = None
         self._next_repeat_time: float | None = None
-        self._zone: TouchZone | None = None
         self._last_xy: tuple[int, int] | None = None
         self._capped = False
 
@@ -271,13 +262,11 @@ class TouchFilter:
                 return events
             if now - self._edge_since >= DEBOUNCE_S:
                 x, y = self._last_xy
-                zone = zone_at(x, y, self._width, self._height)
-                self._zone = zone
                 self._press_time = now
                 self._next_repeat_time = now + FIRST_REPEAT_S
                 self._phase = _HELD
                 self._edge_since = None
-                events.append(TouchEvent(TouchEventType.PRESS, x, y, zone))
+                events.append(TouchEvent(TouchEventType.PRESS, x, y))
             return events
 
         if self._phase in (_HELD, _HELD_CAPPED):
@@ -293,7 +282,7 @@ class TouchFilter:
                 self._phase = _HELD_CAPPED
                 self._next_repeat_time = None
                 self._capped = True
-                events.append(TouchEvent(TouchEventType.CAP, x, y, self._zone))
+                events.append(TouchEvent(TouchEventType.CAP, x, y))
                 return events
             if self._next_repeat_time is not None and now >= self._next_repeat_time:
                 # Only ever emit one REPEAT per feed() call, even if *now*
@@ -302,7 +291,7 @@ class TouchFilter:
                 # REPEAT roughly every poll tick once due, without bursting
                 # a backlog of "catch-up" repeats from one big clock jump.
                 x, y = self._last_xy
-                events.append(TouchEvent(TouchEventType.REPEAT, x, y, self._zone))
+                events.append(TouchEvent(TouchEventType.REPEAT, x, y))
                 self._next_repeat_time += REPEAT_INTERVAL_S
             return events
 
@@ -315,13 +304,12 @@ class TouchFilter:
                 return events
             if now - self._edge_since >= DEBOUNCE_S:
                 x, y = self._last_xy if self._last_xy is not None else (0, 0)
-                zone = self._zone
                 was_capped = self._capped
                 self._reset()
                 # A CAP already told the consumer the press ended; do not
                 # also emit a real RELEASE for the same press.
                 if not was_capped:
-                    events.append(TouchEvent(TouchEventType.RELEASE, x, y, zone))
+                    events.append(TouchEvent(TouchEventType.RELEASE, x, y))
             return events
 
         return events
@@ -331,6 +319,5 @@ class TouchFilter:
         self._edge_since = None
         self._press_time = None
         self._next_repeat_time = None
-        self._zone = None
         self._window.clear()
         self._capped = False

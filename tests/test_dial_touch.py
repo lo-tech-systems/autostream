@@ -95,20 +95,20 @@ DOWN_XY = _center(TouchZone.DOWN)
 MUTE_XY = _center(TouchZone.MUTE)
 
 
-def press_event(xy, zone=None):
-    return TouchEvent(TouchEventType.PRESS, xy[0], xy[1], zone)
+def press_event(xy):
+    return TouchEvent(TouchEventType.PRESS, xy[0], xy[1])
 
 
-def repeat_event(xy, zone=None):
-    return TouchEvent(TouchEventType.REPEAT, xy[0], xy[1], zone)
+def repeat_event(xy):
+    return TouchEvent(TouchEventType.REPEAT, xy[0], xy[1])
 
 
-def release_event(xy=(0, 0), zone=None):
-    return TouchEvent(TouchEventType.RELEASE, xy[0], xy[1], zone)
+def release_event(xy=(0, 0)):
+    return TouchEvent(TouchEventType.RELEASE, xy[0], xy[1])
 
 
-def cap_event(xy=(0, 0), zone=None):
-    return TouchEvent(TouchEventType.CAP, xy[0], xy[1], zone)
+def cap_event(xy=(0, 0)):
+    return TouchEvent(TouchEventType.CAP, xy[0], xy[1])
 
 
 def kinds(actions):

@@ -9524,13 +9524,13 @@ class TestAsleepIdleTouchDoesNotPressAnything:
         from dial_touch_filter import TouchEvent, TouchEventType
 
         sm.set_surface(*display.touch_surface(), now)
-        actions = sm.on_filter_event(TouchEvent(TouchEventType.PRESS, xy[0], xy[1], None), now)
+        actions = sm.on_filter_event(TouchEvent(TouchEventType.PRESS, xy[0], xy[1]), now)
         for a in actions:
             if a.kind == dt.ACTION_WAKE:
                 display.notify_touch_activity()
             elif a.kind == dt.ACTION_ZONE_TAP and a.zone == TouchZone.IDLE_REPLAY:
                 display.open_picker()
-        sm.on_filter_event(TouchEvent(TouchEventType.RELEASE, xy[0], xy[1], None), now + 0.05)
+        sm.on_filter_event(TouchEvent(TouchEventType.RELEASE, xy[0], xy[1]), now + 0.05)
         return actions
 
     def test_waking_touch_does_not_open_the_picker_next_touch_does(self):
@@ -10121,7 +10121,7 @@ class TestPairInAutostreamPage:
         width, height = display._active_panel_dims()
         sm = dt.TouchStateMachine(width, height, is_asleep=display.is_sleeping)
         sm.set_surface(*display.touch_surface(), 1.0)
-        actions = sm.on_filter_event(TouchEvent(TouchEventType.PRESS, width // 2, height // 2, None), 1.0)
+        actions = sm.on_filter_event(TouchEvent(TouchEventType.PRESS, width // 2, height // 2), 1.0)
         assert [a.kind for a in actions] == [dt.ACTION_WAKE]
         assert display._screen_request is None
 
