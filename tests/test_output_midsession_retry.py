@@ -20,7 +20,7 @@ if _CORE not in sys.path:
 
 from autostream_state import Origin
 from autostream_state.outputs import get_authority
-from output_fakes import FakeBackend, group_row, snap
+from output_fakes import FakeBackend, async_hello, group_row, snap, state_event
 
 T0 = 1000.0
 
@@ -121,3 +121,27 @@ class TestWhatIsLeftAlone:
         tick(failed, 40)
         sent = [on for pair in restarts(failed) for on in pair]
         assert sent and True not in sent
+
+
+class TestByEvents:
+    def test_a_lost_event_retries_like_a_failed_row(self, w):
+        async_hello(w.a)
+        read(w, "streaming", 0)
+        w.a.note_session(True)
+        tick(w, 0)
+        w.t[0] = T0 + 1
+        w.a.on_device_event(state_event("1", "failed", "lost", selected=True))
+        tick(w, 1)
+        u = snap().unit("1")
+        assert u.selected and u.availability == "failed" and snap().start_failure is None
+        tick(w, 11)
+        assert restarts(w) == [[False, True]]
+        # The restart fails as it starts: given up after the second retry
+        w.a.on_device_event(state_event("1", "failed", "unreachable", selected=False))
+        tick(w, 12)
+        tick(w, 32)
+        assert len(restarts(w)) == 2
+        w.a.on_device_event(state_event("1", "failed", "unreachable", selected=False))
+        tick(w, 33)
+        assert not snap().unit("1").selected
+        assert snap().start_failure.reason == "unreachable"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 
 import autostream_state as state
+from autostream_backend_events import ConnectInfo, DeviceEvent
 from autostream_players import (
     ActionResult,
     EventChannelInfo,
@@ -144,3 +145,21 @@ class FakeSource:
 
 def error(code, text="failed"):
     return ActionResult(ok=False, error=text, error_code=code)
+
+
+def state_event(uid, state, reason="none", member=None, member_state=None, **fields):
+    """An output_state event for row *uid*: the row's *state* and *reason*,
+    the moved member (the row's own device by default) and its own phase,
+    and any of selected, held, holdable, muted, volume and pin_pending."""
+    return DeviceEvent(
+        "output_state", str(uid), f"Speaker {uid}", "", None, 1, 1.0,
+        member_id=str(member or uid), state=state, member_state=member_state or state,
+        reason=reason, **fields,
+    )
+
+
+def async_hello(authority, boot="b0"):
+    """The authority takes a hello that lists output_state."""
+    authority._handle_connected(ConnectInfo(
+        boot, 1, frozenset({"changed", "device_volume", "receiver_command", "start_volume", "output_state"}),
+        "unix_socket"))

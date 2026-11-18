@@ -61,6 +61,7 @@ from autostream_players import (
     EventChannelInfo,
     ListOutputsResult,
     OutputInfo,
+    session_failure_for,
 )
 
 from . import live, spread
@@ -91,6 +92,29 @@ RETRY_STEADY_S = 30.0
 MIDSESSION_RETRIES = 2
 _READ_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)
 _FAILED_READS_BEFORE_DOWN = 3
+# With events, a burst of output changes is read at most once a second
+CHANGED_READ_MIN_S = 1.0
+# A PIN sent with its select waits this long for the player's verdict
+PIN_OUTCOME_S = 15.0
+
+# The speaker states an output_state event may carry; any other makes the
+# authority read the list
+_EVENT_STATES = frozenset(
+    ("connecting", "connected", "streaming", "stopping", "stopped", "failed", "password"))
+
+# An event's reason as (outcome code, notice); (None, None): no outcome from
+# the event. A reason not listed takes the default of its state.
+_EVENT_OUTCOMES = {
+    "pin_required": ("pin_required", "pin_required"),
+    "pin_invalid": ("pin_invalid", "pin_invalid"),
+    "capacity": ("encoder_capacity", "encoder_capacity"),
+    "no_clock": ("no_clock", "no_clock"),
+    "refused": ("failed", "refused"),
+    "unreachable": ("failed", "unreachable"),
+    "timeout": ("failed", "timed_out"),
+    "cancelled": (None, None),
+    "lost": (None, None),
+}
 
 # Threads start only when this is true; the test configuration turns it off
 # once, so that a test which runs the process bootstrap gets an authority
@@ -301,6 +325,11 @@ class UnitState:
     reselect_retry: bool = False      # a restart's select was refused: send it once more when the unit reads off
     hold_write_at: float = 0.0        # when a hold or its end was last asked of the player
     retry_limit: Optional[int] = None  # retries left to a speaker that failed while playing: none counts
+    outcome_applied: bool = False     # the current attempt's failure has been applied (event or reply)
+    claimant: Optional[str] = None    # who can enter a PIN for the current attempt
+    fail_notice: str = "failed"       # the notice a later give-up of this attempt reports
+    pin_sinks: list = field(default_factory=list)   # a PIN-with-select write waiting for the authorise outcome
+    pin_deadline: float = 0.0         # when parked PIN sinks are answered "pending"
 
 
 class _OwnedLock:
@@ -386,14 +415,18 @@ class _Write:
 
 class _Effects:
     """What a locked block wants done once the locks are released: log
-    lines (nothing logs under a lock) and the now-playing republish request."""
+    lines (nothing logs under a lock), the now-playing republish request,
+    PIN claims to hand to whoever can enter the PIN, and write outcomes to
+    give their waiters."""
 
-    __slots__ = ("logs", "republish", "publish_as")
+    __slots__ = ("logs", "republish", "publish_as", "claims", "completions")
 
     def __init__(self) -> None:
         self.logs: list = []
         self.republish = False
         self.publish_as: Optional[tuple] = None   # an (Origin, requester) pair
+        self.claims: list = []                    # (unit id, claimant)
+        self.completions: list = []               # (sinks, WriteOutcome)
 
     def log(self, level: int, text: str, *args) -> None:
         self.logs.append((level, text, args))
@@ -403,6 +436,17 @@ class _Effects:
             LOG.log(level, text, *args)
         if self.republish:
             runtime.request_nowplaying_republish()
+        handler = _pin_claim_handler
+        for unit_id, claimant in self.claims:
+            if handler is None:
+                break
+            try:
+                handler(unit_id, claimant)
+            except Exception:
+                LOG.exception("PIN claim for %s failed", unit_id)
+        for sinks, outcome in self.completions:
+            for batch, index in sinks:
+                batch.done(index, outcome)
 
 
 def _clamp(value, low: int = 0, high: int = 100) -> int:
@@ -477,6 +521,12 @@ class OutputAuthority:
         # as its hello last said. Kept through the polling between two sockets
         # of one boot; forgotten when a restart is seen without a hello.
         self._start_volume_cap = False
+        # Whether the player reports each speaker's transitions as events and
+        # answers a speaker request without waiting for the speaker, as its
+        # hello last said; kept and forgotten as the start-volume flag is.
+        self._async_outputs_cap = False
+        # With events, the earliest time a "changed" read is made (worker only)
+        self._next_changed_read = 0.0
         self._ever_connected = False
         self._source: Optional[EventSource] = None
         self._source_factory = create_event_source
@@ -727,6 +777,12 @@ class OutputAuthority:
         with self._lock:
             return self._start_volume
 
+    def starts_are_async(self) -> bool:
+        """Whether the player answers a speaker request at once and reports
+        how the start went as events (its hello lists output_state)."""
+        with self._lock:
+            return self._async_outputs_cap
+
     def _member_unit_locked(self, m: _Member) -> Optional[UnitState]:
         """The unit a member stands for: by id, else by exact name."""
         if m.id and m.id in self._units:
@@ -969,7 +1025,8 @@ class OutputAuthority:
                 d.held = False
             d.selected = True
             u.retry_allowed = cause != Origin.USER
-            u.attempt = True
+            self._new_attempt_locked(u)
+            u.claimant = claimant
             u.failure_reported = False
             u.start_pending_until = 0.0
             u.retry_at = None
@@ -989,6 +1046,13 @@ class OutputAuthority:
             ))
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, batch.future)
+
+    @staticmethod
+    def _new_attempt_locked(u: UnitState) -> None:
+        """A start the authority makes now: its result is still to show."""
+        u.attempt = True
+        u.outcome_applied = False
+        u.fail_notice = "failed"
 
     def _deselect_locked(self, u: UnitState, cause: Origin, now: float) -> None:
         d = u.desired
@@ -1019,7 +1083,7 @@ class OutputAuthority:
             if not u.desired.selected:
                 return self._refused("not_selected")
             u.desired.held = False
-            u.attempt = True
+            self._new_attempt_locked(u)
             u.failure_reported = False
             u.start_pending_until = 0.0
             u.held_until = 0.0
@@ -1504,7 +1568,7 @@ class OutputAuthority:
     def _next_wait(self, now: float) -> float:
         wait = 1.0
         if self._dirty:
-            wait = min(wait, max(0.0, self._read_retry_at - now))
+            wait = min(wait, max(0.0, self._dirty_read_at() - now))
         if self._next_safety_read is not None:
             wait = min(wait, max(0.0, self._next_safety_read - now))
         lapse = live.pin_claim_lapse_in()
@@ -1536,7 +1600,7 @@ class OutputAuthority:
             # The wait for the first item may have taken a while.
             now = clock()
         self._maintain_source(now)
-        read_due = (self._dirty and now >= self._read_retry_at) or (
+        read_due = (self._dirty and now >= self._dirty_read_at()) or (
             self._next_safety_read is not None and now >= self._next_safety_read
         )
         if read_due:
@@ -1549,6 +1613,12 @@ class OutputAuthority:
             except Exception:
                 LOG.exception("Output policy failed on a timer")
         return False
+
+    def _dirty_read_at(self) -> float:
+        """When a read asked for by a change may be made: after a failed
+        read's back-off, and with events no sooner than a second after the
+        last read, so a burst of transitions is read once."""
+        return max(self._read_retry_at, self._next_changed_read)
 
     def _take_items(self, block: float, now: float,
                     clock: Optional[Callable[[], float]] = None) -> bool:
@@ -1602,15 +1672,23 @@ class OutputAuthority:
         # Otherwise a boot id the socket gave stays through the polling
         # between two sockets of one boot; the next hello compares it.
         delivers = {"device_volume", "receiver_command"} <= set(info.capabilities)
+        async_changed = None
         with self._lock:
             if info.boot is not None or info.capabilities:
                 # Only the event channel's hello says what the player can do.
                 self._start_volume_cap = "start_volume" in info.capabilities
+                async_cap = "output_state" in info.capabilities
+                if async_cap != self._async_outputs_cap:
+                    async_changed = async_cap
+                self._async_outputs_cap = async_cap
             changed = delivers != self._delivers_device_events
             self._delivers_device_events = delivers
             pending = self._publish_locked(Origin.BACKEND, None) if changed else None
         if pending is not None:
             pending.notify()
+        if async_changed is not None:
+            LOG.info("The player %s speaker transitions as events",
+                     "reports" if async_changed else "no longer reports")
         self._dirty = True
 
     def _handle_disconnected(self, reason: str, now: float) -> None:
@@ -1699,6 +1777,8 @@ class OutputAuthority:
         except Exception as exc:
             LOG.debug("Output read raised", exc_info=True)
             result = ListOutputsResult(ok=False, error=str(exc), error_code="request_failed")
+        # Events carry each transition, so the reads they ask for are spaced out
+        self._next_changed_read = now + CHANGED_READ_MIN_S if self._async_outputs_cap else 0.0
         if result.ok:
             self._on_read_ok(list(result.outputs), now)
         else:
@@ -1707,7 +1787,9 @@ class OutputAuthority:
     def _on_read_failed(self, result: ListOutputsResult, now: float) -> None:
         pending = None
         with self._lock:
-            exempt = (
+            # A player that waits for its speakers may be too busy to answer a
+            # read; one that answers at once and reports by events is not
+            exempt = not self._async_outputs_cap and (
                 (self._inflight > 0 and not self._exempt_off)
                 or any(u.start_pending_until > now for u in self._units.values())
             )
@@ -1746,8 +1828,11 @@ class OutputAuthority:
         state = row.session_state
         if state in ("streaming", "connected"):
             avail = "ok"
-        elif state == "startup":
+        elif state in ("startup", "connecting"):
             avail = "starting"
+        elif state == "stopping":
+            # Still ending its session: wanted again, it starts once that is done
+            avail = "starting" if selected else "ok"
         elif state == "failed":
             avail = "failed"
         elif state == "password":
@@ -1789,7 +1874,7 @@ class OutputAuthority:
             self._revert_locked(u, now)
             if not u.failure_reported:
                 u.failure_reported = True
-                self._start_failure_locked(u, "failed")
+                self._start_failure_locked(u, u.fail_notice)
             return
         if u.retry_allowed and self._session_active:
             u.availability = "failed"
@@ -1814,6 +1899,9 @@ class OutputAuthority:
                 if self._ever_connected:
                     boot_changed = True
                     self._start_volume_cap = False
+                    if self._async_outputs_cap:
+                        fx.log(logging.INFO, "The player no longer reports speaker transitions as events")
+                    self._async_outputs_cap = False
                 self._epoch += 1
             self._connected = True
             self._ever_connected = True
@@ -1902,7 +1990,11 @@ class OutputAuthority:
         if row.session_held != d.held:
             d.held = row.session_held
 
-    def _update_unit_locked(self, u: UnitState, row: OutputInfo, now: float, fx: _Effects) -> None:
+    def _update_unit_locked(self, u: UnitState, row: OutputInfo, now: float, fx: _Effects,
+                            outcome_handled: bool = False) -> None:
+        """Take a row (read, or an event's merged row) as the unit's. With
+        *outcome_handled* the event that brought it has already applied its
+        failed start, so the failure is not applied again here."""
         was = u.was_streaming
         d = u.desired
         sel = d.selected
@@ -1918,6 +2010,10 @@ class OutputAuthority:
             u.ok_since = now
         if u.start_pending_until > 0.0:
             if result_shown:
+                u.start_pending_until = 0.0
+            elif self._async_outputs_cap and row.selected and row.session_state == "stopped":
+                # The player took the speaker while nothing plays: it starts
+                # it with the playback, so there is no start to wait for
                 u.start_pending_until = 0.0
             elif not self._rows_carry_session and not row.selected:
                 # The player answers a read only after the start it was busy
@@ -1948,8 +2044,8 @@ class OutputAuthority:
             u.retry_n = 0
             u.retry_limit = None
             u.group_hold_backoff = RETRY_MIN_S
-        if (sel and self._rows_carry_session and avail == "failed" and was and not u.attempt
-                and self._session_active and u.retry_at is None):
+        if (not outcome_handled and sel and self._rows_carry_session and avail == "failed" and was
+                and not u.attempt and self._session_active and u.retry_at is None):
             # It failed while it played (it went away, or closed its session):
             # tried again a few times before it is given up, with no notice
             # until then.
@@ -1960,7 +2056,7 @@ class OutputAuthority:
             self._failed_treatment_locked(u, now)
         if sel and previous == "starting" and avail == "ok":
             fx.republish = True
-        if sel and u.attempt and avail == "failed":
+        if not outcome_handled and sel and u.attempt and avail == "failed":
             # Only a start the user asked for is reported; the ones the
             # appliance keeps retrying are not.
             if not u.retry_allowed:
@@ -2003,6 +2099,11 @@ class OutputAuthority:
                         u.failure_reported = True
                     self._failed_treatment_locked(u, now)
                     changed = True
+                if u.pin_sinks and now >= u.pin_deadline:
+                    # No verdict on the PIN yet: its request is answered as
+                    # pending, and the speaker's row says the rest
+                    fx.completions.append((u.pin_sinks, WriteOutcome(ok=True, pending=True)))
+                    u.pin_sinks = []
                 if u.absent_since is not None and now - u.absent_since >= ABSENT_KEEP_S:
                     del self._units[u.id]
                     changed = True
@@ -2022,17 +2123,19 @@ class OutputAuthority:
         self._after_intent()
 
     def _queue_reapply_select_locked(self, u: UnitState) -> None:
-        u.attempt = True
+        self._new_attempt_locked(u)
         u.retry_allowed = True
         u.requester = None
+        u.claimant = None
         self._queue_select_again_locked(u, u.desired.volume, u.desired.cause)
 
     def _queue_restart_locked(self, u: UnitState) -> None:
         """Switch a selected speaker off and on again, as a retry the
         authority makes."""
-        u.attempt = True
+        self._new_attempt_locked(u)
         u.retry_allowed = True
         u.requester = None
+        u.claimant = None
         self._enqueue(_Write("deselect", u.id, u.desired_seq, {}, []))
         self._enqueue(_Write(
             "select", u.id, u.desired_seq,
@@ -2085,7 +2188,8 @@ class OutputAuthority:
                 continue
             if d.selected and not r.selected:
                 u.diff_since.pop("deselect", None)
-                if u.availability == "password" or r.session_state in ("startup", "connected") \
+                if u.availability == "password" \
+                        or r.session_state in ("startup", "connecting", "connected", "stopping") \
                         or u.start_pending_until > now:
                     u.diff_since.pop("select", None)
                 elif u.availability == "failed":
@@ -2122,6 +2226,11 @@ class OutputAuthority:
                 continue
             u.diff_since.pop("select", None)
             if not d.selected and r.selected:
+                if live.pin_claim(u.id):
+                    # A PIN is being entered for it: the player starts it
+                    # again for the next PIN itself
+                    u.diff_since.pop("deselect", None)
+                    continue
                 if self._due(u, "deselect", now):
                     u.diff_since.pop("deselect", None)
                     batch = _Batch(1)
@@ -2236,6 +2345,11 @@ class OutputAuthority:
     # -- device events -------------------------------------------------------
 
     def _handle_event(self, ev: DeviceEvent, now: float) -> None:
+        if ev.kind == "output_state":
+            # A speaker's transition is the authority's alone; the policy has
+            # nothing to do with it
+            self._handle_output_state(ev, now)
+            return
         if ev.kind == "device_volume":
             with self._lock:
                 if ev.speaker_id == "0":
@@ -2259,6 +2373,86 @@ class OutputAuthority:
                 policy.on_device_event(ev, store().snapshot().outputs, now)
             except Exception:
                 LOG.exception("Output policy failed on a device event")
+
+    def _handle_output_state(self, ev: DeviceEvent, now: float) -> None:
+        """A speaker moved: apply a failed start's reason once, then take the
+        event's row values as the unit's row, as a read would."""
+        fx = _Effects()
+        pending = None
+        with self._lock:
+            uid = self._unit_for_device_locked(ev.speaker_id)
+            u = self._units.get(uid) if uid is not None else None
+            if u is None or u.reported is None or ev.state not in _EVENT_STATES:
+                # Unknown to us, or a state this version does not know: the list says
+                self._dirty = True
+                fx.log(logging.DEBUG, "Output state %s for %s: reading the outputs", ev.state, ev.speaker_id)
+            else:
+                fx.log(logging.DEBUG, "Output state %s (%s; member %s %s) for %s", ev.state, ev.reason or "none",
+                       ev.member_id or ev.speaker_id, ev.member_state or "-", self._unit_name_locked(u.id))
+                handled = False
+                failure = ev.state in ("failed", "password")
+                stale = self._outcome_stale_locked(u) if failure else True
+                if failure and not stale:
+                    default = ("pin_required", "pin_required") if ev.state == "password" else ("failed", "failed")
+                    code, notice = _EVENT_OUTCOMES.get(ev.reason, default)
+                    if code is not None:
+                        self._select_outcome_locked(u, code, notice, u.requester, u.claimant, False, now, fx)
+                        handled = True
+                self._settle_pin_locked(u, ev, fx)
+                u.reported = self._merged_row(u.reported, ev)
+                # A failure that belongs to an older attempt, or was applied
+                # already, is merged but not applied (again) by the row either
+                self._update_unit_locked(u, u.reported, now, fx,
+                                         outcome_handled=handled or (failure and stale and u.attempt))
+                pending = self._publish_locked(Origin.BACKEND, None)
+        if pending is not None:
+            pending.notify()
+        fx.run()
+        self._after_intent()
+
+    @staticmethod
+    def _merged_row(row: OutputInfo, ev: DeviceEvent) -> OutputInfo:
+        """*row* with what the event says about it; a field the event leaves
+        out keeps the row's value. The time the row was read is not moved."""
+        fields = dict(session_state=ev.state, session_failure=session_failure_for(ev.state, ev.reason))
+        for name, value in (("selected", ev.selected), ("session_held", ev.held),
+                            ("session_holdable", ev.holdable), ("muted", ev.muted),
+                            ("volume_percent", ev.volume), ("pin_pending", ev.pin_pending)):
+            if value is not None:
+                fields[name] = value
+        return dataclasses.replace(row, **fields)
+
+    def _outcome_stale_locked(self, u: UnitState) -> bool:
+        """Whether an event's failure is not this unit's current start to
+        report: the unit is not wanted, no start of ours is waiting for its
+        result, that result was applied already, or a newer start is still
+        queued (the event is about the one before)."""
+        return (not u.desired.selected or not u.attempt or u.outcome_applied
+                or self._start_queued_locked(u.id))
+
+    def _start_queued_locked(self, uid: str) -> bool:
+        # _lock, then the write queue's leaf lock: the order _enqueue takes
+        with self._wq_cond:
+            return any(w.unit_id == uid and (w.kind == "select" or (w.kind == "pin" and w.params.get("select")))
+                       for w in self._wq)
+
+    def _settle_pin_locked(self, u: UnitState, ev: DeviceEvent, fx: _Effects) -> None:
+        """A PIN sent with its select is answered by the event that ends the
+        authorise: a refusal or a new prompt, or the speaker paired (any
+        other state with pin_pending false). While the authorise runs the
+        waiters keep waiting."""
+        if not u.pin_sinks:
+            return
+        if ev.state in ("failed", "password"):
+            code = "pin_invalid" if ev.reason == "pin_invalid" else (ev.reason or "failed")
+            outcome = WriteOutcome(ok=False, error_code=code, error=code)
+        elif ev.pin_pending is False:
+            outcome = WriteOutcome(ok=True)
+        else:
+            return
+        fx.completions.append((u.pin_sinks, outcome))
+        u.pin_sinks = []
+        u.pin_deadline = 0.0
 
     # -- the apply side ------------------------------------------------------
 
@@ -2442,33 +2636,36 @@ class OutputAuthority:
         stale = u is None or u.desired_seq != w.seq
         code = r.error_code
         if r.ok:
+            # A failure event can arrive before the answer is recorded; it
+            # stands, and the answer only says the request was accepted
             if u is not None:
                 u.own_write_at = now
-                if u.desired.selected and u.availability != "password":
+                if u.desired.selected and u.availability != "password" and not u.outcome_applied:
                     u.availability = "starting"
+                    if self._async_outputs_cap and not stale:
+                        # Accepted, not started: the outcome comes as an
+                        # event, and this guard ends a start that never says
+                        u.start_pending_until = now + START_PENDING_S
             if w.params.get("cause") == Origin.USER:
                 self._silence_chosen = False
             # A speaker that joins late gets the bundle once it exists.
             fx.republish = True
             return WriteOutcome(ok=True)
         if code in ("pin_required", "pin_invalid", "encoder_capacity"):
-            reason = {"pin_required": "pin_required", "pin_invalid": "pin_invalid",
-                      "encoder_capacity": "encoder_capacity"}[code]
             if u is not None:
-                if code == "pin_required":
-                    u.availability = "password"
-                if not stale:
-                    self._revert_locked(u, now)
-                self._start_failure_locked(u, reason, w.requester)
+                self._select_outcome_locked(u, code, code, w.requester, None, stale, now, fx)
             return WriteOutcome(ok=False, error_code=code, error=r.message)
         if code == "timeout":
             # The player is still starting it: its command queue is busy, not down.
             # Whether it started is for the row to say; a read just after this
             # is not taken as the player's own change.
-            if u is not None and not stale:
+            if u is not None and not stale and not u.outcome_applied:
                 u.own_write_at = now
                 u.availability = "starting"
                 u.start_pending_until = now + START_PENDING_S
+            if self._async_outputs_cap:
+                fx.log(logging.WARNING, "Start of %s not answered in %.0f s by a player that answers at once",
+                       self._unit_name_locked(w.unit_id), WRITE_TIMEOUT_S)
             return WriteOutcome(ok=True, error_code="timeout", pending=True)
         if code == "reselect_required":
             if w.params.get("reselect") and u is not None and not stale:
@@ -2482,15 +2679,45 @@ class OutputAuthority:
             if u is not None and not stale:
                 u.availability = "starting"
             return WriteOutcome(ok=True, error_code=code, pending=True)
-        if u is not None and not stale:
-            if not u.retry_allowed:
-                self._revert_locked(u, now)
-                self._start_failure_locked(u, "refused", w.requester)
-            elif self._session_active:
-                self._failed_treatment_locked(u, now)
-            else:
-                self._revert_locked(u, now)
+        if u is not None:
+            self._select_outcome_locked(u, "failed", "refused", w.requester, None, stale, now, fx)
         return WriteOutcome(ok=False, error_code=code, error=r.message)
+
+    def _select_outcome_locked(self, u: UnitState, code: str, notice: str, requester: Optional[str],
+                               claimant: Optional[str], stale: bool, now: float, fx: _Effects) -> None:
+        """The one place a failed start is applied, whether the verdict came
+        in a request's answer or in an output_state event. *code* is
+        pin_required, pin_invalid, encoder_capacity, no_clock or failed;
+        *notice* is the reason a notice gives. A start the user asked for is
+        turned back off with a notice; one the appliance made is retried
+        while a session plays. *stale* (an answer to an older request) keeps
+        the desired state as it is. *claimant*, given on the event path, is
+        handed the PIN the speaker now shows."""
+        if not stale:
+            u.outcome_applied = True
+        user = not u.retry_allowed
+        if code in ("pin_required", "pin_invalid", "encoder_capacity"):
+            # The speaker refused this start whoever asked; never retried
+            if code == "pin_required":
+                u.availability = "password"
+            if not stale:
+                self._revert_locked(u, now)
+            self._start_failure_locked(u, notice, requester)
+            if code == "pin_required" and claimant and not stale:
+                fx.claims.append((u.id, claimant))
+            return
+        if stale:
+            return
+        if user or not self._session_active:
+            self._revert_locked(u, now)
+            if user:
+                self._start_failure_locked(u, notice, requester)
+            return
+        if code == "no_clock" and u.retry_limit is None:
+            # The speaker is not following the clock: a couple of tries, then the notice
+            u.retry_limit = MIDSESSION_RETRIES
+        u.fail_notice = notice
+        self._failed_treatment_locked(u, now)
 
 
 _AUTHORITY = OutputAuthority()

@@ -33,7 +33,9 @@ import autostream_state.outputs as outputs
 from autostream_backend_events import DEGRADED, ConnectInfo, DeviceEvent
 from autostream_players import ActionResult, EventChannelInfo, ListOutputsResult
 from autostream_state import Origin
-from output_fakes import FakeBackend, FakeSource, error, group_row, homepods_row, row, snap
+from output_fakes import (
+    FakeBackend, FakeSource, async_hello, error, group_row, homepods_row, row, snap, state_event,
+)
 from autostream_state.outputs import (
     START_PENDING_S,
     PlayerServiceBackend,
@@ -3084,3 +3086,412 @@ class TestOutsideFields:
         pairing.claim("1", "webui")
         self.now[0] = pairing.PIN_CLAIM_S - 0.3
         assert w.a._next_wait(w.t[0]) == pytest.approx(0.3) and idle > 0.3
+
+
+# ---------------------------------------------------------------------------
+# Speaker transitions as events
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def aw(w):
+    """An authority whose player said in its hello that it reports speaker
+    transitions as events; a test's first read adopts the speakers as they are."""
+    async_hello(w.a)
+    return w
+
+
+@pytest.fixture
+def ew(aw):
+    """aw with two speakers off, from a player whose rows carry sessions."""
+    put(aw, [group_row(1, volume_percent=30), group_row(2, volume_percent=30)])
+    return aw
+
+
+def send(w, uid, state, reason="none", at_s=None, **fields):
+    """The player's output_state event for *uid*, handled by the worker."""
+    if at_s is not None:
+        w.t[0] = T0 + at_s
+    w.a.on_device_event(state_event(uid, state, reason, **fields))
+    w.a.step(now=w.t[0])
+
+
+def unit_state(w, uid="1"):
+    return w.a._units[uid]
+
+
+@pytest.fixture
+def claims(monkeypatch):
+    got = []
+    monkeypatch.setattr(outputs, "_pin_claim_handler", lambda uid, who: got.append((uid, who)))
+    return got
+
+
+class TestOutputStateEvents:
+    def test_an_accepted_select_then_connecting_and_streaming_reads_ok(self, ew):
+        out = ew.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out == WriteOutcome(ok=True)
+        assert snap().unit("1").availability == "starting"
+        send(ew, "1", "connecting", selected=True, at_s=0.1)
+        assert snap().unit("1").availability == "starting" and snap().unit("1").selected
+        send(ew, "1", "connected", selected=True, at_s=0.5)
+        send(ew, "1", "streaming", selected=True, at_s=1.0)
+        u = unit_state(ew)
+        assert snap().unit("1").availability == "ok" and u.attempt is False and u.start_pending_until == 0.0
+        assert snap().start_failure is None
+
+    def test_a_failed_event_before_the_204_is_applied_once(self, ew):
+        def fail_first(uid, fields):
+            ew.a.on_device_event(state_event("1", "failed", "unreachable", selected=False))
+            ew.a.step(now=ew.t[0])
+
+        ew.fb.on_update = fail_first
+        out = ew.a.select("1", Origin.USER, volume=30, requester="webui").outcome.result()[0]
+        assert out.ok is True
+        u = snap().unit("1")
+        assert u.selected is False
+        sf = snap().start_failure
+        assert (sf.reason, sf.seq, sf.requester) == ("unreachable", 1, "webui")
+        assert unit_state(ew).start_pending_until == 0.0
+        ew.fb.on_update = None
+        at(ew, 200)
+        assert snap().start_failure.seq == 1
+
+    def test_password_after_the_reply_reverts_claims_and_notices(self, ew, claims):
+        ew.a.select("1", Origin.USER, volume=30, requester="webui", claimant="webui:tab").outcome.result()
+        send(ew, "1", "connecting", selected=True, at_s=0.1)
+        send(ew, "1", "password", "pin_required", selected=False, pin_pending=True, at_s=0.5)
+        u = snap().unit("1")
+        assert u.selected is False and u.availability == "password"
+        assert snap().start_failure.reason == "pin_required"
+        assert claims == [("1", "webui:tab")]
+
+    @pytest.mark.parametrize("state,reason,user_notice,code", [
+        ("password", "pin_required", "pin_required", "pin"),
+        ("password", "pin_invalid", "pin_invalid", "pin"),
+        ("password", "something_new", "pin_required", "pin"),
+        ("failed", "capacity", "encoder_capacity", "never"),
+        ("failed", "no_clock", "no_clock", "retry"),
+        ("failed", "refused", "refused", "retry"),
+        ("failed", "unreachable", "unreachable", "retry"),
+        ("failed", "timeout", "timed_out", "retry"),
+        ("failed", "taken_over", "failed", "retry"),
+    ])
+    @pytest.mark.parametrize("cause", [Origin.USER, Origin.SESSION])
+    def test_each_reason_gets_its_treatment(self, ew, state, reason, user_notice, code, cause):
+        ew.a.note_session(True)
+        ew.a.select("1", cause, volume=30).outcome.result()
+        send(ew, "1", "connecting", selected=True, at_s=0.1)
+        send(ew, "1", state, reason, selected=False, at_s=0.5)
+        u, sf = snap().unit("1"), snap().start_failure
+        if cause is Origin.USER or code in ("pin", "never"):
+            assert u.selected is False
+            assert sf is not None and sf.reason == user_notice
+            assert unit_state(ew).retry_at is None
+        else:
+            # The appliance's own start: kept, retried, and nothing said yet
+            assert u.selected is True and u.availability == "failed"
+            assert sf is None and unit_state(ew).retry_at is not None
+            assert unit_state(ew).fail_notice == user_notice
+            assert unit_state(ew).retry_limit == (2 if reason == "no_clock" else None)
+
+    def test_no_clock_is_retried_twice_then_given_up_with_its_notice(self, ew):
+        ew.a.note_session(True)
+        ew.a.select("1", Origin.SESSION, volume=30).outcome.result()
+        send(ew, "1", "failed", "no_clock", selected=False, at_s=0.1)
+        assert snap().start_failure is None and len(selects(ew)) == 1
+        at(ew, 11)
+        assert len(selects(ew)) == 2
+        send(ew, "1", "failed", "no_clock", selected=False, at_s=11.5)
+        assert snap().unit("1").selected is True and snap().start_failure is None
+        at(ew, 32)
+        assert len(selects(ew)) == 3
+        send(ew, "1", "failed", "no_clock", selected=False, at_s=32.5)
+        assert snap().unit("1").selected is False
+        assert snap().start_failure.reason == "no_clock"
+        at(ew, 100)
+        assert len(selects(ew)) == 3
+
+    def test_capacity_is_never_retried(self, ew):
+        ew.a.note_session(True)
+        ew.a.select("1", Origin.SESSION, volume=30).outcome.result()
+        send(ew, "1", "failed", "capacity", selected=False, at_s=0.1)
+        assert snap().unit("1").selected is False and snap().start_failure.reason == "encoder_capacity"
+        for s in (10, 30, 60, 120):
+            at(ew, s)
+        assert len(selects(ew)) == 1
+
+    def test_unreachable_and_timeout_notices_say_why(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        send(ew, "1", "failed", "unreachable", selected=False, at_s=0.1)
+        assert snap().start_failure.reason == "unreachable"
+        ew.a.select("2", Origin.USER, volume=30).outcome.result()
+        send(ew, "2", "failed", "timeout", selected=False, at_s=0.2)
+        assert (snap().start_failure.unit_id, snap().start_failure.reason) == ("2", "timed_out")
+
+    def test_stopping_then_stopped_after_a_deselect(self, aw):
+        ew = aw
+        put(ew, [group_row(1, "streaming", selected=True), group_row(2)])
+        ew.a.deselect("1", Origin.USER)
+        send(ew, "1", "stopping", selected=False, at_s=0.1)
+        u = snap().unit("1")
+        assert u.selected is False and u.availability == "ok"
+        send(ew, "1", "stopped", selected=False, at_s=1.2)
+        assert snap().unit("1").availability == "ok" and snap().start_failure is None
+        at(ew, 5)
+        assert [f for _, f in ew.fb.updates() if f.get("enabled") is False] == [dict(enabled=False, timeout=3.0)]
+
+    def test_stopping_while_selected_reads_starting(self, aw):
+        ew = aw
+        put(ew, [group_row(1, "streaming", selected=True), group_row(2)])
+        ew.a.deselect("1", Origin.USER)
+        ew.a.select("1", Origin.USER, volume=30)
+        send(ew, "1", "stopping", selected=True, at_s=0.1)
+        assert snap().unit("1").availability == "starting"
+        at(ew, 3)
+        # Still ending its session: not judged, nothing sent again
+        assert len(selects(ew)) == 1
+        send(ew, "1", "stopped", selected=True, at_s=3.2)
+        send(ew, "1", "connecting", selected=True, at_s=3.3)
+        send(ew, "1", "streaming", selected=True, at_s=4.0)
+        assert snap().unit("1").availability == "ok" and snap().start_failure is None
+
+    def test_lost_starts_the_midsession_retry(self, aw):
+        ew = aw
+        ew.a.note_session(True)
+        put(ew, [group_row(1, "streaming", selected=True), group_row(2)])
+        send(ew, "1", "failed", "lost", selected=True, at_s=1)
+        u = unit_state(ew)
+        assert snap().unit("1").selected is True and snap().unit("1").availability == "failed"
+        assert u.retry_limit == outputs.MIDSESSION_RETRIES and u.retry_at is not None
+        assert snap().start_failure is None
+
+    def test_cancelled_changes_nothing(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        send(ew, "1", "connecting", selected=True, at_s=0.1)
+        ew.a.deselect("1", Origin.USER)
+        send(ew, "1", "stopping", selected=False, at_s=0.2)
+        send(ew, "1", "stopped", "cancelled", selected=False, at_s=4)
+        u = snap().unit("1")
+        assert u.selected is False and u.availability == "ok" and snap().start_failure is None
+
+    def test_an_unknown_id_or_state_forces_a_read(self, ew):
+        before = ew.fb.reads
+        send(ew, "99", "streaming", at_s=0.1)
+        assert ew.fb.reads == before + 1
+        send(ew, "1", "warming", at_s=2)
+        assert ew.fb.reads == before + 2
+        assert unit_state(ew).reported.session_state == "stopped"
+
+    @pytest.mark.parametrize("order", ["follower_first", "leader_first"])
+    def test_a_pair_applies_the_row_summary_in_either_order(self, ew, order):
+        # The pair's row state is its leader's phase, in both members' events
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        events = [dict(member="1b", member_state="failed"), dict(member="1", member_state="streaming")]
+        if order == "leader_first":
+            events.reverse()
+        for i, ev in enumerate(events):
+            send(ew, "1", "streaming", selected=True, at_s=0.5 + i, **ev)
+        u = snap().unit("1")
+        assert u.availability == "ok" and u.selected is True and snap().start_failure is None
+
+    def test_a_volume_change_during_connecting_does_not_make_the_failure_stale(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        send(ew, "1", "connecting", selected=True, at_s=0.1)
+        ew.a.set_volume("1", 45, Origin.USER)
+        send(ew, "1", "failed", "unreachable", selected=False, at_s=0.5)
+        assert snap().unit("1").selected is False and snap().start_failure.reason == "unreachable"
+
+    def test_a_queued_select_makes_an_earlier_failure_stale(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        u = unit_state(ew)
+        with ew.a._wq_cond:
+            ew.a._wq.append(outputs._Write("select", "1", u.desired_seq, {"volume": None}, []))
+        send(ew, "1", "failed", "unreachable", selected=False, at_s=0.5)
+        assert snap().start_failure is None and snap().unit("1").selected is True
+        assert len(selects(ew)) == 2
+
+    def test_a_deselected_unit_merges_the_row_without_an_outcome(self, ew):
+        send(ew, "1", "failed", "unreachable", selected=False, at_s=0.5)
+        assert snap().start_failure is None
+        assert unit_state(ew).reported.session_state == "failed"
+        assert unit_state(ew).reported.session_failure == "unreachable"
+        assert snap().unit("1").availability == "failed"
+
+    def test_event_rows_feed_the_hold_follow_and_the_mute_diff(self, aw):
+        ew = aw
+        ew.a.note_session(True)
+        put(ew, [group_row(1, "streaming", selected=True, session_holdable=True), group_row(2)])
+        send(ew, "1", "streaming", selected=True, held=True, at_s=5)
+        assert snap().unit("1").held is True
+        send(ew, "1", "streaming", selected=True, held=True, muted=True, at_s=6)
+        at(ew, 8.5)
+        assert mutes(ew) == [("1", False)]
+
+    def test_absent_fields_keep_the_row_values(self, aw):
+        ew = aw
+        put(ew, [group_row(1, "streaming", selected=True, volume_percent=40, muted=True, session_held=True),
+                 group_row(2)])
+        send(ew, "1", "connected", at_s=0.5)
+        r = unit_state(ew).reported
+        assert (r.session_state, r.selected, r.volume_percent, r.muted, r.session_held) == (
+            "connected", True, 40, True, True)
+        send(ew, "1", "streaming", volume=55, held=False, at_s=0.6)
+        r = unit_state(ew).reported
+        assert (r.volume_percent, r.session_held, r.muted) == (55, False, True)
+
+    def test_no_backend_call_is_made_while_handling_an_event(self, aw):
+        ew = aw
+        put(ew, [group_row(1, "streaming", selected=True), group_row(2)])
+        for state in ("stopping", "stopped", "connecting", "connected", "streaming"):
+            send(ew, "1", state, selected=True, at_s=0.1)
+        assert ew.fb.calls == []
+
+
+class TestReadingWithEvents:
+    def test_changed_reads_are_coalesced_to_one_a_second_with_events(self, ew):
+        before = ew.fb.reads
+        ew.a.on_outputs_changed()
+        at(ew, 0)
+        assert ew.fb.reads == before + 1
+        for t in (0.2, 0.5, 0.9):
+            ew.a.on_outputs_changed()
+            at(ew, t)
+        assert ew.fb.reads == before + 1
+        at(ew, 1.0)
+        assert ew.fb.reads == before + 2
+        assert ew.a._next_wait(T0 + 1.2) <= 1.0
+
+    def test_without_events_a_change_is_read_at_once(self, w):
+        w.fb.rows = [row(1)]
+        for t in (0, 0.2, 0.4):
+            w.a.on_outputs_changed()
+            at(w, t)
+        assert w.fb.reads == 3
+
+    def test_a_read_timeout_counts_against_an_async_player(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        assert unit_state(ew).start_pending_until > ew.t[0]
+        ew.fb.list_result = ListOutputsResult(ok=False, error="slow", error_code="timeout")
+        for i in range(4):
+            ew.a.on_outputs_changed()
+            at(ew, 10 * i)
+        assert snap().connected is False
+
+
+class TestAsyncCapability:
+    def test_output_state_in_the_hello_sets_the_async_flag(self, w, caplog):
+        assert w.a.starts_are_async() is False
+        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
+            async_hello(w.a)
+        assert w.a.starts_are_async() is True
+        assert "The player reports speaker transitions as events" in caplog.text
+        w.a._handle_connected(ConnectInfo("b0", 1, frozenset({"changed"}), "unix_socket"))
+        assert w.a.starts_are_async() is False
+        # Polling between two sockets of one boot keeps it
+        async_hello(w.a)
+        w.a._source = FakeSource("poll")
+        w.a._handle_connected(ConnectInfo(None, None, frozenset(), "poll"))
+        assert w.a.starts_are_async() is True
+
+    def test_a_restart_without_a_hello_forgets_it(self, w):
+        async_hello(w.a)
+        w.a.merge_for_tests([row(1)], now=T0)
+        w.a._handle_connected(ConnectInfo(None, None, frozenset(), "poll"))
+        w.a.mark_unreachable_for_tests()
+        w.a.merge_for_tests([row(1)], now=T0 + 5)
+        assert w.a.starts_are_async() is False
+
+
+class TestAsyncOutcomes:
+    def test_a_204_on_an_async_player_sets_the_start_guard(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        assert unit_state(ew).start_pending_until == T0 + START_PENDING_S
+        # A speaker the player takes while nothing plays is started with the playback
+        send(ew, "1", "connecting", selected=True, at_s=0.1)
+        send(ew, "1", "stopped", selected=True, at_s=0.3)
+        assert unit_state(ew).start_pending_until == 0.0
+        at(ew, START_PENDING_S + 5)
+        assert snap().start_failure is None and snap().unit("1").selected is True
+
+    def test_a_204_with_no_outcome_for_two_minutes_times_out(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        send(ew, "1", "connecting", selected=True, at_s=0.1)
+        at(ew, START_PENDING_S + 1)
+        assert snap().start_failure.reason == "timed_out" and snap().unit("1").selected is False
+
+    def test_a_write_timeout_on_an_async_player_warns(self, ew, caplog):
+        ew.fb.results = [error("timeout")]
+        with caplog.at_level(logging.WARNING, logger="autostream.outputs"):
+            out = ew.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out.pending is True
+        assert "Start of Speaker 1 not answered in 3 s by a player that answers at once" in caplog.text
+
+    def test_the_reply_path_is_unchanged_without_the_capability(self, w, caplog):
+        put(w, [group_row(1), group_row(2)])
+        out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out.ok is True and w.a._units["1"].start_pending_until == 0.0
+        w.fb.results = [error("timeout")]
+        with caplog.at_level(logging.WARNING, logger="autostream.outputs"):
+            w.a.select("2", Origin.USER, volume=30)
+        assert "not answered" not in caplog.text
+        w.a.deselect("1", Origin.USER)
+        w.fb.results = [error("start_failed")]
+        w.a.select("1", Origin.USER, volume=30)
+        assert snap().start_failure.reason == "refused"
+
+
+class TestReconcileWithEvents:
+    @pytest.mark.parametrize("state", ["connecting", "stopping"])
+    def test_connecting_and_stopping_rows_are_not_judged(self, ew, state):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        send(ew, "1", state, selected=False, at_s=0.1)
+        for s in (3, 6, 9):
+            at(ew, s)
+        assert len(selects(ew)) == 1
+
+    def test_a_row_with_a_live_pin_claim_is_not_deselected(self, aw):
+        ew = aw
+        put(ew, [group_row(1, "connecting", selected=True), group_row(2)])
+        ew.a.deselect("1", Origin.USER)
+        ew.fb.calls.clear()
+        pairing.claim("1", "webui:tab")
+        try:
+            for s in (3, 6, 9):
+                at(ew, s)
+            assert ew.fb.updates() == []
+        finally:
+            pairing.release("1")
+        at(ew, 12)
+        at(ew, 15)
+        assert ew.fb.updates() == [("1", dict(enabled=False, timeout=3.0))]
+
+
+class TestRealThreadsWithEvents:
+    def test_events_and_writes_interleave_without_a_lock_cycle(self, live):
+        live.a.on_connected(ConnectInfo(
+            "b0", 1, frozenset({"changed", "start_volume", "output_state"}), "unix_socket"))
+        assert wait_for(lambda: live.a.starts_are_async())
+        stop = threading.Event()
+
+        def events():
+            states = ("connecting", "connected", "streaming", "stopping", "stopped")
+            i = 0
+            while not stop.is_set():
+                live.a.on_device_event(state_event("2", states[i % len(states)], selected=True, volume=30 + i % 5))
+                i += 1
+                time.sleep(0.001)
+
+        t = threading.Thread(target=events, daemon=True)
+        t.start()
+        try:
+            applied = []
+            for i in range(40):
+                applied.append(live.a.set_volume("1", 20 + i % 30, Origin.USER))
+                applied.append(live.a.select("2", Origin.USER, volume=30) if i % 2 else
+                               live.a.deselect("2", Origin.USER))
+            for a in applied:
+                a.outcome.result(5)
+        finally:
+            stop.set()
+            t.join(5)
+        assert wait_for(lambda: live.a._items.empty())

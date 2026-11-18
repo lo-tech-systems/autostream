@@ -31,7 +31,7 @@ from autostream_players import ActionResult
 from autostream_state import Origin
 from autostream_state.outputs import get_authority
 from fake_store import FakeStore
-from output_fakes import FakeBackend, row, snap
+from output_fakes import FakeBackend, async_hello, group_row, row, snap, state_event
 import webui.browser.home_model as webui_home_model
 
 ID = "42"
@@ -200,6 +200,31 @@ class TestEnable:
         state.store().subscribe(lambda c: seen.append(c))
         change(on(), requester="dial:abc")
         assert any(c.requester == "dial:abc" and "outputs" in c.parts for c in seen)
+
+
+class TestEnableOnAnAsyncPlayer:
+    def test_a_select_replies_ok_at_once_on_an_async_player(self, player):
+        async_hello(get_authority())
+        arrange(group_row(ID, name="Kitchen"))
+        assert change(on(volume=35)) == {"ok": True, "id": ID}
+        u = snap().unit(ID)
+        assert u.selected is True and u.availability == "starting"
+
+    def test_a_pin_required_event_after_the_reply_hands_the_pin_to_the_requester(self, player):
+        a = get_authority()
+        async_hello(a)
+        arrange(group_row(ID, name="Kitchen"))
+        reply = submit(Intent("outputs.set", {"id": ID, "selected": True, "volume": 30}, Origin.USER,
+                              "dial:abc", context="dial:abc"))
+        assert reply.ok is True and reply.result == {"ok": True, "id": ID}
+        assert pairing.holder(ID) == ""
+        a.on_device_event(state_event(ID, "connecting", selected=True))
+        a.on_device_event(state_event(ID, "password", "pin_required", selected=False, pin_pending=True))
+        a.step()
+        assert pairing.holder(ID) == "dial:abc"
+        sf = snap().start_failure
+        assert (sf.reason, sf.requester, sf.unit_id) == ("pin_required", "dial:abc", ID)
+        assert snap().unit(ID).availability == "password" and snap().unit(ID).pin_claim == "dial:abc"
 
 
 class TestOccupancy:
