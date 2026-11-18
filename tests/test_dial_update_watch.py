@@ -42,7 +42,8 @@ class TestParse:
         view = parse_update_result(FULL)
         assert view == UpdateView(
             status="failure", percent=0, message="Update to 0.7.0 failed - restored 0.6.0",
-            phase="rolled_back", tag="0.7.0", previous_tag="0.6.0", attempt=2, rolled_back=True,
+            phase="rolled_back", tag="0.7.0", previous_tag="0.6.0", attempt=2, max_attempts=4,
+            rolled_back=True,
             last_run_at="2000-01-01T01:00:00+00:00",
         )
 
@@ -62,6 +63,19 @@ class TestParse:
 
     def test_quoted_values_lose_their_quotes(self):
         assert parse_update_result('PHASE="files"\n').phase == "files"
+        assert parse_update_result("PHASE='files'\n").phase == "files"
+
+    def test_an_unbalanced_quote_is_kept(self):
+        assert parse_update_result('PHASE="files\n').phase == '"files'
+
+    def test_the_attempt_numbers_are_clamped(self):
+        view = parse_update_result("ATTEMPT=250\nMAX_ATTEMPTS=-3\n")
+        assert (view.attempt, view.max_attempts) == (99, 0)
+        assert parse_update_result("ATTEMPT=3\nMAX_ATTEMPTS=5\n").max_attempts == 5
+
+    def test_a_bad_attempt_number_is_zero(self):
+        view = parse_update_result("ATTEMPT=x\nMAX_ATTEMPTS=\n")
+        assert (view.attempt, view.max_attempts) == (0, 0)
 
 
 class TestWatcher:

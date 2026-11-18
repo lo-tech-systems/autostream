@@ -3,8 +3,8 @@
 The updater and the installer report through one small KEY=VALUE file
 (/var/lib/autostream/update-result.env): a status (in_progress, success or
 failure), a percent, a human message, the phase the run is in, the release
-tags involved, the attempt number and whether a failed update was rolled
-back. read_update_result() turns that file into an UpdateView, and
+tags involved, the attempt number and its limit, and whether a failed update
+was rolled back. read_update_result() turns that file into an UpdateView, and
 UpdateWatcher.tick() re-reads it only when the file has changed, so the
 display's once-a-second tick costs one stat() while nothing is happening.
 
@@ -22,7 +22,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from dial_values import clamp_percent, read_text_or
+from dial_values import clamp, clamp_percent, parse_env_text, parse_int, read_text_or
 
 UPDATE_RESULT_PATH = "/var/lib/autostream/update-result.env"
 UPDATE_SEEN_PATH = "/var/lib/autostream/dial-update-seen"
@@ -45,35 +45,25 @@ class UpdateView:
     tag: str = ""
     previous_tag: str = ""
     attempt: int = 0
+    max_attempts: int = 0
     rolled_back: bool = False
     last_run_at: str = ""
 
 
-def _to_int(text: str, default: int = 0) -> int:
-    try:
-        return int(str(text).strip())
-    except (TypeError, ValueError):
-        return default
-
-
 def parse_update_result(text: str) -> UpdateView:
     """Parse the file's text. Unknown keys and malformed lines are ignored;
-    a missing key takes its default; the percent is clamped to 0..100."""
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        values[key.strip()] = value.strip().strip('"')
+    a missing key takes its default; the percent is clamped to 0..100 and
+    the attempt numbers to 0..99."""
+    values = parse_env_text(text)
     return UpdateView(
         status=values.get("STATUS", ""),
-        percent=clamp_percent(_to_int(values.get("PERCENT_COMPLETE", "0"))),
+        percent=clamp_percent(parse_int(values.get("PERCENT_COMPLETE", "0"))),
         message=values.get("MESSAGE", ""),
         phase=values.get("PHASE", ""),
         tag=values.get("TAG", ""),
         previous_tag=values.get("PREVIOUS_TAG", ""),
-        attempt=_to_int(values.get("ATTEMPT", "0")),
+        attempt=clamp(parse_int(values.get("ATTEMPT", "0")), 0, 99),
+        max_attempts=clamp(parse_int(values.get("MAX_ATTEMPTS", "0")), 0, 99),
         rolled_back=values.get("ROLLED_BACK", "0") == "1",
         last_run_at=values.get("LAST_RUN_AT", ""),
     )

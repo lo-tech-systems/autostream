@@ -41,6 +41,7 @@ from dial_display_profiles import (
 )
 from dial_touch_controllers import list_controllers
 from dial_touch_layout import metrics_for
+from dial_update_watch import UPDATE_RESULT_PATH, UpdateView, read_update_result
 from dial_values import NotAnObject, NotJson, is_int, parse_json_object, read_env_file
 
 import dial_admin
@@ -61,7 +62,7 @@ from autostream_sysutils import (
 
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
 _INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
-_UPDATE_RESULT_PATH = Path('/var/lib/autostream/update-result.env')
+_UPDATE_RESULT_PATH = Path(UPDATE_RESULT_PATH)
 
 # POST /screen/settings is unauthenticated when no PIN is configured (the
 # out-of-box state — see the PIN check further down), and the dial's unit
@@ -147,10 +148,9 @@ def _validate_dial_name(name: str) -> None:
 # ---- Update state -----------------------------------------------------------
 
 def _read_update_state() -> str:
-    env = read_env_file(_UPDATE_RESULT_PATH)
-    status = env.get('STATUS', '').lower()
+    view = read_update_result(_UPDATE_RESULT_PATH) or UpdateView()
     return {'success': 'complete', 'failure': 'failed', 'in_progress': 'running'}.get(
-        status, 'idle'
+        view.status.lower(), 'idle'
     )
 
 
@@ -160,24 +160,17 @@ def _read_update_fields() -> dict:
     Every field is optional in the file (older result files lack the phase
     and attempt keys), so each falls back to a neutral value.
     """
-    env = read_env_file(_UPDATE_RESULT_PATH)
-
-    def _int(key: str, high: int) -> int:
-        try:
-            return max(0, min(high, int(env.get(key) or '0')))
-        except ValueError:
-            return 0
-
+    view = read_update_result(_UPDATE_RESULT_PATH) or UpdateView()
     return {
-        'percent':      _int('PERCENT_COMPLETE', 100),
-        'message':      env.get('MESSAGE', ''),
-        'phase':        env.get('PHASE', ''),
-        'tag':          env.get('TAG', ''),
-        'previous_tag': env.get('PREVIOUS_TAG', ''),
-        'attempt':      _int('ATTEMPT', 99),
-        'max_attempts': _int('MAX_ATTEMPTS', 99),
-        'rolled_back':  env.get('ROLLED_BACK', '0') == '1',
-        'last_run_at':  env.get('LAST_RUN_AT', ''),
+        'percent':      view.percent,
+        'message':      view.message,
+        'phase':        view.phase,
+        'tag':          view.tag,
+        'previous_tag': view.previous_tag,
+        'attempt':      view.attempt,
+        'max_attempts': view.max_attempts,
+        'rolled_back':  view.rolled_back,
+        'last_run_at':  view.last_run_at,
     }
 
 
