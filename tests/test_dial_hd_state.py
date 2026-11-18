@@ -80,6 +80,7 @@ class TestCorpus:
             "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited", "pin_required_v1",
             "pin_expired", "power_requested", "power_failed",
             "start_failure_refused", "start_failure_elsewhere", "start_failure_late_pin",
+            "appliance_needs_update",
         }
 
     def test_a_build_is_repeatable(self):
@@ -552,6 +553,17 @@ class TestWarnings:
         card = _state("appliance_warning_notice")["warnings"]["cards"][0]
         assert card["buttons"] == [{"label": "OK", "action": "dismiss"}]
         assert card["severity"] == "info"
+
+    def test_an_appliance_on_an_older_protocol_lists_the_update_warning(self):
+        state = _state("appliance_needs_update")
+        key = f"appliance:{hs.LOUNGE}:update_appliance"
+        block = state["appliances"][0]
+        assert block["capabilities"]["proto"] == 2
+        assert block["warnings"] == [{
+            "key": key, "id": "update_appliance", "severity": "warning", "title": "Update Lounge",
+            "message": "Its software is older than this dial's. Update it from its web UI.",
+            "dismissal": "week", "snoozed": False}]
+        assert state["warnings"]["cards"][0]["id"] == key
 
     def test_a_snooze_runs_to_a_wall_clock_time(self):
         scenario = hs.SCENARIOS["appliance_warning"]

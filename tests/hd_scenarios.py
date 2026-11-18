@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import sys
+from types import SimpleNamespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
     ApplianceState, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqBand, EqState,
     FocusState, NowPlaying, OutputRow, OutputsState, PowerState, StartFailureNotice,
-    TransportRequest, WarningState, artwork_key,
+    TransportRequest, WarningState, artwork_key, protocol_warning,
 )
 from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView
 from dial_repeat_store import RepeatRecord
@@ -65,13 +66,13 @@ SETTINGS = {"brightness": 80, "sleep_after_s": 300}
 def appliance(
     appliance_id=LOUNGE, name="Lounge", *, auth=AUTH_AUTHORIZED, playing=False, eq_version=2,
     outputs_version=1, repeat=None, status_error=None, master_volume=None, muted=None,
-    warnings=(), supplies_warnings=True, ip="192.0.2.20",
+    warnings=(), supplies_warnings=True, ip="192.0.2.20", proto=3,
 ) -> ApplianceState:
     return ApplianceState(
         appliance_id=appliance_id, service_name=name, name=name, ip=ip, port=80,
         playing=playing, playing_since=NOW - 60 if playing else 0.0, auth=auth,
         dial_status=True, dial_outputs=outputs_version > 0, dial_eq=eq_version > 0,
-        repeat_capable=True, dial_proto_version=3, dial_eq_version=eq_version,
+        repeat_capable=True, dial_proto_version=proto, dial_eq_version=eq_version,
         dial_outputs_version=outputs_version, status_error=status_error,
         master_volume=master_volume, muted=muted, repeat=repeat, webui_scheme="http",
         webui_host=ip, webui_port=80, supplies_warnings=supplies_warnings, warnings=warnings,
@@ -233,11 +234,21 @@ def _stylus_warning(dismissal="week", severity="warning"):
     )
 
 
-def _appliance_warning_scenario(name, warning, snoozed=False) -> Scenario:
+def _update_warning():
+    """The warning the dial raises for the Lounge appliance on an older dial
+    protocol than its own."""
+    entry = SimpleNamespace(
+        appliance_id=LOUNGE, auth=AUTH_AUTHORIZED, dial_proto_version=2, service_name="Lounge")
+    return protocol_warning(entry, 3)
+
+
+def _appliance_warning_scenario(name, warning, snoozed=False, proto=3, supplies=True) -> Scenario:
     key = appliance_warning_key(LOUNGE, warning.id)
     descriptor = appliance_warning_descriptor(LOUNGE, warning)
     snapshot = _playing(
-        appliances=(appliance(playing=True, master_volume=42, muted=False, warnings=(warning,)),),
+        appliances=(appliance(
+            playing=True, master_volume=42, muted=False, warnings=(warning,), proto=proto,
+            supplies_warnings=supplies),),
         warnings=warning_states(
             {key: warning.severity}, {key: WALL_NOW + 3600} if snoozed else None, extra=(key,),
         ),
@@ -320,6 +331,8 @@ def _build() -> dict:
     add(_appliance_warning_scenario("appliance_warning", _stylus_warning()))
     add(_appliance_warning_scenario(
         "appliance_warning_notice", _stylus_warning(dismissal="none", severity="info")))
+    add(_appliance_warning_scenario(
+        "appliance_needs_update", _update_warning(), proto=2, supplies=False))
     add(Scenario("pin_required", _pin_snapshot(pin_request("rejected", "pin_required"))))
     add(Scenario("pin_invalid", _pin_snapshot(pin_request("rejected", "pin_invalid", "output_pin"))))
     add(Scenario("pin_busy", _pin_snapshot(pin_request("pending", None, "output_pin"))))

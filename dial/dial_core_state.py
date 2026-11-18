@@ -618,6 +618,32 @@ def _enum_or_default(value, allowed: tuple, default: str) -> str:
     return default
 
 
+# The id of the warning a dial raises for an appliance on an older dial protocol.
+PROTOCOL_WARNING_ID = "update_appliance"
+_PROTOCOL_WARNING_MESSAGE = "Its software is older than this dial's. Update it from its web UI."
+
+
+def protocol_warning(entry, own_generation: int) -> ApplianceWarning | None:
+    """An "Update <appliance>" warning for a rostered, authorised appliance
+    with an identity whose advertised generation (entry.dial_proto_version)
+    is below *own_generation*; None otherwise. Severity "warning", dismissal
+    "week"; the title is "Update " plus the roster's display name, fitted to
+    APPLIANCE_WARNING_TITLE_MAX. Pure."""
+    appliance_id = getattr(entry, "appliance_id", "")
+    if not appliance_id or getattr(entry, "auth", "") != AUTH_AUTHORIZED:
+        return None
+    generation = getattr(entry, "dial_proto_version", 0)
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation >= own_generation:
+        return None
+    service_name = getattr(entry, "service_name", "")
+    name = appliance_display_name(service_name) if isinstance(service_name, str) else ""
+    return ApplianceWarning(
+        id=PROTOCOL_WARNING_ID, severity=SEVERITY_WARNING,
+        title=_clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
+        message=_PROTOCOL_WARNING_MESSAGE, dismissal=DISMISS_WEEK, appliance_name=name,
+    )
+
+
 def validate_appliance_warnings(body, appliance_id: str) -> tuple[ApplianceWarning, ...]:
     """The validated warnings of an appliance's reply, or () when there is
     nothing usable. *body* is the reply as received (bytes or text, parsed

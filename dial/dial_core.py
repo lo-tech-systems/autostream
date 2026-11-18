@@ -66,9 +66,9 @@ from dial_core_state import (
     NowPlaying, OutputsState, StartFailureNotice, input_label_from_record, outputs_tap, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
     appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
     eq_available, eq_gain, idle_affordance, outputs_available, parse_start_failure,
-    reopen_for_pin, reporting_for, resolve_focus, six_band, start_failure_action,
-    started_refused, validate_appliance_warnings, visible_targets, walk_order,
-    with_accepted_replay,
+    protocol_warning, reopen_for_pin, reporting_for, resolve_focus, six_band,
+    start_failure_action, started_refused, validate_appliance_warnings, visible_targets,
+    walk_order, with_accepted_replay,
 )
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
@@ -189,6 +189,7 @@ class _CoreState:
     sd_low: bool                        # the SD health incident latch (with hysteresis)
     appliance_warnings: dict            # appliance id -> its validated, attributed warnings
     statuses: dict                      # appliance id -> (status_error, master_volume, muted) from the last tick
+    protocol_warnings: dict             # appliance id -> the dial's own "Update" warning for it; private
     start_failure: object | None        # the raised StartFailureNotice, published
     start_failure_seen: dict            # appliance id -> (boot, seq) handled; private
 
@@ -198,6 +199,7 @@ _PRIVATE_FIELDS = (
     "roster", "repeats", "eq_optimistic",
     "outputs_refresh_at", "outputs_watch", "eq_watch",
     "wifi_down_streak", "sd_low", "appliance_warnings", "statuses", "start_failure_seen",
+    "protocol_warnings",
 )
 
 _SNAPSHOT_FIELDS = tuple(
@@ -361,6 +363,7 @@ def _initial_state(dial_id: str) -> _CoreState:
         sd_low=False,
         appliance_warnings={},
         statuses={},
+        protocol_warnings={},
         start_failure=None,
         start_failure_seen={},
     )
@@ -1424,9 +1427,18 @@ class DialCore:
             state.appliance_warnings = held
             self._sync_warnings_locked(state)
         return appliance_states(
-            state.roster, state.repeats, state.appliance_warnings, self._capabilities,
+            state.roster, state.repeats, self._all_warnings(state), self._capabilities,
             state.statuses,
         )
+
+    @staticmethod
+    def _all_warnings(state: _CoreState) -> dict:
+        """Each appliance's own warnings followed by the dial's protocol
+        warning for it, when it has one."""
+        merged = dict(state.appliance_warnings)
+        for appliance_id, warning in state.protocol_warnings.items():
+            merged[appliance_id] = merged.get(appliance_id, ()) + (warning,)
+        return merged
 
     def _sync_warnings_locked(self, state: _CoreState) -> bool:
         """Copy the warning manager's runtime state and due warning into
@@ -1695,7 +1707,8 @@ class DialCore:
                 held.pop(appliance_id, None)
             state.appliance_warnings = held
             state.appliances = appliance_states(
-                state.roster, state.repeats, held, self._capabilities, state.statuses,
+                state.roster, state.repeats, self._all_warnings(state), self._capabilities,
+                state.statuses,
             )
             self._sync_warnings_locked(state)
         self._publish(mutate)
@@ -2082,6 +2095,7 @@ class DialCore:
         self._expire_start_failure(now)
         self._refresh_capabilities(now)
         self._refresh_appliance_warnings(now)
+        self._refresh_protocol_warnings()
         self._refresh_dial_info(now)
         if effects.changes or effects.restarting or effects.signal:
             self._queue_effects(effects)
@@ -2120,7 +2134,8 @@ class DialCore:
             if a is None or not a.supplies_warnings or a.auth != AUTH_AUTHORIZED:
                 del self._warnings_next_at[appliance_id]
         for appliance_id, a in appliances.items():
-            if a.warnings and (not a.supplies_warnings or a.auth == AUTH_UNAUTHORIZED):
+            if (self._state.appliance_warnings.get(appliance_id)
+                    and (not a.supplies_warnings or a.auth == AUTH_UNAUTHORIZED)):
                 self._replace_appliance_warnings(appliance_id, ())
         if not self._polling:
             return
@@ -2133,6 +2148,41 @@ class DialCore:
                 now + WARNINGS_RECONCILE_S + _warnings_spread(appliance_id)
             )
             _enqueue_appliance_fetch("warnings", _FetchTarget(appliance_id, a.ip, a.port))
+
+    def _refresh_protocol_warnings(self) -> None:
+        """Raise the "Update <appliance>" warning for each rostered appliance
+        on an older dial protocol than this dial's, and end it for one that
+        has been updated, refused this dial or left the roster. The dial keeps
+        working with the appliance either way. One log line per change."""
+        lines: list = []
+
+        def mutate(state: _CoreState) -> "bool | None":
+            wanted = {}
+            for r in state.roster:
+                warning = protocol_warning(r, dial_capabilities.DIAL_PROTO_GENERATION)
+                if warning is not None:
+                    wanted[r.appliance_id] = warning
+            held = state.protocol_warnings
+            if wanted == held:
+                return False
+            for appliance_id, warning in held.items():
+                if wanted.get(appliance_id) != warning:
+                    self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
+                    if appliance_id not in wanted:
+                        lines.append(f"{warning.appliance_name} no longer needs an update")
+            for appliance_id, warning in wanted.items():
+                if held.get(appliance_id) != warning:
+                    key = appliance_warning_key(appliance_id, warning.id)
+                    self.warnings.register(appliance_warning_descriptor(appliance_id, warning))
+                    self.warnings.set_active(key, warning.severity)
+                    if appliance_id not in held:
+                        lines.append(f"{warning.appliance_name} runs an older dial protocol")
+            state.protocol_warnings = wanted
+            state.appliances = self._derive_appliances_locked(state)
+            self._sync_warnings_locked(state)
+        self._publish(mutate)
+        for line in lines:
+            logging.info("dial core: %s", line)
 
     def on_warnings_result(self, appliance_id: str, status, body) -> bool:
         """Fold a warnings read. A 412 refusing this dial demotes the

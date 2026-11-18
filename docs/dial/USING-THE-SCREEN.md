@@ -434,6 +434,11 @@ the appliance reports the notice again.
 
 Compact panels show the same card in the same layout as the SD card warning.
 
+A card reading **Update \<appliance\>** is the dial's own: that appliance runs older
+software than the dial, and should be updated from its web UI. It looks and
+behaves like the appliance's warnings, and the dial keeps working with that
+appliance in the meantime.
+
 ## Software update
 
 When the dial updates its own software (see

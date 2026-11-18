@@ -252,6 +252,10 @@ power-supply voltage. These are quieter than the dial's own warnings:
 
 Resetting the counter in the appliance's Service page clears its warning.
 
+**Update \<appliance\>** is the dial's own warning, shown in the same way, when that
+appliance runs older software than the dial. Update it from its web UI. The
+dial keeps working with it in the meantime.
+
 ### Sleep and waking
 
 After the **Sleep after** time with nothing playing the screen goes black and

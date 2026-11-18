@@ -1640,6 +1640,30 @@ class TestApplianceWarnings:
         expect(rows(page).filter(has_text="Lounge").locator(".warn-badge")).to_be_hidden()
         expect(modal_card(page)).to_be_hidden()
 
+    def test_an_appliance_on_an_older_protocol_has_a_badge_and_an_update_card(self, page, hd):
+        hd.show(hs.SCENARIOS["appliance_needs_update"])
+        open_page(page, hd)
+        expect(rows(page).first.locator(".warn-badge")).to_have_text("1")
+        expect(modal_card(page)).to_be_visible()
+        expect(page.locator("#card-title")).to_have_text("Update Lounge")
+        expect(page.locator("#card-message")).to_have_text(
+            "Its software is older than this dial's. Update it from its web UI.")
+        assert page.locator("#card-buttons button").all_text_contents() == ["Dismiss"]
+
+    def test_the_dials_controls_stay_usable_for_an_appliance_that_needs_an_update(self, page, hd):
+        hd.show(hs.SCENARIOS["appliance_needs_update"].with_snapshot(
+            outputs=hs.SCENARIOS["playing_artwork"].snapshot.outputs))
+        sent = watch_actions(page)
+        open_page(page, hd)
+        page.locator("#card-buttons button", has_text="Dismiss").click()
+        page.wait_for_timeout(150)
+        hd.show(hs._appliance_warning_scenario(
+            "x", hs._update_warning(), snoozed=True, proto=2, supplies=False))
+        expect(modal_card(page)).to_be_hidden()
+        card(page, "Patio").locator(".output-toggle").click()
+        page.wait_for_timeout(150)
+        assert [name for name, _ in sent] == ["warning_dismiss", "output"]
+
     def test_the_card_shows_when_the_warning_appliance_becomes_the_focus(self, page, hd):
         hd.show(lounge_warning_while_on_kitchen())
         open_page(page, hd)
