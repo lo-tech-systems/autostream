@@ -1456,7 +1456,7 @@ class TestValidateScreenSettings:
 
 
 class TestRunningMarkerPath:
-    """RUNNING_MARKER_PATH is the unclean-shutdown signal dial_main.py
+    """RUNNING_MARKER_PATH is the unclean-shutdown signal dial_recovery.py
     lifecycles — it MUST sit on real disk beside SETTINGS_PATH, never in
     /run or any other tmpfs (tmpfs is cleared at every boot, which would
     make the signal permanently absent and silently defeat the whole
@@ -1474,7 +1474,7 @@ class TestRunningMarkerPath:
 
 
 class TestPinResetPath:
-    """PIN_RESET_PATH is the PIN-recovery arm-request file dial_main.py
+    """PIN_RESET_PATH is the PIN-recovery arm-request file dial_recovery.py
     consumes at startup — same real-disk placement rule as
     RUNNING_MARKER_PATH above and for the same reason."""
 

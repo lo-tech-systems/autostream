@@ -661,7 +661,7 @@ class TestDialFinalCleanup:
 # Unclean-shutdown signal: running.txt lifecycle.
 #
 # Nothing acts on the signal yet; this only establishes and logs it.
-# Each test patches dial_main.RUNNING_MARKER_PATH to a tmp_path
+# Each test patches dial_recovery.RUNNING_MARKER_PATH to a tmp_path
 # file so nothing touches the real /var/lib/autostream location.
 # ---------------------------------------------------------------------------
 
@@ -690,7 +690,7 @@ class TestRunningMarkerLifecycle:
             patch("dial_main.start_network_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
-            patch("dial_main.RUNNING_MARKER_PATH", marker_path),
+            patch("dial_recovery.RUNNING_MARKER_PATH", marker_path),
         ]
         for p in patches:
             p.start()
@@ -745,7 +745,7 @@ class TestRunningMarkerLifecycle:
              patch("dial_main.start_network_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
-             patch("dial_main.RUNNING_MARKER_PATH", marker):
+             patch("dial_recovery.RUNNING_MARKER_PATH", marker):
             dm.main()
 
         assert seen["exists_after_create"] is True, (
@@ -802,35 +802,35 @@ class TestRunningMarkerLifecycle:
 
 class TestRecoveryRequestWithinWindow:
     def test_fresh_request_within_window_when_synced(self, tmp_path):
-        import dial_main as dm
+        import dial_recovery
 
         request = tmp_path / "pin_reset.txt"
         request.write_text("")
         sync_marker = tmp_path / "synchronized"
         sync_marker.write_text("")
 
-        assert dm._recovery_request_within_window(
+        assert dial_recovery._recovery_request_within_window(
             request, sync_marker_path=sync_marker
         ) is True
 
     def test_stale_request_not_within_window_when_synced(self, tmp_path):
-        import dial_main as dm
+        import dial_recovery
 
         request = tmp_path / "pin_reset.txt"
         request.write_text("")
-        old = time.time() - dm._RECOVERY_REQUEST_MAX_AGE_S - 60
+        old = time.time() - dial_recovery._RECOVERY_REQUEST_MAX_AGE_S - 60
         os.utime(request, (old, old))
         sync_marker = tmp_path / "synchronized"
         sync_marker.write_text("")
 
-        assert dm._recovery_request_within_window(
+        assert dial_recovery._recovery_request_within_window(
             request, sync_marker_path=sync_marker
         ) is False
 
     def test_unsynced_clock_honours_arm_and_logs_skip(self, tmp_path, caplog):
         """No sync marker at all: the function must poll (via the injected
         sleep, never a real one) up to the timeout and then fail open."""
-        import dial_main as dm
+        import dial_recovery
 
         request = tmp_path / "pin_reset.txt"
         request.write_text("")
@@ -838,7 +838,7 @@ class TestRecoveryRequestWithinWindow:
         sleeps = []
 
         with caplog.at_level("WARNING"):
-            result = dm._recovery_request_within_window(
+            result = dial_recovery._recovery_request_within_window(
                 request, sync_marker_path=sync_marker, sleep=sleeps.append,
             )
 
@@ -846,14 +846,14 @@ class TestRecoveryRequestWithinWindow:
         assert "clock not yet synchronised" in caplog.text
         # Polled via the injected callable — never a real time.sleep — for
         # the full timeout, in fixed intervals.
-        assert sleeps == [dm._TIMESYNC_POLL_INTERVAL_S] * (
-            dm._TIMESYNC_POLL_TIMEOUT_S // dm._TIMESYNC_POLL_INTERVAL_S
+        assert sleeps == [dial_recovery._TIMESYNC_POLL_INTERVAL_S] * (
+            dial_recovery._TIMESYNC_POLL_TIMEOUT_S // dial_recovery._TIMESYNC_POLL_INTERVAL_S
         )
 
     def test_clock_syncs_mid_poll_then_applies_age_rule(self, tmp_path):
         """If the sync marker appears partway through the poll, the age rule
         is applied rather than falling through to the fail-open path."""
-        import dial_main as dm
+        import dial_recovery
 
         request = tmp_path / "pin_reset.txt"
         request.write_text("")
@@ -865,7 +865,7 @@ class TestRecoveryRequestWithinWindow:
             if len(calls) == 2:
                 sync_marker.write_text("")
 
-        result = dm._recovery_request_within_window(
+        result = dial_recovery._recovery_request_within_window(
             request, sync_marker_path=sync_marker, sleep=fake_sleep,
         )
 
@@ -876,8 +876,8 @@ class TestRecoveryRequestWithinWindow:
 # ---------------------------------------------------------------------------
 # PIN-recovery arming decision wired through dial_main.main(): arm only when
 # the running marker survived AND a request file is present, consuming the
-# request only in that branch. Each test patches RUNNING_MARKER_PATH,
-# PIN_RESET_PATH and _TIMESYNC_MARKER_PATH to tmp_path files so nothing
+# request only in that branch. Each test patches dial_recovery's
+# RUNNING_MARKER_PATH, PIN_RESET_PATH and _TIMESYNC_MARKER_PATH to tmp_path files so nothing
 # touches the real /var/lib/autostream or /run locations.
 # ---------------------------------------------------------------------------
 
@@ -926,9 +926,9 @@ class TestRecoveryArmingDecision:
             patch("dial_main.start_network_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
-            patch("dial_main.RUNNING_MARKER_PATH", running_marker),
-            patch("dial_main.PIN_RESET_PATH", request_path),
-            patch("dial_main._TIMESYNC_MARKER_PATH", sync_marker),
+            patch("dial_recovery.RUNNING_MARKER_PATH", running_marker),
+            patch("dial_recovery.PIN_RESET_PATH", request_path),
+            patch("dial_recovery._TIMESYNC_MARKER_PATH", sync_marker),
         ]
         for p in patches:
             p.start()
@@ -1001,11 +1001,11 @@ class TestRecoveryArmingDecision:
         assert not request_path.exists()
 
     def test_unsynced_clock_honours_arm_and_logs_skip(self, tmp_path, caplog, monkeypatch):
-        import dial_main as dm
+        import dial_recovery
 
         # Shrink the poll timeout for this test only, so main() cannot block
         # on a real wait if this ever regresses to using real time.sleep.
-        monkeypatch.setattr(dm, "_TIMESYNC_POLL_TIMEOUT_S", 0)
+        monkeypatch.setattr(dial_recovery, "_TIMESYNC_POLL_TIMEOUT_S", 0)
 
         mock_http, _ = self._run(
             tmp_path, running_marker_present=True, request_present=True,
@@ -1018,7 +1018,7 @@ class TestRecoveryArmingDecision:
     def test_no_wait_when_no_request_file(self, tmp_path):
         """A normal boot with no pending request must never even reach the
         age/sync check — nothing should delay startup."""
-        with patch("dial_main._recovery_request_within_window") as mock_eval:
+        with patch("dial_recovery._recovery_request_within_window") as mock_eval:
             self._run(
                 tmp_path, running_marker_present=True, request_present=False
             )
@@ -2737,9 +2737,9 @@ class TestPresenceConfirmationWiring:
             # only the timer thread it schedules, not its state transitions.
             patch("dial_recovery.threading.Timer"),
             patch("builtins.__import__", side_effect=_fake_import),
-            patch("dial_main.RUNNING_MARKER_PATH", running_marker),
-            patch("dial_main.PIN_RESET_PATH", pin_reset),
-            patch("dial_main._TIMESYNC_MARKER_PATH", sync_marker),
+            patch("dial_recovery.RUNNING_MARKER_PATH", running_marker),
+            patch("dial_recovery.PIN_RESET_PATH", pin_reset),
+            patch("dial_recovery._TIMESYNC_MARKER_PATH", sync_marker),
         ]
         if build_mock is not None:
             patches.append(patch("dial_main._build_touch_source", build_mock))

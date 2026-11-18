@@ -35,7 +35,7 @@ HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
 SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
 INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 
-# Unclean-shutdown signal (see dial_main.py's running-marker lifecycle):
+# Unclean-shutdown signal (see dial_recovery.py's running-marker lifecycle):
 # created at every service start, deleted on clean shutdown. Its survival at
 # the next startup is evidence the previous stop was NOT clean (power loss,
 # or the process was killed).
@@ -47,7 +47,7 @@ INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 # total failure, not a partial degradation.
 RUNNING_MARKER_PATH = Path('/var/lib/autostream/running.txt')
 
-# PIN-recovery arm request (see dial_main.py's startup arming decision):
+# PIN-recovery arm request (see dial_recovery.py's startup arming decision):
 # written by the dial's unauthenticated arm endpoint when an admin requests
 # recovery, deleted by the disarm endpoint or once consumed at the next
 # startup. Its mtime is the request time, used to expire stale requests.
