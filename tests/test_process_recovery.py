@@ -155,7 +155,6 @@ class TestWebuiBackgroundReturnsThread:
 
         with patch("autostream_webui.WebUIState"), \
              patch("autostream_webui.AuthManager"), \
-             patch("autostream_webui.build_nav_bar_html", return_value=""), \
              patch("autostream_webui.STATE", MagicMock()), \
              patch("autostream_webui.AUTH", MagicMock()), \
              patch("autostream_webui.ThreadingHTTPServer") as mock_server, \

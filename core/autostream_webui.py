@@ -46,11 +46,6 @@ from autostream_sysutils import (
     reboot_system,
 )
 
-from autostream_webui_assets import (
-    LICENSE_BANNER_CSS,
-    logo_banner_html,
-)
-
 from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
 
 from autostream_webui_state import WebUIState
@@ -138,13 +133,14 @@ from autostream_webui_dials import (
     handle_dial_update_post,
     handle_dial_update_status,
 )
-from autostream_webui_common import build_nav_bar_html, send_html
+from autostream_webui_common import send_html
 from autostream_webui_routes import (
     dispatch as _route_dispatch,
     is_poll_log as _route_is_poll_log,
     _read_and_parse_body as _route_read_and_parse_body,
 )
 from autostream_webui_page_about import send_about_page, send_about_system_json
+import autostream_webui_page_auth
 from autostream_webui_page_align import (
     send_align_abort_json,
     send_align_apply_json,
@@ -816,7 +812,7 @@ def _route_get_auth(handler, state):
         handler.end_headers()
         return
     query = urlparse(handler.path).query
-    AUTH.handle_auth_get(handler, query)
+    autostream_webui_page_auth.send_auth_page(handler, state, AUTH, query)
 
 
 def _route_post_auth_verify(handler, state, body_str):
@@ -1462,25 +1458,14 @@ def start_webui_background(
     """
     from autostream_settings import SettingsStore
     from autostream_webui_common import get_app_version
-    import autostream_webui_static as static
     global STATE, AUTH
 
     if settings is None:
         settings = SettingsStore(config_path)
     STATE = WebUIState(config_path, STATE_PATH, settings=settings)
-    # Same theme.css <link>/cache-bust convention as build_page_html(); the
-    # login page keeps LICENSE_BANNER_CSS inline rather than folding it into
-    # the shared theme (it is currently empty, but stays page-specific).
-    style_link = static.style_tag("theme.css")
-    if LICENSE_BANNER_CSS.strip():
-        style_link += f'<style>{LICENSE_BANNER_CSS}</style>'
     AUTH = AuthManager(
         config_path=config_path,
         state_path=STATE_PATH,
-        style_link=style_link,
-        banner_html=logo_banner_html(),
-        nav_html=build_nav_bar_html("setup"),
-        title="autostream",
     )
 
     def _serve() -> None:

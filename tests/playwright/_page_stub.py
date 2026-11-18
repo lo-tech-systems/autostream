@@ -292,10 +292,12 @@ def _render_hostname_changed(*, hostname: str = "autostream", **_fakes) -> bytes
 def _render_auth(*, next_path: str = "/", **_fakes) -> bytes:
     from urllib.parse import quote  # noqa: PLC0415
     from autostream_auth import AuthManager  # noqa: PLC0415
+    from autostream_webui_page_auth import send_auth_page  # noqa: PLC0415
 
     handler, chunks = _handler("/auth")
     manager = AuthManager(config_path="dummy.ini")
-    manager.handle_auth_get(handler, f"next={quote(next_path)}")
+    with tempfile.TemporaryDirectory() as tmp:
+        send_auth_page(handler, _scratch_state(tmp), manager, f"next={quote(next_path)}")
     return b"".join(chunks)
 
 

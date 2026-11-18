@@ -7,6 +7,8 @@ load or on a click still happens.
 """
 from __future__ import annotations
 
+import hashlib
+import re
 
 import pytest
 import _home_stub as stub
@@ -310,3 +312,37 @@ class TestFirstBoot:
         finally:
             server.shutdown()
 
+
+@_requires_browser
+class TestAuth:
+    def test_entering_a_pin_posts_a_proof_of_the_nonce_and_pin(self, page: "Page"):
+        server, base = start_server(_page_stub.render("auth", next_path="/setup"))
+        try:
+            errors = _watch_errors(page)
+            stub.REPLIES.append({"ok": True, "next": "/setup"})
+            page.goto(f"{base}/")
+            nonce = page.input_value("#nonce")
+            assert nonce
+            page.fill("#pin", "1234")
+            page.press("#pin", "Enter")
+            _wait_for(page, lambda: "/api/auth/verify" in stub.POST_PATHS, "the verify post")
+            body = stub.POSTS[-1]
+            assert body["nonce"] == nonce
+            assert re.fullmatch(r"[0-9a-f]{64}", body["proof"])
+            assert body["proof"] == hashlib.sha256((nonce + "1234").encode()).hexdigest()
+            assert body["next"] == "/setup"
+            page.wait_for_url(f"{base}/setup")
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_a_pin_the_server_would_refuse_reloads_with_the_error_and_posts_nothing(self, page: "Page"):
+        server, base = start_server(_page_stub.render("auth", next_path="/setup"))
+        try:
+            page.goto(f"{base}/")
+            page.fill("#pin", "12")
+            page.press("#pin", "Enter")
+            page.wait_for_url(re.compile(r"/auth\?next=%2Fsetup&err=1$"))
+            assert stub.POST_PATHS == []
+        finally:
+            server.shutdown()

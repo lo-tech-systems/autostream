@@ -36,7 +36,7 @@ _L2 = "align announce appliances audio_monitor dial_push dial_warnings identific
 _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
-webui_page_align webui_page_equaliser webui_page_first_boot webui_page_logs
+webui_page_align webui_page_auth webui_page_equaliser webui_page_first_boot webui_page_logs
 webui_page_owntone webui_page_rebooting webui_page_service webui_page_setup
 webui_post_handlers webui_routes webui_service_schema webui_state webui_static
 """.split()
@@ -368,7 +368,6 @@ def l2_cycle(edges) -> list[str] | None:
 # ---------------------------------------------------------------------------
 
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
-    ('A', 'autostream_auth', 'autostream_webui_common', 'send_html'),
     ('A', 'autostream_webui_routes', 'autostream_webui', '*'),
     ('C', 'autostream_appliance_gateway', 'autostream_appliances', 'ApplianceSighting'),
     ('C', 'autostream_appliance_gateway', 'autostream_appliances', 'register_peer_removal_callback'),
@@ -381,7 +380,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('D', 'autostream_webui_api', 'subprocess', '*'),
     ('D', 'autostream_webui_common', 'subprocess', '*'),
     ('D', 'autostream_webui_page_about', 'subprocess', '*'),
-    ('E', 'autostream_auth', 'autostream_webui_common', 'send_html'),
 })
 
 

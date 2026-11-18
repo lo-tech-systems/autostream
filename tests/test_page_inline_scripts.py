@@ -38,7 +38,7 @@ MAX_INLINE = {
     "first_boot_owntone": 0,
     "first_boot_appliance": 0,
     "hostname_changed": 0,
-    "auth": 1,
+    "auth": 0,
 }
 SETUP_INLINE = 12
 
@@ -46,7 +46,7 @@ SETUP_INLINE = 12
 EXTRACTED = (
     "home", "remote_home", "equaliser", "remote_equaliser", "about", "align", "service", "logs",
     "owntone", "owntone_restarting", "rebooting", "first_boot_owntone", "first_boot_appliance",
-    "hostname_changed",
+    "hostname_changed", "auth",
 )
 
 _BOOTSTRAP = "window.__CSRF='t';"
@@ -66,6 +66,7 @@ EXPECTED_INLINE = {
     "first_boot_owntone": [],
     "first_boot_appliance": [],
     "hostname_changed": [],
+    "auth": [],
 }
 # The page's own scripts; the island must come before the first of them.
 FIRST_FILES = {
@@ -79,6 +80,7 @@ FIRST_FILES = {
     "owntone_restarting": ("owntone_restarting.js",),
     "rebooting": ("rebooting.js",),
     "hostname_changed": ("hostname_changed.js",),
+    "auth": ("auth.js",),
 }
 
 # Island keys each extracted page may carry, and the route that serves it.
@@ -103,6 +105,7 @@ ISLAND_KEYS = {
     "first_boot_owntone": set(),
     "first_boot_appliance": set(),
     "hostname_changed": {"redirect_url"},
+    "auth": set(),
 }
 PAGE_PATH = {
     "home": "/",
@@ -120,6 +123,7 @@ PAGE_PATH = {
     "first_boot_appliance": "/first-boot/appliance",
     # Served as the reply to a hostname change, not at a path of its own.
     "hostname_changed": None,
+    "auth": "/auth",
 }
 
 

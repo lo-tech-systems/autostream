@@ -107,26 +107,26 @@ class TestNonceLifecycle:
     def test_issued_nonce_can_be_consumed(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        val = mgr._issue_nonce(handler)
+        val = mgr.issue_nonce(handler)
         assert mgr._consume_nonce(handler, val) is True
 
     def test_nonce_consumed_only_once(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        val = mgr._issue_nonce(handler)
+        val = mgr.issue_nonce(handler)
         mgr._consume_nonce(handler, val)
         assert mgr._consume_nonce(handler, val) is False
 
     def test_wrong_nonce_value_rejected(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        mgr._issue_nonce(handler)
+        mgr.issue_nonce(handler)
         assert mgr._consume_nonce(handler, "wrong-value") is False
 
     def test_expired_nonce_rejected(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        val = mgr._issue_nonce(handler)
+        val = mgr.issue_nonce(handler)
         key = mgr._client_key(handler)
         # _nonces is now a nested dict: client_key → {nonce_value → Nonce}
         mgr._nonces[key][val].expires_at = 0
@@ -517,8 +517,8 @@ class TestMultiNoncePerClient:
     def test_two_nonces_both_usable(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        v1 = mgr._issue_nonce(handler)
-        v2 = mgr._issue_nonce(handler)
+        v1 = mgr.issue_nonce(handler)
+        v2 = mgr.issue_nonce(handler)
         assert v1 != v2
         # Both should be consumable
         assert mgr._consume_nonce(handler, v1) is True
@@ -527,8 +527,8 @@ class TestMultiNoncePerClient:
     def test_consuming_one_nonce_leaves_other_intact(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        v1 = mgr._issue_nonce(handler)
-        v2 = mgr._issue_nonce(handler)
+        v1 = mgr.issue_nonce(handler)
+        v2 = mgr.issue_nonce(handler)
         # Consume v1; v2 must still be valid
         mgr._consume_nonce(handler, v1)
         assert mgr._consume_nonce(handler, v2) is True
@@ -536,8 +536,8 @@ class TestMultiNoncePerClient:
     def test_wrong_proof_consumes_only_the_attempted_nonce(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        v1 = mgr._issue_nonce(handler)
-        v2 = mgr._issue_nonce(handler)
+        v1 = mgr.issue_nonce(handler)
+        v2 = mgr.issue_nonce(handler)
         # Wrong proof for v1 (simulate: try to consume v1 with wrong value — returns False)
         # Actually _consume_nonce looks up by nonce value not by proof.
         # The test should show that consuming v1 (even if the proof is wrong at
@@ -550,7 +550,7 @@ class TestMultiNoncePerClient:
         mgr = _make_manager(pin="testpin1")
         h1 = _make_handler(ip="10.0.0.1")
         h2 = _make_handler(ip="10.0.0.2")
-        val = mgr._issue_nonce(h1)
+        val = mgr.issue_nonce(h1)
         # h2 should not be able to consume h1's nonce
         assert mgr._consume_nonce(h2, val) is False
         # The nonce must still be available to h1
@@ -559,8 +559,8 @@ class TestMultiNoncePerClient:
     def test_expired_nonce_in_bucket_does_not_affect_valid_sibling(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        v1 = mgr._issue_nonce(handler)
-        v2 = mgr._issue_nonce(handler)
+        v1 = mgr.issue_nonce(handler)
+        v2 = mgr.issue_nonce(handler)
         key = mgr._client_key(handler)
         # Expire v1
         mgr._nonces[key][v1].expires_at = 0
@@ -573,7 +573,7 @@ class TestMultiNoncePerClient:
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
         key = mgr._client_key(handler)
-        val = mgr._issue_nonce(handler)
+        val = mgr.issue_nonce(handler)
         mgr._consume_nonce(handler, val)
         # After consumption the bucket should be removed by _consume_nonce
         assert key not in mgr._nonces
@@ -582,7 +582,7 @@ class TestMultiNoncePerClient:
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
         key = mgr._client_key(handler)
-        val = mgr._issue_nonce(handler)
+        val = mgr.issue_nonce(handler)
         # Expire the nonce
         mgr._nonces[key][val].expires_at = 0
         mgr._gc()
@@ -593,7 +593,7 @@ class TestMultiNoncePerClient:
         handler = _make_handler()
         issued = []
         for _ in range(MAX_NONCES_PER_CLIENT + 2):
-            issued.append(mgr._issue_nonce(handler))
+            issued.append(mgr.issue_nonce(handler))
         key = mgr._client_key(handler)
         # Bucket must not exceed the cap
         assert len(mgr._nonces[key]) <= MAX_NONCES_PER_CLIENT
@@ -603,7 +603,7 @@ class TestMultiNoncePerClient:
     def test_nonce_single_use_prevents_replay(self):
         mgr = _make_manager(pin="testpin1")
         handler = _make_handler()
-        val = mgr._issue_nonce(handler)
+        val = mgr.issue_nonce(handler)
         assert mgr._consume_nonce(handler, val) is True
         # Second consumption must fail (replay protection)
         assert mgr._consume_nonce(handler, val) is False
@@ -642,7 +642,7 @@ class TestConcurrencySafety:
 
         def _issue():
             try:
-                mgr._issue_nonce(handler)
+                mgr.issue_nonce(handler)
             except Exception as e:
                 errors.append(e)
 
@@ -673,7 +673,7 @@ class TestConcurrencySafety:
         def _issue_loop():
             for _ in range(50):
                 try:
-                    mgr._issue_nonce(handler)
+                    mgr.issue_nonce(handler)
                 except Exception as e:
                     errors.append(e)
 
