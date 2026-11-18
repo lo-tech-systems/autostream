@@ -19,9 +19,9 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_auth as auth_mod
-import autostream_webui_routes as routes_mod
 from autostream_dials import DIAL_CAPABILITIES, DIAL_PROTO_VERSION
 from webui.dial.api import send_dial_capabilities_json
+import webui.routes as webui_routes
 
 APPLIANCE_ID = "a1b2c3d4e5f6a7b8c9d0"
 
@@ -89,7 +89,7 @@ class TestReply:
 
 class TestRegistration:
     def test_route_is_a_dial_scheme_get(self):
-        matches = [r for r in routes_mod.ROUTES
+        matches = [r for r in webui_routes.ROUTES
                    if r.path == "/api/dial/capabilities" and "GET" in r.methods]
         assert len(matches) == 1
         assert matches[0].scheme == "dial"

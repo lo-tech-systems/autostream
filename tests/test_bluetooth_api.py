@@ -28,6 +28,7 @@ from settings_fixtures import fixed_view
 import webui.session_state as session_state
 import webui.system.services as webui_services
 import webui.browser.about as webui_about
+import webui.system.bluetooth as webui_system_bluetooth
 
 
 # ---------------------------------------------------------------------------
@@ -1027,7 +1028,7 @@ class TestBluetoothForgetPost:
 
 class TestRouteRegistration:
     """Bluetooth GET and POST routes are dispatched through the route table
-    (see autostream_webui_routes.py) -- do_GET/do_POST no
+    (see webui/routes.py) -- do_GET/do_POST no
     longer contain inline elif arms for any of these paths, so this class
     asserts against ROUTES (registration + auth level + allow_unconfigured)
     rather than grepping handler source, and exercises dispatch() directly
@@ -1038,7 +1039,7 @@ class TestRouteRegistration:
     def _webui(self):
         try:
             import autostream_webui as _webui
-            import autostream_webui_routes as _routes
+            import webui.routes as _routes
         except ImportError:
             pytest.skip("autostream_webui import chain unavailable")
         return _webui, _routes
@@ -1052,9 +1053,9 @@ class TestRouteRegistration:
     def test_get_routes_registered(self):
         _webui, routes_mod = self._webui()
         expected = {
-            "/api/bluetooth/status": "send_bluetooth_status_json",
-            "/api/bluetooth/scan_results": "_route_get_bluetooth_scan_results",
-            "/api/bluetooth/pair_status": "send_bluetooth_pair_status_json",
+            "/api/bluetooth/status": "webui.system.bluetooth.send_bluetooth_status_json",
+            "/api/bluetooth/scan_results": "webui.system.bluetooth._route_get_bluetooth_scan_results",
+            "/api/bluetooth/pair_status": "webui.system.bluetooth.send_bluetooth_pair_status_json",
         }
         for path, handler_name in expected.items():
             r = self._route(routes_mod, path, "GET")
@@ -1073,7 +1074,7 @@ class TestRouteRegistration:
         state = MagicMock()
         with patch.object(session_state, "STATE", state), \
              patch.object(session_state, "AUTH") as mock_auth, \
-             patch.object(_webui, "send_bluetooth_pair_status_json") as stub:
+             patch.object(webui_system_bluetooth, "send_bluetooth_pair_status_json") as stub:
             mock_auth.require_authenticated_if_pin_enabled.return_value = True
             assert routes_mod.dispatch(h, "GET", "/api/bluetooth/pair_status") is True
         stub.assert_called_once_with(h, state)
@@ -1081,12 +1082,12 @@ class TestRouteRegistration:
     def test_post_routes_registered(self):
         _webui, routes_mod = self._webui()
         expected = {
-            "/api/bluetooth/scan": "_route_post_bluetooth_scan",
-            "/api/bluetooth/pair": "_route_post_bluetooth_pair",
-            "/api/bluetooth/forget": "_route_post_bluetooth_forget",
-            "/api/bluetooth/services": "_route_post_bluetooth_services",
-            "/api/bluetooth/onboard": "_route_post_bluetooth_onboard",
-            "/api/bluetooth/buffer": "_route_post_bluetooth_buffer",
+            "/api/bluetooth/scan": "webui.system.bluetooth._route_post_bluetooth_scan",
+            "/api/bluetooth/pair": "webui.system.bluetooth._route_post_bluetooth_pair",
+            "/api/bluetooth/forget": "webui.system.bluetooth._route_post_bluetooth_forget",
+            "/api/bluetooth/services": "webui.system.bluetooth._route_post_bluetooth_services",
+            "/api/bluetooth/onboard": "webui.system.bluetooth._route_post_bluetooth_onboard",
+            "/api/bluetooth/buffer": "webui.system.bluetooth._route_post_bluetooth_buffer",
         }
         for path, handler_name in expected.items():
             r = self._route(routes_mod, path, "POST")

@@ -55,6 +55,7 @@ from autostream_state.outputs import PlayerServiceBackend, get_authority
 import webui.browser.home_model as webui_home_model
 import webui.browser.home_api as webui_home_api
 import webui.dial.api as webui_dial_api
+import webui.routes as webui_routes
 
 
 # ---------------------------------------------------------------------------
@@ -557,8 +558,7 @@ class TestSessionEndClearsMute:
 
 class TestWebUIMuteControlRemoved:
     def test_browser_mute_route_is_gone(self):
-        import autostream_webui_routes as routes_mod
-        matches = [r for r in routes_mod.ROUTES if r.path == "/api/mute"]
+        matches = [r for r in webui_routes.ROUTES if r.path == "/api/mute"]
         assert matches == []
 
     def test_send_mute_post_json_handler_is_gone(self):
@@ -567,8 +567,7 @@ class TestWebUIMuteControlRemoved:
 
     def test_dial_mute_route_still_present(self):
         """The dial's own mute button keeps its route."""
-        import autostream_webui_routes as routes_mod
-        matches = [r for r in routes_mod.ROUTES if r.path == "/api/dial/mute" and "POST" in r.methods]
+        matches = [r for r in webui_routes.ROUTES if r.path == "/api/dial/mute" and "POST" in r.methods]
         assert len(matches) == 1
 
     def test_mute_icon_markup_and_slash_path(self):

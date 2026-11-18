@@ -665,9 +665,9 @@ def _make_post_handler(path: str, csrf_token: Optional[str]) -> "ConfigWebHandle
 
 @_skip_no_webui
 @pytest.mark.parametrize("path,stub_target", [
-    ("/api/align/start", "autostream_webui.send_align_start_json"),
+    ("/api/align/start", "webui.browser.align.send_align_start_json"),
     ("/api/align/abort", "webui.browser.align.send_align_abort_json"),
-    ("/api/align/apply", "autostream_webui.send_align_apply_json"),
+    ("/api/align/apply", "webui.browser.align.send_align_apply_json"),
     ("/api/align/discard", "webui.browser.align.send_align_discard_json"),
 ])
 def test_align_post_routes_require_csrf(path, stub_target):

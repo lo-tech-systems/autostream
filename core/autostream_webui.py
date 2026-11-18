@@ -27,7 +27,7 @@ import json
 
 # When executed as a script (the appliance entrypoint) this module is
 # registered in sys.modules as "__main__" only. A later
-# `import autostream_webui` -- autostream_webui_routes.dispatch() does this at
+# `import autostream_webui` -- the route table's dispatch does this at
 # request time to resolve the handler names of the route table -- would load
 # a SECOND copy of this module. Alias the running module under its import
 # name, before any project import can recurse into us, so both routes
@@ -36,90 +36,41 @@ if __name__ == "__main__":
     sys.modules.setdefault("autostream_webui", sys.modules[__name__])
 
 from autostream_auth import AuthManager, FLASH_COOKIE_NAME
-
-from webui import session_state
-from webui.browser import first_boot
-from webui.system.updates import _route_get_update_status, _route_post_update_apply, run_updater, send_update_check_json
-from webui.system.network import (
-    _route_get_network_status,
-    _route_post_network_roaming,
-    _route_post_network_setup,
-)
-from webui.system.bluetooth import (
-    _route_get_bluetooth_scan_results,
-    _route_post_bluetooth_buffer,
-    _route_post_bluetooth_forget,
-    _route_post_bluetooth_onboard,
-    _route_post_bluetooth_pair,
-    _route_post_bluetooth_scan,
-    _route_post_bluetooth_services,
-    send_bluetooth_pair_status_json,
-    send_bluetooth_status_json,
-)
-from webui.system.sdcard import (
-    _route_get_sdcard_health,
-    _route_post_sdcard_health_disable,
-    _route_post_sdcard_health_enable,
-)
-from webui.browser.home_api import _route_get_playing_status, send_audio_status_json, send_input_levels_json, send_owntone_outputs_json, send_owntone_outputs_state_json, send_playing_status_json, send_status_json
-from webui.browser.equaliser import _route_get_equaliser, _route_get_output_eq_status, _route_post_output_eq_reset, send_output_eq_config_json, send_output_eq_reset_json, send_output_eq_status_json
-from webui.browser.api_service import send_service_config_json, send_service_reset_json
-from webui.browser.api_settings import _route_get_log_level, _route_post_settings, _route_post_settings_save, _route_put_log_level, send_advertisement_post_json, send_auto_update_post_json, send_hostname_post_json, send_log_level_get_json, send_log_level_put_json, send_save_now_json, send_settings_get_json, send_settings_post_json
-from webui.browser.api_owntone import send_owntone_buffered_audio_json, send_owntone_grace_period_json, send_owntone_output_include_tv_json, send_owntone_output_mode_json, send_owntone_output_offset_json, send_owntone_output_visibility_json, send_owntone_start_buffer_json, send_owntone_uncompressed_json, send_owntone_user_agent_json, send_settings_mdns_grace_period_json
-from webui.repeat import send_repeat_post_json
-from webui.dial.api import (
-    _route_post_dial_eq,
-    _route_post_dial_eq_set,
-    _route_post_dial_mute,
-    _route_post_dial_outputs,
-    _route_post_dial_outputs_set,
-    _route_post_dial_repeat,
-    _route_post_dial_repeat_arm,
-    _route_post_dial_status,
-    _route_post_dial_volume,
-    _route_post_dial_warnings,
-    send_dial_capabilities_json,
-)
-from webui.dial.management import (
-    _route_get_dial_configure,
-    _route_get_dial_pin_recovery_status,
-    _route_get_dial_screen_image,
-    _route_get_dial_screen_settings,
-    _route_get_dial_sdcard_health,
-    _route_get_dial_update_status,
-    _route_post_dial_management,
-    _route_post_dial_screen_settings,
-    _route_post_dial_sdcard_health,
-    _route_post_dial_update,
-)
-from autostream_webui_routes import (
-    dispatch as _route_dispatch,
-    is_poll_log as _route_is_poll_log,
-    _read_and_parse_body as _route_read_and_parse_body,
-)
-from webui.browser.setup.page import _route_get_setup, _route_get_setup_card, _route_post_setup_form
-from webui.browser.home import _route_get_home, _route_get_remote_page
-from webui.browser.service import _route_get_service
-from webui.browser.logs import _route_get_logs, _route_get_logs_download
-from webui.browser.owntone import _route_get_owntone_setup, _route_post_owntone_setup_form, send_owntone_ready_json, send_owntone_restarting_page
-from webui.browser.align import _route_get_align_result, _route_post_align_abort, _route_post_align_discard, send_align_apply_json, send_align_page, send_align_start_json, send_align_status_json
-from webui.browser.rebooting import _route_get_rebooting
-from webui.browser.about import _route_get_about_system, send_about_page
-from webui.browser.auth import _route_get_auth, _route_post_auth_verify, _route_post_pin_change
-from webui.browser.first_boot import _route_get_first_boot_appliance, _route_get_first_boot_owntone, _route_post_first_boot_continue, _route_post_first_boot_finish
-from webui.browser.post_handlers import handle_live_input_eq_update, handle_live_input_gain_update, handle_output_update
-from webui.system.power import _route_post_factory_reset, _route_post_reboot, handle_factory_reset_post
-
 from autostream_config import STATE_PATH
 import autostream_commissioning as commissioning
-from webui.peer.gateway import (
-    _route_get_appliances_list,
-    _route_get_gateway_sub,
-    _route_post_gateway,
-)
+
+# The route table names its handlers by dotted module path and looks them up
+# in sys.modules, so every module it names is imported here, one line each.
+import webui.browser.about
+import webui.browser.align
+import webui.browser.api_owntone
+import webui.browser.api_service
+import webui.browser.api_settings
+import webui.browser.auth
+import webui.browser.equaliser
+import webui.browser.first_boot
+import webui.browser.home
+import webui.browser.home_api
+import webui.browser.logs
+import webui.browser.owntone
+import webui.browser.post_handlers
+import webui.browser.rebooting
+import webui.browser.service
+import webui.browser.setup.page
+import webui.dial.api
+import webui.dial.management
+import webui.peer.federation
+import webui.peer.gateway
+import webui.repeat
+import webui.system.bluetooth
+import webui.system.network
+import webui.system.power
+import webui.system.sdcard
+import webui.system.updates
+
+from webui import common, session_state
 from webui.peer import federation
-from webui.peer.federation import _route_get_federation, _route_post_federation
-from webui import common
+from webui.routes import dispatch as _route_dispatch, is_poll_log as _route_is_poll_log
 from webui.system import updates
 
 
@@ -143,7 +94,7 @@ _POLLING_LOG_PATHS: tuple = ()
 # Route-table GET adapters
 # -----------------------------------------------------------------------------
 #
-# autostream_webui_routes.dispatch() calls every GET handler as
+# webui.routes.dispatch() calls every GET handler as
 # fn(handler, STATE) -- matching the sender functions whose signature is
 # already exactly that. The senders below need something else (the module
 # AUTH singleton, the flash message/type, the raw query string), so each
@@ -416,7 +367,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         path = self._normalized_path()
 
-        # Route-table dispatch (see autostream_webui_routes.py). This
+        # Route-table dispatch (see webui/routes.py). This
         # covers every GET path/scheme the server recognizes (browser
         # pages/APIs, federation, dial protocol/management, the
         # loopback-aware fast paths, the gateway, remote pages, first-boot,
@@ -473,7 +424,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         path = self._normalized_path()
 
-        # Route-table dispatch (see autostream_webui_routes.py). This
+        # Route-table dispatch (see webui/routes.py). This
         # covers every POST path/scheme the server recognizes.
         # Falls through untouched for anything not in ROUTES.
         if _route_dispatch(self, "POST", path):
@@ -550,7 +501,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
     def do_PUT(self):  # noqa: N802
         path = self._normalized_path()
 
-        # Route-table dispatch (see autostream_webui_routes.py).
+        # Route-table dispatch (see webui/routes.py).
         # PUT /api/log-level (scheme="loopback_aware") is the only PUT
         # route the server has ever recognized.
         if _route_dispatch(self, "PUT", path):

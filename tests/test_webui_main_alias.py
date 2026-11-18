@@ -2,11 +2,9 @@
 into sys.modules as "autostream_webui".
 
 On the appliance the webui file is the process entrypoint, so it executes
-as __main__. autostream_webui_routes.dispatch() resolves the handler names
-of the route table via `import autostream_webui` at request time; without
-the alias that import loads a SECOND copy of the module, and its
-dispatched handlers would be a different set of objects from the ones the
-running process holds. Tests import the module by name, so only this
+as __main__. Any later `import autostream_webui` would, without the
+alias, load a SECOND copy of the module, and its handlers would be a
+different set of objects from the ones the running process holds. Tests import the module by name, so only this
 script-execution test can catch it.
 
 The test executes the real file with run_name="__main__" (exactly the
@@ -35,8 +33,9 @@ def run_autostream(config_path, start_webui=None, **kwargs):
     main_mod = sys.modules.get("__main__")
     print("ALIAS_PRESENT:", alias is not None)
     print("ALIAS_IS_MAIN:", alias is main_mod)
-    # The routes dispatcher resolves handler names off this module object.
-    print("HAS_HANDLER_ATTR:", hasattr(alias, "_route_get_home"))
+    # The route table resolves handler names off the loaded web modules.
+    home = sys.modules.get("webui.browser.home")
+    print("HAS_HANDLER_ATTR:", hasattr(home, "_route_get_home"))
 
 autostream_core.run_autostream = run_autostream
 

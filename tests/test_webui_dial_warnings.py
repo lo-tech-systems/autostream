@@ -19,12 +19,12 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_dial_warnings as dw
-import autostream_webui_routes as routes_mod
 from autostream_state import live
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE, DIAL_CAPABILITIES
 from webui.dial.api import send_dial_warnings_post_json
 from webui.session_state import WebUIState
 from settings_fixtures import fixed_view
+import webui.routes as webui_routes
 
 DIAL_ID = "test-dial-uuid-1234"
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
@@ -115,7 +115,7 @@ class TestReply:
 
 class TestRegistration:
     def test_route_is_a_dial_scheme_post(self):
-        matches = [r for r in routes_mod.ROUTES if r.path == "/api/dial/warnings"]
+        matches = [r for r in webui_routes.ROUTES if r.path == "/api/dial/warnings"]
         assert len(matches) == 1
         assert matches[0].scheme == "dial"
         assert matches[0].methods == ("POST",)

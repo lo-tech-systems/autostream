@@ -23,6 +23,8 @@ from _source_text import page_with_static
 import webui.system.updates as updates
 import webui.system.services as webui_services
 import webui.browser.about as webui_about
+import webui.browser.about as webui_browser_about
+import webui.routes as webui_routes
 
 
 # ---------------------------------------------------------------------------
@@ -1098,7 +1100,6 @@ class TestRouteDispatch:
     def test_get_api_about_system_dispatches(self):
         try:
             import autostream_webui as _webui
-            import autostream_webui_routes as _routes
         except ImportError:
             pytest.skip("autostream_webui import chain unavailable")
 
@@ -1107,15 +1108,15 @@ class TestRouteDispatch:
         # ROUTES, through the _route_get_about_system adapter, which calls
         # send_about_system_json.
         route = next(
-            (r for r in _routes.ROUTES if r.path == "/api/about/system" and "GET" in r.methods),
+            (r for r in webui_routes.ROUTES if r.path == "/api/about/system" and "GET" in r.methods),
             None,
         )
         assert route is not None, "/api/about/system GET route not registered in ROUTES"
-        fn = _routes._resolve_handler(route)
-        assert fn is _webui._route_get_about_system
+        fn = webui_routes._resolve_handler(route)
+        assert fn is webui_browser_about._route_get_about_system
 
         import inspect
-        adapter_src = inspect.getsource(_webui._route_get_about_system)
+        adapter_src = inspect.getsource(webui_browser_about._route_get_about_system)
         assert "send_about_system_json" in adapter_src, (
             "send_about_system_json not called by the /api/about/system adapter"
         )

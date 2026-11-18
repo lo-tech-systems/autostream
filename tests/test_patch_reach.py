@@ -29,10 +29,9 @@ TESTS_DIR = Path(__file__).resolve().parent
 CORE_DIR = TESTS_DIR.parent / "core"
 _SELF = Path(__file__).name
 
-# Modules whose attribute lookups are resolved by handler name strings kept in
-# the route table, not by a literal attribute read.
-_ROUTE_TABLE_MODULE = "autostream_webui_routes"
-_ROUTE_TARGET_MODULE = "autostream_webui"
+# The module whose handler strings (dotted `module.function` paths) are
+# lookups of a name in another module, not literal attribute reads.
+_ROUTE_TABLE_MODULE = "webui.routes"
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +216,9 @@ def build_core_index(core_dir: Path) -> CoreIndex:
                 else:
                     idx.dynamic.add(mod)
         if mod == _ROUTE_TABLE_MODULE:
-            idx.attr_lookups.setdefault(_ROUTE_TARGET_MODULE, set()).update(_handler_strings(tree))
+            for dotted in _handler_strings(tree):
+                target, _, name = dotted.rpartition(".")
+                idx.attr_lookups.setdefault(target, set()).add(name)
     return idx
 
 
@@ -521,16 +522,18 @@ def test_getattr_on_another_object_exempts_nothing(tmp_path):
 
 def test_route_handler_strings_count_as_lookups_of_the_web_module(tmp_path):
     core = {
-        "autostream_webui.py": "def send_it():\n    pass\n",
-        "autostream_webui_routes.py": (
+        "webui/__init__.py": "",
+        "webui/page.py": "def send_it():\n    pass\n",
+        "webui/routes.py": (
+            "import sys\n"
             "def route(**kw):\n    pass\n"
-            "route(handler='send_it')\n"
-            "def resolve(mod, r):\n    import autostream_webui as w\n    return getattr(w, r.handler)\n"
+            "route(handler='webui.page.send_it')\n"
+            "def resolve(r):\n    m, _, n = r.handler.rpartition('.')\n    return getattr(sys.modules[m], n)\n"
         ),
     }
     tests = ("from unittest.mock import patch\n"
-             "def test_a():\n    patch('autostream_webui.send_it')\n    patch('autostream_webui.other')\n")
-    assert _run(tmp_path, core, {"test_a.py": tests}) == {("test_a.py", 1, "autostream_webui", "other")}
+             "def test_a():\n    patch('webui.page.send_it')\n    patch('webui.page.other')\n")
+    assert _run(tmp_path, core, {"test_a.py": tests}) == {("test_a.py", 1, "webui.page", "other")}
 
 
 def test_class_attribute_patch_is_skipped_but_instance_attribute_is_checked(tmp_path):

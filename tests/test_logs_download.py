@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import webui.browser.logs as webui_logs
+import webui.routes as webui_routes
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -197,7 +198,7 @@ class TestLogsDownloadRouting:
     def test_route_exists_in_python_webui(self) -> None:
         """/logs/download must be handled by the Python web UI router.
 
-        Migrated into the route table (autostream_webui_routes.ROUTES) --
+        Migrated into the route table (webui.routes.ROUTES) --
         it's no longer a literal string in autostream_webui.py's
         do_GET, so check the table itself rather than grepping source.
         """
@@ -205,9 +206,8 @@ class TestLogsDownloadRouting:
         _core = str(REPO_ROOT / "core")
         if _core not in sys.path:
             sys.path.insert(0, _core)
-        import autostream_webui_routes as routes_mod
 
-        r = routes_mod._resolve("/logs/download", "GET")
+        r = webui_routes._resolve("/logs/download", "GET")
         assert r is not None, "/logs/download route not found in ROUTES"
 
     def test_route_is_not_in_auth_allowlist(self) -> None:

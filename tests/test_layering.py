@@ -33,9 +33,7 @@ runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
 _L2 = "align announce appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup".split()
-_L3 = """
-webui_routes
-""".split()
+_L3: list[str] = []
 
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
@@ -365,9 +363,7 @@ def l2_cycle(edges) -> list[str] | None:
 # Ratchet: violations that exist today.  Shrink only.
 # ---------------------------------------------------------------------------
 
-RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
-    ('A', 'autostream_webui_routes', 'autostream_webui', '*'),
-})
+RATCHET: frozenset[tuple[str, str, str, str]] = frozenset()
 
 
 # ---------------------------------------------------------------------------

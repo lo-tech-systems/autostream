@@ -105,13 +105,13 @@ def _make_handler(path: str, sess_token: str, csrf_token: str) -> "ConfigWebHand
 # the stub.  The stub is the first downstream call that would be made if the
 # auth guard were absent, so assert_not_called() proves the guard fired.
 _PROTECTED = [
-    ("/setup",              "autostream_webui._route_post_setup_form"),
-    ("/api/input_eq",       "autostream_webui.handle_live_input_eq_update"),
-    ("/api/input_gain",     "autostream_webui.handle_live_input_gain_update"),
+    ("/setup",              "webui.browser.setup.page._route_post_setup_form"),
+    ("/api/input_eq",       "webui.browser.post_handlers.handle_live_input_eq_update"),
+    ("/api/input_gain",     "webui.browser.post_handlers.handle_live_input_gain_update"),
     ("/api/update/apply",   "webui.system.updates.run_updater"),
     ("/api/reboot",         "webui.system.power.reboot_system"),
     ("/api/factory-reset",  "webui.system.power.handle_factory_reset_post"),
-    ("/api/settings/mdns-grace-period", "autostream_webui.send_settings_mdns_grace_period_json"),
+    ("/api/settings/mdns-grace-period", "webui.browser.api_owntone.send_settings_mdns_grace_period_json"),
     ("/api/dial/authorize", "webui.dial.management.dispatch_dial_management_post"),
     ("/api/dial/recovery/arm", "webui.dial.management.dispatch_dial_management_post"),
     ("/api/dial/recovery/disarm", "webui.dial.management.dispatch_dial_management_post"),
@@ -121,14 +121,14 @@ _PROTECTED = [
 # stub.  These routes are intentionally accessible to any trusted-LAN user
 # and must not be gated by a PIN session.
 _PUBLIC = [
-    ("/api/output",          "autostream_webui.handle_output_update"),
+    ("/api/output",          "webui.browser.post_handlers.handle_output_update"),
     ("/api/output_eq/reset", "webui.browser.equaliser.send_output_eq_reset_json"),
-    ("/api/service/reset",   "autostream_webui.send_service_reset_json"),
+    ("/api/service/reset",   "webui.browser.api_service.send_service_reset_json"),
     # Home-page repeat button: playback action, same sensitivity class as
     # /api/output's enable/volume -- must work without a PIN session (an
     # in-memory-only session would otherwise 401 the button for anyone who
     # hadn't opened the setup pages, and after every autostream restart).
-    ("/api/repeat",          "autostream_webui.send_repeat_post_json"),
+    ("/api/repeat",          "webui.repeat.send_repeat_post_json"),
 ]
 
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""autostream_webui_routes.py
+"""webui/routes.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-Route table and dispatcher for ConfigWebHandler (autostream_webui.py).
+Route table and dispatcher for ConfigWebHandler (webui/server.py).
 
 Each request path/method can be declared as a ``Route`` row below instead
 of an inline branch in do_GET/do_POST/do_PUT: ``dispatch()`` resolves the
@@ -16,12 +16,14 @@ than reimplementing them. Not every path is on the table yet; anything
 not registered below still falls through to the legacy do_GET/do_POST/
 do_PUT if/elif chains untouched.
 
-Handlers are registered by *name* (a string looked up on the
-``autostream_webui`` module at dispatch time), not by direct function
-reference. This is deliberate: existing tests patch handlers via
-``patch("autostream_webui.send_repeat_post_json")`` etc, and a module
-attribute lookup at call time (rather than a reference captured once at
-import time) is required for that patching to take effect. The state and
+Handlers are registered by *name* (a dotted string such as
+``webui.repeat.send_repeat_post_json``, looked up in ``sys.modules`` at
+dispatch time), not by direct function reference. This is deliberate:
+tests patch handlers via ``patch("webui.repeat.send_repeat_post_json")``
+etc, and a module attribute lookup at call time (rather than a reference
+captured once at import time) is required for that patching to take
+effect. Every module a string names must already be imported when the
+first request is dispatched (the server imports them all). The state and
 auth objects are read through ``webui.session_state`` and the commissioning
 reads go through ``autostream_commissioning``: none is imported by name here.
 A raw callable is also accepted for handler (and is used as-is), for
@@ -31,6 +33,7 @@ directly with a mock).
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional, Union
@@ -68,7 +71,7 @@ class Route:
     Exactly one of ``path`` (exact match) or ``prefix`` (startswith match)
     should be set; if both match a request, ``path`` wins (see
     ``dispatch()``'s resolution order). ``handler`` is a string name to be
-    resolved dynamically against the ``autostream_webui`` module at
+    resolved dynamically against its module in ``sys.modules`` at
     dispatch time (patch-friendly -- see module docstring), or a raw
     callable used as-is.
     """
@@ -91,12 +94,12 @@ class Route:
     # handler itself distinguishes a direct-loopback caller (full access)
     # from an NGINX-proxied one (its own, usually lighter-weight, gate --
     # see the /api/playing-status and /api/log-level adapters in
-    # autostream_webui.py). Non-browser handlers are always called as
+    # webui/server.py). Non-browser handlers are always called as
     # fn(handler, STATE) -- two args, GET's calling convention -- even for
     # POST/PUT, since dispatch() does no body pre-parsing for them either
     # (that parsing is itself part of the "own logic" these routes keep;
     # see e.g. _route_post_federation's or the dial adapters' own body
-    # reads in autostream_webui.py, which reproduce -- not share -- the
+    # reads in the dial and peer modules, which reproduce -- not share -- the
     # generic POST/PUT parse below since their legacy call sites ran ahead
     # of, or bypassed, one or more of its checks).
     scheme: str = "browser"
@@ -122,7 +125,7 @@ class Route:
     # route using it here sets both.
     unconfigured_only: bool = False
     # Demotes this route's access-log line to DEBUG (see log_message()'s
-    # existing _POLLING_LOG_PATHS check in autostream_webui.py).
+    # existing _POLLING_LOG_PATHS check in webui/server.py).
     # log_message() falls back to is_poll_log() (this module) for any
     # path not covered by that tuple.
     poll_log: bool = False
@@ -237,9 +240,8 @@ def is_poll_log(path: str, method: str) -> bool:
 def _resolve_handler(route_obj: Route):
     if callable(route_obj.handler) and not isinstance(route_obj.handler, str):
         return route_obj.handler
-    import autostream_webui as _webui_mod  # deferred: avoids circular import
-
-    return getattr(_webui_mod, route_obj.handler)
+    module, _, name = route_obj.handler.rpartition(".")
+    return getattr(sys.modules[module], name)
 
 
 def _read_and_parse_body(handler):
@@ -282,7 +284,7 @@ def _read_and_parse_body(handler):
 
 def _commissioning_redirect_get(handler) -> None:
     """Same redirect shape as do_GET's existing commissioning gate
-    (autostream_webui.py lines ~630-636) -- no Content-Length header, to
+    (webui/server.py) -- no Content-Length header, to
     match that branch exactly.
     """
     step = commissioning.required_first_boot_step(
@@ -296,7 +298,7 @@ def _commissioning_redirect_get(handler) -> None:
 
 def _csrf_failure_response(handler, path: str) -> None:
     """Same three-way branch as do_POST's existing CSRF-failure handling
-    (autostream_webui.py lines ~936-957): form pages get an error-flash
+    (webui/server.py): form pages get an error-flash
     redirect, /api/* paths get the stale-session-recovery shape, anything
     else gets a bare 403.
     """
@@ -465,7 +467,7 @@ register(
     Route(
         path="/about",
         methods=("GET",),
-        handler="send_about_page",
+        handler="webui.browser.about.send_about_page",
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=False,
@@ -476,7 +478,7 @@ register(
     Route(
         path="/api/repeat",
         methods=("POST",),
-        handler="send_repeat_post_json",
+        handler="webui.repeat.send_repeat_post_json",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=False,
@@ -526,7 +528,7 @@ register(
 #
 # poll_log=True is set for the polling paths migrated in this batch;
 # they're removed from ConfigWebHandler._POLLING_LOG_PATHS in
-# autostream_webui.py in the same commit (see is_poll_log() above, which
+# webui/server.py in the same commit (see is_poll_log() above, which
 # log_message() now consults for any path not in that shrunk tuple).
 # ---------------------------------------------------------------------------
 
@@ -536,7 +538,7 @@ register(
     Route(
         path="/",
         methods=("GET",),
-        handler="_route_get_home",
+        handler="webui.browser.home._route_get_home",
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=False,
@@ -547,7 +549,7 @@ register(
     Route(
         path="/equaliser",
         methods=("GET",),
-        handler="_route_get_equaliser",
+        handler="webui.browser.equaliser._route_get_equaliser",
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=False,
@@ -558,7 +560,7 @@ register(
     Route(
         path="/service",
         methods=("GET",),
-        handler="_route_get_service",
+        handler="webui.browser.service._route_get_service",
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=False,
@@ -569,7 +571,7 @@ register(
     Route(
         path="/setup",
         methods=("GET",),
-        handler="_route_get_setup",
+        handler="webui.browser.setup.page._route_get_setup",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=False,
@@ -581,7 +583,7 @@ register(
     Route(
         prefix="/api/setup/card/",
         methods=("GET",),
-        handler="_route_get_setup_card",
+        handler="webui.browser.setup.page._route_get_setup_card",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -597,7 +599,7 @@ register(
     Route(
         path="/logs",
         methods=("GET",),
-        handler="_route_get_logs",
+        handler="webui.browser.logs._route_get_logs",
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=True,
@@ -608,7 +610,7 @@ register(
     Route(
         path="/align",
         methods=("GET",),
-        handler="send_align_page",
+        handler="webui.browser.align.send_align_page",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=False,
@@ -619,7 +621,7 @@ register(
     Route(
         path="/align/result",
         methods=("GET",),
-        handler="_route_get_align_result",
+        handler="webui.browser.align._route_get_align_result",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=False,
@@ -635,7 +637,7 @@ register(
     Route(
         path="/owntone-setup",
         methods=("GET",),
-        handler="_route_get_owntone_setup",
+        handler="webui.browser.owntone._route_get_owntone_setup",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=False,
@@ -647,7 +649,7 @@ register(
     Route(
         path="/rebooting",
         methods=("GET",),
-        handler="_route_get_rebooting",
+        handler="webui.browser.rebooting._route_get_rebooting",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=True,
@@ -659,7 +661,7 @@ register(
     Route(
         path="/owntone-restarting",
         methods=("GET",),
-        handler="send_owntone_restarting_page",
+        handler="webui.browser.owntone.send_owntone_restarting_page",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=True,
@@ -677,7 +679,7 @@ register(
     Route(
         path="/api/status",
         methods=("GET",),
-        handler="send_status_json",
+        handler="webui.browser.home_api.send_status_json",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=False,
@@ -689,7 +691,7 @@ register(
     Route(
         path="/api/owntone/outputs_state",
         methods=("GET",),
-        handler="send_owntone_outputs_state_json",
+        handler="webui.browser.home_api.send_owntone_outputs_state_json",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=True,
@@ -701,7 +703,7 @@ register(
     Route(
         path="/api/owntone/outputs",
         methods=("GET",),
-        handler="send_owntone_outputs_json",
+        handler="webui.browser.home_api.send_owntone_outputs_json",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=True,
@@ -714,7 +716,7 @@ register(
     Route(
         path="/api/audio/status",
         methods=("GET",),
-        handler="send_audio_status_json",
+        handler="webui.browser.home_api.send_audio_status_json",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=False,
@@ -726,7 +728,7 @@ register(
     Route(
         path="/api/about/system",
         methods=("GET",),
-        handler="_route_get_about_system",
+        handler="webui.browser.about._route_get_about_system",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=False,
@@ -737,7 +739,7 @@ register(
     Route(
         path="/api/settings",
         methods=("GET",),
-        handler="send_settings_get_json",
+        handler="webui.browser.api_settings.send_settings_get_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -748,7 +750,7 @@ register(
     Route(
         path="/api/output_eq/status",
         methods=("GET",),
-        handler="_route_get_output_eq_status",
+        handler="webui.browser.equaliser._route_get_output_eq_status",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=False,
@@ -759,7 +761,7 @@ register(
     Route(
         path="/api/owntone/ready",
         methods=("GET",),
-        handler="send_owntone_ready_json",
+        handler="webui.browser.owntone.send_owntone_ready_json",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=True,
@@ -771,7 +773,7 @@ register(
     Route(
         path="/api/align/status",
         methods=("GET",),
-        handler="send_align_status_json",
+        handler="webui.browser.align.send_align_status_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -782,7 +784,7 @@ register(
     Route(
         path="/api/network/status",
         methods=("GET",),
-        handler="_route_get_network_status",
+        handler="webui.system.network._route_get_network_status",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -794,7 +796,7 @@ register(
     Route(
         path="/api/bluetooth/status",
         methods=("GET",),
-        handler="send_bluetooth_status_json",
+        handler="webui.system.bluetooth.send_bluetooth_status_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -805,7 +807,7 @@ register(
     Route(
         path="/api/inputs/levels",
         methods=("GET",),
-        handler="send_input_levels_json",
+        handler="webui.browser.home_api.send_input_levels_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -817,7 +819,7 @@ register(
     Route(
         path="/api/bluetooth/scan_results",
         methods=("GET",),
-        handler="_route_get_bluetooth_scan_results",
+        handler="webui.system.bluetooth._route_get_bluetooth_scan_results",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -828,7 +830,7 @@ register(
     Route(
         path="/api/bluetooth/pair_status",
         methods=("GET",),
-        handler="send_bluetooth_pair_status_json",
+        handler="webui.system.bluetooth.send_bluetooth_pair_status_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -839,7 +841,7 @@ register(
     Route(
         path="/api/update/check",
         methods=("GET",),
-        handler="send_update_check_json",
+        handler="webui.system.updates.send_update_check_json",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=False,
@@ -851,7 +853,7 @@ register(
     Route(
         path="/api/update/status",
         methods=("GET",),
-        handler="_route_get_update_status",
+        handler="webui.system.updates._route_get_update_status",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=False,
@@ -907,7 +909,7 @@ register(
 # (so e.g. a form-urlencoded body was rejected too) -- that check moved
 # into its adapter, _route_post_settings, instead.
 #
-# Adapters (in autostream_webui.py, next to the senders they wrap):
+# Adapters (in the family modules, next to the senders they wrap):
 # needed wherever the sender's signature isn't already fn(handler, STATE,
 # body_str) -- a json_obj-taking sender (network/bluetooth), a
 # no-body sender (output_eq/reset, settings/save, align/abort,
@@ -923,7 +925,7 @@ register(
     Route(
         path="/api/output",
         methods=("POST",),
-        handler="handle_output_update",
+        handler="webui.browser.post_handlers.handle_output_update",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=True,
@@ -935,7 +937,7 @@ register(
     Route(
         path="/api/output_eq/config",
         methods=("POST",),
-        handler="send_output_eq_config_json",
+        handler="webui.browser.equaliser.send_output_eq_config_json",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=False,
@@ -947,7 +949,7 @@ register(
     Route(
         path="/api/output_eq/reset",
         methods=("POST",),
-        handler="_route_post_output_eq_reset",
+        handler="webui.browser.equaliser._route_post_output_eq_reset",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=True,
@@ -958,7 +960,7 @@ register(
     Route(
         path="/api/service/config",
         methods=("POST",),
-        handler="send_service_config_json",
+        handler="webui.browser.api_service.send_service_config_json",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=False,
@@ -970,7 +972,7 @@ register(
     Route(
         path="/api/service/reset",
         methods=("POST",),
-        handler="send_service_reset_json",
+        handler="webui.browser.api_service.send_service_reset_json",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=True,
@@ -982,7 +984,7 @@ register(
     Route(
         path="/api/input_eq",
         methods=("POST",),
-        handler="handle_live_input_eq_update",
+        handler="webui.browser.post_handlers.handle_live_input_eq_update",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -994,7 +996,7 @@ register(
     Route(
         path="/api/input_gain",
         methods=("POST",),
-        handler="handle_live_input_gain_update",
+        handler="webui.browser.post_handlers.handle_live_input_gain_update",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1006,7 +1008,7 @@ register(
     Route(
         path="/api/settings",
         methods=("POST",),
-        handler="_route_post_settings",
+        handler="webui.browser.api_settings._route_post_settings",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1018,7 +1020,7 @@ register(
     Route(
         path="/api/settings/hostname",
         methods=("POST",),
-        handler="send_hostname_post_json",
+        handler="webui.browser.api_settings.send_hostname_post_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1029,7 +1031,7 @@ register(
     Route(
         path="/api/settings/advertisement",
         methods=("POST",),
-        handler="send_advertisement_post_json",
+        handler="webui.browser.api_settings.send_advertisement_post_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1040,7 +1042,7 @@ register(
     Route(
         path="/api/settings/auto-update",
         methods=("POST",),
-        handler="send_auto_update_post_json",
+        handler="webui.browser.api_settings.send_auto_update_post_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1051,7 +1053,7 @@ register(
     Route(
         path="/api/settings/mdns-grace-period",
         methods=("POST",),
-        handler="send_settings_mdns_grace_period_json",
+        handler="webui.browser.api_owntone.send_settings_mdns_grace_period_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1062,7 +1064,7 @@ register(
     Route(
         path="/api/settings/save",
         methods=("POST",),
-        handler="_route_post_settings_save",
+        handler="webui.browser.api_settings._route_post_settings_save",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1073,7 +1075,7 @@ register(
     Route(
         path="/api/owntone/grace-period",
         methods=("POST",),
-        handler="send_owntone_grace_period_json",
+        handler="webui.browser.api_owntone.send_owntone_grace_period_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1084,7 +1086,7 @@ register(
     Route(
         path="/api/owntone/output-visibility",
         methods=("POST",),
-        handler="send_owntone_output_visibility_json",
+        handler="webui.browser.api_owntone.send_owntone_output_visibility_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1095,7 +1097,7 @@ register(
     Route(
         path="/api/owntone/output-include-tv",
         methods=("POST",),
-        handler="send_owntone_output_include_tv_json",
+        handler="webui.browser.api_owntone.send_owntone_output_include_tv_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1106,7 +1108,7 @@ register(
     Route(
         path="/api/owntone/output-mode",
         methods=("POST",),
-        handler="send_owntone_output_mode_json",
+        handler="webui.browser.api_owntone.send_owntone_output_mode_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1117,7 +1119,7 @@ register(
     Route(
         path="/api/owntone/output-offset",
         methods=("POST",),
-        handler="send_owntone_output_offset_json",
+        handler="webui.browser.api_owntone.send_owntone_output_offset_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1128,7 +1130,7 @@ register(
     Route(
         path="/api/owntone/uncompressed-audio",
         methods=("POST",),
-        handler="send_owntone_uncompressed_json",
+        handler="webui.browser.api_owntone.send_owntone_uncompressed_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1139,7 +1141,7 @@ register(
     Route(
         path="/api/owntone/buffered-audio",
         methods=("POST",),
-        handler="send_owntone_buffered_audio_json",
+        handler="webui.browser.api_owntone.send_owntone_buffered_audio_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1150,7 +1152,7 @@ register(
     Route(
         path="/api/owntone/start-buffer",
         methods=("POST",),
-        handler="send_owntone_start_buffer_json",
+        handler="webui.browser.api_owntone.send_owntone_start_buffer_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1161,7 +1163,7 @@ register(
     Route(
         path="/api/owntone/user-agent",
         methods=("POST",),
-        handler="send_owntone_user_agent_json",
+        handler="webui.browser.api_owntone.send_owntone_user_agent_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1172,7 +1174,7 @@ register(
     Route(
         path="/api/align/start",
         methods=("POST",),
-        handler="send_align_start_json",
+        handler="webui.browser.align.send_align_start_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1183,7 +1185,7 @@ register(
     Route(
         path="/api/align/abort",
         methods=("POST",),
-        handler="_route_post_align_abort",
+        handler="webui.browser.align._route_post_align_abort",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1194,7 +1196,7 @@ register(
     Route(
         path="/api/align/apply",
         methods=("POST",),
-        handler="send_align_apply_json",
+        handler="webui.browser.align.send_align_apply_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1205,7 +1207,7 @@ register(
     Route(
         path="/api/align/discard",
         methods=("POST",),
-        handler="_route_post_align_discard",
+        handler="webui.browser.align._route_post_align_discard",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1216,7 +1218,7 @@ register(
     Route(
         path="/api/network/setup",
         methods=("POST",),
-        handler="_route_post_network_setup",
+        handler="webui.system.network._route_post_network_setup",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1227,7 +1229,7 @@ register(
     Route(
         path="/api/network/roaming",
         methods=("POST",),
-        handler="_route_post_network_roaming",
+        handler="webui.system.network._route_post_network_roaming",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1238,7 +1240,7 @@ register(
     Route(
         path="/api/bluetooth/scan",
         methods=("POST",),
-        handler="_route_post_bluetooth_scan",
+        handler="webui.system.bluetooth._route_post_bluetooth_scan",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1249,7 +1251,7 @@ register(
     Route(
         path="/api/bluetooth/pair",
         methods=("POST",),
-        handler="_route_post_bluetooth_pair",
+        handler="webui.system.bluetooth._route_post_bluetooth_pair",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1260,7 +1262,7 @@ register(
     Route(
         path="/api/bluetooth/forget",
         methods=("POST",),
-        handler="_route_post_bluetooth_forget",
+        handler="webui.system.bluetooth._route_post_bluetooth_forget",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1271,7 +1273,7 @@ register(
     Route(
         path="/api/bluetooth/services",
         methods=("POST",),
-        handler="_route_post_bluetooth_services",
+        handler="webui.system.bluetooth._route_post_bluetooth_services",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1282,7 +1284,7 @@ register(
     Route(
         path="/api/bluetooth/onboard",
         methods=("POST",),
-        handler="_route_post_bluetooth_onboard",
+        handler="webui.system.bluetooth._route_post_bluetooth_onboard",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1293,7 +1295,7 @@ register(
     Route(
         path="/api/bluetooth/buffer",
         methods=("POST",),
-        handler="_route_post_bluetooth_buffer",
+        handler="webui.system.bluetooth._route_post_bluetooth_buffer",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1304,7 +1306,7 @@ register(
     Route(
         path="/api/sdcard-health",
         methods=("GET",),
-        handler="_route_get_sdcard_health",
+        handler="webui.system.sdcard._route_get_sdcard_health",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1315,7 +1317,7 @@ register(
     Route(
         path="/api/sdcard-health/enable",
         methods=("POST",),
-        handler="_route_post_sdcard_health_enable",
+        handler="webui.system.sdcard._route_post_sdcard_health_enable",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1326,7 +1328,7 @@ register(
     Route(
         path="/api/sdcard-health/disable",
         methods=("POST",),
-        handler="_route_post_sdcard_health_disable",
+        handler="webui.system.sdcard._route_post_sdcard_health_disable",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1337,7 +1339,7 @@ register(
     Route(
         path="/api/update/apply",
         methods=("POST",),
-        handler="_route_post_update_apply",
+        handler="webui.system.updates._route_post_update_apply",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1349,7 +1351,7 @@ register(
     Route(
         path="/api/reboot",
         methods=("POST",),
-        handler="_route_post_reboot",
+        handler="webui.system.power._route_post_reboot",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1361,7 +1363,7 @@ register(
     Route(
         path="/api/factory-reset",
         methods=("POST",),
-        handler="_route_post_factory_reset",
+        handler="webui.system.power._route_post_factory_reset",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1396,7 +1398,7 @@ register(
     Route(
         prefix="/api/federation/v1",
         methods=("GET",),
-        handler="_route_get_federation",
+        handler="webui.peer.federation._route_get_federation",
         scheme="bearer",
         comment="Auth/commissioning/body validation all stay inside _dispatch_federation, unchanged.",
     )
@@ -1406,7 +1408,7 @@ register(
     Route(
         prefix="/api/federation/v1",
         methods=("POST",),
-        handler="_route_post_federation",
+        handler="webui.peer.federation._route_post_federation",
         scheme="bearer",
         comment=(
             "Adapter reproduces do_POST's former universal body-read (steps 2-3) "
@@ -1424,7 +1426,7 @@ register(
     Route(
         path="/api/dial/capabilities",
         methods=("GET",),
-        handler="send_dial_capabilities_json",
+        handler="webui.dial.api.send_dial_capabilities_json",
         scheme="dial",
         comment="Unauthenticated: discloses only what the mDNS records already broadcast.",
     )
@@ -1434,7 +1436,7 @@ register(
     Route(
         path="/api/dial/volume",
         methods=("POST",),
-        handler="_route_post_dial_volume",
+        handler="webui.dial.api._route_post_dial_volume",
         scheme="dial",
         comment="Non-object JSON body -> 400, matching the legacy UUID-auth dial guard.",
     )
@@ -1444,7 +1446,7 @@ register(
     Route(
         path="/api/dial/mute",
         methods=("POST",),
-        handler="_route_post_dial_mute",
+        handler="webui.dial.api._route_post_dial_mute",
         scheme="dial",
     )
 )
@@ -1453,7 +1455,7 @@ register(
     Route(
         path="/api/dial/status",
         methods=("POST",),
-        handler="_route_post_dial_status",
+        handler="webui.dial.api._route_post_dial_status",
         scheme="dial",
         comment="Non-object JSON body is passed through as {} -- sender 400s on missing dial_id.",
     )
@@ -1463,7 +1465,7 @@ register(
     Route(
         path="/api/dial/repeat",
         methods=("POST",),
-        handler="_route_post_dial_repeat",
+        handler="webui.dial.api._route_post_dial_repeat",
         scheme="dial",
         comment="Non-object JSON body -> 400.",
     )
@@ -1473,7 +1475,7 @@ register(
     Route(
         path="/api/dial/repeat/arm",
         methods=("POST",),
-        handler="_route_post_dial_repeat_arm",
+        handler="webui.dial.api._route_post_dial_repeat_arm",
         scheme="dial",
         comment="Non-object JSON body -> 400.",
     )
@@ -1483,7 +1485,7 @@ register(
     Route(
         path="/api/dial/outputs",
         methods=("POST",),
-        handler="_route_post_dial_outputs",
+        handler="webui.dial.api._route_post_dial_outputs",
         scheme="dial",
         comment="Non-object JSON body -> 400.",
     )
@@ -1493,7 +1495,7 @@ register(
     Route(
         path="/api/dial/outputs/set",
         methods=("POST",),
-        handler="_route_post_dial_outputs_set",
+        handler="webui.dial.api._route_post_dial_outputs_set",
         scheme="dial",
         comment="Non-object JSON body -> 400.",
     )
@@ -1503,7 +1505,7 @@ register(
     Route(
         path="/api/dial/eq",
         methods=("POST",),
-        handler="_route_post_dial_eq",
+        handler="webui.dial.api._route_post_dial_eq",
         scheme="dial",
         comment="Non-object JSON body -> 400.",
     )
@@ -1513,7 +1515,7 @@ register(
     Route(
         path="/api/dial/eq/set",
         methods=("POST",),
-        handler="_route_post_dial_eq_set",
+        handler="webui.dial.api._route_post_dial_eq_set",
         scheme="dial",
         comment="Non-object JSON body -> 400.",
     )
@@ -1523,7 +1525,7 @@ register(
     Route(
         path="/api/dial/warnings",
         methods=("POST",),
-        handler="_route_post_dial_warnings",
+        handler="webui.dial.api._route_post_dial_warnings",
         scheme="dial",
         comment="Non-object JSON body -> 400.",
     )
@@ -1535,7 +1537,7 @@ register(
     Route(
         path="/api/playing-status",
         methods=("GET",),
-        handler="_route_get_playing_status",
+        handler="webui.browser.home_api._route_get_playing_status",
         scheme="loopback_aware",
         comment=(
             "Adapter reproduces do_GET's direct-local fast path (bypasses "
@@ -1550,7 +1552,7 @@ register(
     Route(
         path="/api/log-level",
         methods=("GET",),
-        handler="_route_get_log_level",
+        handler="webui.browser.api_settings._route_get_log_level",
         scheme="loopback_aware",
         comment="Allowlisted (AUTH.ALLOWLIST_PATHS) so the proxied path has no auth gate, only commissioning.",
     )
@@ -1560,7 +1562,7 @@ register(
     Route(
         path="/api/log-level",
         methods=("PUT",),
-        handler="_route_put_log_level",
+        handler="webui.browser.api_settings._route_put_log_level",
         scheme="loopback_aware",
         comment=(
             "do_PUT never had a commissioning gate at all; adapter reproduces its "
@@ -1576,7 +1578,7 @@ register(
     Route(
         path="/api/appliances",
         methods=("GET",),
-        handler="_route_get_appliances_list",
+        handler="webui.peer.gateway._route_get_appliances_list",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=False,
@@ -1589,7 +1591,7 @@ register(
     Route(
         prefix="/api/appliances/",
         methods=("GET",),
-        handler="_route_get_gateway_sub",
+        handler="webui.peer.gateway._route_get_gateway_sub",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=False,
@@ -1602,7 +1604,7 @@ register(
     Route(
         prefix="/api/appliances/",
         methods=("POST",),
-        handler="_route_post_gateway",
+        handler="webui.peer.gateway._route_post_gateway",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=False,
@@ -1617,7 +1619,7 @@ register(
     Route(
         prefix="/a/",
         methods=("GET",),
-        handler="_route_get_remote_page",
+        handler="webui.browser.home._route_get_remote_page",
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=False,
@@ -1631,7 +1633,7 @@ register(
     Route(
         path="/auth",
         methods=("GET",),
-        handler="_route_get_auth",
+        handler="webui.browser.auth._route_get_auth",
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=True,
@@ -1650,7 +1652,7 @@ register(
     Route(
         path="/api/auth/verify",
         methods=("POST",),
-        handler="_route_post_auth_verify",
+        handler="webui.browser.auth._route_post_auth_verify",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=True,
@@ -1669,7 +1671,7 @@ register(
     Route(
         path="/api/pin/change",
         methods=("POST",),
-        handler="_route_post_pin_change",
+        handler="webui.browser.auth._route_post_pin_change",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=False,
@@ -1684,7 +1686,7 @@ register(
     Route(
         path="/setup",
         methods=("POST",),
-        handler="_route_post_setup_form",
+        handler="webui.browser.setup.page._route_post_setup_form",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=False,
@@ -1701,7 +1703,7 @@ register(
     Route(
         path="/owntone-setup",
         methods=("POST",),
-        handler="_route_post_owntone_setup_form",
+        handler="webui.browser.owntone._route_post_owntone_setup_form",
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=False,
@@ -1720,7 +1722,7 @@ register(
     Route(
         path="/first-boot/owntone",
         methods=("GET",),
-        handler="_route_get_first_boot_owntone",
+        handler="webui.browser.first_boot._route_get_first_boot_owntone",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=True,
@@ -1732,7 +1734,7 @@ register(
     Route(
         path="/first-boot/appliance",
         methods=("GET",),
-        handler="_route_get_first_boot_appliance",
+        handler="webui.browser.first_boot._route_get_first_boot_appliance",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=True,
@@ -1744,7 +1746,7 @@ register(
     Route(
         path="/first-boot/owntone/continue",
         methods=("POST",),
-        handler="_route_post_first_boot_continue",
+        handler="webui.browser.first_boot._route_post_first_boot_continue",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1756,7 +1758,7 @@ register(
     Route(
         path="/first-boot/appliance/finish",
         methods=("POST",),
-        handler="_route_post_first_boot_finish",
+        handler="webui.browser.first_boot._route_post_first_boot_finish",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=True,
@@ -1770,7 +1772,7 @@ register(
     Route(
         path="/logs/download",
         methods=("GET",),
-        handler="_route_get_logs_download",
+        handler="webui.browser.logs._route_get_logs_download",
         auth=AuthRequirement.FULL,
         kind="page",
         allow_unconfigured=True,
@@ -1788,7 +1790,7 @@ register(
     Route(
         path="/api/dial/authorize",
         methods=("POST",),
-        handler="_route_post_dial_management",
+        handler="webui.dial.management._route_post_dial_management",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1799,7 +1801,7 @@ register(
     Route(
         path="/api/dial/revoke",
         methods=("POST",),
-        handler="_route_post_dial_management",
+        handler="webui.dial.management._route_post_dial_management",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1810,7 +1812,7 @@ register(
     Route(
         path="/api/dial/configure",
         methods=("POST",),
-        handler="_route_post_dial_management",
+        handler="webui.dial.management._route_post_dial_management",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1821,7 +1823,7 @@ register(
     Route(
         path="/api/dial/pin_recovery/complete",
         methods=("POST",),
-        handler="_route_post_dial_management",
+        handler="webui.dial.management._route_post_dial_management",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1832,7 +1834,7 @@ register(
     Route(
         path="/api/dial/recovery/arm",
         methods=("POST",),
-        handler="_route_post_dial_management",
+        handler="webui.dial.management._route_post_dial_management",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1843,7 +1845,7 @@ register(
     Route(
         path="/api/dial/recovery/disarm",
         methods=("POST",),
-        handler="_route_post_dial_management",
+        handler="webui.dial.management._route_post_dial_management",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1854,7 +1856,7 @@ register(
     Route(
         prefix="/api/dial/update/",
         methods=("POST",),
-        handler="_route_post_dial_update",
+        handler="webui.dial.management._route_post_dial_update",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1866,7 +1868,7 @@ register(
     Route(
         path="/api/dial/screen/settings",
         methods=("POST",),
-        handler="_route_post_dial_screen_settings",
+        handler="webui.dial.management._route_post_dial_screen_settings",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1877,7 +1879,7 @@ register(
     Route(
         path="/api/dial/sdcard-health",
         methods=("POST",),
-        handler="_route_post_dial_sdcard_health",
+        handler="webui.dial.management._route_post_dial_sdcard_health",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1888,7 +1890,7 @@ register(
     Route(
         prefix="/api/dial/configure/",
         methods=("GET",),
-        handler="_route_get_dial_configure",
+        handler="webui.dial.management._route_get_dial_configure",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1899,7 +1901,7 @@ register(
     Route(
         prefix="/api/dial/pin_recovery/status/",
         methods=("GET",),
-        handler="_route_get_dial_pin_recovery_status",
+        handler="webui.dial.management._route_get_dial_pin_recovery_status",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1910,7 +1912,7 @@ register(
     Route(
         prefix="/api/dial/update/status/",
         methods=("GET",),
-        handler="_route_get_dial_update_status",
+        handler="webui.dial.management._route_get_dial_update_status",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1921,7 +1923,7 @@ register(
     Route(
         prefix="/api/dial/screen/settings/",
         methods=("GET",),
-        handler="_route_get_dial_screen_settings",
+        handler="webui.dial.management._route_get_dial_screen_settings",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1932,7 +1934,7 @@ register(
     Route(
         prefix="/api/dial/screen/image/",
         methods=("GET",),
-        handler="_route_get_dial_screen_image",
+        handler="webui.dial.management._route_get_dial_screen_image",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
@@ -1943,7 +1945,7 @@ register(
     Route(
         prefix="/api/dial/sdcard-health/",
         methods=("GET",),
-        handler="_route_get_dial_sdcard_health",
+        handler="webui.dial.management._route_get_dial_sdcard_health",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,

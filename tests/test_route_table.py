@@ -1,4 +1,4 @@
-"""Tests for the route table (autostream_webui_routes.py).
+"""Tests for the route table (webui/routes.py).
 
 Four groups:
   1. Table integrity -- static checks over ROUTES itself (no duplicates,
@@ -15,6 +15,7 @@ Four groups:
      identically via do_GET/do_POST as the route table intends,
      reusing the assertion style of test_webui_auth_routing.py.
 """
+import ast
 import io
 import secrets
 import sys
@@ -33,14 +34,17 @@ if _core not in sys.path:
 try:
     from autostream_webui import ConfigWebHandler
     import autostream_webui as _webui
-    import autostream_webui_routes as routes_mod
-    from autostream_webui_routes import AuthRequirement, Route, dispatch, register
+    from webui.routes import dispatch
+    from webui.routes import register
+    from webui.routes import Route
+    from webui.routes import AuthRequirement
 
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
 
 from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME, PIN_STATUS_MISSING
+import webui.routes as webui_routes
 
 _skip_no_webui = pytest.mark.skipif(
     not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
@@ -109,38 +113,54 @@ def _make_handler(path: str, method: str = "GET", sess_token: str = "",
 class TestTableIntegrity:
     def test_no_duplicate_path_method(self):
         seen = {}
-        for r in routes_mod.ROUTES:
+        for r in webui_routes.ROUTES:
             key = r.path or r.prefix
             for m in r.methods:
                 dup_key = (key, r.path is not None, m)
                 assert dup_key not in seen, f"duplicate route registration: {dup_key}"
                 seen[dup_key] = r
 
+    def test_every_handler_names_a_function_of_a_web_module(self):
+        core = Path(__file__).resolve().parent.parent / "core"
+        for r in webui_routes.ROUTES:
+            if not isinstance(r.handler, str):
+                continue
+            module, _, name = r.handler.rpartition(".")
+            assert module.startswith("webui."), f"{r.handler}: not in the web package"
+            source = core / (module.replace(".", "/") + ".py")
+            assert source.is_file(), f"{r.handler}: {source} does not exist"
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            defined = {
+                n.name for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            assert name in defined, f"{r.handler}: {name} is not a function defined in {module}"
+
     def test_all_handlers_resolvable_and_callable(self):
-        for r in routes_mod.ROUTES:
-            fn = routes_mod._resolve_handler(r)
+        for r in webui_routes.ROUTES:
+            fn = webui_routes._resolve_handler(r)
             assert callable(fn), f"handler for {r.path or r.prefix} is not callable: {fn!r}"
 
     def test_all_auth_values_are_enum_members(self):
-        for r in routes_mod.ROUTES:
+        for r in webui_routes.ROUTES:
             assert isinstance(r.auth, AuthRequirement)
 
     def test_all_kind_values_valid(self):
-        for r in routes_mod.ROUTES:
+        for r in webui_routes.ROUTES:
             assert r.kind in ("page", "api")
 
     def test_every_route_has_path_xor_prefix(self):
-        for r in routes_mod.ROUTES:
+        for r in webui_routes.ROUTES:
             assert (r.path is not None) != (r.prefix is not None)
 
     def test_pilot_routes_are_registered(self):
-        keys = {(r.path, tuple(r.methods)) for r in routes_mod.ROUTES}
+        keys = {(r.path, tuple(r.methods)) for r in webui_routes.ROUTES}
         assert ("/about", ("GET",)) in keys
         assert ("/api/repeat", ("POST",)) in keys
 
     def test_register_rejects_exact_duplicate(self):
         scratch = []
-        with patch.object(routes_mod, "ROUTES", scratch):
+        with patch.object(webui_routes, "ROUTES", scratch):
             register(Route(path="/tmp-dup", methods=("GET",), handler=lambda h, s: None))
             with pytest.raises(ValueError):
                 register(Route(path="/tmp-dup", methods=("GET",), handler=lambda h, s: None))
@@ -152,7 +172,7 @@ class TestTableIntegrity:
 #     plain GET route. Values were derived from each route's semantics in
 #     AUTH.ALLOWLIST_PATHS and do_GET's commissioning allowlist -- see the
 #     long comment above this route group's registrations in
-#     autostream_webui_routes.py for the derivation rules.
+#     webui/routes.py for the derivation rules.
 # ---------------------------------------------------------------------------
 
 # (path, auth, kind, allow_unconfigured, poll_log)
@@ -197,7 +217,7 @@ class TestBrowserGetRouteParity:
     @classmethod
     def setup_class(cls):
         cls._by_path = {
-            (r.path, "GET"): r for r in routes_mod.ROUTES if r.path and "GET" in r.methods
+            (r.path, "GET"): r for r in webui_routes.ROUTES if r.path and "GET" in r.methods
         }
 
     @pytest.mark.parametrize(
@@ -216,7 +236,7 @@ class TestBrowserGetRouteParity:
 
     def test_all_expected_paths_covered(self):
         expected_paths = {p for p, *_ in _BROWSER_GET_EXPECTED}
-        actual = {r.path for r in routes_mod.ROUTES if r.path in expected_paths}
+        actual = {r.path for r in webui_routes.ROUTES if r.path in expected_paths}
         assert actual == expected_paths
 
     def test_polling_paths_removed_from_legacy_tuple(self):
@@ -234,7 +254,7 @@ class TestBrowserGetRouteParity:
 # 1c. Browser POST API routes -- expected-table literal cross-checking
 #     auth/allow_unconfigured/requires_body for every browser POST API
 #     route. See the long comment above this route group's registrations
-#     in autostream_webui_routes.py for the derivation rules, including the
+#     in webui/routes.py for the derivation rules, including the
 #     deliberate output_eq/service reset-vs-config allow_unconfigured
 #     asymmetry and the /api/owntone/* commissioning allowlist applying
 #     despite FULL auth.
@@ -290,7 +310,7 @@ class TestBrowserPostApiParity:
     @classmethod
     def setup_class(cls):
         cls._by_path = {
-            (r.path, "POST"): r for r in routes_mod.ROUTES if r.path and "POST" in r.methods
+            (r.path, "POST"): r for r in webui_routes.ROUTES if r.path and "POST" in r.methods
         }
 
     @pytest.mark.parametrize(
@@ -311,7 +331,7 @@ class TestBrowserPostApiParity:
 
     def test_all_expected_paths_covered(self):
         expected_paths = {p for p, *_ in _BROWSER_POST_EXPECTED}
-        actual = {r.path for r in routes_mod.ROUTES if r.path in expected_paths}
+        actual = {r.path for r in webui_routes.ROUTES if r.path in expected_paths}
         assert actual == expected_paths
 
 
@@ -346,7 +366,7 @@ class TestSpecialSchemeRouteParity:
         ids=[f"{k}:{m}" for k, _, m, _ in _SPECIAL_SCHEME_EXPECTED],
     )
     def test_scheme_matches_expected(self, key, is_prefix, method, scheme):
-        for r in routes_mod.ROUTES:
+        for r in webui_routes.ROUTES:
             match_key = r.prefix if is_prefix else r.path
             if match_key == key and method in r.methods:
                 assert r.scheme == scheme, f"{key} {method}: expected scheme={scheme!r}, got {r.scheme!r}"
@@ -354,7 +374,7 @@ class TestSpecialSchemeRouteParity:
         pytest.fail(f"{key} {method} is not registered")
 
     def test_dial_update_post_prefix_registered(self):
-        matches = [r for r in routes_mod.ROUTES if r.prefix == "/api/dial/update/" and "POST" in r.methods]
+        matches = [r for r in webui_routes.ROUTES if r.prefix == "/api/dial/update/" and "POST" in r.methods]
         assert len(matches) == 1
         assert matches[0].auth is AuthRequirement.FULL
 
@@ -368,13 +388,13 @@ class TestSpecialSchemeRouteParity:
             "/api/dial/sdcard-health/",
         }
         actual = {
-            r.prefix for r in routes_mod.ROUTES
+            r.prefix for r in webui_routes.ROUTES
             if r.prefix in expected_prefixes and "GET" in r.methods
         }
         assert actual == expected_prefixes
 
     def test_dial_screen_image_prefix_registered(self):
-        matches = [r for r in routes_mod.ROUTES
+        matches = [r for r in webui_routes.ROUTES
                    if r.prefix == "/api/dial/screen/image/" and "GET" in r.methods]
         assert len(matches) == 1
         assert matches[0].auth is AuthRequirement.FULL
@@ -382,15 +402,15 @@ class TestSpecialSchemeRouteParity:
         assert matches[0].allow_unconfigured is False
 
     def test_gateway_routes_registered(self):
-        get_exact = routes_mod._resolve("/api/appliances", "GET")
+        get_exact = webui_routes._resolve("/api/appliances", "GET")
         assert get_exact is not None and get_exact.auth is AuthRequirement.NONE
-        get_sub = routes_mod._resolve("/api/appliances/aabbccdd1122334455aa/home", "GET")
+        get_sub = webui_routes._resolve("/api/appliances/aabbccdd1122334455aa/home", "GET")
         assert get_sub is not None and get_sub.auth is AuthRequirement.NONE
-        post_sub = routes_mod._resolve("/api/appliances/aabbccdd1122334455aa/output", "POST")
+        post_sub = webui_routes._resolve("/api/appliances/aabbccdd1122334455aa/output", "POST")
         assert post_sub is not None and post_sub.auth is AuthRequirement.CSRF
 
     def test_remote_page_route_registered(self):
-        r = routes_mod._resolve("/a/aabbccdd1122334455aa", "GET")
+        r = webui_routes._resolve("/a/aabbccdd1122334455aa", "GET")
         assert r is not None
         assert r.auth is AuthRequirement.NONE
         assert r.kind == "page"
@@ -440,8 +460,8 @@ class TestStatefulRouteParity:
 
     @classmethod
     def setup_class(cls):
-        cls._get_by_path = {r.path: r for r in routes_mod.ROUTES if r.path and "GET" in r.methods}
-        cls._post_by_path = {r.path: r for r in routes_mod.ROUTES if r.path and "POST" in r.methods}
+        cls._get_by_path = {r.path: r for r in webui_routes.ROUTES if r.path and "GET" in r.methods}
+        cls._post_by_path = {r.path: r for r in webui_routes.ROUTES if r.path and "POST" in r.methods}
 
     @pytest.mark.parametrize(
         "path,auth,kind,allow_unconfigured,unconfigured_only", _STATEFUL_GET_EXPECTED,
@@ -473,8 +493,8 @@ class TestStatefulRouteParity:
         page content they cannot otherwise reach. Only `kind` differs,
         deliberately: an api route 401s with JSON rather than redirecting
         a fetch() to the login page."""
-        page = routes_mod._resolve("/setup", "GET")
-        card = routes_mod._resolve("/api/setup/card/bluetooth", "GET")
+        page = webui_routes._resolve("/setup", "GET")
+        card = webui_routes._resolve("/api/setup/card/bluetooth", "GET")
         assert card is not None, "/api/setup/card/<key> is not registered as a GET route"
         assert card.prefix == "/api/setup/card/"
         assert card.auth is page.auth is AuthRequirement.FULL
@@ -482,7 +502,7 @@ class TestStatefulRouteParity:
         assert card.kind == "api"
 
     def test_unconfigured_only_implies_allow_unconfigured(self):
-        for r in routes_mod.ROUTES:
+        for r in webui_routes.ROUTES:
             if r.unconfigured_only:
                 assert r.allow_unconfigured, (
                     f"{r.path or r.prefix}: unconfigured_only routes must also be "
@@ -509,7 +529,7 @@ class TestDispatcherBehaviour:
                           auth=AuthRequirement.NONE, kind="page")]
         h = _make_handler("/tmp-none", "GET")
         h._commissioning_required = lambda: False
-        with patch.object(routes_mod, "ROUTES", scratch), \
+        with patch.object(webui_routes, "ROUTES", scratch), \
              patch("webui.session_state.STATE", MagicMock()) as state, \
              patch("webui.session_state.AUTH", MagicMock()):
             result = dispatch(h, "GET", "/tmp-none")
@@ -524,7 +544,7 @@ class TestDispatcherBehaviour:
         h._commissioning_required = lambda: False
         mock_auth = MagicMock()
         mock_auth.require_authenticated_if_pin_enabled.return_value = False
-        with patch.object(routes_mod, "ROUTES", scratch), \
+        with patch.object(webui_routes, "ROUTES", scratch), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("webui.session_state.AUTH", mock_auth):
             result = dispatch(h, "GET", "/tmp-full-page")
@@ -542,7 +562,7 @@ class TestDispatcherBehaviour:
         h._commissioning_required = lambda: False
         mock_auth = MagicMock()
         mock_auth.require_authenticated_if_pin_enabled.return_value = False
-        with patch.object(routes_mod, "ROUTES", scratch), \
+        with patch.object(webui_routes, "ROUTES", scratch), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("webui.session_state.AUTH", mock_auth):
             result = dispatch(h, "GET", "/tmp-full-api")
@@ -560,7 +580,7 @@ class TestDispatcherBehaviour:
         h._commissioning_required = lambda: False
         mock_auth = MagicMock()
         mock_auth.require_authenticated_if_pin_enabled.return_value = True
-        with patch.object(routes_mod, "ROUTES", scratch), \
+        with patch.object(webui_routes, "ROUTES", scratch), \
              patch("webui.session_state.STATE", MagicMock()) as state, \
              patch("webui.session_state.AUTH", mock_auth):
             result = dispatch(h, "GET", "/tmp-full-ok")
@@ -574,7 +594,7 @@ class TestDispatcherBehaviour:
                           allow_unconfigured=False)]
         h = _make_handler("/tmp-gated", "GET")
         h._commissioning_required = lambda: True
-        with patch.object(routes_mod, "ROUTES", scratch), \
+        with patch.object(webui_routes, "ROUTES", scratch), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.required_first_boot_step", return_value="owntone"):
             result = dispatch(h, "GET", "/tmp-gated")
@@ -589,7 +609,7 @@ class TestDispatcherBehaviour:
                           allow_unconfigured=True)]
         h = _make_handler("/tmp-open-during-boot", "GET")
         h._commissioning_required = lambda: True
-        with patch.object(routes_mod, "ROUTES", scratch), \
+        with patch.object(webui_routes, "ROUTES", scratch), \
              patch("webui.session_state.STATE", MagicMock()) as state, \
              patch("webui.session_state.AUTH", MagicMock()):
             result = dispatch(h, "GET", "/tmp-open-during-boot")
@@ -600,7 +620,7 @@ class TestDispatcherBehaviour:
         stub = MagicMock()
         scratch = [Route(path="/tmp-get-only", methods=("GET",), handler=stub)]
         h = _make_handler("/tmp-get-only", "POST", body=b"{}")
-        with patch.object(routes_mod, "ROUTES", scratch):
+        with patch.object(webui_routes, "ROUTES", scratch):
             result = dispatch(h, "POST", "/tmp-get-only")
         assert result is False
         stub.assert_not_called()
@@ -619,7 +639,7 @@ class TestPilotRouteAboutPage:
         with patch("webui.session_state.AUTH", _make_manager()), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_about_page") as stub:
+             patch("webui.browser.about.send_about_page") as stub:
             h.do_GET()
         stub.assert_called_once()
 
@@ -629,7 +649,7 @@ class TestPilotRouteAboutPage:
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("autostream_commissioning.required_first_boot_step", return_value="owntone"), \
-             patch("autostream_webui.send_about_page") as stub:
+             patch("webui.browser.about.send_about_page") as stub:
             h.do_GET()
         stub.assert_not_called()
         h.send_response.assert_called_once_with(302)
@@ -649,7 +669,7 @@ class TestPilotRouteApiRepeat:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_repeat_post_json") as stub:
+             patch("webui.repeat.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_called_once()
 
@@ -661,7 +681,7 @@ class TestPilotRouteApiRepeat:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_repeat_post_json") as stub:
+             patch("webui.repeat.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_not_called()
 
@@ -672,7 +692,7 @@ class TestPilotRouteApiRepeat:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_repeat_post_json") as stub:
+             patch("webui.repeat.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_not_called()
         h.send_error.assert_called_once_with(400, "Missing request body")
@@ -687,7 +707,7 @@ class TestPilotRouteApiRepeat:
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui.send_repeat_post_json") as stub:
+             patch("webui.repeat.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_not_called()
         assert sent and sent[0][0] == 409

@@ -19,7 +19,8 @@ sys.path.insert(0, str(REPO_ROOT / "tests" / "playwright"))
 
 import _page_stub  # noqa: E402
 import _source_text
-import webui.browser.equaliser as webui_equaliser  # noqa: E402
+import webui.browser.equaliser as webui_equaliser
+import webui.routes as webui_routes  # noqa: E402
 
 _INLINE = re.compile(r"<script\b([^>]*)>(.*?)</script>", re.DOTALL | re.IGNORECASE)
 
@@ -184,12 +185,11 @@ def test_the_island_carries_only_the_keys_of_its_page(page):
 
 @pytest.mark.parametrize("page", EXTRACTED)
 def test_an_island_on_a_public_route_carries_only_listed_keys(page):
-    import autostream_webui_routes as routes  # noqa: PLC0415
     if PAGE_PATH[page] is None:
         pytest.skip("not served at a path of its own")
-    route = routes._resolve(PAGE_PATH[page], "GET")
+    route = webui_routes._resolve(PAGE_PATH[page], "GET")
     assert route is not None
-    if route.auth is routes.AuthRequirement.NONE:
+    if route.auth is webui_routes.AuthRequirement.NONE:
         assert set(_source_text.page_data(_render(page))) <= ISLAND_KEYS[page]
 
 
@@ -261,9 +261,8 @@ def test_the_logs_island_carries_the_page_token():
 
 @pytest.mark.parametrize("page", ("owntone", "owntone_restarting", "rebooting"))
 def test_the_pages_with_a_live_flag_or_a_redirect_target_need_a_full_sign_in(page):
-    import autostream_webui_routes as routes  # noqa: PLC0415
-    route = routes._resolve(PAGE_PATH[page], "GET")
-    assert route.auth is routes.AuthRequirement.FULL
+    route = webui_routes._resolve(PAGE_PATH[page], "GET")
+    assert route.auth is webui_routes.AuthRequirement.FULL
 
 
 def test_the_restarting_island_carries_the_next_path_and_cannot_end_its_element():
@@ -282,11 +281,10 @@ def test_the_hostname_changed_island_carries_the_redirect_url():
 
 
 def test_the_routes_that_carry_the_setup_island_and_cards_need_a_full_sign_in():
-    import autostream_webui_routes as routes  # noqa: PLC0415
     for path in ("/setup", "/api/setup/card/input1"):
-        route = routes._resolve(path, "GET")
+        route = webui_routes._resolve(path, "GET")
         assert route is not None, path
-        assert route.auth is routes.AuthRequirement.FULL, path
+        assert route.auth is webui_routes.AuthRequirement.FULL, path
 
 
 def test_the_setup_island_holds_the_values_the_old_substitutions_did():
