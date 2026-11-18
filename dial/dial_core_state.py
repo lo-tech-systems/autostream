@@ -33,16 +33,9 @@ AUTH_UNKNOWN = "unknown"
 AUTH_AUTHORIZED = "authorized"
 AUTH_UNAUTHORIZED = "unauthorized"
 
-# The EQ bass/treble range: both ends (the core's step and the appliance's
-# own apply_eq_fields) independently clamp to it.
-EQ_LIMIT_DB = 6
-
 # How long an EQ tap's value is shown ahead of the appliance's own reading.
 EQ_OPTIMISTIC_WINDOW_S = 2.0
 
-# The two controls every EQ capability exposes; a six-band appliance lists its
-# own bands before them.
-DERIVED_EQ_IDS = ("bass", "treble")
 SIX_BAND_EQ_VERSION = 2
 PIN_OUTPUTS_VERSION = 2
 

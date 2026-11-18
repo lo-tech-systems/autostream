@@ -28,21 +28,11 @@ from typing import Callable, Mapping
 from autostream_peer_client import PeerReply
 
 from dial_core_state import TransportRequest
+from dial_eq_model import eq_fields
 from dial_values import is_int
 
 # The longest wait a rate-limited reply may ask for, in seconds.
 RETRY_AFTER_MAX_S = 3600
-
-# The band range an equaliser write is held to, and the narrower one the
-# bass and treble controls use.
-EQ_BAND_LIMIT_DB = 12
-EQ_BASS_TREBLE_LIMIT_DB = 6
-
-# The share of a treble move that goes to the 4 kHz band; the 10 kHz band
-# takes all of it.
-_TREBLE_SECONDARY_SCALE = 0.5
-
-_BAND_FIELDS = ("peq1", "peq2", "peq3", "peq4", "peq5", "peq6")
 
 
 # ---- intents ------------------------------------------------------------------
@@ -68,28 +58,6 @@ def output_set(output_id: str, *, selected: bool, volume: int | None = None, pin
 def output_pin(output_id: str, pin: str) -> Intent:
     """A PIN for a speaker. It is always sent as one this dial can answer."""
     return Intent("output_pin", "output.pin.submit", {"id": output_id, "pin": pin}, {"pin_capable": True})
-
-
-def eq_fields(gains: Mapping[str, float]) -> tuple[tuple[str, float], ...]:
-    """The band fields to write for gains keyed by control id: a band id
-    (peq1 to peq6) writes its own field, held to the band range; bass writes
-    the two lowest bands equally and treble the highest in full and the band
-    below it by half, both held to the bass and treble range. Raises
-    ValueError for an id that is none of these."""
-    out: list[tuple[str, float]] = []
-    for band_id, raw in gains.items():
-        value = float(raw)
-        if band_id in _BAND_FIELDS:
-            out.append((f"{band_id}_db", max(-EQ_BAND_LIMIT_DB, min(EQ_BAND_LIMIT_DB, value))))
-            continue
-        held = max(-EQ_BASS_TREBLE_LIMIT_DB, min(EQ_BASS_TREBLE_LIMIT_DB, value))
-        if band_id == "bass":
-            out += [("peq1_db", held), ("peq2_db", held)]
-        elif band_id == "treble":
-            out += [("peq6_db", held), ("peq5_db", held * _TREBLE_SECONDARY_SCALE)]
-        else:
-            raise ValueError(f"unknown equaliser control: {band_id!r}")
-    return tuple(out)
 
 
 def eq_set(gains: Mapping[str, float]) -> Intent:

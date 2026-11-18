@@ -72,8 +72,9 @@ from dial_display_profiles import (
     layout_context_for,
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
+from dial_eq_model import DERIVED_EQ_IDS
 from dial_core_state import (
-    AUTH_UNAUTHORIZED, DERIVED_EQ_IDS, PIN_ERRORS, EqState, OutputRow, PickerRow, SelectorRow,
+    AUTH_UNAUTHORIZED, PIN_ERRORS, EqState, OutputRow, PickerRow, SelectorRow,
     awaiting_title, title_fallback,
     eq_gain,
 )

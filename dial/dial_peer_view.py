@@ -28,12 +28,10 @@ from dial_core_state import (
     StartFailureReport, appliance_warning_entries, attribute_appliance_warnings,
     parse_start_failure, webui_address,
 )
+from dial_eq_model import EQ_BAND_LIMIT_DB, EQ_BASS_TREBLE_LIMIT_DB, bass_treble
 from dial_mdns import appliance_display_name
 from dial_repeat_store import RepeatRecord, parse_repeat_object
 from dial_values import clamp, clamp_percent, is_whole_number
-
-# The EQ range the dial's bass and treble controls move within.
-EQ_BASS_TREBLE_LIMIT_DB = 6
 
 # The label of each input type, as the appliance's own pages name it.
 _INPUT_TYPE_LABELS = {"turntable": "Turntable", "cd": "CD", "line": "Line"}
@@ -189,14 +187,6 @@ def outputs_state(appliance_id: str, parts, *, fetched_at: float = 0.0) -> Outpu
     return OutputsState(appliance_id, rows, isinstance(_map(parts).get("outputs"), Mapping), fetched_at)
 
 
-def _bass_treble(bands: list) -> tuple[int, int]:
-    """(bass, treble): the 40 Hz and 10 kHz bands rounded to whole dB and
-    held to the dial's own range."""
-    def clamp(v):
-        return max(-EQ_BASS_TREBLE_LIMIT_DB, min(EQ_BASS_TREBLE_LIMIT_DB, int(round(v))))
-    return clamp(bands[0]), clamp(bands[-1])
-
-
 def eq_state(appliance_id: str, parts) -> EqState:
     """The six output bands, then the bass and treble controls the two-control
     page uses. Empty, and not loaded, before the appliance has published its
@@ -206,12 +196,12 @@ def eq_state(appliance_id: str, parts) -> EqState:
     gains = [g for g in raw if isinstance(g, (int, float)) and not isinstance(g, bool) and math.isfinite(g)]
     if len(gains) != len(table):
         return EqState(appliance_id, 2, (), False, (), 0.0)
-    low, high = int(eq_bands.OUTPUT_EQ_DB_MIN), int(eq_bands.OUTPUT_EQ_DB_MAX)
+    low, high = -EQ_BAND_LIMIT_DB, EQ_BAND_LIMIT_DB
     bands = [
         EqBand(b["key"][:-3], int(b["freq_hz"]), clamp(_whole(g), low, high), low, high)
         for b, g in zip(table, gains)
     ]
-    bass, treble = _bass_treble(gains)
+    bass, treble = bass_treble(gains)
     bands.append(EqBand("bass", None, bass, -EQ_BASS_TREBLE_LIMIT_DB, EQ_BASS_TREBLE_LIMIT_DB))
     bands.append(EqBand("treble", None, treble, -EQ_BASS_TREBLE_LIMIT_DB, EQ_BASS_TREBLE_LIMIT_DB))
     return EqState(appliance_id, 2, tuple(bands), True, (), 0.0)

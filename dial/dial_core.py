@@ -61,9 +61,10 @@ import dial_core_focus
 import dial_core_requests as rq
 import dial_peer_view
 from dial_config import SCOPE_ALL
+from dial_eq_model import DERIVED_EQ_IDS, EQ_BASS_TREBLE_LIMIT_DB
 from dial_core_state import (
-    ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS, EQ_LIMIT_DB,
-    DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
+    ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS,
+    EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
     DialInfo, FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
     DIAL_WARNING_ID, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState,
@@ -731,7 +732,7 @@ class DialCore:
         if held is None:
             return ActionResult(False, "not_polling")
         band = next((b for b in held.bands if b.id == band_id), None)
-        low, high = (band.min_db, band.max_db) if band is not None else (-EQ_LIMIT_DB, EQ_LIMIT_DB)
+        low, high = (band.min_db, band.max_db) if band is not None else (-EQ_BASS_TREBLE_LIMIT_DB, EQ_BASS_TREBLE_LIMIT_DB)
         now = self._clock()
         shown = self._eq_shown(band_id, now)
         target = clamp((0 if shown is None else shown) + delta, low, high)

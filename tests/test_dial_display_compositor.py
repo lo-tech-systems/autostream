@@ -30,6 +30,7 @@ for _p in (_DIAL, _CORE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import dial_eq_model  # noqa: E402
 from dial_display_compositor import (  # noqa: E402
     BG_BASE,
     BG_CHASSIS,
@@ -48,7 +49,6 @@ from dial_display_compositor import (  # noqa: E402
     BODY_TOGGLE_ROW,
     BODY_WARNING,
     DEFAULT_MARK,
-    EQ_LIMIT_DB,
     Body,
     DialDisplayCompositor,
     EqViewState,
@@ -5478,10 +5478,10 @@ class TestComposeEq:
     def test_minus_dimmed_at_minus_six_plus_dimmed_at_plus_six(self, compositor):
         layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
         at_min = compositor.compose_eq(
-            320, 240, _eq_state(bass_db=-EQ_LIMIT_DB), rotate=False, bgr=False, metrics=_RICH_METRICS,
+            320, 240, _eq_state(bass_db=-dial_eq_model.EQ_BASS_TREBLE_LIMIT_DB), rotate=False, bgr=False, metrics=_RICH_METRICS,
         )
         at_max = compositor.compose_eq(
-            320, 240, _eq_state(bass_db=EQ_LIMIT_DB), rotate=False, bgr=False, metrics=_RICH_METRICS,
+            320, 240, _eq_state(bass_db=dial_eq_model.EQ_BASS_TREBLE_LIMIT_DB), rotate=False, bgr=False, metrics=_RICH_METRICS,
         )
         assert not _has_near_white_pixel(at_min.crop(layout.bass.down))
         assert _has_near_white_pixel(at_min.crop(layout.bass.up))
@@ -6133,6 +6133,7 @@ class TestRevealAtPanelSize:
 import numpy as np
 
 import dial_display_compositor as _dc  # noqa: E402
+import dial_eq_model  # noqa: E402
 from dial_display_compositor import (  # noqa: E402
     _apply_layer_np,
     _reveal_frame,

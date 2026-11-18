@@ -58,6 +58,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFo
 
 from dial_display_image import transform_artwork_for_panel
 from dial_core_state import SEVERITY_CRITICAL, SEVERITY_WARNING
+from dial_eq_model import EQ_BASS_TREBLE_LIMIT_DB
 from dial_values import clamp, clamp_percent
 from dial_touch_layout import (
     CONTENT_COMPACT,
@@ -588,12 +589,6 @@ BODY_INFO_VALUE = "info_value"              # the compact info page's own drill-
 BODY_EQ_BARS = "eq_bars"                    # the EQ page's own bass/treble bar rows
 BODY_WARNING = "warning"                    # a warning page: title (+ message) row over one or more button cells, crosshair dividers
 BODY_CENTRED_LABEL = "centred_label"        # one string centred on the whole panel (the "Restarting..." screen)
-
-# The EQ bars' own +/-6 dB range — how far the marker can travel each way
-# from centre_x. Duplicated (not imported) from the appliance/manager side:
-# a pure compositor constant, the same number both ends independently clamp
-# to.
-EQ_LIMIT_DB = 6
 
 # Footer kinds — the bottom band's content, dispatched through
 # _FOOTER_RENDERERS.
@@ -2822,14 +2817,14 @@ def _draw_eq_bar(img: Image.Image, bar, label: str, value: "int | None", metrics
         [(bar.centre_x, bar.track_y - 2 * w), (bar.centre_x, bar.track_y + 2 * w)], fill=_GLYPH_RGB, width=w,
     )
     if value is not None:
-        marker_x = bar.centre_x + round(value * (bar.track_x1 - bar.centre_x) / EQ_LIMIT_DB)
+        marker_x = bar.centre_x + round(value * (bar.track_x1 - bar.centre_x) / EQ_BASS_TREBLE_LIMIT_DB)
         x0, x1 = sorted((bar.centre_x, marker_x))
         draw.line([(x0, bar.track_y), (x1, bar.track_y)], fill=_GLYPH_RGB, width=3 * w)
         r = max(3, pad // 2)
         draw.ellipse([marker_x - r, bar.track_y - r, marker_x + r, bar.track_y + r], fill=_GLYPH_RGB)
 
-    at_min = value is not None and value <= -EQ_LIMIT_DB
-    at_max = value is not None and value >= EQ_LIMIT_DB
+    at_min = value is not None and value <= -EQ_BASS_TREBLE_LIMIT_DB
+    at_max = value is not None and value >= EQ_BASS_TREBLE_LIMIT_DB
     minus_color = _DIMMED_GLYPH_RGB if (value is None or at_min) else _GLYPH_RGB
     plus_color = _DIMMED_GLYPH_RGB if (value is None or at_max) else _GLYPH_RGB
     _draw_minus_glyph(draw, bar.down, color=minus_color)
