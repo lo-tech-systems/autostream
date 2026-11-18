@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from _setup_card_test_helpers import setup_page_mocks
+from _source_text import page_data
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -162,8 +163,12 @@ class TestBluetoothDisabledGating:
         assert "bt-manage-btn" not in html
 
     def test_no_bt_css_classes(self, html):
-        assert "bt-scan-row" not in html
-        assert "bt-device-list" not in html
+        # The pairing styles sit in the stylesheet every Setup page links, so
+        # only the markup and scripts are checked for the classes.
+        from _source_text import static_text
+        used = html.replace(static_text("page/setup.css"), "")
+        assert "bt-scan-row" not in used
+        assert "bt-device-list" not in used
 
     def test_pairing_only_api_paths_absent(self, html):
         """The pairing-modal-only endpoints require the loopback card to
@@ -309,7 +314,8 @@ class TestBluetoothEnabledUnpaired:
         assert "settingsSaveField('audio2.capture_device', this.value)" in html
 
     def test_bt_paired_initial_false(self, html):
-        assert "var btPaired = false;" in html
+        assert page_data(html)["bt_paired"] is False
+        assert "var btPaired = pageData.bt_paired;" in html
 
     def test_no_manage_button_markup(self, html):
         assert "bt-manage-btn" not in html
@@ -453,7 +459,8 @@ class TestBluetoothEnabledPaired:
         )
 
     def test_bt_paired_initial_true(self, html):
-        assert "var btPaired = true;" in html
+        assert page_data(html)["bt_paired"] is True
+        assert "var btPaired = pageData.bt_paired;" in html
 
     def test_paired_row_shows_connected(self, html):
         assert "My Turntable · Connected" in html

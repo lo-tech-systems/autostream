@@ -255,7 +255,7 @@ class TestSetupPageNoInitialSetupMode:
         return handler.wfile.getvalue().decode("utf-8", errors="replace")
 
     def test_live_enabled_always_true(self, tmp_path):
-        html = self._render(tmp_path)
+        html = page_scripts(self._render(tmp_path))
         assert "const liveEnabled = true;" in html
         assert "const liveEnabled = false;" not in html
 

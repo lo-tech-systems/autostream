@@ -39,14 +39,14 @@ MAX_INLINE = {
     "first_boot_appliance": 0,
     "hostname_changed": 0,
     "auth": 0,
+    "setup": 1,
 }
-SETUP_INLINE = 12
 
 # Pages whose scripts are all files: nothing inline but the token bootstrap.
 EXTRACTED = (
     "home", "remote_home", "equaliser", "remote_equaliser", "about", "align", "service", "logs",
     "owntone", "owntone_restarting", "rebooting", "first_boot_owntone", "first_boot_appliance",
-    "hostname_changed", "auth",
+    "hostname_changed", "auth", "setup",
 )
 
 _BOOTSTRAP = "window.__CSRF='t';"
@@ -67,6 +67,7 @@ EXPECTED_INLINE = {
     "first_boot_appliance": [],
     "hostname_changed": [],
     "auth": [],
+    "setup": [_BOOTSTRAP],
 }
 # The page's own scripts; the island must come before the first of them.
 FIRST_FILES = {
@@ -81,6 +82,7 @@ FIRST_FILES = {
     "rebooting": ("rebooting.js",),
     "hostname_changed": ("hostname_changed.js",),
     "auth": ("auth.js",),
+    "setup": ("setup_controls.js",),
 }
 
 # Island keys each extracted page may carry, and the route that serves it.
@@ -106,6 +108,10 @@ ISLAND_KEYS = {
     "first_boot_appliance": set(),
     "hostname_changed": {"redirect_url"},
     "auth": set(),
+    "setup": {
+        "app_version", "icons", "bt_loopback_hw", "bt_paired", "bt_link_state", "bt_services_enabled",
+        "bt_onboard_enabled", "bt_status", "bt_ui_text", "sd_health",
+    },
 }
 PAGE_PATH = {
     "home": "/",
@@ -124,6 +130,7 @@ PAGE_PATH = {
     # Served as the reply to a hostname change, not at a path of its own.
     "hostname_changed": None,
     "auth": "/auth",
+    "setup": "/setup",
 }
 
 
@@ -149,10 +156,6 @@ def test_a_page_carries_no_more_inline_scripts_than_its_limit(page):
     count = len(_inline_scripts(_render(page)))
     assert count <= MAX_INLINE[page], (
         f"{page} carries {count} inline scripts; the limit is {MAX_INLINE[page]}")
-
-
-def test_setup_carries_no_more_inline_scripts_than_its_limit():
-    assert len(_inline_scripts(_render("setup"))) <= SETUP_INLINE
 
 
 @pytest.mark.parametrize("page", EXTRACTED)
@@ -274,3 +277,34 @@ def test_the_rebooting_island_carries_the_minimum_wait():
 def test_the_hostname_changed_island_carries_the_redirect_url():
     island = _source_text.page_data(_render("hostname_changed"))
     assert island["redirect_url"].startswith("http://autostream.local")
+
+
+def test_the_routes_that_carry_the_setup_island_and_cards_need_a_full_sign_in():
+    import autostream_webui_routes as routes  # noqa: PLC0415
+    for path in ("/setup", "/api/setup/card/input1"):
+        route = routes._resolve(path, "GET")
+        assert route is not None, path
+        assert route.auth is routes.AuthRequirement.FULL, path
+
+
+def test_the_setup_island_holds_the_values_the_old_substitutions_did():
+    from autostream_webui_assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED  # noqa: PLC0415
+    from autostream_webui_page_setup import BLUETOOTH_LOOPBACK_HW  # noqa: PLC0415
+    island = _source_text.page_data(_render("setup"))
+    assert island["icons"] == {"padlock_locked": ICON_PADLOCK_LOCKED, "padlock_unlocked": ICON_PADLOCK_UNLOCKED}
+    assert island["bt_loopback_hw"] == BLUETOOTH_LOOPBACK_HW
+    assert island["app_version"] == "2.0.0"
+    assert island["bt_link_state"] == "disconnected"
+    assert island["bt_status"] is None
+    assert isinstance(island["bt_paired"], bool) and isinstance(island["sd_health"], dict)
+
+
+def test_the_setup_island_and_scripts_follow_the_bluetooth_state():
+    plain = _render("setup")
+    with_bt = _page_stub.render("setup", bt_enabled=True).decode("utf-8")
+    assert "setup_bt_pairing.js" not in plain
+    assert "setup_bt_pairing.js" in with_bt
+    assert "setup_bt_card.js" in plain and "setup_bt_card.js" in with_bt
+    island = _source_text.page_data(with_bt)
+    assert island["bt_status"]["adapter_present"] is True
+    assert island["bt_services_enabled"] is True

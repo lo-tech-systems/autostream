@@ -8,7 +8,9 @@ load or on a click still happens.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from types import SimpleNamespace
 
 import pytest
 import _home_stub as stub
@@ -344,5 +346,212 @@ class TestAuth:
             page.press("#pin", "Enter")
             page.wait_for_url(re.compile(r"/auth\?next=%2Fsetup&err=1$"))
             assert stub.POST_PATHS == []
+        finally:
+            server.shutdown()
+
+
+SETUP_CARD_KEYS = (
+    "input1", "input2", "bluetooth", "playback", "track-id", "dials", "customise", "system", "factory-reset",
+)
+
+
+def _dial_fakes() -> dict:
+    """One authorized dial that is online and one new dial, for the Dials card."""
+    def sighting(uuid, name):
+        return SimpleNamespace(uuid=uuid, name=name, version="2.0.0", pin_recovery=False,
+                               ip="10.0.0.42", dial_proto="v3", sdmon=False)
+
+    entry = SimpleNamespace(uuid="dial-aaaa-1111", name="Hall Dial", current_name="Hall Dial", last_seen="")
+    return {"dial_sightings": [sighting("dial-aaaa-1111", "Hall Dial"), sighting("dial-bbbb-2222", "New Dial")],
+            "dial_entries": [entry]}
+
+
+def _serve_setup(**fakes):
+    """Serve the Setup page and the reply of every card's lazy fetch."""
+    for key, body in _page_stub.setup_card_json(**fakes).items():
+        stub.API[f"/api/setup/card/{key}"] = json.loads(body)
+    return start_server(_page_stub.render("setup", **fakes))
+
+
+def _open_setup_panel(page: "Page", key: str) -> None:
+    page.evaluate(f"openPanel('{key}')")
+    page.wait_for_function(
+        f"_setupPanelIsLoaded('{key}') && document.getElementById('panel-body-{key}').innerHTML.length > 0")
+    assert "Could not load" not in page.inner_html(f"#panel-body-{key}")
+
+
+_SHOWN = re.compile(r"\bshow\b")
+
+
+@_requires_browser
+class TestSetup:
+    def test_loads_with_no_error_and_every_setup_file_answers(self, page: "Page"):
+        html = _page_stub.render("setup").decode("utf-8")
+        linked = re.findall(r"/static/(page/setup(?:_[a-z_]+)?\.(?:js|css))\?", html)
+        assert len(linked) == 8  # five blocks, factory reset, Bluetooth card, stylesheet
+        server, base = _serve_setup()
+        try:
+            errors = _watch_errors(page)
+            statuses = {}
+            page.on("response", lambda r: statuses.update({r.url.split("?")[0].rsplit("/", 1)[-1]: r.status})
+                    if "/static/page/setup" in r.url else None)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            assert errors == []
+            for name in linked:
+                assert statuses.get(name.rsplit("/", 1)[-1]) == 200, name
+        finally:
+            server.shutdown()
+
+    def test_each_card_fetches_its_fragment_once_and_raises_no_error(self, page: "Page"):
+        server, base = _serve_setup()
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            for key in SETUP_CARD_KEYS:
+                _open_setup_panel(page, key)
+                page.evaluate(f"openPanel('{key}')")  # a second open must not fetch again
+            fetched = sorted(p for p in stub.PATHS if p.startswith("/api/setup/card/"))
+            assert fetched == sorted(f"/api/setup/card/{k}" for k in SETUP_CARD_KEYS)
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_the_system_subtitle_shows_the_app_version_from_the_island(self, page: "Page"):
+        server, base = _serve_setup()
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "system")
+            assert page.evaluate("pageData.app_version") == "2.0.0"
+            page.evaluate("document.getElementById('system-card-sub').textContent = ''; refreshSystemCardSub();")
+            expect(page.locator("#system-card-sub")).to_have_text(
+                re.compile("^.+ · v2\\.0\\.0 · Auto-update: (On|Off)"))
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_the_dials_subtitle_shows_its_counts_with_middle_dots(self, page: "Page"):
+        server, base = _serve_setup(**_dial_fakes())
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "dials")
+            page.evaluate("document.getElementById('dials-card-sub').textContent = ''; refreshDialsCardSub();")
+            expect(page.locator("#dials-card-sub")).to_have_text("1 authorized · 1 new")
+            page.evaluate(
+                "document.querySelectorAll('.dial-card[data-authorized=\"false\"]').forEach(c => c.remove());"
+                "document.getElementById('dials-card-sub').textContent = ''; refreshDialsCardSub();")
+            expect(page.locator("#dials-card-sub")).to_have_text("1 authorized · 1 online")
+            page.evaluate(
+                "document.querySelector('.dial-card').dataset.needsUpdate = 'true';"
+                "document.getElementById('dials-card-sub').textContent = ''; refreshDialsCardSub();")
+            expect(page.locator("#dials-card-sub")).to_have_text(
+                "1 authorized · 1 online · 1 need update")
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_the_dial_padlock_unlocks_and_relocks_with_the_icons_of_the_island(self, page: "Page"):
+        server, base = _serve_setup(**_dial_fakes())
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "dials")
+            page.wait_for_selector(".dial-card")
+            shown = page.evaluate("""() => {
+                const asDom = (svg) => { const d = document.createElement('div'); d.innerHTML = svg; return d.innerHTML; };
+                const card = document.querySelector('.dial-card[data-authorized="true"]');
+                card.dataset.pinSet = 'true';
+                const btn = card.querySelector('.dial-lock-btn');
+                _dialUnlockSection(card, '1234');
+                const unlocked = btn.innerHTML;
+                _dialLockSection(card);
+                return {unlocked, locked: btn.innerHTML,
+                        wantUnlocked: asDom(pageData.icons.padlock_unlocked),
+                        wantLocked: asDom(pageData.icons.padlock_locked)};
+            }""")
+            assert shown["unlocked"] == shown["wantUnlocked"] != ""
+            assert shown["locked"] == shown["wantLocked"] != ""
+            assert shown["unlocked"] != shown["locked"]
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_bluetooth_installed_links_the_pairing_script_and_reads_its_island(self, page: "Page"):
+        status = {"adapter_present": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Test Turntable"},
+                  "link": "connected", "streaming": False, "scanning": False}
+        assert "setup_bt_pairing.js" in _page_stub.render("setup", bt_enabled=True, bt_status=status).decode()
+        server, base = _serve_setup(bt_enabled=True, bt_status=status)
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            assert page.evaluate("BT_LOOPBACK_HW") == page.evaluate("pageData.bt_loopback_hw")
+            assert page.evaluate("btPaired") is True
+            assert page.evaluate("_btLinkState") == "connected"
+            assert page.evaluate("window._btUiText") == page.evaluate("pageData.bt_ui_text") == "Test Turntable"
+            page.evaluate("openBtPairingModal(1, null)")
+            expect(page.locator("#btPairingModal")).to_have_class(_SHOWN)
+            page.click("#btPairingCancel")
+            expect(page.locator("#btPairingModal")).not_to_have_class(_SHOWN)
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_bluetooth_absent_leaves_the_pairing_script_out_and_nothing_throws(self, page: "Page"):
+        assert "setup_bt_pairing.js" not in _page_stub.render("setup").decode()
+        server, base = _serve_setup()
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            assert page.evaluate("typeof openBtPairingModal") == "undefined"
+            assert page.evaluate("typeof btServicesEnabled") == "boolean"
+            assert page.evaluate("window._btUiText") == page.evaluate("pageData.bt_ui_text")
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_the_sd_card_health_row_reads_the_island(self, page: "Page"):
+        server, base = _serve_setup()
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            assert page.evaluate("JSON.stringify(sdHealthState) === JSON.stringify(pageData.sd_health)")
+            page.evaluate("showSdHealthModal()")
+            expect(page.locator("#sdHealthModal")).to_have_class(_SHOWN)
+            assert page.inner_text("#sdHealthModalMsg").strip()
+            page.click("#sdHealthModalCancel")
+            expect(page.locator("#sdHealthModal")).not_to_have_class(_SHOWN)
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_the_factory_reset_modal_opens_and_cancel_closes_it(self, page: "Page"):
+        server, base = _serve_setup()
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "factory-reset")
+            page.click("#btnFactoryReset")
+            expect(page.locator("#factoryResetModal")).to_have_class(_SHOWN)
+            page.click("#factoryResetCancel")
+            expect(page.locator("#factoryResetModal")).not_to_have_class(_SHOWN)
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_changing_the_pin_opens_the_pin_modal(self, page: "Page"):
+        server, base = _serve_setup()
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "system")
+            page.click("#btnChangePin")
+            expect(page.locator("#pinModal")).to_have_class(_SHOWN)
+            assert errors == []
         finally:
             server.shutdown()

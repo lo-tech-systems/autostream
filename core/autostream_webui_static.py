@@ -99,16 +99,6 @@ def page_data_island(data: Mapping) -> str:
     return f'<script type="application/json" id="page-data">{text}</script>'
 
 
-def static_text(rel: str) -> str:
-    """The file's text, read on each call (Setup's inline use of the shared
-    files until its scripts move); "" and one WARNING when missing."""
-    try:
-        return (static_root() / _checked(rel)).read_text(encoding="utf-8")
-    except OSError as exc:
-        _warn_once(rel, str(exc))
-        return ""
-
-
 def reset_for_tests() -> None:
     """Clear the version cache and the warned set. Called by the tests that need
     it, never from an autouse fixture."""

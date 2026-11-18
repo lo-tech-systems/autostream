@@ -277,7 +277,7 @@ class TestDialCardsHtml:
     def test_only_legacy_dial_is_flagged(self):
         legacy = _sighting("legacy", "", version="1.0.0")
         modern = _sighting("modern", "v3", version="1.0.0")
-        cards_html, summary, _ = _cards([legacy, modern], [_Entry("legacy"), _Entry("modern")])
+        cards_html, summary = _cards([legacy, modern], [_Entry("legacy"), _Entry("modern")])
         cards = cards_html.split('<div class="dial-card"')
         legacy_card = next(c for c in cards if 'data-dial-uuid="legacy"' in c)
         modern_card = next(c for c in cards if 'data-dial-uuid="modern"' in c)
@@ -288,17 +288,17 @@ class TestDialCardsHtml:
         assert summary.endswith("1 need update")
 
     def test_unauthorised_legacy_dial_is_flagged(self):
-        cards_html, summary, _ = _cards([_sighting("new", "")], [])
+        cards_html, summary = _cards([_sighting("new", "")], [])
         assert cards_html.count("dial-badge-update") == 1
         assert "1 need update" in summary
 
     def test_authorised_dial_not_sighted_is_not_flagged(self):
-        cards_html, summary, _ = _cards([], [_Entry("gone")])
+        cards_html, summary = _cards([], [_Entry("gone")])
         assert "dial-badge-update" not in cards_html
         assert "need update" not in summary
 
     def test_summary_has_no_suffix_when_all_current(self):
-        _, summary, _ = _cards([_sighting("a", "v3")], [_Entry("a")])
+        _, summary = _cards([_sighting("a", "v3")], [_Entry("a")])
         assert "need update" not in summary
 
 

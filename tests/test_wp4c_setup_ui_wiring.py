@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from _setup_card_test_helpers import setup_page_mocks
+from _source_text import page_scripts
 from fake_store import fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -526,7 +527,7 @@ class TestSetupPageLiveEnabled:
                 send_setup_page(handler, state, auth)
 
         store.close(save=False)
-        html = handler.wfile.getvalue().decode("utf-8", errors="replace")
+        html = page_scripts(handler.wfile.getvalue().decode("utf-8", errors="replace"))
         assert "const liveEnabled = true;" in html
         assert "window.settingsSaveField" in html
 

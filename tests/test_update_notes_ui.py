@@ -91,7 +91,7 @@ class TestInfoModalEmbedded:
     def test_page_setup_imports_info_modal_constants(self):
         src = _setup_page_src()
         assert "INFO_MODAL_HTML" in src
-        assert "page/info_modal.js" in src
+        assert "info_modal.js" in src
 
     def test_rendered_page_has_info_modal_exactly_once(self):
         html_out = _render_setup_page()
@@ -99,14 +99,14 @@ class TestInfoModalEmbedded:
 
     def test_rendered_page_defines_show_info_modal(self):
         html_out = _render_setup_page()
-        assert "function showInfoModal" in html_out
+        assert "function showInfoModal" in _source_text.page_scripts(html_out)
 
     def test_info_modal_not_added_to_global_escape_listener(self):
         """The setup page's shared keydown Escape listener handles its other
         modals explicitly; infoModal must not be added there because
         showInfoModal installs its own per-call Escape handler."""
         src = _setup_page_src()
-        start = src.find("document.addEventListener('keydown', function(ev) {{")
+        start = src.find("document.addEventListener('keydown', function(ev) {")
         assert start >= 0, "global Escape listener not found"
         end = src.find("});", start)
         block = src[start:end]
@@ -134,7 +134,7 @@ class TestCheckButtonInfoModeSwitch:
 
     def test_check_label_restored_on_check_failure(self):
         block = _updates_iife(_setup_page_src())
-        idx = block.find('catch(e) {{')
+        idx = block.find('catch(e) {')
         assert idx >= 0
         tail = block[idx:]
         assert 'resetUpdateCheckState();' in tail
@@ -142,9 +142,9 @@ class TestCheckButtonInfoModeSwitch:
 
     def test_info_mode_click_opens_modal_instead_of_rechecking(self):
         block = _updates_iife(_setup_page_src())
-        idx = block.find("if (infoMode) {{")
+        idx = block.find("if (infoMode) {")
         assert idx >= 0
-        end = block.find("}}", idx)
+        end = block.find("}", idx)
         info_branch = block[idx:end]
         assert 'showInfoModal("Release Notes"' in info_branch
         assert "return;" in info_branch

@@ -69,7 +69,6 @@ def test_a_missing_file_gives_the_application_version_and_one_warning(root, capl
          caplog.at_level(logging.WARNING, logger=static.__name__):
         assert static.asset_version("page/missing.js") == "9.9.9"
         assert static.static_url("page/missing.js") == "/static/page/missing.js?v=9.9.9"
-        assert static.static_text("page/missing.js") == ""
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert "page/missing.js" in warnings[0].getMessage()
@@ -78,16 +77,9 @@ def test_a_missing_file_gives_the_application_version_and_one_warning(root, capl
 
 @pytest.mark.parametrize("rel", ["../core/autostream_core.py", "page/../../x.js", "/etc/passwd", "", "page" + chr(92) + "x.js"])
 def test_paths_outside_the_static_root_are_refused(root, rel):
-    for call in (static.asset_version, static.static_url, static.script_tag,
-                 static.style_tag, static.static_text):
+    for call in (static.asset_version, static.static_url, static.script_tag, static.style_tag):
         with pytest.raises(ValueError):
             call(rel)
-
-
-def test_static_text_is_read_on_each_call(root):
-    assert static.static_text("page/home.js") == "var x = 1;\n"
-    (root / "page" / "home.js").write_bytes(b"var x = 3;\n")
-    assert static.static_text("page/home.js") == "var x = 3;\n"
 
 
 def test_the_island_cannot_be_ended_by_its_values():

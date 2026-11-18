@@ -679,7 +679,7 @@ class TestSetupPageUpdateApplyResponseHandling:
         assert idx >= 0
         end_idx = src.find("};", idx)
         block = src[idx:end_idx] if end_idx > 0 else src[idx:idx + 800]
-        assert "if(j.accepted){{" in block
+        assert "if(j.accepted){" in block
         assert 'window.location.replace("/offline/updating");' in block
 
     def test_no_longer_branches_on_bare_ok(self):
@@ -688,7 +688,7 @@ class TestSetupPageUpdateApplyResponseHandling:
         assert idx >= 0
         end_idx = src.find("};", idx)
         block = src[idx:end_idx] if end_idx > 0 else src[idx:idx + 800]
-        assert "if(j.ok){{" not in block
+        assert "if(j.ok){" not in block
 
 
 def _render_setup_page() -> str:
@@ -745,21 +745,19 @@ class TestSetupPageScriptRendering:
 
     def test_owntone_button_flushes_pending(self):
         """More Owntone Settings must drain pending autosave writes before navigating."""
-        html_out = _render_setup_page()
-        assert "flushPendingToServer" in html_out, (
+        scripts = _source_text.page_scripts(_render_setup_page())
+        assert "flushPendingToServer" in scripts, (
             "owntone navigation must call flushPendingToServer() before location.href"
         )
-        owntone_idx = html_out.find("owntone-setup")
-        flush_idx = html_out.rfind("flushPendingToServer", 0, owntone_idx)
+        owntone_idx = scripts.find("owntone-setup")
+        flush_idx = scripts.rfind("flushPendingToServer", 0, owntone_idx)
         assert flush_idx != -1, (
             "flushPendingToServer must appear before /owntone-setup in the navigation handler"
         )
 
     def test_setup_page_parser_and_submit_coexist(self):
         """_parseDialResponse and submitPinChange must both be in the setup page."""
-        html_out = _render_setup_page()
-        scripts = _extract_script_blocks(html_out)
-        combined = "\n".join(scripts)
+        combined = _source_text.page_scripts(_render_setup_page())
         assert "_parseDialResponse" in combined, (
             "_parseDialResponse not found in setup page scripts"
         )
@@ -769,10 +767,13 @@ class TestSetupPageScriptRendering:
 
     @node_available
     def test_setup_page_scripts_syntax(self):
-        """Every <script> block in the setup page must be syntactically valid JS."""
+        """Every inline <script> block in the setup page must be syntactically
+        valid JS. The page's other scripts are files, checked with the rest of
+        nginx/static."""
         html_out = _render_setup_page()
-        scripts = _extract_script_blocks(html_out)
-        assert scripts, "No <script> blocks found in setup page"
+        scripts = [body for attrs, body in re.findall(r"<script\b([^>]*)>(.*?)</script>", html_out, re.DOTALL)
+                   if "src=" not in attrs and "application/json" not in attrs]
+        assert scripts, "No inline <script> blocks found in setup page"
         for i, script in enumerate(scripts):
             _check_js_syntax(script, f"setup page script #{i}")
 
@@ -1212,7 +1213,7 @@ class TestDialCardHtmlStructure:
         idx = src.find("function dialSetCardBusy(card, busy)")
         next_fn = src.find("\nfunction ", idx + 1)
         body = src[idx:next_fn]
-        assert "if (!busy) {{" in body
+        assert "if (!busy) {" in body
         assert "dialSyncScreenControlsEnabled(card);" in body
 
     # ── _dialGet() and its call sites ─────────────────────────────────────────
@@ -1226,7 +1227,7 @@ class TestDialCardHtmlStructure:
         candidates = [n for n in (next_fn, alt_next_fn) if n > 0]
         end = min(candidates) if candidates else idx + 500
         body = src[idx:end]
-        assert "_dialFetch(path, {{cache: 'no-store'}})" in body
+        assert "_dialFetch(path, {cache: 'no-store'})" in body
 
     def test_dial_get_call_sites_moved_off_hand_rolled_fetch(self):
         """The three former hand-rolled GET call sites (dialLoadConfig,
@@ -1239,20 +1240,20 @@ class TestDialCardHtmlStructure:
         load_config_next = src.find("async function dialLoadScreenSettings(card)", load_config_idx)
         load_config_body = src[load_config_idx:load_config_next]
         assert "_dialGet('/api/dial/configure/'" in load_config_body
-        assert "headers: {{'X-CSRF-Token'" not in load_config_body
+        assert "headers: {'X-CSRF-Token'" not in load_config_body
 
         load_screen_idx = src.find("async function dialLoadScreenSettings(card)")
         load_screen_next = src.find("async function dialSaveScreenSettings", load_screen_idx)
         load_screen_body = src[load_screen_idx:load_screen_next]
         assert "_dialGet('/api/dial/screen/settings/'" in load_screen_body
-        assert "headers: {{'X-CSRF-Token'" not in load_screen_body
+        assert "headers: {'X-CSRF-Token'" not in load_screen_body
 
         recovery_poll_idx = src.find("_dialPinRecoveryTimer = setInterval")
         assert recovery_poll_idx >= 0
-        recovery_poll_end = src.find("}}, 2000);", recovery_poll_idx)
+        recovery_poll_end = src.find("}, 2000);", recovery_poll_idx)
         recovery_poll_body = src[recovery_poll_idx:recovery_poll_end]
         assert "_dialGet('/api/dial/pin_recovery/status/'" in recovery_poll_body
-        assert "headers: {{'X-CSRF-Token'" not in recovery_poll_body
+        assert "headers: {'X-CSRF-Token'" not in recovery_poll_body
 
     # ── dialPollUntil() bounded poller ─────────────────────────────────────────
 
@@ -1353,8 +1354,8 @@ class TestDialCardHtmlStructure:
         assert "screen.bgr = " in body
         assert "screen.screen_type = " in body
         # Ungated body (no caps) must remain byte-identical to the historical
-        # {{fitted, rotate}} shape.
-        assert "var screen = {{fitted: fittedEl.checked, rotate: rotateEl.checked}};" in body
+        # {fitted, rotate} shape.
+        assert "var screen = {fitted: fittedEl.checked, rotate: rotateEl.checked};" in body
 
     def test_save_blocked_until_screen_settings_loaded(self):
         """A whole-object POST built before the screen-settings GET resolves
@@ -2133,8 +2134,8 @@ class TestDialCardHtmlStructure:
 
     def test_touch_restart_poll_timeout_restores_card_and_offline_badge(self):
         body = self._touch_restart_poll_body(_setup_page_src())
-        assert "function onTimeout() {{" in body
-        timeout_idx = body.find("function onTimeout() {{")
+        assert "function onTimeout() {" in body
+        timeout_idx = body.find("function onTimeout() {")
         block = body[timeout_idx:timeout_idx + 300]
         assert "_dialFinishTouchRestartPoll(card, 'offline', _DIAL_CFG_GENERIC_ERR, false);" in block
 
@@ -2687,7 +2688,7 @@ class TestDialPinRecoveryTwoStepFlow:
         assert idx >= 0
         end = src.find("\n        function _dialPinRecoveryBeginWait", idx)
         body = src[idx:end] if end > 0 else src[idx:idx + 1500]
-        else_idx = body.find("}} else {{")
+        else_idx = body.find("} else {")
         assert else_idx >= 0
         else_body = body[else_idx:]
         assert "_dialPinRecoveryBeginWait" not in else_body, (
@@ -2696,7 +2697,7 @@ class TestDialPinRecoveryTwoStepFlow:
         assert "closeDialPinRecoveryModal()" in else_body
         assert "_dialErrorMessage(result.error)" in else_body
         # The network-error branch (fetch itself rejecting) must not advance either.
-        catch_idx = body.find("}} catch(e) {{")
+        catch_idx = body.find("} catch(e) {")
         assert catch_idx >= 0
         catch_body = body[catch_idx:]
         assert "_dialPinRecoveryBeginWait" not in catch_body
@@ -2800,7 +2801,7 @@ class TestDialCardRecoveryBadge:
         assert "dial-badge-recovery" in tag
 
     def test_badge_css_variant_defined(self):
-        src = self._src()
+        src = _source_text.static_text("page/setup.css")
         idx = src.find(".dial-badge-recovery")
         assert idx >= 0
         rule = src[idx:idx + 200]
@@ -2810,7 +2811,7 @@ class TestDialCardRecoveryBadge:
         """Should reuse the existing danger/warning colour token rather than
         inventing a new literal colour, and stay distinct from the other
         three badge variants (accent/success/muted)."""
-        src = self._src()
+        src = _source_text.static_text("page/setup.css")
         idx = src.find(".dial-badge-recovery")
         assert idx >= 0
         rule = src[idx:idx + 200]

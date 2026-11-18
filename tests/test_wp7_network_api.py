@@ -964,7 +964,7 @@ class TestSetupPageNetworkCard:
 
     def test_refresh_network_adapter_info_updates_new_fields(self):
         assert "Array.isArray(j.interface_lines)" in self.PAGE_SRC
-        assert "j.interface_lines.join('\\\\n')" in self.PAGE_SRC
+        assert "j.interface_lines.join('\\n')" in self.PAGE_SRC
         assert "addressEl.textContent = j.detail" in self.PAGE_SRC
         assert "warningEl.textContent = j.warning" in self.PAGE_SRC
         assert "j.warning_severity === 'danger'" in self.PAGE_SRC

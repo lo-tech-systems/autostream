@@ -1,0 +1,107 @@
+      #pinModal .pin-entry {
+        -webkit-text-security: disc;
+        text-security: disc;
+      }
+      #savingModal .modal-panel {
+        --modal-width: 18rem;
+      }
+      .saving-modal-body {
+        display: flex;
+        align-items: center;
+        gap: 0.85rem;
+      }
+      .saving-spinner {
+        width: 1.4rem;
+        height: 1.4rem;
+        flex: 0 0 auto;
+        border: 3px solid var(--color-border-nav);
+        border-top-color: var(--color-btn-bg);
+        border-radius: 50%;
+        animation: saving-spin 0.8s linear infinite;
+      }
+      @keyframes saving-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .saving-spinner { animation-duration: 1.6s; }
+      }
+    
+
+      #factoryResetModal .modal-panel{--modal-width:28rem;--modal-bg:var(--color-surface-raised);}
+      #factoryResetModal .modal-hdr{--modal-title-color:var(--color-status-danger);}
+    
+
+.dial-badge{display:inline-flex;align-items:center;font-size:0.65rem;font-weight:600;
+  padding:0.1rem 0.45rem;border-radius:0.75rem;letter-spacing:0.02em;white-space:nowrap;}
+.dial-badge-new{background:var(--color-accent,#007bff);color:#fff;}
+.dial-badge-online{background:var(--color-status-success,#28a745);color:#fff;}
+.dial-badge-offline{background:var(--color-text-muted,#888);color:#fff;}
+.dial-badge-recovery{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-badge-update{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-badge-configuring{background:var(--color-status-warning,#f0ad4e);color:#212529;}
+.dial-card-title{font-weight:600;font-size:0.9rem;}
+.dial-card-msg{font-size:0.8rem;}
+.dial-update-bar{height:0.4rem;margin-top:0.4rem;border-radius:0.2rem;overflow:hidden;
+  background:var(--color-border,#ccc);}
+.dial-update-bar-fill{height:100%;width:0;background:var(--color-accent,#007bff);
+  transition:width 0.4s ease;}
+/* Matches the setup list cards' 0.62rem bottom margin so the Dials panel
+   spaces its cards the same way the rest of the setup page does. */
+.dial-card-wrap{margin-bottom:0.62rem;}
+/* Screen controls follow the "Has Screen Fitted" toggle: the inputs are
+   disabled from JS, and this dims the whole row &mdash; including its label text,
+   which a disabled attribute alone leaves at full contrast. */
+.dial-screen-ctl-row{transition:opacity 0.15s ease;}
+.dial-screen-ctl-row.is-disabled{opacity:0.45;}
+/* A custom switch draws its own state from a hidden checkbox, so a
+   disabled one still looks live and its label stays full contrast.
+   Dim the whole row instead, matching the screen control rows. */
+.dial-card .is-disabled{opacity:0.45;}
+.dial-card .is-disabled .output-toggle{cursor:not-allowed;}
+
+
+.dial-locked-section {
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-border-card);
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem 0.6rem;
+}
+.dial-locked-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.dial-locked-label {
+  font-size: 0.75rem;
+  color: var(--color-text-dim);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.dial-lock-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  line-height: 0;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+}
+.dial-lock-btn svg { width: 18px; height: 18px; }
+.dial-lock-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.dial-locked-controls { transition: opacity 120ms ease; }
+.dial-section-locked .dial-locked-controls {
+  opacity: 0.45;
+  pointer-events: none;
+  user-select: none;
+}
+
+
+      .bt-device-list{margin-top:0.5rem;max-height:14rem;overflow-y:auto;}
+      .bt-scan-row{padding:0.5rem 0.6rem;border:1px solid var(--color-border-nav);
+        border-radius:6px;margin-bottom:0.4rem;cursor:pointer;}
+      .bt-scan-row:hover{background:var(--color-surface-raised);}
+      .bt-scan-empty{color:var(--color-text-muted,#888);font-style:italic;}
+    
+#panel-playback { padding-bottom: 4.5rem; }
