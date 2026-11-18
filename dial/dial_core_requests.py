@@ -36,6 +36,7 @@ except ImportError:
     from autostream_peer_client import PeerReply  # noqa: E402
 
 from dial_core_state import TransportRequest
+from dial_values import is_int
 
 # The longest wait a rate-limited reply may ask for, in seconds.
 RETRY_AFTER_MAX_S = 3600
@@ -167,7 +168,7 @@ def _outputs(snapshot) -> Mapping:
 def _failure_seq(snapshot) -> int:
     failure = _outputs(snapshot).get("start_failure")
     seq = failure.get("seq") if isinstance(failure, Mapping) else 0
-    return seq if isinstance(seq, int) and not isinstance(seq, bool) else 0
+    return seq if is_int(seq) else 0
 
 
 def wait_for(request: TransportRequest, reply, snapshot) -> Waiting | None:

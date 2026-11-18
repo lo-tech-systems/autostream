@@ -23,6 +23,7 @@ from dial_control_protocol import (
     CONTROL_SERVER_CLIENT_TIMEOUT,
     CONTROL_SOCKET_PATH,
 )
+from dial_values import is_int
 
 # ---------------------------------------------------------------------------
 # AF_UNIX shim — absent from some Python builds and from Windows
@@ -255,7 +256,7 @@ def _handle_nudge(obj: dict, server: "DialControlServer") -> dict:
             delta = server.nudge_down()
     else:
         raw_delta = obj["delta"]
-        if isinstance(raw_delta, bool) or not isinstance(raw_delta, int):
+        if not is_int(raw_delta):
             return _err("invalid_delta",
                         "delta must be an integer from -100 to 100 excluding zero")
         if raw_delta == 0 or not (-100 <= raw_delta <= 100):

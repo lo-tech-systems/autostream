@@ -22,6 +22,8 @@ import logging
 import os
 from dataclasses import dataclass
 
+from dial_values import clamp_percent
+
 UPDATE_RESULT_PATH = "/var/lib/autostream/update-result.env"
 UPDATE_SEEN_PATH = "/var/lib/autostream/dial-update-seen"
 
@@ -66,7 +68,7 @@ def parse_update_result(text: str) -> UpdateView:
         values[key.strip()] = value.strip().strip('"')
     return UpdateView(
         status=values.get("STATUS", ""),
-        percent=max(0, min(100, _to_int(values.get("PERCENT_COMPLETE", "0")))),
+        percent=clamp_percent(_to_int(values.get("PERCENT_COMPLETE", "0"))),
         message=values.get("MESSAGE", ""),
         phase=values.get("PHASE", ""),
         tag=values.get("TAG", ""),

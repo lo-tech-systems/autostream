@@ -34,6 +34,8 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from dial_values import clamp_percent
+
 BACKLIGHT_ROOT = Path("/sys/class/backlight")
 TICK_S = 1.0
 
@@ -41,7 +43,7 @@ TICK_S = 1.0
 def scaled_level(percent: int, maximum: int) -> int:
     """*percent* (clamped to 0..100) as a share of *maximum*: 0 is dark, any
     other value at least the lowest step."""
-    percent = max(0, min(100, int(percent)))
+    percent = clamp_percent(int(percent))
     return 0 if percent == 0 else max(1, round(maximum * percent / 100))
 
 

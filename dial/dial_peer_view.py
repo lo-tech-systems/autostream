@@ -38,6 +38,7 @@ from dial_core_state import (
 )
 from dial_mdns import appliance_display_name
 from dial_repeat_store import RepeatRecord, parse_repeat_object
+from dial_values import clamp, clamp_percent, is_whole_number
 
 # The EQ range the dial's bass and treble controls move within.
 EQ_BASS_TREBLE_LIMIT_DB = 6
@@ -75,11 +76,6 @@ def _whole(value) -> int | None:
     return math.floor(value + 0.5)
 
 
-def _is_int(value) -> bool:
-    return (isinstance(value, int) and not isinstance(value, bool)) or (
-        isinstance(value, float) and value.is_integer())
-
-
 # ---- derivations shared with the browser --------------------------------------
 
 
@@ -95,7 +91,7 @@ def _source_input(parts) -> int | None:
     if source == "replay":
         block = _block(parts)
         origin = _map(block.get("recording")).get("origin_input")
-        if _map(block.get("replay")).get("active") and _is_int(origin):
+        if _map(block.get("replay")).get("active") and is_whole_number(origin):
             return int(origin)
         return None
     found = _INPUT_SOURCE_RE.fullmatch(source) if isinstance(source, str) else None
@@ -169,7 +165,7 @@ def speaker_rows(parts) -> list[SpeakerRow]:
         level = _whole(u.get("volume")) or 0
         connecting = not by and bool(u.get("connecting"))
         rows.append(SpeakerRow(
-            id=u["id"], name=u["name"], on=on, volume=max(0, min(100, level)),
+            id=u["id"], name=u["name"], on=on, volume=clamp_percent(level),
             chip="in-use" if by else "on" if on else "off",
             auto_start=auto_start, in_use_by=by,
             in_use_id=(u.get("in_use_id") or "") if by else "",
@@ -220,7 +216,7 @@ def eq_state(appliance_id: str, parts) -> EqState:
         return EqState(appliance_id, 2, (), False, (), 0.0)
     low, high = int(eq_bands.OUTPUT_EQ_DB_MIN), int(eq_bands.OUTPUT_EQ_DB_MAX)
     bands = [
-        EqBand(b["key"][:-3], int(b["freq_hz"]), max(low, min(high, _whole(g))), low, high)
+        EqBand(b["key"][:-3], int(b["freq_hz"]), clamp(_whole(g), low, high), low, high)
         for b, g in zip(table, gains)
     ]
     bass, treble = _bass_treble(gains)

@@ -28,6 +28,7 @@ import numpy
 import dial_spi_bus
 from dial_display import DisplayBackend
 from dial_display_profiles import DisplayProfile, backend_name_for
+from dial_values import is_int
 
 # Fixed wiring (Raspberry Pi SPI0), shared across every profile — this is
 # board wiring, not panel geometry, so it is not part of the profile table.
@@ -191,7 +192,7 @@ def _fast_block_writer(display):
     except AttributeError:
         return None
     constants = (column_set, page_set, ram_write, x_start, y_start)
-    if not all(isinstance(v, int) and not isinstance(v, bool) for v in constants):
+    if not all(is_int(v) for v in constants):
         return None
     if not (callable(encode_pos) and callable(block)):
         return None

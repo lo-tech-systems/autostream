@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from dial_core_state import ActionResult
+from dial_values import is_int
 from dial_warning_text import NOWIFI_WARNING_ID
 
 ACTION_NAME_RE = re.compile(r"^[a-z_]{1,32}$")
@@ -40,10 +41,6 @@ class InvalidArgument(Exception):
 # Each check takes the value (None when the field is absent) and returns the
 # value to use, or raises ValueError.
 
-def _is_int(value) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 def text(value):
     if not isinstance(value, str) or not 0 < len(value) <= ID_MAX or not value.isprintable():
         raise ValueError
@@ -56,7 +53,7 @@ def opt_text(value):
 
 def integer(low: int, high: int):
     def check(value):
-        if not _is_int(value) or not low <= value <= high:
+        if not is_int(value) or not low <= value <= high:
             raise ValueError
         return value
     return check
@@ -64,7 +61,7 @@ def integer(low: int, high: int):
 
 def direction(value):
     """-1 (down) or 1 (up): a step's sign, never its size."""
-    if not _is_int(value) or value not in (-1, 1):
+    if not is_int(value) or value not in (-1, 1):
         raise ValueError
     return value
 

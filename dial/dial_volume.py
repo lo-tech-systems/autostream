@@ -92,6 +92,8 @@ except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
     import autostream_logging as log_setup  # noqa: E402
 
+from dial_values import clamp_percent, is_int
+
 # A step or a mute is sent with a short read and without the write backoff: a
 # busy appliance can answer late, and a burst of late answers must cost only
 # those steps, never the other requests to that appliance.
@@ -259,7 +261,7 @@ def shown_volume(service_name: str | None) -> int | None:
     with _readout_lock:
         if service_name is None or service_name != _readout_service or _readout_base is None:
             return None
-        return max(0, min(100, _readout_base + _readout_pending))
+        return clamp_percent(_readout_base + _readout_pending)
 
 
 def observe_mute_state(
@@ -651,7 +653,7 @@ def _send_one(target, delta: int, clamped: list) -> None:
     muted_field = data.get("muted")
     if isinstance(muted_field, bool):
         observe_mute_state(target.service_name, muted_field)
-    if isinstance(vol, int) and not isinstance(vol, bool):
+    if is_int(vol):
         # Fast-path reconciliation of the optimistic readout (see the
         # "Optimistic volume readout" section above) — this response is the
         # authoritative master_volume for the target this delta was applied

@@ -89,6 +89,7 @@ from dial_network import (
 )
 from dial_repeat_store import heard_position
 from dial_info import INFO_LABELS
+from dial_values import clamp
 from dial_warning_bell import Bell, whole_bell
 from dial_warning_page import Card, WarningsPageState, status_card
 from dial_warning_text import WARNING_DESCRIPTORS
@@ -564,7 +565,7 @@ def _rows_per_page_for(width: int, height: int, metrics: "LayoutMetrics | None" 
 def _clamp_page(page: int, row_count: int, rows_per_page: int) -> int:
     """Clamp *page* into [0, last page] for *row_count* rows; 0 when empty."""
     max_page = max(0, (row_count - 1) // rows_per_page) if row_count else 0
-    return max(0, min(page, max_page))
+    return clamp(page, 0, max_page)
 
 
 def _wrap_page(page: int, row_count: int, rows_per_page: int) -> int:
@@ -2419,7 +2420,7 @@ class DialDisplay:
             # when nothing is scheduled.
             deadline = self._next_repaint_deadline()
             now = time.monotonic()
-            timeout = 1.0 if deadline is None else max(0.0, min(1.0, deadline - now))
+            timeout = 1.0 if deadline is None else clamp(deadline - now, 0.0, 1.0)
             signaled = self._overlay_signal.wait(timeout=timeout)
             if self._repaint_stop_event.is_set():
                 break

@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, awaiting_pin, pin_window_end
+from dial_values import clamp_percent, int_or_none
 from dial_warning_bell import appliance_bell, descriptor_map, dial_bell
 from dial_warnings import ACTION_CLOSE
 
@@ -58,12 +59,6 @@ def _text(value: Any) -> str:
     if not isinstance(value, str):
         value = str(value)
     return value[:STRING_MAX]
-
-
-def _int_or_none(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
 
 
 def _round(value: Any, places: int = 1) -> float:
@@ -200,8 +195,8 @@ def _request_block(held, now: float) -> dict | None:
 
 
 def _card_progress(value) -> int | None:
-    value = _int_or_none(value)
-    return None if value is None else max(0, min(100, value))
+    value = int_or_none(value)
+    return None if value is None else clamp_percent(value)
 
 
 def _status_block(snapshot, descriptors: dict) -> dict | None:

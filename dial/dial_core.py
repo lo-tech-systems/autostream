@@ -87,6 +87,7 @@ from dial_update_watch import (
     PHASE_REBOOT, PHASE_VERIFY, STATUS_FAILURE, STATUS_IN_PROGRESS, STATUS_SUCCESS,
     UPDATE_SEEN_PATH, UpdateWatcher, read_seen_marker, write_seen_marker,
 )
+from dial_values import clamp, clamp_percent, is_int
 from dial_volume import (
     enqueue_delta, enqueue_mute, enqueue_mute_all, forget_mute_states_except,
     observe_master_volume, observe_master_volume_if_tracked, observe_mute_state, shown_muted,
@@ -715,7 +716,7 @@ class DialCore:
         if shown is None:
             return ActionResult(False, "wrong_state")
         return self.set_output(
-            appliance_id, output_id, selected=True, volume=max(0, min(100, shown + delta)),
+            appliance_id, output_id, selected=True, volume=clamp_percent(shown + delta),
         )
 
     def step_eq(self, appliance_id: str, band_id: str, delta: int) -> ActionResult:
@@ -741,7 +742,7 @@ class DialCore:
         low, high = (band.min_db, band.max_db) if band is not None else (-EQ_LIMIT_DB, EQ_LIMIT_DB)
         now = self._clock()
         shown = self._eq_shown(band_id, now)
-        target = max(low, min(high, (0 if shown is None else shown) + delta))
+        target = clamp((0 if shown is None else shown) + delta, low, high)
         pairs = []
         for other_id in band_ids:
             value = target if other_id == band_id else self._eq_shown(other_id, now)
@@ -1233,7 +1234,7 @@ class DialCore:
         refusal = self._not_focused(appliance_id)
         if refusal is not None:
             return refusal
-        if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 100:
+        if not is_int(level) or not 0 <= level <= 100:
             return ActionResult(False, "wrong_state")
         shown = shown_volume(self.current_source_service_name())
         if shown is None:
@@ -1394,7 +1395,7 @@ class DialCore:
             except Exception:
                 logging.debug("dial core: housekeeping raised", exc_info=True)
             remaining = next_fold - time.perf_counter()
-            self._wake.wait(max(0.0, min(HOUSEKEEPING_INTERVAL_S, remaining)))
+            self._wake.wait(clamp(remaining, 0.0, HOUSEKEEPING_INTERVAL_S))
 
     def _housekeeping(self, now: float) -> None:
         """The once-a-second work: the update watch, expiring warnings, the
@@ -1693,7 +1694,7 @@ class DialCore:
         selected, volume = args.get("selected"), args.get("volume")
         shown = (
             selected if isinstance(selected, bool) else row.selected,
-            volume if isinstance(volume, int) and not isinstance(volume, bool) else row.volume,
+            volume if is_int(volume) else row.volume,
         )
         return "outputs_request", "output_set", row.id, shown
 
@@ -1913,7 +1914,7 @@ class DialCore:
         io.forget_mute({e.service_name for e in choice.visible})
         if reporting is not None:
             volume = reporting.master_volume
-            volume = volume if isinstance(volume, int) and not isinstance(volume, bool) else None
+            volume = volume if is_int(volume) else None
             seen = (reporting.service_name, volume)
             if seen != self._volume_seen:
                 rekeyed = self._volume_seen is None or self._volume_seen[0] != reporting.service_name

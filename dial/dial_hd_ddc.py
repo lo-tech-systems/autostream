@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 from dial_hd_panel import BACKLIGHT_ROOT, Backlight, BacklightBase, scaled_level
+from dial_values import clamp_percent
 
 DRM_ROOT = Path("/sys/class/drm")
 DEV_ROOT = Path("/dev")
@@ -291,7 +292,7 @@ class DdcBacklight(BacklightBase):
         """Record the wanted level (0 is asleep: dimmed to the minimum, or
         powered off if that has been asked for); returns at once. Never
         raises."""
-        percent = max(0, min(100, int(percent)))
+        percent = clamp_percent(int(percent))
         with self._cond:
             if self._stopping:
                 return

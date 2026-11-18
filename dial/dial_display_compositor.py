@@ -58,6 +58,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFo
 
 from dial_display_image import transform_artwork_for_panel
 from dial_core_state import SEVERITY_CRITICAL, SEVERITY_WARNING
+from dial_values import clamp, clamp_percent
 from dial_touch_layout import (
     CONTENT_COMPACT,
     GEOMETRY_EQ,
@@ -2356,7 +2357,7 @@ def _body_idle_badge(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
     elif style == WIFI_GREY:
         lit, color = 0, _GLYPH_RGB
     else:
-        lit, color = max(0, min(3, int(body.wifi_bars))), _GLYPH_RGB
+        lit, color = clamp(int(body.wifi_bars), 0, 3), _GLYPH_RGB
     _draw_glyph(img, layout.wifi, GLYPH_WIFI, lit, color, supersample=metrics.supersample)
 
 
@@ -2970,7 +2971,7 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
         bar_h = max(3, 2 * w)
         bar_y0 = my1 - zone // 2 - bar_h // 2
         x0, x1 = mx0 + metrics.pad, mx1 - metrics.pad
-        fill_x1 = x0 + round((x1 - x0) * max(0, min(100, body.percent)) / 100)
+        fill_x1 = x0 + round((x1 - x0) * clamp_percent(body.percent) / 100)
         draw.rectangle([x0, bar_y0, x1 - 1, bar_y0 + bar_h - 1], fill=_DIMMED_GLYPH_RGB)
         if fill_x1 > x0:
             draw.rectangle([x0, bar_y0, fill_x1 - 1, bar_y0 + bar_h - 1], fill=_GLYPH_RGB)

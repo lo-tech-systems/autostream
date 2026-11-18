@@ -42,6 +42,7 @@ from dial_display_profiles import (
 )
 from dial_touch_controllers import list_controllers
 from dial_touch_layout import metrics_for
+from dial_values import is_int
 
 # autostream_sysutils is deployed flat into /opt/autostream beside the dial
 # package; in the repo it lives in core/.
@@ -1015,7 +1016,7 @@ class DialHTTPServer:
 
                 if 'step_percent' in obj:
                     v = obj['step_percent']
-                    if not isinstance(v, int) or isinstance(v, bool) or not (1 <= v <= 10):
+                    if not is_int(v) or not (1 <= v <= 10):
                         self._send_json(400, {'ok': False, 'error': 'invalid_step_percent'})
                         return
                     new_cfg.step_percent = v

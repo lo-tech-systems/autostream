@@ -25,6 +25,7 @@ from dial_network import NetworkView
 from dial_repeat_store import RepeatRecord
 from dial_sdhealth import SdHealthView
 from dial_update_watch import UpdateView
+from dial_values import is_int
 from dial_volume import select_volume_target
 
 # What this dial believes about its authorisation on one appliance.
@@ -351,7 +352,7 @@ class StartFailureNotice:
 
 def _whole_number(value, minimum: int) -> int | None:
     """*value* when it is an int (not a bool) of at least *minimum*, else None."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+    if not is_int(value) or value < minimum:
         return None
     return value
 
@@ -616,7 +617,7 @@ def _entry_protocol(entry, own_protocol: int) -> "int | None":
     if not getattr(entry, "appliance_id", ""):
         return None
     protocol = getattr(entry, "dial_proto_version", 0)
-    if not isinstance(protocol, int) or isinstance(protocol, bool) or protocol <= 0 or protocol == own_protocol:
+    if not is_int(protocol) or protocol <= 0 or protocol == own_protocol:
         return None
     return protocol
 

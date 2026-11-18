@@ -41,6 +41,7 @@ from dial_hd_actions import (
 from dial_hd_backdrop import BackdropStore
 from dial_hd_events import SSE_MAX_CLIENTS, PartDiffer, PartStep, encode_parts, serve_events, state_bytes
 from dial_hd_state import build_parts
+from dial_values import is_int
 
 HD_PORT = HD_PORT_DEFAULT       # loopback listener; the page's own address
 HD_DEV_PORT = 7844              # the development listener, when enabled
@@ -161,7 +162,7 @@ ARTWORK_VARIANTS = {
 
 
 def _one_of(value, choices):
-    if isinstance(value, bool) or not isinstance(value, int) or value not in choices:
+    if not is_int(value) or value not in choices:
         raise ValueError
     return value
 

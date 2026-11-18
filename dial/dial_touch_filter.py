@@ -39,6 +39,8 @@ import statistics
 from dataclasses import dataclass
 from enum import Enum
 
+from dial_values import clamp
+
 
 # Number of raw samples averaged (component-wise median) per accepted
 # reading. Odd so there is always a single middle value.
@@ -196,7 +198,7 @@ class TouchFilter:
                 return rx, ry
             px = int(rx * self._width / phys[0])
             py = int(ry * self._height / phys[1])
-            return max(0, min(self._width - 1, px)), max(0, min(self._height - 1, py))
+            return clamp(px, 0, self._width - 1), clamp(py, 0, self._height - 1)
 
         nx = (rx - self._raw_x_min) / (self._raw_x_max - self._raw_x_min)
         ny = (ry - self._raw_y_min) / (self._raw_y_max - self._raw_y_min)
@@ -210,8 +212,8 @@ class TouchFilter:
 
         px = int(nx * self._width)
         py = int(ny * self._height)
-        px = max(0, min(self._width - 1, px))
-        py = max(0, min(self._height - 1, py))
+        px = clamp(px, 0, self._width - 1)
+        py = clamp(py, 0, self._height - 1)
         return px, py
 
     def feed(self, raw_sample: tuple[int, int, int] | None, now: float) -> list[TouchEvent]:

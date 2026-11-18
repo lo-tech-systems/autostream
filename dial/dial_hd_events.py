@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
+from dial_values import clamp
+
 SSE_MAX_CLIENTS = 4
 SSE_HEARTBEAT_S = 15.0
 # How often an idle stream looks at its own socket to see whether the client
@@ -196,7 +198,7 @@ def _wait(handler, hub: ChangeHub, clients, seen: int) -> "int | None":
     deadline = time.monotonic() + SSE_HEARTBEAT_S
     while True:
         left = deadline - time.monotonic()
-        changed = hub.wait_for_change(seen, max(0.0, min(SSE_LIVENESS_S, left)))
+        changed = hub.wait_for_change(seen, clamp(left, 0.0, SSE_LIVENESS_S))
         if changed is not None or clients.stopping or hub.stopped:
             return changed
         if _peer_closed(handler.connection):
