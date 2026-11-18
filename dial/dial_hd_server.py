@@ -17,7 +17,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import hmac
 import http.server
 import json
 import logging
@@ -71,7 +70,6 @@ SESSION_COOKIE = "hd_session"
 SESSION_TTL_S = 12 * 3600
 SESSION_MAX = 8
 SESSION_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
-PIN_MAX_LENGTH = 64
 DEV_HOST_RE = re.compile(r"^[A-Za-z0-9._\-]+$|^\[[0-9A-Fa-f:.]+\]$")
 # The only files the development listener serves before a login: the login
 # page and what it needs to draw. Nothing else is reachable without a session.
@@ -826,18 +824,13 @@ class HdServer:
         if not expected:
             handler.send_json(403, {"ok": False, "error": "login_disabled"})
             return
-        if (
-            not isinstance(pin, str) or len(pin) > PIN_MAX_LENGTH
-            or not hmac.compare_digest(pin.encode("utf-8"), expected.encode("utf-8"))
-        ):
-            dial_pin_guard.record_failure(ip)
-            blocked, wait = dial_pin_guard.blocked(ip)
-            if blocked:
-                handler.send_too_many(wait)
+        verdict = dial_pin_guard.authorise(ip, pin, expected)
+        if not verdict.ok:
+            if verdict.wait_s:
+                handler.send_too_many(verdict.wait_s)
             else:
                 handler.send_json(403, {"ok": False, "error": "wrong_pin"})
             return
-        dial_pin_guard.clear(ip)
         token = self._issue_session()
         handler.send_bytes(
             200, b'{"ok":true}', "application/json",

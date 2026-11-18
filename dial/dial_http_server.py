@@ -777,23 +777,16 @@ class DialHTTPServer:
             def _pin_ok(self, obj: dict, cfg) -> bool:
                 """True when the body carries the current PIN. Otherwise the
                 refusal (429 while backed off, else 403) has been sent."""
-                ip = self.client_address[0]
-                blocked, wait_secs = dial_pin_guard.blocked(ip)
-                if blocked:
-                    self._send_429(wait_secs)
-                    return False
-                current_pin = obj.get('current_pin', '')
-                if not isinstance(current_pin, str) or current_pin != cfg.pin:
-                    dial_pin_guard.record_failure(ip)
-                    # Return 429 immediately if this failure hit the threshold
-                    blocked, wait_secs = dial_pin_guard.blocked(ip)
-                    if blocked:
-                        self._send_429(wait_secs)
-                    else:
-                        self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
-                    return False
-                dial_pin_guard.clear(ip)
-                return True
+                verdict = dial_pin_guard.authorise(
+                    self.client_address[0], obj.get('current_pin', ''), cfg.pin,
+                )
+                if verdict.ok:
+                    return True
+                if verdict.wait_s:
+                    self._send_429(verdict.wait_s)
+                else:
+                    self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
+                return False
 
             def do_GET(self) -> None:
                 if self.path == '/configure':
