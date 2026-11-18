@@ -53,6 +53,7 @@ from dial_touch_layout import TouchZone, layout_for, list_layout_for, repeat_lay
 from autostream_peer_client import PeerReply
 import dial_artwork
 import dial_core
+import dial_core_effects
 import dial_core_state
 import dial_repeat_store
 from dial_core import DialCore
@@ -10052,8 +10053,8 @@ class TestPairInAutostreamPage:
     def test_the_effect_is_ignored_for_another_output_or_appliance(self):
         display = self._detail()
         for effect in (
-            dd.OutputsEffect(self.AID, "9", "output_set", "rejected", "pin_required"),
-            dd.OutputsEffect("b" * 20, "1", "output_set", "rejected", "pin_required"),
+            dial_core_effects.OutputsEffect(self.AID, "9", "output_set", "rejected", "pin_required"),
+            dial_core_effects.OutputsEffect("b" * 20, "1", "output_set", "rejected", "pin_required"),
         ):
             display._apply_outputs_outcome(effect)
             assert display._screen_request is None
@@ -10142,7 +10143,7 @@ class TestPairInAutostreamPage:
         display._core._lock = core_spy
         display.output_toggle_tap()
         display._apply_outputs_outcome(
-            dd.OutputsEffect(self.AID, "1", "output_set", "rejected", "pin_required"),
+            dial_core_effects.OutputsEffect(self.AID, "1", "output_set", "rejected", "pin_required"),
         )
         assert view_spy.acquire_calls == 0
         assert core_spy.acquire_calls == 0
@@ -10167,7 +10168,7 @@ class TestStartFailureNotice:
 
     @staticmethod
     def _effect(reason="refused", name="Speaker A", appliance_id="a" * 20):
-        return dd.StartFailureEffect(appliance_id, f"{appliance_id}:b:1", name, reason)
+        return dial_core_effects.StartFailureEffect(appliance_id, f"{appliance_id}:b:1", name, reason)
 
     def _fold(self, display):
         display._apply_pending_snapshot()
@@ -10251,7 +10252,7 @@ class TestLatePairingHint:
         return display
 
     def _late(self, display, output_id="1", late=True, appliance_id=None):
-        display._apply_outputs_outcome(dd.OutputsEffect(
+        display._apply_outputs_outcome(dial_core_effects.OutputsEffect(
             appliance_id or self.AID, output_id, "output_set", "rejected", "pin_required", 1.0, late))
         display._apply_pending_snapshot()
         with display._lock:

@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 
-from dial_core import ADDRESS_REFRESH_S, EFFECTS_BACKLOG_MAX, DialCore, SourceEffects
+from dial_core import ADDRESS_REFRESH_S, EFFECTS_BACKLOG_MAX, DialCore
+from dial_core_effects import SourceEffects
 from dial_core_state import NowPlaying
 from dial_network import LINK_CONNECTED, NetworkView
 

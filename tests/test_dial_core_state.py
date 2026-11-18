@@ -89,7 +89,8 @@ class TestDataclasses:
         assert not not_frozen, f"not frozen: {not_frozen}"
 
     @pytest.mark.parametrize(
-        "name", ["dial_core_state.py", "dial_core_focus.py", "dial_appliance_warnings.py"])
+        "name", ["dial_core_state.py", "dial_core_focus.py", "dial_appliance_warnings.py",
+                 "dial_core_effects.py"])
     def test_a_pure_core_module_imports_no_display_thread_clock_or_volume_worker(self, name):
         src = (REPO_ROOT / "dial" / name).read_text(encoding="utf-8")
         assert "dial_display" not in src

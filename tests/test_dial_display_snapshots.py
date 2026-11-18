@@ -19,7 +19,7 @@ from dial_test_support import (
 )
 import dial_core
 import dial_display as dd
-from dial_core import SourceEffects
+from dial_core_effects import SourceEffects
 
 
 def _fold(display):

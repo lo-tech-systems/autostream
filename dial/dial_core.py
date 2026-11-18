@@ -63,6 +63,9 @@ import dial_peer_view
 from dial_config import SCOPE_ALL
 from dial_eq_model import DERIVED_EQ_IDS, EQ_BASS_TREBLE_LIMIT_DB
 from dial_appliance_warnings import DIAL_WARNING_ID, newer_appliance_names, protocol_warning
+from dial_core_effects import (
+    OutputsEffect, RepeatEffect, RepeatOutcome, SourceEffects, StartFailureEffect, WarningChange,
+)
 from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS,
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
@@ -215,71 +218,6 @@ def _eq_band_ids(held) -> tuple:
     if held is None or not six_band(held.capability_version):
         return DERIVED_EQ_IDS
     return DERIVED_EQ_IDS + tuple(b.id for b in held.bands if b.id not in DERIVED_EQ_IDS)
-
-
-@dataclass(frozen=True)
-class RepeatOutcome:
-    """What a repeat transport result meant, for the caller's own reactions
-    (a fold, screen changes); the state it implies is already folded."""
-    ok: bool                # an ok:true ack
-    replay_accepted: bool   # an ack for a replay of the appliance the dial follows
-    stop_acked: bool        # an ok ack for the Stop this dial sent
-
-
-@dataclass(frozen=True)
-class WarningChange:
-    """What a source did to one warning, for a caller that turns warnings
-    into screens: reported present (`active`, and `began` when that started
-    a new incident rather than refreshing one) or cleared."""
-    warning_id: str
-    active: bool
-    began: bool = False
-
-
-@dataclass(frozen=True)
-class SourceEffects:
-    """The outcome of folding a source's reading: the warning changes in the
-    order they were made, whether the update run reached its reboot phase
-    (the caller shows its restarting screen), and whether the caller should
-    repaint."""
-    changes: tuple = ()
-    restarting: bool = False
-    signal: bool = True
-
-
-@dataclass(frozen=True)
-class RepeatEffect:
-    """A repeat transport result as queued for a view: the appliance it was
-    for, what it meant (see `RepeatOutcome`) and the token of the request it
-    answered (0.0 when the reply carried none)."""
-    appliance_id: str
-    outcome: RepeatOutcome
-    token: float = 0.0
-
-
-@dataclass(frozen=True)
-class OutputsEffect:
-    """An output request's outcome as queued for a view: the appliance and
-    output it was for, its kind ("output_set" or "output_pin"), whether it was
-    "accepted" or "rejected" and, when rejected, the error name of the reply
-    and the token of the request it resolved."""
-    appliance_id: str
-    output_id: str
-    kind: str
-    outcome: str
-    error: str | None
-    token: float = 0.0
-    late: bool = False   # a PIN request that arrived after the switch's reply
-
-
-@dataclass(frozen=True)
-class StartFailureEffect:
-    """A raised notice, queued for a view: the appliance, the notice's key,
-    the speaker's name and the reason."""
-    appliance_id: str
-    key: str
-    name: str
-    reason: str
 
 
 def _initial_state(dial_id: str) -> _CoreState:

@@ -80,10 +80,8 @@ from dial_core_state import (
     eq_gain,
 )
 import dial_artwork
-from dial_core import (
-    DialCore, CoreIO,
-    OutputsEffect, RepeatEffect, StartFailureEffect,
-)
+from dial_core import DialCore, CoreIO
+from dial_core_effects import OutputsEffect, RepeatEffect, StartFailureEffect
 from dial_mdns import appliance_display_name
 from dial_network import (
     LINK_CONNECTED,

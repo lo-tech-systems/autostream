@@ -41,6 +41,7 @@ from dial_core_focus import FOCUS_PENDING_GRACE_S
 from dial_appliance_warnings import ApplianceWarning
 from dial_core_state import eq_gain
 from dial_core import DialCore
+from dial_core_effects import StartFailureEffect
 import dial_network
 from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget
@@ -317,7 +318,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # ("start_failure_effect", appliance_id, name, reason) -- the notice
         # the core raised for a start this dial asked for, queued for the view.
         _, aid, name, reason = step
-        d.core._queue_effects(dd.StartFailureEffect(aid, f"{aid}:b:1", name, reason))
+        d.core._queue_effects(StartFailureEffect(aid, f"{aid}:b:1", name, reason))
         d._apply_pending_snapshot()
     elif kind == "tick_outputs_refresh":
         pass

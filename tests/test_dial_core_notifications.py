@@ -17,6 +17,7 @@ import pytest
 
 import dial_core
 import dial_appliance_warnings
+import dial_core_effects
 import dial_core_state
 from dial_core import EFFECTS_BACKLOG_MAX, DialCore
 
@@ -259,7 +260,7 @@ class TestEffectsQueueIsAViewChannel:
     def test_two_takers_split_the_effects_with_none_lost_or_repeated(self):
         core = _core()
         total = EFFECTS_BACKLOG_MAX - 1
-        marks = [dial_core.SourceEffects(restarting=bool(i % 2)) for i in range(total)]
+        marks = [dial_core_effects.SourceEffects(restarting=bool(i % 2)) for i in range(total)]
         taken = [[], []]
         done = threading.Event()
         ready = threading.Barrier(3)
@@ -344,6 +345,15 @@ class TestSnapshotsAreImmutable:
         assert set(types) == _PUBLISHED
         for name, t in types.items():
             assert t.__dataclass_params__.frozen, name
+
+    def test_every_effect_type_is_frozen(self):
+        names = ("RepeatOutcome", "WarningChange", "SourceEffects", "RepeatEffect",
+                 "OutputsEffect", "StartFailureEffect")
+        for name in names:
+            assert getattr(dial_core_effects, name).__dataclass_params__.frozen, name
+        found = {n for n, o in vars(dial_core_effects).items()
+                 if dataclasses.is_dataclass(o) and o.__module__ == dial_core_effects.__name__}
+        assert found == set(names)
 
     def test_a_published_snapshot_rejects_writes(self):
         snap = _core().snapshot()
