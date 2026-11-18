@@ -1,107 +1,48 @@
 """dial_display_compositor.py — stateless frame composition for the dial
 display.
 
-The manager (dial_display.py) owns all I/O: fetching artwork, decoding it,
+The manager (dial_display.py) owns all I/O: fetching and decoding artwork,
 loading the logo file, deciding what to show and when. This module owns all
-pixel work once a base image is in hand — it is the single place a frame is
-actually built. It has no threading, no hardware access, no persistent
-state, and no lock of its own; every call is independent of every other.
+pixel work once a base image is in hand. It has no threading, no hardware
+access, no persistent state and no lock; every call is independent of every
+other.
 
-Every screen (the now-playing overlay, the repeat screen, the appliance
-selector, the outputs list, the per-output detail page, the idle screen) is
-drawn by one pipeline, _compose_frame(): background, then dims, then any
-row highlights, then a pressed-zone wash, then the header, then the body,
-then the footer, then rotate/BGR. What differs between screens is
-only the data — a frozen Frame descriptor made of a background choice plus
-a Header/Body/Footer triple — never the drawing order. Each of the public
-entry points (compose(), compose_list(), compose_repeat(), compose_output(),
-compose_idle(), compose_warning(), compose_restarting()) is a thin adapter that turns its own state snapshot
-(OverlayState, ListState, RepeatViewState, OutputViewState, or nothing at
-all) into a Frame and hands it to the pipeline. The outputs list reuses
-compose_list() outright (it is just another row list); only the detail
-page (compose_output()) is new.
+Every screen is drawn by one pipeline, _compose_frame(): background, dims,
+row highlights, pressed-zone wash, header, body, footer, then rotate/BGR.
+Screens differ only in data: a frozen Frame descriptor made of a background
+choice plus a Header/Body/Footer triple, never the drawing order. Each
+public entry point turns its own state snapshot into a Frame and hands it
+to the pipeline:
 
-The main screen's own footer is three-way (FOOTER_VOLUME_MUTE: minus |
-plus | mute), not the two-way minus/plus (FOOTER_VOLUME) the repeat and
-per-output detail screens still use — mute moved off the header (which is
-never slashed on any screen any more) into its own footer cell, with a
-persistent wash while muted on top of which a genuine press adds its own
-momentary wash.
+  compose()                 the now-playing overlay (OverlayState)
+  compose_list()            the appliance selector and outputs list (ListState)
+  compose_repeat()          the repeat screen (RepeatViewState)
+  compose_eq()              the equaliser page (EqViewState)
+  compose_output()          the per-output detail page (OutputViewState)
+  compose_info_value()      the compact info page's drill-in value
+  compose_idle()            the idle screen
+  compose_starting()        the boot splash
+  compose_warning()         a warning page
+  compose_restarting()      the restarting screen
 
-Two kinds of base image reach compose():
-  - Artwork: the manager hands over the RAW DECODED image plus the active
-    panel (width, height) and sets is_artwork=True. compose() calls
-    transform_artwork_for_panel() itself, ahead of the pipeline — a
-    "finished frame" is by definition already panel-fitted, so that call
-    belongs here rather than in the manager.
-  - Logo: the manager calls load_logo(...) itself (file I/O, and the
-    failure-to-sentinel branch is manager policy) and passes the resulting
-    already-panel-sized image with is_artwork=False — compose() then just
-    runs it through the pipeline (or, with no visible overlay, straight
-    through the rotate/BGR tail) unchanged.
+Geometry comes from dial_touch_layout, the same coordinates the touch side
+hit-tests against, in compose-space before rotate/BGR. With no visible
+overlay, compose() applies only rotate/BGR to the panel-fitted base, which
+is a strict no-op otherwise; a call with neither returns the very object it
+was given, which keeps the manager's pre-rotate artwork cache exact.
 
-overlay=None (the default) or an OverlayState with visible=False never
-enters the pipeline at all: compose() returns the panel-fitted base with
-only rotate/BGR applied, a strict no-op, pixel for pixel, which is what a
-dial with no touch panel always sees. This also keeps the manager's
-pre-rotate artwork cache exact: a call with no overlay and no rotate/bgr
-returns the very same image object it was given.
+The artwork-tap reveal is a paint parameter: compose(reveal_progress=p) and
+compose_repeat(reveal_progress=p) slide the overlay's chrome off the panel
+while the artwork stays put. The chrome is separated from the artwork once
+per frame descriptor (see _reveal_layers) and memoised. The manager owns
+the clock; this module never knows a frame is part of an animation.
 
-A visible overlay, the repeat screen and the selector chassis are all drawn
-in compose-space — the same (width, height) coordinates
-dial_touch_layout.layout_for()/list_layout_for()/repeat_layout_for()
-describe, and the same ones the touch session hit-tests against — before
-rotate/BGR. This is the same rotate-then-BGR logic and ordering that
-previously lived in dial_display.py's _apply_frame_transform, moved here
-unchanged. As before, this seam is bypassed by the backend-internal
-clear()/sleep() fills, which paint directly against the backend rather than
-going through the manager's _display_locked()/compose() path. sleep()'s
-black fill is swap-symmetric so that is harmless; clear()'s background
-colour is not — an accepted cosmetic exception, limited to the fallback
-background and never artwork.
-
-The artwork-tap reveal is a paint parameter too: compose(reveal_progress=p)
-and compose_repeat(reveal_progress=p) slide the overlay's own chrome (the
-dim, the glyphs, the text, the washes) off the panel by p of a band's
-height while the artwork underneath stays exactly where it is, and fade
-the inter-band text at 1 - p; p = 0 is exactly the ordinary frame and
-p = 1 exactly the no-overlay frame. The chrome is separated from the
-artwork once per frame descriptor (see RevealLayers/_reveal_layers) and
-memoised, so a slide frame costs a few small region operations and never
-re-renders text or glyphs. The manager owns the clock; this module never
-knows a frame is part of an animation.
-
-Text rendering (artist name, volume number) never raises: every draw or
-measure call goes through _draw_text_safe()/_text_size(), which swallow any
-Pillow/font exception and report failure to the caller instead. The worst
-case for a text failure is a frame with the glyphs but no text — never an
-exception escaping the pipeline. See _load_font() for the font fallback
-chain this same discipline extends to. The pipeline itself adds no blanket
-exception handling: every helper it calls already degrades gracefully on
-its own, and an unrecognised Body/Footer kind is a programming error, left
-to raise rather than be hidden.
-
-The album, title and artist lines (centre-low) are drawn over arbitrary
-album art, so they go through _draw_text_with_halo() rather than a plain
-draw.text():
-a soft, Gaussian-blurred dark glow is composited behind the text before the
-text itself is drawn, so it stays legible whether the artwork behind it is
-light or dark. The appliance name (top-left) sits over the dimmed top band
-instead, which gives it enough contrast on its own, so it is drawn plain.
-The halo is drawn per element, confined to that element's own rectangle —
-never as a whole-frame effect — the same discipline _draw_glyph() applies to
-the list's play marker and chevrons (rendered at a higher resolution and
-downsampled with LANCZOS, so small diagonal strokes read smoothly rather
-than aliasing).
-
-compose_list() builds the appliance-selector screen (a dark chassis with a
-page of rows, the current one washed, and a back|down|up bar) from a
-ListState snapshot, sharing
-dial_touch_layout.list_layout_for()'s geometry with dial_touch.py's
-selector-surface hit-test — the same single-source-of-truth discipline the
-overlay's own geometry follows. Like compose(), it applies rotate/BGR last
-and never raises: a font or glyph failure degrades to a plainer row, never
-an exception.
+Drawing never raises. Every text draw or measure goes through
+_draw_text_safe()/_text_size(), so the worst case is a frame with glyphs
+but no text; see _load_font() for the font fallback chain. An unrecognised
+Body/Footer kind is a programming error and is left to raise. Text over
+arbitrary artwork gets a per-element soft dark halo (_draw_text_with_halo());
+the appliance name sits over the dimmed top band and is drawn plain.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
