@@ -6,7 +6,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Shared debounce primitive.
 
 Two independent ad hoc ``threading.Timer`` instances existed in
-``autostream_webui_api.py`` (``_debounce_coordinator_reload``,
+``autostream_live_config.py`` (``_debounce_coordinator_reload``,
 ``_debounce_track_id_rebuild``), each with its own lock and timer-handle
 global, for the same underlying need -- "collapse repeated calls arriving
 within a short window into one trailing call." This module is the *one*

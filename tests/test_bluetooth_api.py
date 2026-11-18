@@ -1378,7 +1378,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+            with patch("autostream_live_config.bluetooth_installed", return_value=True):
                 send_settings_post_json(
                     handler, state,
                     {"field": "audio1.capture_device", "value": BLUETOOTH_PLAYBACK_DEVICE},
@@ -1396,7 +1396,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+            with patch("autostream_live_config.bluetooth_installed", return_value=True):
                 send_settings_post_json(
                     handler, state,
                     {"field": "audio2.capture_device", "value": BLUETOOTH_PLAYBACK_DEVICE},

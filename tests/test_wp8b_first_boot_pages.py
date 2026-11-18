@@ -433,7 +433,7 @@ class TestFirstBootFinishPost:
              patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
              patch("autostream_webui_page_first_boot.mark_configured"), \
              patch("autostream_webui_page_first_boot.update_playback_input_config") as m_update, \
-             patch("autostream_webui_page_first_boot.request_config_reload") as m_reload:
+             patch("autostream_runtime.request_config_reload") as m_reload:
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         m_update.assert_called_once()
@@ -577,7 +577,7 @@ class TestFirstBootFinishPost:
              patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
              patch("autostream_webui_page_first_boot.mark_configured"), \
              patch("autostream_webui_page_first_boot.update_playback_input_config") as m_update, \
-             patch("autostream_webui_page_first_boot.request_config_reload") as m_reload:
+             patch("autostream_runtime.request_config_reload") as m_reload:
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
         m_update.assert_called_once()

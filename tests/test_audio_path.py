@@ -29,6 +29,7 @@ if _CORE not in sys.path:
 import autostream_config as cfgmod
 import autostream_player_service as svc
 import autostream_players as ap
+import autostream_live_config as live_config
 
 
 # ---------------------------------------------------------------------------
@@ -604,30 +605,30 @@ class TestResyncAudioPathFreshness:
 class TestValidateAudioPath:
     def test_accepts_balanced_and_fast_regardless_of_hardware(self):
         import autostream_webui_api as api
-        with patch("autostream_webui_api.is_high_performance_pi", return_value=False):
-            assert api._validate_audio_path("balanced") == "balanced"
-            assert api._validate_audio_path("fast") == "fast"
+        with patch("autostream_live_config.is_high_performance_pi", return_value=False):
+            assert live_config._validate_audio_path("balanced") == "balanced"
+            assert live_config._validate_audio_path("fast") == "fast"
 
     def test_accepts_max_on_high_perf_hardware(self):
         import autostream_webui_api as api
-        with patch("autostream_webui_api.is_high_performance_pi", return_value=True):
-            assert api._validate_audio_path("max") == "max"
+        with patch("autostream_live_config.is_high_performance_pi", return_value=True):
+            assert live_config._validate_audio_path("max") == "max"
 
     def test_rejects_max_on_small_hardware(self):
         import autostream_webui_api as api
-        with patch("autostream_webui_api.is_high_performance_pi", return_value=False):
+        with patch("autostream_live_config.is_high_performance_pi", return_value=False):
             with pytest.raises(ValueError):
-                api._validate_audio_path("max")
+                live_config._validate_audio_path("max")
 
     def test_rejects_unknown_value(self):
         import autostream_webui_api as api
         with pytest.raises(ValueError):
-            api._validate_audio_path("ultra")
+            live_config._validate_audio_path("ultra")
 
     def test_rejects_non_string(self):
         import autostream_webui_api as api
         with pytest.raises(ValueError):
-            api._validate_audio_path(123)
+            live_config._validate_audio_path(123)
 
 
 class TestLiveAudioPath:
@@ -645,9 +646,9 @@ class TestLiveAudioPath:
         import autostream_webui_api as api
         state, store = self._make_state(tmp_path)
         try:
-            with patch("autostream_webui_api.push_resample_quality") as push_mock, \
-                 patch("autostream_webui_api.sync_monitor_args_for_audio_path") as sync_mock:
-                result = api._live_audio_path(state, "fast")
+            with patch("autostream_live_config.push_resample_quality") as push_mock, \
+                 patch("autostream_live_config.sync_monitor_args_for_audio_path") as sync_mock:
+                result = live_config._live_audio_path(state, "fast")
             assert result is True
             push_mock.assert_called_once_with("http://localhost:3689", "fast", timeout=3.0)
             sync_mock.assert_called_once_with("http://localhost:3689", "fast", timeout=3.0)
@@ -661,9 +662,9 @@ class TestLiveAudioPath:
         import autostream_webui_api as api
         state, store = self._make_state(tmp_path)
         try:
-            with patch("autostream_webui_api.push_resample_quality", return_value=MagicMock()), \
-                 patch("autostream_webui_api.sync_monitor_args_for_audio_path", return_value=False):
-                result = api._live_audio_path(state, "max")
+            with patch("autostream_live_config.push_resample_quality", return_value=MagicMock()), \
+                 patch("autostream_live_config.sync_monitor_args_for_audio_path", return_value=False):
+                result = live_config._live_audio_path(state, "max")
             assert result is True
         finally:
             store.close(save=False)
@@ -674,5 +675,5 @@ class TestLiveAudioPath:
         section, key, validator, live_fn = api._SETTINGS_FIELDS["general.audio_path"]
         assert section == "general"
         assert key == "audio_path"
-        assert validator is api._validate_audio_path
-        assert live_fn is api._live_audio_path
+        assert validator is live_config._validate_audio_path
+        assert live_fn is live_config._live_audio_path

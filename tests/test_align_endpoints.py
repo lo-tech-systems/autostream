@@ -472,7 +472,7 @@ class TestAlignApply:
         handler, sent = _make_handler()
 
         body = json.dumps({"offsets": {"out-a": 100, "out-b": 9999}})
-        with patch("autostream_webui_api.update_live_owntone_runtime"):
+        with patch("autostream_live_config.update_live_owntone_runtime"):
             send_align_apply_json(handler, state, body)
 
         assert sent["body"]["ok"] is True

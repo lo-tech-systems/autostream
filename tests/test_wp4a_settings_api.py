@@ -29,11 +29,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
-    _validate_output_name,
-    _validate_silence_seconds,
-    _validate_volume_percent,
     send_settings_post_json,
 )
+from autostream_live_config import _validate_output_name
+from autostream_live_config import _validate_silence_seconds
+from autostream_live_config import _validate_volume_percent
 from autostream_live_config import _validate_gain_db
 from autostream_webui_post_handlers import (
     handle_live_input_eq_update,
@@ -295,21 +295,21 @@ class TestWp4aStorePersistence:
 
     def test_owntone_volume_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_live_owntone_runtime", return_value=True):
+        with patch("autostream_live_config.update_live_owntone_runtime", return_value=True):
             resp = _post(state, "owntone.volume_percent", 42)
         assert resp["ok"] is True
         assert store.snapshot().owntone.volume_percent == 42
 
     def test_owntone_output_name_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_live_owntone_runtime", return_value=True):
+        with patch("autostream_live_config.update_live_owntone_runtime", return_value=True):
             resp = _post(state, "owntone.output_name", "Deck Speakers")
         assert resp["ok"] is True
         assert store.snapshot().owntone.output_name == "Deck Speakers"
 
     def test_silence_seconds_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_live_silence_seconds", return_value=True):
+        with patch("autostream_live_config.update_live_silence_seconds", return_value=True):
             resp = _post(state, "general.silence_seconds", 60)
         assert resp["ok"] is True
         assert store.snapshot().general.silence_seconds == 60
@@ -361,7 +361,7 @@ class TestWp4aLiveEffects:
         def _setup(raw):
             raw.setdefault("owntone", {})["volume_percent"] = 30
         store.update(_setup)
-        with patch("autostream_webui_api.update_live_owntone_runtime", return_value=True) as m:
+        with patch("autostream_live_config.update_live_owntone_runtime", return_value=True) as m:
             resp = _post(state, "owntone.output_name", "Kitchen")
         args = m.call_args
         assert args.kwargs.get("output_name") == "Kitchen" or args[1].get("output_name") == "Kitchen"
@@ -372,7 +372,7 @@ class TestWp4aLiveEffects:
         def _setup(raw):
             raw.setdefault("owntone", {})["output_name"] = "Main"
         store.update(_setup)
-        with patch("autostream_webui_api.update_live_owntone_runtime", return_value=True) as m:
+        with patch("autostream_live_config.update_live_owntone_runtime", return_value=True) as m:
             resp = _post(state, "owntone.volume_percent", 75)
         args = m.call_args
         assert args.kwargs.get("volume_percent") == 75 or args[1].get("volume_percent") == 75
@@ -380,7 +380,7 @@ class TestWp4aLiveEffects:
 
     def test_silence_calls_update_live_silence_seconds(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_live_silence_seconds", return_value=True) as m:
+        with patch("autostream_live_config.update_live_silence_seconds", return_value=True) as m:
             resp = _post(state, "general.silence_seconds", 45)
         m.assert_called_once_with(45)
         assert resp["live"] is True

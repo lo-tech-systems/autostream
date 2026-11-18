@@ -928,14 +928,20 @@ class TestPostHandlerChannel:
         get_system_hostname=MagicMock(return_value="testhost"),
         set_system_hostname=MagicMock(),
         run_admin_cmd=MagicMock(return_value=MagicMock(returncode=0)),
-        update_live_owntone_runtime=MagicMock(),
-        update_playback_input_config=MagicMock(),
-        update_live_silence_seconds=MagicMock(return_value=True),
-        request_config_reload=MagicMock(),
         _set_flash_cookie=MagicMock(),
         send_setup_page=MagicMock(),
         build_top_banner_html=MagicMock(return_value=("", "")),
     )
+
+    @staticmethod
+    @contextmanager
+    def _live_effects_patched():
+        """The live effects the form's save would otherwise push."""
+        with patch("autostream_live_config.update_live_owntone_runtime"), \
+                patch("autostream_live_config._hooks"), \
+                patch("autostream_live_config.update_live_silence_seconds", return_value=True), \
+                patch("autostream_runtime.request_config_reload"):
+            yield
 
     def _run_post(self, tmp_path, form_fields, extra_cfg=None):
         """Call the actual handle_setup_post and return the saved config dict."""
@@ -959,7 +965,8 @@ class TestPostHandlerChannel:
         state = MagicMock()
         state.config_path = str(config_path)
 
-        with patch.multiple("autostream_webui_post_handlers", **self._POST_PATCHES):
+        with patch.multiple("autostream_webui_post_handlers", **self._POST_PATCHES), \
+                self._live_effects_patched():
             ph.handle_setup_post(handler, state, MagicMock(), urlencode(form_fields))
 
         return json.loads(config_path.read_text(encoding="utf-8"))
@@ -999,7 +1006,8 @@ class TestPostHandlerChannel:
 
         # Form: channel → dev, auto_update unchanged (False → False via sentinel absent)
         form = {"updates_channel_present": "1", "updates_prerelease_channel": "1"}
-        with patch.multiple("autostream_webui_post_handlers", **patches):
+        with patch.multiple("autostream_webui_post_handlers", **patches), \
+                self._live_effects_patched():
             ph.handle_setup_post(handler, state, MagicMock(), urlencode(form))
 
         mock_admin.assert_not_called()

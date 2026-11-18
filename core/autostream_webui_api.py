@@ -62,36 +62,27 @@ from autostream_bluetooth_client import (
     bluetooth_paired_row_text,
     bluetooth_services_enabled,
     classify_loopback_hw,
-    is_loopback_playback,
 )
 from autostream_config import (
-    AUDIO_PATH_CHOICES,
     BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
-    SILENCE_THRESHOLD_MAX_DBFS,
-    SILENCE_THRESHOLD_MIN_DBFS,
     VALID_AIRPLAY_MODES,
     input_type_label,
-    input_type_silence_threshold_dbfs,
     is_valid_monitor_device_id,
     load_config,
     load_state,
     normalize_airplay_mode,
     normalize_input_type,
     normalize_output_usage_poll_interval,
-    normalize_track_id_analysis_lead_in_seconds,
-    normalize_track_id_refresh_seconds,
-    normalize_track_id_track_change_silence_seconds,
     normalize_update_channel,
     parse_config,
     save_config,
     save_state,
-    set_input_type,
 )
-from autostream_rpi import get_appliance_id, is_high_performance_pi
+from autostream_rpi import get_appliance_id
 from autostream_dials import (
     AUTH_AUTHORIZED,
     AUTH_UNAVAILABLE,
@@ -100,21 +91,14 @@ from autostream_dials import (
     dial_authorization,
     dial_speaks_v2,
 )
-from autostream_runtime import request_config_reload
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, session_source_input_index, store
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
-    apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
-    update_live_dynamic_rate_matching,
-    update_live_input_type,
-    update_live_owntone_runtime,
-    update_live_silence_seconds,
-    update_live_silence_threshold_dbfs,
     update_playback_input_config,
 )
 from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
@@ -133,9 +117,7 @@ from autostream_appliance_models import (
     sanitize_output_body,
 )
 from autostream_player_service import (
-    push_resample_quality,
     save_setting,
-    sync_monitor_args_for_audio_path,
 )
 from autostream_sysutils import (
     bt_onboard_set,
@@ -165,11 +147,8 @@ from autostream_webui_service_schema import (
     _time_display,
 )
 from autostream_webui_state import WebUIState
-from autostream_debounce import default_debouncer
 from autostream_settings_schema import (
-    CrossFieldValidationError,
     LiveClass,
-    cross_validate_capture_device_unique,
     cross_validate_hostname_visibility_cascade,
     get_field_spec,
     register_field,
@@ -1597,330 +1576,6 @@ def _validate_update_channel(value: object) -> str:
     return normalize_update_channel(value)
 
 
-def _validate_volume_percent(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    v = int(value)
-    if v < 0 or v > 100:
-        raise ValueError("Value must be between 0 and 100")
-    return v
-
-
-def _validate_silence_seconds(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    v = int(value)
-    if v < 5 or v > 300:
-        raise ValueError("Value must be between 5 and 300")
-    return v
-
-
-def _validate_output_name(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("Value must be a string")
-    v = value.strip()
-    if not v:
-        raise ValueError("Value must be a non-empty string")
-    return v
-
-
-def _live_owntone_name(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    return bool(update_live_owntone_runtime(
-        output_name=str(value),
-        volume_percent=snap.owntone.volume_percent,
-        output_offsets_ms=snap.owntone.output_offsets_ms,
-        output_airplay_modes=snap.owntone.output_airplay_modes,
-    ))
-
-
-def _live_owntone_volume(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    return bool(update_live_owntone_runtime(
-        output_name=snap.owntone.output_name,
-        volume_percent=int(value),
-        output_offsets_ms=snap.owntone.output_offsets_ms,
-        output_airplay_modes=snap.owntone.output_airplay_modes,
-    ))
-
-
-def _live_silence(state: object, value: object) -> bool:
-    return bool(update_live_silence_seconds(int(value)))
-
-
-def _validate_audio_path(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"Value must be one of {', '.join(AUDIO_PATH_CHOICES)}")
-    v = value.strip().lower()
-    if v not in AUDIO_PATH_CHOICES:
-        raise ValueError(f"Value must be one of {', '.join(AUDIO_PATH_CHOICES)}")
-    if v == "max" and not is_high_performance_pi():
-        # Defends against a stale browser tab (the Best tier is filtered
-        # out of the rendered options on this hardware, see settings_card_html
-        # in autostream_webui_page_setup.py) or a hand-crafted request.
-        raise ValueError("Best quality is only available on Pi 4/5-class hardware")
-    return v
-
-
-def _live_audio_path(state: object, value: object) -> bool:
-    """Web UI change flow: persist happens before this runs (send_settings_
-    post_json commits via settings.update() first, same as every other live
-    function here); this pushes the two derived knobs.
-
-    Both steps are individually tolerant of backend/transport failure (see
-    push_resample_quality()/sync_monitor_args_for_audio_path()'s own
-    docstrings -- stock OwnTone, an old owntone-mini, or a transient error
-    are all logged and left for the next reconcile pass, never raised), so
-    this always reports success once the setting itself is saved -- matching
-    the tolerated-to-fail treatment already used for the daemon-side repeat
-    policy push elsewhere in this codebase.
-    """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    base_url = snap.owntone.base_url
-    audio_path = str(value)
-
-    push_resample_quality(base_url, audio_path, timeout=3.0)
-    sync_monitor_args_for_audio_path(base_url, audio_path, timeout=3.0)
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Validators, debounce helpers, and live functions
-# ---------------------------------------------------------------------------
-
-def _validate_capture_device(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("Value must be a string")
-    v = value.strip()
-    if not v:
-        raise ValueError("Value must be a non-empty string")
-    # Reject the ASBT loopback's PLAYBACK side: it is an internal device the
-    # pump feeds, never a valid capture-device value -- a stale saved value
-    # or a hand-crafted request could otherwise resurface it (see the Setup
-    # page's synthetic "(not currently detected)" option, build_opts in
-    # autostream_webui_page_setup.py). Only rejected when the Bluetooth-input
-    # subsystem is installed, so appliances without it see byte-identical
-    # validator behaviour.
-    if bluetooth_installed() and is_loopback_playback(v):
-        raise ValueError(
-            "That is the internal Bluetooth loopback device; select the Bluetooth input entry instead"
-        )
-    return v
-
-
-def _validate_track_id_lead_in(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    return normalize_track_id_analysis_lead_in_seconds(value)
-
-
-def _validate_track_id_refresh(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    return normalize_track_id_refresh_seconds(value)
-
-
-def _validate_track_id_silence(value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    return normalize_track_id_track_change_silence_seconds(value)
-
-
-# Debounce helpers.
-#
-# _debounce_coordinator_reload keeps its own ad hoc threading.Timer/lock/
-# global trio rather than the shared primitive below: the reload flag it
-# signals is already an idempotent threading.Event, so this timer may be
-# deletable outright rather than migrated onto the shared debouncer. Do
-# not touch it here.
-#
-# The coordinator reload timer calls save_now() before signalling so the
-# coordinator always reads up-to-date settings from disk.
-
-_coordinator_reload_lock = threading.Lock()
-_coordinator_reload_timer: Optional[threading.Timer] = None
-
-
-def _debounce_coordinator_reload(state: object, delay: float = 0.3) -> None:
-    global _coordinator_reload_timer
-    with _coordinator_reload_lock:
-        if _coordinator_reload_timer is not None:
-            _coordinator_reload_timer.cancel()
-
-        def _do_reload():
-            from autostream_settings import SettingsStore as _SettingsStore
-            settings = getattr(state, "settings", None)
-            if isinstance(settings, _SettingsStore):
-                settings.save_now()
-            request_config_reload()
-
-        _coordinator_reload_timer = threading.Timer(delay, _do_reload)
-        _coordinator_reload_timer.daemon = True
-        _coordinator_reload_timer.start()
-
-
-# The one genuine debounce-of-a-live-push case among this module's two
-# reload timers: built on the shared autostream_debounce.Debouncer (one
-# implementation, greppable) instead of its own bespoke
-# threading.Timer/lock/global trio. Same coalescing behaviour: a call
-# arriving within `delay` of the previous one replaces it, and only the
-# last-registered snapshot read actually runs.
-def _debounce_track_id_rebuild(state: object, delay: float = 0.3) -> None:
-    def _do_rebuild():
-        from autostream_settings import SettingsStore as _SettingsStore
-        settings = getattr(state, "settings", None)
-        if isinstance(settings, _SettingsStore):
-            try:
-                snap = settings.snapshot()
-                apply_track_id_config_live_from_parsed(snap)
-            except Exception:
-                logging.exception("debounced track-ID rebuild failed")
-
-    default_debouncer().trigger("track_id_rebuild", delay, _do_rebuild)
-
-
-def _live_capture_1(state: object, value: object) -> bool:
-    _debounce_coordinator_reload(state)
-    return True
-
-
-def _live_capture_2(state: object, value: object) -> bool:
-    _debounce_coordinator_reload(state)
-    return True
-
-
-def _live_audio1_enabled(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
-        snap = settings.snapshot()
-        update_playback_input_config(
-            1,
-            enabled=bool(value),
-            is_turntable=snap.audio1.is_turntable,
-            input_type=snap.audio1.input_type,
-            is_bluetooth=classify_loopback_hw(snap.audio1.capture_device) == "capture",
-            stylus_life_hours=snap.audio1.stylus_life_hours,
-            belt_life_hours=snap.audio1.belt_life_hours,
-            belt_life_years=snap.audio1.belt_life_years,
-            bearing_life_hours=snap.audio1.bearing_life_hours,
-            bearing_life_years=snap.audio1.bearing_life_years,
-        )
-    _debounce_coordinator_reload(state)
-    return True
-
-
-def _live_audio2_enabled(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
-        snap = settings.snapshot()
-        update_playback_input_config(
-            2,
-            enabled=bool(value),
-            is_turntable=snap.audio2.is_turntable,
-            input_type=snap.audio2.input_type,
-            is_bluetooth=classify_loopback_hw(snap.audio2.capture_device) == "capture",
-            stylus_life_hours=snap.audio2.stylus_life_hours,
-            belt_life_hours=snap.audio2.belt_life_hours,
-            belt_life_years=snap.audio2.belt_life_years,
-            bearing_life_hours=snap.audio2.bearing_life_hours,
-            bearing_life_years=snap.audio2.bearing_life_years,
-        )
-    _debounce_coordinator_reload(state)
-    return True
-
-
-def _validate_input_type(value: object) -> str:
-    if not isinstance(value, str) or normalize_input_type(value, default="") == "":
-        raise ValueError("Value must be one of turntable, cd, line")
-    return normalize_input_type(value)
-
-
-def _validate_silence_threshold_dbfs(value: object) -> float:
-    import math
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    v = float(value)
-    if not math.isfinite(v) or v < SILENCE_THRESHOLD_MIN_DBFS or v > SILENCE_THRESHOLD_MAX_DBFS:
-        raise ValueError(
-            f"Value must be between {SILENCE_THRESHOLD_MIN_DBFS:.0f} and {SILENCE_THRESHOLD_MAX_DBFS:.0f}"
-        )
-    return float(round(v))
-
-
-def _sync_playback_input_config(snap, input_index: int) -> None:
-    """Hand one input's current settings to the playback tracker."""
-    a = snap.audio1 if input_index == 1 else snap.audio2
-    update_playback_input_config(
-        input_index,
-        enabled=snap.audio1_enabled if input_index == 1 else snap.audio2_enabled,
-        is_turntable=a.is_turntable,
-        input_type=a.input_type,
-        is_bluetooth=classify_loopback_hw(a.capture_device) == "capture",
-        stylus_life_hours=a.stylus_life_hours,
-        belt_life_hours=a.belt_life_hours,
-        belt_life_years=a.belt_life_years,
-        bearing_life_hours=a.bearing_life_hours,
-        bearing_life_years=a.bearing_life_years,
-    )
-
-
-def _live_input_type(state: object, input_index: int, value: object) -> bool:
-    # Runs after the store has committed the type, flag and preset, so the
-    # snapshot already holds the threshold to push with the type.
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
-        snap = settings.snapshot()
-        _sync_playback_input_config(snap, input_index)
-        a = snap.audio1 if input_index == 1 else snap.audio2
-        return update_live_input_type(input_index, a.input_type, a.silence_threshold_dbfs)
-    return update_live_input_type(
-        input_index, value, input_type_silence_threshold_dbfs(value))
-
-
-def _live_input_type_1(state: object, value: object) -> bool:
-    return _live_input_type(state, 1, value)
-
-
-def _live_input_type_2(state: object, value: object) -> bool:
-    return _live_input_type(state, 2, value)
-
-
-def _live_silence_threshold_1(state: object, value: object) -> bool:
-    return update_live_silence_threshold_dbfs(1, float(value))
-
-
-def _live_silence_threshold_2(state: object, value: object) -> bool:
-    return update_live_silence_threshold_dbfs(2, float(value))
-
-
-def _live_dynamic_rate_matching_1(state: object, value: object) -> bool:
-    return update_live_dynamic_rate_matching(1, bool(value))
-
-
-def _live_dynamic_rate_matching_2(state: object, value: object) -> bool:
-    return update_live_dynamic_rate_matching(2, bool(value))
-
-
-def _live_track_id(state: object, value: object) -> bool:
-    _debounce_track_id_rebuild(state)
-    return True
-
-
 class _DuplicateCaptureDeviceError(Exception):
     """Raised by ``send_settings_post_json``'s mutator to signal, atomically
     under ``SettingsStore._lock``, that the capture device being assigned is
@@ -1956,12 +1611,6 @@ def _reg_settings_field(path, section, key, validate, live=None, form_coerce=Non
     return (section, key, validate, live)
 
 
-def _mutate_input_type(raw: dict, section: str, key: str, value: object) -> None:
-    """FieldSpec.mutate for audio{1,2}.input_type: set_input_type also keeps
-    the turntable flag in step and moves the threshold to the new preset."""
-    set_input_type(raw, int(section[-1]), value)
-
-
 _SETTINGS_FIELDS: dict = {
     # Personalisation (no live effect)
     "webui.dark_mode":                          _reg_settings_field("webui.dark_mode", "webui", "dark_mode", _validate_bool),
@@ -1971,35 +1620,6 @@ _SETTINGS_FIELDS: dict = {
     "webui.control_other_appliances":           _reg_settings_field("webui.control_other_appliances", "webui", "control_other_appliances", _validate_bool),
     "webui.output_usage_poll_interval_seconds": _reg_settings_field("webui.output_usage_poll_interval_seconds", "webui", "output_usage_poll_interval_seconds", _validate_poll_interval, form_coerce=normalize_output_usage_poll_interval),
     "updates.update_channel":                   _reg_settings_field("updates.update_channel", "updates", "update_channel", _validate_update_channel),
-    # Audio input gain/EQ (live: monitor)
-    # OwnTone playback defaults (live: owntone runtime)
-    "owntone.output_name":                      _reg_settings_field("owntone.output_name", "owntone", "output_name", _validate_output_name, _live_owntone_name, live_class=LiveClass.LIVE),
-    "owntone.volume_percent":                   _reg_settings_field("owntone.volume_percent", "owntone", "volume_percent", _validate_volume_percent, _live_owntone_volume, live_class=LiveClass.LIVE),
-    # Silence detection (live: monitor)
-    "general.silence_seconds":                  _reg_settings_field("general.silence_seconds", "general", "silence_seconds", _validate_silence_seconds, _live_silence, live_class=LiveClass.LIVE),
-    # Audio Path (live: owntone resample_quality push + monitor --src args)
-    "general.audio_path":                       _reg_settings_field("general.audio_path", "general", "audio_path", _validate_audio_path, _live_audio_path, live_class=LiveClass.RELOAD),
-    # Audio input capture device (live: coordinator reload debounce)
-    "audio1.capture_device":                    _reg_settings_field("audio1.capture_device", "audio1", "capture_device", _validate_capture_device, _live_capture_1, cross_validate=cross_validate_capture_device_unique, live_class=LiveClass.RELOAD),
-    "audio2.capture_device":                    _reg_settings_field("audio2.capture_device", "audio2", "capture_device", _validate_capture_device, _live_capture_2, cross_validate=cross_validate_capture_device_unique, live_class=LiveClass.RELOAD),
-    # audio1 enabled (live: playback tracker + coordinator reload debounce)
-    "audio1.enabled":                           _reg_settings_field("audio1.enabled", "audio1", "enabled", _validate_bool, _live_audio1_enabled, live_class=LiveClass.RELOAD),
-    # Audio2 enabled (live: playback tracker + coordinator reload debounce)
-    "audio2.enabled":                           _reg_settings_field("audio2.enabled", "audio2", "enabled", _validate_bool, _live_audio2_enabled, live_class=LiveClass.RELOAD),
-    # Input type (one store update writes the type, the turntable flag and the preset threshold; live: playback tracker and daemon push, never a reload)
-    "audio1.input_type":                        _reg_settings_field("audio1.input_type", "audio1", "input_type", _validate_input_type, _live_input_type_1, mutate=_mutate_input_type, live_class=LiveClass.LIVE),
-    "audio2.input_type":                        _reg_settings_field("audio2.input_type", "audio2", "input_type", _validate_input_type, _live_input_type_2, mutate=_mutate_input_type, live_class=LiveClass.LIVE),
-    # Sensitivity in whole dB (live: daemon push, never a reload)
-    "audio1.silence_threshold":                 _reg_settings_field("audio1.silence_threshold", "audio1", "silence_threshold", _validate_silence_threshold_dbfs, _live_silence_threshold_1, live_class=LiveClass.LIVE),
-    "audio2.silence_threshold":                 _reg_settings_field("audio2.silence_threshold", "audio2", "silence_threshold", _validate_silence_threshold_dbfs, _live_silence_threshold_2, live_class=LiveClass.LIVE),
-    # Dynamic Rate Matching (live: daemon push, never a reload)
-    "audio1.dynamic_rate_matching":             _reg_settings_field("audio1.dynamic_rate_matching", "audio1", "dynamic_rate_matching", _validate_bool, _live_dynamic_rate_matching_1, live_class=LiveClass.LIVE),
-    "audio2.dynamic_rate_matching":             _reg_settings_field("audio2.dynamic_rate_matching", "audio2", "dynamic_rate_matching", _validate_bool, _live_dynamic_rate_matching_2, live_class=LiveClass.LIVE),
-    # Track identification (live: track-ID rebuild debounce)
-    "track_identification.enabled":             _reg_settings_field("track_identification.enabled", "track_identification", "enabled", _validate_bool, _live_track_id, live_class=LiveClass.RELOAD),
-    "track_identification.analysis_lead_in_seconds": _reg_settings_field("track_identification.analysis_lead_in_seconds", "track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id, form_coerce=normalize_track_id_analysis_lead_in_seconds, live_class=LiveClass.RELOAD),
-    "track_identification.refresh_seconds":     _reg_settings_field("track_identification.refresh_seconds", "track_identification", "refresh_seconds", _validate_track_id_refresh, _live_track_id, form_coerce=normalize_track_id_refresh_seconds, live_class=LiveClass.RELOAD),
-    "track_identification.track_change_silence_seconds": _reg_settings_field("track_identification.track_change_silence_seconds", "track_identification", "track_change_silence_seconds", _validate_track_id_silence, _live_track_id, form_coerce=normalize_track_id_track_change_silence_seconds, live_class=LiveClass.RELOAD),
 }
 
 
@@ -2013,6 +1633,17 @@ class _LateFields(Mapping):
         "audio1.eq_40hz_db", "audio1.eq_100hz_db", "audio1.eq_8khz_db",
         "audio2.eq_40hz_db", "audio2.eq_100hz_db", "audio2.eq_8khz_db",
         "repeat.enabled", "repeat.codec", "repeat.target_minutes",
+        "owntone.output_name", "owntone.volume_percent",
+        "general.silence_seconds", "general.audio_path",
+        "audio1.capture_device", "audio2.capture_device",
+        "audio1.enabled", "audio2.enabled",
+        "audio1.input_type", "audio2.input_type",
+        "audio1.silence_threshold", "audio2.silence_threshold",
+        "audio1.dynamic_rate_matching", "audio2.dynamic_rate_matching",
+        "track_identification.enabled",
+        "track_identification.analysis_lead_in_seconds",
+        "track_identification.refresh_seconds",
+        "track_identification.track_change_silence_seconds",
     )
 
     def __getitem__(self, path):
@@ -2169,32 +1800,31 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
             })
             return
 
-    # Dispatches through SettingsStore.set()'s internal "already
-    # normalised" entry point -- the mutation (including the input type's
-    # non-flat write and the hostname-visibility cascade) and the live-push
-    # side effect are the schema row's own `mutate`/`cross_validate`/
-    # `live_fn` (see the row registrations above), not logic hand-rolled at
-    # this call site. The authoritative cross-input exclusivity check is
-    # `cross_validate_capture_device_unique`, run from inside `_set_normalized`
-    # against the raw copy about to be committed -- same atomicity guarantee
-    # (under SettingsStore._lock) as any single-field mutator.
-    spec = get_field_spec(field)
-    try:
-        outcome = settings._set_normalized(spec, normalized, state=state)
-    except CrossFieldValidationError as e:
-        send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
+    # The mutation (including the input type's non-flat write and the
+    # hostname-visibility cascade) and the live-push side effect are the schema
+    # row's own `mutate`/`cross_validate`/`live_fn`, applied by the settings
+    # intent, not logic hand-rolled at this call site. The authoritative
+    # cross-input exclusivity check is `cross_validate_capture_device_unique`,
+    # run from inside the store's commit against the raw copy about to be
+    # committed -- same atomicity guarantee (under SettingsStore._lock) as any
+    # single-field mutator.
+    reply = submit(Intent(
+        "settings.apply", {"changes": ((field, normalized),)}, Origin.USER, "webui",
+        context=state))
+    if not reply.ok:
+        if "invalid" in reply.result:
+            send_json(handler, 400, {"ok": False, "field": field, "error": reply.result["invalid"]})
+        else:
+            send_json(handler, 200, {"ok": False, "field": field, "error": "Internal error"})
         return
-    except Exception:
-        logging.exception("send_settings_post_json: store update failed")
-        send_json(handler, 200, {"ok": False, "field": field, "error": "Internal error"})
-        return
+    outcome = reply.result["outcomes"][0]
 
     resp: dict = {"ok": True, "field": field, "value": normalized}
     if live_fn is not None:
-        resp["live"] = outcome.live
-        if not outcome.live:
-            resp["live_error"] = outcome.live_error
-    # outcome.reload_scheduled (SetOutcome.reload_scheduled) is
+        resp["live"] = outcome["live"]
+        if not outcome["live"]:
+            resp["live_error"] = outcome["live_error"]
+    # outcome["reload_scheduled"] (SetOutcome.reload_scheduled) is
     # deliberately NOT added to the wire response here -- this endpoint's
     # response shape must stay byte-identical to what callers already
     # depend on. The field is available to any in-process caller of
@@ -2271,11 +1901,6 @@ def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> No
 # Dedicated transaction endpoints for privileged/external operations
 # -----------------------------------------------------------------------------
 
-# Serializes advertisement preference changes.
-# Must not be held while CONFIG_IO_LOCK is held, and vice versa.
-_ADVERTISE_LOCK = threading.Lock()
-
-
 def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/settings/hostname -- change the system hostname.
 
@@ -2317,8 +1942,8 @@ def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
 def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/settings/advertisement -- toggle peer advertisement.
 
-    Calls reconcile_appliance_announcement(); persists to store only on
-    success. Uses _ADVERTISE_LOCK to serialize concurrent calls.
+    The advertisement intent applies the preference and persists it to the
+    store only on success.
     """
     try:
         payload = json.loads(body or "{}")
@@ -2332,29 +1957,19 @@ def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
         return
 
     try:
-        from autostream_appliances import reconcile_appliance_announcement
-        from autostream_webui_common import get_app_version
-        with _ADVERTISE_LOCK:
-            ok = reconcile_appliance_announcement(get_app_version(), value)
-            if not ok:
-                logging.warning(
-                    "send_advertisement_post_json: admin call failed for advertise=%s", value
-                )
-                send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
-                return
-            from autostream_settings import SettingsStore as _SettingsStore
-            settings = getattr(state, "settings", None)
-            if isinstance(settings, _SettingsStore):
-                try:
-                    settings.update(lambda raw: raw.setdefault("webui", {}).update({"advertise_appliance": value}))
-                except Exception:
-                    logging.exception("send_advertisement_post_json: store write failed")
-                    send_json(handler, 200, {"ok": True, "value": value,
-                                             "warning": "Preference applied but could not be saved — will revert on restart"})
-                    return
+        version = get_app_version()
     except Exception:
         logging.exception("send_advertisement_post_json: unexpected failure")
         send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
+        return
+    reply = submit(Intent(
+        "settings.advertisement", {"value": value, "version": version}, Origin.USER, "webui",
+        context=state))
+    if not reply.ok:
+        send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
+        return
+    if "warning" in reply.result:
+        send_json(handler, 200, {"ok": True, "value": value, "warning": reply.result["warning"]})
         return
 
     send_json(handler, 200, {"ok": True, "value": value})
@@ -2363,8 +1978,9 @@ def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
 def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/settings/auto-update -- toggle the automatic update timer.
 
-    Calls the toggle-update-timer admin command; persists to store only on
-    success so a failed privileged call cannot commit an incorrect value.
+    The auto-update intent calls the toggle-update-timer admin command and
+    persists to the store only on success, so a failed privileged call cannot
+    commit an incorrect value.
     """
     try:
         payload = json.loads(body or "{}")
@@ -2377,26 +1993,14 @@ def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
 
-    verb = "enable" if value else "disable"
-    result = run_admin_cmd(["toggle-update-timer", verb], timeout=5.0)
-    if result.returncode != 0:
-        logging.warning(
-            "send_auto_update_post_json: toggle-update-timer %s failed (rc=%d): %s",
-            verb, result.returncode, (result.stderr or "").strip(),
-        )
-        send_json(handler, 200, {"ok": False, "error": f"Auto-update timer could not be {verb}d"})
+    reply = submit(Intent(
+        "settings.auto_update", {"value": value}, Origin.USER, "webui", context=state))
+    if not reply.ok:
+        send_json(handler, 200, {"ok": False, "error": reply.error})
         return
-
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
-        try:
-            settings.update(lambda raw: raw.setdefault("updates", {}).update({"auto_update": value}))
-        except Exception:
-            logging.exception("send_auto_update_post_json: store write failed")
-            send_json(handler, 200, {"ok": True, "value": value,
-                                     "warning": "Preference applied but could not be saved — will revert on restart"})
-            return
+    if "warning" in reply.result:
+        send_json(handler, 200, {"ok": True, "value": value, "warning": reply.result["warning"]})
+        return
 
     send_json(handler, 200, {"ok": True, "value": value})
 
@@ -2409,15 +2013,11 @@ def send_save_now_json(handler, state: WebUIState) -> None:
     Returns an error if the store is unavailable or the save fails; the
     caller should treat a failure as a barrier and not proceed.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        send_json(handler, 200, {"ok": False, "error": "Settings store not available"})
-        return
-    if settings.save_now():
+    reply = submit(Intent("settings.save", {}, Origin.USER, "webui", context=state))
+    if reply.ok:
         send_json(handler, 200, {"ok": True})
     else:
-        send_json(handler, 200, {"ok": False, "error": "Settings could not be saved"})
+        send_json(handler, 200, {"ok": False, "error": reply.error})
 
 
 # ---------------------------------------------------------------------------
@@ -2428,12 +2028,13 @@ def _owntone_update_live_runtime(state: WebUIState) -> None:
     """Re-apply owntone runtime from the current store or config snapshot."""
     try:
         snap = _config_snapshot(state)
-        update_live_owntone_runtime(
-            output_name=snap.owntone.output_name,
-            volume_percent=snap.owntone.volume_percent,
-            output_offsets_ms=snap.owntone.output_offsets_ms,
-            output_airplay_modes=snap.owntone.output_airplay_modes,
-        )
+        submit(Intent(
+            "settings.form_apply",
+            {"steps": (("owntone_runtime", {
+                "output_name": snap.owntone.output_name,
+                "volume_percent": snap.owntone.volume_percent,
+            }),)},
+            Origin.USER, "webui", context=snap))
     except Exception:
         logging.exception("_owntone_update_live_runtime failed")
 

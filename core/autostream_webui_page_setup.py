@@ -40,10 +40,6 @@ except ImportError:
     def _get_dial_sightings() -> list:  # type: ignore[misc]
         return []
 
-from autostream_core import (
-    update_live_owntone_runtime,
-    update_playback_input_config,
-)
 from autostream_state import store
 from autostream_players import (
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,

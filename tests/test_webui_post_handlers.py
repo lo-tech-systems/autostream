@@ -561,13 +561,13 @@ def _call_setup_post(form_data: dict, tmp_path: Path,
          patch("autostream_webui_post_handlers.set_system_hostname", side_effect=fake_set_hostname), \
          patch("autostream_webui_post_handlers.run_admin_cmd",
                return_value=MagicMock(returncode=admin_rc, stderr="")), \
-         patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-         patch("autostream_webui_post_handlers.update_playback_input_config"), \
+         patch("autostream_live_config.update_live_owntone_runtime"), \
+         patch("autostream_live_config._hooks"), \
          patch("autostream_webui_post_handlers.send_setup_page",
                side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
          patch("autostream_webui_post_handlers._set_flash_cookie"), \
          patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-         patch("autostream_webui_post_handlers.request_config_reload"):
+         patch("autostream_runtime.request_config_reload"):
         # Configure parse_config mock to return something plausible
         p = mock_parse.return_value
         p.audio1.capture_device = "hw:0,0"
@@ -656,11 +656,11 @@ class TestSetupPost:
              patch("autostream_webui_post_handlers.set_system_hostname"), \
              patch("autostream_webui_post_handlers.run_admin_cmd",
                    return_value=MagicMock(returncode=0, stderr="")), \
-             patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-             patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             patch("autostream_live_config.update_live_owntone_runtime"), \
+             patch("autostream_live_config._hooks"), \
              patch("autostream_webui_post_handlers._set_flash_cookie"), \
              patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-             patch("autostream_webui_post_handlers.request_config_reload"):
+             patch("autostream_runtime.request_config_reload"):
             p = mp.return_value
             p.audio1.capture_device = "hw:0,0"
             p.audio1.silence_threshold_dbfs = -50.0
@@ -747,13 +747,13 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.set_system_hostname"), \
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
-             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_live_config.update_live_owntone_runtime"), \
+             _patch("autostream_live_config._hooks"), \
              _patch("autostream_webui_post_handlers.send_setup_page",
                     side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
              _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-             _patch("autostream_webui_post_handlers.request_config_reload"):
+             _patch("autostream_runtime.request_config_reload"):
             p = mp.return_value
             p.audio1.capture_device = "hw:0,0"
             p.audio1.silence_threshold_dbfs = -50.0
@@ -826,12 +826,12 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.set_system_hostname"), \
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
-             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_live_config.update_live_owntone_runtime"), \
+             _patch("autostream_live_config._hooks"), \
              _patch("autostream_webui_post_handlers.send_setup_page"), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
              _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-             _patch("autostream_webui_post_handlers.request_config_reload",
+             _patch("autostream_runtime.request_config_reload",
                     side_effect=lambda: reload_calls.append(True)):
             p = mp.return_value
             p.audio1.capture_device = "hw:0,0"   # old device
@@ -879,14 +879,14 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.set_system_hostname"), \
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
-             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_live_config.update_live_owntone_runtime"), \
+             _patch("autostream_live_config._hooks"), \
              _patch("autostream_webui_post_handlers.send_setup_page"), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
              _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-             _patch("autostream_webui_post_handlers.update_live_silence_seconds",
+             _patch("autostream_live_config.update_live_silence_seconds",
                     side_effect=lambda s: silence_calls.append(s) or True), \
-             _patch("autostream_webui_post_handlers.request_config_reload",
+             _patch("autostream_runtime.request_config_reload",
                     side_effect=lambda: reload_calls.append(True)):
             p = mp.return_value
             p.audio1.capture_device = "hw:0,0"
@@ -933,14 +933,14 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.set_system_hostname"), \
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
-             _patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-             _patch("autostream_webui_post_handlers.update_playback_input_config"), \
+             _patch("autostream_live_config.update_live_owntone_runtime"), \
+             _patch("autostream_live_config._hooks"), \
              _patch("autostream_webui_post_handlers.send_setup_page"), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
              _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-             _patch("autostream_webui_post_handlers.update_live_silence_seconds",
+             _patch("autostream_live_config.update_live_silence_seconds",
                     return_value=False), \
-             _patch("autostream_webui_post_handlers.request_config_reload",
+             _patch("autostream_runtime.request_config_reload",
                     side_effect=lambda: reload_calls.append(True)):
             p = mp.return_value
             p.audio1.capture_device = "hw:0,0"
@@ -1005,18 +1005,20 @@ def _call_setup_post_advertise(
     with patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
          patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
          patch("autostream_webui_post_handlers.save_config", side_effect=fake_save), \
+         patch("autostream_live_config.load_config", return_value=cfg), \
+         patch("autostream_live_config.save_config", side_effect=fake_save), \
          patch("autostream_webui_post_handlers.mark_configured"), \
          patch("autostream_webui_post_handlers.get_system_hostname", return_value="host"), \
          patch("autostream_webui_post_handlers.set_system_hostname"), \
          patch("autostream_webui_post_handlers.run_admin_cmd",
                return_value=MagicMock(returncode=0, stderr="")), \
-         patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-         patch("autostream_webui_post_handlers.update_playback_input_config"), \
+         patch("autostream_live_config.update_live_owntone_runtime"), \
+         patch("autostream_live_config._hooks"), \
          patch("autostream_webui_post_handlers.send_setup_page",
                side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
          patch("autostream_webui_post_handlers._set_flash_cookie"), \
          patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-         patch("autostream_webui_post_handlers.request_config_reload"), \
+         patch("autostream_runtime.request_config_reload"), \
          patch("autostream_appliances.reconcile_appliance_announcement",
                side_effect=fake_reconcile), \
          patch("autostream_webui_common.get_app_version", return_value="v1.0"):

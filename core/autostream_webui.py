@@ -47,6 +47,7 @@ from autostream_core import (
     run_autostream,
 )
 import autostream_runtime as runtime
+from autostream_intents import Intent, Origin, submit
 
 from autostream_bluetooth_client import BluetoothClient, bluetooth_installed
 
@@ -1502,13 +1503,13 @@ def _rate_follow_check(state, bluetooth_status: Optional[dict],
         and rate != last_cable_rate
         and _bluetooth_input_configured(state)
     ):
-        from autostream_runtime import request_config_reload
         logging.info(
             "Bluetooth transport rate changed %d Hz -> %d Hz; "
             "reloading monitor inputs to renegotiate the loopback.",
             last_cable_rate, rate,
         )
-        request_config_reload()
+        submit(Intent("settings.reload", {"reason": "bluetooth rate follow"},
+                      Origin.SYSTEM, "coordinator"))
     return rate
 
 
@@ -1541,13 +1542,13 @@ def _lockout_heal_check(state, bluetooth_status: Optional[dict],
         and cooldown_elapsed
         and _bluetooth_input_configured(state)
     ):
-        from autostream_runtime import request_config_reload
         logging.info(
             "Bluetooth loopback held at incompatible parameters with a "
             "Bluetooth input configured; reloading monitor inputs to "
             "renegotiate the cable.",
         )
-        request_config_reload()
+        submit(Intent("settings.reload", {"reason": "bluetooth lockout heal"},
+                      Origin.SYSTEM, "coordinator"))
         lockout_streak = 0
         last_heal_reload = now
     return lockout_streak, last_heal_reload

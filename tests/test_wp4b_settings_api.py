@@ -33,13 +33,15 @@ from autostream_monitor_client import MonitorClient
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
-    _validate_capture_device,
-    _validate_track_id_lead_in,
-    _validate_track_id_refresh,
-    _validate_track_id_silence,
     send_settings_post_json,
 )
+from autostream_live_config import _validate_track_id_silence
+from autostream_live_config import _validate_track_id_refresh
+from autostream_live_config import _validate_track_id_lead_in
+from autostream_live_config import _validate_capture_device
 import autostream_monitor_client as monitor_client
+import autostream_live_config as live_config
+import autostream_runtime as runtime
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -101,6 +103,15 @@ def _make_live_monitor(input_index: int, **overrides) -> AudioMonitor:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
         mock_get_pub.side_effect = lambda path: MagicMock()
         return AudioMonitor(**defaults)
+
+
+@contextmanager
+def _playback_hook():
+    """Stand in for the coordinator's playback tracker hook; yields the mock
+    that receives the input configuration."""
+    with patch("autostream_live_config._hooks") as hooks:
+        hooks.return_value.update_playback_input_config.return_value = True
+        yield hooks.return_value.update_playback_input_config
 
 
 def _fake_connected(client):
@@ -214,50 +225,50 @@ class TestSettingsFieldsWp4bPresent:
 class TestWp4bStorePersistence:
     def test_capture_device_1_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_coordinator_reload"):
+        with patch("autostream_live_config._debounce_coordinator_reload"):
             code, resp = _post_resp(state, "audio1.capture_device", "hw:1,0")
         assert resp["ok"] is True
         assert store.snapshot().audio1.capture_device == "hw:1,0"
 
     def test_capture_device_2_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_coordinator_reload"):
+        with patch("autostream_live_config._debounce_coordinator_reload"):
             code, resp = _post_resp(state, "audio2.capture_device", "plughw:2,0")
         assert resp["ok"] is True
         assert store.snapshot().audio2.capture_device == "plughw:2,0"
 
     def test_audio2_enabled_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_coordinator_reload"), \
-             patch("autostream_webui_api.update_playback_input_config", return_value=True):
+        with patch("autostream_live_config._debounce_coordinator_reload"), \
+             _playback_hook():
             code, resp = _post_resp(state, "audio2.enabled", True)
         assert resp["ok"] is True
         assert store.snapshot().audio2_enabled is True
 
     def test_track_id_enabled_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_track_id_rebuild"):
+        with patch("autostream_live_config._debounce_track_id_rebuild"):
             code, resp = _post_resp(state, "track_identification.enabled", True)
         assert resp["ok"] is True
         assert store.snapshot().track_identification.enabled is True
 
     def test_track_id_lead_in_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_track_id_rebuild"):
+        with patch("autostream_live_config._debounce_track_id_rebuild"):
             code, resp = _post_resp(state, "track_identification.analysis_lead_in_seconds", 5)
         assert resp["ok"] is True
         assert store.snapshot().track_identification.analysis_lead_in_seconds == 5
 
     def test_track_id_refresh_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_track_id_rebuild"):
+        with patch("autostream_live_config._debounce_track_id_rebuild"):
             code, resp = _post_resp(state, "track_identification.refresh_seconds", 300)
         assert resp["ok"] is True
         assert store.snapshot().track_identification.refresh_seconds == 300
 
     def test_track_id_silence_stored(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_track_id_rebuild"):
+        with patch("autostream_live_config._debounce_track_id_rebuild"):
             code, resp = _post_resp(state, "track_identification.track_change_silence_seconds", 1.5)
         assert resp["ok"] is True
         assert store.snapshot().track_identification.track_change_silence_seconds == pytest.approx(1.5)
@@ -267,13 +278,13 @@ class TestWp4bStorePersistence:
 
 @pytest.fixture(autouse=True)
 def _no_push_retry_sleep():
-    with patch.object(_core_mod, "LIVE_PUSH_RETRY_GAP_SECONDS", 0.0):
+    with patch.object(live_config, "LIVE_PUSH_RETRY_GAP_SECONDS", 0.0):
         yield
 
 
 @contextmanager
 def _tracker_patched():
-    with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m:
+    with _playback_hook() as m:
         yield m
 
 
@@ -356,7 +367,7 @@ class TestInputTypeRow:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
              _tracker_patched():
             code, resp = _post_resp(state, "audio1.input_type", "turntable")
         assert resp["ok"] is True
@@ -371,8 +382,8 @@ class TestInputTypeRow:
         state, store = _make_state(str(tmp_path))
         _make_live_monitor(1, silence_threshold_dbfs=-60.0)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.request_config_reload") as m_rel, \
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel, \
              _tracker_patched():
             code, resp = _post_resp(state, "audio1.input_type", "cd")
         assert resp["ok"] is True
@@ -404,7 +415,7 @@ class TestInputTypeRow:
 
     def test_tracker_told_the_type(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_playback_input_config") as m_trk:
+        with _playback_hook() as m_trk:
             _post_resp(state, "audio1.input_type", "cd")
         m_trk.assert_called_once()
         assert m_trk.call_args.kwargs["input_type"] == "cd"
@@ -441,7 +452,7 @@ class TestSilenceThresholdRow:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb:
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb:
             code, resp = _post_resp(state, "audio1.silence_threshold", -50)
         assert resp["live"] is True
         pushed = mock_client.configure_input.call_args
@@ -453,8 +464,8 @@ class TestSilenceThresholdRow:
         state, store = _make_state(str(tmp_path))
         _make_live_monitor(1)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.request_config_reload") as m_rel:
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel:
             code, resp = _post_resp(state, "audio1.silence_threshold", -50)
         assert resp["ok"] is True
         assert resp["live"] is False
@@ -508,8 +519,8 @@ class TestDynamicRateMatchingRow:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.request_config_reload") as m_rel:
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel:
             code, resp = _post_resp(state, "audio1.dynamic_rate_matching", True)
         assert resp["live"] is True
         mock_client.configure_input.assert_called_once()
@@ -525,9 +536,9 @@ class TestDynamicRateMatchingRow:
         state, store = _make_state(str(tmp_path))
         mon = _make_live_monitor(1)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)), \
-             patch("autostream_core.LIVE_PUSH_RETRY_GAP_SECONDS", 0), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.request_config_reload") as m_rel:
+             patch("autostream_live_config.LIVE_PUSH_RETRY_GAP_SECONDS", 0), \
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel:
             code, resp = _post_resp(state, "audio1.dynamic_rate_matching", True)
         assert resp["ok"] is True
         assert resp["live"] is False
@@ -581,8 +592,8 @@ class TestDynamicRateMatchingRow:
 class TestCoordinatorReloadDebounce:
     def test_capture_device_calls_debounce_not_direct_reload(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.request_config_reload") as m_rel:
+        with patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel:
             _post_resp(state, "audio1.capture_device", "hw:1,0")
         m_deb.assert_called_once()
         m_rel.assert_not_called()
@@ -596,30 +607,30 @@ class TestCoordinatorReloadDebounce:
 
         # Use a very short delay to actually fire the timer in test
         import autostream_webui_api as _api
-        orig_debounce = _api._debounce_coordinator_reload
+        orig_debounce = live_config._debounce_coordinator_reload
 
         fired = threading.Event()
 
         def _patched_debounce(s, delay=0.3):
-            with _api._coordinator_reload_lock:
-                if _api._coordinator_reload_timer is not None:
-                    _api._coordinator_reload_timer.cancel()
+            with live_config._coordinator_reload_lock:
+                if live_config._coordinator_reload_timer is not None:
+                    live_config._coordinator_reload_timer.cancel()
 
                 def _do():
                     from autostream_settings import SettingsStore as _SS
                     settings = getattr(s, "settings", None)
                     if isinstance(settings, _SS):
                         settings.save_now()
-                    _api.request_config_reload()
+                    runtime.request_config_reload()
                     fired.set()
 
                 t = threading.Timer(0.05, _do)
                 t.daemon = True
                 t.start()
-                _api._coordinator_reload_timer = t
+                live_config._coordinator_reload_timer = t
 
-        with patch.object(_api, "_debounce_coordinator_reload", _patched_debounce), \
-             patch.object(_api, "request_config_reload") as m_rel:
+        with patch.object(live_config, "_debounce_coordinator_reload", _patched_debounce), \
+             patch.object(runtime, "request_config_reload") as m_rel:
             _post_resp(state, "audio1.capture_device", "hw:1,0")
             fired.wait(timeout=1.0)
         # save_now() wrote to disk before reload was called
@@ -631,7 +642,7 @@ class TestCoordinatorReloadDebounce:
         but the timer only fires once (debounce coalescing)."""
         state, store = _make_state(str(tmp_path))
         debounce_calls = []
-        with patch("autostream_webui_api._debounce_coordinator_reload",
+        with patch("autostream_live_config._debounce_coordinator_reload",
                    side_effect=lambda s, **kw: debounce_calls.append(1)):
             for device in ("hw:0,0", "hw:1,0", "hw:2,0"):
                 _post_resp(state, "audio1.capture_device", device)
@@ -646,8 +657,8 @@ class TestCoordinatorReloadDebounce:
 class TestAudio2EnabledLive:
     def test_enabled_calls_update_playback_tracker(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m, \
-             patch("autostream_webui_api._debounce_coordinator_reload"):
+        with _playback_hook() as m, \
+             patch("autostream_live_config._debounce_coordinator_reload"):
             _post_resp(state, "audio2.enabled", True)
         m.assert_called_once()
         args, kwargs = m.call_args
@@ -656,8 +667,8 @@ class TestAudio2EnabledLive:
 
     def test_disabled_calls_update_playback_tracker(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m, \
-             patch("autostream_webui_api._debounce_coordinator_reload"):
+        with _playback_hook() as m, \
+             patch("autostream_live_config._debounce_coordinator_reload"):
             _post_resp(state, "audio2.enabled", False)
         m.assert_called_once()
         _, kwargs = m.call_args
@@ -670,8 +681,8 @@ class TestAudio1EnabledLive:
     def test_enabled_calls_update_playback_tracker(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("audio1", {}).update({"capture_device": "hw:0,0"}))
-        with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m, \
-             patch("autostream_webui_api._debounce_coordinator_reload"):
+        with _playback_hook() as m, \
+             patch("autostream_live_config._debounce_coordinator_reload"):
             _post_resp(state, "audio1.enabled", True)
         m.assert_called_once()
         args, kwargs = m.call_args
@@ -680,8 +691,8 @@ class TestAudio1EnabledLive:
 
     def test_disabled_calls_update_playback_tracker(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_playback_input_config", return_value=True) as m, \
-             patch("autostream_webui_api._debounce_coordinator_reload"):
+        with _playback_hook() as m, \
+             patch("autostream_live_config._debounce_coordinator_reload"):
             _post_resp(state, "audio1.enabled", False)
         m.assert_called_once()
         _, kwargs = m.call_args
@@ -689,8 +700,8 @@ class TestAudio1EnabledLive:
 
     def test_disabling_triggers_reload_debounce(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.update_playback_input_config", return_value=True), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m:
+        with _playback_hook(), \
+             patch("autostream_live_config._debounce_coordinator_reload") as m:
             _post_resp(state, "audio1.enabled", False)
         m.assert_called_once()
 
@@ -701,7 +712,7 @@ class TestAudio1EnabledCaptureDeviceGating:
     def test_empty_capture_device_accepted_when_disabled(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("audio1", {}).update({"enabled": False}))
-        with patch("autostream_webui_api._debounce_coordinator_reload"):
+        with patch("autostream_live_config._debounce_coordinator_reload"):
             code, resp = _post_resp(state, "audio1.capture_device", "")
         assert resp["ok"] is True
         assert store.snapshot().audio1.capture_device == ""
@@ -738,8 +749,8 @@ class TestAudio1EnabledCaptureDeviceGating:
         store.update(lambda raw: raw.setdefault("audio1", {}).update({
             "enabled": False, "capture_device": "hw:0,0",
         }))
-        with patch("autostream_webui_api.update_playback_input_config", return_value=True), \
-             patch("autostream_webui_api._debounce_coordinator_reload"):
+        with _playback_hook(), \
+             patch("autostream_live_config._debounce_coordinator_reload"):
             code, resp = _post_resp(state, "audio1.enabled", True)
         assert resp["ok"] is True
         assert store.snapshot().audio1_enabled is True
@@ -750,13 +761,13 @@ class TestAudio1EnabledCaptureDeviceGating:
 class TestTrackIdRebuildDebounce:
     def test_track_id_enabled_calls_debounce(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_track_id_rebuild") as m:
+        with patch("autostream_live_config._debounce_track_id_rebuild") as m:
             _post_resp(state, "track_identification.enabled", True)
         m.assert_called_once()
 
     def test_track_id_lead_in_calls_debounce(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api._debounce_track_id_rebuild") as m:
+        with patch("autostream_live_config._debounce_track_id_rebuild") as m:
             _post_resp(state, "track_identification.analysis_lead_in_seconds", 3)
         m.assert_called_once()
 
@@ -776,8 +787,9 @@ class TestTrackIdRebuildDebounce:
             fired.set()
 
         # Schedule rebuild via the real debounce function, at a short delay.
-        with patch.object(_api, "apply_track_id_config_live_from_parsed", side_effect=_capture):
-            _api._debounce_track_id_rebuild(state, delay=0.05)
+        with patch("autostream_live_config._hooks") as hooks:
+            hooks.return_value.apply_track_id_config_live_from_parsed.side_effect = _capture
+            live_config._debounce_track_id_rebuild(state, delay=0.05)
 
             # Mutate store after scheduling, before timer fires
             def _late_change(raw):

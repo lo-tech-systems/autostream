@@ -33,14 +33,7 @@ from autostream_config import (
     save_config,
     set_input_mode,
 )
-from autostream_core import (
-    apply_track_id_config_live,
-    update_live_owntone_runtime,
-    update_live_silence_seconds,
-    update_playback_input_config,
-)
 from autostream_player_service import config_airplay_mode_to_backend
-from autostream_runtime import request_config_reload
 from autostream_settings_schema import SETTINGS_SCHEMA, CrossFieldValidationError
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 
@@ -51,7 +44,7 @@ from autostream_webui_common import (
     send_hostname_changed_page,
 )
 from autostream_webui_state import WebUIState
-from autostream_webui_api import _ADVERTISE_LOCK, send_json, send_settings_post_json
+from autostream_webui_api import send_json, send_settings_post_json
 from autostream_webui_page_setup import send_setup_page
 
 
@@ -300,81 +293,50 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
                                 flash_type="error")
                 return
 
-        # Race-safe advertisement preference field-level update.
-        # Serialize with _ADVERTISE_LOCK; do not hold CONFIG_IO_LOCK during admin call.
+        # Advertisement preference: applied and persisted by the advertisement
+        # intent, which holds the announcement lock across the privileged call
+        # and the configuration write and restores the previous preference if
+        # that write fails.
         if "webui_advertise_appliance_present" in form and new_advertise != old_advertise:
             try:
-                from autostream_appliances import reconcile_appliance_announcement
                 from autostream_webui_common import get_app_version
-                with _ADVERTISE_LOCK:
-                    ok = reconcile_appliance_announcement(get_app_version(), new_advertise)
-                    if not ok:
-                        logging.warning(
-                            "handle_setup_post: advertisement preference admin call failed; "
-                            "not persisting advertise_appliance=%s",
-                            new_advertise,
-                        )
-                        send_setup_page(
-                            handler, state, auth,
-                            flash_msg="Advertisement preference could not be applied; check logs.",
-                            flash_type="error",
-                        )
-                        return
-                    # Admin call succeeded: re-load fresh config and change only this field.
-                    try:
-                        with CONFIG_IO_LOCK:
-                            fresh_cfg = load_config(state.config_path)
-                            fresh_cfg.setdefault("webui", {})["advertise_appliance"] = new_advertise
-                            save_config(state.config_path, fresh_cfg)
-                    except Exception:
-                        logging.warning(
-                            "handle_setup_post: failed to persist advertise_appliance=%s; "
-                            "rolling back service state",
-                            new_advertise,
-                        )
-                        # Roll back: restore previous service state.
-                        reconcile_appliance_announcement(get_app_version(), old_advertise)
-                        send_setup_page(
-                            handler, state, auth,
-                            flash_msg="Advertisement preference could not be saved; check logs.",
-                            flash_type="error",
-                        )
-                        return
+                reply = submit(Intent(
+                    "settings.advertisement",
+                    {"value": new_advertise, "version": get_app_version(),
+                     "rollback_to": old_advertise},
+                    Origin.USER, "webui", context=state))
+                if reply.error == "apply_failed":
+                    send_setup_page(
+                        handler, state, auth,
+                        flash_msg="Advertisement preference could not be applied; check logs.",
+                        flash_type="error",
+                    )
+                    return
+                if reply.error == "save_failed":
+                    send_setup_page(
+                        handler, state, auth,
+                        flash_msg="Advertisement preference could not be saved; check logs.",
+                        flash_type="error",
+                    )
+                    return
             except Exception:
                 logging.exception("handle_setup_post: advertisement preference update failed")
                 # Do not abort the whole save; the other preferences were already saved.
 
-        update_live_owntone_runtime(
-            output_name=fld("owntone_output_name", p.owntone.output_name),
-            volume_percent=fld(
-                "owntone_volume_percent",
-                str(p.owntone.volume_percent),
-            ),
-            output_offsets_ms=p.owntone.output_offsets_ms,
-            output_airplay_modes=p.owntone.output_airplay_modes,
-        )
-        update_playback_input_config(
-            1,
-            enabled=True,
-            is_turntable=new_audio1_turntable,
-            input_type="turntable" if new_audio1_turntable else "line",
-            stylus_life_hours=p.audio1.stylus_life_hours,
-            belt_life_hours=p.audio1.belt_life_hours,
-            belt_life_years=p.audio1.belt_life_years,
-            bearing_life_hours=p.audio1.bearing_life_hours,
-            bearing_life_years=p.audio1.bearing_life_years,
-        )
-        update_playback_input_config(
-            2,
-            enabled=new_audio2_enabled,
-            is_turntable=new_audio2_turntable,
-            input_type="turntable" if new_audio2_turntable else "line",
-            stylus_life_hours=p.audio2.stylus_life_hours,
-            belt_life_hours=p.audio2.belt_life_hours,
-            belt_life_years=p.audio2.belt_life_years,
-            bearing_life_hours=p.audio2.bearing_life_hours,
-            bearing_life_years=p.audio2.bearing_life_years,
-        )
+        submit(Intent(
+            "settings.form_apply",
+            {"steps": (
+                ("owntone_runtime", {
+                    "output_name": fld("owntone_output_name", p.owntone.output_name),
+                    "volume_percent": fld("owntone_volume_percent", str(p.owntone.volume_percent)),
+                }),
+                ("playback_input", {
+                    "input": 1, "enabled": True, "is_turntable": new_audio1_turntable}),
+                ("playback_input", {
+                    "input": 2, "enabled": new_audio2_enabled,
+                    "is_turntable": new_audio2_turntable}),
+            )},
+            Origin.USER, "webui", context=p))
 
         # One-shot success banner (cookie-based) to avoid sticky URLs in iOS A2HS/PWA.
         _set_flash_cookie(handler, "Settings saved", max_age=30)
@@ -407,13 +369,18 @@ def handle_setup_post(handler, state: WebUIState, auth, body: str) -> None:
         silence_seconds_changed = new_silence_seconds != old_silence_seconds
 
         if silence_seconds_changed and not daemon_changed:
-            if not update_live_silence_seconds(new_silence_seconds):
+            reply = submit(Intent(
+                "settings.form_apply", {"steps": (("silence_seconds", new_silence_seconds),)},
+                Origin.USER, "webui", context=p))
+            if not reply.ok:
                 daemon_changed = True
 
         if daemon_changed:
-            request_config_reload()
+            submit(Intent("settings.reload", {"reason": "setup form"}, Origin.USER, "webui"))
         elif _track_id_changed:
-            apply_track_id_config_live(state.config_path)
+            submit(Intent(
+                "settings.form_apply", {"steps": (("track_id", state.config_path),)},
+                Origin.USER, "webui", context=p))
     except CrossFieldValidationError as e:
         # Same schema-declared invariant POST /api/settings enforces
         # (see the cross_validate call above) -- surfaced here with its own

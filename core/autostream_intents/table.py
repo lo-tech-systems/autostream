@@ -195,6 +195,43 @@ def _build_rows() -> dict:
             # One seek a second appliance-wide, whoever asks.
             limit=RateLimit(1.0),
         ),
+        _row(
+            "settings.apply",
+            {"changes": v.pairs(error=_BAD_BODY)},
+            {"changes"},
+            {Origin.USER, Origin.SYSTEM},
+        ),
+        _row("settings.save", {}, (), {Origin.USER, Origin.SYSTEM}),
+        _row(
+            "settings.reload",
+            {"reason": v.text(error="invalid_reason", max_len=64)},
+            {"reason"},
+            {Origin.USER, Origin.SYSTEM},
+        ),
+        _row(
+            "settings.form_apply",
+            {"steps": v.pairs(error=_BAD_BODY)},
+            {"steps"},
+            {Origin.USER},
+        ),
+        _row(
+            "settings.advertisement",
+            {
+                "value": v.boolean(error="value must be a boolean"),
+                "version": v.text(error="invalid_version", max_len=64),
+                # The Setup form writes the configuration file and, when that
+                # fails, puts this preference back.
+                "rollback_to": v.optional(v.boolean(error=_BAD_BODY)),
+            },
+            {"value", "version"},
+            {Origin.USER},
+        ),
+        _row(
+            "settings.auto_update",
+            {"value": v.boolean(error="value must be a boolean")},
+            {"value"},
+            {Origin.USER},
+        ),
     ]
     return {row.name: row for row in rows}
 

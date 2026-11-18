@@ -40,7 +40,7 @@ from autostream_nowplaying import NowPlayingMetadata
 @pytest.fixture(autouse=True)
 def _no_retry_sleep():
     """Live pushes retry with a pause between attempts; tests do not wait."""
-    with patch.object(core, "LIVE_PUSH_RETRY_GAP_SECONDS", 0.0):
+    with patch.object(live_config, "LIVE_PUSH_RETRY_GAP_SECONDS", 0.0):
         yield
 
 
@@ -547,6 +547,7 @@ import autostream_announce as announce
 import autostream_session as session
 from fake_store import fake_repeat, fake_session
 import autostream_repeat as repeat
+import autostream_live_config as live_config
 
 
 def _inputs():
@@ -714,11 +715,11 @@ class TestSetLiveOutputAutoTrim:
 
 class TestUpdateLiveSilenceSeconds:
     def test_returns_true_with_no_monitors(self):
-        result = core.update_live_silence_seconds(30)
+        result = live_config.update_live_silence_seconds(30)
         assert result is True
 
     def test_invalid_value_returns_false(self):
-        result = core.update_live_silence_seconds("not-a-number")
+        result = live_config.update_live_silence_seconds("not-a-number")
         assert result is False
 
     def test_calls_configure_input_for_each_monitor(self):
@@ -727,7 +728,7 @@ class TestUpdateLiveSilenceSeconds:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_silence_seconds(45)
+            result = live_config.update_live_silence_seconds(45)
         assert result is True
         assert mock_client.configure_input.call_count == 2
         assert mock_client.configure_input.call_args.kwargs["input_type"] == "line"
@@ -735,7 +736,7 @@ class TestUpdateLiveSilenceSeconds:
     def test_returns_false_when_client_unavailable(self):
         mon = _make_monitor(input_index=0)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            result = core.update_live_silence_seconds(30)
+            result = live_config.update_live_silence_seconds(30)
         assert result is False
 
     def test_returns_false_when_configure_input_fails(self):
@@ -743,7 +744,7 @@ class TestUpdateLiveSilenceSeconds:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_silence_seconds(30)
+            result = live_config.update_live_silence_seconds(30)
         assert result is False
 
     def test_updates_monitor_silence_seconds_on_success(self):
@@ -751,7 +752,7 @@ class TestUpdateLiveSilenceSeconds:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_silence_seconds(60)
+            live_config.update_live_silence_seconds(60)
         assert mon.silence_seconds == 60
 
     def test_silence_seconds_clamped_to_range(self):
@@ -759,7 +760,7 @@ class TestUpdateLiveSilenceSeconds:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_silence_seconds(99999)
+            live_config.update_live_silence_seconds(99999)
         assert mon.silence_seconds == 3600  # clamped to max
 
 
@@ -769,12 +770,12 @@ class TestUpdateLiveSilenceSeconds:
 
 class TestUpdateLiveSilenceThresholdDbfs:
     def test_returns_true_with_no_matching_monitor(self):
-        result = core.update_live_silence_threshold_dbfs(0, -40.0)
+        result = live_config.update_live_silence_threshold_dbfs(0, -40.0)
         assert result is True
 
     def test_invalid_value_returns_false(self):
         _make_monitor(input_index=0)
-        result = core.update_live_silence_threshold_dbfs(0, "not-a-number")
+        result = live_config.update_live_silence_threshold_dbfs(0, "not-a-number")
         assert result is False
 
     def test_pushes_configure_input_for_matching_monitor_only(self):
@@ -783,7 +784,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+            result = live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert result is True
         assert mock_client.configure_input.call_count == 1
         args, _ = mock_client.configure_input.call_args
@@ -793,7 +794,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
     def test_returns_false_when_client_unavailable(self):
         _make_monitor(input_index=0)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+            result = live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert result is False
 
     def test_failed_push_is_retried_then_reported(self):
@@ -801,7 +802,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+            result = live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert result is False
         assert mock_client.configure_input.call_count == 3
 
@@ -810,7 +811,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_silence_threshold_dbfs(0, -35.0)
+            live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert mon.silence_threshold_dbfs == -35.0
 
     def test_first_acknowledged_retry_stops_retrying(self):
@@ -818,7 +819,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.side_effect = [False, True]
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_silence_threshold_dbfs(0, -35.0)
+            result = live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert result is True
         assert mock_client.configure_input.call_count == 2
 
@@ -834,7 +835,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
             yield mock_client
 
         with patch.object(monitor_client, "_connected_monitor", _counting):
-            assert core._push_input_config_with_retry(mon) is False
+            assert live_config._push_input_config_with_retry(mon) is False
         assert len(entered) == 3
 
     def test_an_exception_counts_as_a_failed_attempt(self):
@@ -842,7 +843,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.side_effect = [RuntimeError("boom"), True]
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            assert core._push_input_config_with_retry(mon) is True
+            assert live_config._push_input_config_with_retry(mon) is True
         assert mock_client.configure_input.call_count == 2
 
     def test_push_carries_the_monitor_type(self):
@@ -850,7 +851,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_silence_threshold_dbfs(0, -35.0)
+            live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert mock_client.configure_input.call_args.kwargs["input_type"] == "cd"
 
     def test_updates_only_matching_monitor_threshold_on_success(self):
@@ -859,7 +860,7 @@ class TestUpdateLiveSilenceThresholdDbfs:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_silence_threshold_dbfs(0, -35.0)
+            live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert mon0.silence_threshold_dbfs == -35.0
         assert mon1.silence_threshold_dbfs == -50.0
 
@@ -875,13 +876,13 @@ class TestUpdateLiveInputType:
         return mock_client
 
     def test_returns_true_with_no_matching_monitor(self):
-        assert core.update_live_input_type(0, "cd", -60.0) is True
+        assert live_config.update_live_input_type(0, "cd", -60.0) is True
 
     def test_pushes_type_and_threshold(self):
         _make_monitor(input_index=0)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_input_type(0, "cd", -60.0)
+            result = live_config.update_live_input_type(0, "cd", -60.0)
         assert result is True
         args, kwargs = mock_client.configure_input.call_args
         assert kwargs["input_type"] == "cd"
@@ -891,11 +892,11 @@ class TestUpdateLiveInputType:
         mon = _make_monitor(input_index=0)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_input_type(0, "cd", -60.0)
+            live_config.update_live_input_type(0, "cd", -60.0)
             assert mon.input_type == "cd"
             assert mon.is_turntable is False
             assert mon.silence_threshold_dbfs == -60.0
-            core.update_live_input_type(0, "turntable", -45.0)
+            live_config.update_live_input_type(0, "turntable", -45.0)
         assert mon.input_type == "turntable"
         assert mon.is_turntable is True
         assert mon.silence_threshold_dbfs == -45.0
@@ -905,7 +906,7 @@ class TestUpdateLiveInputType:
         runtime.consume_nowplaying_republish()
         mon._current_nowplaying = mon._default_nowplaying_metadata()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(self._acking_client())):
-            core.update_live_input_type(0, "cd", -60.0)
+            live_config.update_live_input_type(0, "cd", -60.0)
         assert mon._current_nowplaying.title == "CD"
         assert runtime.consume_nowplaying_republish() is True
 
@@ -913,7 +914,7 @@ class TestUpdateLiveInputType:
         mon = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_input_type(0, "cd", "not-a-number")
+            result = live_config.update_live_input_type(0, "cd", "not-a-number")
         assert result is False
         assert mon.input_type == "line"
         assert mon.is_turntable is False
@@ -923,7 +924,7 @@ class TestUpdateLiveInputType:
     def test_stored_type_is_normalised(self):
         mon = _make_monitor(input_index=0)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(self._acking_client())):
-            core.update_live_input_type(0, "  CD ", -60.0)
+            live_config.update_live_input_type(0, "  CD ", -60.0)
         assert mon.input_type == "cd"
 
     def test_swapped_default_bundle_keeps_its_artwork(self):
@@ -932,7 +933,7 @@ class TestUpdateLiveInputType:
             mon._default_nowplaying_metadata(), artwork=b"art-bytes"
         )
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(self._acking_client())):
-            core.update_live_input_type(0, "cd", -60.0)
+            live_config.update_live_input_type(0, "cd", -60.0)
         assert mon._current_nowplaying.title == "CD"
         assert mon._current_nowplaying.artwork == b"art-bytes"
 
@@ -941,13 +942,13 @@ class TestUpdateLiveInputType:
         song = NowPlayingMetadata(title="Song", artist="A", album="B")
         mon._current_nowplaying = song
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(self._acking_client())):
-            core.update_live_input_type(0, "cd", -60.0)
+            live_config.update_live_input_type(0, "cd", -60.0)
         assert mon._current_nowplaying is song
 
     def test_failed_push_reports_false_but_keeps_attributes(self):
         mon = _make_monitor(input_index=0)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            result = core.update_live_input_type(0, "cd", -60.0)
+            result = live_config.update_live_input_type(0, "cd", -60.0)
         assert result is False
         assert mon.input_type == "cd"
         assert mon.silence_threshold_dbfs == -60.0
@@ -1354,21 +1355,21 @@ class TestRateMatchingFlagOnEveryPush:
         _make_monitor(input_index=0, dynamic_rate_matching=True)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_silence_seconds(45)
+            live_config.update_live_silence_seconds(45)
         assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is True
 
     def test_threshold_update_carries_the_flag_the_monitor_holds(self):
         _make_monitor(input_index=0, dynamic_rate_matching=True)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_silence_threshold_dbfs(0, -35.0)
+            live_config.update_live_silence_threshold_dbfs(0, -35.0)
         assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is True
 
     def test_input_type_update_carries_the_flag_the_monitor_holds(self):
         _make_monitor(input_index=0, dynamic_rate_matching=True)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_input_type(0, "cd", -60.0)
+            live_config.update_live_input_type(0, "cd", -60.0)
         assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is True
 
     def test_flag_defaults_on_for_a_new_monitor(self):
@@ -1427,14 +1428,14 @@ class TestUpdateLiveDynamicRateMatching:
         return mock_client
 
     def test_returns_true_with_no_matching_monitor(self):
-        assert core.update_live_dynamic_rate_matching(0, True) is True
+        assert live_config.update_live_dynamic_rate_matching(0, True) is True
 
     def test_pushes_the_new_value_for_the_matching_monitor_only(self):
         _make_monitor(input_index=1)
         _make_monitor(input_index=2)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_dynamic_rate_matching(2, True)
+            result = live_config.update_live_dynamic_rate_matching(2, True)
         assert result is True
         assert mock_client.configure_input.call_count == 1
         args, kwargs = mock_client.configure_input.call_args
@@ -1445,7 +1446,7 @@ class TestUpdateLiveDynamicRateMatching:
         _make_monitor(input_index=1, input_type="cd", silence_threshold_dbfs=-61.0)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_dynamic_rate_matching(1, True)
+            live_config.update_live_dynamic_rate_matching(1, True)
         args, kwargs = mock_client.configure_input.call_args
         assert kwargs["input_type"] == "cd"
         assert args[2] == -61.0
@@ -1461,14 +1462,14 @@ class TestUpdateLiveDynamicRateMatching:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.side_effect = record
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_dynamic_rate_matching(1, True)
+            live_config.update_live_dynamic_rate_matching(1, True)
         assert seen == [True]
 
     def test_turning_it_off_pushes_false(self):
         mon = _make_monitor(input_index=1, dynamic_rate_matching=True)
         mock_client = self._acking_client()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_dynamic_rate_matching(1, False)
+            live_config.update_live_dynamic_rate_matching(1, False)
         assert mon.dynamic_rate_matching is False
         assert mock_client.configure_input.call_args.kwargs["dynamic_rate_matching"] is False
 
@@ -1477,15 +1478,15 @@ class TestUpdateLiveDynamicRateMatching:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_dynamic_rate_matching(1, True)
+            result = live_config.update_live_dynamic_rate_matching(1, True)
         assert result is False
-        assert mock_client.configure_input.call_count == core.LIVE_PUSH_ATTEMPTS
+        assert mock_client.configure_input.call_count == live_config.LIVE_PUSH_ATTEMPTS
         assert mon.dynamic_rate_matching is True
 
     def test_no_daemon_returns_false_and_keeps_the_value(self):
         mon = _make_monitor(input_index=1)
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            result = core.update_live_dynamic_rate_matching(1, True)
+            result = live_config.update_live_dynamic_rate_matching(1, True)
         assert result is False
         assert mon.dynamic_rate_matching is True
 
@@ -1494,7 +1495,7 @@ class TestUpdateLiveDynamicRateMatching:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.configure_input.side_effect = [False, True]
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.update_live_dynamic_rate_matching(1, True)
+            result = live_config.update_live_dynamic_rate_matching(1, True)
         assert result is True
         assert mock_client.configure_input.call_count == 2
 

@@ -159,12 +159,12 @@ def _call_setup_post(form_data: dict):
          patch("autostream_webui_post_handlers.set_system_hostname") as mock_set_hostname, \
          patch("autostream_webui_post_handlers.run_admin_cmd",
                return_value=MagicMock(returncode=0, stderr="")), \
-         patch("autostream_webui_post_handlers.update_live_owntone_runtime"), \
-         patch("autostream_webui_post_handlers.update_playback_input_config"), \
+         patch("autostream_live_config.update_live_owntone_runtime"), \
+         patch("autostream_live_config._hooks"), \
          patch("autostream_webui_post_handlers.send_setup_page", side_effect=fake_send_setup_page), \
          patch("autostream_webui_post_handlers._set_flash_cookie"), \
          patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-         patch("autostream_webui_post_handlers.request_config_reload"):
+         patch("autostream_runtime.request_config_reload"):
         p = mock_parse.return_value
         p.audio1.capture_device = "hw:0,0"
         p.audio1.silence_threshold_dbfs = -50.0

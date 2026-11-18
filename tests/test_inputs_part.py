@@ -18,6 +18,7 @@ if _CORE not in sys.path:
 import autostream_core as core
 import autostream_state as state
 from autostream_core import AudioMonitor
+import autostream_live_config as live_config
 
 LEVEL_KEYS = {
     "index", "label", "dbfs", "detected_hz", "detected_khz", "negotiated_hz",
@@ -127,16 +128,16 @@ def test_switching_dynamic_rate_matching_changes_the_note_before_the_push():
         seen.append(inputs().rate_texts(1)[0])
         return True
 
-    with patch.object(core, "_push_input_config_with_retry", push):
-        assert core.update_live_dynamic_rate_matching(1, True) is True
+    with patch.object(live_config, "_push_input_config_with_retry", push):
+        assert live_config.update_live_dynamic_rate_matching(1, True) is True
     assert seen == [core.RATE_MATCHING_NOTE_MONITOR_OLD]
 
 
 def test_changing_the_input_type_updates_the_entry():
     make_monitor(1)
     core._publish_inputs()
-    with patch.object(core, "_push_input_config_with_retry", return_value=True):
-        core.update_live_input_type(1, "turntable", -50.0)
+    with patch.object(live_config, "_push_input_config_with_retry", return_value=True):
+        live_config.update_live_input_type(1, "turntable", -50.0)
     assert inputs().entry(1).input_type == "turntable"
 
 

@@ -333,8 +333,8 @@ class TestP2LiveApplyNotReload:
     def test_enabled_does_not_debounce_coordinator_reload(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
         with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.request_config_reload") as m_rel:
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel:
             _post_settings(state, "repeat.enabled", True)
         m_deb.assert_not_called()
         m_rel.assert_not_called()
@@ -342,8 +342,8 @@ class TestP2LiveApplyNotReload:
     def test_codec_does_not_debounce_coordinator_reload(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
         with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True), \
-             patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
-             patch("autostream_webui_api.request_config_reload") as m_rel:
+             patch("autostream_live_config._debounce_coordinator_reload") as m_deb, \
+             patch("autostream_runtime.request_config_reload") as m_rel:
             _post_settings(state, "repeat.codec", "mp2_160")
         m_deb.assert_not_called()
         m_rel.assert_not_called()

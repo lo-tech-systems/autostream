@@ -167,7 +167,7 @@ class TestOutputMode:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "mode": "raop"})
-        with patch("autostream_webui_api.update_live_owntone_runtime"):
+        with patch("autostream_live_config.update_live_owntone_runtime"):
             send_owntone_output_mode_json(handler, state, body)
         assert sent["body"]["ok"] is True
         snap = store.snapshot()
@@ -203,7 +203,7 @@ class TestOutputMode:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "mode": "raop"})
-        with patch("autostream_webui_api.update_live_owntone_runtime") as m_live:
+        with patch("autostream_live_config.update_live_owntone_runtime") as m_live:
             send_owntone_output_mode_json(handler, state, body)
         m_live.assert_called_once()
 
@@ -228,7 +228,7 @@ class TestBufferedModeGuard:
             handler, sent = _make_handler()
             body = json.dumps({"output_id": "42", "mode": mode})
             with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=False), \
-                 patch("autostream_webui_api.update_live_owntone_runtime") as m_live:
+                 patch("autostream_live_config.update_live_owntone_runtime") as m_live:
                 send_owntone_output_mode_json(handler, state, body)
             assert sent["code"] == 200
             assert sent["body"]["ok"] is False
@@ -247,7 +247,7 @@ class TestBufferedModeGuard:
             handler, sent = _make_handler()
             body = json.dumps({"output_id": "42", "mode": mode})
             with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=True), \
-                 patch("autostream_webui_api.update_live_owntone_runtime"):
+                 patch("autostream_live_config.update_live_owntone_runtime"):
                 send_owntone_output_mode_json(handler, state, body)
             assert sent["body"]["ok"] is True
             snap = store.snapshot()
@@ -264,7 +264,7 @@ class TestBufferedModeGuard:
                 handler, sent = _make_handler()
                 body = json.dumps({"output_id": "42", "mode": mode})
                 with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=buffered_state) as m_guard, \
-                     patch("autostream_webui_api.update_live_owntone_runtime"):
+                     patch("autostream_live_config.update_live_owntone_runtime"):
                     send_owntone_output_mode_json(handler, state, body)
                 assert sent["body"]["ok"] is True
                 m_guard.assert_not_called()  # `mode in BUFFERED_AIRPLAY_MODES` short-circuits before the probe
@@ -280,7 +280,7 @@ class TestBufferedModeGuard:
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "mode": "raop"})
         with patch("autostream_player_service.get_setting") as m_get, \
-             patch("autostream_webui_api.update_live_owntone_runtime"):
+             patch("autostream_live_config.update_live_owntone_runtime"):
             send_owntone_output_mode_json(handler, state, body)
         assert sent["body"]["ok"] is True
         m_get.assert_not_called()
@@ -343,7 +343,7 @@ class TestOutputOffset:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": 250})
-        with patch("autostream_webui_api.update_live_owntone_runtime"):
+        with patch("autostream_live_config.update_live_owntone_runtime"):
             send_owntone_output_offset_json(handler, state, body)
         assert sent["body"]["ok"] is True
         snap = store.snapshot()
@@ -357,7 +357,7 @@ class TestOutputOffset:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": 9999})
-        with patch("autostream_webui_api.update_live_owntone_runtime"):
+        with patch("autostream_live_config.update_live_owntone_runtime"):
             send_owntone_output_offset_json(handler, state, body)
         assert sent["body"]["offset_ms"] == 2000
 
@@ -384,7 +384,7 @@ class TestOutputOffset:
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": 300})
         caps = BackendCapabilities(can_set_output_offset=True)
-        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+        with patch("autostream_live_config.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_capabilities", return_value=caps), \
              patch("autostream_player_service.supports_live_offset", return_value=True), \
              patch("autostream_player_service.update_output") as m_update:
@@ -408,7 +408,7 @@ class TestOutputOffset:
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": 300})
         caps = BackendCapabilities(can_set_output_offset=False)
-        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+        with patch("autostream_live_config.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_capabilities", return_value=caps), \
              patch("autostream_player_service.supports_live_offset", return_value=False), \
              patch("autostream_player_service.update_output") as m_update:
@@ -427,7 +427,7 @@ class TestOutputOffset:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": 300})
-        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+        with patch("autostream_live_config.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_capabilities", side_effect=ConnectionError("down")):
             send_owntone_output_offset_json(handler, state, body)
         assert sent["code"] == 200
@@ -446,7 +446,7 @@ class TestOutputOffset:
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": -2000})
         buf_result = MagicMock(ok=True, value=1000)
-        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+        with patch("autostream_live_config.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_setting", return_value=buf_result), \
              patch("autostream_player_service.get_capabilities") as m_caps:
             m_caps.side_effect = ConnectionError("down")
@@ -466,7 +466,7 @@ class TestOutputOffset:
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": -900})
         buf_result = MagicMock(ok=True, value=2250)
-        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+        with patch("autostream_live_config.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_setting", return_value=buf_result), \
              patch("autostream_player_service.get_capabilities") as m_caps:
             m_caps.side_effect = ConnectionError("down")
@@ -483,7 +483,7 @@ class TestOutputOffset:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"output_id": "42", "offset_ms": 900})
-        with patch("autostream_webui_api.update_live_owntone_runtime"), \
+        with patch("autostream_live_config.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_setting") as m_get, \
              patch("autostream_player_service.get_capabilities") as m_caps:
             m_caps.side_effect = ConnectionError("down")
@@ -864,7 +864,7 @@ class TestBufferedAudioResetOutputs:
         body = json.dumps({"value": False})
         with patch("autostream_webui_api.save_setting") as m_save, \
              patch("autostream_webui_api._config_snapshot") as m_snap, \
-             patch("autostream_webui_api.update_live_owntone_runtime"):
+             patch("autostream_live_config.update_live_owntone_runtime"):
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=True)
             send_owntone_buffered_audio_json(handler, state, body)
@@ -891,7 +891,7 @@ class TestBufferedAudioResetOutputs:
         body = json.dumps({"value": True})
         with patch("autostream_webui_api.save_setting") as m_save, \
              patch("autostream_webui_api._config_snapshot") as m_snap, \
-             patch("autostream_webui_api.update_live_owntone_runtime") as m_live:
+             patch("autostream_live_config.update_live_owntone_runtime") as m_live:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=True)
             send_owntone_buffered_audio_json(handler, state, body)

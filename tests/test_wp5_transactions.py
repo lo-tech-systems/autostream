@@ -169,14 +169,10 @@ class TestAdvertisementEndpoint:
         from autostream_webui_api import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.reconcile_appliance_announcement", return_value=reconcile_ok), \
-             patch("autostream_webui_api.get_app_version", return_value="1.0.0"), \
-             patch("autostream_webui_api.reconcile_appliance_announcement",
-                   create=True, return_value=reconcile_ok):
-            # Patch the import inside the function body
-            with patch("autostream_appliances.reconcile_appliance_announcement",
-                       return_value=reconcile_ok, create=True):
-                send_advertisement_post_json(handler, state, json.dumps({"value": value}))
+        with patch("autostream_webui_api.get_app_version", return_value="1.0.0"), \
+             patch("autostream_appliances.reconcile_appliance_announcement",
+                   return_value=reconcile_ok, create=True):
+            send_advertisement_post_json(handler, state, json.dumps({"value": value}))
         code, data = _response(handler)
         return code, data, state, store
 
@@ -307,7 +303,7 @@ class TestAutoUpdateEndpoint:
         from autostream_webui_api import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.run_admin_cmd", return_value=self._admin_result()) as mock_cmd:
+        with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result()) as mock_cmd:
             send_auto_update_post_json(handler, state, json.dumps({"value": True}))
         mock_cmd.assert_called_once_with(["toggle-update-timer", "enable"], timeout=5.0)
         store.close(save=False)
@@ -316,7 +312,7 @@ class TestAutoUpdateEndpoint:
         from autostream_webui_api import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.run_admin_cmd", return_value=self._admin_result()) as mock_cmd:
+        with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result()) as mock_cmd:
             send_auto_update_post_json(handler, state, json.dumps({"value": False}))
         mock_cmd.assert_called_once_with(["toggle-update-timer", "disable"], timeout=5.0)
         store.close(save=False)
@@ -325,7 +321,7 @@ class TestAutoUpdateEndpoint:
         from autostream_webui_api import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.run_admin_cmd", return_value=self._admin_result()):
+        with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result()):
             send_auto_update_post_json(handler, state, json.dumps({"value": True}))
         code, data = _response(handler)
         assert code == 200
@@ -338,7 +334,7 @@ class TestAutoUpdateEndpoint:
         from autostream_webui_api import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.run_admin_cmd", return_value=self._admin_result(returncode=1, stderr="fail")):
+        with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result(returncode=1, stderr="fail")):
             send_auto_update_post_json(handler, state, json.dumps({"value": True}))
         code, data = _response(handler)
         assert code == 200
@@ -351,7 +347,7 @@ class TestAutoUpdateEndpoint:
         from autostream_webui_api import send_auto_update_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.run_admin_cmd", return_value=self._admin_result(returncode=1)):
+        with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result(returncode=1)):
             send_auto_update_post_json(handler, state, json.dumps({"value": True}))
         _, data = _response(handler)
         assert "error" in data
@@ -364,7 +360,7 @@ class TestAutoUpdateEndpoint:
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         store.update = MagicMock(side_effect=RuntimeError("store full"))
-        with patch("autostream_webui_api.run_admin_cmd", return_value=self._admin_result()):
+        with patch("autostream_live_config.run_admin_cmd", return_value=self._admin_result()):
             send_auto_update_post_json(handler, state, json.dumps({"value": True}))
         code, data = _response(handler)
         assert code == 200

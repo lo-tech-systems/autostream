@@ -51,6 +51,9 @@ from autostream_config import (
     normalize_track_id_track_change_silence_seconds,
     parse_config,
 )
+import autostream_live_config as live_config
+import autostream_core as core
+import autostream_runtime as runtime
 
 
 # ---------------------------------------------------------------------------
@@ -259,18 +262,17 @@ def _run_setup_post(form_fields: dict, tmp_path: Path, extra_cfg: dict | None = 
     with (
         patch.object(ph, "get_system_hostname", return_value="myhost"),
         patch.object(ph, "set_system_hostname"),
-        patch.object(ph, "update_live_owntone_runtime"),
-        patch.object(ph, "update_playback_input_config"),
+        patch.object(live_config, "update_live_owntone_runtime"),
         patch.object(cfg_mod, "suggested_silence_threshold_dbfs", return_value=-60.0),
-        patch.object(ph, "request_config_reload") as mock_reload,
-        patch.object(ph, "apply_track_id_config_live") as mock_live_apply,
-        patch.object(ph, "update_live_silence_seconds", return_value=True),
+        patch.object(runtime, "request_config_reload") as mock_reload,
+        patch.object(live_config, "_hooks") as hooks,
+        patch.object(live_config, "update_live_silence_seconds", return_value=True),
         patch.object(ph, "_set_flash_cookie"),
     ):
         ph.handle_setup_post(handler, state, auth, body)
 
     saved = json.loads(Path(state.config_path).read_text())
-    return saved, mock_reload, mock_live_apply
+    return saved, mock_reload, hooks.return_value.apply_track_id_config_live
 
 
 class TestHandleSetupPostTrackId:

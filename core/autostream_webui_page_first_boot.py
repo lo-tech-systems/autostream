@@ -35,7 +35,7 @@ from autostream_commissioning import (
     mark_commissioning_complete,
 )
 from autostream_core import update_playback_input_config
-from autostream_runtime import request_config_reload
+from autostream_intents import Intent, Origin, submit
 from autostream_player_service import output_supported_config_modes
 from autostream_state import store
 from autostream_sysutils import get_system_hostname, set_system_hostname
@@ -417,7 +417,7 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             bearing_life_hours=snap.audio1.bearing_life_hours,
             bearing_life_years=snap.audio1.bearing_life_years,
         )
-        request_config_reload()
+        submit(Intent("settings.reload", {"reason": "first boot"}, Origin.USER, "webui"))
     except Exception:
         logging.warning(
             "handle_first_boot_finish_post: failed to push live config to monitor"
