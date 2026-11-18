@@ -643,3 +643,47 @@ class TestGatewayErrorContract:
     def test_retryable_absent_when_not_supplied(self):
         _, payload = self._call_helper(502, "remote_bad_response")
         assert "retryable" not in payload
+
+
+def _location_block(conf, header):
+    """The text between the braces of the location opened by *header*, with
+    nested blocks kept."""
+    start = conf.index(header)
+    i = conf.index("{", start)
+    depth = 0
+    for j in range(i, len(conf)):
+        depth += {"{": 1, "}": -1}.get(conf[j], 0)
+        if depth == 0:
+            return conf[i + 1:j]
+    raise AssertionError("unbalanced braces")
+
+
+class TestStateStreamLocation:
+    """The state change stream has its own unbuffered location."""
+
+    def _block(self):
+        conf = _conf_main()
+        assert len(re.findall(r"location\s*=\s*/api/v1/events\s*\{", conf)) == 1
+        return _location_block(conf, "location = /api/v1/events")
+
+    def test_the_stream_location_is_unbuffered_with_a_long_read_timeout(self):
+        block = self._block()
+        assert re.search(r"^\s*proxy_buffering\s+off;", block, re.MULTILINE)
+        assert re.search(r"^\s*proxy_read_timeout\s+90s;", block, re.MULTILINE)
+        assert re.search(r"^\s*gzip\s+off;", block, re.MULTILINE)
+
+    def test_the_stream_location_uses_the_same_backend_and_updating_redirect(self):
+        block = self._block()
+        assert "proxy_pass $html_backend$uri$is_args$args;" in block
+        assert "if ($is_updating)" in block
+        assert "return 302 /offline/updating;" in block
+        assert "proxy_set_header Host $http_host;" in block
+
+    def test_the_stream_location_has_no_error_page_of_its_own(self):
+        block = self._block()
+        assert "error_page" not in block
+        assert "proxy_intercept_errors" not in block
+
+    def test_the_general_location_keeps_its_short_read_timeout(self):
+        block = _location_block(_conf_main(), "location / {")
+        assert re.search(r"^\s*proxy_read_timeout\s+15s;", block, re.MULTILINE)

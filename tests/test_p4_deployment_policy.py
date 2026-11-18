@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from nginx_helpers import copy_for_unprivileged_check
 
 REPO_ROOT = Path(__file__).parent.parent
 SYSTEMD_DIR = REPO_ROOT / "system" / "systemd"
@@ -1054,42 +1055,6 @@ NGINX_COMPANIONS = {
 _NGINX_STOCK_DIR = Path("/etc/nginx")
 _NGINX_STOCK_FILES = ("fastcgi_params", "mime.types")
 
-_LISTEN_PORT_RE = re.compile(r"(\blisten\s+(?:\[[^\]]*\]:|[\w.]+:)?)(\d+)\b")
-_LOG_PATH_RE = re.compile(r"(\b(?:access_log|error_log)\s+)(/[^\s;]+)")
-
-
-def _free_port() -> int:
-    import socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def _copy_for_unprivileged_check(src: Path, dst_dir: Path, ports: dict[int, int]) -> Path:
-    """Copy *src* into *dst_dir* ready for an unprivileged nginx -t, which
-    binds every listen socket and opens every log file named: each listen
-    port moves to a free unprivileged one (the same port always to the same
-    replacement, so a server listening on IPv4 and IPv6 stays one server),
-    since ports below 1024 need privilege and a local nginx may already
-    serve the real one; and each absolute access_log/error_log file moves
-    into *dst_dir*, since the system log directory is not writable. Only
-    port numbers and log file paths change; every other directive, log
-    formats and conditions included, is checked as deployed."""
-    def port(m: re.Match) -> str:
-        p = int(m.group(2))
-        if p not in ports:
-            ports[p] = _free_port()
-        return f"{m.group(1)}{ports[p]}"
-
-    def log_path(m: re.Match) -> str:
-        return f"{m.group(1)}{(dst_dir / Path(m.group(2)).name).as_posix()}"
-
-    text = src.read_text(encoding="utf-8")
-    text = _LOG_PATH_RE.sub(log_path, _LISTEN_PORT_RE.sub(port, text))
-    dst = dst_dir / src.name
-    dst.write_text(text, encoding="utf-8")
-    return dst
-
 
 class TestNginxSyntax:
     """nginx -t validates every nginx config snippet via a minimal wrapper."""
@@ -1107,7 +1072,7 @@ class TestNginxSyntax:
             (tmp_path / name).write_bytes(stock.read_bytes())
         ports: dict[int, int] = {}
         includes = [
-            _copy_for_unprivileged_check(p, tmp_path, ports)
+            copy_for_unprivileged_check(p, tmp_path, ports)
             for p in [*NGINX_COMPANIONS.get(snippet.name, []), snippet]
         ]
         # Wrap the snippets in a minimal nginx.conf so nginx -t can parse
@@ -1144,7 +1109,7 @@ class TestNginxSyntax:
             encoding="utf-8",
         )
         ports: dict[int, int] = {}
-        out = _copy_for_unprivileged_check(src, tmp_path, ports).read_text(encoding="utf-8")
+        out = copy_for_unprivileged_check(src, tmp_path, ports).read_text(encoding="utf-8")
         assert set(ports) == {80, 8080}
         assert f"listen {ports[80]} default_server;" in out
         assert f"listen [::]:{ports[80]} default_server;" in out
