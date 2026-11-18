@@ -143,8 +143,8 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     from PIL import Image, ImageDraw
 
     import dial_warning_text as dwt
-    import dial_display_compositor as dc
     import dial_display_draw as dd_draw
+    import dial_display_render
     from dial_layout_metrics import metrics_for
     from dial_touch_layout import warning_layout_for
     from dial_warning_text import CLOSE_TEXT, NEXT_TEXT, RESTART_TEXT
@@ -198,4 +198,4 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     three = warning_layout_for(width, height, buttons=3, metrics=metrics)
     for label, cell in zip((NEXT_TEXT, RESTART_TEXT, CLOSE_TEXT), three.cells):
         avail = (cell[2] - cell[0]) - 2 * metrics.pad
-        assert fits(label, dc._cell_label_font(draw, label, avail, metrics), avail), label
+        assert fits(label, dial_display_render._cell_label_font(draw, label, avail, metrics), avail), label

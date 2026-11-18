@@ -31,6 +31,7 @@ for _p in (_DIAL, _CORE):
         sys.path.insert(0, _p)
 
 import dial_display_draw  # noqa: E402
+import dial_display_render  # noqa: E402
 import dial_eq_model  # noqa: E402
 from dial_display_views import (  # noqa: E402
     BG_BASE,
@@ -101,21 +102,23 @@ from dial_display_draw import (  # noqa: E402
     _truncate_to_width,
 )
 from dial_display_reveal import _apply_layer  # noqa: E402
-from dial_display_compositor import (  # noqa: E402
-    DialDisplayCompositor,
+from dial_display_render import (  # noqa: E402
     _BODY_RENDERERS,
     _FOOTER_RENDERERS,
     _BELL_GLYPH_FRACTION,
     timer_area,
     _COMPACT_PICKER_TITLE,
     _COMPACT_SMALL_GLYPH_FRACTION,
-    _compact_controls_frame,
     _compact_glyph_box,
+    _compact_small_glyph_box,
+    _draw_compact_list_row,
+)
+from dial_display_compositor import (  # noqa: E402
+    DialDisplayCompositor,
+    _compact_controls_frame,
     _compact_list_frame,
     _compact_repeat_frame,
-    _compact_small_glyph_box,
     _compose_frame,
-    _draw_compact_list_row,
     _eq_frame,
     _eq_pressed_rects,
     _now_playing_frame,
@@ -1319,7 +1322,7 @@ _MARKER_GOLDEN_CASES = [
 def _marker_rect_for(width, height, metrics):
     """Re-derive the marker rect from the layout and the module's own
     _MARKER_BOX_FRACTION — pins the placement rule, not one literal."""
-    from dial_display_compositor import _MARKER_BOX_FRACTION
+    from dial_display_render import _MARKER_BOX_FRACTION
 
     layout = list_layout_for(width, height, metrics=metrics)
     row_h = layout.row_h
@@ -1415,7 +1418,7 @@ class TestPlayMarker:
             calls.append(kind)
             return real_draw_glyph(img, rect, kind, *params, **kwargs)
 
-        with patch("dial_display_compositor._draw_glyph", side_effect=spy):
+        with patch("dial_display_render._draw_glyph", side_effect=spy):
             compositor.compose_list(
                 width, height, ListState(rows=(("Kitchen", False),)), rotate=False, bgr=False, metrics=metrics,
             )
@@ -1769,7 +1772,7 @@ class TestComposeRepeatReplayingLayout:
         assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
 
     def test_start_label_reads_restart_not_start(self, compositor):
-        with patch("dial_display_compositor._draw_label_centered") as mock_label_centered:
+        with patch("dial_display_render._draw_label_centered") as mock_label_centered:
             compositor.compose_repeat(160, 128, self._state(), rotate=False, bgr=False)
         texts = [call.args[2] for call in mock_label_centered.call_args_list]
         assert "Restart" in texts
@@ -2268,7 +2271,7 @@ class TestComposeCard:
         assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
 
     def test_never_raises_without_a_font(self, compositor):
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_render._load_font", return_value=None):
             frame = self._frame(compositor, (160, 128), self._view())
         assert frame.size == (160, 128)
 
@@ -2301,7 +2304,7 @@ class TestComposeWarning:
             assert frame.getpixel((x, layout.message[1] + 4)) != (255, 255, 255)
 
     def test_never_raises_without_a_font(self, compositor):
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_render._load_font", return_value=None):
             frame = compositor.compose_warning(
                 self._base((160, 128)), 160, 128,
                 WarningView(title="Hi", buttons=("Close",)),
@@ -2469,7 +2472,7 @@ class TestComposeRestarting:
         assert abs(bbox_mid - width / 2) <= max(6, width * 0.08)
 
     def test_font_failure_leaves_the_flat_fill(self, compositor):
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_render._load_font", return_value=None):
             frame = compositor.compose_restarting(160, 128, rotate=False, bgr=False)
         assert set(frame.getdata()) == {LIST_BG_RGB}
 
@@ -2498,7 +2501,7 @@ class TestComposeStarting:
         assert abs(bbox_mid - width / 2) <= max(6, width * 0.08)
 
     def test_font_failure_leaves_the_flat_fill(self, compositor):
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_render._load_font", return_value=None):
             frame = compositor.compose_starting(160, 128, rotate=False, bgr=False)
         assert set(frame.getdata()) == {LIST_BG_RGB}
 
@@ -3643,7 +3646,7 @@ class TestLargeFontCaps:
     def test_load_font_called_with_capped_body_and_readout_sizes(self, compositor):
         metrics = _LARGE_METRICS
         img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
-        with patch("dial_display_compositor._load_font", wraps=_load_font) as spy:
+        with patch("dial_display_render._load_font", wraps=_load_font) as spy:
             compositor.compose(
                 img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Album", volume=42),
@@ -3700,7 +3703,7 @@ class TestLargeFontCaps:
         size, which has nothing to do with this cap."""
         metrics = _LARGE_METRICS
         img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
-        with patch("dial_display_compositor._draw_glyph", wraps=dial_display_draw._draw_glyph) as spy:
+        with patch("dial_display_render._draw_glyph", wraps=dial_display_draw._draw_glyph) as spy:
             compositor.compose(
                 img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, volume=42), metrics=metrics,
@@ -4732,7 +4735,7 @@ class TestInfoListVariant:
         state = ListState(
             rows=(("Dial name", False, "Kitchen"),), title="Info", plain_background=True,
         )
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_render._load_font", return_value=None):
             result = compositor.compose_list(
                 metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics,
             )
@@ -4909,7 +4912,7 @@ class TestInfoValueView:
 
     def test_never_raises_with_no_font(self, compositor):
         metrics = _COMPACT_240
-        with patch("dial_display_compositor._load_font", return_value=None), \
+        with patch("dial_display_render._load_font", return_value=None), \
              patch("dial_display_draw._load_font", return_value=None):
             result = compositor.compose_info_value(
                 metrics.width, metrics.height, InfoValueView(label="IPv4", value="10.0.0.5"),
@@ -5726,7 +5729,7 @@ class TestComposeTimerLine:
     def test_the_pill_is_complete_even_when_the_smallest_font_overflows_the_area(self, compositor):
         # An area narrower than the smallest font's pill: the pill is drawn
         # whole, extending left of the area, never clipped.
-        from dial_display_compositor import _timer_fit
+        from dial_display_render import _timer_fit
         fit = _timer_fit(self._LONGEST, 15, 40, 30)
         assert fit is not None and fit[4] > 40
 
@@ -6356,7 +6359,6 @@ def _reference_body_warning(img, metrics, body):
     button-less form existed: kept here, independent of the shared
     renderer, as the reference the existing pages must still match."""
     from PIL import ImageDraw
-    import dial_display_compositor as dcm
     from dial_display_palette import DIVIDER_RGB
     layout = warning_layout_for(metrics.width, metrics.height, buttons=max(1, len(body.buttons)), metrics=metrics)
     draw = ImageDraw.Draw(img)
@@ -6371,13 +6373,13 @@ def _reference_body_warning(img, metrics, body):
         dial_display_draw._draw_label_centered(draw, layout.message, body.title, readout_font)
     for rect, label in zip(layout.cells, body.buttons):
         # A label too wide for its cell steps down in size (see _cell_label_font).
-        font = dcm._cell_label_font(draw, label, rect[2] - rect[0] - 2 * metrics.pad, metrics)
+        font = dial_display_render._cell_label_font(draw, label, rect[2] - rect[0] - 2 * metrics.pad, metrics)
         dial_display_draw._draw_label_centered(draw, rect, label, font)
     w = metrics.divider_w
     cx0, cy0, cx1, cy1 = layout.card
-    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=dcm.DIVIDER_RGB, width=w)
+    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=DIVIDER_RGB, width=w)
     for x in layout.divider_xs:
-        draw.line([(x, layout.cells[0][1]), (x, cy1 - 1)], fill=dcm.DIVIDER_RGB, width=w)
+        draw.line([(x, layout.cells[0][1]), (x, cy1 - 1)], fill=DIVIDER_RGB, width=w)
 
 
 class TestWarningGenericBody:
@@ -6395,7 +6397,6 @@ class TestWarningGenericBody:
     @pytest.mark.parametrize("width,height", sorted(_WARNING_MM_PER_PX))
     @pytest.mark.parametrize("pressed", [False, True])
     def test_existing_warning_frames_match_the_reference_renderer(self, compositor, width, height, pressed):
-        import dial_display_compositor as dcm
         import dial_display_views
         from dial_display import WARNING_DESCRIPTORS
         mm = _WARNING_MM_PER_PX[(width, height)]
@@ -6411,7 +6412,7 @@ class TestWarningGenericBody:
                 buttons=tuple(b.label for b in desc.buttons), pressed=len(desc.buttons) - 1 if pressed else None,
             )
             current = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
-            with patch.dict(dcm._BODY_RENDERERS, {dial_display_views.BODY_WARNING: _reference_body_warning}):
+            with patch.dict(dial_display_render._BODY_RENDERERS, {dial_display_views.BODY_WARNING: _reference_body_warning}):
                 reference = compositor.compose_warning(
                     base, width, height, view, rotate=False, bgr=False, metrics=metrics,
                 )
@@ -6496,7 +6497,7 @@ class TestWarningGenericBody:
         assert frame.getpixel((two.divider_xs[0], two.cells[0][3] - 4)) != (255, 255, 255)
 
     def test_no_buttons_with_a_font_failure_still_returns_a_frame(self, compositor):
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_render._load_font", return_value=None):
             frame = self._compose(
                 compositor, 160, 128, WarningView(title="Hi", percent=30),
             )
@@ -6530,7 +6531,7 @@ _TYPICAL = ("Lounge", "Technics stylus", "Needs changing soon (7.5 h remaining).
 
 def _fit_plan(tier, source, title, message):
     from PIL import ImageDraw
-    from dial_display_compositor import _plan_warning_text
+    from dial_display_render import _plan_warning_text
     width, height, mm = _APPLIANCE_TIERS[tier]
     metrics = metrics_for(width, height, mm)
     rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
@@ -6597,14 +6598,13 @@ class TestApplianceWarningText:
     @pytest.mark.parametrize("texts", [(_WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE), _UNBROKEN, _TYPICAL],
                              ids=["worst", "unbroken", "typical"])
     def test_nothing_is_drawn_outside_the_message_row(self, compositor, tier, texts):
-        import dial_display_compositor as dcm
         width, height, mm = _APPLIANCE_TIERS[tier]
         metrics = metrics_for(width, height, mm)
         rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
         view = WarningView(title=texts[1], message=texts[2], buttons=("Close",), source=texts[0])
         base = Image.new("RGB", (width, height), (0, 0, 0))
         with_text = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
-        with patch.object(dcm, "_plan_warning_text", return_value=[]):
+        with patch.object(dial_display_render, "_plan_warning_text", return_value=[]):
             without = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
         box = _diff_bbox(with_text, without)
         assert box is not None
@@ -6631,7 +6631,7 @@ class TestApplianceWarningText:
         assert plain.tobytes() != sourced.tobytes()
 
     def test_a_font_failure_draws_no_text_and_still_returns_a_frame(self, compositor):
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_render._load_font", return_value=None):
             frame = compositor.compose_warning(
                 None, 160, 128, WarningView(title="Hi", buttons=("Close",), source="Lounge"),
                 rotate=False, bgr=False,
