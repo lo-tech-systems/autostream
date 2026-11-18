@@ -46,15 +46,23 @@ def _watch_errors(page: "Page") -> list:
     return errors
 
 
-@pytest.fixture(autouse=True)
-def _clean_stub():
-    yield
+def _clear_stub_logs():
     stub.POSTS.clear()
     stub.PATHS.clear()
     stub.API.clear()
     stub.REPLIES.clear()
     stub.POST_PATHS.clear()
     stub.POST_TOKENS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clean_stub():
+    """Clear the stub's logs before and after each test: a test from another
+    file on the same worker may leave a post behind, and the tests here that
+    assert nothing was posted must not see it."""
+    _clear_stub_logs()
+    yield
+    _clear_stub_logs()
 
 
 def _wait_for(page: "Page", done, what: str) -> None:
