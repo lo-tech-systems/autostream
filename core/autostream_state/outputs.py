@@ -63,7 +63,7 @@ from autostream_players import (
     OutputInfo,
 )
 
-from . import live
+from . import live, spread
 from .origin import Origin
 from .parts import DefaultMemberView, OutputsPart, OutputUnitView, StartFailure
 from .store import store
@@ -270,6 +270,9 @@ class UnitState:
     group_hold_backoff: float = RETRY_MIN_S   # the wait for an Apple TV's group, which doubles
     device_volume_at: float = 0.0
     own_write_at: float = 0.0
+    report_at: float = 0.0            # last per-speaker volume report that may spread
+    report_used_at: float = 0.0       # report_at of the last report a spread considered
+    ok_since: float = 0.0             # when the unit last started playing
     was_streaming: bool = False
     absent_since: Optional[float] = None
     start_pending_until: float = 0.0
@@ -370,11 +373,12 @@ class _Effects:
     """What a locked block wants done once the locks are released: log
     lines (nothing logs under a lock) and the now-playing republish request."""
 
-    __slots__ = ("logs", "republish")
+    __slots__ = ("logs", "republish", "publish_as")
 
     def __init__(self) -> None:
         self.logs: list = []
         self.republish = False
+        self.publish_as: Optional[tuple] = None   # an (Origin, requester) pair
 
     def log(self, level: int, text: str, *args) -> None:
         self.logs.append((level, text, args))
@@ -432,6 +436,8 @@ class OutputAuthority:
         self._exempt_off = False
         self._policy = None
         self._include_tv_reader: Callable[[str], Optional[bool]] = lambda unit_id: None
+        self._spread_reader: Callable[[], bool] = lambda: False
+        self._spread_burst: Optional[spread.Burst] = None
         # Worker-side bookkeeping.
         self._items: "queue.Queue" = queue.Queue()
         with self._wq_cond:
@@ -532,6 +538,19 @@ class OutputAuthority:
     def set_include_tv_reader(self, fn: Callable[[str], Optional[bool]]) -> None:
         self._touched = True
         self._include_tv_reader = fn
+
+    def set_spread_reader(self, fn: Callable[[], bool]) -> None:
+        """Whether a volume change made at a speaker applies to the other
+        playing speakers. Called on the worker with no authority lock held."""
+        self._touched = True
+        self._spread_reader = fn
+
+    def _read_spread_setting(self) -> bool:
+        try:
+            return bool(self._spread_reader())
+        except Exception:
+            LOG.debug("Speaker volume setting could not be read", exc_info=True)
+            return False
 
     # -- tests ---------------------------------------------------------------
 
@@ -1343,10 +1362,12 @@ class OutputAuthority:
             pending = self._publish_locked(Origin.SESSION, None)
         pending.notify()
 
-    def device_volume_seen(self, unit_id: str) -> None:
+    def device_volume_seen(self, unit_id: str, *, single: bool = True) -> None:
         """A volume was set on the speaker itself: a mute on it ends at once
         (its level is whatever the speaker now reports) and the re-apply of a
-        muted level is suppressed for a moment."""
+        muted level is suppressed for a moment. A report made at one speaker
+        (*single*) on an unmuted unit that autostream did not just write is
+        armed to apply to the other speakers."""
         self._touched = True
         now = self._clock()
         with self._lock:
@@ -1355,6 +1376,8 @@ class OutputAuthority:
                 return
             u.device_volume_at = now
             d = u.desired
+            if single and not d.muted and not self._spread_held(u, now):
+                u.report_at = now
             if not d.muted:
                 return
             self._clear_mute_locked(d)
@@ -1709,6 +1732,8 @@ class OutputAuthority:
             self._ws_degraded_until = 0.0
             for u in self._units.values():
                 u.after_boot = True
+            if self._spread_burst is not None:
+                self._end_burst_locked(fx)
 
         seen = set()
         order = []
@@ -1765,6 +1790,7 @@ class OutputAuthority:
                 del self._units[uid]
 
     def _update_unit_locked(self, u: UnitState, row: OutputInfo, now: float, fx: _Effects) -> None:
+        was = u.was_streaming
         d = u.desired
         sel = d.selected
         avail = self._availability_locked(row, sel)
@@ -1774,6 +1800,8 @@ class OutputAuthority:
         else:
             u.was_streaming = row.selected
             result_shown = row.selected or avail == "password"
+        if u.was_streaming and not was:
+            u.ok_since = now
         if u.start_pending_until > 0.0:
             if result_shown:
                 u.start_pending_until = 0.0
@@ -1818,12 +1846,15 @@ class OutputAuthority:
             else:
                 self._failed_treatment_locked(u, now)
 
-    def _adopt_volume_locked(self, u: UnitState, r: OutputInfo, now: float) -> None:
+    def _adopt_volume_locked(self, u: UnitState, r: OutputInfo, now: float) -> Optional[bool]:
+        """Take the level the row reports. None when deferred (a write is in
+        flight or has just finished), False when it already matches, True
+        when it was adopted."""
         d = u.desired
         if self._inflight > 0 or now - u.own_write_at < DEBOUNCE_S:
-            return
+            return None
         if r.volume_percent == d.volume:
-            return
+            return False
         if d.muted:
             # A level above silence on a muted speaker is a change made on the
             # speaker; without device events nothing else can be told apart.
@@ -1833,12 +1864,14 @@ class OutputAuthority:
         d.cause = Origin.DEVICE if now - u.device_volume_at < DEVICE_VOLUME_MARK_S else Origin.BACKEND
         d.changed_at = now
         u.desired_seq += 1
+        return True
 
     # -- timers and reconcile ------------------------------------------------
 
     def _run_timers(self, now: float) -> None:
         fx = _Effects()
         pending = None
+        follow = self._read_spread_setting()
         with self._lock:
             changed = False
             for u in list(self._units.values()):
@@ -1855,9 +1888,13 @@ class OutputAuthority:
             if any(live.pin_claim(uid) != who for uid, who in self._claims_published.items()):
                 changed = True      # a PIN claim has lapsed
             if self._connected:
-                changed = self._reconcile_locked(now, fx) or changed
+                changed = self._reconcile_locked(now, fx, follow) or changed
+            b = self._spread_burst
+            if b is not None and (not follow or not self._session_active or b.expired(now)):
+                self._end_burst_locked(fx)
             if changed:
-                pending = self._publish_locked(Origin.BACKEND, None)
+                origin, requester = fx.publish_as or (Origin.BACKEND, None)
+                pending = self._publish_locked(origin, requester)
         if pending is not None:
             pending.notify()
         fx.run()
@@ -1882,10 +1919,15 @@ class OutputAuthority:
         since = u.diff_since.setdefault(key, now)
         return now - since >= DEBOUNCE_S
 
-    def _reconcile_locked(self, now: float, fx: _Effects) -> bool:
+    def _spread_held(self, u: UnitState, now: float) -> bool:
+        """Written by autostream, or started playing, too recently to be a reporter."""
+        return now - max(u.own_write_at, u.ok_since) < spread.SPREAD_HOLD_S
+
+    def _reconcile_locked(self, now: float, fx: _Effects, follow: bool = False) -> bool:
         """Compare reported with desired and queue what repairs a difference.
         True when a unit changed. Runs on the worker, under _lock; it only
-        queues writes."""
+        queues writes. *follow* is whether a volume change made at a speaker
+        applies to the other playing speakers."""
         changed = False
         restored = 0
         busy = self._inflight > 0 or bool(self._wq)
@@ -1962,11 +2004,91 @@ class OutputAuthority:
             if not d.muted and not busy:
                 # With a write queued the row read may predate it, as above.
                 before = d.volume
-                self._adopt_volume_locked(u, r, now)
-                changed = changed or d.volume != before
+                adopted = self._adopt_volume_locked(u, r, now)
+                if adopted:
+                    changed = True
+                if adopted is not None and self._spread_locked(u, before, adopted, follow, now, fx):
+                    # The targets' rows predate the writes just queued.
+                    busy = True
         if restored:
             fx.log(logging.WARNING, "Output selection restored after the player restarted: %d output(s)", restored)
         return changed
+
+    def _spread_locked(self, u: UnitState, before: int, adopted: bool, follow: bool,
+                       now: float, fx: _Effects) -> bool:
+        """u's row was just compared with its desired level (not deferred); it
+        moved from *before* when *adopted*. Consume u's arm when the row is
+        newer than it, and when that was a report made at the speaker, apply
+        it to the other playing speakers. True when a write was queued."""
+        if u.seen_at < u.report_at:
+            # The row predates the event; keep the arm for the read that follows.
+            return False
+        armed = u.report_at > u.report_used_at and now - u.report_at < spread.SPREAD_REPORT_S
+        u.report_used_at = u.report_at
+        if not (follow and armed and adopted):
+            return False
+        if not (self._session_active and self._delivers_device_events):
+            return False
+        d = u.desired
+        if not (d.selected and not d.muted and u.reported is not None and u.availability == "ok"):
+            return False
+        if self._spread_held(u, now):
+            return False
+        d.cause = Origin.DEVICE
+        fx.publish_as = (Origin.DEVICE, f"device:{u.id}")
+        targets = [t for t in self._selected_locked(online_only=True)
+                   if t.id != u.id and not t.desired.muted]
+        b = self._spread_burst
+        if b is not None and (b.reporter != u.id or b.expired(now) or self._foreign_locked(b)):
+            self._end_burst_locked(fx)
+            b = None
+        if b is None:
+            if not targets:
+                return False
+            b = spread.Burst(
+                reporter=u.id, reporter_old=before,
+                base={t.id: t.desired.volume for t in targets},
+                seqs={t.id: t.desired_seq for t in targets},
+                last_at=now,
+            )
+            self._spread_burst = b
+        levels = spread.spread_levels(b.base, b.reporter_old, d.volume)
+        moved = []
+        for t in targets:
+            if t.id in levels and levels[t.id] != t.desired.volume:
+                t.desired.volume = levels[t.id]
+                self._stamp(t, Origin.DEVICE, now)
+                moved.append(t)
+        b.note_spread(now, d.volume, {t.id: (t.desired_seq, t.desired.volume)
+                                      for t in targets if t.id in levels})
+        self._queue_volume_writes_locked(moved)
+        return bool(moved)
+
+    def _foreign_locked(self, b: spread.Burst) -> bool:
+        """True when a unit of the burst changed in a way the burst did not make."""
+        return any(uid in self._units and self._units[uid].desired_seq != seq
+                   for uid, seq in b.seqs.items())
+
+    def _unit_name_locked(self, uid: str) -> str:
+        u = self._units.get(uid)
+        if u is None:
+            return uid
+        return u.reported.name if u.reported is not None else (u.name or uid)
+
+    def _end_burst_locked(self, fx: _Effects) -> None:
+        """Forget the open burst; log it once when it moved anything."""
+        b = self._spread_burst
+        self._spread_burst = None
+        if b is None:
+            return
+        moved = b.moved()
+        if not moved:
+            return
+        text = ", ".join(
+            "%s %d -> %d" % (self._unit_name_locked(uid), b.base[uid], b.after[uid]) for uid in moved
+        )
+        fx.log(logging.INFO, "Speaker volume applied to all: %s %d -> %d; moved %s",
+               self._unit_name_locked(b.reporter), b.reporter_old, b.reporter_new, text)
 
     # -- device events -------------------------------------------------------
 
@@ -1981,7 +2103,7 @@ class OutputAuthority:
             if not targets:
                 LOG.info("device volume from %s maps to no speaker; dropped", ev.speaker_name or ev.speaker_id)
             for uid in targets:
-                self.device_volume_seen(uid)
+                self.device_volume_seen(uid, single=ev.speaker_id != "0")
         elif ev.kind == "receiver_command":
             if self._policy is None:
                 LOG.info(
@@ -2141,9 +2263,10 @@ class OutputAuthority:
         u = self._units.get(w.unit_id) if w.unit_id is not None else None
         if w.kind == "select":
             return self._record_select_locked(w, r, u, now, fx)
-        if r.ok:
+        if r.ok or (w.kind == "volume" and r.error_code == "timeout"):
             if u is not None:
                 u.own_write_at = now
+        if r.ok:
             return WriteOutcome(ok=True)
         return WriteOutcome(ok=False, error_code=r.error_code, error=r.message)
 

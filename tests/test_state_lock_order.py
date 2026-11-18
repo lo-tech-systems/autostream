@@ -614,6 +614,21 @@ def test_the_include_tv_reader_runs_without_the_authority_lock(authority, tmp_pa
     assert lockcheck.ORDER_VIOLATIONS == []
 
 
+def test_the_spread_reader_runs_without_the_authority_lock(authority):
+    held_in_reader = []
+
+    def reader():
+        held_in_reader.append(lockcheck.held())
+        return True
+
+    authority.set_spread_reader(reader)
+    authority.merge_for_tests([row(1, selected=True, volume_percent=40)], boot="b0", now=100.0)
+    authority.step(now=100.0)
+    assert held_in_reader
+    assert all(h <= {"apply"} for h in held_in_reader)
+    assert lockcheck.ORDER_VIOLATIONS == []
+
+
 def test_the_stream_hub_takes_only_its_own_condition_and_is_called_with_no_lock_held(st):
 
     session = st.claim("session", "test_owner")

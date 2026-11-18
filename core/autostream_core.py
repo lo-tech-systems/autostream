@@ -267,6 +267,7 @@ def _start_output_authority(cfg, settings) -> None:
     policy.bind_settings(autostream_live_config.output_policy_settings)
     get_authority().set_policy(policy)
     get_authority().set_include_tv_reader(autostream_live_config.include_tv_for)
+    get_authority().set_spread_reader(autostream_live_config.speaker_volume_applies_to_all)
     autostream_live_config._push_default_set(settings)
     get_authority().start(PlayerServiceBackend(cfg.owntone.base_url))
 
