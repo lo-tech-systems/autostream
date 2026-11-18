@@ -28,7 +28,7 @@ from autostream_startup import check_webui_thread as _check_webui_thread
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_logging as log_setup
-import autostream_announce as announce
+import autostream_session_flag as session_flag
 import autostream_playback_tracking as playback_tracking
 import autostream_startup as startup
 import autostream_services as services
@@ -299,9 +299,8 @@ class TestAppliancesStartup:
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(playback_tracking, "ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
-             patch.object(announce, "remove_avahi_playing_service",
-                          side_effect=lambda: calls.append("remove-playing")), \
-             patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(session_flag, "reset_at_startup",
+                          side_effect=lambda: calls.append("reset-flag")), \
              patch.object(_core_mod.appliances, "start",
                           side_effect=lambda _life, _settings: calls.append("appliances")), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
@@ -310,11 +309,10 @@ class TestAppliancesStartup:
             # appliance following should still be started because it now runs before the
             # monitor retry loop.
             mock_flag.is_set.return_value = True
-            avahi_path.exists.return_value = False
 
             _core_mod.run_autostream("unused.json", settings=settings)
 
-        assert calls == ["remove-playing", "appliances"]
+        assert calls == ["reset-flag", "appliances"]
         client_cls.assert_not_called()
 
 
@@ -341,13 +339,11 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(playback_tracking, "ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
-             patch.object(announce, "remove_avahi_playing_service"), \
-             patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(session_flag, "reset_at_startup"), \
              patch.object(_core_mod.appliances, "start"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(services, "stop_discovery"):
             mock_flag.is_set.return_value = True
-            avahi_path.exists.return_value = False
 
             _core_mod.run_autostream("unused.json", settings=settings)
 
@@ -374,13 +370,11 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(playback_tracking, "ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
-             patch.object(announce, "remove_avahi_playing_service"), \
-             patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(session_flag, "reset_at_startup"), \
              patch.object(_core_mod.appliances, "start"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(services, "stop_discovery"):
             mock_flag.is_set.return_value = True
-            avahi_path.exists.return_value = False
 
             _core_mod.run_autostream("unused.json", settings=settings)  # must not raise
 

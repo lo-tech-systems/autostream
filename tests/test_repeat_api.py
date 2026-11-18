@@ -1614,9 +1614,9 @@ class TestApplyRepeatAck:
         _set_repeat_status(None)
         _set_session_state(False, None)
         with patch("autostream_repeat._rearm_replay_identification") as rearm, \
-             patch("autostream_repeat._announce_replay_playing") as announce:
+             patch("autostream_repeat._flag_replay_playing") as flag:
             self.rearm = rearm
-            self.announce = announce
+            self.flag = flag
             yield
         _set_repeat_status(None)
         _set_session_state(False, None)
@@ -1691,7 +1691,7 @@ class TestApplyRepeatAck:
         assert get_repeat_status() == block
         assert get_session_state() == {"active": False, "source": None}
         self.rearm.assert_not_called()
-        self.announce.assert_not_called()
+        self.flag.assert_not_called()
 
     def test_none_ack_is_a_noop_and_returned(self):
         block = _cached_block()
@@ -1717,7 +1717,7 @@ class TestApplyRepeatAck:
         assert get_repeat_status() is None
         assert get_session_state()["active"] is False
         self.rearm.assert_not_called()
-        self.announce.assert_not_called()
+        self.flag.assert_not_called()
 
     def test_overlay_does_not_mutate_the_previously_cached_dict(self):
         block = _cached_block()
@@ -1753,31 +1753,31 @@ class TestApplyRepeatAck:
         _set_repeat_status(_cached_block(origin_input=2))
         repeat.apply_repeat_ack(_ack("repeat_seek", "replaying"))
         self.rearm.assert_called_once_with(2, in_session=False)
-        self.announce.assert_called_once_with()
+        self.flag.assert_called_once_with()
 
     def test_seek_during_replay_hooks_identify_origin_as_in_session(self):
         _set_repeat_status(_replaying_block(origin_input=2))
         repeat.apply_repeat_ack(_ack("repeat_seek", "replaying", position=12.0))
         self.rearm.assert_called_once_with(2, in_session=True)
-        self.announce.assert_not_called()
+        self.flag.assert_not_called()
 
     def test_arm_from_hold_hooks_fire_but_arm_while_replaying_does_not(self):
         _set_repeat_status(_cached_block())
         repeat.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
         self.rearm.assert_called_once_with(1, in_session=False)
-        self.announce.assert_called_once_with()
+        self.flag.assert_called_once_with()
         self.rearm.reset_mock()
-        self.announce.reset_mock()
+        self.flag.reset_mock()
         repeat.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
         self.rearm.assert_not_called()
-        self.announce.assert_not_called()
+        self.flag.assert_not_called()
 
     def test_stop_and_hold_acks_fire_no_hooks(self):
         _set_repeat_status(_replaying_block())
         repeat.apply_repeat_ack(_ack("repeat_stop", "fading_out", armed=False))
         repeat.apply_repeat_ack(_ack("set_repeat_armed", "hold", armed=False))
         self.rearm.assert_not_called()
-        self.announce.assert_not_called()
+        self.flag.assert_not_called()
 
     def test_repeat_recording_origin_reads_origin_without_active_replay(self):
         assert autostream_state.repeat_recording_origin(_cached_block(origin_input=2)) == 2

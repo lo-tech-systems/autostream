@@ -34,8 +34,6 @@ Exactly one of:
   version-info
   sethostname HOSTNAME
   factory-reset
-  write-playing-service VERSION [ID]
-  remove-playing-service
   write-appliance-service VERSION ID [CONTROL]
   remove-appliance-service
   update-dial-service VERSION UUID NAME [--pin-recovery]
@@ -1769,7 +1767,6 @@ def factory_reset(execute: bool = False) -> bool:
 # ---------------------------------------------------------------------------
 
 _AVAHI_SERVICES_DIR = Path("/etc/avahi/services")
-_PLAYING_SERVICE    = _AVAHI_SERVICES_DIR / "autostream-playing.service"
 _APPLIANCE_SERVICE  = _AVAHI_SERVICES_DIR / "autostream.service"
 _DIAL_SERVICE       = _AVAHI_SERVICES_DIR / "autostream-dial.service"
 _DIAL_TEMPLATE      = Path("/usr/local/share/autostream/avahi/autostream-dial.service")
@@ -1832,43 +1829,6 @@ def _remove_fixed_service(path: Path) -> None:
     """Remove a fixed Avahi service file if it exists."""
     if path.exists():
         path.unlink()
-
-
-def _write_playing_service(args) -> int:
-    appliance_id = getattr(args, "id", "") or ""
-    if appliance_id and not _APPLIANCE_ID_RE.match(appliance_id):
-        log("ERROR", f"write-playing-service: invalid appliance ID format: {appliance_id!r}")
-        return 1
-    id_record = f"\n    <txt-record>id={_html.escape(appliance_id)}</txt-record>" if appliance_id else ""
-    content = f"""<?xml version="1.0" standalone='no'?>
-<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
-<service-group>
-  <name replace-wildcards="yes">autostream on %h</name>
-  <service>
-    <type>_autostream-playing._tcp</type>
-    <port>80</port>
-    <txt-record>version={_html.escape(args.version)}</txt-record>{id_record}
-  </service>
-</service-group>
-"""
-    try:
-        changed = _write_fixed_service(_PLAYING_SERVICE, content)
-    except Exception as e:
-        log("ERROR", f"write-playing-service: {e!r}")
-        return 1
-    if changed:
-        log("INFO", f"write-playing-service: wrote {_PLAYING_SERVICE}")
-    return 0
-
-
-def _remove_playing_service(_args) -> int:
-    try:
-        _remove_fixed_service(_PLAYING_SERVICE)
-    except Exception as e:
-        log("ERROR", f"remove-playing-service: {e!r}")
-        return 1
-    log("INFO", f"remove-playing-service: removed {_PLAYING_SERVICE} (or was absent)")
-    return 0
 
 
 def _write_appliance_service(args) -> int:
@@ -2555,23 +2515,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
 
-    p_wps = subparsers.add_parser(
-        "write-playing-service",
-        help="Write _autostream-playing._tcp avahi service file.",
-    )
-    p_wps.add_argument("version", help="autostream version string.")
-    p_wps.add_argument(
-        "id",
-        nargs="?",
-        default="",
-        help="Appliance ID (20 lowercase hex chars); omitted for an identity-less appliance.",
-    )
-
-    subparsers.add_parser(
-        "remove-playing-service",
-        help="Delete _autostream-playing._tcp avahi service file.",
-    )
-
     p_was = subparsers.add_parser(
         "write-appliance-service",
         help="Write _autostream._tcp avahi service file.",
@@ -2726,12 +2669,6 @@ def main(argv: list[str]) -> int:
         if args.command == "factory-reset":
             ok = factory_reset(execute=args.execute)
             return 0 if ok else 1
-
-        if args.command == "write-playing-service":
-            return _write_playing_service(args)
-
-        if args.command == "remove-playing-service":
-            return _remove_playing_service(args)
 
         if args.command == "write-appliance-service":
             return _write_appliance_service(args)

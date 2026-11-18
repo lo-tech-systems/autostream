@@ -1256,6 +1256,9 @@ configure_phase() {
   # Also drop the toggle's success marker so the next set_journald_persistent
   # call re-drives the admin helper instead of trusting pre-upgrade state.
   rm -f /var/lib/autostream/journald-persistent.applied
+  # The appliance no longer announces a playing record; remove the one an
+  # earlier release left, so an upgraded appliance stops advertising it.
+  rm -f /etc/avahi/services/autostream-playing.service
   systemctl restart systemd-journald || warn "systemctl restart systemd-journald failed"
 
   # systemd-coredump storage bounds: cap how much disk core dumps may use so a

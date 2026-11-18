@@ -708,24 +708,8 @@ class TestAvahiXml:
                 f"autostream-dial.service Avahi XML missing placeholder {placeholder!r}"
             )
 
-    def test_playing_avahi_is_valid_xml(self):
-        root = self._parse("autostream-playing.service")
-        assert root.tag == "service-group"
-
-    def test_playing_avahi_service_type(self):
-        root = self._parse("autostream-playing.service")
-        svc_type = root.find("service/type")
-        assert svc_type is not None and svc_type.text == "_autostream-playing._tcp"
-
-    def test_playing_avahi_port_80(self):
-        root = self._parse("autostream-playing.service")
-        port_el = root.find("service/port")
-        assert port_el is not None and port_el.text == "80"
-
-    def test_playing_avahi_has_version_placeholder(self):
-        text = (AVAHI_DIR / "autostream-playing.service").read_text(encoding="utf-8")
-        assert "__AUTOSTREAM_RELEASE_TAG__" in text
-
+    def test_there_is_no_playing_service_template(self):
+        assert not (AVAHI_DIR / "autostream-playing.service").exists()
 
 # ---------------------------------------------------------------------------
 # Dnsmasq configuration

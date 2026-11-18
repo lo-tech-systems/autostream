@@ -243,7 +243,7 @@ def _load_host(tmp_path: Path) -> ModuleType:
     mod.UPDATE_RESULT_FILE = tmp_path / "update-result.env"
     mod.LOG_PATH = tmp_path / "update.log"
     mod.APMODE_FLAG = tmp_path / "_apmode_absent"
-    mod.PLAYING_SERVICE = tmp_path / "_playing_absent"
+    mod.SESSION_FLAG = tmp_path / "_session_absent"
     mod.CONFIG_PATH = tmp_path / "autostream.json"
     return mod
 

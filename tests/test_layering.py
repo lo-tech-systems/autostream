@@ -28,10 +28,10 @@ align_tone appliance_identity artwork auth backend_events bluetooth_client
 bluetooth_facts bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
 licensing logging mdns monitor_client nowplaying
 owntone owntone_mini peer_client peer_http peer_registry pin_pairing playback_stats player_service players protocol rpi
-runtime runtime_state settings settings_schema start_buffer_cache system_stats
+runtime runtime_state session_flag settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliance_state appliances audio_monitor identification input_status live_config log_policy monitor_control output_intents output_policy playback_tracking repeat selfheal services session startup warnings".split()
+_L2 = "align appliance_state appliances audio_monitor identification input_status live_config log_policy monitor_control output_intents output_policy playback_tracking repeat selfheal services session startup warnings".split()
 
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
@@ -56,7 +56,6 @@ DYNAMIC_LOOKUPS: dict[tuple[str, str], str] = {
 # Allowed L2-to-L2 imports (importer, imported).  Must stay acyclic.
 L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_repeat", "autostream_session"),
-    ("autostream_repeat", "autostream_announce"),
     ("autostream_monitor_control", "autostream_repeat"),
     ("autostream_audio_monitor", "autostream_selfheal"),
     ("autostream_selfheal", "autostream_session"),

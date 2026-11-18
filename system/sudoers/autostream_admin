@@ -94,10 +94,6 @@ Defaults!AUTOSTREAM_ADMIN !requiretty
 
 AUTOSTREAM_WEB ALL=(root) NOPASSWD: AUTOSTREAM_ADMIN
 
-# Dial mDNS service management (playing-state announcement)
-autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin write-playing-service *
-autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin remove-playing-service
-
 # Appliance mDNS service management (_autostream._tcp peer discovery)
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin write-appliance-service *
 autostream ALL=(root) NOPASSWD: /usr/local/libexec/autostream/autostream_admin remove-appliance-service

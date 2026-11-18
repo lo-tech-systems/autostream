@@ -844,41 +844,6 @@ def get_install_state(path) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Avahi playing-state helpers (mDNS service file lifecycle)
-# ---------------------------------------------------------------------------
-
-def write_avahi_playing_service(version: str, appliance_id: str | None = None) -> bool:
-    """Call sudo autostream_admin write-playing-service <version> [id].
-
-    Returns True on success.  Logs at WARNING on failure; never raises.
-    """
-    args = ["write-playing-service", version]
-    if appliance_id:
-        args.append(appliance_id)
-    p = run_admin_cmd(args, timeout=10.0)
-    if p.returncode == 0:
-        return True
-    logger.warning(
-        "write_avahi_playing_service: admin call failed (rc=%s)", p.returncode
-    )
-    return False
-
-
-def remove_avahi_playing_service() -> bool:
-    """Call sudo autostream_admin remove-playing-service.
-
-    Returns True on success.  Logs at WARNING on failure; never raises.
-    """
-    p = run_admin_cmd(["remove-playing-service"], timeout=10.0)
-    if p.returncode == 0:
-        return True
-    logger.warning(
-        "remove_avahi_playing_service: admin call failed (rc=%s)", p.returncode
-    )
-    return False
-
-
 def set_nginx_verbose_logging(enabled: bool) -> bool:
     """Switch NGINX access logging between verbose (all requests) and normal (2xx suppressed).
 

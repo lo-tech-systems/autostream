@@ -31,7 +31,6 @@ FEDERATION_MODULES = (
 )
 
 # Avahi XML service files containing the canonical TXT records
-AVAHI_PLAYING_SVC = REPO_ROOT / "system" / "avahi" / "autostream-playing.service"
 AVAHI_DIAL_SVC = REPO_ROOT / "system" / "avahi" / "autostream-dial.service"
 
 
@@ -106,18 +105,6 @@ class TestWifiNetworkModuleMdnsIsolation:
 # ---------------------------------------------------------------------------
 
 class TestAvahiServiceFileIntegrity:
-    def test_playing_service_file_exists(self):
-        assert AVAHI_PLAYING_SVC.exists(), "system/avahi/autostream-playing.service must exist"
-
-    def test_playing_service_type_unchanged(self):
-        txt = AVAHI_PLAYING_SVC.read_text(encoding="utf-8")
-        assert "_autostream-playing._tcp" in txt
-
-    def test_playing_service_txt_keys_present(self):
-        txt = AVAHI_PLAYING_SVC.read_text(encoding="utf-8")
-        for key in ("version=", "id="):
-            assert key in txt, f"TXT key '{key}' missing from autostream-playing.service"
-
     def test_dial_service_file_exists(self):
         assert AVAHI_DIAL_SVC.exists(), "system/avahi/autostream-dial.service must exist"
 
@@ -125,6 +112,5 @@ class TestAvahiServiceFileIntegrity:
         txt = AVAHI_DIAL_SVC.read_text(encoding="utf-8")
         assert "_autostream-dial._tcp" in txt
 
-    def test_playing_service_port_unchanged(self):
-        txt = AVAHI_PLAYING_SVC.read_text(encoding="utf-8")
-        assert "<port>80</port>" in txt
+    def test_there_is_no_playing_service_file(self):
+        assert not (REPO_ROOT / "system" / "avahi" / "autostream-playing.service").exists()

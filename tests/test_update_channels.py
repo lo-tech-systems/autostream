@@ -832,17 +832,17 @@ class TestMainUpdaterApplySingleLookup:
         assert f"AUTOSTREAM_RELEASE_TAG={FAKE_TAG}" in flat_cmd, \
             f"AUTOSTREAM_RELEASE_TAG not in systemd-run command: {flat_cmd}"
 
-    def test_apply_auto_skips_when_playing_service_exists(self, tmp_path):
-        """auto mode must skip when the playing-service marker file is present."""
+    def test_apply_auto_skips_when_the_session_flag_exists(self, tmp_path):
+        """auto mode must skip when the session flag file is present."""
         mod = self._load(tmp_path)
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text(
             json.dumps({"updates": {"auto_update": True, "update_channel": "stable"}}),
             encoding="utf-8",
         )
-        playing = tmp_path / "playing.service"
-        playing.touch()
-        mod.PLAYING_SERVICE = playing
+        flag = tmp_path / "session-active"
+        flag.touch()
+        mod.SESSION_FLAG = flag
         result = mod.cmd_apply(auto=True)
         assert result == {"ok": True, "skipped": True, "reason": "playback_active"}
 

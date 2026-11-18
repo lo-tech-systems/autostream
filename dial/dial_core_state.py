@@ -58,7 +58,7 @@ def pin_capable_outputs(version: int) -> bool:
 
 
 # How long a replay the appliance has just accepted may be shown as playing
-# before its own playing advertisement reaches the dial (normally a few
+# before the appliance's own session state reaches the dial (normally a few
 # seconds).
 ACCEPTED_REPLAY_GRACE_S = 20.0
 
@@ -73,10 +73,10 @@ NOWIFI_PROMPT_STREAK = 3
 
 @dataclass(frozen=True)
 class NowPlaying:
-    """Now-playing state for the overlay, as last observed by the poll
-    thread. Immutable — a changed poll result produces a new instance rather
-    than mutating this one, which is what makes the `!=` comparison in
-    _poll_once() a reliable "did anything worth repainting change" check.
+    """Now-playing state for the overlay, as last folded by the core thread.
+    Immutable — a changed state produces a new instance rather than mutating
+    this one, which is what makes the `!=` comparison in the core's fold a
+    reliable "did anything worth repainting change" check.
     """
     service_name: str
     artist: str

@@ -32,7 +32,7 @@ import autostream_core as core
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_logging as log_setup
-import autostream_announce as announce
+import autostream_session_flag as session_flag
 import autostream_playback_tracking as playback_tracking
 import autostream_session
 import autostream_identification as identification
@@ -115,10 +115,9 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         stack.enter_context(patch.object(startup, "sync_audio_path_backend"))
         stack.enter_context(patch.object(startup, "configure_startup_monitors", return_value=[]))
         stack.enter_context(patch.object(identification, "build_track_id_service", return_value=None))
-        stack.enter_context(patch.object(announce, "_start_playing_reconciliation"))
         stack.enter_context(patch.object(autostream_session, "SessionTracker", mock_session_tracker_cls))
         stack.enter_context(patch.object(autostream_session, "dispatch_session_event"))
-        stack.enter_context(patch.object(announce, "sync_playing_announcement"))
+        stack.enter_context(patch.object(session_flag, "sync"))
         stack.enter_context(patch.object(runtime, "_playback_tracker", None))
         stack.enter_context(patch.object(services, "stop_discovery"))
         stack.enter_context(patch.object(core.time, "sleep"))

@@ -2566,13 +2566,13 @@ class TestReplayEndTeardown:
         )
         assert mon._ti_generation == gen + 1
 
-    def test_poll_loop_tears_down_after_session_state_and_announcement(self):
+    def test_poll_loop_tears_down_after_session_state_and_flag(self):
         import inspect
         src = inspect.getsource(core.run_autostream)
         teardown = src.index("autostream_session.teardown_identification_after_replay_end(")
         assert teardown > src.index("autostream_session.dispatch_session_event(")
         assert teardown > src.index("autostream_session.publish(")
-        assert teardown > src.index("announce.sync_playing_announcement(")
+        assert teardown > src.index("session_flag.sync(")
 
     def test_teardown_takes_the_ti_state_lock(self):
         mon = self._origin()

@@ -17,12 +17,11 @@ change is delivered to subscribers after the lock is released.
 from __future__ import annotations
 
 import copy
-import logging
 import math
 import threading
 from typing import Optional
 
-import autostream_announce as announce
+import autostream_session_flag as session_flag
 import autostream_runtime as runtime
 import autostream_session
 import autostream_state
@@ -113,37 +112,12 @@ def _rearm_replay_identification(origin_input: Optional[int], in_session: bool) 
         target.on_replay_seek_accepted(in_session)
 
 
-def _announce_playing_if_active(version: str) -> None:
-    """Pool worker: sync the announcement to the session state as it is now.
-
-    The state is read when the task runs, not when it was submitted, so a
-    stop that lands between the ack and the write leaves the service file
-    removed (or never written) instead of announcing an idle appliance. A
-    stop landing inside the window between this read and the write is
-    corrected by the coordinator's next tick or the periodic reconciliation.
-    """
-    announce.sync_playing_announcement(
-        autostream_state.store().snapshot().session.active, version)
-
-
-def _announce_replay_playing() -> None:
-    """Advertise the appliance as playing as soon as a replay start is acked.
-
-    Called from apply_repeat_ack on the API thread, so the write (a sudo
-    admin call) is handed to the task pool rather than run inline. The
-    submission is single-flight, and sync_playing_announcement is
-    idempotent under its lock, so the coordinator's own sync later in
-    the session either finds it announced or waits briefly for the write:
-    one write per session. Never raises.
-    """
-    version = announce._playing_version
-    if version is None or announce._playing_announced:
-        return
-    try:
-        runtime._task_pool.submit(
-            "playing-announce", _announce_playing_if_active, version)
-    except Exception:
-        logging.debug("replay playing announcement not submitted", exc_info=True)
+def _flag_replay_playing() -> None:
+    """Mark the appliance as in use as soon as a replay start is acked, from
+    the session state as it is now: a stop that lands between the ack and
+    this read leaves the flag removed instead of marking an idle appliance.
+    Never raises."""
+    session_flag.sync(autostream_state.store().snapshot().session.active)
 
 
 def apply_repeat_ack(ack: Optional[dict], *, requester: Optional[str] = None) -> Optional[dict]:
@@ -194,7 +168,7 @@ def apply_repeat_ack(ack: Optional[dict], *, requester: Optional[str] = None) ->
         _rearm_replay_identification(
             autostream_state.repeat_recording_origin(new_block), in_session=not started)
     if started:
-        _announce_replay_playing()
+        _flag_replay_playing()
     return ack
 
 

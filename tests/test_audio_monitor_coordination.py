@@ -539,7 +539,7 @@ import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
-import autostream_announce as announce
+import autostream_session_flag as session_flag
 import autostream_session as session
 from fake_store import fake_repeat, fake_session
 import autostream_repeat as repeat
@@ -1159,77 +1159,44 @@ class TestCaptureStopOrdering:
 
 
 # ---------------------------------------------------------------------------
-# _sync_playing_announcement: mDNS zero-to-one and one-to-zero transitions.
-# The predicate is the unified session-active flag, so a repeat-replay
-# session announces exactly like a live-capture one.
+# The session flag: created on the zero-to-one transition and removed on the
+# one-to-zero one. The predicate is the unified session-active flag, so a
+# repeat-replay session sets it exactly like a live-capture one.
 # ---------------------------------------------------------------------------
 
-_FIXED_APPLIANCE_ID = "a1b2c3d4e5f6a1b2c3d4"
+class TestSessionFlagSync:
+    def test_zero_to_one_creates_the_flag(self):
+        session_flag.sync(True)
+        assert session_flag.SESSION_FLAG_PATH.exists()
 
+    def test_one_to_zero_removes_the_flag(self):
+        session_flag.sync(True)
+        session_flag.sync(False)
+        assert not session_flag.SESSION_FLAG_PATH.exists()
 
-class TestSyncPlayingAnnouncement:
-    def setup_method(self):
-        announce._playing_announced = False
-        self._id_patcher = patch.object(rpi, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID)
-        self._id_patcher.start()
+    def test_a_repeated_sync_does_not_touch_the_file_again(self):
+        session_flag.sync(True)
+        session_flag.SESSION_FLAG_PATH.unlink()
+        session_flag.sync(True)
+        assert not session_flag.SESSION_FLAG_PATH.exists()
 
-    def teardown_method(self):
-        self._id_patcher.stop()
-        announce._playing_announced = False
+    def test_idle_with_no_flag_does_nothing(self):
+        session_flag.sync(False)
+        assert not session_flag.SESSION_FLAG_PATH.exists()
 
-    def test_zero_to_one_writes_avahi_service(self):
-        with patch.object(announce, "write_avahi_playing_service", return_value=True) as mock_write:
-            announce.sync_playing_announcement(True, "v1")
-        mock_write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
-        assert announce._playing_announced is True
-
-    def test_write_failure_leaves_announced_false(self):
-        with patch.object(announce, "write_avahi_playing_service", return_value=False):
-            announce.sync_playing_announcement(True, "v1")
-        assert announce._playing_announced is False
-
-    def test_one_to_zero_removes_avahi_service(self):
-        announce._playing_announced = True
-        with patch.object(announce, "remove_avahi_playing_service", return_value=True) as mock_remove:
-            announce.sync_playing_announcement(False, "v1")
-        mock_remove.assert_called_once()
-        assert announce._playing_announced is False
-
-    def test_remove_failure_leaves_announced_true(self):
-        announce._playing_announced = True
-        with patch.object(announce, "remove_avahi_playing_service", return_value=False):
-            announce.sync_playing_announcement(False, "v1")
-        assert announce._playing_announced is True
-
-    def test_already_announced_skips_write(self):
-        announce._playing_announced = True
-        with patch.object(announce, "write_avahi_playing_service") as mock_write:
-            announce.sync_playing_announcement(True, "v1")
-        mock_write.assert_not_called()
-
-    def test_not_announced_and_not_active_skips_remove(self):
-        announce._playing_announced = False
-        with patch.object(announce, "remove_avahi_playing_service") as mock_remove:
-            announce.sync_playing_announcement(False, "v1")
-        mock_remove.assert_not_called()
-
-    def test_reconciliation_reads_session_state_not_capture_flags(self):
-        # A replay session (no monitor capturing) must still re-announce:
-        # the reconcile tick derives its predicate from the session part.
+    def test_a_replay_session_sets_the_flag_from_the_session_state(self):
+        # A replay session (no monitor capturing) must still set the flag:
+        # the predicate comes from the session part.
         session.publish(True, "replay")
         try:
-            with patch.object(announce, "write_avahi_playing_service", return_value=True) as mock_write:
-                announce.sync_playing_announcement(
-                    autostream_state.store().snapshot().session.active, "v1"
-                )
-            mock_write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
-            assert announce._playing_announced is True
+            session_flag.sync(autostream_state.store().snapshot().session.active)
+            assert session_flag.SESSION_FLAG_PATH.exists()
         finally:
             session.publish(False, None)
 
 
 # ---------------------------------------------------------------------------
-# Replay-start acks advertise "playing" from the API thread, via the task pool.
+# Replay-start acks set the session flag from the API thread.
 # ---------------------------------------------------------------------------
 
 def _repeat_block(replaying=False):
@@ -1247,15 +1214,11 @@ def _repeat_ack(command, state):
             "armed": True, "position_seconds": 0.0}
 
 
-class TestReplayAckAnnouncement:
+class TestReplayAckSessionFlag:
     def setup_method(self):
-        announce._playing_announced = False
-        announce._playing_version = "v1"
         session.publish(False, None)
 
     def teardown_method(self):
-        announce._playing_announced = False
-        announce._playing_version = None
         repeat.publish_from_daemon(None)
         session.publish(False, None)
 
@@ -1263,84 +1226,34 @@ class TestReplayAckAnnouncement:
                        replaying=False):
         repeat.publish_from_daemon(_repeat_block(replaying=replaying))
         with patch.object(repeat, "_rearm_replay_identification"), \
-             patch.object(runtime._task_pool, "submit", return_value=True) as submit:
+             patch.object(repeat, "_flag_replay_playing") as flag:
             repeat.apply_repeat_ack(_repeat_ack(command, state))
-        return submit
+        return flag
 
-    def test_replaying_ack_submits_the_announcement_off_thread(self):
-        submit = self._ack_from_hold()
-        submit.assert_called_once_with(
-            "playing-announce", repeat._announce_playing_if_active, "v1")
+    def test_replaying_ack_sets_the_flag(self):
+        flag = self._ack_from_hold()
+        flag.assert_called_once_with()
 
-    def test_replaying_ack_is_a_noop_when_already_announced(self):
-        announce._playing_announced = True
-        submit = self._ack_from_hold()
-        submit.assert_not_called()
+    def test_seek_within_a_replay_does_not_set_it_again(self):
+        flag = self._ack_from_hold(replaying=True)
+        flag.assert_not_called()
 
-    def test_replaying_ack_is_a_noop_without_a_version(self):
-        announce._playing_version = None
-        submit = self._ack_from_hold()
-        submit.assert_not_called()
-
-    def test_seek_within_a_replay_does_not_submit(self):
-        submit = self._ack_from_hold(replaying=True)
-        submit.assert_not_called()
-
-    def test_stop_and_fading_out_acks_never_submit(self):
+    def test_stop_and_fading_out_acks_never_set_it(self):
         assert self._ack_from_hold("repeat_stop", "fading_out",
                                    replaying=True).call_count == 0
         assert self._ack_from_hold("set_repeat_armed", "hold").call_count == 0
 
-    def test_a_submit_failure_never_reaches_the_caller(self):
-        repeat.publish_from_daemon(_repeat_block())
-        with patch.object(repeat, "_rearm_replay_identification"), \
-             patch.object(runtime._task_pool, "submit",
-                          side_effect=RuntimeError("pool down")):
-            repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
-
-    def test_duplicate_submission_is_dropped_by_single_flight(self):
-        import threading
-        release = threading.Event()
-        started = threading.Event()
-        pool = runtime.TaskPool(max_workers=1)
-
-        def slow(_v):
-            started.set()
-            release.wait(5)
-
-        try:
-            with patch.object(runtime, "_task_pool", pool), \
-                 patch.object(repeat, "_announce_playing_if_active", slow):
-                repeat._announce_replay_playing()
-                assert started.wait(5)
-                repeat._announce_replay_playing()
-                assert pool.is_inflight("playing-announce")
-        finally:
-            release.set()
-
-    def test_worker_reads_the_session_state_when_it_runs(self):
-        # A stop that lands before the pooled task runs must not leave the
-        # service announced.
+    def test_the_flag_follows_the_session_state_when_it_is_written(self):
+        # A stop that lands before the write must not leave the flag set.
         session.publish(False, None)
-        with patch.object(announce, "write_avahi_playing_service") as write:
-            repeat._announce_playing_if_active("v1")
-        write.assert_not_called()
-        assert announce._playing_announced is False
+        repeat._flag_replay_playing()
+        assert not session_flag.SESSION_FLAG_PATH.exists()
 
-    def test_worker_announces_while_the_session_is_active(self):
+    def test_the_flag_is_set_while_the_session_is_active(self):
         session.publish(True, "replay")
-        with patch.object(rpi, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
-             patch.object(announce, "write_avahi_playing_service",
-                          return_value=True) as write:
-            repeat._announce_playing_if_active("v1")
-            announce.sync_playing_announcement(True, "v1")
-        write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
-        assert announce._playing_announced is True
+        repeat._flag_replay_playing()
+        assert session_flag.SESSION_FLAG_PATH.exists()
 
-    def test_run_autostream_records_the_version(self):
-        import inspect
-        src = inspect.getsource(core.run_autostream)
-        assert "announce.set_version(version)" in src
 
 
 # ---------------------------------------------------------------------------

@@ -300,77 +300,17 @@ class TestFactoryResetHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Avahi XML escaping: _write_playing_service and _update_dial_service
+# Avahi service files: _update_dial_service, and the playing record's absence
 # ---------------------------------------------------------------------------
 
 class TestAvahiXmlEscaping:
-    def test_playing_service_escapes_version_html(self, tmp_path):
-        svc_dir = tmp_path / "avahi"
-        svc_dir.mkdir()
-        svc_file = svc_dir / "autostream-playing.service"
-
-        args = MagicMock()
-        args.version = "<script>bad</script>"
-        args.id = ""
-
-        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
-             patch.object(m, "_PLAYING_SERVICE", svc_file):
-            m._write_playing_service(args)
-
-        assert svc_file.exists(), "_write_playing_service did not write anything"
-        content = svc_file.read_text(encoding="utf-8")
-        assert "<script>" not in content
-        assert "&lt;script&gt;" in content
-
-    def test_playing_service_writes_id_record(self, tmp_path):
-        svc_dir = tmp_path / "avahi"
-        svc_dir.mkdir()
-        svc_file = svc_dir / "autostream-playing.service"
-
-        args = MagicMock()
-        args.version = "v1.2.3"
-        args.id = "a1b2c3d4e5f6a1b2c3d4"
-
-        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
-             patch.object(m, "_PLAYING_SERVICE", svc_file):
-            rc = m._write_playing_service(args)
-
-        assert rc == 0
-        content = svc_file.read_text(encoding="utf-8")
-        assert "id=" + args.id in content
-
-    def test_playing_service_omits_id_when_absent(self, tmp_path):
-        svc_dir = tmp_path / "avahi"
-        svc_dir.mkdir()
-        svc_file = svc_dir / "autostream-playing.service"
-
-        args = MagicMock()
-        args.version = "v1.2.3"
-        args.id = ""
-
-        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
-             patch.object(m, "_PLAYING_SERVICE", svc_file):
-            rc = m._write_playing_service(args)
-
-        assert rc == 0
-        content = svc_file.read_text(encoding="utf-8")
-        assert "id=" not in content
-
-    def test_playing_service_rejects_malformed_id(self, tmp_path):
-        svc_dir = tmp_path / "avahi"
-        svc_dir.mkdir()
-        svc_file = svc_dir / "autostream-playing.service"
-
-        args = MagicMock()
-        args.version = "v1.2.3"
-        args.id = "not-a-valid-id"
-
-        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
-             patch.object(m, "_PLAYING_SERVICE", svc_file):
-            rc = m._write_playing_service(args)
-
-        assert rc == 1
-        assert not svc_file.exists()
+    def test_there_is_no_playing_service_writer_or_command(self):
+        assert not hasattr(m, "_write_playing_service")
+        assert not hasattr(m, "_remove_playing_service")
+        assert not hasattr(m, "_PLAYING_SERVICE")
+        src = (Path(__file__).parent.parent / "supervisor" / "autostream_admin").read_text(encoding="utf-8")
+        assert "write-playing-service" not in src
+        assert "remove-playing-service" not in src
 
     def test_dial_service_rejects_semicolon_in_name(self, tmp_path):
         template = tmp_path / "template.xml"

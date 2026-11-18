@@ -81,7 +81,8 @@ UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
 UPDATE_STATE_UID = 0
 STAGING_DIR = UPDATE_STATE_DIR / "staging"
 CONFIG_PATH = Path("/etc/autostream/autostream.json")
-PLAYING_SERVICE = Path("/etc/avahi/services/autostream-playing.service")
+# The playback-session flag the autostream service keeps while a session is active.
+SESSION_FLAG = Path("/run/autostream-pipes/session-active")
 
 UA = "autostream-updater/1.0 (+https://github.com/lo-tech-systems/autostream)"
 
@@ -271,7 +272,7 @@ def cmd_apply(auto: bool = False) -> Dict[str, Any]:
         _log("apply: auto mode — auto_update disabled in config, skipping")
         return {"ok": True, "skipped": True, "reason": "auto_update_disabled"}
 
-    if auto and PLAYING_SERVICE.exists():
+    if auto and SESSION_FLAG.exists():
         _log("apply: auto mode — playback active, skipping")
         return {"ok": True, "skipped": True, "reason": "playback_active"}
 

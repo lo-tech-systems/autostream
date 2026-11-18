@@ -85,7 +85,7 @@ def _load_host(tmp_path: Path) -> ModuleType:
     mod.UPDATE_RESULT_FILE = tmp_path / "update-result.env"
     mod.LOG_PATH = tmp_path / "update.log"
     mod.APMODE_FLAG = tmp_path / "_apmode_absent"
-    mod.PLAYING_SERVICE = tmp_path / "_playing_absent"
+    mod.SESSION_FLAG = tmp_path / "_session_absent"
     mod.CONFIG_PATH = tmp_path / "autostream.json"
     # Stub the pre-update teardown helpers by default so tests that reach the
     # scheduling step do not make real HTTP/socket calls; test_pre_update_teardown.py
@@ -457,8 +457,8 @@ class TestHostAutoUpdateGate:
         mod = _load_host(tmp_path)
         mod.CONFIG_PATH = tmp_path / "autostream.json"
         mod.CONFIG_PATH.write_text(json.dumps({"updates": {"auto_update": True}}))
-        mod.PLAYING_SERVICE = tmp_path / "playing.service"
-        mod.PLAYING_SERVICE.touch()
+        mod.SESSION_FLAG = tmp_path / "session-active"
+        mod.SESSION_FLAG.touch()
         result = mod.cmd_apply(auto=True)
         assert result.get("ok") is True
         assert result.get("skipped") is True

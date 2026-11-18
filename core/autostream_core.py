@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-import autostream_announce as announce
+import autostream_session_flag as session_flag
 import autostream_audio_monitor as audio_monitor
 import autostream_identification as identification
 import autostream_input_status as input_status
@@ -73,7 +73,7 @@ from autostream_sysutils import (
 #
 # Independent, single-purpose locks:
 #   (_monitors_lock and _track_id_request_gate are in autostream_runtime;
-#    the Avahi "playing" announcement lock is in autostream_announce)
+#    the session flag lock is in autostream_session_flag)
 #   (the now-playing republish-request lock is in autostream_runtime)
 #   (the repeat-block overlay lock is in autostream_repeat)
 #
@@ -336,10 +336,8 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     poll_interval = 0.5          # seconds between get_status() polls
     switch_silence_seconds = 5.0 # how long current input must be silent before switching
 
-    # Remove any stale playing announcement from a previous crash, then
-    # sync the announced flag to filesystem truth so sync_playing_announcement
-    # does not attempt a redundant remove on the first poll.
-    announce.reset_at_startup()
+    # Remove a stale session flag left by a crash of the previous process.
+    session_flag.reset_at_startup()
     appliances.start(runtime.lifecycle(), settings)
 
     return _BootstrapResult(
@@ -374,8 +372,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     cfg = bootstrap.cfg
     webui_thread = bootstrap.webui_thread
     socket_path = bootstrap.socket_path
-    version = bootstrap.version
-    announce.set_version(version)
     POLL_INTERVAL = bootstrap.poll_interval
     SWITCH_SILENCE_SECONDS = bootstrap.switch_silence_seconds
 
@@ -413,8 +409,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             "autostream_core is now running with %d input(s). Press Ctrl+C to exit.",
             len(monitors),
         )
-
-        announce.start_reconciliation_once(version)
 
         current: Optional[audio_monitor.AudioMonitor] = None
         reconnect_at: float = 0.0
@@ -619,17 +613,17 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     session_source is not None, session_source,
                     edge=session_event is not None)
 
-                # The LAN "playing" announcement is a consumer of the session
-                # state (so repeat replay counts, not just live capture); the
-                # sync is idempotent and only touches avahi on a transition.
-                announce.sync_playing_announcement(session_source is not None, version)
+                # The session flag is a consumer of the session state (so
+                # repeat replay counts, not just live capture); the sync is
+                # idempotent and only touches the file on a transition.
+                session_flag.sync(session_source is not None)
 
                 tick_batch.close()
 
                 # Reset the replay origin's identification only now that the
-                # session is marked inactive and the announcement withdrawn:
-                # a client polling status must never see "advertised as
-                # playing" together with an already-reset identification.
+                # session is marked inactive and the flag removed: a
+                # client reading the state must never see the session active
+                # together with an already-reset identification.
                 autostream_session.teardown_identification_after_replay_end(
                     session_event, session_prev_source,
                     session_prev_monitor, session_new_monitor,
@@ -763,7 +757,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             with runtime._monitors_lock:
                 runtime.all_monitors.clear()
             input_status.publish_inputs()
-            announce.sync_playing_announcement(False, version)
+            session_flag.sync(False)
             client.close()
             if not _reloading:
                 log_lifecycle("autostream stopped cleanly")

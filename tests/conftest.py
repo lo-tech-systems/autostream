@@ -155,33 +155,27 @@ def _mod(name: str) -> ModuleType | None:
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_playing_announcement(monkeypatch):
-    """Keep the LAN playing announcement inert for every test.
+def _hermetic_session_flag(monkeypatch, tmp_path):
+    """Point the playback-session flag at a scratch file for every test.
 
-    The coordinator's poll cycle syncs the _autostream-playing._tcp
-    announcement from the session state each iteration, and starts a
-    60-second reconcile thread once per process. Tests that drive
-    run_autostream()/the poll cycle with mock monitors would therefore
-    invoke the real avahi service-file helpers (a sudo autostream_admin
-    subprocess per transition) and leave a real daemon thread running for
-    the rest of the pytest session. Stub both at the autostream_announce
-    import site; tests that assert on the announcement itself re-patch
-    these names inside the test, which nests over this seal.
+    The coordinator's poll cycle syncs the flag from the session state each
+    iteration. Tests that drive run_autostream()/the poll cycle with mock
+    monitors would otherwise create and remove the real flag under
+    /run/autostream-pipes. Tests that assert on the flag itself patch the
+    path again inside the test, which nests over this one.
     """
     repo_core = str(Path(__file__).parent.parent / "core")
     if repo_core not in sys.path:
         sys.path.insert(0, repo_core)
     try:
-        import autostream_announce as announce
+        import autostream_session_flag as session_flag
     except Exception:
         yield
         return
-    monkeypatch.setattr(announce, "write_avahi_playing_service", lambda version, appliance_id=None: True)
-    monkeypatch.setattr(announce, "remove_avahi_playing_service", lambda: True)
-    monkeypatch.setattr(announce, "_start_playing_reconciliation", lambda version: None)
-    announce.reset_for_tests()
+    monkeypatch.setattr(session_flag, "SESSION_FLAG_PATH", tmp_path / "session-active")
+    session_flag.reset_for_tests()
     yield
-    announce.reset_for_tests()
+    session_flag.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
