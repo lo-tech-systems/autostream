@@ -93,6 +93,7 @@ references, not needed for normal use:
 - [Log level API](LOG-LEVEL-API.md) - reading and setting log verbosity at runtime.
 - [API error contract](API-ERROR-CONTRACT.md) - how the web interface reports errors.
 - [Status API](STATUS-API.md) - the combined `/api/status` endpoint, including track identification.
+- [Client protocol](CLIENT-PROTOCOL.md) - the state, event and intent routes the Web UI, dials and other appliances use (unstable until 1.0).
 
 ## See also
 
