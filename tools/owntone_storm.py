@@ -620,8 +620,9 @@ def judge_stop(transitions, sent: float, stop_bound_s: float, start_bound_s: flo
 
     A speaker that was connected or streaming must read stopped within the
     stop bound. One that was still connecting finishes its start first, so
-    it must read stopped within the start bound. Any other speaker had
-    nothing to stop."""
+    it must read stopped within the start bound, unless a select overtakes
+    the stop and it goes back to connecting. Any other speaker had nothing
+    to stop."""
     if prior is None:
         prior = state_at(transitions, sent)
     if prior in SESSION:
@@ -639,6 +640,8 @@ def judge_stop(transitions, sent: float, stop_bound_s: float, start_bound_s: flo
                            what if elapsed <= bound else f"{what} took {elapsed:.1f} s")
         if state == "failed":
             return Outcome(False, state, when - sent, f"{what} ended failed, not stopped")
+        if state == "connecting" and prior == "connecting":
+            return Outcome(True, state, when - sent, f"{what}: selected again before it ended", needed=False)
     return Outcome(False, state_at(transitions, math.inf), None, f"{what}: stopped not seen")
 
 

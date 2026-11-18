@@ -428,6 +428,15 @@ def test_a_stop_during_connecting_is_judged_by_the_start_bound():
     assert not storm.judge_stop([(0.0, "streaming")], 2.0, 2.0, 90).ok
 
 
+def test_a_stop_during_connecting_overtaken_by_a_select_is_not_judged():
+    tl = [(0.0, "connecting"), (2.1, "stopping"), (2.4, "connecting"), (3.0, "failed")]
+    overtaken = storm.judge_stop(tl, 2.0, 2.0, 90)
+    assert overtaken.ok and not overtaken.needed and overtaken.state == "connecting"
+    # A stop of a playing speaker is still judged to its stopped
+    tl = [(0.0, "streaming"), (2.1, "stopping"), (2.4, "connecting"), (3.0, "stopped")]
+    assert storm.judge_stop(tl, 2.0, 2.0, 90).needed
+
+
 @pytest.mark.parametrize("rate,bits,frames", [(44100, 16, 882), (48000, 32, 960)])
 def test_a_tone_chunk_is_twenty_milliseconds_of_frames(rate, bits, frames):
     import array
