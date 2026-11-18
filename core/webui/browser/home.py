@@ -398,6 +398,7 @@ def send_airplay_page(
         + _island
         + "\n"
         + static.script_tag("poll.js") + "\n"
+        + static.script_tag("stream.js") + "\n"
         + static.script_tag("render_fragments.js") + "\n"
         + static.script_tag("page/home_cards.js")
         + static.script_tag("page/appliance_selector.js")

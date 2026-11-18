@@ -130,6 +130,7 @@
       })
       .finally(function () {
         p.inFlight = false;
+        if (p.again) { p.again = false; __fire(p); return; }
         __scheduleNext(p);
       });
   }
@@ -166,6 +167,7 @@
       timeoutMs: opts.timeoutMs || 0,
       intervalMs: opts.intervalMs,
       onData: opts.onData,
+      onError: opts.onError || null,
       isSuppressed: opts.isSuppressed || null,
       variant: opts.variant || 'local',
       activeOnly: !!opts.activeOnly,
@@ -174,6 +176,7 @@
       classifyError: opts.classifyError || null,
       onDefinitiveError: opts.onDefinitiveError || null,
       inFlight: false,
+      again: false,
       timer: null,
       running: false,
       stopped: false,
@@ -191,14 +194,26 @@
       p.running = true;
       if (!document.hidden) __fire(p);
     }
-    p.start = function () {
+    // start({ fireNow: false }) begins the cadence without fetching at once,
+    // for a caller that has just been handed a fresh reply.
+    p.start = function (o) {
       if (p.stopped || p.running) return;
       p.running = true;
+      if (o && o.fireNow === false) { __scheduleNext(p); return; }
       if (!document.hidden) __fire(p);
     };
     p.stop = function () {
       p.running = false;
       __pause(p);
+    };
+    // Fire one fetch now, whether or not the poller is running. A fetch
+    // already in flight is followed by one more as soon as it ends, so a
+    // change that happened while it was being answered is not missed.
+    p.refresh = function () {
+      if (p.stopped) return;
+      if (p.inFlight) { p.again = true; return; }
+      if (p.timer) { clearTimeout(p.timer); p.timer = null; }
+      __fire(p);
     };
     return p;
   };

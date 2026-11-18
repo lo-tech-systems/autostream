@@ -31,12 +31,17 @@ _requires_browser = pytest.mark.skipif(
 
 
 def _watch_errors(page: "Page") -> list:
-    """Collect uncaught script errors and console errors from ``page``."""
+    """Collect uncaught script errors and console errors from ``page``.
+
+    The stub refuses the state stream unless a test turns it on, and the
+    browser logs that refusal; it is the expected start of the polling
+    fallback, not a page error."""
     errors: list = []
     page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
     page.on(
         "console",
-        lambda msg: errors.append(f"console: {msg.text}") if msg.type == "error" else None,
+        lambda msg: errors.append(f"console: {msg.text}")
+        if msg.type == "error" and "EventSource" not in msg.text else None,
     )
     return errors
 

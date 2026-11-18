@@ -108,6 +108,15 @@
           if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
         }
 
+        function isHomeLive(d) {
+          var replay = (d && d.repeat && d.repeat.replay) || {};
+          return !!(d && d.session && d.session.active) || !!replay.active || !!replay.fading_out;
+        }
+        function anyOf(parts, wanted) {
+          for (var i = 0; i < wanted.length; i++) if (parts.indexOf(wanted[i]) >= 0) return true;
+          return false;
+        }
+
         window.addEventListener('DOMContentLoaded',function(){
           window.__PENDING_OUTPUTS = new Set();
           window.__PIN_DISMISSED = new Set();
@@ -128,7 +137,48 @@
           refreshApplianceSelector();
           setInterval(function(){if(!document.hidden) refreshApplianceSelector();},15000);
           document.addEventListener('visibilitychange',function(){if(!document.hidden) refreshApplianceSelector();});
-          Poller({ url: '/api/status', intervalMs: 1500, onData: onStatusPollData });
-          Poller({ url: '/api/owntone/outputs_state', intervalMs: 1500, timeoutMs: 5000, onData: onOutputsPollData });
+          var STATUS_PARTS = ['session', 'repeat', 'track', 'inputs', 'playback', 'outputs'];
+          var OUTPUTS_PARTS = ['outputs', 'settings'];
+          var RECONCILE_MS = 15000;
+          var homeLive = false, lastRestart = 0, stream = null;
+          var statusPoller = Poller({ url: '/api/status', intervalMs: 1500, activeOnly: true,
+            onData: function (d) { onStatusPollData(d); homeLive = isHomeLive(d); applyFeedMode(true); },
+            onError: onFeedError });
+          var outputsPoller = Poller({ url: '/api/owntone/outputs_state', intervalMs: 1500,
+            timeoutMs: 5000, activeOnly: true, onData: onOutputsPollData, onError: onFeedError });
+          function streamUp() { return !!(stream && stream.isUp()); }
+          // fresh: called with a status reply just received, so a poller
+          // started now waits one interval before its first fetch.
+          function applyFeedMode(fresh) {
+            var opts = fresh ? { fireNow: false } : undefined;
+            if (!streamUp()) { statusPoller.start(opts); outputsPoller.start(); return; }
+            outputsPoller.stop();
+            if (homeLive) statusPoller.start(opts); else statusPoller.stop();
+          }
+          function onFeedError() {
+            if (!streamUp() || Date.now() - lastRestart < RECONCILE_MS) return;
+            lastRestart = Date.now();
+            stream.restart();
+          }
+          stream = StateStream({
+            url: '/api/v1/events',
+            onChange: function (parts, resync) {
+              if (resync || anyOf(parts, STATUS_PARTS)) statusPoller.refresh();
+              if (resync || anyOf(parts, OUTPUTS_PARTS)) outputsPoller.refresh();
+            },
+            onUp: function () { applyFeedMode(false); },
+            onDown: function () { applyFeedMode(false); },
+          });
+          applyFeedMode(false);
+          setInterval(function () {
+            if (!document.hidden && streamUp()) { statusPoller.refresh(); outputsPoller.refresh(); }
+          }, RECONCILE_MS);
+          // A running poller resumes with a fetch of its own when the page
+          // is shown (poll.js); only the stopped ones are refreshed here.
+          document.addEventListener('visibilitychange', function () {
+            if (document.hidden || !streamUp()) return;
+            if (!statusPoller.running) statusPoller.refresh();
+            if (!outputsPoller.running) outputsPoller.refresh();
+          });
         });
 function navigateToRemoteAppliance(hostname){fetch('/api/appliances',{cache:'no-store'}).then(function(r){return r.json();}).then(function(data){if(!data||!data.ok||!Array.isArray(data.appliances))return;var appliance=data.appliances.find(function(a){return String(a.hostname||'').toLowerCase()===String(hostname||'').toLowerCase();});if(appliance){window.location.href='/a/'+String(appliance.id)+'/';}}).catch(function(){});}document.addEventListener('DOMContentLoaded',function(){var list=document.getElementById('outputs-list');if(!list)return;list.addEventListener('click',function(e){if(!window.__CONTROL_OTHER_APPLIANCES)return;var card=e.target.closest('.output-card[data-remote-in-use="1"]');if(!card)return;if(e.target.closest('.output-toggle')||e.target.closest('.output-slider-wrap'))return;var owner=card.getAttribute('data-remote-owner');if(owner)navigateToRemoteAppliance(owner);});});
