@@ -2740,12 +2740,10 @@ bool ReplayEngine::init_session(ReplaySessionCtx& ctx, CodecChoice codec, int ra
 
     ctx.reader.emplace(buffer);
 
-    // Fresh session: neither a stall streak nor a fade request from a PRIOR
-    // replay session may leak into this one (_stall_since's doc comment;
-    // request_fade_out() only ever fires while a session is active, but a
-    // fade requested right at the tail of the PREVIOUS session could
-    // otherwise still be sitting here set).
-    _stall_since.store(0.0, std::memory_order_relaxed);
+    // Fresh session: a fade request from a PRIOR replay session must not
+    // leak into this one (request_fade_out() only ever fires while a
+    // session is active, but a fade requested right at the tail of the
+    // PREVIOUS session could otherwise still be sitting here set).
     _fade_requested.store(false, std::memory_order_relaxed);
     // A seek requested at the tail of a PRIOR session (mid-fade, or a race
     // with the session ending) must not leak into this one.
@@ -3116,34 +3114,22 @@ ReplayEngine::SessionEndReason ReplayEngine::run_one_session()
 
 bool ReplayEngine::push_paced(const float* interleaved, size_t frames)
 {
-    // track_stall_outcome() below folds every exit of this loop into
-    // "fifo.stalled_seconds" the same way FifoWriter::write() does for the
-    // live path -- the ring staying full for longer than one output block
-    // period counts as a stall tick just like an abort, since either way no
-    // audio is moving; that alone does not exit the loop (it re-checks the
-    // abort flag and keeps retrying), so it is recorded inline below rather
-    // than via a single wrapped return.
-    const double block_period_seconds =
-        static_cast<double>(_owner._mixer.block_frames()) / static_cast<double>(_owner._mixer.rate_hz());
-
-    const float* ptr        = interleaved;
-    size_t       left       = frames;
-    double       wait_start = 0.0;   // 0 = not currently waiting on a full ring
+    const float* ptr  = interleaved;
+    size_t       left = frames;
 
     while (left > 0)
     {
         size_t n = _owner._mixer.push(OutputSource::Replay, ptr, left);
         if (n > 0)
         {
-            ptr        += n * 2;   // stereo
-            left       -= n;
-            wait_start  = 0.0;
+            ptr  += n * 2;   // stereo
+            left -= n;
             continue;
         }
 
         if (_pending_cmd.load(std::memory_order_relaxed) == Cmd::Abort ||
             _stop_requested.load(std::memory_order_relaxed))
-            return track_stall_outcome(false);
+            return false;
 
         // push() also returns 0 once the mixer has auto-deactivated the
         // Replay source, which is exactly what happens the instant a
@@ -3154,13 +3140,9 @@ bool ReplayEngine::push_paced(const float* interleaved, size_t frames)
             _owner._mixer.gain_is_zero(OutputSource::Replay))
             return true;
 
-        if (wait_start == 0.0)
-            wait_start = get_monotonic_time();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        if (get_monotonic_time() - wait_start > block_period_seconds)
-            track_stall_outcome(false);
     }
-    return track_stall_outcome(true);
+    return true;
 }
 
 bool ReplayEngine::write_loop_gap(int rate_hz)
@@ -3181,13 +3163,4 @@ bool ReplayEngine::write_loop_gap(int rate_hz)
         written_frames += chunk_frames;
     }
     return true;
-}
-
-bool ReplayEngine::track_stall_outcome(bool ok)
-{
-    if (ok)
-        _stall_since.store(0.0, std::memory_order_relaxed);
-    else if (_stall_since.load(std::memory_order_relaxed) == 0.0)
-        _stall_since.store(get_monotonic_time(), std::memory_order_relaxed);
-    return ok;
 }

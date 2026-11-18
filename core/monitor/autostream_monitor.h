@@ -1339,17 +1339,6 @@ public:
     uint32_t track_change_seq() const { return _track_change_seq.load(std::memory_order_relaxed); }
     unsigned get_id_snapshot(int16_t* out, unsigned max_frames) const;
 
-    // Mirrors FifoWriter::stalled_seconds() (see its doc comment) for this
-    // engine's own push into the output mixer's Replay ring -- seconds since
-    // the last successful push_paced() call, 0.0 if healthy or no session
-    // has run yet. Reset to 0 at the start of every run_one_session() so a
-    // stall from a PRIOR session never leaks into this one's reading.
-    double stalled_seconds() const
-    {
-        double since = _stall_since.load(std::memory_order_relaxed);
-        return since > 0.0 ? (get_monotonic_time() - since) : 0.0;
-    }
-
     static constexpr unsigned ID_BUF_RATE   = 16000;
     // Matches InputChannel's own ID_BUF_FRAMES (autostream_monitor.h
     // ~1420) rather than a smaller replay-side value -- there is no reason
@@ -1450,9 +1439,7 @@ private:
     // ring (OutputMixer::push()), looping until every frame is accepted.
     // push() never blocks and returns 0 whenever the ring has no room (the
     // mixer's own consumer thread paces the drain) or the source is not
-    // active -- either sleeps a short fixed interval and retries. A push
-    // that stays stuck at 0 for longer than one output block period is
-    // recorded via track_stall_outcome() (the ring is not draining), a
+    // active -- either sleeps a short fixed interval and retries. A
     // pending abort/shutdown ends the session, and a push stuck at 0 because
     // a requested fade has run this source's gain to zero (mix_block()
     // auto-deactivates it once a ramp to zero completes, so push() then
@@ -1473,11 +1460,6 @@ private:
     // post-gap slice). Returns false if an abort/shutdown interrupts the gap
     // early (same contract as push_paced()).
     bool write_loop_gap(int rate_hz);
-
-    // Records a push_paced() outcome into _stall_since and returns `ok`
-    // unchanged, so call sites can wrap a return statement with it (see the
-    // call sites' comment).
-    bool track_stall_outcome(bool ok);
 
     enum class Cmd { None, Start, Abort };
 
@@ -1539,12 +1521,6 @@ private:
     std::vector<int16_t> _id_buf;
     unsigned              _id_write_pos    = 0;
     unsigned              _id_frames_avail = 0;
-
-    // Monotonic start of the current push-stall streak (the Replay ring
-    // staying full for longer than one output block period, see
-    // push_paced()); 0 = healthy. Only ever written by the replay thread;
-    // read from the control thread by stalled_seconds().
-    std::atomic<double> _stall_since{0.0};
 };
 
 

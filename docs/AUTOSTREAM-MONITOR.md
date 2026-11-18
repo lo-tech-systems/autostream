@@ -340,8 +340,8 @@ intercepts `hw:*` before consulting named `pcm.*` definitions. Production
 ### Atomics and lock-freedom
 
 The daemon uses `std::atomic<double>` in hot paths: the `RateEstimator`'s
-published ratio/rate (updated at most every 10 s) and the `_stall_since`
-stall trackers written once per audio block on the process thread. On
+published ratio/rate (updated at most every 10 s) and the FIFO writer's
+`_stall_since` stall tracker, written on the output thread. On
 32-bit ARMv6 these 8-byte atomics could fall back to a libatomic lock
 table - a hidden lock on the audio thread. This is closed as a non-issue
 by product policy: **the monitor only ships on 64-bit OS** (32-bit is
