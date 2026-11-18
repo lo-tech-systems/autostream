@@ -1,8 +1,6 @@
 """Tests for setup-page and captive-portal branding.
 
 Covers:
-- dial/dial_webui_assets.py: badge img tag and three favicon link tags are
-  present in SETUP_PAGE_HTML.
 - platform/wifi_watcher.py: APP_BANNER_IMAGE env var causes BANNER_HTML to render
   an <img> element; when unset, the text <div class="app-title"> is rendered.
   .app-banner-image CSS class is defined for the image variant.
@@ -17,7 +15,6 @@ from pathlib import Path
 from importlib.machinery import SourceFileLoader
 
 REPO_ROOT = Path(__file__).parent.parent
-DIAL_WEBUI_ASSETS = REPO_ROOT / "dial" / "dial_webui_assets.py"
 WIFI_WATCHER = REPO_ROOT / "platform" / "wifi_watcher.py"
 # Presentation (APP_TITLE/APP_BANNER_IMAGE/BANNER_HTML/STYLE_CSS) was extracted
 # to wifi_web.py (HTTP-extraction plan).
@@ -67,65 +64,6 @@ def _load_wifi_web(alias: str, env_overrides: dict | None = None) -> object:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = orig
-
-
-# ---------------------------------------------------------------------------
-# Setup page: badge and favicons
-# ---------------------------------------------------------------------------
-
-class TestSetupPageBranding:
-    def _html(self):
-        import importlib.util as _iu
-        loader = SourceFileLoader("dial_webui_assets_test", str(DIAL_WEBUI_ASSETS))
-        spec = _iu.spec_from_loader("dial_webui_assets_test", loader)
-        mod = _iu.module_from_spec(spec)
-        loader.exec_module(mod)
-        return mod.SETUP_PAGE_HTML
-
-    def test_badge_img_in_header(self):
-        """SETUP_PAGE_HTML must include the badge img in the .hdr div."""
-        html = self._html()
-        assert "/autostream-dial-badge.png" in html, (
-            "Badge image (/autostream-dial-badge.png) not found in setup page HTML"
-        )
-        assert '<img src="/autostream-dial-badge.png"' in html, (
-            "Badge <img> tag not found in setup page HTML"
-        )
-
-    def test_badge_img_has_alt_text(self):
-        """Badge img must have alt text."""
-        html = self._html()
-        assert 'alt="autostream dial"' in html, (
-            "Badge img must have alt=\"autostream dial\""
-        )
-
-    def test_favicon_ico_link(self):
-        """SETUP_PAGE_HTML must include a favicon.ico link."""
-        html = self._html()
-        assert 'href="/favicon.ico"' in html, (
-            "favicon.ico link not found in setup page HTML"
-        )
-
-    def test_favicon_16_link(self):
-        """SETUP_PAGE_HTML must include a 16x16 PNG favicon link."""
-        html = self._html()
-        assert 'href="/favicon-16x16.png"' in html
-
-    def test_favicon_32_link(self):
-        """SETUP_PAGE_HTML must include a 32x32 PNG favicon link."""
-        html = self._html()
-        assert 'href="/favicon-32x32.png"' in html
-
-    def test_favicon_links_in_head(self):
-        """Favicon links must appear before </head>."""
-        html = self._html()
-        head_end = html.find("</head>")
-        assert head_end != -1
-        favicon_pos = html.find("/favicon.ico")
-        assert favicon_pos != -1
-        assert favicon_pos < head_end, (
-            "Favicon link must appear in <head>, not after </head>"
-        )
 
 
 # ---------------------------------------------------------------------------

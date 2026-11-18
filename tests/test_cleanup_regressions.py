@@ -159,7 +159,6 @@ _ASSET_MODULES = sorted(
         *(REPO_ROOT / "core").glob("autostream_webui*.py"),
         *(REPO_ROOT / "core").glob("autostream_appliance_*.py"),
         *(REPO_ROOT / "core" / "webui").rglob("*.py"),
-        REPO_ROOT / "dial" / "dial_webui_assets.py",
     ]
 )
 

@@ -525,18 +525,6 @@ class TestDialImportIsolation:
         src = self._dial_source("dial_http_server.py")
         assert "autostream_webui_dials" not in src
 
-    def test_dial_webui_assets_does_not_import_autostream_webui_api(self):
-        src = self._dial_source("dial_webui_assets.py")
-        assert "autostream_webui_api" not in src
-
-    def test_dial_webui_assets_does_not_import_autostream_webui_dials(self):
-        src = self._dial_source("dial_webui_assets.py")
-        assert "autostream_webui_dials" not in src
-
-    def test_dial_webui_assets_does_not_import_core_helper_names(self):
-        src = self._dial_source("dial_webui_assets.py")
-        assert "send_browser_api_error" not in src
-
     def test_no_core_module_imported_by_dial_http_server(self):
         src = self._dial_source("dial_http_server.py")
         # No import from core/ modules
@@ -545,10 +533,8 @@ class TestDialImportIsolation:
 
     def test_send_browser_api_error_not_duplicated_in_dial(self):
         """There must be only one authoritative intercepted-status helper."""
-        src = self._dial_source("dial_webui_assets.py")
+        src = self._dial_source("dial_http_server.py")
         assert "send_browser_api_error" not in src
-        src2 = self._dial_source("dial_http_server.py")
-        assert "send_browser_api_error" not in src2
 
 
 # ---------------------------------------------------------------------------

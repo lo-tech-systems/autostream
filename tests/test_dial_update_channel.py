@@ -625,36 +625,6 @@ class TestDialHttpConfigureApi:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.4 — Dial Setup UI (structural)
-# ---------------------------------------------------------------------------
-
-class TestDialSetupUiStructural:
-    """Verify the dial Setup page HTML includes channel controls."""
-
-    def test_prerelease_checkbox_present(self):
-        from dial_webui_assets import SETUP_PAGE_HTML
-        assert 'id="c-pre"' in SETUP_PAGE_HTML
-
-    def test_loadcfg_populates_channel(self):
-        from dial_webui_assets import SETUP_PAGE_HTML
-        assert "update_channel === 'dev'" in SETUP_PAGE_HTML
-
-    def test_saveconfig_includes_update_channel(self):
-        from dial_webui_assets import SETUP_PAGE_HTML
-        assert "update_channel:" in SETUP_PAGE_HTML
-        assert "pre ? 'dev' : 'stable'" in SETUP_PAGE_HTML
-
-    def test_update_check_result_states_the_candidate_alone(self):
-        """The check result names the candidate version and nothing else: the
-        tag itself already distinguishes a pre-release (it carries an
-        -alpha/-beta label), and which channel the device follows is shown
-        with the channel setting, not appended to the offered version."""
-        from dial_webui_assets import SETUP_PAGE_HTML
-        assert "'Update available' + (d.candidate ? ': v' + d.candidate : '')" in SETUP_PAGE_HTML
-        assert "pre-release channel" not in SETUP_PAGE_HTML
-
-
-# ---------------------------------------------------------------------------
 # Section 8.5 — Main appliance dial card (structural)
 # ---------------------------------------------------------------------------
 

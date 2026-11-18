@@ -81,34 +81,11 @@ def _extract_script_blocks(html_source: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Load modules that contain embedded JavaScript
-# ---------------------------------------------------------------------------
-
-def _load_dial_webui() -> ModuleType:
-    path = REPO_ROOT / "dial" / "dial_webui_assets.py"
-    loader = importlib.util.spec_from_loader(
-        "dial_webui_assets_p2",
-        importlib.machinery.SourceFileLoader("dial_webui_assets_p2", str(path)),
-    )
-    mod = importlib.util.module_from_spec(loader)
-    loader.loader.exec_module(mod)
-    return mod
-
-
-# ---------------------------------------------------------------------------
 # JS syntax checks (Node.js required)
 # ---------------------------------------------------------------------------
 
 class TestJavaScriptSyntax:
     """Every embedded <script> block must be syntactically valid JS."""
-
-    @node_available
-    def test_dial_setup_page_js_syntax(self):
-        mod = _load_dial_webui()
-        scripts = _extract_script_blocks(mod.SETUP_PAGE_HTML)
-        assert scripts, "No <script> blocks found in SETUP_PAGE_HTML"
-        for i, script in enumerate(scripts):
-            _check_js_syntax(script, f"SETUP_PAGE_HTML script #{i}")
 
     @node_available
     def test_offline_updating_html_js_syntax(self):
@@ -220,42 +197,6 @@ class TestStaticFiles:
 # ---------------------------------------------------------------------------
 # Structural JS checks (no Node required)
 # ---------------------------------------------------------------------------
-
-class TestDialSetupPageJsStructure:
-    """Verify key JS constructs are present in the dial setup page."""
-
-    def test_load_update_status_function_present(self):
-        mod = _load_dial_webui()
-        assert "loadUpdSt" in mod.SETUP_PAGE_HTML, (
-            "loadUpdSt function missing from dial setup page"
-        )
-
-    def test_polling_state_names_present(self):
-        """The dial UI must check for 'running', 'complete', and 'failed'."""
-        mod = _load_dial_webui()
-        js = mod.SETUP_PAGE_HTML
-        assert "'running'" in js or '"running"' in js, "Public state 'running' missing"
-        assert "'complete'" in js or '"complete"' in js, "Public state 'complete' missing"
-        assert "'failed'" in js or '"failed"' in js, "Public state 'failed' missing"
-
-    def test_polling_uses_setinterval(self):
-        """Polling must use setInterval (not manual recursion that could leak)."""
-        mod = _load_dial_webui()
-        assert "setInterval" in mod.SETUP_PAGE_HTML
-
-    def test_terminal_states_clear_interval(self):
-        """complete and failed must clear the polling interval."""
-        mod = _load_dial_webui()
-        js = mod.SETUP_PAGE_HTML
-        # Both 'complete' and 'failed' branches must contain clearInterval.
-        # Check that clearInterval appears at all in the script.
-        assert "clearInterval" in js, "clearInterval not found; polling may leak"
-
-    def test_update_status_endpoint_is_slash_update_slash_status(self):
-        """Must fetch /update/status, not some other path."""
-        mod = _load_dial_webui()
-        assert "/update/status" in mod.SETUP_PAGE_HTML
-
 
 class TestOfflineUpdatingHtmlJsStructure:
     """updating.html reads raw STATUS values (in_progress/success/failure)."""

@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(
 
 RETIRED = (
     "dial_core_poll", "dial_target_status", "dial_appliance_fetch", "dial_outputs",
-    "dial_eq", "dial_repeat", "dial_auth", "dial_capabilities",
+    "dial_eq", "dial_repeat", "dial_auth", "dial_capabilities", "dial_webui_assets",
 )
 
 
