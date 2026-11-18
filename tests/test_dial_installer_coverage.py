@@ -216,7 +216,7 @@ class TestAvahiTemplate:
 
 VERB = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$")
 ADMIN_RUNNERS = {"run_admin_cmd", "_sdcard_health_admin_call"}
-ADMIN_CALL =re.compile(r"ADMIN_CMD,\s*[\"']([a-z][a-z0-9\-]*)[\"']")
+ADMIN_CALL = re.compile(r"\b(?:run_admin|spawn_admin)\(\s*[\"']([a-z][a-z0-9\-]*)[\"']")
 
 
 def _sudoers_verbs(user: str = "autostream") -> set[str]:

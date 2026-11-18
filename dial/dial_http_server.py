@@ -43,6 +43,7 @@ from dial_touch_controllers import list_controllers
 from dial_touch_layout import metrics_for
 from dial_values import is_int, read_env_file
 
+import dial_admin
 from autostream_sysutils import (
     SDCARD_HEALTH_METHODS,
     sdcard_health_check,
@@ -51,7 +52,6 @@ from autostream_sysutils import (
     sdcard_health_state,
 )
 
-ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
 _INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 _UPDATE_RESULT_PATH = Path('/var/lib/autostream/update-result.env')
@@ -216,12 +216,7 @@ def _read_update_fields() -> dict:
 
 def _announce_self(cfg) -> None:
     """Write/update the avahi service file for this dial via admin verb."""
-    args = ["sudo", ADMIN_CMD, "update-dial-service",
-            VERSION, cfg.uuid, cfg.name or cfg.uuid]
-    try:
-        subprocess.run(args, timeout=5, check=False)
-    except Exception as e:
-        logging.warning("_announce_self failed: %s — will retry at next configure", e)
+    dial_admin.announce(cfg, VERSION)
 
 
 # ---- Recovery window --------------------------------------------------------
@@ -659,7 +654,7 @@ class DialHTTPServer:
         the settings save — the config is already persisted by the time
         this runs — so any error here is logged and swallowed."""
         try:
-            subprocess.Popen(["sudo", "-n", ADMIN_CMD, "restart-dial-service"])
+            dial_admin.spawn_admin("restart-dial-service")
             logging.info("dial touch: restart triggered (touch_type changed)")
         except Exception as e:
             logging.warning("dial touch: restart trigger failed: %s", e)
@@ -753,14 +748,7 @@ class DialHTTPServer:
     def _on_announce(self, add: bool) -> None:
         with self._cfg_lock:
             cfg = self._cfg
-        args = ["sudo", ADMIN_CMD, "update-dial-service",
-                VERSION, cfg.uuid, cfg.name or cfg.uuid]
-        if add:
-            args.append("--pin-recovery")
-        try:
-            subprocess.run(args, timeout=5, check=False)
-        except Exception as e:
-            logging.warning("update-dial-service failed: %s", e)
+        dial_admin.announce(cfg, VERSION, pin_recovery=add)
 
     def _make_handler(self) -> type:
         dial_server = self
@@ -1074,10 +1062,7 @@ class DialHTTPServer:
 
                 if 'auto_update' in obj and new_cfg.auto_update != cfg.auto_update:
                     verb = "enable" if new_cfg.auto_update else "disable"
-                    r = subprocess.run(
-                        ["sudo", ADMIN_CMD, "toggle-dial-update-timer", verb],
-                        timeout=5, capture_output=True,
-                    )
+                    r = dial_admin.run_admin("toggle-dial-update-timer", verb, timeout=5, capture=True)
                     if r.returncode != 0:
                         # Rollback saved value
                         rollback = copy.copy(new_cfg)
@@ -1207,10 +1192,7 @@ class DialHTTPServer:
                     self._send_json(200, {'ok': False, 'error': 'check_failed'})
 
             def _handle_update(self) -> None:
-                r = subprocess.run(
-                    ["sudo", ADMIN_CMD, "run-updater"],
-                    timeout=5, capture_output=True,
-                )
+                r = dial_admin.run_admin("run-updater", timeout=5, capture=True)
                 if r.returncode != 0:
                     self._send_json(200, {'ok': False, 'error': 'scheduler_failed'})
                 else:

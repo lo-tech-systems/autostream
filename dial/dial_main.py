@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -21,6 +20,7 @@ _REPO_CORE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__fil
 if os.path.isdir(_REPO_CORE) and _REPO_CORE not in sys.path:
     sys.path.insert(0, _REPO_CORE)
 
+import dial_admin
 from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_config
 from dial_display_profiles import get_profile_or_default
 from dial_control import DialControlServer, core_target_records
@@ -31,7 +31,6 @@ from dial_hd_ddc import detect_backlight
 from dial_hd_panel import HdPanel
 from dial_hd_server import HdServer
 from dial_http_server import (
-    ADMIN_CMD,
     VERSION,
     DialHTTPServer,
     NoOpDisplayStatusProvider,
@@ -98,10 +97,7 @@ def _reconcile_update_timer(auto_update: bool) -> None:
     """
     verb = "enable" if auto_update else "disable"
     try:
-        r = subprocess.run(
-            ["sudo", ADMIN_CMD, "toggle-dial-update-timer", verb],
-            timeout=10,
-        )
+        r = dial_admin.run_admin("toggle-dial-update-timer", verb, timeout=10)
         if r.returncode != 0:
             logging.warning(
                 "startup: timer reconciliation failed (rc=%d, verb=%s) — timer state may be stale",

@@ -23,6 +23,7 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
+import dial_admin
 import dial_http_server as dhs
 from dial_config import DEFAULT_PROFILE_KEY, DEFAULT_TOUCH_KEY, DialConfig, DialDisplayConfig
 from dial_http_server import DialHTTPServer, NoOpDisplayStatusProvider, RecoveryWindow
@@ -2060,7 +2061,7 @@ class TestTouchTypeSelfRestart:
         assert r["data"]["ok"] is True
         assert r["data"]["restarting"] is True
         r["popen_mock"].assert_called_once_with(
-            ["sudo", "-n", dhs.ADMIN_CMD, "restart-dial-service"]
+            ["sudo", "-n", dial_admin.ADMIN_CMD, "restart-dial-service"]
         )
 
     def test_restart_not_triggered_when_touch_type_unchanged(self):

@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import http.client
 import logging
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
 
+import dial_admin
 from dial_info import (
     SIGNAL_NORMAL,
     SIGNAL_STRONG,
@@ -66,10 +66,9 @@ REBOOT_REQUEST_TIMEOUT_S = 4.0
 # for a few seconds after it is asked.
 REBOOT_COOLDOWN_S = 60.0
 
-# The privileged helper's power-off verb, run through the dial's own sudo
+# The privileged helper's power-off verb is run through the dial's own sudo
 # grant. The helper waits a few seconds before powering off, so the dial's
 # reply has gone out by then.
-ADMIN_CMD = "/usr/local/libexec/autostream/autostream_admin"
 SHUTDOWN_REQUEST_TIMEOUT_S = 15.0
 # How long a power-off the helper has scheduled may take to end this process
 # (the helper's own delay, the timer's granularity, the services stopping).
@@ -322,9 +321,8 @@ def _shutdown_thread(on_outcome: Callable[[bool], None]) -> None:
     one left to tell)."""
     global _shutdown_pending
     try:
-        done = subprocess.run(
-            ["sudo", "-n", ADMIN_CMD, "poweroff"],
-            capture_output=True, timeout=SHUTDOWN_REQUEST_TIMEOUT_S,
+        done = dial_admin.run_admin(
+            "poweroff", no_prompt=True, capture=True, timeout=SHUTDOWN_REQUEST_TIMEOUT_S,
         )
         ok = done.returncode == 0
     except Exception:

@@ -18,6 +18,7 @@ DIAL = Path(__file__).resolve().parent.parent / "dial"
 # module -> the non-stdlib modules it may import at module level.
 ALLOWED = {
     "dial_values": set(),
+    "dial_admin": set(),
 }
 
 
