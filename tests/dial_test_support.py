@@ -20,11 +20,45 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 
 from autostream_peer_client import PeerReply, PeerSnapshot
 from autostream_peer_registry import Sighting
+import dial_core
+import dial_peer_view
 from dial_config import DialDisplayConfig
 from dial_display import WARNING_DESCRIPTORS, DialDisplay
 from dial_display_profiles import DEFAULT_PROFILE_KEY
 from dial_mdns import PlayingTarget, RosterEntry
 from dial_warnings import WarningManager, WarningStore
+
+
+@dataclasses.dataclass(frozen=True)
+class RowSnapshot(PeerSnapshot):
+    """A PeerSnapshot built from a test row, carrying what that row says the
+    appliance offers as (dial_outputs, dial_eq, repeat_capable)."""
+    offers: tuple = ()
+
+
+class _RowPeerView:
+    """dial_peer_view as the core sees it in these tests: the same module,
+    except that an appliance built from a test row offers what the row says.
+    A peer on the protocol offers every capability; a test row may still
+    leave one out, so the screens can be driven without it."""
+
+    def __getattr__(self, name):
+        return getattr(dial_peer_view, name)
+
+    @staticmethod
+    def appliance_state(sighting, snap, **kwargs):
+        state = dial_peer_view.appliance_state(sighting, snap, **kwargs)
+        offers = getattr(snap, "offers", ())
+        if offers and state.dial_status:
+            outputs, eq, repeat = offers
+            state = dataclasses.replace(
+                state, dial_outputs=outputs, dial_eq=eq, repeat_capable=repeat,
+                dial_outputs_version=2 if outputs else 0, dial_eq_version=2 if eq else 0,
+            )
+        return state
+
+
+dial_core.dial_peer_view = _RowPeerView()
 
 TEST_LOGO_PATH = str(REPO_ROOT / "images" / "autostream-logo-centred-dark.png")
 
@@ -176,19 +210,9 @@ def _roster_from_targets(targets, repeat_capable=False) -> list:
 
 def fetch_target_status(target, dial_id, timeout_seconds=None) -> dict:
     """What an appliance says about itself when a test has not said: it
-    answers, with nothing identified. Tests patch this name."""
-    return _status_result()
-
-
-def _test_row(display, appliance_id):
-    """The target or roster row a test gave for *appliance_id*, or None."""
-    if not appliance_id:
-        return None
-    bridge = display.bridge
-    row = None
-    if bridge.roster_override is not None:
-        row = next((r for r in bridge.roster_override if r.appliance_id == appliance_id), None)
-    return row if row is not None else bridge._rows.get(appliance_id)
+    answers, with nothing identified, and leaves its repeat record as it
+    was. Tests patch this name."""
+    return dict(_status_result(), repeat_untold=True)
 
 
 def _block_from_repeat_obj(obj) -> dict | None:
@@ -245,11 +269,16 @@ class _BridgeClient:
         return 200, {"parts": {}}
 
 
+# How often a fold takes every appliance's own word on its repeat record.
+EVERYONE_READ_S = 60.0
+
+
 class StatusBridge:
     """The peer pool and registry behind a test display's core. On each fold
     it builds one PeerSnapshot per appliance from the test's targets (those
     playing), its roster (every appliance) and what `fetch_target_status`
-    says of each, plus the speakers, EQ and repeat record a test seeds."""
+    says of each, plus the speakers, EQ and repeat record a test seeds. Each
+    snapshot carries what the appliance's row says it offers."""
 
     def __init__(self, get_targets, get_roster, dial_id: str) -> None:
         self._get_targets = get_targets
@@ -265,22 +294,58 @@ class StatusBridge:
         self.roster_override = None
         self._subs: list = []
         self._rows: dict = {}
+        self._roster_rows: dict = {}
+        self._sighted: set = set()
+        self.ever_sighted: set = set()
+        self._read: set = set()
+        self._playing: set = set()
+        self._everyone_at = None
 
-    # The registry.
-    def sightings(self):
+    def _scan(self) -> tuple:
+        """(rows, roster rows, playing ids) as the test's targets and roster
+        say now. The targets are the playing set; a roster row only adds an
+        appliance to the list."""
         rows = {}
-        playing = set()
         for t in self._get_targets() or ():
             if t.appliance_id:
                 rows[t.appliance_id] = t
-                playing.add(t.appliance_id)
+        playing = set(rows)
         roster = self.roster_override if self.roster_override is not None else self._get_roster()
+        roster_rows = {}
         for r in roster or ():
+            if r.appliance_id:
+                roster_rows.setdefault(r.appliance_id, r)
             if r.appliance_id and r.appliance_id not in rows:
                 rows[r.appliance_id] = r
-                if getattr(r, "playing", False):
-                    playing.add(r.appliance_id)
+        return rows, roster_rows, playing
+
+    def snapshot_now(self, appliance_id: str):
+        """The snapshot *appliance_id* would give now, or None when the test
+        lists no such appliance; nothing is recorded as read."""
+        rows, roster_rows, playing = self._scan()
+        if appliance_id not in rows:
+            return None
+        return self._snapshot(appliance_id, rows[appliance_id], roster_rows, playing, read=False)
+
+    # The registry.
+    def sightings(self):
+        rows, roster_rows, playing = self._scan()
+        # The appliances whose own word on their repeat record this fold
+        # takes: every playing one, one sighted for the first time, and every
+        # one on the first fold, on a fold that finds the playing set has
+        # shrunk and once a minute; the record of any other stays as it was
+        # last told (or seeded).
+        now = time.monotonic()
+        if (self._everyone_at is None or self._playing - playing
+                or now - self._everyone_at >= EVERYONE_READ_S):
+            self._everyone_at = now
+            self._read = playing | set(rows)
+        else:
+            self._read = playing | (set(rows) - self._sighted)
+        self._sighted = set(rows)
+        self.ever_sighted |= self._sighted
         self._rows = rows
+        self._roster_rows = roster_rows
         self._playing = playing
         return {aid: Sighting(id=aid, hostname=r.name, ip=r.ip, port=r.port, version="0.8.0",
                               control=True, proto=4, service_name=r.service_name)
@@ -301,8 +366,13 @@ class StatusBridge:
         pass
 
     def snapshot_for(self, appliance_id: str):
-        row = self._rows[appliance_id]
-        playing = appliance_id in self._playing
+        read = appliance_id in self._read
+        self._read.discard(appliance_id)
+        return self._snapshot(appliance_id, self._rows[appliance_id], self._roster_rows,
+                              self._playing, read=read)
+
+    def _snapshot(self, appliance_id, row, roster_rows, playing_ids, *, read):
+        playing = appliance_id in playing_ids
         protocol_ok = getattr(row, "dial_status", True)
         status = fetch_target_status(row, self._dial_id, timeout_seconds=2.0) if protocol_ok else {}
         error = status.get("status_error")
@@ -312,6 +382,8 @@ class StatusBridge:
             access = {"authorized": "playback", "unauthorized": "none"}.get(row.auth)
         elif getattr(row, "auth", "") == "unauthorized":
             access = "none"
+        # A reply may say outright what access the appliance gives this dial.
+        access = status.get("access", access)
         parts: dict = {"session": {"active": playing, "source": "input1" if playing else ""}}
         track = status.get("track_id")
         if isinstance(track, dict):
@@ -326,17 +398,26 @@ class StatusBridge:
             parts["outputs"]["start_failure"] = dict(failure)
         if appliance_id in self.bands:
             parts["eq"] = {"output_bands": list(self.bands[appliance_id])}
-        repeat = self.repeats.get(appliance_id, status.get("repeat"))
-        block = _block_from_repeat_obj(repeat)
+        if read:
+            if status.get("repeat_untold"):
+                pass
+            elif error is None and protocol_ok:
+                self.repeats[appliance_id] = status.get("repeat")
+            elif error == "unauthorized":
+                self.repeats[appliance_id] = None
+        block = _block_from_repeat_obj(self.repeats.get(appliance_id))
         if block is not None:
             parts["repeat"] = {"block": block}
-        return PeerSnapshot(
+        offer = roster_rows.get(appliance_id, row)
+        return RowSnapshot(
             peer_id=appliance_id, boot=self.boots.get(appliance_id, "b1"),
             version=self.versions.get(appliance_id, 1), part_versions=MappingProxyType({}),
             parts=MappingProxyType(parts), reachable=reachable, access=access,
             access_reason="dial_not_authorized" if access == "none" else None,
             protocol=4 if protocol_ok else 3, protocol_ok=protocol_ok, configured=True,
-            heard_at=0.0, seq=1)
+            heard_at=0.0, seq=1,
+            offers=(bool(getattr(offer, "dial_outputs", False)), bool(getattr(offer, "dial_eq", False)),
+                    bool(getattr(offer, "repeat_capable", False))))
 
     def sent(self, core) -> list:
         """The requests the core has queued on its request lane since the
@@ -397,17 +478,6 @@ def attach_bridge(display, get_targets, get_roster) -> "StatusBridge":
     display.core.attach_pool(bridge, bridge)
     display.bridge = bridge
     _DISPLAYS.add(display)
-    # A test row says whether its appliance has an EQ; a peer has every
-    # capability or none, so a row without one is held to no EQ page.
-    compact = display._compact_tier
-
-    def eq_veto() -> bool:
-        if compact():
-            return True
-        focus = display.core._state.focus
-        row = _test_row(display, focus.manual_id or focus.reporting_id)
-        return row is not None and not getattr(row, "dial_eq", False)
-    display.core.set_eq_veto(eq_veto)
     # The artwork download runs inline, so a fold ends with it held.
     io = display.core._io
     display.core.set_io(dataclasses.replace(io, spawn=lambda fn, *args: fn(*args)))
@@ -506,8 +576,44 @@ def on_outputs_result(display, kind, appliance_id, status, body, request=None) -
     elif status == 200 and isinstance(body, dict) and body.get("ok") is True:
         display.bridge.units[appliance_id] = [_unit_from_row(o) for o in body.get("outputs") or ()]
         display.bridge.versions[appliance_id] = display.bridge.versions.get(appliance_id, 1) + 1
-        display.core.fold_once()
+        _reread(display, appliance_id)
     fold(display)
+
+
+def _reread(display, appliance_id) -> None:
+    """What one appliance's change event does: the snapshot the core holds
+    for it takes up the speakers and EQ the bridge now says it has, and the
+    focused appliance's outputs and EQ are mapped again. Nothing else is
+    folded, so the focus and the list stay as the last fold left them."""
+    bridge = display.bridge
+    core = display.core
+
+    held = core._state.peers.get(appliance_id)
+    if held is None:
+        # Not folded yet (a test that set the roster by hand): its first
+        # snapshot, as its client would hold it.
+        held = bridge.snapshot_now(appliance_id)
+
+    def mutate(state):
+        if held is None:
+            # Never sighted (a screen set up by hand): its speakers are held
+            # for it when nothing else is.
+            if appliance_id in bridge.ever_sighted or (
+                    state.outputs is not None and state.outputs.appliance_id != appliance_id):
+                return False
+            state.outputs = dial_peer_view.outputs_state(appliance_id, {"outputs": {
+                "units": [dict(u) for u in bridge.units.get(appliance_id, [])]}}, fetched_at=core._clock())
+            return None
+        parts = dict(held.parts)
+        parts["outputs"] = dict(parts.get("outputs") or {},
+                                units=[dict(u) for u in bridge.units.get(appliance_id, [])])
+        if appliance_id in bridge.bands:
+            parts["eq"] = {"output_bands": list(bridge.bands[appliance_id])}
+        snap = dataclasses.replace(
+            held, parts=MappingProxyType(parts), version=bridge.versions.get(appliance_id, held.version))
+        state.peers = {**state.peers, appliance_id: snap}
+        core._fold_focused_locked(state, core._clock(), availability=False)
+    core._publish(mutate)
 
 
 def on_eq_result(display, kind, appliance_id, status, body, request=None) -> None:
@@ -520,7 +626,7 @@ def on_eq_result(display, kind, appliance_id, status, body, request=None) -> Non
         else:
             gains = [body.get("bass_db", 0), 0, 0, 0, 0, body.get("treble_db", 0)]
         display.bridge.bands[appliance_id] = gains
-        display.core.fold_once()
+        _reread(display, appliance_id)
     fold(display)
 
 
@@ -782,6 +888,14 @@ def seed_eq(display, bass_db=None, treble_db=None, loaded=True) -> None:
     def mutate(state):
         state.eq = held
     display.core._publish(mutate)
+    fold(display)
+
+
+def seed_bands(display, appliance_id, gains) -> None:
+    """Make *appliance_id* report *gains* as its EQ bands, as its next change
+    event would carry them."""
+    display.bridge.bands[appliance_id] = list(gains)
+    _reread(display, appliance_id)
     fold(display)
 
 
