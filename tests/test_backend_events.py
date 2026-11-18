@@ -163,6 +163,17 @@ class TestUnixConnection:
         assert (volume.kind, volume.speaker_id, volume.verb, volume.value) == (
             "device_volume", "8734567012345678", "volumeup", "45")
         assert command.received == clock.now
+        assert (command.member_id, volume.member_id) == ("9988776655443399", "8734567012345678")
+
+    def test_member_id_is_none_when_absent_or_not_a_string(self):
+        def source_for(speaker):
+            line = json.dumps({"type": "event", "seq": 3, "kind": "receiver_command", "verb": "paus",
+                               "speaker": speaker, "at_ms": 1}).encode() + b"\n"
+            _source, sink, _sock, _result = serve([fixture_bytes("hello.jsonl") + line])
+            return sink.calls[1][1]
+        assert source_for({"id": "1", "name": "A"}).member_id is None
+        assert source_for({"id": "1", "member_id": 7, "name": "A"}).member_id is None
+        assert source_for({"id": "1", "member_id": "2", "name": "A"}).member_id == "2"
 
     def test_the_all_speakers_volume_keeps_id_zero_and_a_null_name(self):
         _source, sink, _sock, _result = serve([fixture_bytes("hello.jsonl", "all_speakers_volume.jsonl")])

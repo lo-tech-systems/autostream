@@ -371,7 +371,8 @@ class OutputAuthority:
         self._start_failure: Optional[StartFailure] = None
         self._failure_seq = 0
         self._session_active = False
-        self._supports_group_fields = False
+        self._rows_carry_session = False
+        self._include_tv_supported = False
         self._delivers_device_events = False
         self._inflight = 0
         self._exempt_off = False
@@ -569,19 +570,13 @@ class OutputAuthority:
         return Applied(version=store().snapshot().version, outcome=None, refused=reason)
 
     def unit_for_device(self, device_id: str) -> Optional[str]:
-        """The unit a device id belongs to: the unit's own id, else the unit
-        whose group lists it (a pair's hidden member, an Apple TV's HomePod)."""
+        """The unit a device id belongs to: the unit's own id. The player
+        reports an event under the id of the row that plays the device."""
         with self._lock:
             return self._unit_for_device_locked(device_id)
 
     def _unit_for_device_locked(self, device_id: str) -> Optional[str]:
-        if device_id in self._units:
-            return device_id
-        for u in self._ordered_units_locked():
-            r = u.reported
-            if r is not None and r.speakers is not None and device_id in r.speakers.ids:
-                return u.id
-        return None
+        return device_id if device_id in self._units else None
 
     # -- intents -------------------------------------------------------------
 
@@ -1125,16 +1120,6 @@ class OutputAuthority:
             pending.notify()
 
     def _on_read_ok(self, rows: list, now: float) -> None:
-        # The setting is read before any lock is taken: the settings store has
-        # a lock of its own.
-        reader = self._include_tv_reader
-        tv_values = {}
-        for row in rows:
-            if row.group_role == "tv_leader" and row.selected:
-                try:
-                    tv_values[row.id] = reader(row.id)
-                except Exception:
-                    tv_values[row.id] = None
         fx = _Effects()
         with self._lock:
             self._fail_count = 0
@@ -1143,23 +1128,16 @@ class OutputAuthority:
             self._exempt_off = False
             self._read_retry_at = 0.0
             self._next_safety_read = now + SAFETY_READ_S
-            self._merge_locked(rows, now, tv_values, fx)
+            self._merge_locked(rows, now, fx)
             pending = self._publish_locked(Origin.BACKEND, None)
         pending.notify()
         fx.run()
         self._after_intent()
 
-    def _row_state(self, row: OutputInfo) -> str:
-        """The start state the row reports for the unit: the session's, or the
-        speakers' when the Apple TV is left out of the group."""
-        if row.group_role == "tv_leader" and row.include_tv is False and row.speakers is not None:
-            return row.speakers.state
-        return row.session_state
-
     def _availability_locked(self, row: OutputInfo, selected: bool) -> str:
-        if not self._supports_group_fields:
+        if not self._rows_carry_session:
             return "password" if (row.needs_auth_key or row.pin_pending) else "ok"
-        state = self._row_state(row)
+        state = row.session_state
         if state in ("streaming", "connected"):
             avail = "ok"
         elif state == "startup":
@@ -1170,11 +1148,6 @@ class OutputAuthority:
             avail = "password"
         else:
             avail = "starting" if selected else "ok"
-        if selected and row.speakers is not None and row.group_role in ("pair", "tv_leader"):
-            if row.speakers.state == "password":
-                avail = "password"
-            elif row.speakers.state == "failed" and avail != "password":
-                avail = "failed"
         return avail
 
     def _start_failure_locked(self, u: UnitState, reason: str, requester: Optional[str] = None) -> None:
@@ -1201,7 +1174,7 @@ class OutputAuthority:
         that timed out): keep it wanted and retry on a back-off while a
         session plays, on a player that can say why. Otherwise it is turned
         back off at once."""
-        if u.retry_allowed and self._supports_group_fields and self._session_active:
+        if u.retry_allowed and self._rows_carry_session and self._session_active:
             u.availability = "failed"
             if u.retry_at is None:
                 u.retry_at = now + u.retry_backoff
@@ -1209,9 +1182,11 @@ class OutputAuthority:
         else:
             self._revert_locked(u, now)
 
-    def _merge_locked(self, rows: list, now: float, tv_values: dict, fx: _Effects) -> None:
+    def _merge_locked(self, rows: list, now: float, fx: _Effects) -> None:
         if any(row.session_state != "" for row in rows):
-            self._supports_group_fields = True
+            self._rows_carry_session = True
+        if any(row.has_homepods is not None for row in rows):
+            self._include_tv_supported = True
         boot_changed = self._boot_changed
         self._boot_changed = False
         if not self._connected:
@@ -1245,16 +1220,6 @@ class OutputAuthority:
                     reported=row, seen_at=now,
                 )
                 self._units[uid] = u
-                tv = tv_values.get(uid)
-                if row.selected and row.group_role == "tv_leader" and tv is not None \
-                        and row.include_tv is not None and row.include_tv != tv:
-                    fx.log(
-                        logging.INFO,
-                        "Speaker %s is playing with the Apple TV %s; the setting asks for %s; "
-                        "it applies at the next start",
-                        row.name, "included" if row.include_tv else "left out",
-                        "included" if tv else "left out",
-                    )
             else:
                 u.reported = row
                 u.name = row.name
@@ -1281,12 +1246,9 @@ class OutputAuthority:
         d = u.desired
         sel = d.selected
         avail = self._availability_locked(row, sel)
-        if self._supports_group_fields:
-            u.was_streaming = (
-                row.session_state in ("streaming", "connected")
-                or (row.speakers is not None and row.speakers.state == "streaming")
-            )
-            result_shown = self._row_state(row) in ("streaming", "connected", "failed", "password")
+        if self._rows_carry_session:
+            u.was_streaming = row.session_state in ("streaming", "connected")
+            result_shown = row.session_state in ("streaming", "connected", "failed", "password")
         else:
             u.was_streaming = row.selected
             result_shown = row.selected or avail == "password"
@@ -1402,7 +1364,7 @@ class OutputAuthority:
                     if u.retry_at is not None and now >= u.retry_at and self._session_active:
                         u.retry_at = None
                         self._queue_reapply_select_locked(u)
-                elif self._supports_group_fields:
+                elif self._rows_carry_session:
                     if self._due(u, "select", now):
                         u.diff_since.pop("select", None)
                         restored += 1 if u.after_boot else 0
@@ -1431,14 +1393,6 @@ class OutputAuthority:
                     self._enqueue(_Write("deselect", u.id, u.desired_seq, {}, [(batch, 0)]))
                 continue
             u.diff_since.pop("deselect", None)
-            if d.selected and r.selected and r.speakers is not None and r.speakers.state == "failed":
-                if u.retry_at is None:
-                    u.retry_at = now + u.retry_backoff
-                    u.retry_backoff = min(u.retry_backoff * 2, RETRY_MAX_S)
-                elif now >= u.retry_at and self._session_active:
-                    u.retry_at = None
-                    self._queue_reapply_select_locked(u)
-                continue
             if d.muted and r.volume_percent > 0 and d.selected:
                 recent = now - u.device_volume_at < DEVICE_VOLUME_MARK_S
                 if recent or busy:
@@ -1582,8 +1536,8 @@ class OutputAuthority:
                 offset_ms=w.params.get("offset_ms"), mode=w.params.get("mode"),
                 timeout=WRITE_TIMEOUT_S,
             )
-            if include is not None and self._supports_group_fields:
-                if u.reported is not None and u.reported.group_role == "tv_leader":
+            if include is not None and self._include_tv_supported:
+                if u.reported is not None and u.reported.has_homepods:
                     kwargs["include_tv"] = include
                 elif include is False:
                     # The Apple TV is never selected alone: wait for its group.
@@ -1685,7 +1639,7 @@ class OutputAuthority:
             if not u.retry_allowed:
                 self._revert_locked(u, now)
                 self._start_failure_locked(u, "refused", w.requester)
-            elif self._supports_group_fields and self._session_active:
+            elif self._rows_carry_session and self._session_active:
                 if not u.failure_reported:
                     u.failure_reported = True
                     self._start_failure_locked(u, "failed")

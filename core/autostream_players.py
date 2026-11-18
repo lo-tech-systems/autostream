@@ -224,19 +224,10 @@ class BackendCapabilities:
     event_source: str = "poll"
     # receiver_command and device_volume events arrive on that channel.
     delivers_device_events: bool = False
-    # Output rows carry a session and a group object.
-    supports_group_fields: bool = False
-    # PUT /api/outputs/{id} takes include_tv.
+    # Output rows carry a session object: availability and failed starts can be told.
+    supports_session_state: bool = False
+    # Rows carry has_homepods, and PUT /api/outputs/{id} takes include_tv.
     supports_include_tv: bool = False
-
-
-@dataclass(frozen=True)
-class SpeakersSummary:
-    """The other outputs of a pair or an Apple TV group, as the row reports them."""
-
-    ids: tuple[str, ...] = ()
-    count: int = 0
-    state: str = "stopped"  # streaming | startup | password | failed | stopped
 
 
 @dataclass(frozen=True)
@@ -257,17 +248,12 @@ class OutputInfo:
     current_mode: str = OUTPUT_MODE_AUTO
     supported_modes: tuple[str, ...] = ()
     extra: tuple[tuple[str, Any], ...] = ()
-    # Session and group fields of a backend whose rows carry them; the
+    # Session and has_homepods fields of a backend whose rows carry them; the
     # defaults stand for a backend whose rows do not.
     session_state: str = ""  # "" when the backend has no session object
     session_failure: str = "none"  # "none" | "capacity"
-    group_role: str = "none"  # "none" | "pair" | "tv_leader"
-    group_gid: Optional[str] = None
-    group_leader_id: Optional[str] = None
-    pair_name: Optional[str] = None
-    group_hidden: bool = False
-    include_tv: Optional[bool] = None  # only on a tv_leader row, as reported
-    speakers: Optional[SpeakersSummary] = None  # only on pair and tv_leader rows
+    # An Apple TV whose HomePods are present; None: the row has no such field.
+    has_homepods: Optional[bool] = None
 
     def extra_dict(self) -> dict[str, Any]:
         """Return extra metadata as a plain dict when needed."""
@@ -404,7 +390,7 @@ class PlayerBackend(ABC):
         support mode must absorb an unsupported-mode condition internally:
         log at INFO and return ok=True rather than propagating a failure.
 
-        include_tv chooses, for an Apple TV that leads a group of speakers,
+        include_tv chooses, for an Apple TV that leads its HomePods,
         whether the TV itself plays too.  Backends without the option ignore it.
         """
 

@@ -29,9 +29,9 @@ import autostream_runtime as runtime
 import autostream_state as state
 import autostream_state.outputs as outputs
 from autostream_backend_events import DEGRADED, ConnectInfo, DeviceEvent
-from autostream_players import ActionResult, ListOutputsResult, SpeakersSummary
+from autostream_players import ActionResult, ListOutputsResult
 from autostream_state import Origin
-from output_fakes import FakeBackend, FakeSource, error, group_row, row, snap
+from output_fakes import FakeBackend, FakeSource, error, group_row, homepods_row, row, snap
 from autostream_state.outputs import (
     START_PENDING_S,
     PlayerServiceBackend,
@@ -103,16 +103,24 @@ class TestAdoption:
         assert got == {"1": "ok", "2": "starting", "3": "failed", "4": "password",
                        "5": "starting", "6": "ok"}
 
-    def test_availability_of_a_tv_group_without_the_tv_follows_its_speakers(self, w):
-        speakers = SpeakersSummary(ids=("x", "y"), count=2, state="streaming")
-        merge(w, [group_row(
-            1, "stopped", selected=True, group_role="tv_leader", include_tv=False, speakers=speakers)])
-        assert snap().unit("1").availability == "ok"
+    def test_a_homepods_only_row_follows_its_own_session(self, w):
+        merge(w, [
+            homepods_row(1, "streaming", selected=True),
+            homepods_row(2, "startup", selected=True),
+            homepods_row(3, "password", selected=True),
+            homepods_row(4, "failed", selected=True),
+        ])
+        got = {u.id: u.availability for u in snap().units}
+        assert got == {"1": "ok", "2": "starting", "3": "password", "4": "failed"}
 
-    def test_a_pair_member_that_failed_lowers_the_availability_of_a_selected_pair(self, w):
-        speakers = SpeakersSummary(ids=("x",), count=1, state="failed")
-        merge(w, [group_row(1, "streaming", selected=True, group_role="pair", speakers=speakers)])
-        assert snap().unit("1").availability == "failed"
+    def test_a_pin_pending_flag_counts_only_for_a_player_without_sessions(self, w):
+        merge(w, [row(1, pin_pending=True)])
+        assert snap().unit("1").availability == "password"
+
+    def test_a_unit_was_streaming_when_its_own_session_is(self, w):
+        merge(w, [homepods_row(1, "streaming", selected=True), homepods_row(2, "stopped", selected=True)])
+        assert w.a._units["1"].was_streaming is True
+        assert w.a._units["2"].was_streaming is False
 
 
 class TestReading:
@@ -280,16 +288,21 @@ class TestBootChange:
 
 
 class TestUnitForDevice:
-    def test_ids_resolve_through_the_unit_and_its_group(self, w):
-        merge(w, [
-            group_row(10, group_role="pair", speakers=SpeakersSummary(ids=("11",), count=1)),
-            group_row(20, group_role="tv_leader", speakers=SpeakersSummary(ids=("21", "22"), count=2)),
-        ])
+    def test_ids_resolve_by_the_unit_id_only(self, w):
+        merge(w, [homepods_row(20), group_row(10)])
         a = w.a
         assert a.unit_for_device("10") == "10"
-        assert a.unit_for_device("11") == "10"
-        assert a.unit_for_device("22") == "20"
+        assert a.unit_for_device("20") == "20"
+        assert a.unit_for_device("22") is None
         assert a.unit_for_device("99") is None
+
+    def test_a_device_volume_under_a_row_id_reaches_that_row_whatever_the_member(self, w):
+        merge(w, [homepods_row(20, "streaming", selected=True, volume_percent=40)])
+        w.a.mute("20", Origin.USER)
+        w.a.on_device_event(DeviceEvent(
+            "device_volume", "20", "Speaker 20", "volumeup", "45", 1, 1.0, member_id="22"))
+        w.a.step(now=T0)
+        assert snap().unit("20").muted is False
 
     def test_a_device_volume_for_zero_reaches_every_selected_unit(self, w, caplog):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50), row(3)])
@@ -885,17 +898,17 @@ class TestRepublishRequest:
 
 
 class TestIncludeTv:
-    def tv_rows(self, role="tv_leader", **fields):
-        return [group_row(1, "stopped", group_role=role, include_tv=True if role == "tv_leader" else None, **fields)]
+    def tv_rows(self, has_homepods=True, **fields):
+        return [group_row(1, "stopped", has_homepods=has_homepods, **fields)]
 
     def test_the_field_is_never_sent_when_the_reader_has_no_value(self, w):
         merge(w, self.tv_rows())
         w.a.select("1", Origin.USER, volume=30)
         assert "include_tv" not in w.fb.updates()[0][1]
 
-    def test_false_is_sent_only_once_the_row_shows_a_tv_leader(self, w):
+    def test_false_is_sent_only_once_the_row_shows_has_homepods(self, w):
         w.a.set_include_tv_reader(lambda uid: False)
-        merge(w, self.tv_rows(role="none"))
+        merge(w, self.tv_rows(has_homepods=False))
         out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
         assert w.fb.calls == [] and out.pending is True
         assert snap().unit("1").selected is True and snap().unit("1").availability == "starting"
@@ -903,28 +916,31 @@ class TestIncludeTv:
         w.a.select("1", Origin.USER, volume=30)
         assert w.fb.updates()[0][1]["include_tv"] is False
 
-    def test_true_is_sent_to_a_tv_leader_and_nothing_to_another_row(self, w):
+    def test_true_is_sent_to_a_row_with_homepods_and_nothing_to_another_row(self, w):
         w.a.set_include_tv_reader(lambda uid: True)
-        merge(w, self.tv_rows() + [group_row(2, "stopped")])
+        merge(w, self.tv_rows() + [group_row(2, "stopped", has_homepods=False)])
         w.a.select("1", Origin.USER)
         w.a.select("2", Origin.USER)
         calls = dict(w.fb.updates())
         assert calls["1"]["include_tv"] is True
         assert "include_tv" not in calls["2"]
 
-    def test_a_player_without_group_fields_is_never_sent_the_field(self, w):
+    def test_a_player_whose_rows_lack_has_homepods_is_never_sent_the_field(self, w):
         w.a.set_include_tv_reader(lambda uid: False)
         merge(w, [row(1)])
         w.a.select("1", Origin.USER)
         assert "include_tv" not in w.fb.updates()[0][1]
+        w.fb.calls.clear()
+        merge(w, [group_row(2, "stopped")])
+        w.a.select("2", Origin.USER)
+        assert "include_tv" not in dict(w.fb.updates())["2"]
 
-    def test_a_mismatch_on_a_playing_group_is_logged_at_first_sight_and_left(self, w, caplog):
-        w.a.set_include_tv_reader(lambda uid: False)
-        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
-            merge(w, [group_row(1, "streaming", selected=True, group_role="tv_leader", include_tv=True)])
-        assert any("applies at the next start" in r.getMessage() for r in caplog.records)
-        assert w.fb.calls == []
-        assert snap().unit("1").selected is True
+    def test_the_reader_is_not_called_when_rows_are_read(self, w):
+        calls = []
+        w.a.set_include_tv_reader(lambda uid: calls.append(uid))
+        merge(w, [homepods_row(1, "streaming", selected=True)])
+        assert calls == []
+        assert snap().unit("1").selected is True and w.fb.calls == []
 
 
 class TestWaitOutcome:
@@ -1233,17 +1249,7 @@ class TestReconcile:
         assert snap().start_failure.reason == "timed_out"
         assert w.a._units["1"].retry_at is not None
 
-    def test_a_pair_whose_member_failed_is_selected_again_on_the_failed_back_off(self, w):
-        pair = group_row(1, "streaming", selected=True, group_role="pair",
-                         speakers=SpeakersSummary(ids=("a", "b"), count=2, state="failed"))
-        put(w, [pair])
-        w.a.note_session(True)
-        at(w, 0.1)
-        assert selects(w) == []
-        at(w, 11)
-        assert len(selects(w)) == 1
-
-    def test_a_player_without_group_fields_adopts_its_own_deselect(self, w):
+    def test_a_player_without_sessions_adopts_its_own_deselect(self, w):
         put(w, [row(1, selected=True, volume_percent=40)])
         w.t[0] += 5
         put(w, [row(1, selected=False, volume_percent=40)])
@@ -1252,7 +1258,7 @@ class TestReconcile:
         assert u.selected is False and u.cause is Origin.BACKEND
         assert w.fb.calls == []
 
-    def test_a_player_without_group_fields_reselects_only_after_a_restart(self, w):
+    def test_a_player_without_sessions_reselects_only_after_a_restart(self, w):
         put(w, [row(1, selected=True, volume_percent=40)], boot="b0")
         put(w, [row(1, selected=False)], boot="b1")
         at(w, 0.1)

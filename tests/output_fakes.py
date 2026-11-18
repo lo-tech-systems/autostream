@@ -26,6 +26,12 @@ def group_row(id, session_state="stopped", **fields):
     return row(id, session_state=session_state, **fields)
 
 
+def homepods_row(id, session_state="stopped", **fields):
+    """A row from a player whose rows carry has_homepods: an Apple TV whose
+    HomePods are present."""
+    return group_row(id, session_state, has_homepods=True, **fields)
+
+
 def snap():
     return state.store().snapshot().outputs
 

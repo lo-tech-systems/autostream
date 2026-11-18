@@ -404,12 +404,11 @@ class TestOutputsPart:
         assert state.outputs_volume_digest(off) == state.outputs_volume_digest(base)
 
     def test_a_part_with_a_reported_row_is_frozen_and_publishable(self):
-        from autostream_players import OutputInfo, SpeakersSummary
+        from autostream_players import OutputInfo
         row = OutputInfo(
-            id="a", name="A", extra=(("k", [1, 2]),),
-            speakers=SpeakersSummary(ids=("x", "y"), count=2, state="streaming"),
+            id="a", name="A", extra=(("k", [1, 2]),), has_homepods=True,
         )
         part = state.OutputsPart(units=(self.unit("a", reported=row),))
         frozen = deep_freeze(part)
         assert frozen.units[0].reported.extra == (("k", (1, 2)),)
-        assert hash(frozen.units[0].reported.speakers) == hash(row.speakers)
+        assert frozen.units[0].reported.has_homepods is True

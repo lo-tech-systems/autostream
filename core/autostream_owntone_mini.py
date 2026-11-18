@@ -36,7 +36,6 @@ from autostream_players import (
     SaveSettingResult,
     SettingDescriptor,
     SettingValueResult,
-    SpeakersSummary,
     failure_code,
     SETTING_BUFFERED_AUDIO_ENABLED,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
@@ -91,23 +90,16 @@ _EVENT_CHANNEL_PROBE_CACHE_SECONDS = 60.0
 _event_channel_probe_lock = threading.Lock()
 _event_channel_probe_cache: dict[str, tuple[float, tuple[int, Optional[str]]]] = {}
 
-# Whether the last list of outputs from a base_url carried session objects.
-# That, and not the event channel, says the rows have session and group
-# fields and that PUT takes include_tv: a build whose socket is off still
-# sends both. Set by list_outputs() from any non-empty list.
+# What the last list of outputs from a base_url carried: session objects (the
+# rows say whether a start failed) and a boolean has_homepods (PUT takes
+# include_tv). That, and not the event channel, says what the player offers: a
+# build whose socket is off still sends both. Set by list_outputs() from any
+# non-empty list.
 _rows_carry_session_lock = threading.Lock()
 _rows_carry_session: dict[str, bool] = {}
+_rows_carry_has_homepods: dict[str, bool] = {}
 
 _SESSION_STATES = ("stopped", "startup", "connected", "streaming", "failed", "password")
-_GROUP_ROLES = ("none", "pair", "tv_leader")
-_SPEAKERS_STATES = ("streaming", "startup", "password", "failed", "stopped")
-_SPEAKERS_LISTED_MAX = 8
-
-
-def _optional_text(value: Any) -> Optional[str]:
-    """A non-empty string, else None."""
-    text = str(value).strip() if value is not None else ""
-    return text or None
 
 # Maps owntone-mini server mode values to normalized internal mode constants.
 # "auto" is always a valid PUT value but is intentionally omitted from the
@@ -349,6 +341,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         has_channel = channel is not None and channel[0] >= 1
         with _rows_carry_session_lock:
             rows_carry_session = _rows_carry_session.get(self._base_url, False)
+            rows_carry_has_homepods = _rows_carry_has_homepods.get(self._base_url, False)
         return BackendCapabilities(
             can_list_outputs=True,
             can_get_output=True,
@@ -374,8 +367,8 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             supported_setting_keys=tuple(_SETTING_SPECS.keys()),
             event_source="unix_socket" if has_channel else "poll",
             delivers_device_events=has_channel,
-            supports_group_fields=rows_carry_session,
-            supports_include_tv=rows_carry_session,
+            supports_session_state=rows_carry_session,
+            supports_include_tv=rows_carry_has_homepods,
         )
 
     def get_status(self) -> BackendStatus:
@@ -463,13 +456,13 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             base,
             current_mode=current_mode,
             supported_modes=supported_modes,
-            **self._session_and_group_fields(output),
+            **self._session_fields(output),
         )
 
     @staticmethod
-    def _session_and_group_fields(output: dict[str, Any]) -> dict[str, Any]:
-        """The session and group fields of a row; absent objects leave the
-        defaults, and an unknown state or role reads as the neutral value."""
+    def _session_fields(output: dict[str, Any]) -> dict[str, Any]:
+        """The session and has_homepods fields of a row; absent fields leave
+        the defaults, and an unknown state reads as the neutral value."""
         fields: dict[str, Any] = {}
 
         session = output.get("session")
@@ -479,30 +472,8 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             failure = str(session.get("failure") or "").strip().lower()
             fields["session_failure"] = "capacity" if failure == "capacity" else "none"
 
-        group = output.get("group")
-        if isinstance(group, dict):
-            role = str(group.get("role") or "").strip().lower()
-            fields["group_role"] = role if role in _GROUP_ROLES else "none"
-            fields["group_gid"] = _optional_text(group.get("gid"))
-            fields["group_leader_id"] = _optional_text(group.get("leader_id"))
-            fields["pair_name"] = _optional_text(group.get("pair_name"))
-            fields["group_hidden"] = bool(group.get("hidden", False))
-            if isinstance(group.get("include_tv"), bool):
-                fields["include_tv"] = group["include_tv"]
-            speakers = group.get("speakers")
-            if isinstance(speakers, dict):
-                ids = speakers.get("ids")
-                listed = tuple(str(i) for i in ids) if isinstance(ids, list) else ()
-                try:
-                    count = int(speakers.get("count", len(listed)))
-                except (TypeError, ValueError):
-                    count = len(listed)
-                speakers_state = str(speakers.get("state") or "").strip().lower()
-                fields["speakers"] = SpeakersSummary(
-                    ids=listed[:_SPEAKERS_LISTED_MAX],
-                    count=max(0, count),
-                    state=speakers_state if speakers_state in _SPEAKERS_STATES else "stopped",
-                )
+        if isinstance(output.get("has_homepods"), bool):
+            fields["has_homepods"] = output["has_homepods"]
         return fields
 
     def list_outputs(self) -> ListOutputsResult:
@@ -525,8 +496,10 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         rows = [output for output in outputs if isinstance(output, dict)]
         if rows:
             carries = any(isinstance(row.get("session"), dict) for row in rows)
+            carries_homepods = any(isinstance(row.get("has_homepods"), bool) for row in rows)
             with _rows_carry_session_lock:
                 _rows_carry_session[self._base_url] = carries
+                _rows_carry_has_homepods[self._base_url] = carries_homepods
         return ListOutputsResult(
             ok=True,
             outputs=tuple(

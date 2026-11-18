@@ -62,6 +62,7 @@ class DeviceEvent:
     value: Optional[str]  # device_volume only
     at_ms: int  # the player's monotonic clock, same origin as uptime_ms
     received: float  # time.monotonic() at the sink
+    member_id: Optional[str] = None  # the device the event came from; for logs
 
 
 class EventSink(Protocol):
@@ -314,6 +315,7 @@ class UnixSocketEventSource(EventSource):
             LOG.debug("owntone-mini events: %s event without a speaker or verb ignored", kind)
             return None
         name = speaker.get("name")
+        member_id = speaker.get("member_id")
         value = msg.get("value")
         at_ms = msg.get("at_ms")
         return DeviceEvent(
@@ -324,6 +326,7 @@ class UnixSocketEventSource(EventSource):
             value=None if value is None or kind != "device_volume" else str(value),
             at_ms=at_ms if isinstance(at_ms, int) and not isinstance(at_ms, bool) else 0,
             received=self._clock(),
+            member_id=member_id if isinstance(member_id, str) else None,
         )
 
     # ------------------------------------------------------------ line I/O

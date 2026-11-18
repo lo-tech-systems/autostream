@@ -1144,19 +1144,15 @@ _ROW_PLAIN = {
     "mode": "auto",
     "supported_modes": ["raop", "airplay2"],
     "session": {"state": "streaming", "failure": "none"},
-    "group": {"gid": None, "role": "none", "leader_id": None, "pair_name": None, "hidden": False},
+    "has_homepods": False,
 }
 
-_ROW_TV_LEADER = {
+_ROW_TV_HOMEPODS = {
     "id": "186916976721924",
     "name": "TV A",
     "selected": True,
-    "session": {"state": "stopped", "failure": "none"},
-    "group": {
-        "gid": "5B2C0A44", "role": "tv_leader", "leader_id": "186916976721924",
-        "pair_name": "Pair A", "hidden": False, "include_tv": False,
-        "speakers": {"ids": ["186916976721925", "186916976721926"], "count": 2, "state": "streaming"},
-    },
+    "session": {"state": "streaming", "failure": "none"},
+    "has_homepods": True,
 }
 
 _ROW_OLD = {"id": "7", "name": "Speaker B", "selected": False, "volume": 30}
@@ -1166,6 +1162,7 @@ def _clear_mini_caches():
     import autostream_owntone_mini as om
     om._event_channel_probe_cache.clear()
     om._rows_carry_session.clear()
+    om._rows_carry_has_homepods.clear()
     om._live_offset_probe_cache.clear()
 
 
@@ -1173,66 +1170,52 @@ def _mini(base_url="http://mini-fields:3689"):
     return OwnToneMiniBackend(base_url=base_url)
 
 
-class TestMiniSessionAndGroupFields:
-    def test_plain_row_carries_session_and_default_group(self):
+class TestMiniSessionAndHomepodsFields:
+    def test_plain_row_carries_session_and_no_homepods(self):
         out = _mini()._normalize_output_info(_ROW_PLAIN)
         assert out.session_state == "streaming"
         assert out.session_failure == "none"
-        assert out.group_role == "none"
-        assert out.group_gid is None
-        assert out.group_hidden is False
-        assert out.include_tv is None
-        assert out.speakers is None
+        assert out.has_homepods is False
 
-    def test_tv_leader_row_carries_group_fields(self):
-        out = _mini()._normalize_output_info(_ROW_TV_LEADER)
-        assert out.session_state == "stopped"
-        assert out.group_role == "tv_leader"
-        assert out.group_gid == "5B2C0A44"
-        assert out.group_leader_id == "186916976721924"
-        assert out.pair_name == "Pair A"
-        assert out.include_tv is False
-        assert out.speakers == ap.SpeakersSummary(
-            ids=("186916976721925", "186916976721926"), count=2, state="streaming")
+    def test_apple_tv_row_carries_has_homepods_and_its_own_session(self):
+        out = _mini()._normalize_output_info(_ROW_TV_HOMEPODS)
+        assert out.session_state == "streaming"
+        assert out.has_homepods is True
 
-    def test_row_without_session_or_group_keeps_defaults(self):
+    def test_row_without_session_or_has_homepods_keeps_defaults(self):
         out = _mini()._normalize_output_info(_ROW_OLD)
         assert out.session_state == ""
         assert out.session_failure == "none"
-        assert out.group_role == "none"
-        assert out.speakers is None
-        assert out.include_tv is None
+        assert out.has_homepods is None
 
-    def test_unknown_role_and_states_read_as_neutral(self):
+    def test_unknown_session_states_read_as_neutral(self):
         out = _mini()._normalize_output_info({
             "id": "x",
             "session": {"state": "warming", "failure": "mystery"},
-            "group": {"role": "stack", "speakers": {"ids": [], "count": 0, "state": "odd"}},
         })
         assert out.session_state == ""
         assert out.session_failure == "none"
-        assert out.group_role == "none"
-        assert out.speakers.state == "stopped"
+
+    def test_a_group_object_is_ignored(self):
+        out = _mini()._normalize_output_info({
+            "id": "x",
+            "group": {"role": "tv_leader", "include_tv": False, "speakers": {"ids": ["1"], "count": 1}},
+        })
+        assert out.has_homepods is None
+        assert not hasattr(out, "group_role")
+
+    def test_has_homepods_only_when_boolean(self):
+        out = _mini()._normalize_output_info({"id": "x", "has_homepods": "yes"})
+        assert out.has_homepods is None
 
     def test_capacity_failure_is_kept(self):
         out = _mini()._normalize_output_info({"id": "x", "session": {"state": "failed", "failure": "capacity"}})
         assert (out.session_state, out.session_failure) == ("failed", "capacity")
 
-    def test_at_most_eight_speaker_ids_are_kept(self):
-        ids = [str(n) for n in range(12)]
-        out = _mini()._normalize_output_info({
-            "id": "x", "group": {"role": "pair", "speakers": {"ids": ids, "count": 12, "state": "streaming"}}})
-        assert len(out.speakers.ids) == 8
-        assert out.speakers.count == 12
-
-    def test_include_tv_only_when_boolean(self):
-        out = _mini()._normalize_output_info({"id": "x", "group": {"role": "tv_leader", "include_tv": "no"}})
-        assert out.include_tv is None
-
     def test_upstream_rows_have_no_session_fields(self):
         out = OwnToneBackend(base_url="http://localhost:3689")._normalize_output_info(_ROW_PLAIN)
         assert out.session_state == ""
-        assert out.group_role == "none"
+        assert out.has_homepods is None
 
 
 class TestMiniRowFlagsAndChannelCapabilities:
@@ -1282,8 +1265,8 @@ class TestMiniRowFlagsAndChannelCapabilities:
             before = b.get_capabilities()
             assert b.list_outputs().ok
             after = b.get_capabilities()
-        assert (before.supports_group_fields, before.supports_include_tv) == (False, False)
-        assert (after.supports_group_fields, after.supports_include_tv) == (True, True)
+        assert (before.supports_session_state, before.supports_include_tv) == (False, False)
+        assert (after.supports_session_state, after.supports_include_tv) == (True, True)
         assert after.event_source == "poll"
 
     def test_rows_without_a_session_leave_the_row_flags_false(self):
@@ -1291,7 +1274,15 @@ class TestMiniRowFlagsAndChannelCapabilities:
         with patch("autostream_players._session.get", side_effect=self._get({}, [_ROW_OLD])):
             assert b.list_outputs().ok
             caps = b.get_capabilities()
-        assert (caps.supports_group_fields, caps.supports_include_tv) == (False, False)
+        assert (caps.supports_session_state, caps.supports_include_tv) == (False, False)
+
+    def test_a_session_without_has_homepods_offers_no_include_tv(self):
+        b = _mini()
+        row = {"id": "5", "name": "Speaker C", "session": {"state": "stopped", "failure": "none"}}
+        with patch("autostream_players._session.get", side_effect=self._get({}, [row])):
+            assert b.list_outputs().ok
+            caps = b.get_capabilities()
+        assert (caps.supports_session_state, caps.supports_include_tv) == (True, False)
 
     def test_an_empty_list_does_not_change_the_row_flags(self):
         b = _mini()
@@ -1300,7 +1291,8 @@ class TestMiniRowFlagsAndChannelCapabilities:
         with patch("autostream_players._session.get", side_effect=self._get({}, [])):
             b.list_outputs()
             caps = b.get_capabilities()
-        assert caps.supports_group_fields is True
+        assert caps.supports_session_state is True
+        assert caps.supports_include_tv is True
 
     def test_channel_probe_is_cached(self):
         b = _mini()
