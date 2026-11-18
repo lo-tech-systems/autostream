@@ -134,7 +134,7 @@ class HdPreview:
         clock reading, then what reset() puts back."""
         server = self.server
         server.set_dev_access(False)
-        server._last_pin = None
+        server.sessions._last_pin = None
         server._info_cache = None
         deadline = time.monotonic() + 5
         while server.client_count() and time.monotonic() < deadline:

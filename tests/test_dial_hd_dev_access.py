@@ -22,6 +22,7 @@ import dial_hd_events as hde
 from autostream_peer_client import PeerReply
 import dial_http_common
 import dial_hd_server as hds
+import dial_hd_session as hss
 import dial_http_server as dhs
 import dial_pin_guard as pg
 import hd_scenarios as hs
@@ -729,7 +730,7 @@ class TestSessionLifetime:
 
     def test_a_session_expires_after_twelve_hours(self, dev, stack):
         cookie = signed_in(dev)
-        stack.clock.now += hds.SESSION_TTL_S - 1
+        stack.clock.now += hss.SESSION_TTL_S - 1
         assert api(dev, "/api/v1/state", cookie)[0].status == 200
         stack.clock.now += 2
         response, data = api(dev, "/api/v1/state", cookie)
@@ -737,18 +738,18 @@ class TestSessionLifetime:
         assert error_of(data) == "login_required"
 
     def test_the_ttl_matches_the_cookie_max_age(self):
-        assert hds.SESSION_TTL_S == 43200
+        assert hss.SESSION_TTL_S == 43200
 
     def test_sessions_are_capped_and_the_oldest_goes(self, dev):
-        cookies = [signed_in(dev) for _ in range(hds.SESSION_MAX + 1)]
+        cookies = [signed_in(dev) for _ in range(hss.SESSION_MAX + 1)]
         assert api(dev, "/api/v1/state", cookies[0])[0].status == 401
         for cookie in cookies[1:]:
             assert api(dev, "/api/v1/state", cookie)[0].status == 200
 
     def test_expired_sessions_do_not_count_toward_the_cap(self, dev, stack):
-        old = [signed_in(dev) for _ in range(hds.SESSION_MAX)]
-        stack.clock.now += hds.SESSION_TTL_S + 1
-        fresh = [signed_in(dev) for _ in range(hds.SESSION_MAX)]
+        old = [signed_in(dev) for _ in range(hss.SESSION_MAX)]
+        stack.clock.now += hss.SESSION_TTL_S + 1
+        fresh = [signed_in(dev) for _ in range(hss.SESSION_MAX)]
         assert all(api(dev, "/api/v1/state", c)[0].status == 200 for c in fresh)
         assert all(api(dev, "/api/v1/state", c)[0].status == 401 for c in old)
 
@@ -757,7 +758,7 @@ class TestSessionLifetime:
         server.set_dev_access(True)
         signed_in(server)
         assert not [p for p in tmp_path.rglob("*") if "session" in p.name.lower()]
-        source = open(hds.__file__).read()
+        source = open(hds.__file__).read() + open(hss.__file__).read()
         assert not re.search(r"(?<![A-Za-z_.])open[(]", source)
         assert "write_text" not in source and "write_bytes" not in source
 
@@ -825,7 +826,7 @@ class TestStreams:
         client = Sse(dev.dev_port, signed_in(dev))
         try:
             assert client.read_until(b"event: change")
-            stack.clock.now += hds.SESSION_TTL_S + 1
+            stack.clock.now += hss.SESSION_TTL_S + 1
             assert client.closed_by_server()
         finally:
             client.close()

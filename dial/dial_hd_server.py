@@ -25,7 +25,6 @@ import secrets
 import socket
 import threading
 import time
-from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -38,6 +37,7 @@ from dial_hd_actions import (
     ACTION_NAME_RE, ACTIONS, HD_INTENTS, Context, InvalidArgument, integer, prepare,
 )
 from dial_hd_backdrop import BackdropStore
+from dial_hd_session import SESSION_TTL_S, SessionStore
 from dial_hd_events import SSE_MAX_CLIENTS, PartDiffer, PartStep, encode_parts, serve_events, state_bytes
 from dial_hd_state import build_parts
 from dial_http_common import MAX_BODY, TOO_MANY_ATTEMPTS, content_length, json_bytes
@@ -67,9 +67,6 @@ CONTENT_SECURITY_POLICY = (
 # The development listener: a PIN login issues one of these cookies, held in
 # memory only.
 SESSION_COOKIE = "hd_session"
-SESSION_TTL_S = 12 * 3600
-SESSION_MAX = 8
-SESSION_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 DEV_HOST_RE = re.compile(r"^[A-Za-z0-9._\-]+$|^\[[0-9A-Fa-f:.]+\]$")
 # The only files the development listener serves before a login: the login
 # page and what it needs to draw. Nothing else is reachable without a session.
@@ -272,15 +269,12 @@ class HdServer:
         self._backdrops = backdrops or BackdropStore(self.static_path("logo.png") or LOGO_PATH)
         self._ctx = Context(core, http_server)
         # Development listener: the listener, its thread, a flag that ends its
-        # event streams, and the sessions (token -> (expiry, pin epoch)).
+        # event streams, and the sessions.
         self._dev_lock = threading.Lock()
         self._dev_httpd: _HdHTTPServer | None = None
         self._dev_thread: threading.Thread | None = None
         self._dev_stopping = threading.Event()
-        self._session_lock = threading.Lock()
-        self._sessions: OrderedDict = OrderedDict()
-        self._pin_epoch = 0
-        self._last_pin: str | None = None
+        self.sessions = SessionStore(clock)
         self._stopping = threading.Event()
         self._client_lock = threading.Lock()
         self._clients = 0
@@ -474,13 +468,7 @@ class HdServer:
         """Config listener: follow the development access setting, and drop
         every session when the PIN has changed or been cleared."""
         pin = getattr(cfg, "pin", "") or ""
-        revoke = False
-        with self._session_lock:
-            if self._last_pin is not None and pin != self._last_pin:
-                self._pin_epoch += 1
-                self._sessions.clear()
-                revoke = True
-            self._last_pin = pin
+        revoke = self.sessions.follow_pin(pin)
         if revoke and self._hub is not None:
             self._hub.publish()      # wakes event streams so they re-check
         self.set_dev_access(bool(getattr(cfg, "hd_dev_access", False)) and bool(pin))
@@ -510,9 +498,7 @@ class HdServer:
             )
             self._dev_httpd, self._dev_thread = httpd, thread
             thread.start()
-        with self._session_lock:
-            if self._last_pin is None:
-                self._last_pin = self._current_pin()
+        self.sessions.adopt_pin(self._current_pin())
         logging.info("HD development listener open on port %d", self.dev_port)
 
     def _close_dev(self) -> None:
@@ -520,8 +506,7 @@ class HdServer:
             httpd, self._dev_httpd = self._dev_httpd, None
             thread, self._dev_thread = self._dev_thread, None
             self._dev_stopping.set()
-        with self._session_lock:
-            self._sessions.clear()
+        self.sessions.clear()
         if httpd is None:
             return
         httpd.shutdown()
@@ -534,35 +519,9 @@ class HdServer:
 
     # ---- sessions ----------------------------------------------------------
 
-    def _issue_session(self) -> str:
-        token = secrets.token_hex(16)
-        now = self._clock()
-        with self._session_lock:
-            self._expire_sessions_locked(now)
-            while len(self._sessions) >= SESSION_MAX:
-                self._sessions.popitem(last=False)
-            self._sessions[token] = (now + SESSION_TTL_S, self._pin_epoch)
-        return token
-
-    def _expire_sessions_locked(self, now: float) -> None:
-        for token in [t for t, (expiry, _e) in self._sessions.items() if expiry <= now]:
-            del self._sessions[token]
-
     def session_valid(self, token: "str | None") -> bool:
-        """Whether *token* is a live session: issued here, not expired, and
-        issued under the PIN now in force."""
-        if not token or not SESSION_TOKEN_RE.match(token):
-            return False
-        now = self._clock()
-        with self._session_lock:
-            self._expire_sessions_locked(now)
-            entry = self._sessions.get(token)
-            return entry is not None and entry[1] == self._pin_epoch
-
-    def _drop_session(self, token: "str | None") -> None:
-        if token:
-            with self._session_lock:
-                self._sessions.pop(token, None)
+        """Whether *token* is a live session."""
+        return self.sessions.valid(token)
 
     # ---- static files ----------------------------------------------------
 
@@ -831,7 +790,7 @@ class HdServer:
             else:
                 handler.send_json(403, {"ok": False, "error": "wrong_pin"})
             return
-        token = self._issue_session()
+        token = self.sessions.issue()
         handler.send_bytes(
             200, b'{"ok":true}', "application/json",
             {"Set-Cookie": _session_cookie(token, SESSION_TTL_S)},
@@ -840,7 +799,7 @@ class HdServer:
     def _post_logout(self, handler, rest) -> None:
         if handler.read_json_body() is None:
             return
-        self._drop_session(handler.session_token())
+        self.sessions.drop(handler.session_token())
         handler.send_bytes(
             200, b'{"ok":true}', "application/json", {"Set-Cookie": _session_cookie("", 0)},
         )

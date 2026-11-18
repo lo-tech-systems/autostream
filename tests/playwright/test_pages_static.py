@@ -595,11 +595,13 @@ def test_every_hd_page_module_has_a_ceiling():
     assert {p.name for p in HD.glob("hd*.js")} == set(HD_CEILINGS)
 
 
-# The dial's Python modules behind the HD page -> the most non-blank lines each may have.
+# The dial's Python modules behind the HD page -> the most non-blank lines each may have;
+# guidance: raise for a cohesive module, lower when one shrinks.
 HD_PY_CEILINGS = {
     "dial_hd_state.py": 338,
     "dial_hd_actions.py": 145,
-    "dial_hd_server.py": 935,
+    "dial_hd_server.py": 897,
+    "dial_hd_session.py": 75,
     "dial_hd_events.py": 285,
 }
 
