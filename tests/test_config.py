@@ -65,9 +65,13 @@ class TestOutputsSettings:
     def test_the_default_scope_constant_is_the_dataclass_default(self):
         assert c.OutputsConfig().device_pause_scope == c.DEVICE_PAUSE_SCOPE_DEFAULT
 
-    @pytest.mark.parametrize("scope", ["ignore", "output", "all", "off_all"])
+    @pytest.mark.parametrize("scope", ["output", "all", "off_all"])
     def test_each_scope_is_kept(self, scope):
         assert self.parse({"outputs": {"device_pause_scope": scope}}).outputs.device_pause_scope == scope
+
+    def test_the_retired_keep_playing_choice_reads_as_that_speaker_only(self):
+        assert self.parse({"outputs": {"device_pause_scope": "ignore"}}).outputs.device_pause_scope == "output"
+        assert c.DEVICE_PAUSE_SCOPE_DEFAULT == "output"
 
     @pytest.mark.parametrize("bad", ["", "everything", None, 3, True, ["all"]])
     def test_an_unknown_scope_is_the_default(self, bad):

@@ -18,7 +18,6 @@ from webui.browser.setup import context
 
 
 _DEVICE_PAUSE_OPTIONS = (
-    ("ignore", "Keep playing"),
     ("output", "Mute that speaker"),
     ("all", "Mute all playing speakers"),
     ("off_all", "Turn off all speakers"),

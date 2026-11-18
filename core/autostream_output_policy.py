@@ -3,8 +3,8 @@
 A receiver command (Pause, Play) arrives from the player's event channel as
 a device event. The output authority hands each one to this policy on its
 worker thread, and the policy turns it into an intent: mute that speaker,
-mute every playing speaker, turn every speaker off, or nothing, as the
-device pause setting says. A Play undoes what its Pause did.
+mute every playing speaker, or turn every speaker off, as the device pause
+setting says. A Play undoes what its Pause did.
 
 Every Pause that mutes also starts the pause timeout. When it runs out with
 no Play, the speakers that Pause muted and that are still muted are turned
@@ -27,7 +27,6 @@ import autostream_runtime as runtime
 from autostream_backend_events import DeviceEvent
 from autostream_config import (
     DEVICE_PAUSE_ALL,
-    DEVICE_PAUSE_IGNORE,
     DEVICE_PAUSE_OFF_ALL,
     DEVICE_PAUSE_OUTPUT,
     OutputsConfig,
@@ -184,9 +183,6 @@ class OutputPolicy:
         by = ctx.member_id or uid
         settings = self._settings()
         scope = settings.device_pause_scope
-        if scope == DEVICE_PAUSE_IGNORE:
-            LOG.info("receiver pause from %s: the setting says keep playing", who)
-            return Outcome(ok=True, result={"action": "ignored"})
         unit = ctx.outputs.unit(uid)
         if unit is None:
             LOG.info("receiver pause from %s: no such speaker", who)

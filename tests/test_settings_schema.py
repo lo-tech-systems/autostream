@@ -365,12 +365,12 @@ class TestOutputPolicyRows:
             with pytest.raises(ValueError, match="Value must be true or false"):
                 spec.validate(bad)
 
-    def test_the_scope_must_be_one_of_the_four(self):
+    def test_the_scope_must_be_one_of_the_three(self):
         from autostream_settings_schema import get_field_spec
         spec = get_field_spec("outputs.device_pause_scope")
-        for ok in ("ignore", "output", "all", "off_all"):
+        for ok in ("output", "all", "off_all"):
             assert spec.validate(ok) == ok
-        for bad in ("", "All", "everything", 3, None, True):
+        for bad in ("", "All", "everything", "ignore", 3, None, True):
             with pytest.raises(ValueError, match="device_pause_scope must be one of"):
                 spec.validate(bad)
 

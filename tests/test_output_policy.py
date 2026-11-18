@@ -123,20 +123,11 @@ class TestScopeIsReadAtEachEvent:
         w.box.cfg = OutputsConfig(device_pause_scope="output")
         deliver(w, event("paus", received=T0 + 1))
         assert snap().unit("1").muted and not snap().unit("2").muted
-        w.box.cfg = OutputsConfig(device_pause_scope="ignore")
+        w.box.cfg = OutputsConfig(device_pause_scope="all")
         deliver(w, event("play", received=T0 + 2))
         assert not snap().unit("1").muted
         deliver(w, event("paus", received=T0 + 3))
-        assert not snap().unit("1").muted
-
-    def test_keep_playing_makes_no_authority_call(self, w, monkeypatch):
-        w.box.cfg = OutputsConfig(device_pause_scope="ignore")
-        called = []
-        for name in ("mute", "mute_all", "deselect", "deselect_all", "unmute", "unmute_joined"):
-            monkeypatch.setattr(w.a, name, lambda *a, _n=name, **k: called.append(_n))
-        deliver(w, event("paus", received=T0 + 1))
-        assert called == [] and w.fb.calls == []
-        assert w.pol.paused_units() == () and w.pol.next_deadline() is None
+        assert snap().unit("1").muted and snap().unit("2").muted
 
 
 class TestPlayGuard:

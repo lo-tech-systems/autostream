@@ -463,13 +463,15 @@ class OwntoneConfig:
 
 
 # What a Pause pressed on a speaker does.
-DEVICE_PAUSE_IGNORE = "ignore"        # keep playing
 DEVICE_PAUSE_OUTPUT = "output"        # mute that speaker
 DEVICE_PAUSE_ALL = "all"              # mute every playing speaker
 DEVICE_PAUSE_OFF_ALL = "off_all"      # turn every speaker off
-DEVICE_PAUSE_SCOPES = (DEVICE_PAUSE_IGNORE, DEVICE_PAUSE_OUTPUT, DEVICE_PAUSE_ALL, DEVICE_PAUSE_OFF_ALL)
+DEVICE_PAUSE_SCOPES = (DEVICE_PAUSE_OUTPUT, DEVICE_PAUSE_ALL, DEVICE_PAUSE_OFF_ALL)
 # What a Pause on a speaker does when the owner has not chosen.
-DEVICE_PAUSE_SCOPE_DEFAULT = DEVICE_PAUSE_IGNORE
+DEVICE_PAUSE_SCOPE_DEFAULT = DEVICE_PAUSE_OUTPUT
+# A choice that is no longer offered, and what it now reads as. A speaker
+# that pauses itself cannot be kept playing.
+_DEVICE_PAUSE_RETIRED = {"ignore": DEVICE_PAUSE_OUTPUT}
 # Speakers a Pause muted are turned off once the Pause has lasted this long.
 PAUSE_OFF_SECONDS_DEFAULT = 300
 PAUSE_OFF_SECONDS_RANGE = (30, 3600)
@@ -480,8 +482,10 @@ PLAY_GUARD_SECONDS_RANGE = (0.0, 60.0)
 
 
 def normalize_device_pause_scope(value: object) -> str:
-    """One of DEVICE_PAUSE_SCOPES; anything else is the default."""
+    """One of DEVICE_PAUSE_SCOPES; a retired choice reads as its successor,
+    anything else as the default."""
     v = value.strip().lower() if isinstance(value, str) else ""
+    v = _DEVICE_PAUSE_RETIRED.get(v, v)
     return v if v in DEVICE_PAUSE_SCOPES else DEVICE_PAUSE_SCOPE_DEFAULT
 
 

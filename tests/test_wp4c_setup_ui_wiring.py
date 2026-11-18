@@ -689,7 +689,7 @@ class TestPlaybackPanelCardSplit:
 # ---------------------------------------------------------------------------
 
 class TestDevicePauseChoice:
-    LABELS = ("Keep playing", "Mute that speaker", "Mute all playing speakers", "Turn off all speakers")
+    LABELS = ("Mute that speaker", "Mute all playing speakers", "Turn off all speakers")
     HELP = (
         "Applies to Pause on a HomePod or on an Apple TV remote. Play on the same speaker "
         "undoes the mute. A stereo pair, or an Apple TV with its HomePods, counts as one speaker."
@@ -723,10 +723,11 @@ class TestDevicePauseChoice:
         start = html.index('<span id="device_pause_off_note"')
         return html[start:html.index("</span>", start)]
 
-    def test_the_four_options_have_the_exact_labels_and_values(self):
+    def test_the_three_options_have_the_exact_labels_and_values(self):
         sel = self._select(self._card())
-        for value, label in zip(("ignore", "output", "all", "off_all"), self.LABELS):
+        for value, label in zip(("output", "all", "off_all"), self.LABELS):
             assert f'<option value="{value}"' in sel and f">{label}</option>" in sel
+        assert sel.count("<option") == 3 and "Keep playing" not in sel
 
     def test_the_title_and_help_are_the_agreed_text(self):
         html = self._card()
@@ -734,7 +735,7 @@ class TestDevicePauseChoice:
         assert self.HELP in html
         assert "\u2014" not in html and "&mdash;" not in html.split("When Pause is pressed")[1]
 
-    @pytest.mark.parametrize("scope", ["ignore", "output", "all", "off_all"])
+    @pytest.mark.parametrize("scope", ["output", "all", "off_all"])
     def test_the_parsed_scope_is_the_selected_option(self, scope):
         sel = self._select(self._card(scope))
         assert sel.count(" selected") == 1
@@ -763,7 +764,7 @@ class TestDevicePauseChoice:
                 "Pause on a speaker does nothing until it is.") in html.replace("&#x27;", "'")
         assert "Needs owntone-mini 1.6" not in html
 
-    @pytest.mark.parametrize("scope", ["ignore", "off_all"])
+    @pytest.mark.parametrize("scope", ["off_all"])
     def test_the_timeout_sentence_is_absent_when_nothing_is_left_to_time(self, scope):
         assert self._note(self._card(scope)).endswith(">")
         assert "Pause lasts longer" not in self._note(self._card(scope)).split(">", 1)[1]

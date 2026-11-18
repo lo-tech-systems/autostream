@@ -282,7 +282,7 @@ def test_an_output_policy_setting_is_stored_and_reported_live(ctx, store, path, 
 
 def test_the_output_policy_settings_are_read_by_the_next_event(ctx, store):
     live_config.bind_settings_store(store)
-    assert live_config.output_policy_settings().device_pause_scope == "ignore"
+    assert live_config.output_policy_settings().device_pause_scope == "output"
     _apply(ctx, ("outputs.device_pause_scope", "all"), ("outputs.pause_off_seconds", 45))
     got = live_config.output_policy_settings()
     assert (got.device_pause_scope, got.pause_off_seconds) == ("all", 45)
