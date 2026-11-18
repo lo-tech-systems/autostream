@@ -19,10 +19,13 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import json
+import re
 import select
 import socket
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 SSE_MAX_CLIENTS = 4
@@ -242,3 +245,96 @@ def _stream(handler, hub: ChangeHub, clients) -> None:
         seq, body = hub.state()
         _write(handler, _event_bytes(seq, body))
         seen = seq
+
+
+# ---- the two parts, step by step ---------------------------------------------
+
+PART_NAMES = ("dial", "focused")
+
+_SINCE_RE = re.compile(r"([0-9a-f]{16})-([0-9]{1,18})")
+
+
+def parse_since(value: "str | None") -> "tuple[str, int] | None":
+    """(boot, sequence) from a `since` value of the form the events carry as
+    their id, or None when it is absent or not of that form."""
+    match = _SINCE_RE.fullmatch(value or "")
+    return None if match is None else (match.group(1), int(match.group(2)))
+
+
+def must_resync(since: "tuple[str, int] | None", boot: str, seq: int) -> bool:
+    """Whether a client that says it is at *since* must fetch the state. The
+    hub keeps no history, so only a client at this boot and the current
+    sequence is current; any other cannot be told what moved."""
+    return since is None or since != (boot, seq)
+
+
+def encode_parts(parts: dict) -> "dict[str, bytes]":
+    """Each of the page's parts as its JSON (null for an absent one)."""
+    return {
+        name: json.dumps(parts.get(name), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        for name in PART_NAMES
+    }
+
+
+@dataclass(frozen=True)
+class PartStep:
+    """One hub step's parts. *changed* maps each part whose bytes differ from
+    the step before (both, with no step before) to its JSON; *versions* is
+    what the body reports for each part: the sequence a part last changed at,
+    and for the focused part the appliance's own version (absent with no
+    focus)."""
+
+    changed: "dict[str, bytes]"
+    versions: "dict[str, int]"
+
+
+class PartDiffer:
+    """Builds the page's parts once per hub step and says which changed.
+
+    *clients* returns how many pages are connected. With none, a step builds
+    nothing and drops what it held, so the first step after a page connects
+    has no baseline and reports both parts."""
+
+    def __init__(self, clients: "Callable[[], int]") -> None:
+        self._clients = clients
+        self._bytes: "dict[str, bytes] | None" = None
+        self._dial_version = 0
+
+    def step(self, seq: int, build: "Callable[[], dict]") -> "PartStep | None":
+        """The step for sequence *seq*, with *build* called once for the
+        parts; None, without calling it, while no page is connected."""
+        if self._clients() <= 0:
+            self._bytes = None
+            return None
+        parts = build()
+        current = encode_parts(parts)
+        previous = self._bytes
+        changed = {n: b for n, b in current.items() if previous is None or previous[n] != b}
+        self._bytes = current
+        if "dial" in changed:
+            self._dial_version = seq
+        versions = {"dial": self._dial_version}
+        if parts.get("focused") is not None:
+            versions["focused"] = parts["focused"]["version"]
+        return PartStep(changed, versions)
+
+
+def _parts_json(parts: "dict[str, bytes]") -> bytes:
+    return b"{" + b",".join(json.dumps(n).encode("ascii") + b":" + b for n, b in parts.items()) + b"}"
+
+
+def state_bytes(boot: str, seq: int, now: float, step: PartStep, parts: "dict[str, bytes]") -> bytes:
+    """The state body: the sequence, the core's clock, the part versions and
+    *parts*, each as its JSON."""
+    head = json.dumps(
+        {"boot": boot, "version": seq, "time": now, "part_versions": step.versions}, separators=(",", ":"))
+    return head[:-1].encode("ascii") + b',"parts":' + _parts_json(parts) + b"}"
+
+
+def change_bytes(boot: str, seq: int, now: float, changed: "dict[str, bytes]", resync: bool = False) -> bytes:
+    """One change event: *changed* maps each moved part to its JSON; a resync
+    carries none and tells the page to fetch the state."""
+    head = json.dumps({"boot": boot, "version": seq, "time": now, "resync": bool(resync)}, separators=(",", ":"))
+    data = b"{}" if resync else _parts_json(changed)
+    payload = head[:-1].encode("ascii") + b',"data":' + data + b"}"
+    return b"id: %s-%d\nevent: change\ndata: %s\n\n" % (boot.encode("ascii"), seq, payload)

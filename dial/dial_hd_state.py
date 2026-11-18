@@ -31,6 +31,20 @@ from dial_warning_text import appliance_warning_key
 # an added field never bumps it.
 STATE_VERSION = 1
 
+# The version of the `dial` part of the two-part body, bumped on the same terms.
+DIAL_PART_VERSION = 2
+
+# The appliance's own parts the `focused` part passes through; the page reads
+# nothing else of the appliance's state.
+FOCUSED_PART_NAMES = ("session", "repeat", "track", "outputs", "eq")
+
+# What the `dial` part leaves out of the full body: what the appliance's own
+# parts carry, and the readings that change at every step.
+_DIAL_PART_DROPPED = (
+    "seq", "now", "core_seq", "now_playing", "volume", "outputs", "outputs_available", "eq", "eq_available",
+)
+_DIAL_PART_APPLIANCE_DROPPED = ("volume", "muted", "capabilities")
+
 # No string in the body is longer than this many characters.
 STRING_MAX = 200
 
@@ -116,11 +130,11 @@ def _dial_block(snapshot) -> dict:
     }
 
 
-def _repeat_block(record, now: float) -> dict | None:
+def _repeat_block(record, now: float, extrapolate: bool = True) -> dict | None:
     if record is None:
         return None
     position = record.position_seconds
-    if record.state == "replaying":
+    if extrapolate and record.state == "replaying":
         # Between two status readings the replay keeps moving.
         position += max(0.0, now - record.observed_at)
         if record.duration_seconds > 0:
@@ -159,7 +173,7 @@ def _appliance_warnings(appliance, snoozed_until: dict, wall_now: float) -> list
     return out
 
 
-def _appliance_block(a, now: float, wall_now: float, snoozed_until: dict) -> dict:
+def _appliance_block(a, now: float, wall_now: float, snoozed_until: dict, extrapolate: bool = True) -> dict:
     return {
         "id": a.appliance_id,
         "name": a.name,
@@ -179,7 +193,7 @@ def _appliance_block(a, now: float, wall_now: float, snoozed_until: dict) -> dic
             "warnings": bool(a.supplies_warnings),
             "proto": a.dial_proto_version,
         },
-        "repeat": _repeat_block(a.repeat, now),
+        "repeat": _repeat_block(a.repeat, now, extrapolate),
         "warnings": _appliance_warnings(a, snoozed_until, wall_now),
         "webui": f"{a.webui_scheme}://{a.webui_host}:{a.webui_port}/" if a.webui_host else "",
         "update_needed": a.status_error == "protocol",
@@ -432,7 +446,7 @@ def _start_failure_block(snapshot) -> dict | None:
 def build_state(
     snapshot, *, descriptors: "Mapping | Iterable | None" = None, panel: "Mapping | None" = None,
     settings: "Mapping | None" = None, recovery=None, hub_seq: int = 0, now: float = 0.0,
-    wall_now: float = 0.0, muted: bool | None = None,
+    wall_now: float = 0.0, muted: bool | None = None, extrapolate: bool = True,
 ) -> dict:
     """The state body for *snapshot*.
 
@@ -445,11 +459,13 @@ def build_state(
     monotonic time (the repeat position and the EQ tap window are read
     against it) and *wall_now* the wall clock (a snooze runs to a wall-clock
     time). *muted* is the shown mute flag of the reporting appliance, read
-    by the caller because it is not part of the snapshot."""
+    by the caller because it is not part of the snapshot. With *extrapolate*
+    False a replaying record's position is the one reported, as of its
+    observed_at, instead of carried on to *now*."""
     descriptors = _descriptor_map(descriptors)
     snoozed_until = {s.id: s.snoozed_until for s in snapshot.warnings}
     appliances = [
-        _appliance_block(a, now, wall_now, snoozed_until)
+        _appliance_block(a, now, wall_now, snoozed_until, extrapolate)
         for a in snapshot.appliances
         if a.appliance_id and a.auth in (AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)
     ]
@@ -489,3 +505,54 @@ def build_state(
 def dumps(state: dict) -> str:
     """The wire form of a state body."""
     return json.dumps(state, separators=(",", ":"), ensure_ascii=False)
+
+
+# ---- the two-part body --------------------------------------------------------
+
+
+def _dial_part(snapshot, **kwargs) -> dict:
+    """The part about the dial itself: the full body without the appliance's
+    own parts and without any reading that moves with the clock, so it changes
+    only when something in it does. A replaying record's position is the
+    reported one, as of its observed_at."""
+    body = build_state(snapshot, extrapolate=False, **kwargs)
+    part = {k: v for k, v in body.items() if k not in _DIAL_PART_DROPPED}
+    part["v"] = DIAL_PART_VERSION
+    part["focus"] = dict(part["focus"], reporting_id=snapshot.focus.reporting_id)
+    part["appliances"] = [
+        {k: v for k, v in a.items() if k not in _DIAL_PART_APPLIANCE_DROPPED} for a in part["appliances"]
+    ]
+    part["panel"] = {k: v for k, v in part["panel"].items() if k != "always_show_controls"}
+    return part
+
+
+def _focused_part(peer) -> dict | None:
+    """The focused appliance's snapshot as the core folded it, limited to the
+    parts the page reads and passed through as the appliance sent them."""
+    if peer is None:
+        return None
+    return {
+        "id": peer.peer_id,
+        "boot": peer.boot,
+        "version": peer.version,
+        "reachable": bool(peer.reachable),
+        "access": peer.access,
+        "parts": {name: peer.parts[name] for name in FOCUSED_PART_NAMES if name in peer.parts},
+    }
+
+
+def build_parts(
+    snapshot, *, descriptors: "Mapping | Iterable | None" = None, panel: "Mapping | None" = None,
+    settings: "Mapping | None" = None, recovery=None, now: float = 0.0, wall_now: float = 0.0,
+) -> dict:
+    """The two parts of the page's state, {"dial": ..., "focused": ... | None}.
+    Both come from the one *snapshot*: the focused part is the appliance
+    snapshot the core folded into it, never a live read, so the roster and the
+    focus always agree. Arguments as for build_state."""
+    return {
+        "dial": _dial_part(
+            snapshot, descriptors=descriptors, panel=panel, settings=settings, recovery=recovery,
+            now=now, wall_now=wall_now,
+        ),
+        "focused": _focused_part(snapshot.focused_peer),
+    }
