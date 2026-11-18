@@ -367,6 +367,9 @@ def _reset_state_store():
     import autostream_state
 
     autostream_state.store().reset_for_tests()
+    intents_table = _mod("autostream_intents.table")
+    if intents_table is not None:
+        intents_table.reset_for_tests()
     yield
     leaked = autostream_state.store().take_leaked()
     if leaked:
