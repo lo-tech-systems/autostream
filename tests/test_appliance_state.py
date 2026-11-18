@@ -43,7 +43,7 @@ def sources(monkeypatch):
     monkeypatch.setattr(appliance_state, "pin_is_set", lambda st: values["pin"])
     monkeypatch.setattr(appliance_state, "_read_get_throttled_value", lambda: values["throttled"])
     monkeypatch.setattr(appliance_state.autostream_system_stats, "get_cpu_thermal_status", lambda previous: values["cpu"])
-    monkeypatch.setattr(appliance_state, "sdcard_health_display", lambda: values["sd"])
+    monkeypatch.setattr(appliance_state, "sdcard_health_reading", lambda: (values["sd"], values.get("sd_read_at")))
     monkeypatch.setattr(appliance_state, "_dials_needing_update", lambda: values["dials"])
     monkeypatch.setattr(appliance_state, "_unlicensed", lambda: values["unlicensed"])
     return values
@@ -227,6 +227,13 @@ class TestWarningsPass:
         sources["sd"] = 30
         appliance_state._run_pass(src)
         assert WARNINGS_PART().entries == ()
+
+    def test_the_sd_read_date_reaches_the_inputs(self, sources, monkeypatch):
+        sources["sd_read_at"] = "2026-03-03T10:00:00+00:00"
+        seen = []
+        monkeypatch.setattr(appliance_state, "derive", lambda inputs: seen.append(inputs) or ())
+        appliance_state._run_pass(make_src())
+        assert seen[0].sd_read_at == "2026-03-03T10:00:00+00:00"
 
     def test_the_thermal_status_is_passed_back_as_previous(self, sources, monkeypatch):
         seen = []

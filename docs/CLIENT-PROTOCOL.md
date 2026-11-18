@@ -105,7 +105,8 @@ severe first, at most 16. Each entry:
 | `kind` | `psu`, `cpu_temp`, `sd_health`, `stylus`, `belt`, `bearing`, `sample_rate`, `dial_update`, `licence` or `no_input`. Lets a client group the same item on several inputs without parsing the title. |
 | `subject` | The input's label for per-input kinds, otherwise `""`. |
 | `title` | At most 40 characters. |
-| `message` | At most 32 characters. |
+| `message` | The short form: what to do, at most 32 characters, so it fits the smallest panel. |
+| `detail` | Optional: why, in a sentence or two, at most 120 characters. May be empty. A client shows it only where there is room. |
 | `link` | The Web UI page that deals with it (`/service`, `/setup#input2`, `/setup#dials`, `/setup`, `/about#system`), or `null`. |
 
 ### `outputs`

@@ -542,7 +542,7 @@ class TestWarningsPart:
         base = state.WarningsPart((self.entry(),))
         for name, value in [("id", "x"), ("incident", "i"), ("severity", "info"), ("kind", "k"),
                             ("subject", "s"), ("title", "t"), ("message", "n"),
-                            ("link", "/about")]:
+                            ("link", "/about"), ("detail", "why")]:
             other = state.WarningsPart((self.entry(**{name: value}),))
             assert DIGESTS["warnings"](other) != DIGESTS["warnings"](base), name
         assert DIGESTS["warnings"](base) == DIGESTS["warnings"](state.WarningsPart((self.entry(),)))

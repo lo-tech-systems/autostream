@@ -43,7 +43,7 @@ from autostream_dials import (
 )
 from autostream_intents.table import Intent, Outcome, bind
 from autostream_state import AppliancePart, DialsPart, Origin, WarningsPart, live
-from autostream_sysutils import format_hostname, get_system_hostname, sd_level, sdcard_health_display
+from autostream_sysutils import format_hostname, get_system_hostname, sd_level, sdcard_health_reading
 from autostream_system_stats import _read_get_throttled_value
 from autostream_warnings import Inputs, derive
 
@@ -157,7 +157,7 @@ def _gather_warnings(src: _Sources, snap) -> Inputs:
     cpu_status, cpu_temp = _read(
         lambda: autostream_system_stats.get_cpu_thermal_status(held.cpu_status), ("ok", None), "CPU temperature")
     held.cpu_status = cpu_status
-    sd_percent = _read(sdcard_health_display, None, "microSD health")
+    sd_percent, sd_read_at = _read(sdcard_health_reading, (None, None), "microSD health")
     held.sd_level = sd_level(sd_percent, held.sd_level)
     return Inputs(
         playback=snap.playback,
@@ -169,6 +169,7 @@ def _gather_warnings(src: _Sources, snap) -> Inputs:
         sd_level=held.sd_level,
         dials_needing_update=_read(_dials_needing_update, 0, "dial sightings"),
         unlicensed=_read(_unlicensed, False, "licence"),
+        sd_read_at=sd_read_at,
     )
 
 

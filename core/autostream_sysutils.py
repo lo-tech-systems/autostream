@@ -723,21 +723,31 @@ def sdcard_health_state() -> dict:
     return state
 
 
-def sdcard_health_display() -> Optional[int]:
-    """Return the SD card's remaining-health percent, but only while monitoring is enabled.
+def sdcard_health_reading() -> "tuple[Optional[int], Optional[str]]":
+    """Return the SD card's remaining-health percent and the date it was read,
+    but only while monitoring is enabled; otherwise (None, None).
 
     Reads the status file's timer_enabled flag directly rather than going
     through sdcard_health_state(), so callers that only need the display
-    value avoid the sysfs identity read that function also does. Never
+    values avoid the sysfs identity read that function also does. Never
     raises.
     """
     try:
         status = _read_json_dict(SDCARD_HEALTH_STATUS_FILE)
         if not status or not status.get("timer_enabled"):
-            return None
-        return get_sdcard_health_percent()
+            return None, None
+        percent = get_sdcard_health_percent()
+        if percent is None:
+            return None, None
+        health_json = _read_json_dict(SDCARD_HEALTH_JSON_FILE)
+        return percent, (health_json.get("date") if health_json else None)
     except Exception:
-        return None
+        return None, None
+
+
+def sdcard_health_display() -> Optional[int]:
+    """Return the SD card's remaining-health percent, but only while monitoring is enabled."""
+    return sdcard_health_reading()[0]
 
 
 def _sdcard_health_validate_method(method: str) -> str:

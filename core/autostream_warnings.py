@@ -6,7 +6,8 @@ The text table behind the warnings part: what the appliance wants a person to
 know, and the words it uses. derive() is a pure function of the inputs the
 appliance-state worker gathers, so every row can be tested without hardware.
 The words are short enough to fit a small dial panel: a title of at most 40
-characters and a message of at most 32.
+characters and a message of at most 32, with an optional detail of at most
+120 that says why, shown where there is room.
 
 Contents:
   - Inputs    -- everything derive() reads
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 
 TITLE_MAX = 40
 MESSAGE_MAX = 32
+DETAIL_MAX = 120
 MAX_ENTRIES = 16
 
 _ELLIPSIS = "…"
@@ -48,6 +50,7 @@ class Inputs:
     sd_level: str                       # "ok" | "low" | "failing"
     dials_needing_update: int
     unlicensed: bool
+    sd_read_at: Optional[str] = None    # when the microSD health was read (ISO 8601)
 
 
 
@@ -65,11 +68,11 @@ def _title(label: str, suffix: str) -> str:
     return f"{label_text} {suffix}" if label_text else suffix.capitalize()
 
 
-def _entry(id, severity, kind, title, message, link, subject="") -> WarningEntry:
+def _entry(id, severity, kind, title, message, link, subject="", detail="") -> WarningEntry:
     return WarningEntry(
         id=id, incident="", severity=severity, kind=kind, subject=subject,
         title=_fit(title, TITLE_MAX), message=_fit(message, MESSAGE_MAX),
-        link=link,
+        link=link, detail=_fit(detail, DETAIL_MAX),
     )
 
 

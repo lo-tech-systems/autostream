@@ -907,6 +907,28 @@ class TestSdcardHealthState:
         assert state["last_sampled_at"] is None
 
 
+class TestSdcardHealthReading:
+    def test_enabled_returns_percent_and_date(self, tmp_path):
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({"timer_enabled": True}), encoding="utf-8")
+        health_file = tmp_path / "health.json"
+        health_file.write_text(json.dumps({"date": "2026-03-03T10:00:00+00:00"}), encoding="utf-8")
+        with patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file),              patch.object(su, "SDCARD_HEALTH_JSON_FILE", health_file),              patch.object(su, "get_sdcard_health_percent", return_value=77):
+            assert su.sdcard_health_reading() == (77, "2026-03-03T10:00:00+00:00")
+
+    def test_a_missing_date_reads_as_none(self, tmp_path):
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({"timer_enabled": True}), encoding="utf-8")
+        with patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file),              patch.object(su, "SDCARD_HEALTH_JSON_FILE", tmp_path / "missing.json"),              patch.object(su, "get_sdcard_health_percent", return_value=77):
+            assert su.sdcard_health_reading() == (77, None)
+
+    def test_disabled_reads_as_nothing(self, tmp_path):
+        status_file = tmp_path / "status.json"
+        status_file.write_text(json.dumps({"timer_enabled": False}), encoding="utf-8")
+        with patch.object(su, "SDCARD_HEALTH_STATUS_FILE", status_file),              patch.object(su, "get_sdcard_health_percent", return_value=77):
+            assert su.sdcard_health_reading() == (None, None)
+
+
 class TestSdcardHealthDisplay:
     def test_enabled_returns_percent(self, tmp_path):
         status_file = tmp_path / "status.json"

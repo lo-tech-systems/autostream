@@ -92,6 +92,15 @@ class TestRows:
         assert (low.severity, low.message, low.link) == (
             "warning", "18% life left, replace soon", "/about#system")
 
+    def test_no_row_has_a_detail_yet(self):
+        entries = w.derive(make(sd_percent=8, sd_level="failing", throttled=0x1))
+        assert entries and all(e.detail == "" for e in entries)
+
+    def test_the_entry_helper_fits_a_detail(self):
+        entry = w._entry("x", "info", "k", "t", "m", None, detail="word " * 60)
+        assert len(entry.detail) == w.DETAIL_MAX and entry.detail.endswith("…")
+        assert w._entry("x", "info", "k", "t", "m", None).detail == ""
+
     def test_sd_unknown_says_nothing(self):
         assert w.derive(make(sd_percent=None, sd_level="low")) == ()
 
