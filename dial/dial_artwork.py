@@ -12,18 +12,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
-import sys
 import time
 from typing import Callable
 
-# autostream_logging and autostream_artwork are deployed flat beside the dial
-# package; in the repo they live in core/.
-try:
-    import autostream_logging as log_setup
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    import autostream_logging as log_setup  # noqa: E402
+import autostream_logging as log_setup
 from dial_core_state import Artwork, artwork_key
 
 ARTWORK_FETCH_TIMEOUT_SECONDS = 2.0
@@ -50,14 +42,8 @@ class RateLimitedLogger:
 
 
 def _artwork_module():
-    """The shared artwork fetcher. The dial deployment copies core modules
-    alongside the dial package; in the repo they live in core/, which may
-    or may not be on sys.path."""
-    try:
-        import autostream_artwork
-    except ImportError:
-        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-        import autostream_artwork
+    """The shared artwork fetcher, imported on first use."""
+    import autostream_artwork
     return autostream_artwork
 
 

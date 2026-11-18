@@ -15,6 +15,12 @@ import time
 from pathlib import Path
 from typing import Callable
 
+# In the repository core/ sits beside dial/; in /opt/autostream the core
+# modules are flat beside this file.
+_REPO_CORE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "core"))
+if os.path.isdir(_REPO_CORE) and _REPO_CORE not in sys.path:
+    sys.path.insert(0, _REPO_CORE)
+
 from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_config
 from dial_display_profiles import get_profile_or_default
 from dial_control import DialControlServer, core_target_records
@@ -41,27 +47,10 @@ from dial_mdns import (
 from dial_network import latest as network_latest
 from dial_network import start_network_worker
 import dial_sdhealth
-# autostream_sysutils is deployed flat into /opt/autostream beside the dial
-# package; in the repo it lives in core/.
-try:
-    from autostream_sysutils import log_lifecycle
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    from autostream_sysutils import log_lifecycle  # noqa: E402
-# autostream_logging is deployed flat beside the dial package too.
-try:
-    import autostream_logging as log_setup
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    import autostream_logging as log_setup  # noqa: E402
-# The peer library is deployed flat beside the dial package too.
-try:
-    from autostream_peer_client import PeerClient, PeerPool
-    from autostream_peer_registry import PeerRegistry
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    from autostream_peer_client import PeerClient, PeerPool  # noqa: E402
-    from autostream_peer_registry import PeerRegistry  # noqa: E402
+import autostream_logging as log_setup
+from autostream_peer_client import PeerClient, PeerPool
+from autostream_peer_registry import PeerRegistry
+from autostream_sysutils import log_lifecycle
 from dial_volume import select_volume_target, start_volume_worker
 
 

@@ -20,20 +20,12 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
-import os
 import queue
-import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
-# autostream_peer_client is deployed flat beside the dial package; in the repo
-# it lives in core/.
-try:
-    from autostream_peer_client import PeerReply
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    from autostream_peer_client import PeerReply  # noqa: E402
+from autostream_peer_client import PeerReply
 
 from dial_core_state import TransportRequest
 from dial_values import is_int

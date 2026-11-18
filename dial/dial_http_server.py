@@ -43,27 +43,13 @@ from dial_touch_controllers import list_controllers
 from dial_touch_layout import metrics_for
 from dial_values import is_int, read_env_file
 
-# autostream_sysutils is deployed flat into /opt/autostream beside the dial
-# package; in the repo it lives in core/.
-try:
-    from autostream_sysutils import (
-        SDCARD_HEALTH_METHODS,
-        sdcard_health_check,
-        sdcard_health_disable,
-        sdcard_health_enable,
-        sdcard_health_state,
-    )
-except ImportError:
-    import os as _os
-    import sys as _sys
-    _sys.path.insert(0, _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..', 'core')))
-    from autostream_sysutils import (
-        SDCARD_HEALTH_METHODS,
-        sdcard_health_check,
-        sdcard_health_disable,
-        sdcard_health_enable,
-        sdcard_health_state,
-    )
+from autostream_sysutils import (
+    SDCARD_HEALTH_METHODS,
+    sdcard_health_check,
+    sdcard_health_disable,
+    sdcard_health_enable,
+    sdcard_health_state,
+)
 
 ADMIN_CMD           = '/usr/local/libexec/autostream/autostream_admin'
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'

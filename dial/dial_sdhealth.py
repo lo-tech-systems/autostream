@@ -24,24 +24,13 @@ import threading
 import time
 from dataclasses import dataclass
 
-try:
-    from autostream_sysutils import (
-        SD_HEALTH_LOW_THRESHOLD,
-        SD_HEALTH_RECOVER_THRESHOLD,
-        SD_HEALTH_STALE_HOURS,
-        SDCARD_HEALTH_JSON_FILE,
-        sdcard_health_state,
-    )
-except ImportError:
-    import sys
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    from autostream_sysutils import (  # noqa: E402
-        SD_HEALTH_LOW_THRESHOLD,
-        SD_HEALTH_RECOVER_THRESHOLD,
-        SD_HEALTH_STALE_HOURS,
-        SDCARD_HEALTH_JSON_FILE,
-        sdcard_health_state,
-    )
+from autostream_sysutils import (
+    SD_HEALTH_LOW_THRESHOLD,
+    SD_HEALTH_RECOVER_THRESHOLD,
+    SD_HEALTH_STALE_HOURS,
+    SDCARD_HEALTH_JSON_FILE,
+    sdcard_health_state,
+)
 
 # The probe runs daily; ten minutes is plenty to notice a new reading, and a
 # forced refresh covers the enable/disable moment.

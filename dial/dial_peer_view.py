@@ -16,19 +16,11 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import math
-import os
 import re
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-# autostream_eq_bands is deployed flat beside the dial package; in the repo it
-# lives in core/.
-try:
-    import autostream_eq_bands as eq_bands
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    import autostream_eq_bands as eq_bands  # noqa: E402
+import autostream_eq_bands as eq_bands
 
 from dial_core_state import (
     AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN, APPLIANCE_WARNINGS_MAX,

@@ -12,20 +12,11 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import os
 import re
-import sys
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-# The dial deployment copies core modules into /opt/autostream/ at the same
-# level as the dial package. In the repo they live in core/, which may or may
-# not be on sys.path.
-try:
-    from autostream_protocol import PROTOCOL
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    from autostream_protocol import PROTOCOL  # noqa: E402
+from autostream_protocol import PROTOCOL
 
 # What the dial believes about its access to an appliance: the same string as
 # dial_core_state.AUTH_UNKNOWN, which imports this module.

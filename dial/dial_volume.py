@@ -79,18 +79,10 @@ import logging
 import queue
 import threading
 import time
-import os
-import sys
 from collections.abc import Mapping
 from typing import Tuple, Union
 
-# autostream_logging is deployed flat beside the dial package; in the repo it
-# lives in core/.
-try:
-    import autostream_logging as log_setup
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
-    import autostream_logging as log_setup  # noqa: E402
+import autostream_logging as log_setup
 
 from dial_values import clamp_percent, is_int
 
