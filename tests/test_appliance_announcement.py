@@ -17,6 +17,17 @@ if _CORE not in sys.path:
 # Helpers
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _restore_appliances_module():
+    """_make_module() re-imports autostream_appliances against stubs and leaves
+    that copy in sys.modules. Put the original back after each test, so other
+    tests patch the same module object the core imported."""
+    import autostream_appliances  # noqa: F401  (make sure there is an original)
+    original = sys.modules["autostream_appliances"]
+    yield
+    sys.modules["autostream_appliances"] = original
+
+
 def _make_module():
     """Import autostream_appliances with external dependencies stubbed out.
 
