@@ -171,6 +171,25 @@ def _read_token() -> str:
     return read_text_or(WATCHER_TOKEN_PATH)
 
 
+def _loopback(method: str, host: str, port: int, path: str, *, timeout: float, headers: dict,
+              body: "bytes | None" = None) -> "tuple[int, bytes] | None":
+    """One request to a local service: (status, body up to the response
+    cap), or None on any transport failure. Never follows a redirect."""
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            if body is None:
+                conn.request(method, path, headers=headers)
+            else:
+                conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            return resp.status, resp.read(_MAX_RESPONSE_BYTES)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
 def _fetch_snapshot() -> "dict | None":
     """GET the watcher's status snapshot over loopback with the per-boot
     token. None on any failure: no token, a connection/timeout error, a
@@ -178,17 +197,13 @@ def _fetch_snapshot() -> "dict | None":
     token = _read_token()
     if not token:
         return None
-    try:
-        conn = http.client.HTTPConnection(WATCHER_HOST, WATCHER_PORT, timeout=NETWORK_REQUEST_TIMEOUT_S)
-        try:
-            conn.request("GET", WATCHER_STATUS_PATH, headers={WATCHER_TOKEN_HEADER: token})
-            resp = conn.getresponse()
-            status = resp.status
-            raw = resp.read(_MAX_RESPONSE_BYTES)
-        finally:
-            conn.close()
-    except Exception:
+    reply = _loopback(
+        "GET", WATCHER_HOST, WATCHER_PORT, WATCHER_STATUS_PATH,
+        timeout=NETWORK_REQUEST_TIMEOUT_S, headers={WATCHER_TOKEN_HEADER: token},
+    )
+    if reply is None:
         return None
+    status, raw = reply
     if status != 200:
         return None
     try:
@@ -269,20 +284,11 @@ def _post_reboot() -> "int | None":
     """POST the reboot action to the local recovery endpoint. Returns the
     HTTP status (302 on success) or None on a transport failure. Never
     raises. Never follows the redirect — the box is about to go down."""
-    try:
-        conn = http.client.HTTPConnection(REBOOT_HOST, REBOOT_PORT, timeout=REBOOT_REQUEST_TIMEOUT_S)
-        try:
-            conn.request(
-                "POST", REBOOT_PATH, body=b"",
-                headers={"X-Requested-With": "XMLHttpRequest", "Content-Length": "0"},
-            )
-            resp = conn.getresponse()
-            resp.read(_MAX_RESPONSE_BYTES)
-            return resp.status
-        finally:
-            conn.close()
-    except Exception:
-        return None
+    reply = _loopback(
+        "POST", REBOOT_HOST, REBOOT_PORT, REBOOT_PATH, timeout=REBOOT_REQUEST_TIMEOUT_S, body=b"",
+        headers={"X-Requested-With": "XMLHttpRequest", "Content-Length": "0"},
+    )
+    return None if reply is None else reply[0]
 
 
 def _reboot_thread() -> None:
