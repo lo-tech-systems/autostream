@@ -115,6 +115,7 @@ Appliances that have authorised this dial are listed first, then those that
 have not. Within each group, appliances that are playing come before idle ones,
 then they are in name order.
 
+- An appliance on a different release from the dial shows **Needs an update**; the dial cannot control it until both match.
 - An appliance that is not answering shows **Not responding** and its
   controls are disabled while it is followed.
 - An appliance that has not authorised this dial shows **Not authorised**.
@@ -122,8 +123,9 @@ then they are in name order.
   web UI (Setup, Dials). See [Getting Started](GETTING-STARTED.md#authorizing-the-dial).
 - A speaker in use by another autostream appliance is dimmed and cannot be
   switched, with **In Use by** and the other appliance's name when it is known.
-- The appliance's default speaker carries a Default label, as on the appliance's
+- Speakers in the appliance's Auto-Start set carry an Auto-Start label, as on the appliance's
   Home page.
+- A speaker the appliance is still starting shows (Connecting) after its name, and an Auto-Start speaker that is off the network shows (offline).
 - Speakers have their own on/off switch and volume slider.
 - The Auto-Start pin is a square button at the right of the SPEAKERS heading, the same size and shape as the dial's bell. It sets the speakers that are on as the ones that start with each session, as the pin does on the appliance's Home page (see [Playback setup](../SETUP-PLAYBACK.md#auto-start-speakers)).
 - Switching on a speaker that needs pairing (a new Apple TV, for example)
@@ -254,7 +256,7 @@ a look, and a tap on it opens the card.
   power-supply voltage.
 
 Tap a bell to open a card over a dimmed page. A bar across the top of the
-card, in the card's own blue, names where the warning comes from and, when the
+card, in the card's own colour, names where the warning comes from and, when the
 bell holds more than one, which it is ("Turntable · 1 of 2"). A bell at the
 right of the bar and a rule under it show how urgent the warning is, in the
 colours above. The first line of the card names the level, as in "Warning:
@@ -277,8 +279,8 @@ is put away with **Close**. These cards do appear by themselves, because they
 say what the dial is doing.
 
 **Update this dial** is shown when an appliance runs newer software than the
-dial. Update the dial from the appliance's web UI. The dial keeps working with
-that appliance in the meantime.
+dial. Update the dial from the appliance's web UI. The dial cannot control
+that appliance until both are on the same release.
 
 ### Sleep and waking
 

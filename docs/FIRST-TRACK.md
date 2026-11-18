@@ -12,11 +12,11 @@ Press play on the turntable or CD player itself. There is no play button in auto
 
 ## 3. autostream starts streaming automatically
 
-As soon as the input's level rises above its sensitivity level (set per input in [Setup - Inputs](SETUP-INPUTS.md#sensitivity)), autostream treats this as the start of a listening session and begins streaming to your default speaker. There is no manual "start" step in the Web UI: the session starts itself as soon as it detects real audio. A brief quiet passage will not cut it short; see [Silence detection](SETUP-PLAYBACK.md#silence-detection) for the minimum hold that keeps a session running.
+As soon as the input's level rises above its sensitivity level (set per input in [Setup - Inputs](SETUP-INPUTS.md#sensitivity)), autostream treats this as the start of a listening session and begins streaming to your Auto-Start speaker. There is no manual "start" step in the Web UI: the session starts itself as soon as it detects real audio. A brief quiet passage will not cut it short; see [Silence detection](SETUP-PLAYBACK.md#silence-detection) for the minimum hold that keeps a session running.
 
 ## 4. Choose your speakers
 
-Your default speaker (chosen during [Setup Page 1](GETTING-STARTED.md#setup-page-1---speaker-selection)) is switched on automatically if nothing else is already selected. Open the [Home page](HOME-PAGE.md) at any time to:
+Your Auto-Start speaker (chosen during [Setup Page 1](GETTING-STARTED.md#setup-page-1---speaker-selection)) is switched on automatically if nothing else is already selected. Open the [Home page](HOME-PAGE.md) at any time to:
 
 - See which speaker(s) are currently playing (shown as **On**/**Off** on each speaker card).
 - Turn on a different speaker, or more than one.

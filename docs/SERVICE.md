@@ -89,10 +89,14 @@ the limit is reached, they turn red ("due now"/"Overdue").
 
 When any tracked item on any input is in warning or overdue:
 
-- A banner appears near the top of the Home page (one line per item -
-  stylus, belt, bearing - naming the input when there's more than one
-  affected). Tapping a banner opens the Service page.
-- The **Service** tab in the bottom navigation is highlighted red.
+- A warning card appears above the speaker list on the Home page (stylus,
+  drive belt or main bearing, naming the input). It reads "Change soon" or
+  "Service soon" when due soon, and "Change now" or "Service now" when
+  overdue. Tapping the card opens the Service page. Dials show the same
+  warnings, with the reason (for example the hours played) where there is room.
+- The **Service** tab in the bottom navigation is coloured to match the most
+  urgent of these warnings: blue when something is due soon, amber when
+  something is overdue.
 
 ## Resetting counters after servicing
 

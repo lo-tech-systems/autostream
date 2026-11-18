@@ -23,6 +23,9 @@ Every dial discovered on the network, authorized or not, gets its own card:
 - **Name** (or the dial's identity if it has none yet) as the card title.
 - A status badge: **New** (seen but not yet authorized), **Online**, or
   **Offline**.
+- A **Needs update** badge while the dial is online and on a different release
+  from the appliance, and a **Recovery Active** badge while a lost-PIN recovery
+  window is open.
 - **Firmware** version, shown next to the title only while the dial is
   authorized and online.
 - **Last seen**, shown for an authorized dial that is currently offline.
@@ -50,7 +53,11 @@ start adjusting volume on this appliance as soon as it is playing something.
 
 ## Keeping dials and the appliance on the same release
 
-Update the appliance and its dials together. A 0.7 dial is not supported with a 0.6 appliance, and a 0.7 appliance needs 0.7 dials for changes made elsewhere to show on the dial within a second or so and for the input type name to appear on the dial.
+Update the appliance and its dials together: every appliance and every dial must be on 0.8. A dial that is older than the appliance shows a **Needs update** badge on its card in the Dials panel, along with an **Update firmware** button, and the Home page shows a "Dials" warning card saying how many need updating. Such a dial cannot control the appliance until it is updated.
+
+## Dial settings and the lock
+
+If a PIN is set on a dial, the **Settings** section of its card is locked. Tap the padlock and enter the dial's PIN to unlock it. The card stays unlocked while you use its controls and the dialogs they open. It locks again when you tap the padlock, leave the Dials panel with Back, or the page is hidden. Without a PIN the section is always unlocked. See [Getting Started](dial/GETTING-STARTED.md#setting-a-pin).
 
 ## Revoking a dial
 

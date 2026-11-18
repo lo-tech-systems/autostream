@@ -1,8 +1,9 @@
 # Home Page
 
 The Home page is the main screen for day-to-day use. It shows what's playing and lets you pick
-which speakers (AirPlay outputs) are active and how loud they are. It updates on its own, with
-no manual refresh.
+which speakers (AirPlay outputs) are active and how loud they are. The appliance pushes each
+change to the page as it happens, so it updates on its own, with no manual refresh. If the live
+connection is lost, the page falls back to checking the appliance at intervals until it returns.
 
 ## Now Playing card
 
@@ -47,16 +48,27 @@ out) whenever no output is currently selected. While active, dragging it scales 
 every selected output proportionally, using each output's current volume as its starting
 point; it does not set every output to the same level.
 
+The Auto-Start pin sits at the right of the Master Volume heading (see
+[Auto-Start speakers](#auto-start-speakers) below).
+
 ## Speakers (outputs)
 
 Below the Now Playing card, each AirPlay-capable output OwnTone can see is listed as a card
 showing:
 
-- The output's name, with a **Default** badge if it is the output configured as the default
-  in [Setup-OwnTone](SETUP-OWNTONE.md).
+- The output's name, with an **Auto-Start** badge if it is in the Auto-Start set (see
+  [Auto-Start speakers](#auto-start-speakers) below). Auto-Start speakers are listed first, then
+  the rest by name. A speaker you have hidden in [Setup-OwnTone](SETUP-OWNTONE.md) is listed
+  only while it is on or in the Auto-Start set.
 - A state chip reading **On** or **Off**.
 - An on/off toggle.
 - When the output is on, a **Volume:** slider (0-100%) underneath.
+
+While autostream is starting a speaker that should be playing, its name is followed by
+**(Connecting)**. An Auto-Start speaker that is not currently on the network stays in the list
+with **(offline)** after its name, its volume slider is disabled, and its toggle is disabled
+until a listening session is running. If an Auto-Start speaker fails to start, autostream keeps
+retrying it while the music plays.
 
 Turning an output on sends its current volume to the appliance immediately; toggling it off
 does the same. If the output requires a device PIN (a fresh Apple TV pairing, for example), a
@@ -68,6 +80,14 @@ accepted but the speaker stays off; switch it on again and it plays.
 
 If a speaker does not start, a **Could not start** dialog names it and gives the likely
 reason. Another appliance's Home page shows the same dialog for a speaker on that appliance.
+
+### Auto-Start speakers
+
+While a listening session is running, an **Auto-Start** pin appears (in the Master Volume
+heading, or above the speaker list if the master volume control is hidden). Tap it and
+confirm to save the speakers that are on now, with their levels, as the set that starts with
+each new session. The pin looks pressed while the speakers that are on match the saved set.
+The set is also listed under [Setup - Playback](SETUP-PLAYBACK.md#auto-start-speakers).
 
 ### "In Use by \<name\>"
 
@@ -96,13 +116,39 @@ handled.
 
 ## Other notices
 
-- If no audio input is configured at all, a banner reads "No input device configured - set one
-  up in Setup, or enable Bluetooth."
-- Service reminder banners (stylus, belt, bearing wear) can appear above the outputs list; they
-  link through to the Service page.
-- A "Sample Rate Mismatch: Please enable Dynamic Rate Matching" banner appears while an input
-  delivers a different sample rate than it was opened at and Dynamic Rate Matching is off for
-  that input. Tapping it opens that input on the Setup page.
+Anything the appliance wants you to know appears as a warning on the Home page, in one of two
+ways.
+
+- **Red banner.** A critical fault (for example a power supply that cannot hold its voltage up,
+  a CPU that is too hot, or a microSD card that is failing) shows as a red banner across the
+  top of the page, as "Title: message". If there is more than one, the banner shows the first
+  with "+N more"; tap it to open the whole list and tap again to fold it.
+- **Warning cards.** Everything else appears as cards above the speaker list. Two show at a
+  time, with a "N more" button to show the rest. A card whose message has a page to go to has
+  a chevron (>) at its right edge; tap it to open that page. The cards are:
+  - **Stylus, drive belt or main bearing**, per input: "Change soon" or "Service soon" as the
+    hours or time run down, then "Change now" or "Service now" once overdue. They link to the
+    [Service](SERVICE.md) page. When several inputs share the same message the cards are
+    folded into one that names the inputs.
+  - **Sample rate**: "Turn on rate matching" while an input delivers a different sample rate
+    than it was opened at and Dynamic Rate Matching is off for that input. It opens that
+    input on the Setup page.
+  - **CPU temperature**: "Running hot" (a card) or "Too hot" (the red banner). It opens the
+    System panel on the About page.
+  - **microSD card**: "Replace soon" (a card) or "Replace now" (the red banner), with the same
+    link. See [SD card health monitoring](SETUP-SYSTEM.md#sd-card-health-monitoring).
+  - **Power supply**: "Low voltage seen" (a card) since the last restart, or "Low voltage now"
+    (the red banner).
+  - **Dials**: "N need updating" when a dial is running older software. It opens the Dials
+    panel in Setup.
+  - **Licence**: "This system is unlicensed".
+  - **No input**: "Set up an input in the web UI" when no audio input is enabled. It opens
+    Setup.
+- The **Service** tab in the navigation bar is marked with the colour of the most severe
+  Service warning, and the mark goes away when there is none.
+
+On another appliance's page (see [Multi-Appliance](MULTI-APPLIANCE.md)) the cards show without
+their links.
 
 ## See also
 

@@ -13,8 +13,11 @@ setting one up and using it day to day.
 
 ## Upgrade together
 
-A 0.7 dial is not supported with a 0.6 appliance. When you move to 0.7, update
-every appliance and every dial together.
+Every appliance and every dial must be on 0.8. A dial and an appliance on
+different releases cannot control each other: the dial lists such an appliance
+as needing an update and raises a warning, and the appliance's Dials card shows
+**Needs update** for such a dial. When you move to 0.8, update every appliance
+and every dial together.
 
 ## Where setup happens
 
@@ -57,8 +60,10 @@ from an HD screen, pair a speaker that asks for a PIN.
 
 Once authorized, the dial's card expands to show its settings. If a PIN is
 set, the settings section is locked: tap the padlock next to **Settings**
-and enter the PIN to unlock it. It re-locks automatically as soon as you
-click or tap away from it.
+and enter the PIN to unlock it. It stays unlocked while you use its
+controls and any dialogs they open, and locks again when you tap the padlock,
+leave the Dials panel with Back, or the page is hidden (for example when you
+switch to another app).
 
 - **Change Dial Name**: opens a rename dialog. Printable ASCII, up to 64
   characters. Semicolons and pipe characters aren't allowed. The name is

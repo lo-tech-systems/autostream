@@ -1,6 +1,6 @@
 # Setup: Inputs
 
-autostream can take audio from up to two wired inputs (**Input 1** and **Input 2**) plus one **Bluetooth** source. All three are configured from the autostream **Setup page**, each as its own card that expands into a detail panel when tapped.
+autostream has two inputs (**Input 1** and **Input 2**). Each input is either a wired device or the **Bluetooth** source, which takes the place of a wired device on one of the two. Both inputs, and the Bluetooth card, are configured from the autostream **Setup page**, each as its own card that expands into a detail panel when tapped.
 
 This page covers the Input 1 / Input 2 cards and the Bluetooth card, including pairing a Bluetooth turntable.
 

@@ -115,11 +115,11 @@ reschedule request cannot pull the deadline earlier, only push it later.
 
 ---
 
-## `GET /api/v1/events` and `GET /api/v1/state` (unstable until the next release line)
+## `GET /api/v1/events` and `GET /api/v1/state` (unstable until 1.0)
 
-These two routes are new and **unstable**: their shape, names and auth may
-change before the next release line, and nothing outside this appliance's own
-Home page should depend on them yet.
+These two routes are **unstable**: their shape, names and auth may
+change before 1.0. The Web UI, the dials and other appliances use them (see
+[CLIENT-PROTOCOL.md](CLIENT-PROTOCOL.md)), and a client should expect to be updated with the appliance.
 
 ### `GET /api/v1/events`
 

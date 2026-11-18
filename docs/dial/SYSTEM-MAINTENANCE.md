@@ -18,9 +18,10 @@ expect it to be unavailable for a minute or two at the end.
 
 A dial that is running an older protocol number (see
 [mDNS service types](DIAL_PROTOCOL.md#2-mdns-service-types)) is flagged
-**Needs update** on its card, and the Home page shows a **Dial updates
-required** banner that links to Setup, Dials. The dial keeps working in the
-meantime; updating it brings it up to date.
+**Needs update** on its card, and the Home page shows a **Dials** warning card
+("N need updating") that links to Setup, Dials. Such a dial cannot control the
+appliance until it is updated, so update it promptly; every appliance and every
+dial must be on 0.8.
 
 ### What an update does
 

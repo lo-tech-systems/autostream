@@ -301,7 +301,7 @@ from:
 ![Outputs list showing two speaker names, one with a volume level shown](images/outputs-list-rich.png)
 
 *The outputs list: a level number shows for whichever outputs are switched
-on; nothing shows for ones that are off. The appliance's default output has
+on; nothing shows for ones that are off. A speaker in the appliance's Auto-Start set has
 a bullet after its name.*
 
 Tap a row to open that output's own detail page:
@@ -412,7 +412,9 @@ Tap the bell to open a card:
 *One warning at a time. A blue band at the top says in white where it comes
 from and which of the bell's warnings this is ("Turntable · 1 of 2"), with a
 bell at its right-hand end in the warning's colour. The rule under the band
-shows how urgent it is.*
+shows how urgent it is. The dial's own warnings (No WiFi, microSD card and
+Update this dial) show "This Dial" as their source, whatever the dial is
+called.*
 
 - **Close** puts the card away. It does nothing else: nothing is hidden or
   postponed, and the bell keeps counting for as long as the cause is there. The
@@ -501,8 +503,18 @@ small screen may show the message alone.
 **Update this dial** is the dial's own warning, shown in the same way. Its
 message names the appliances that run newer software than the dial, for example
 "Turntable, CD Player need a newer dial". It is one entry however many
-appliances are ahead of the dial. Update the dial from the appliance's web UI;
-the dial keeps working with those appliances in the meantime.
+appliances are ahead of the dial. Where there is room, the smaller line under
+the message says where to update it ("Update it from Turntable's web UI (Setup,
+Dials)"). Update the dial from the appliance's web UI; its card in the Dials
+panel shows a **Needs update** badge and an **Update firmware** button. The dial
+cannot control an appliance that speaks a different protocol number, so those
+appliances are listed as needing an update and are not selectable until the
+dial and the appliance are on the same release.
+
+The reverse case is a warning too. An appliance running older software than the
+dial raises **Update** followed by the appliance's name, with the message "Its
+software is older than this dial's. Update it from its web UI." Update the
+appliance, not the dial.
 
 ## Software update
 

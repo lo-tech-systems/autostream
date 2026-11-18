@@ -64,7 +64,7 @@ and is served. A dial or another appliance must send it.
 - `clients` is the number of open event streams.
 - `parts` holds each part under its name. The state is split into the parts
   `session`, `repeat`, `track`, `inputs`, `monitor`, `playback`, `health`,
-  `settings`, `outputs`, `eq`, `devices`, `appliance`, `dials` and `warnings`.
+  `settings`, `outputs`, `eq`, `devices`, `appliance`, `dials`, `warnings` and `peers`.
 
 `?parts=outputs,warnings` returns only those parts. `?parts=` (present and
 empty) returns the top level and the `appliance` part only, because every
@@ -151,7 +151,7 @@ data: {"boot":"3f9a0c1d2e4b5a69","version":4812,"resync":false,"data":{"outputs"
 To resume, send the last id as the `Last-Event-ID` header, or as `?since=`.
 The stream mechanics (keep-alive comments, the folding of changes within
 0.3 s, the five-minute lifetime, the origin check) are described in the
-[Status API](STATUS-API.md#get-apiv1events-and-get-apiv1state-unstable-until-the-next-release-line).
+[Status API](STATUS-API.md#get-apiv1events-and-get-apiv1state-unstable-until-10).
 
 ### Limits
 

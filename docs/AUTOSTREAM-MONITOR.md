@@ -291,7 +291,11 @@ This ordering matters:
 - Beyond the pipe itself, the writer keeps any bytes a stalled reader will
   not yet accept in a backlog (capped at 1 s of audio at the output rate)
   and delivers them ahead of the next block once the reader resumes, so only
-  a stall longer than that combined headroom loses audio.
+  a stall longer than that combined headroom loses audio. The backlog's
+  memory is allocated and touched once at start-up (384,000 bytes in native
+  mode, 176,400 in `--compatible` mode), before any audio thread exists, so a
+  stall never allocates on the output thread. Its capacity is reported as
+  `fifo.backlog_capacity_bytes` in `get_status`.
 - A stream that has gone more than 1 s without a successful write is treated
   as a cold start: the output stage buffers the next 0.5 s and writes it as
   one block before resuming block-by-block writes. A transition between
@@ -309,6 +313,23 @@ This ordering matters:
   live-clock wait timeouts, counted over that stream. The line is a warning
   when anything was lost, underran, was dropped or stalled, and a debug line
   for a clean stream, so a clean stream logs nothing at the default level.
+- Lines that a persistent fault would otherwise repeat every audio block, or
+  every watchdog pass, go through a keyed rate limit in the monitor's log
+  function: the first call in a window is written, and later calls inside it
+  are only counted. The count is added to the next line written for that key
+  (as "N more suppressed in S s") and is also reported when the window ends.
+  This covers the FIFO open, pipe and write-error lines, ring-full and
+  reader-stalled lines, live-clock wait timeouts, scheduling gaps, capture
+  rate steps and mismatches, the rate detector's debug lines and the input
+  watchdog's restart lines. Windows run from 5 s to 60 s depending on the
+  line. Pending counts are flushed when the log level changes and at
+  shutdown.
+- The input watchdog does not restart an input again at once when it died
+  within a few seconds of the watchdog's own previous restart: it waits for
+  the back-off to pass and logs one line saying so, so an input that dies as
+  soon as it starts is not opened and closed several times a second. A
+  later, unrelated death is still retried straight away, and an input started
+  through the control socket still gets its immediate first retry.
 - At startup the daemon calls `mlockall(MCL_CURRENT | MCL_FUTURE |
   MCL_ONFAULT)` so its memory is pinned as it is touched, rather than paged
   out under memory pressure. This requires `LimitMEMLOCK=infinity` in the

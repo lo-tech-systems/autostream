@@ -37,7 +37,9 @@ The pill in the top-right of the Home page shows the current appliance's hostnam
 it to open a dropdown listing:
 
 - Your own (bound) appliance, shown first in bold.
-- Every other discovered autostream appliance, listed by hostname below a divider.
+- Every other discovered autostream appliance, listed by hostname below a divider. An
+  appliance on a different release from this one is marked **needs an update**, and one
+  that has not been set up yet is marked **not set up**.
 
 If no other appliances are visible, the dropdown shows "No other appliances". The list
 refreshes on its own, and again as soon as you open it, so a newly discovered or newly
@@ -97,10 +99,12 @@ control others.
 ## Recovery when a remote appliance goes offline
 
 If a remote appliance you're controlling stops responding (network drop, reboot, power
-loss), autostream detects the failure after a few moments and returns you to your own
-appliance's Home page with a message explaining
-that the remote appliance is unavailable. You don't need to do anything else - reopen
-the selector once the other appliance is back to reconnect to it.
+loss), the page first keeps the last state it had and says "Can't reach this appliance".
+After three failed attempts in a row it returns you to your own appliance's Home page.
+A definitive refusal returns you at once: the appliance is not found, two appliances share
+its name, it is not set up yet, it needs an update, or control of it is turned off. You
+don't need to do anything else - reopen the selector once the other appliance is back to
+reconnect to it.
 
 ## See also
 

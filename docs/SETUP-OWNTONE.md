@@ -47,6 +47,12 @@ Below AirPlay Settings, every known speaker gets its own row:
 - **Mode** - a drop-down (see [AirPlay modes](#airplay-modes) below).
 - **Offset** - a slider (see [Output offsets](#output-offsets) below), shown
   only when the backend supports it.
+- **Play on the Apple TV as well as its HomePods** - a toggle that appears
+  only on the row of an Apple TV that has HomePods behind it. On (the
+  default), the Apple TV plays too. Off, the HomePods play as a stereo pair
+  and the Apple TV shows nothing. Changing it while they are playing restarts
+  them. It needs owntone-mini 1.6 or above, which this release
+  installs; with an older engine the page says so instead.
 
 If a speaker isn't currently discovered, its row still appears (from saved
 state) but shows: "Speaker not currently discovered. Saved mode will be

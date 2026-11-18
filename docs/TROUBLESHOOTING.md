@@ -118,11 +118,13 @@ In-app updates can take a long time. A full update may take up to **15 minutes**
 * run an APT system update
 * rebuild `autostream_monitor`
 * recreate the Python virtual environment
-* rebuild `owntone-mini` and `vibra-mini` - but only when the release changes the pinned version. Each is skipped when the pinned version is already installed, so most updates do not pay this cost. The update to 0.7.0 moves `owntone-mini` to 1.5.0, so expect the long rebuild that once.
+* rebuild `owntone-mini` and `vibra-mini` - but only when the release changes the pinned version. Each is skipped when the pinned version is already installed, so most updates do not pay this cost. When a release moves the pinned `owntone-mini` version, expect the long rebuild that once.
 
 Micro-SD card speed has a big impact, so slower cards can make updates feel stalled even when they are still working.
 
 If the system upgrade briefly drops the Wi-Fi, the update waits up to nine minutes for the network to return and then repeats the step that needed it, so a short interruption does not fail the update. An update that gives up says in its log that the network was not available.
+
+**Update every appliance and every dial together.** Every appliance and every dial must be on 0.8. A dial and an appliance on different releases cannot control each other: the dial lists such an appliance as needing an update, and the appliance's Dials card shows **Needs update** for the dial. If a dial or an appliance is left behind after an update, update it too (see [Target shows `status_error: protocol`](#target-shows-status_error-protocol)).
 
 **Audio stops while an update runs.** Before overwriting anything, the updater stops `autostream_monitor`, `autostream_bluetooth`, `owntone`, `vibra-mini` and the `autostream` coordinator, so playback and outputs go away for the duration. The Wi-Fi watcher, nginx, NetworkManager and ssh are deliberately left running, so the appliance stays on the network and reachable throughout.
 
@@ -256,7 +258,7 @@ What to try next:
 
 * Use a known-good Raspberry Pi PSU (or an equivalent, high-quality supply for your specific Pi model. Note that 'an expensive USB adapter' it not necessarily suitable, especially if you are using a Pi4 or Pi5).
 * Avoid powering from a TV USB port or low-power hub.
-* If you can reach the UI, check for any **power warning banner** (**autostream**’s code exposes messages like “Under-voltage detected…” via `core/autostream_system_stats.py`).
+* If you can reach the UI, check the Home page for a **Power supply** warning: a card reading "Low voltage seen" (low voltage since the last restart), or a red banner reading "Low voltage now".
 
 ---
 
@@ -1209,7 +1211,7 @@ If a pre-release update causes issues:
 3. If a newer stable release is available it will be offered immediately. Install it.
 
 **Why is an older stable release not offered as an automatic downgrade?**
-autostream's version comparison only offers updates - versions strictly newer than the currently installed build. If you are running `0.7.0-beta.2` and the latest stable is `0.7.0`, that stable release is numerically newer so it will be offered. If the latest stable is `0.6.9` (older than your pre-release), no update will be offered because that would be a downgrade.
+autostream's version comparison only offers updates - versions strictly newer than the currently installed build. If you are running `0.8.0-beta.1` and the latest stable is `0.8.0`, that stable release is numerically newer so it will be offered. If the latest stable is `0.7.9` (older than your pre-release), no update will be offered because that would be a downgrade.
 
 **Returning immediately to a known stable build (console):**
 
