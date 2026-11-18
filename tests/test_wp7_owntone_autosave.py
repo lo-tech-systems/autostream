@@ -991,7 +991,7 @@ class TestOwntoneSetupPage:
         `outputs` is a list of OutputInfo instances returned as discovered speakers;
         `can_set_output_mode` toggles capabilities.can_set_output_mode so the mode
         <select> is rendered instead of a hidden input; `can_set_output_offset`
-        similarly toggles the offset slider; `config_extra` is passed through to
+        similarly toggles the offset stepper; `config_extra` is passed through to
         `_make_config` (e.g. to pre-seed `owntone.airplay_modes`).
         """
         from webui.browser.owntone import send_owntone_setup_page
@@ -1079,25 +1079,55 @@ class TestOwntoneSetupPage:
         speaker_idx = html.index('id="spk_settings_0"')
         assert audio_idx < speaker_idx
 
-    def test_offset_slider_rendered_for_every_output_when_capable(self, tmp_path):
+    def test_offset_stepper_rendered_for_every_output_when_capable(self, tmp_path):
         """A discovered output with no offset saved yet must still get a
-        slider once the backend advertises can_set_output_offset -- the old
+        stepper once the backend advertises can_set_output_offset -- the old
         "only if it already has an offset" gate is gone."""
         from autostream_players import OutputInfo
         output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
         html = self._render_page(
             str(tmp_path), outputs=[output], can_set_output_offset=True,
         )
-        assert 'id="off_slider_0"' in html
+        assert 'id="off_stepper_0"' in html
         assert 'id="off_val_0"' in html
+        assert 'id="off_slider_0"' not in html
+        for step in (-25, -5, 5, 25):
+            assert f"_owntoneOffsetStep(0, &quot;42&quot;, {step});" in html
 
-    def test_offset_slider_not_rendered_when_incapable(self, tmp_path):
+    def test_offset_stepper_shows_the_saved_offset(self, tmp_path):
+        from autostream_players import OutputInfo
+        output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
+        html = self._render_page(
+            str(tmp_path), outputs=[output], can_set_output_offset=True,
+            config_extra={"owntone": {"offsets": {"42": -110}}},
+        )
+        assert 'data-offset="-110">-110</span>' in html
+
+    def test_offset_step_past_a_limit_is_disabled(self, tmp_path):
+        from autostream_players import OutputInfo
+        output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
+        html = self._render_page(
+            str(tmp_path), outputs=[output], can_set_output_offset=True,
+            config_extra={"owntone": {"offsets": {"42": -1990}}},
+        )
+        stepper = html.split('id="off_stepper_0"', 1)[1].split("</div>\n                  </div>", 1)[0]
+        buttons = {
+            step: stepper.split(f'data-step="{step}"', 1)[1].split(">", 1)[0]
+            for step in (-25, -5, 5, 25)
+        }
+        assert "disabled" in buttons[-25]
+        assert "disabled" not in buttons[-5]
+        assert "disabled" not in buttons[5]
+        assert "disabled" not in buttons[25]
+
+    def test_offset_stepper_not_rendered_when_incapable(self, tmp_path):
         from autostream_players import OutputInfo
         output = OutputInfo(id="42", name="Kitchen", supported_modes=("default",))
         html = self._render_page(
             str(tmp_path), outputs=[output], can_set_output_offset=False,
         )
-        assert 'id="off_slider_0"' not in html
+        assert 'id="off_stepper_0"' not in html
+        assert "_owntoneOffsetStep(" not in html
 
     def test_offset_reset_button_rendered(self, tmp_path):
         from autostream_players import OutputInfo

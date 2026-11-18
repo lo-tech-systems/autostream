@@ -70,10 +70,10 @@ Proposed offsets are clamped to a maximum of ±2000 ms either way.
 
 After applying, you can jump straight to **Open Output Settings** to fine-tune any
 offset by hand, or **Run Alignment Again** to repeat the whole process. See
-[Setup-OwnTone](SETUP-OWNTONE.md) for how the per-output offset sliders work if you want
+[Setup-OwnTone](SETUP-OWNTONE.md) for how the per-output offset controls work if you want
 to nudge a value afterwards rather than re-running the whole measurement.
 
 ## See also
 
-- [Setup-OwnTone](SETUP-OWNTONE.md) - the per-output offset sliders that Speaker
+- [Setup-OwnTone](SETUP-OWNTONE.md) - the per-output offset controls that Speaker
   Synchronisation reads from and writes to, and how to adjust them by hand.

@@ -45,7 +45,7 @@ Below AirPlay Settings, every known speaker gets its own row:
   elsewhere in the app. Hidden speakers still keep their saved mode and
   offset.
 - **Mode** - a drop-down (see [AirPlay modes](#airplay-modes) below).
-- **Offset** - a slider (see [Output offsets](#output-offsets) below), shown
+- **Offset** - the current offset with step buttons either side (see [Output offsets](#output-offsets) below), shown
   only when the backend supports it.
 - **Play on the Apple TV as well as its HomePods** - a toggle that appears
   only on the row of an Apple TV that has HomePods behind it. On (the
@@ -110,13 +110,17 @@ the notes above.
 
 ## Output offsets
 
-Where supported, each speaker row has an **Offset** slider running from
--2000 ms to +2000 ms in 10 ms steps, with a **Reset** button that sets it
-back to 0. This shifts that speaker's audio earlier or later relative to
-the others, for correcting small timing mismatches between speakers (for
-example one lagging behind the rest in a multi-room group).
+Where supported, each speaker row shows its **Offset** in milliseconds
+between four buttons: **-25** and **-5** on the left, **+5** and **+25** on
+the right. A **Reset** button sets it back to 0. The offset runs from
+-2000 ms to +2000 ms, and a button that would go past either end is greyed
+out. This shifts that speaker's audio earlier (negative) or later
+(positive) relative to the others, for correcting small timing mismatches
+between speakers (for example one lagging behind the rest in a multi-room
+group).
 
-Offsets are applied live as you drag the slider. The same offset values are
+Offsets are applied live: a moment after your last press, the new value is
+saved and sent to the speaker. The same offset values are
 what [Speaker Synchronisation](SPEAKER-SYNC.md) measures and writes
 automatically if you'd rather not set them by ear - run that first, then
 fine-tune here if needed.

@@ -397,25 +397,35 @@ def send_owntone_setup_page(
             # JS must be attribute-escaped like the mode/visibility handlers
             # below, or json.dumps's quotes terminate the attribute early.
             _off_reset = f"_owntoneOffsetReset({i}, {json.dumps(out_id)});"
-            _off_input = (
-                f"document.getElementById('off_val_{i}').textContent=this.value+' ms';"
-                f"if(liveEnabled) _owntoneOffsetDebounced({i}, {json.dumps(out_id)}, parseInt(this.value,10));"
-            )
+            _off_buttons = {}
+            for step, label, aria in (
+                (-25, "&minus;25", "25 ms earlier"),
+                (-5, "&minus;5", "5 ms earlier"),
+                (5, "+5", "5 ms later"),
+                (25, "+25", "25 ms later"),
+            ):
+                _off_step = f"_owntoneOffsetStep({i}, {json.dumps(out_id)}, {step});"
+                disabled = " disabled" if not -2000 <= cur_off + step <= 2000 else ""
+                _off_buttons[step] = (
+                    f'<button type="button" class="pill-btn" data-step="{step}" aria-label="{aria}"'
+                    f' onclick="{html.escape(_off_step)}"{disabled}>{label}</button>'
+                )
             offset_html = f"""
-                  <label style="display:block;margin-top:0.5rem;">
+                  <div style="margin-top:0.5rem;">
                     <div class="slider-header">
                       <span>Offset:</span>
-                      <span id="off_val_{i}">{cur_off} ms</span>
-                      <button type="button" class="pill-btn small" style="margin-left:0.5rem;"
+                      <button type="button" class="pill-btn small"
                               onclick="{html.escape(_off_reset)}">Reset</button>
                     </div>
-                    <input type="range"
-                           id="off_slider_{i}"
-                           name="offset_{i}"
-                           min="-2000" max="2000" step="10"
-                           value="{cur_off}"
-                           oninput="{html.escape(_off_input)}">
-                  </label>
+                    <div class="offset-stepper" id="off_stepper_{i}" role="group" aria-label="Offset">
+                      {_off_buttons[-25]}
+                      {_off_buttons[-5]}
+                      <div class="offset-stepper-value" aria-live="polite"><span id="off_val_{i}"
+                           data-offset="{cur_off}">{cur_off}</span><span class="unit">ms</span></div>
+                      {_off_buttons[5]}
+                      {_off_buttons[25]}
+                    </div>
+                  </div>
                 """
 
         _out_id_js = json.dumps(out_id)

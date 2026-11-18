@@ -46,6 +46,8 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   outside the set.
 - changed: the one-off green message after saving a form is gone, and the
   sign-in page shows "Incorrect PIN" inside its card.
+- changed: a speaker's offset on the Owntone Setup page is set with -25, -5, +5
+  and +25 ms buttons either side of its value, in place of a slider.
 
 ### Speakers
 
