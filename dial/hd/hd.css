@@ -245,12 +245,18 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 
 /* Warning badge on an appliance row */
 .appliance .warn-badge {
-    min-width: 2.2em; padding: 0.55em 0.7em; margin: -0.3em 0; border-radius: 999px; text-align: center;
-    font-size: 0.8em; font-weight: 700; line-height: 1; color: #fff; background: var(--color-accent);
+    position: relative; display: inline-block; flex: none; width: 2.27em; height: 2.27em; margin: -0.5em 0;
+    color: var(--color-accent);
 }
 .appliance .warn-badge[hidden] { display: none; }
-.appliance .warn-badge.sev-warning { background: var(--color-status-warning); color: #1b1b1b; }
-.appliance .warn-badge.sev-critical { background: var(--color-status-danger); }
+.appliance .warn-badge svg { display: block; width: 100%; height: 100%; }
+.appliance .warn-badge .warn-count {
+    position: absolute; left: 0; right: 0; top: 50%; transform: translateY(calc(-50% + 1px));
+    text-align: center; color: #fff; font-size: 0.78em; font-weight: 800; line-height: 1;
+    font-variant-numeric: tabular-nums;
+}
+.appliance .warn-badge.sev-warning { color: var(--color-warning-highlight); }
+.appliance .warn-badge.sev-critical { color: var(--color-status-danger); }
 
 /* Replay row: the arm toggle, or the transport buttons and the timer. The
    timer is set as the track's second line is. */

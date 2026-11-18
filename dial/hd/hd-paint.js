@@ -13,7 +13,7 @@ import {
     SLEEP_CHOICES,
     signed
 } from "./hd-tables.js";
-import { make, setText, makeIcon, setLevel, syncList, els } from "./hd-dom.js";
+import { make, setText, makeIcon, makeBell, setLevel, syncList, els } from "./hd-dom.js";
 import { ui, dragging } from "./hd-state.js";
 import { graph, scheduleGraph } from "./hd-eq.js";
 import { trackDrag } from "./hd-requests.js";
@@ -42,6 +42,8 @@ function createApplianceRow() {
         state: node.appendChild(make("span", "state"))
     };
     parts.warn.setAttribute("role", "button");
+    parts.warn.appendChild(makeBell());
+    const warnCount = parts.warn.appendChild(make("span", "warn-count"));
     node.addEventListener("click", () => onAppliance(node.dataset.key));
     parts.warn.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -59,7 +61,7 @@ function createApplianceRow() {
             parts.warn.dataset.key = item.warn.key;
             parts.warn.className = "warn-badge sev-" + item.warn.severity;
             parts.warn.setAttribute("aria-label", item.warn.count + " warning" + (item.warn.count > 1 ? "s" : ""));
-            setText(parts.warn, String(item.warn.count));
+            setText(warnCount, String(item.warn.count));
         }
     };
     return node;

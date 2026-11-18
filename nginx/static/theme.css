@@ -47,6 +47,8 @@
   --color-status-danger:     #dc3545;
   --color-status-success:    #28a745;
   --color-status-warning:    #f0ad4e;
+  /* The HD dial's warning bell (same in both themes) */
+  --color-warning-highlight: #E97132;
   /* Equaliser curve display */
   --color-eq-bg:             #e4e8ec;
   --color-eq-grid:           rgba(0,0,0,0.12);
@@ -93,6 +95,7 @@
   --color-status-danger:     #B23A48;
   --color-status-success:    #2F9E7E;
   --color-status-warning:    #E0A458;
+  --color-warning-highlight: #E97132;
   /* Equaliser curve display */
   --color-eq-bg:             #0d1c2b;
   --color-eq-grid:           rgba(100,150,200,0.22);

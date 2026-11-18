@@ -1389,6 +1389,18 @@ def with_recovery(base, active=True, confirmed=False):
     return dataclasses.replace(base, recovery=(active, confirmed))
 
 
+def bell_colour(page):
+    return page.evaluate("getComputedStyle(document.querySelector('.warn-badge')).color")
+
+
+def token_colour(page, name):
+    """A theme colour token as the computed colour a bell would resolve to."""
+    return page.evaluate(
+        "(name) => { const d = document.createElement('div');"
+        " d.style.color = getComputedStyle(document.documentElement).getPropertyValue(name);"
+        " document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; }", name)
+
+
 def lounge_warning_while_on_kitchen(*, snoozed=False, dismissal="week"):
     """The Lounge has a stylus warning while the Kitchen is the focus."""
     base = hs.SCENARIOS["appliance_warning" if dismissal == "week" else "appliance_warning_notice"]
@@ -1519,6 +1531,7 @@ class TestDialWarnings:
             assert button.bounding_box()["height"] >= 44
 
 
+@pytest.mark.engines
 class TestApplianceWarnings:
     def test_the_focused_appliance_shows_its_card(self, page, hd):
         hd.show(hs.SCENARIOS["appliance_warning"])
@@ -1559,12 +1572,42 @@ class TestApplianceWarnings:
             descriptors=hs.WARNING_DESCRIPTORS + (hs.appliance_warning_descriptor(LOUNGE, warning),)))
         open_page(page, hd)
         expect(rows(page).first.locator(".warn-badge")).to_have_class(re.compile("sev-critical"))
-        colour = page.evaluate(
-            "getComputedStyle(document.querySelector('.warn-badge')).backgroundColor")
-        assert colour == page.evaluate(
-            "(() => { const d = document.createElement('div');"
-            " d.style.color = getComputedStyle(document.documentElement).getPropertyValue('--color-status-danger');"
-            " document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; })()")
+        assert bell_colour(page) == token_colour(page, "--color-status-danger")
+
+    def test_the_badge_is_a_bell_with_the_count_inside(self, page, hd):
+        hd.show(hs.SCENARIOS["appliance_warning"])
+        open_page(page, hd)
+        badge = rows(page).first.locator(".warn-badge")
+        expect(badge.locator("svg")).to_have_count(1)
+        expect(badge.locator("svg path")).to_have_count(2)
+        expect(badge.locator(".warn-count")).to_have_text("1")
+        bell, count = badge.locator("svg").bounding_box(), badge.locator(".warn-count").bounding_box()
+        assert count["x"] >= bell["x"] and count["x"] + count["width"] <= bell["x"] + bell["width"]
+        assert count["y"] >= bell["y"] and count["y"] + count["height"] <= bell["y"] + bell["height"]
+        assert page.evaluate("getComputedStyle(document.querySelector('.warn-badge')).backgroundColor") \
+            == "rgba(0, 0, 0, 0)"
+
+    def test_a_warning_bell_is_the_highlight_orange_and_an_info_one_the_accent(self, page, hd):
+        hd.show(hs.SCENARIOS["appliance_warning"])
+        open_page(page, hd)
+        assert bell_colour(page) == "rgb(233, 113, 50)"
+        hd.show(hs.SCENARIOS["appliance_warning_notice"])
+        open_page(page, hd)
+        expect(rows(page).first.locator(".warn-badge")).to_have_class(re.compile("sev-info"))
+        assert bell_colour(page) == token_colour(page, "--color-accent")
+
+    def test_a_two_digit_count_fits_in_the_bell(self, page, hd):
+        hd.show(hs.SCENARIOS["appliance_warning"])
+        open_page(page, hd)
+        page.evaluate("document.querySelector('.warn-badge .warn-count').textContent = '88'")
+        badge = rows(page).first.locator(".warn-badge")
+        bell, count = badge.locator("svg").bounding_box(), badge.locator(".warn-count").bounding_box()
+        text_width = page.evaluate(
+            "(() => { const r = document.createRange();"
+            " r.selectNodeContents(document.querySelector('.warn-badge .warn-count'));"
+            " return r.getBoundingClientRect().width; })()")
+        assert 0 < text_width < bell["width"] * 0.7
+        assert count["x"] >= bell["x"] and count["x"] + count["width"] <= bell["x"] + bell["width"]
 
     def test_another_appliances_warning_is_a_badge_until_tapped(self, page, hd):
         hd.show(lounge_warning_while_on_kitchen())
