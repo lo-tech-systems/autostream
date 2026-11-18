@@ -215,6 +215,12 @@ class MdnsBrowser(Generic[_T]):
         with self._lock:
             return dict(self._by_identity)
 
+    def get_models(self, identity_key: Any) -> list[_T]:
+        """The model of every live Avahi record for one identity, which
+        get_snapshot's single most-recent model leaves out."""
+        with self._lock:
+            return [r.model for r in self._by_key.values() if r.identity_key == identity_key]
+
     @property
     def has_started(self) -> bool:
         with self._lock:

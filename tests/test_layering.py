@@ -27,7 +27,7 @@ _L0 = """
 align_tone appliance_identity artwork auth backend_events bluetooth_client
 bluetooth_facts bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
 federation licensing logging mdns monitor_client nowplaying
-owntone owntone_mini pin_pairing playback_stats player_service players protocol rpi
+owntone owntone_mini peer_client peer_http peer_registry pin_pairing playback_stats player_service players protocol rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
