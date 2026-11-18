@@ -193,8 +193,10 @@ def test_an_island_on_a_public_route_carries_only_listed_keys(page):
 
 
 def test_the_island_of_the_home_page_holds_the_values_the_old_globals_did():
-    from autostream_webui_assets import (  # noqa: PLC0415
-        ICON_BLUETOOTH, ICON_CD, ICON_LINE_LEVEL, ICON_TURNTABLE)
+    from webui.assets import ICON_BLUETOOTH
+    from webui.assets import ICON_LINE_LEVEL
+    from webui.assets import ICON_CD
+    from webui.assets import ICON_TURNTABLE
     island = _source_text.page_data(_render("home"))
     assert island["icons"] == {
         "turntable": ICON_TURNTABLE, "bluetooth": ICON_BLUETOOTH,
@@ -224,7 +226,7 @@ def test_the_island_of_the_remote_home_page_points_at_the_remote_appliance():
 
 
 def test_an_island_value_cannot_end_its_script_element():
-    from autostream_webui_static import page_data_island  # noqa: PLC0415
+    from webui.static import page_data_island  # noqa: PLC0415
     text = page_data_island({"name": "</script><b>&"})
     assert text.count("</script>") == 1
     body = re.search(r">(\{.*\})</script>", text).group(1)
@@ -288,7 +290,8 @@ def test_the_routes_that_carry_the_setup_island_and_cards_need_a_full_sign_in():
 
 
 def test_the_setup_island_holds_the_values_the_old_substitutions_did():
-    from autostream_webui_assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED  # noqa: PLC0415
+    from webui.assets import ICON_PADLOCK_UNLOCKED
+    from webui.assets import ICON_PADLOCK_LOCKED  # noqa: PLC0415
     from webui.browser.setup.cards_bluetooth import BLUETOOTH_LOOPBACK_HW  # noqa: PLC0415
     island = _source_text.page_data(_render("setup"))
     assert island["icons"] == {"padlock_locked": ICON_PADLOCK_LOCKED, "padlock_unlocked": ICON_PADLOCK_UNLOCKED}

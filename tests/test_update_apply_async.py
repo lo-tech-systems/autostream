@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import webui.common as webui_common
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -87,7 +88,7 @@ class TestStartUpdateApplyAccepts:
 
         h = _handler()
         with patch.object(webui, "run_updater", side_effect=blocking_run_updater), \
-             patch.object(webui, "send_json", side_effect=fake_send_json):
+             patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h._start_update_apply()
 
             # The response must already be sent even though run_updater is
@@ -114,7 +115,7 @@ class TestStartUpdateApplyAccepts:
 
         h1, h2 = _handler(), _handler()
         with patch.object(webui, "run_updater", side_effect=blocking_run_updater) as mock_run, \
-             patch.object(webui, "send_json", side_effect=fake_send_json):
+             patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h1._start_update_apply()
             h2._start_update_apply()
             release_event.set()
@@ -134,14 +135,14 @@ class TestStartUpdateApplyAccepts:
 
         h1 = _handler()
         with patch.object(webui, "run_updater", return_value=(0, "{}", "")) as mock_run1, \
-             patch.object(webui, "send_json", side_effect=fake_send_json):
+             patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h1._start_update_apply()
             _wait_until_idle()
         assert mock_run1.call_count == 1
 
         h2 = _handler()
         with patch.object(webui, "run_updater", return_value=(0, "{}", "")) as mock_run2, \
-             patch.object(webui, "send_json", side_effect=fake_send_json):
+             patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h2._start_update_apply()
             _wait_until_idle()
 

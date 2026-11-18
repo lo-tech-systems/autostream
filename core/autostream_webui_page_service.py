@@ -33,14 +33,12 @@ from autostream_config import (
 from autostream_state import store
 from autostream_playback_stats import InputPlaybackSnapshot
 
-import autostream_webui_static as static
+from webui import static
 
-from autostream_webui_common import (
-    _config_snapshot,
+from webui.common import (
     _fallback_input_snapshot,
     build_page_html,
     build_top_banner_html,
-    send_html,
 )
 
 from autostream_webui_service_schema import (
@@ -52,7 +50,8 @@ from autostream_webui_service_schema import (
     _time_display,
 )
 
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
 
 
 # Confirm modal HTML (rendered once per request, referenced by SERVICE_JS).
@@ -554,7 +553,7 @@ def send_service_page(
 
     parsed = None
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception:
         parsed = None
 
@@ -626,4 +625,4 @@ def send_service_page(
         service_warn=service_warn,
         dark_mode=parsed.webui.dark_mode if parsed else False,
     )
-    send_html(handler, 200, html_body)
+    common.send_html(handler, 200, html_body)

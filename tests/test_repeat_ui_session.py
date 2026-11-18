@@ -92,7 +92,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
     buf_result = MagicMock(ok=True, value="2250")
 
     patches = [
-        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
@@ -619,7 +619,7 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
 # activeLevel. The now-playing/session logic (formerly duplicated as
 # updateNowPlayingCard on the local page and an inline copy inside the
 # remote page's renderHomeState) now lives in a single shared function,
-# renderNowPlayingCard (core/autostream_webui_assets.py::HOME_CARDS_SCRIPT),
+# renderNowPlayingCard (core/webui/assets.py::HOME_CARDS_SCRIPT),
 # embedded byte-for-byte on both pages -- so these assertions are checked
 # once against home_html and, separately, that the remote page's own
 # renderHomeState delegates to it rather than re-implementing it.
@@ -674,7 +674,7 @@ def _render_remote_home_page() -> str:
     parsed = _make_parsed(repeat_enabled=True)
 
     patches = [
-        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_airplay._build_appliances_for_selector", return_value=[]),
         patch("autostream_webui_page_airplay.build_appliance_selector_html", return_value=""),
@@ -757,7 +757,7 @@ class TestRepeatUrlParameterization:
 
 class TestLogoIsHomeLink:
     def test_banner_logo_html_wraps_images_in_home_link(self):
-        from autostream_webui_assets import BANNER_LOGO_HTML
+        from webui.assets import BANNER_LOGO_HTML
 
         assert '<a href="/"' in BANNER_LOGO_HTML
         # Both theme badges must be inside the link, not siblings of it.

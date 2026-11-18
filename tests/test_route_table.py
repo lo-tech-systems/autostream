@@ -686,7 +686,7 @@ class TestPilotRouteApiRepeat:
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", MagicMock()), \
              patch("autostream_webui.is_commissioning_required", return_value=True), \
-             patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_not_called()

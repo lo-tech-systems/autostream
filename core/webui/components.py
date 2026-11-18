@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""autostream_webui_components.py
+"""webui/components.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Shared HTML widget builders, extracted one at a time from their current
 best call site with byte-identical output. Kept dependency-light (stdlib
-``html`` only) so any page module or ``autostream_webui_common.py`` can
+``html`` only) so any page module or ``webui/common.py`` can
 import from here without risking a circular import.
 """
 

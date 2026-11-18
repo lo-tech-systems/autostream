@@ -109,7 +109,7 @@ def _render_setup_page(
     minimum_playback_seconds: int = 30,
 ) -> str:
     from autostream_settings import SettingsStore
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
     from autostream_players import ListOutputsResult
     from _setup_card_test_helpers import render_full_setup_with_cards
 
@@ -442,7 +442,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
     buf_result = MagicMock(ok=True, value="2250")
 
     patches = [
-        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
@@ -681,7 +681,7 @@ def _render_equaliser_page(*, repeat_enabled: bool = True) -> str:
     state.config_path = "dummy.ini"
 
     patches = [
-        patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed),
+        patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_equaliser.get_system_hostname", return_value="autostream"),

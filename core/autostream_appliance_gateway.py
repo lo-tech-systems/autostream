@@ -63,8 +63,9 @@ from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_state.live import get_live_output_eq_status
 from autostream_player_service import config_airplay_mode_to_backend
 from autostream_rpi import get_appliance_id
-from autostream_webui_api import apply_repeat_arm_request, send_browser_api_error, send_json
-from autostream_webui_common import _config_snapshot
+from autostream_webui_api import apply_repeat_arm_request
+from webui import common
+from webui.system import updates
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -579,11 +580,11 @@ def _coalesced_remote_get(
 def _gateway_error_to_browser(handler, resolution: str) -> None:
     """Emit the standard browser error for a pre-flight ID resolution failure."""
     if resolution == "invalid":
-        send_browser_api_error(handler, 404, "not_found")
+        common.send_browser_api_error(handler, 404, "not_found")
     elif resolution == "conflict":
-        send_json(handler, 409, {"ok": False, "error": "appliance_conflicted"})
+        common.send_json(handler, 409, {"ok": False, "error": "appliance_conflicted"})
     elif resolution == "offline":
-        send_browser_api_error(handler, 503, "appliance_offline", retryable=True)
+        common.send_browser_api_error(handler, 503, "appliance_offline", retryable=True)
 
 
 def _check_and_emit_backoff(
@@ -603,7 +604,7 @@ def _check_and_emit_backoff(
         logging.debug(
             "gateway: serving backoff for %s (retry_after=%ds)", appliance_id, retry_after,
         )
-        send_browser_api_error(handler, 429, "remote_backoff", retryable=True,
+        common.send_browser_api_error(handler, 429, "remote_backoff", retryable=True,
                                extra={"retry_after": retry_after})
     return in_backoff
 
@@ -611,7 +612,7 @@ def _check_and_emit_backoff(
 def _handle_remote_response(handler, appliance_id: str, status: int, data: dict) -> None:
     """Emit the browser response for a completed remote request."""
     if status == 200 and isinstance(data, dict) and data.get("ok"):
-        send_json(handler, 200, data)
+        common.send_json(handler, 200, data)
         return
 
     err = data.get("error", "remote_timeout") if isinstance(data, dict) else "remote_timeout"
@@ -619,25 +620,25 @@ def _handle_remote_response(handler, appliance_id: str, status: int, data: dict)
 
     if err == "remote_backoff":
         retry = data.get("retry_after", 1) if isinstance(data, dict) else 1
-        send_browser_api_error(handler, 429, "remote_backoff", retryable=True,
+        common.send_browser_api_error(handler, 429, "remote_backoff", retryable=True,
                                extra={"retry_after": int(retry)})
     elif err == "rate_limited":
         retry = data.get("retry_after", 1) if isinstance(data, dict) else 1
-        send_browser_api_error(handler, 429, "rate_limited", retryable=True,
+        common.send_browser_api_error(handler, 429, "rate_limited", retryable=True,
                                extra={"retry_after": int(retry)})
     elif err in ("appliance_unconfigured", "appliance_identity_unavailable"):
-        send_json(handler, 409, {"ok": False, "error": err})
+        common.send_json(handler, 409, {"ok": False, "error": err})
     elif status == 200:
         # Target returned HTTP 200 but ok=False — application-level error on remote
-        send_json(handler, 500, {"ok": False, "error": "target_error"})
+        common.send_json(handler, 500, {"ok": False, "error": "target_error"})
     elif err == "remote_timeout":
-        send_browser_api_error(handler, 504, err, retryable=True)
+        common.send_browser_api_error(handler, 504, err, retryable=True)
     elif err == "remote_bad_response":
-        send_browser_api_error(handler, 502, err, retryable=True)
+        common.send_browser_api_error(handler, 502, err, retryable=True)
     elif err == "appliance_offline":
-        send_browser_api_error(handler, 503, err, retryable=True)
+        common.send_browser_api_error(handler, 503, err, retryable=True)
     else:
-        send_json(handler, 500, {"ok": False, "error": "target_error"})
+        common.send_json(handler, 500, {"ok": False, "error": "target_error"})
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +649,7 @@ def send_appliances_json(handler, state) -> None:  # noqa: ARG001
     """GET /api/appliances — bound-first appliance list."""
     local_id = get_appliance_id()
     if not local_id:
-        send_json(handler, 500, {
+        common.send_json(handler, 500, {
             "ok": False,
             "error": "appliance_identity_unavailable",
             "retryable": False,
@@ -681,7 +682,7 @@ def send_appliances_json(handler, state) -> None:  # noqa: ARG001
             "equaliser_path": f"/a/{s.id}/equaliser",
         })
 
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "bound_appliance_id": local_id,
         "scanner": {
@@ -701,8 +702,7 @@ def _local_hostname() -> str:
 
 
 def _local_version() -> str:
-    from autostream_webui_common import get_app_version
-    return get_app_version()
+    return updates.get_app_version()
 
 
 def _format_hostname(raw: str) -> str:
@@ -725,12 +725,12 @@ def send_gateway_home_json(handler, state, appliance_id: str) -> None:
 
     if resolution == "bound":
         try:
-            parsed = _config_snapshot(state)
+            parsed = common._config_snapshot(state)
         except Exception as e:
             logging.error("gateway home (bound): config error: %s", e)
-            send_json(handler, 500, {"ok": False, "error": "internal_error"})
+            common.send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
-        send_json(handler, 200, build_home_state(store().snapshot(), parsed))
+        common.send_json(handler, 200, build_home_state(store().snapshot(), parsed))
         return
 
     status, data = _coalesced_remote_get(appliance_id, sighting, "/api/federation/v1/home")
@@ -746,15 +746,15 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
     try:
         body = json.loads(body_str) if body_str else {}
     except (json.JSONDecodeError, ValueError):
-        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_json"})
         return
     if not isinstance(body, dict):
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
 
     out_id = str(body.get("id") or "").strip()
     if not out_id:
-        send_json(handler, 400, {"ok": False, "error": "missing_output_id"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_output_id"})
         return
 
     resolution, sighting = resolve_appliance(appliance_id)
@@ -767,25 +767,25 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
     # validates the op/pin/selected/volume shape.
     sanitized, sanitize_error = sanitize_output_body(body)
     if sanitize_error is not None:
-        send_json(handler, 400, {"ok": False, "error": sanitize_error})
+        common.send_json(handler, 400, {"ok": False, "error": sanitize_error})
         return
 
     if resolution == "bound":
         try:
-            parsed = _config_snapshot(state)
+            parsed = common._config_snapshot(state)
             offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
             offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
             mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE)
             mode = config_airplay_mode_to_backend(mode_text)
         except Exception as e:
             logging.error("gateway output (bound): config error: %s", e)
-            send_json(handler, 500, {"ok": False, "error": "internal_error"})
+            common.send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
         result = submit_output_change(
             sanitized, requester="webui", pin_requester=REQUESTER_WEBUI,
             offset_ms=offset_ms, mode=mode,
         )
-        send_json(handler, 200, result)
+        common.send_json(handler, 200, result)
         return
 
     if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
@@ -810,12 +810,12 @@ def send_gateway_equaliser_json(handler, state, appliance_id: str) -> None:
 
     if resolution == "bound":
         try:
-            parsed = _config_snapshot(state)
+            parsed = common._config_snapshot(state)
         except Exception as e:
             logging.error("gateway equaliser (bound): config error: %s", e)
-            send_json(handler, 500, {"ok": False, "error": "internal_error"})
+            common.send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
-        send_json(handler, 200, build_equaliser_state(parsed))
+        common.send_json(handler, 200, build_equaliser_state(parsed))
         return
 
     status, data = _coalesced_remote_get(appliance_id, sighting, "/api/federation/v1/equaliser")
@@ -832,9 +832,9 @@ def send_gateway_eq_status_json(handler, state, appliance_id: str) -> None:
     if resolution == "bound":
         live = get_live_output_eq_status()
         if live is None:
-            send_json(handler, 200, {"ok": False, "error": "monitor_unavailable"})
+            common.send_json(handler, 200, {"ok": False, "error": "monitor_unavailable"})
             return
-        send_json(handler, 200, {"ok": True, **live})
+        common.send_json(handler, 200, {"ok": True, **live})
         return
 
     _eq_status_path = "/api/federation/v1/equaliser/status"
@@ -852,10 +852,10 @@ def send_gateway_eq_config_json(handler, state, appliance_id: str, body_str: str
     try:
         body = json.loads(body_str) if body_str else {}
     except (json.JSONDecodeError, ValueError):
-        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_json"})
         return
     if not isinstance(body, dict):
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
 
     field = str(body.get("field", "")).strip()
@@ -870,12 +870,12 @@ def send_gateway_eq_config_json(handler, state, appliance_id: str, body_str: str
         reply = submit(Intent(
             "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "webui", context=state))
         if "invalid" in reply.result:
-            send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
+            common.send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
             return
         if not reply.ok:
-            send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
+            common.send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
             return
-        send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
+        common.send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
         return
 
     if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
@@ -898,9 +898,9 @@ def send_gateway_eq_reset_json(handler, state, appliance_id: str) -> None:
     if resolution == "bound":
         reply = submit(Intent("output.eq.reset", {}, Origin.USER, "webui", context=state))
         if not reply.ok:
-            send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
+            common.send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
             return
-        send_json(handler, 200, {"ok": True})
+        common.send_json(handler, 200, {"ok": True})
         return
 
     if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):
@@ -929,16 +929,16 @@ def send_gateway_repeat_json(handler, state, appliance_id: str, body_str: str) -
 
     if resolution == "bound":
         status, resp = apply_repeat_arm_request(body_str)
-        send_json(handler, status, resp)
+        common.send_json(handler, status, resp)
         return
 
     try:
         body = json.loads(body_str) if body_str else {}
     except (json.JSONDecodeError, ValueError):
-        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_json"})
         return
     if not isinstance(body, dict) or "armed" not in body or not isinstance(body.get("armed"), bool):
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
 
     if _check_and_emit_backoff(handler, appliance_id, "*write*", sighting):

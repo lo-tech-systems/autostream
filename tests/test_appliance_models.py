@@ -417,7 +417,7 @@ class TestBuildHomeStateLocal:
             fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
-            patch("autostream_appliance_models.get_app_version", return_value="2.0.0"),
+            patch("webui.system.updates.get_app_version", return_value="2.0.0"),
         )
 
     def test_ok_true_returned(self, tmp_path):
@@ -479,7 +479,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], \
-             patch("autostream_appliance_models.get_app_version", return_value="1.0"):
+             patch("webui.system.updates.get_app_version", return_value="1.0"):
             with patch("autostream_appliance_models.get_system_hostname",
                        return_value="mybox.local"):
                 result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
@@ -558,7 +558,7 @@ class TestBuildHomeStateNoPlayerCall:
              fake_playback(playback), \
              patch("autostream_appliance_models.get_appliance_id", return_value=""), \
              patch("autostream_appliance_models.get_system_hostname", return_value=""), \
-             patch("autostream_appliance_models.get_app_version", return_value=""):
+             patch("webui.system.updates.get_app_version", return_value=""):
             cache.note_saved(1500)
             try:
                 result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
@@ -619,7 +619,7 @@ class TestBuildHomeStateAnnotation:
                  fake_playback(playback), \
                  patch("autostream_appliance_models.get_appliance_id", return_value=""), \
                  patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
-                 patch("autostream_appliance_models.get_app_version", return_value="1.0"), \
+                 patch("webui.system.updates.get_app_version", return_value="1.0"), \
                  patch("autostream_output_usage.get_usage_snapshot", return_value=snapshot), \
                  patch("autostream_output_usage.annotate_outputs", side_effect=_fake_annotate):
                 yield

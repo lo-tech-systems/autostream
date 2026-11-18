@@ -45,11 +45,11 @@ from autostream_player_service import output_supported_config_modes
 from autostream_state import store
 from autostream_state.live import get_capabilities, get_setting, list_outputs
 from autostream_sysutils import run_admin_cmd
-import autostream_webui_static as static
-from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, send_html
-from autostream_webui_assets import RESTART_MODAL_HTML
-from autostream_webui_state import WebUIState
-from autostream_webui_api import send_json
+from webui import static
+from webui.common import build_page_html, build_top_banner_html
+from webui.assets import RESTART_MODAL_HTML
+from webui.session_state import WebUIState
+from webui import common
 
 
 # -----------------------------------------------------------------------------
@@ -94,7 +94,7 @@ def _restart_owntone_worker(state, token: int) -> None:
 
     # After restart command, wait for API to come back (more generous than the UI poll).
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
         ok, msg = wait_for_owntone_api(parsed.owntone.base_url, timeout_s=20.0)
     except Exception as e:
         ok, msg = False, str(e)
@@ -142,7 +142,7 @@ def start_owntone_restart_async(state, delay_s: float = 0.75) -> None:
 def send_owntone_ready_json(handler, state) -> None:
     """JSON endpoint polled by /owntone-restarting."""
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
         ready, ready_msg = _owntone_ready_quick(parsed.owntone.base_url, timeout_s=0.6)
     except Exception as e:
         ready, ready_msg = False, str(e)
@@ -159,7 +159,7 @@ def send_owntone_ready_json(handler, state) -> None:
             "message": str(restart["message"]),
         },
     }
-    send_json(handler, 200, payload)
+    common.send_json(handler, 200, payload)
 
 
 # -----------------------------------------------------------------------------
@@ -199,7 +199,7 @@ def send_owntone_restarting_page(handler, state) -> None:
       </body>
       </html>
     """
-    send_html(handler, 200, body)
+    common.send_html(handler, 200, body)
 
 
 # -----------------------------------------------------------------------------
@@ -665,4 +665,4 @@ def send_owntone_setup_page(
         dark_mode=parsed.webui.dark_mode,
         head_extra=csrf_meta + static.page_data_island({"live_enabled": True}),
     )
-    send_html(handler, 200, html_body)
+    common.send_html(handler, 200, html_body)

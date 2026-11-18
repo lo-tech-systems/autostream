@@ -229,7 +229,7 @@ class TestRemoteHomePageContent:
         parsed.webui.dark_mode = False
         parsed.webui.show_hostname_on_home = False
         parsed.webui.control_other_appliances = False
-        with patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed), \
+        with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound-host"):

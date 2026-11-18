@@ -121,10 +121,8 @@ from autostream_sysutils import (
     set_system_hostname,
 )
 from urllib.parse import urlparse as _urlparse
-from autostream_webui_common import (
-    _config_snapshot,
+from webui.common import (
     _fallback_input_snapshot,
-    get_app_version,
     render_license_md,
 )
 from autostream_webui_service_schema import (
@@ -134,13 +132,15 @@ from autostream_webui_service_schema import (
     _hours_display,
     _time_display,
 )
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 from autostream_settings_schema import (
     LiveClass,
     cross_validate_hostname_visibility_cascade,
     get_field_spec,
     register_field,
 )
+from webui import common
+from webui.system import updates
 
 
 # -----------------------------------------------------------------------------
@@ -168,96 +168,6 @@ for _si in _SERVICE_ITEMS:
             _SERVICE_FIELD_MAP[_years_path] = (_sec, _si.years_config_key, _si.years_normalizer)
 
 
-# -----------------------------------------------------------------------------
-# Core JSON response helper
-# -----------------------------------------------------------------------------
-
-# Statuses intercepted by the main autostream NGINX configuration.
-# error_page 404 502 503 504 = @upstream_failed redirects these to an offline
-# page, so they cannot be used as browser transport status for structured JSON.
-# See system/nginx/autostream-nginx.conf and docs/API-ERROR-CONTRACT.md.
-_NGINX_INTERCEPTED_STATUSES: frozenset[int] = frozenset({404, 502, 503, 504})
-
-
-def send_browser_api_error(
-    handler,
-    semantic_status: int,
-    error: str,
-    *,
-    retryable: bool | None = None,
-    extra: dict | None = None,
-) -> None:
-    """Send a structured JSON error that survives the main NGINX boundary.
-
-    For statuses in _NGINX_INTERCEPTED_STATUSES (404/502/503/504) the browser
-    transport status is 200 and error_status carries the semantic code.
-    All other statuses are sent natively.
-
-    Caller-supplied extra fields are merged last; they cannot override ok,
-    error, or error_status.  The caller-provided dict is never mutated.
-    """
-    if not isinstance(semantic_status, int) or not (100 <= semantic_status <= 599):
-        raise ValueError(f"Invalid semantic_status: {semantic_status!r}")
-
-    payload: dict = {"ok": False, "error": error}
-
-    tunneled = semantic_status in _NGINX_INTERCEPTED_STATUSES
-    if tunneled:
-        payload["error_status"] = semantic_status
-
-    if retryable is not None:
-        payload["retryable"] = retryable
-
-    if extra:
-        for k, v in extra.items():
-            if k not in ("ok", "error", "error_status"):
-                payload[k] = v
-
-    transport_status = 200 if tunneled else semantic_status
-    send_json(handler, transport_status, payload)
-
-
-def _json_finite(value):
-    """Recursively replace non-finite floats (nan/inf/-inf) with None.
-
-    Fallback sanitizer for send_json(): Python's json.dumps emits NaN /
-    Infinity / -Infinity by default, which strict parsers (every browser's
-    JSON.parse) reject wholesale -- one stray sentinel invalidates the
-    entire payload.
-    """
-    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
-        return None
-    if isinstance(value, dict):
-        return {k: _json_finite(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_finite(v) for v in value]
-    return value
-
-
-def send_json(handler, code: int, payload: dict) -> None:
-    try:
-        # allow_nan=False makes a non-JSON-representable float a loud
-        # ValueError here instead of a silently-invalid payload that every
-        # browser rejects while every Python client accepts it.
-        body = json.dumps(payload, allow_nan=False).encode("utf-8")
-    except ValueError:
-        logging.exception(
-            "send_json: payload contains non-finite floats; sanitizing "
-            "(fix the producer - keys affected are being nulled)"
-        )
-        body = json.dumps(_json_finite(payload), allow_nan=False).encode("utf-8")
-    try:
-        handler.send_response(code)
-        handler.send_header("Content-Type", "application/json; charset=utf-8")
-        handler.send_header("Cache-Control", "no-store, max-age=0")
-        handler.send_header("Pragma", "no-cache")
-        handler.send_header("Expires", "0")
-        handler.send_header("Content-Length", str(len(body)))
-        handler.end_headers()
-        handler.wfile.write(body)
-    except (BrokenPipeError, ConnectionResetError):
-        # Client navigated away / refreshed / closed the tab mid-response.
-        return
 
 
 # -----------------------------------------------------------------------------
@@ -307,9 +217,9 @@ def _status_text_for_home(is_playing: bool, input_levels: list[dict]) -> str:
 def send_owntone_outputs_json(handler, state: WebUIState) -> None:
     """Return available Owntone output names for async refresh on /setup."""
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
-        send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
+        common.send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
 
     part = store().snapshot().outputs
@@ -329,7 +239,7 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
             continue
         names.append(nm)
 
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "outputs": names,
         "selected": parsed.owntone.output_name,
@@ -340,12 +250,12 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
     """Return Owntone outputs (id/name/selected/volume) for live refresh on '/'."""
     snap = store().snapshot()
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
         logging.warning("send_owntone_outputs_state_json: settings unavailable: %s", e)
-        send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
+        common.send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
-    send_json(handler, 200, home_outputs_reply(snap, parsed))
+    common.send_json(handler, 200, home_outputs_reply(snap, parsed))
 
 
 # -----------------------------------------------------------------------------
@@ -395,7 +305,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     # state, not a daemon-optional block like "repeat") -- lets the Web UI or
     # support tooling see that self-healing fired without grepping logs.
     response["owntone_selfheal"] = snap.health.as_json()
-    send_json(handler, 200, response)
+    common.send_json(handler, 200, response)
 
 
 def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
@@ -411,7 +321,7 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
     enabled = {1: False, 2: False}
     if state is not None:
         try:
-            parsed = _config_snapshot(state)
+            parsed = common._config_snapshot(state)
             enabled = {1: bool(parsed.audio1_enabled), 2: bool(parsed.audio2_enabled)}
         except Exception:
             logging.debug("input levels: config snapshot unavailable", exc_info=True)
@@ -436,7 +346,7 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
                 bool(lv.get("monitor_supports_rate_matching", False)) if lv is not None else False
             ),
         })
-    send_json(handler, 200, {"ok": True, "connected": connected, "inputs": inputs})
+    common.send_json(handler, 200, {"ok": True, "connected": connected, "inputs": inputs})
 
 
 def _submit_playback_config(input_index: int, **settings) -> None:
@@ -467,28 +377,28 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         field = str(payload.get("field", "")).strip()
         value = str(payload.get("value", "")).strip()
     except Exception:
-        send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
         return
 
     if field not in _SERVICE_FIELD_MAP:
-        send_json(handler, 400, {"ok": False, "error": "Unknown field"})
+        common.send_json(handler, 400, {"ok": False, "error": "Unknown field"})
         return
 
     section, key, _normaliser = _SERVICE_FIELD_MAP[field]
 
     try:
         # The pre-write parse, which the live-update args below start from.
-        p = _config_snapshot(state)
+        p = common._config_snapshot(state)
         reply = submit(Intent(
             "settings.service_field.set", {"path": field, "value": value}, Origin.USER, "webui",
             context=state))
         if not reply.ok:
             if "invalid" in reply.result:
-                send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
+                common.send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
             elif "unavailable" in reply.result:
-                send_json(handler, 500, {"ok": False, "error": "Settings store unavailable"})
+                common.send_json(handler, 500, {"ok": False, "error": "Settings store unavailable"})
             else:
-                send_json(handler, 200, {"ok": False, "error": reply.error})
+                common.send_json(handler, 200, {"ok": False, "error": reply.error})
             return
         normalised = reply.result["value"]
 
@@ -524,7 +434,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
             )
     except Exception as e:
         logging.exception("send_service_config_json: save failed")
-        send_json(handler, 200, {"ok": False, "error": str(e)})
+        common.send_json(handler, 200, {"ok": False, "error": str(e)})
         return
 
     # Build display dict so the client can update the DOM without recalculation.
@@ -547,7 +457,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
     except Exception:
         logging.exception("send_service_config_json: display computation failed")
 
-    send_json(handler, 200, {"ok": True, "field": field, "value": str(normalised), "display": _display})
+    common.send_json(handler, 200, {"ok": True, "field": field, "value": str(normalised), "display": _display})
 
 
 def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
@@ -565,14 +475,14 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
         item = str(payload.get("item", "")).strip().lower()
         input_index = int(payload.get("input", 0))
     except Exception:
-        send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
         return
 
     if item not in ("stylus", "belt", "bearing"):
-        send_json(handler, 400, {"ok": False, "error": "Unknown item"})
+        common.send_json(handler, 400, {"ok": False, "error": "Unknown item"})
         return
     if input_index not in (1, 2):
-        send_json(handler, 400, {"ok": False, "error": "Input must be 1 or 2"})
+        common.send_json(handler, 400, {"ok": False, "error": "Input must be 1 or 2"})
         return
 
     # Load config for life thresholds before resetting (used by display computation).
@@ -582,7 +492,7 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     _parsed       = None
     _audio_cfg    = None
     try:
-        _parsed = _config_snapshot(state)
+        _parsed = common._config_snapshot(state)
         _audio_cfg    = _parsed.audio1 if input_index == 1 else _parsed.audio2
         _life_hours   = int(getattr(_audio_cfg, f"{item}_life_hours", 0) or 0)
         _life_years   = int(getattr(_audio_cfg, f"{item}_life_years", 0) or 0) if item != "stylus" else 0
@@ -595,7 +505,7 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     result = reply.result.get("reset")
 
     if result is None or not result.applied:
-        send_json(handler, 200, {"ok": False, "error": "Reset could not be applied"})
+        common.send_json(handler, 200, {"ok": False, "error": "Reset could not be applied"})
         return
 
     response: dict = {
@@ -624,7 +534,7 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     except Exception:
         logging.exception("send_service_reset_json: display computation failed")
 
-    send_json(handler, 200, response)
+    common.send_json(handler, 200, response)
 
 
 def send_update_check_json(handler, state=None) -> None:
@@ -639,18 +549,18 @@ def send_update_check_json(handler, state=None) -> None:
             pass  # best effort; the check still runs against current disk state
     rc, out, err = run_updater(["check"], timeout=60)
     if rc != 0:
-        send_json(handler, 200, {"ok": False, "error": "check failed"})
+        common.send_json(handler, 200, {"ok": False, "error": "check failed"})
         return
     try:
         payload = json.loads(out)
     except Exception:
-        send_json(handler, 200, {"ok": False})
+        common.send_json(handler, 200, {"ok": False})
         return
     if isinstance(payload, dict):
         notes = payload.get("release_notes")
         if isinstance(notes, str) and notes:
             payload = {**payload, "release_notes_html": render_license_md(notes)}
-    send_json(handler, 200, payload)
+    common.send_json(handler, 200, payload)
 
 
 def send_update_status_json(handler) -> None:
@@ -662,7 +572,7 @@ def send_update_status_json(handler) -> None:
     """
     p = run_admin_cmd(["update-status"], timeout=10.0)
     if p.returncode != 0:
-        send_json(handler, 200, {
+        common.send_json(handler, 200, {
             "ok": False,
             "status": "error",
             "message": "Could not read update status",
@@ -671,9 +581,9 @@ def send_update_status_json(handler) -> None:
         })
         return
     try:
-        send_json(handler, 200, json.loads(p.stdout or "{}"))
+        common.send_json(handler, 200, json.loads(p.stdout or "{}"))
     except Exception:
-        send_json(handler, 200, {
+        common.send_json(handler, 200, {
             "ok": False,
             "status": "error",
             "message": "Malformed update status response",
@@ -700,29 +610,29 @@ def send_output_eq_config_json(handler, state, body: str) -> None:
         field = str(payload.get("field", "")).strip()
         value_raw = str(payload.get("value", "")).strip()
     except Exception:
-        send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
         return
 
     reply = submit(Intent(
         "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "webui", context=state))
     if "invalid" in reply.result:
-        send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
+        common.send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
         return
 
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
+        common.send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
         return
 
-    send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
+    common.send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
 
 
 def send_output_eq_reset_json(handler, state) -> None:
     """POST /api/output_eq/reset — zero all EQ bands; does not change output gain or auto-trim."""
     reply = submit(Intent("output.eq.reset", {}, Origin.USER, "webui", context=state))
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
+        common.send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
         return
-    send_json(handler, 200, {"ok": True})
+    common.send_json(handler, 200, {"ok": True})
 
 
 def send_output_eq_status_json(handler) -> None:
@@ -738,9 +648,9 @@ def send_output_eq_status_json(handler) -> None:
     """
     status = get_live_output_eq_status()
     if status is None:
-        send_json(handler, 200, {"ok": False, "error": "Monitor unavailable"})
+        common.send_json(handler, 200, {"ok": False, "error": "Monitor unavailable"})
         return
-    send_json(handler, 200, {"ok": True, **status})
+    common.send_json(handler, 200, {"ok": True, **status})
 
 
 # ---------------------------------------------------------------------------
@@ -748,17 +658,6 @@ def send_output_eq_status_json(handler) -> None:
 # ---------------------------------------------------------------------------
 
 _audio_status_fail_count = 0
-
-
-def _session_playing(snap=None) -> bool:
-    """Whether a playback session is active (live input or repeat replay), in
-    *snap* or, when none is given, in the store's current snapshot.
-
-    The outward-facing "is this appliance playing" answer for neighbours,
-    dials, and local automation: reads the unified session state so repeat
-    replay counts.
-    """
-    return bool((snap if snap is not None else store().snapshot()).session.active)
 
 
 def send_audio_status_json(handler, state: WebUIState) -> None:
@@ -771,12 +670,12 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
     """
     global _audio_status_fail_count
     snap = store().snapshot()
-    playing = _session_playing(snap)
+    playing = common._session_playing(snap)
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
         logging.warning("audio/status: config load failed: %s", e)
-        send_json(handler, 200, {"playing": playing, "outputs": None,
+        common.send_json(handler, 200, {"playing": playing, "outputs": None,
                                  "error": "backend_unavailable"})
         return
     part = snap.outputs
@@ -787,12 +686,12 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
             logging.warning("audio/status: outputs unavailable (call #%d)", n)
         else:
             logging.debug("audio/status: outputs unavailable")
-        send_json(handler, 200, {"playing": playing, "outputs": None,
+        common.send_json(handler, 200, {"playing": playing, "outputs": None,
                                  "error": "backend_unavailable"})
         return
     _audio_status_fail_count = 0
     names = [u.name for u in part.units if u.reported is not None and u.shown_selected]
-    send_json(handler, 200, {"playing": playing, "outputs": names})
+    common.send_json(handler, 200, {"playing": playing, "outputs": names})
 
 
 def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> None:
@@ -814,28 +713,28 @@ def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> No
     delta = json_obj.get("delta")
 
     if not isinstance(dial_id, str) or not dial_id:
-        send_json(handler, 403, {})
+        common.send_json(handler, 403, {})
         return
     if _dial_auth_gate(handler, json_obj) is None:
         return
     if not isinstance(delta, int) or isinstance(delta, bool):
-        send_json(handler, 200, {"ok": False, "error": "invalid_delta"})
+        common.send_json(handler, 200, {"ok": False, "error": "invalid_delta"})
         return
     delta = max(-100, min(100, delta))
 
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
         default_vol = parsed.owntone.volume_percent
     except Exception as e:
         logging.warning("dial volume: config load failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
 
     reply = submit(Intent(
         "volume.step", {"delta": delta, "default_level": default_vol},
         Origin.USER, dial_requester(dial_id),
     ))
-    send_json(handler, 200, dict(reply.result) if reply.result else {"ok": False, "error": reply.error})
+    common.send_json(handler, 200, dict(reply.result) if reply.result else {"ok": False, "error": reply.error})
 
 
 def calculate_master_volume(outputs) -> tuple:
@@ -971,17 +870,17 @@ def _dial_auth_gate(handler, json_obj: dict) -> str | None:
     """
     dial_id = json_obj.get("dial_id", "")
     if not isinstance(dial_id, str) or not dial_id:
-        send_json(handler, 400, {"ok": False, "error": "missing_dial_id"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_dial_id"})
         return None
     auth = dial_authorization(dial_id)
     if auth == AUTH_UNAVAILABLE:
-        send_json(handler, 200, {"ok": False, "error": "auth_unavailable"})
+        common.send_json(handler, 200, {"ok": False, "error": "auth_unavailable"})
         return None
     if auth != AUTH_AUTHORIZED:
         if not dial_speaks_v2(dial_id):
-            send_json(handler, 403, {})
+            common.send_json(handler, 403, {})
             return None
-        send_json(handler, 412, {
+        common.send_json(handler, 412, {
             "ok": False,
             "error": "dial_not_authorized",
             "appliance_id": get_appliance_id(),
@@ -1010,19 +909,19 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         return
 
     snap = store().snapshot()
-    playing = _session_playing(snap)
+    playing = common._session_playing(snap)
 
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
         base_url = parsed.owntone.base_url
     except Exception as e:
         logging.warning("dial status: config load failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
 
     if not snap.outputs.connected:
         logging.warning("dial status: the player is not answering")
-        send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
+        common.send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
         return
 
     muted = snap.outputs.muted_all
@@ -1046,7 +945,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
     repeat = _dial_repeat_object(base_url, snap)
     if repeat is not None:
         response["repeat"] = repeat
-    send_json(handler, 200, response)
+    common.send_json(handler, 200, response)
 
 
 # Error tokens the daemon itself can produce for a transport/arm ack, passed
@@ -1072,7 +971,7 @@ def _send_dial_repeat_ack(handler, ack: Optional[dict]) -> None:
         error = ack.get("error") if isinstance(ack, dict) else None
         if error not in _REPEAT_KNOWN_ERRORS:
             error = "backend_unavailable"
-        send_json(handler, 200, {
+        common.send_json(handler, 200, {
             "ok": False,
             "error": error,
             "state": (ack or {}).get("state", "idle"),
@@ -1080,7 +979,7 @@ def _send_dial_repeat_ack(handler, ack: Optional[dict]) -> None:
             "appliance_id": get_appliance_id(),
         })
         return
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "state": ack.get("state", "idle"),
         "armed": bool(ack.get("armed", False)),
@@ -1104,14 +1003,14 @@ def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> No
         return
     action = json_obj.get("action")
     if action not in ("stop", "seek"):
-        send_json(handler, 400, {"ok": False, "error": "invalid_action"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_action"})
         return
     position = 0.0
     if action == "seek":
         raw = json_obj.get("position_seconds", 0)
         if isinstance(raw, bool) or not isinstance(raw, (int, float)) \
                 or not math.isfinite(raw) or raw < 0:
-            send_json(handler, 400, {"ok": False, "error": "invalid_position"})
+            common.send_json(handler, 400, {"ok": False, "error": "invalid_position"})
             return
         position = float(raw)
     requester = f"dial:{dial_id}"
@@ -1120,7 +1019,7 @@ def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> No
     else:
         reply = submit(Intent("repeat.transport", {"action": "stop"}, Origin.USER, requester))
     if reply.error == "rate_limited":
-        send_json(handler, 200, {"ok": False, "error": "rate_limited",
+        common.send_json(handler, 200, {"ok": False, "error": "rate_limited",
                                  "appliance_id": get_appliance_id()})
         return
     ack = reply.result.get("ack")
@@ -1145,7 +1044,7 @@ def send_dial_repeat_arm_post_json(handler, state: WebUIState, json_obj: dict) -
         return
     armed = json_obj.get("armed")
     if not isinstance(armed, bool):
-        send_json(handler, 400, {"ok": False, "error": "invalid_armed"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_armed"})
         return
     reply = submit(Intent("repeat.arm", {"armed": armed}, Origin.USER, f"dial:{dial_id}"))
     _send_dial_repeat_ack(handler, reply.result.get("ack"))
@@ -1184,16 +1083,16 @@ def send_dial_outputs_post_json(handler, state: WebUIState, json_obj: dict) -> N
     if _dial_auth_gate(handler, json_obj) is None:
         return
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
         logging.warning("dial outputs: config load failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
     outputs = _dial_outputs_list(parsed)
     if outputs is None:
-        send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
+        common.send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
         return
-    send_json(handler, 200, {"ok": True, "outputs": outputs, "appliance_id": get_appliance_id()})
+    common.send_json(handler, 200, {"ok": True, "outputs": outputs, "appliance_id": get_appliance_id()})
 
 
 def send_dial_capabilities_json(handler, state: WebUIState) -> None:
@@ -1203,10 +1102,10 @@ def send_dial_capabilities_json(handler, state: WebUIState) -> None:
     only what the mDNS records already broadcast: identity, version, protocol
     generation and the capability table. Static for a given software version.
     """
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "appliance_id": get_appliance_id(),
-        "version": get_app_version(),
+        "version": updates.get_app_version(),
         "dial_proto": int(DIAL_PROTO_VERSION[1:]),
         "capabilities": dict(DIAL_CAPABILITIES),
     })
@@ -1223,9 +1122,9 @@ def send_dial_warnings_post_json(handler, state: WebUIState, json_obj: dict) -> 
         warnings = current_warnings()
     except Exception as e:
         logging.warning("dial warnings: build failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "appliance_id": get_appliance_id(),
         "warnings": warnings_payload(warnings),
@@ -1251,12 +1150,12 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
     body = {k: json_obj.get(k) for k in ("id", "selected", "volume", "op", "pin") if k in json_obj}
     sanitized, err = sanitize_output_body(body)
     if err is not None:
-        send_json(handler, 400, {"ok": False, "error": err})
+        common.send_json(handler, 400, {"ok": False, "error": err})
         return
     pin_capable = json_obj.get("pin_capable") is True or sanitized.get("op") == "pin"
     requester = dial_requester(dial_id) if pin_capable else None
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
         out_id = sanitized["id"]
         offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
         offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
@@ -1267,14 +1166,14 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
             sanitized["volume"] = max(0, min(100, int(parsed.owntone.volume_percent)))
     except Exception as e:
         logging.warning("dial outputs: config load failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
     result = submit_output_change(
         sanitized, requester=dial_requester(dial_id), pin_requester=requester,
         offset_ms=offset_ms, mode=mode,
     )
     result["appliance_id"] = get_appliance_id()
-    send_json(handler, 200, result)
+    common.send_json(handler, 200, result)
 
 
 def send_dial_eq_post_json(handler, state: WebUIState, json_obj: dict) -> None:
@@ -1284,12 +1183,12 @@ def send_dial_eq_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     if _dial_auth_gate(handler, json_obj) is None:
         return
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
         logging.warning("dial eq: config load failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
-    send_json(handler, 200, _dial_eq_reply(parsed))
+    common.send_json(handler, 200, _dial_eq_reply(parsed))
 
 
 def _dial_eq_reply(parsed) -> dict:
@@ -1342,21 +1241,21 @@ def send_dial_eq_set_post_json(handler, state: WebUIState, json_obj: dict) -> No
             continue
         fields = validate(json_obj[key])
         if fields is None:
-            send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+            common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
             return
         values.update(fields)
     if not values:
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
     reply = submit(Intent(
         "output.eq.set", {"fields": tuple(values.items())}, Origin.USER, f"dial:{dial_id}",
         context=state))
     if not reply.ok:
         logging.warning("dial eq set: apply failed: %s", reply.result.get("error", reply.error))
-        send_json(handler, 200, {"ok": False, "error": "eq_apply_failed", "appliance_id": get_appliance_id()})
+        common.send_json(handler, 200, {"ok": False, "error": "eq_apply_failed", "appliance_id": get_appliance_id()})
         return
-    parsed = _config_snapshot(state)
-    send_json(handler, 200, _dial_eq_reply(parsed))
+    parsed = common._config_snapshot(state)
+    common.send_json(handler, 200, _dial_eq_reply(parsed))
 
 
 def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:
@@ -1373,28 +1272,28 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
     """
     dial_id = json_obj.get("dial_id", "")
     if not isinstance(dial_id, str) or not dial_id:
-        send_json(handler, 403, {})
+        common.send_json(handler, 403, {})
         return
     if _dial_auth_gate(handler, json_obj) is None:
         return
 
     action = json_obj.get("action")
     if action not in ("mute", "restore"):
-        send_json(handler, 400, {"ok": False, "error": "invalid_action"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_action"})
         return
 
     try:
-        default_vol = _config_snapshot(state).owntone.volume_percent
+        default_vol = common._config_snapshot(state).owntone.volume_percent
     except Exception as e:
         logging.warning("mute: config load failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
 
     reply = submit(Intent(
         "mute.set", {"action": action, "default_level": default_vol},
         Origin.USER, dial_requester(dial_id),
     ))
-    send_json(handler, 200, dict(reply.result) if reply.result else {"ok": False, "error": reply.error})
+    common.send_json(handler, 200, dict(reply.result) if reply.result else {"ok": False, "error": reply.error})
 
 
 # ---------------------------------------------------------------------------
@@ -1425,7 +1324,7 @@ def send_federation_session_json(handler, source_ip: str) -> None:
         handler.end_headers()
         handler.wfile.write(body)
         return
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "token": token,
         "token_type": "Bearer",
@@ -1437,12 +1336,12 @@ def send_federation_session_json(handler, source_ip: str) -> None:
 def send_federation_home_json(handler, state: WebUIState) -> None:
     """GET /api/federation/v1/home — return aggregate Home state."""
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
         logging.warning("federation home: settings unavailable: %s", e)
-        send_json(handler, 500, {"ok": False, "error": str(e)})
+        common.send_json(handler, 500, {"ok": False, "error": str(e)})
         return
-    send_json(handler, 200, build_home_state(store().snapshot(), parsed))
+    common.send_json(handler, 200, build_home_state(store().snapshot(), parsed))
 
 
 def send_federation_output_json(handler, state: WebUIState, body_str: str) -> None:
@@ -1450,19 +1349,19 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
     try:
         body = json.loads(body_str)
     except (json.JSONDecodeError, ValueError):
-        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_json"})
         return
     if not isinstance(body, dict):
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
 
     out_id = str(body.get("id") or "").strip()
     if not out_id:
-        send_json(handler, 400, {"ok": False, "error": "missing_output_id"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_output_id"})
         return
 
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
         from autostream_player_service import config_airplay_mode_to_backend
         from autostream_config import DEFAULT_AIRPLAY_MODE
         offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
@@ -1471,7 +1370,7 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
         mode = config_airplay_mode_to_backend(mode_text)
     except Exception as e:
         logging.error("federation output: config error: %s", e)
-        send_json(handler, 500, {"ok": False, "error": "internal_error"})
+        common.send_json(handler, 500, {"ok": False, "error": "internal_error"})
         return
 
     # Same preserved error-priority ordering as before this extraction: the
@@ -1479,25 +1378,25 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
     # validates the op/pin/selected/volume shape.
     sanitized, sanitize_error = sanitize_output_body(body)
     if sanitize_error is not None:
-        send_json(handler, 400, {"ok": False, "error": sanitize_error})
+        common.send_json(handler, 400, {"ok": False, "error": sanitize_error})
         return
 
     result = submit_output_change(
         sanitized, requester="peer", pin_requester=REQUESTER_WEBUI,
         offset_ms=offset_ms, mode=mode,
     )
-    send_json(handler, 200, result)
+    common.send_json(handler, 200, result)
 
 
 def send_federation_equaliser_json(handler, state: WebUIState) -> None:
     """GET /api/federation/v1/equaliser — return aggregate Equaliser state."""
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
         logging.warning("federation equaliser: settings unavailable: %s", e)
-        send_json(handler, 500, {"ok": False, "error": str(e)})
+        common.send_json(handler, 500, {"ok": False, "error": str(e)})
         return
-    send_json(handler, 200, build_equaliser_state(parsed))
+    common.send_json(handler, 200, build_equaliser_state(parsed))
 
 
 def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) -> None:
@@ -1505,40 +1404,40 @@ def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) ->
     try:
         payload = json.loads(body_str)
     except (json.JSONDecodeError, ValueError):
-        send_json(handler, 400, {"ok": False, "error": "invalid_json"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_json"})
         return
     if not isinstance(payload, dict):
-        send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
         return
     field = str(payload.get("field", "")).strip()
     value_raw = str(payload.get("value", "")).strip()
     reply = submit(Intent(
         "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "peer", context=state))
     if "invalid" in reply.result:
-        send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
+        common.send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
         return
     if not reply.ok:
-        send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
+        common.send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
         return
-    send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
+    common.send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
 
 
 def send_federation_eq_reset_json(handler, state: WebUIState) -> None:
     """POST /api/federation/v1/equaliser/reset — zero all EQ bands; does not change output gain or auto-trim."""
     reply = submit(Intent("output.eq.reset", {}, Origin.USER, "peer", context=state))
     if not reply.ok:
-        send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
+        common.send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
         return
-    send_json(handler, 200, {"ok": True})
+    common.send_json(handler, 200, {"ok": True})
 
 
 def send_federation_eq_status_json(handler, state: WebUIState) -> None:  # noqa: ARG001
     """GET /api/federation/v1/equaliser/status — return live trim state."""
     status = get_live_output_eq_status()
     if status is None:
-        send_json(handler, 200, {"ok": False, "error": "monitor_unavailable"})
+        common.send_json(handler, 200, {"ok": False, "error": "monitor_unavailable"})
         return
-    send_json(handler, 200, {"ok": True, **status})
+    common.send_json(handler, 200, {"ok": True, **status})
 
 
 # ---------------------------------------------------------------------------
@@ -1682,9 +1581,9 @@ _SETTINGS_FIELDS = _SettingsFieldTable(_SETTINGS_FIELDS, _LateFields())
 def send_settings_get_json(handler, state) -> None:
     """GET /api/settings — return all browser-editable non-secret settings."""
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception as e:
-        send_json(handler, 200, {"ok": False, "error": str(e)})
+        common.send_json(handler, 200, {"ok": False, "error": str(e)})
         return
     values = {
         "webui.dark_mode":                         parsed.webui.dark_mode,
@@ -1699,7 +1598,7 @@ def send_settings_get_json(handler, state) -> None:
         "repeat.codec":                            parsed.repeat.codec,
         "repeat.target_minutes":                   parsed.repeat.target_minutes,
     }
-    send_json(handler, 200, {"ok": True, "values": values})
+    common.send_json(handler, 200, {"ok": True, "values": values})
 
 
 def send_settings_post_json(handler, state, json_obj: dict) -> None:
@@ -1711,21 +1610,21 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
     Validation failure (HTTP 400): {"ok": false, "field": "...", "error": "..."}
     """
     if not isinstance(json_obj, dict):
-        send_json(handler, 400, {"ok": False, "error": "JSON object required"})
+        common.send_json(handler, 400, {"ok": False, "error": "JSON object required"})
         return
 
     field = json_obj.get("field")
     if not isinstance(field, str) or not field.strip():
-        send_json(handler, 400, {"ok": False, "field": "", "error": "field must be a non-empty string"})
+        common.send_json(handler, 400, {"ok": False, "field": "", "error": "field must be a non-empty string"})
         return
     field = field.strip()
 
     if "value" not in json_obj:
-        send_json(handler, 400, {"ok": False, "field": field, "error": "value is required"})
+        common.send_json(handler, 400, {"ok": False, "field": field, "error": "value is required"})
         return
 
     if field not in _SETTINGS_FIELDS:
-        send_json(handler, 400, {"ok": False, "field": field, "error": "Unknown field"})
+        common.send_json(handler, 400, {"ok": False, "field": field, "error": "Unknown field"})
         return
 
     section, key, validator, live_fn = _SETTINGS_FIELDS[field]
@@ -1743,19 +1642,19 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
             except Exception:
                 audio1_enabled = True
         if audio1_enabled:
-            send_json(handler, 400, {"ok": False, "field": field, "error": "Value must be a non-empty string"})
+            common.send_json(handler, 400, {"ok": False, "field": field, "error": "Value must be a non-empty string"})
             return
         normalized = ""
     else:
         try:
             normalized = validator(raw_value)
         except ValueError as e:
-            send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
+            common.send_json(handler, 400, {"ok": False, "field": field, "error": str(e)})
             return
 
     settings = getattr(state, "settings", None)
     if not isinstance(settings, SettingsView):
-        send_json(handler, 200, {"ok": False, "field": field, "error": "Settings store unavailable"})
+        common.send_json(handler, 200, {"ok": False, "field": field, "error": "Settings store unavailable"})
         return
 
     # Enabling input 1 requires a valid capture device already on record --
@@ -1767,7 +1666,7 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         except Exception:
             current_device = ""
         if not is_valid_monitor_device_id(current_device):
-            send_json(handler, 400, {
+            common.send_json(handler, 400, {
                 "ok": False,
                 "field": field,
                 "error": "Set a valid capture device before enabling input 1",
@@ -1788,7 +1687,7 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         except Exception:
             other_value = ""
         if other_value == normalized:
-            send_json(handler, 400, {
+            common.send_json(handler, 400, {
                 "ok": False,
                 "field": field,
                 "error": "That device is already assigned to the other input; choose a different device or reassign it first",
@@ -1808,9 +1707,9 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
         context=state))
     if not reply.ok:
         if "invalid" in reply.result:
-            send_json(handler, 400, {"ok": False, "field": field, "error": reply.result["invalid"]})
+            common.send_json(handler, 400, {"ok": False, "field": field, "error": reply.result["invalid"]})
         else:
-            send_json(handler, 200, {"ok": False, "field": field, "error": "Internal error"})
+            common.send_json(handler, 200, {"ok": False, "field": field, "error": "Internal error"})
         return
     outcome = reply.result["outcomes"][0]
 
@@ -1825,7 +1724,7 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
     # depend on. The field is available to any in-process caller of
     # settings.set()/_set_normalized() via the returned SetOutcome; wiring it
     # onto the wire is a separate, later decision.
-    send_json(handler, 200, resp)
+    common.send_json(handler, 200, resp)
 
 
 def apply_repeat_arm_request(body: str, *, requester: str = REQUESTER_WEBUI) -> tuple[int, dict]:
@@ -1880,7 +1779,7 @@ def send_repeat_post_json(handler, state, body: str) -> None:
     See apply_repeat_arm_request() for the full validation/response contract.
     """
     status, resp = apply_repeat_arm_request(body)
-    send_json(handler, status, resp)
+    common.send_json(handler, status, resp)
 
 
 def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> None:  # noqa: ARG001
@@ -1889,7 +1788,7 @@ def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> No
     apply_repeat_arm_request().
     """
     status, resp = apply_repeat_arm_request(body_str, requester="peer")
-    send_json(handler, status, resp)
+    common.send_json(handler, status, resp)
 
 
 # -----------------------------------------------------------------------------
@@ -1905,24 +1804,24 @@ def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     new_hn = str(payload.get("value") or "").strip()
     if not new_hn:
-        send_json(handler, 400, {"ok": False, "error": "Hostname must not be empty"})
+        common.send_json(handler, 400, {"ok": False, "error": "Hostname must not be empty"})
         return
 
     old_hn = get_system_hostname()
     if new_hn == old_hn:
-        send_json(handler, 200, {"ok": True, "changed": False, "value": old_hn})
+        common.send_json(handler, 200, {"ok": True, "changed": False, "value": old_hn})
         return
 
     try:
         set_system_hostname(new_hn)
     except Exception as exc:
         logging.warning("send_hostname_post_json: hostname change failed: %s", exc)
-        send_json(handler, 200, {"ok": False, "error": "Hostname could not be changed"})
+        common.send_json(handler, 200, {"ok": False, "error": "Hostname could not be changed"})
         return
 
     host_header = str(handler.headers.get("Host", "") or "")
@@ -1931,7 +1830,7 @@ def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
     host_p = f"{new_hn}.local:{port}" if port else f"{new_hn}.local"
     redirect_url = f"http://{host_p}/setup"
 
-    send_json(handler, 200, {"ok": True, "changed": True, "value": new_hn, "redirect_url": redirect_url})
+    common.send_json(handler, 200, {"ok": True, "changed": True, "value": new_hn, "redirect_url": redirect_url})
 
 
 def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
@@ -1943,31 +1842,31 @@ def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     value = payload.get("value")
     if not isinstance(value, bool):
-        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        common.send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
 
     try:
-        version = get_app_version()
+        version = updates.get_app_version()
     except Exception:
         logging.exception("send_advertisement_post_json: unexpected failure")
-        send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
+        common.send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
         return
     reply = submit(Intent(
         "settings.advertisement", {"value": value, "version": version}, Origin.USER, "webui",
         context=state))
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
+        common.send_json(handler, 200, {"ok": False, "error": "Advertisement preference could not be applied"})
         return
     if "warning" in reply.result:
-        send_json(handler, 200, {"ok": True, "value": value, "warning": reply.result["warning"]})
+        common.send_json(handler, 200, {"ok": True, "value": value, "warning": reply.result["warning"]})
         return
 
-    send_json(handler, 200, {"ok": True, "value": value})
+    common.send_json(handler, 200, {"ok": True, "value": value})
 
 
 def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
@@ -1980,24 +1879,24 @@ def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     value = payload.get("value")
     if not isinstance(value, bool):
-        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        common.send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
 
     reply = submit(Intent(
         "settings.auto_update", {"value": value}, Origin.USER, "webui", context=state))
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
         return
     if "warning" in reply.result:
-        send_json(handler, 200, {"ok": True, "value": value, "warning": reply.result["warning"]})
+        common.send_json(handler, 200, {"ok": True, "value": value, "warning": reply.result["warning"]})
         return
 
-    send_json(handler, 200, {"ok": True, "value": value})
+    common.send_json(handler, 200, {"ok": True, "value": value})
 
 
 def send_save_now_json(handler, state: WebUIState) -> None:
@@ -2010,9 +1909,9 @@ def send_save_now_json(handler, state: WebUIState) -> None:
     """
     reply = submit(Intent("settings.save", {}, Origin.USER, "webui", context=state))
     if reply.ok:
-        send_json(handler, 200, {"ok": True})
+        common.send_json(handler, 200, {"ok": True})
     else:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
 
 
 # ---------------------------------------------------------------------------
@@ -2049,26 +1948,26 @@ def send_owntone_output_visibility_json(handler, state: WebUIState, body: str) -
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     output_name = str(payload.get("output_name") or "").strip()
     if not output_name:
-        send_json(handler, 400, {"ok": False, "error": "output_name required"})
+        common.send_json(handler, 400, {"ok": False, "error": "output_name required"})
         return
     visible = payload.get("visible")
     if not isinstance(visible, bool):
-        send_json(handler, 400, {"ok": False, "error": "visible must be a boolean"})
+        common.send_json(handler, 400, {"ok": False, "error": "visible must be a boolean"})
         return
     output_id = str(payload.get("output_id") or "").strip()
 
     reply = _submit_backend_setting(
         state, "output_visibility", {"output_name": output_name, "visible": visible}, output_id)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
         return
 
-    send_json(handler, 200, {"ok": True, "output_name": output_name, "visible": visible})
+    common.send_json(handler, 200, {"ok": True, "output_name": output_name, "visible": visible})
 
 
 def send_owntone_output_include_tv_json(handler, state: WebUIState, body: str) -> None:
@@ -2081,23 +1980,23 @@ def send_owntone_output_include_tv_json(handler, state: WebUIState, body: str) -
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     output_id = str(payload.get("output_id") or "").strip()
     if not output_id:
-        send_json(handler, 400, {"ok": False, "error": "output_id required"})
+        common.send_json(handler, 400, {"ok": False, "error": "output_id required"})
         return
     include_tv = payload.get("include_tv")
     if not isinstance(include_tv, bool):
-        send_json(handler, 400, {"ok": False, "error": "include_tv must be a boolean"})
+        common.send_json(handler, 400, {"ok": False, "error": "include_tv must be a boolean"})
         return
 
     reply = _submit_backend_setting(state, "output_include_tv", include_tv, output_id)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
         return
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "output_id": reply.result["output_id"],
         "include_tv": reply.result["include_tv"],
@@ -2113,12 +2012,12 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     output_id = str(payload.get("output_id") or "").strip()
     if not output_id:
-        send_json(handler, 400, {"ok": False, "error": "output_id required"})
+        common.send_json(handler, 400, {"ok": False, "error": "output_id required"})
         return
     mode_raw = str(payload.get("mode") or DEFAULT_AIRPLAY_MODE).strip().lower()
     valid_modes = {
@@ -2131,16 +2030,16 @@ def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None
         "airplay2_surround_upmix",
     }
     if mode_raw not in valid_modes:
-        send_json(handler, 400, {"ok": False, "error": f"mode must be one of {sorted(valid_modes)}"})
+        common.send_json(handler, 400, {"ok": False, "error": f"mode must be one of {sorted(valid_modes)}"})
         return
     mode = normalize_airplay_mode(mode_raw)
 
     reply = _submit_backend_setting(state, "output_mode", mode, output_id)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
         return
 
-    send_json(handler, 200, {"ok": True, "output_id": output_id, "mode": mode})
+    common.send_json(handler, 200, {"ok": True, "output_id": output_id, "mode": mode})
 
 
 def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> None:
@@ -2151,23 +2050,23 @@ def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> No
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     output_id = str(payload.get("output_id") or "").strip()
     if not output_id:
-        send_json(handler, 400, {"ok": False, "error": "output_id required"})
+        common.send_json(handler, 400, {"ok": False, "error": "output_id required"})
         return
     raw_offset = payload.get("offset_ms")
     if isinstance(raw_offset, bool) or not isinstance(raw_offset, (int, float)):
-        send_json(handler, 400, {"ok": False, "error": "offset_ms must be a number"})
+        common.send_json(handler, 400, {"ok": False, "error": "offset_ms must be a number"})
         return
 
     reply = _submit_backend_setting(state, "output_offset", raw_offset, output_id)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
         return
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "output_id": reply.result["output_id"],
         "offset_ms": reply.result["offset_ms"],
@@ -2188,10 +2087,10 @@ def _send_owntone_native_setting_json(
     """
     reply = _submit_backend_setting(state, setting, value)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error or "OwnTone API error"})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error or "OwnTone API error"})
         return
 
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True, "restart_required": _start_owntone_restart_if_required(state, reply)})
 
 
@@ -2203,11 +2102,11 @@ def send_owntone_uncompressed_json(handler, state: WebUIState, body: str) -> Non
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
     value = payload.get("value")
     if not isinstance(value, bool):
-        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        common.send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
     _send_owntone_native_setting_json(handler, state, "uncompressed_audio", value)
 
@@ -2220,19 +2119,19 @@ def send_owntone_buffered_audio_json(handler, state: WebUIState, body: str) -> N
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
     value = payload.get("value")
     if not isinstance(value, bool):
-        send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
+        common.send_json(handler, 400, {"ok": False, "error": "value must be a boolean"})
         return
 
     reply = _submit_backend_setting(state, "buffered_audio", value)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error or "OwnTone API error"})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error or "OwnTone API error"})
         return
 
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "restart_required": _start_owntone_restart_if_required(state, reply),
         "reset_outputs": list(reply.result["reset_outputs"]),
@@ -2252,11 +2151,11 @@ def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> Non
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
     raw = payload.get("value")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        send_json(handler, 400, {"ok": False, "error": "value must be a number"})
+        common.send_json(handler, 400, {"ok": False, "error": "value must be a number"})
         return
     value = max(
         SETTING_START_BUFFER_MS_MIN,
@@ -2267,9 +2166,9 @@ def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> Non
     )
     reply = _submit_backend_setting(state, "start_buffer_ms", value)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error or "OwnTone API error"})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error or "OwnTone API error"})
         return
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True, "restart_required": _start_owntone_restart_if_required(state, reply)})
 
 
@@ -2283,18 +2182,18 @@ def send_owntone_user_agent_json(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
     raw = payload.get("value")
     if not isinstance(raw, str):
-        send_json(handler, 400, {"ok": False, "error": "value must be a string"})
+        common.send_json(handler, 400, {"ok": False, "error": "value must be a string"})
         return
     value = raw.strip()
     if len(value.encode("utf-8")) > SETTING_USER_AGENT_MAX_LEN:
-        send_json(handler, 400, {"ok": False, "error": "value too long"})
+        common.send_json(handler, 400, {"ok": False, "error": "value too long"})
         return
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
-        send_json(handler, 400, {"ok": False, "error": "value contains control characters"})
+        common.send_json(handler, 400, {"ok": False, "error": "value contains control characters"})
         return
     _send_owntone_native_setting_json(handler, state, "user_agent", value)
 
@@ -2311,11 +2210,11 @@ def send_settings_mdns_grace_period_json(handler, state: WebUIState, body: str) 
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
     raw = payload.get("value")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        send_json(handler, 400, {"ok": False, "error": "value must be a number"})
+        common.send_json(handler, 400, {"ok": False, "error": "value must be a number"})
         return
     minutes = max(
         SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
@@ -2325,7 +2224,7 @@ def send_settings_mdns_grace_period_json(handler, state: WebUIState, body: str) 
 
     reply = _submit_backend_setting(state, "mdns_grace_period", seconds)
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
         return
 
     response = {
@@ -2336,7 +2235,7 @@ def send_settings_mdns_grace_period_json(handler, state: WebUIState, body: str) 
     }
     if "warning" in reply.result:
         response["warning"] = reply.result["warning"]
-    send_json(handler, 200, response)
+    common.send_json(handler, 200, response)
 
 
 def send_owntone_grace_period_json(handler, state: WebUIState, body: str) -> None:
@@ -2358,7 +2257,7 @@ def send_log_level_get_json(handler, state: WebUIState) -> None:
     result = get_log_level_state(
         state.config_path, settings=getattr(state, "settings", None)
     )
-    send_json(handler, 200, result)
+    common.send_json(handler, 200, result)
 
 
 def send_log_level_put_json(
@@ -2376,14 +2275,14 @@ def send_log_level_put_json(
     # Reject any unknown or prohibited fields.
     unknown = set(json_obj.keys()) - _LOG_LEVEL_PUT_ALLOWED_FIELDS
     if unknown:
-        send_browser_api_error(
+        common.send_browser_api_error(
             handler, 400, f"Unknown field(s): {', '.join(sorted(unknown))}"
         )
         return
 
     requested_level = json_obj.get("level")
     if requested_level is None:
-        send_browser_api_error(handler, 400, "Missing required field: level")
+        common.send_browser_api_error(handler, 400, "Missing required field: level")
         return
 
     # Persistence goes through the process's SettingsStore: the store owns the
@@ -2395,15 +2294,15 @@ def send_log_level_put_json(
     if not reply.ok:
         error = reply.error or "Unknown error"
         if "Unsupported" in error or "Invalid" in error:
-            send_browser_api_error(handler, 400, error)
+            common.send_browser_api_error(handler, 400, error)
         else:
-            send_browser_api_error(handler, 500, "Configuration could not be saved")
+            common.send_browser_api_error(handler, 500, "Configuration could not be saved")
         return
 
     # Note: watcher forwarding is now performed inside set_log_level itself
     # (applied["wifi_watcher"]) so every caller stays in sync, not just this
     # HTTP handler. Do not call forward_log_level_to_watcher again here.
-    send_json(handler, 200, result)
+    common.send_json(handler, 200, result)
 
 
 # ---------------------------------------------------------------------------
@@ -2732,13 +2631,13 @@ def send_network_status_json(handler) -> None:
     try:
         status, data = watcher_client.watcher_request("GET", "/network_status")
     except Exception:
-        send_browser_api_error(handler, 503, "Network service unavailable")
+        common.send_browser_api_error(handler, 503, "Network service unavailable")
         return
     if status != 200 or not isinstance(data, dict) or not data.get("ok"):
-        send_browser_api_error(handler, 503, "Network service unavailable")
+        common.send_browser_api_error(handler, 503, "Network service unavailable")
         return
     data.update(build_network_card_presentation(data))
-    send_json(handler, 200, data)
+    common.send_json(handler, 200, data)
 
 
 _NETWORK_SETUP_ALLOWED_ACTIONS = frozenset({"start_setup", "reconnect_saved"})
@@ -2747,49 +2646,49 @@ _NETWORK_SETUP_ALLOWED_ACTIONS = frozenset({"start_setup", "reconnect_saved"})
 def send_network_setup_json(handler, json_obj: dict) -> None:
     """POST /api/network/setup — proxy a bounded setup action to the watcher."""
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     action = json_obj.get("action")
     extra = set(json_obj.keys()) - {"action", "csrf_token"}
     if action not in _NETWORK_SETUP_ALLOWED_ACTIONS or extra:
-        send_browser_api_error(handler, 400, "Invalid action")
+        common.send_browser_api_error(handler, 400, "Invalid action")
         return
     try:
         status, data = watcher_client.watcher_request("POST", "/network_control", {"action": action})
     except Exception:
-        send_browser_api_error(handler, 503, "Network service unavailable")
+        common.send_browser_api_error(handler, 503, "Network service unavailable")
         return
     if status == 200 and isinstance(data, dict) and data.get("ok"):
-        send_json(handler, 200, {"ok": True, "queued": True, "action": action})
+        common.send_json(handler, 200, {"ok": True, "queued": True, "action": action})
         return
     # Surface watcher conflict (busy) without breaking the Setup page.
     if status == 409:
-        send_browser_api_error(handler, 409, "A network change is already in progress")
+        common.send_browser_api_error(handler, 409, "A network change is already in progress")
         return
-    send_browser_api_error(handler, 503, "Network service unavailable")
+    common.send_browser_api_error(handler, 503, "Network service unavailable")
 
 
 def send_network_roaming_json(handler, json_obj: dict) -> None:
     """POST /api/network/roaming — proxy the USB roaming-management preference to the watcher."""
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     managed = json_obj.get("managed")
     extra = set(json_obj.keys()) - {"managed", "csrf_token"}
     if not isinstance(managed, bool) or extra:
-        send_browser_api_error(handler, 400, "Invalid request")
+        common.send_browser_api_error(handler, 400, "Invalid request")
         return
     try:
         status, data = watcher_client.watcher_request(
             "POST", "/network_control", {"action": "set_roaming_management", "managed": managed}
         )
     except Exception:
-        send_browser_api_error(handler, 503, "Network service unavailable")
+        common.send_browser_api_error(handler, 503, "Network service unavailable")
         return
     if status == 200 and isinstance(data, dict) and data.get("ok"):
-        send_json(handler, 200, {"ok": True, "managed": managed})
+        common.send_json(handler, 200, {"ok": True, "managed": managed})
         return
-    send_browser_api_error(handler, 503, "Network service unavailable")
+    common.send_browser_api_error(handler, 503, "Network service unavailable")
 
 
 # -----------------------------------------------------------------------------
@@ -2842,7 +2741,7 @@ def send_bluetooth_status_json(handler, state) -> None:
             cached = state.get_bluetooth_status() if state is not None else None
             daemon = cached if isinstance(cached, dict) and cached.get("ok") is True else None
 
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "installed": installed,
         "services_enabled": services_enabled,
@@ -2863,13 +2762,13 @@ def send_bluetooth_status_json(handler, state) -> None:
 def send_bluetooth_scan_results_json(handler) -> None:
     """GET /api/bluetooth/scan_results — live device list from the daemon."""
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     result = BluetoothClient().scan_results()
     if not isinstance(result, dict) or result.get("ok") is not True:
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    send_json(handler, 200, result)
+    common.send_json(handler, 200, result)
 
 
 def send_bluetooth_pair_status_json(handler, state=None) -> None:
@@ -2892,11 +2791,11 @@ def send_bluetooth_pair_status_json(handler, state=None) -> None:
     change.
     """
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     result = BluetoothClient().pair_status()
     if not isinstance(result, dict) or result.get("ok") is not True:
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     if result.get("state") == "done":
         try:
@@ -2906,7 +2805,7 @@ def send_bluetooth_pair_status_json(handler, state=None) -> None:
             auto = None
         if auto is not None:
             result["input_auto_configure"] = auto
-    send_json(handler, 200, result)
+    common.send_json(handler, 200, result)
 
 
 def send_bluetooth_scan_post_json(handler, json_obj) -> None:
@@ -2920,26 +2819,26 @@ def send_bluetooth_scan_post_json(handler, json_obj) -> None:
     non-ok reply stays a 503 ``bluetooth_unavailable``.
     """
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     action = json_obj.get("action")
     extra = set(json_obj.keys()) - {"action", "csrf_token"}
     if action not in _BLUETOOTH_SCAN_ALLOWED_ACTIONS or extra:
-        send_browser_api_error(handler, 400, "Invalid action")
+        common.send_browser_api_error(handler, 400, "Invalid action")
         return
 
     client = BluetoothClient()
     result = client.scan_start() if action == "start" else client.scan_stop()
     if not isinstance(result, dict) or result.get("ok") is not True:
         if isinstance(result, dict) and result.get("error") == "scan_in_progress":
-            send_browser_api_error(handler, 409, "scan_in_progress")
+            common.send_browser_api_error(handler, 409, "scan_in_progress")
             return
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    send_json(handler, 200, {"ok": True, "action": action})
+    common.send_json(handler, 200, {"ok": True, "action": action})
 
 
 def _bt_pairing_resolve_state(state):
@@ -3122,38 +3021,38 @@ def send_bluetooth_pair_post_json(handler, json_obj) -> None:
     response stays the plain ``{"ok": True}`` shape.
     """
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     address = json_obj.get("address")
     extra = set(json_obj.keys()) - {"address", "csrf_token"}
     if not isinstance(address, str) or not _BLUETOOTH_MAC_RE.match(address) or extra:
-        send_browser_api_error(handler, 400, "Invalid address")
+        common.send_browser_api_error(handler, 400, "Invalid address")
         return
 
     result = BluetoothClient().pair(address)
     if not isinstance(result, dict) or result.get("ok") is not True:
         if isinstance(result, dict) and result.get("error") == "pair_in_progress":
-            send_browser_api_error(handler, 409, "pair_in_progress")
+            common.send_browser_api_error(handler, 409, "pair_in_progress")
             return
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
 
-    send_json(handler, 200, {"ok": True})
+    common.send_json(handler, 200, {"ok": True})
 
 
 def send_bluetooth_forget_post_json(handler) -> None:
     """POST /api/bluetooth/forget — RemoveDevice + clear daemon state."""
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     result = BluetoothClient().forget()
     if not isinstance(result, dict) or result.get("ok") is not True:
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    send_json(handler, 200, {"ok": True})
+    common.send_json(handler, 200, {"ok": True})
 
 
 def send_bluetooth_services_post_json(handler, json_obj) -> None:
@@ -3165,24 +3064,24 @@ def send_bluetooth_services_post_json(handler, json_obj) -> None:
     stop, not here. Closed action set, extra keys rejected.
     """
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     action = json_obj.get("action")
     extra = set(json_obj.keys()) - {"action", "csrf_token"}
     if action not in _BLUETOOTH_SERVICES_ALLOWED_ACTIONS or extra:
-        send_browser_api_error(handler, 400, "Invalid action")
+        common.send_browser_api_error(handler, 400, "Invalid action")
         return
 
     try:
         ok, message = bt_services_enable() if action == "enable" else bt_services_disable()
     except Exception as e:
         logging.exception("send_bluetooth_services_post_json: %s failed", action)
-        send_json(handler, 200, {"ok": False, "message": str(e)})
+        common.send_json(handler, 200, {"ok": False, "message": str(e)})
         return
-    send_json(handler, 200, {"ok": bool(ok), "message": str(message)})
+    common.send_json(handler, 200, {"ok": bool(ok), "message": str(message)})
 
 
 def send_bluetooth_onboard_post_json(handler, json_obj) -> None:
@@ -3193,27 +3092,27 @@ def send_bluetooth_onboard_post_json(handler, json_obj) -> None:
     existing reboot holding-page flow -- this handler does not reboot.
     """
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     enabled = json_obj.get("enabled")
     extra = set(json_obj.keys()) - {"enabled", "csrf_token"}
     if not isinstance(enabled, bool) or extra:
-        send_browser_api_error(handler, 400, "Invalid enabled value")
+        common.send_browser_api_error(handler, 400, "Invalid enabled value")
         return
 
     try:
         ok, message = bt_onboard_set(enabled)
     except Exception as e:
         logging.exception("send_bluetooth_onboard_post_json: bt_onboard_set failed")
-        send_json(handler, 200, {"ok": False, "message": str(e)})
+        common.send_json(handler, 200, {"ok": False, "message": str(e)})
         return
     resp: dict = {"ok": bool(ok), "message": str(message)}
     if ok:
         resp["reboot_required"] = True
-    send_json(handler, 200, resp)
+    common.send_json(handler, 200, resp)
 
 
 def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
@@ -3225,10 +3124,10 @@ def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
     too. An unreachable daemon is a 503 ``bluetooth_unavailable``.
     """
     if not bluetooth_installed():
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     buffer_ms = json_obj.get("buffer_ms")
     extra = set(json_obj.keys()) - {"buffer_ms", "csrf_token"}
@@ -3238,20 +3137,20 @@ def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
         or not (_BLUETOOTH_BUFFER_MS_MIN <= buffer_ms <= _BLUETOOTH_BUFFER_MS_MAX)
         or extra
     ):
-        send_browser_api_error(handler, 400, "invalid_buffer_ms")
+        common.send_browser_api_error(handler, 400, "invalid_buffer_ms")
         return
 
     result = BluetoothClient().configure(buffer_ms)
     if not isinstance(result, dict):
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     if result.get("ok") is not True:
         if result.get("error") == "invalid_buffer_ms":
-            send_browser_api_error(handler, 400, "invalid_buffer_ms")
+            common.send_browser_api_error(handler, 400, "invalid_buffer_ms")
             return
-        send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    send_json(handler, 200, {"ok": True, "buffer_ms": buffer_ms})
+    common.send_json(handler, 200, {"ok": True, "buffer_ms": buffer_ms})
 
 
 # -----------------------------------------------------------------------------
@@ -3260,7 +3159,7 @@ def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
 
 def send_sdcard_health_get_json(handler) -> None:
     """GET /api/sdcard-health — read-only, no CSRF; current monitoring state."""
-    send_json(handler, 200, sdcard_health_state())
+    common.send_json(handler, 200, sdcard_health_state())
 
 
 def send_sdcard_health_enable_post_json(handler, json_obj) -> None:
@@ -3273,50 +3172,50 @@ def send_sdcard_health_enable_post_json(handler, json_obj) -> None:
     4 hung marker found, 2 tool missing.
     """
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     method = json_obj.get("method")
     extra = set(json_obj.keys()) - {"method", "csrf_token"}
     if not isinstance(method, str) or method not in SDCARD_HEALTH_METHODS or extra:
-        send_browser_api_error(handler, 400, "Invalid method")
+        common.send_browser_api_error(handler, 400, "Invalid method")
         return
 
     ok, code, payload = sdcard_health_check(method)
     if not ok:
         if code == 3:
-            send_browser_api_error(handler, 409, "unsupported", extra={"reason": payload.get("reason", "")})
+            common.send_browser_api_error(handler, 409, "unsupported", extra={"reason": payload.get("reason", "")})
             return
         if code == 4:
-            send_browser_api_error(handler, 409, "hung")
+            common.send_browser_api_error(handler, 409, "hung")
             return
         if code == 2:
-            send_browser_api_error(handler, 503, "tool_missing")
+            common.send_browser_api_error(handler, 503, "tool_missing")
             return
-        send_browser_api_error(handler, 500, "check_failed", extra={"output": payload.get("output", "")})
+        common.send_browser_api_error(handler, 500, "check_failed", extra={"output": payload.get("output", "")})
         return
 
     ok, code, payload = sdcard_health_enable(method)
     if not ok:
-        send_browser_api_error(handler, 500, "enable_failed", extra={"output": payload.get("output", "")})
+        common.send_browser_api_error(handler, 500, "enable_failed", extra={"output": payload.get("output", "")})
         return
-    send_json(handler, 200, {"ok": True, "state": sdcard_health_state()})
+    common.send_json(handler, 200, {"ok": True, "state": sdcard_health_state()})
 
 
 def send_sdcard_health_disable_post_json(handler, json_obj) -> None:
     """POST /api/sdcard-health/disable {"csrf_token": str}."""
     if not isinstance(json_obj, dict):
-        send_browser_api_error(handler, 400, "JSON object required")
+        common.send_browser_api_error(handler, 400, "JSON object required")
         return
     extra = set(json_obj.keys()) - {"csrf_token"}
     if extra:
-        send_browser_api_error(handler, 400, "Invalid request")
+        common.send_browser_api_error(handler, 400, "Invalid request")
         return
 
     ok, code, payload = sdcard_health_disable()
     if not ok:
-        send_browser_api_error(handler, 500, "disable_failed", extra={"output": payload.get("output", "")})
+        common.send_browser_api_error(handler, 500, "disable_failed", extra={"output": payload.get("output", "")})
         return
-    send_json(handler, 200, {"ok": True, "state": sdcard_health_state()})
+    common.send_json(handler, 200, {"ok": True, "state": sdcard_health_state()})
 
 
 def send_playing_status_json(handler) -> None:
@@ -3329,9 +3228,9 @@ def send_playing_status_json(handler) -> None:
     automation conservatively treats the state as unknown (Section 8.3).
     """
     try:
-        playing = _session_playing()
+        playing = common._session_playing()
     except Exception:
         logging.warning("playing status unavailable (monitor query failed)")
-        send_json(handler, 200, {"ok": False, "error": "playing status unavailable"})
+        common.send_json(handler, 200, {"ok": False, "error": "playing status unavailable"})
         return
-    send_json(handler, 200, {"ok": True, "playing": bool(playing)})
+    common.send_json(handler, 200, {"ok": True, "playing": bool(playing)})

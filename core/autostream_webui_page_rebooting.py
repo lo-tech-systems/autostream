@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import html
 
-import autostream_webui_static as static
-from autostream_webui_assets import VIEWPORT_META
-from autostream_webui_common import build_top_banner_html, send_html
-from autostream_webui_state import WebUIState
+from webui import static
+from webui.assets import VIEWPORT_META
+from webui.common import build_top_banner_html
+from webui.session_state import WebUIState
+from webui import common
 
 
 def send_rebooting_page(handler, state: WebUIState, auth) -> None:
@@ -69,4 +70,4 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
       </body>
       </html>
     """
-    send_html(handler, 200, body)
+    common.send_html(handler, 200, body)

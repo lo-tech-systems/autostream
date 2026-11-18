@@ -67,9 +67,9 @@ def _files_and_player_fail(*, cached_buffer: bool = True) -> ExitStack:
 
 def _reply(route, *args):
     sent: dict = {}
-    with patch("autostream_webui_api.send_json",
+    with patch("webui.common.send_json",
                side_effect=lambda h, code, body: sent.update(code=code, body=body)), \
-         patch("autostream_appliance_gateway.send_json",
+         patch("webui.common.send_json",
                side_effect=lambda h, code, body: sent.update(code=code, body=body)), \
          patch("autostream_appliance_gateway.resolve_appliance", return_value=("bound", None)):
         route(MagicMock(), *args)
@@ -142,12 +142,12 @@ def test_the_gateway_bound_output_reads_the_settings_view(state):
     (gw.send_gateway_equaliser_json, (APPLIANCE_ID,), {"ok": False, "error": "internal_error"}),
 ])
 def test_a_settings_view_that_fails_gives_a_500(state, route, args, expected):
-    with patch("autostream_webui_api._config_snapshot", side_effect=RuntimeError("boom")), \
-         patch("autostream_appliance_gateway._config_snapshot", side_effect=RuntimeError("boom")):
+    with patch("webui.common._config_snapshot", side_effect=RuntimeError("boom")), \
+         patch("webui.common._config_snapshot", side_effect=RuntimeError("boom")):
         code, body = _reply(route, state, *args)
     assert (code, body) == (500, expected)
 
 
 def test_the_web_helpers_have_no_file_loader():
-    import autostream_webui_common
-    assert not hasattr(autostream_webui_common, "locked_load_config")
+    import webui.common as web_common
+    assert not hasattr(web_common, "locked_load_config")

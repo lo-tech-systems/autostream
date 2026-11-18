@@ -498,23 +498,22 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
 
     shared = dict(
         get_appliance_id=lambda: APPLIANCE_ID,
-        get_app_version=lambda: FIXED_APP_VERSION,
         _dial_update_banner_text=lambda: "",
     )
+    import webui.common as web_common
+    import webui.system.updates as updates
+    setattrs(web_common, _config_snapshot=lambda state: cfg)
+    setattrs(updates, get_app_version=lambda: FIXED_APP_VERSION)
     setattrs(api, **{k: v for k, v in shared.items() if k != "_dial_update_banner_text"},
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True,
-             _config_snapshot=lambda state: cfg,
              get_live_output_eq_status=lambda: scenario.eq_status)
     setattrs(models, **{k: v for k, v in shared.items() if k not in ("get_app_version", "list_outputs")},
-             get_app_version=lambda: FIXED_APP_VERSION,
              get_system_hostname=lambda: "golden.local",
              _wall=lambda: FIXED_WALL_CLOCK,
              get_live_output_eq_status=lambda: scenario.eq_status)
-    setattrs(gateway, _config_snapshot=lambda state: cfg)
     setattrs(airplay, **{k: v for k, v in shared.items()
                          if k in ("get_appliance_id", "_dial_update_banner_text")},
-             _config_snapshot=lambda state: cfg,
              get_setting=get_setting,
              get_all_appliances=lambda: [],
              get_system_hostname=lambda: "golden.local",
@@ -555,7 +554,7 @@ def _begin_mute(scenario: Scenario, fake, monkeypatch) -> None:
 
 
 def make_state():
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
     return WebUIState(config_path="golden.json", state_path="golden-state.json", settings=fixed_view())
 
 

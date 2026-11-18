@@ -18,7 +18,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 from autostream_webui_api import send_input_levels_json
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 import autostream_state as _state
 from fake_store import FakeStore
 from settings_fixtures import fixed_view
@@ -68,9 +68,9 @@ def _call(levels=None, connected=True, config=None, config_error=None,
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     config_patch = (
-        patch("autostream_webui_api._config_snapshot", side_effect=config_error)
+        patch("webui.common._config_snapshot", side_effect=config_error)
         if config_error is not None
-        else patch("autostream_webui_api._config_snapshot", return_value=config)
+        else patch("webui.common._config_snapshot", return_value=config)
     )
     _state.store().publish_for_tests(
         "monitor", _state.MonitorRuntimeInfo(connected=connected))
@@ -131,7 +131,7 @@ def test_a_non_breaking_space_in_the_text_survives_the_json_reply():
         "monitor", _state.MonitorRuntimeInfo(connected=True))
     _put_inputs([_level(1, -40.0)], lambda index: "note",
                 lambda index: "Sample rate: 48 kHz")
-    with patch("autostream_webui_api._config_snapshot",
+    with patch("webui.common._config_snapshot",
                return_value=MagicMock(audio1_enabled=True, audio2_enabled=False)):
         send_input_levels_json(handler, state)
     raw = handler.wfile.getvalue().decode("ascii")

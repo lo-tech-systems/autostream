@@ -314,9 +314,9 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     webui_thread = None
     if start_webui is not None:
         import autostream_appliance_gateway
-        import autostream_webui_common
+        import webui.system.updates as webui_updates
         services.start(runtime.lifecycle(), settings,
-                       app_version=autostream_webui_common.get_app_version,
+                       app_version=webui_updates.get_app_version,
                        sweeps=(autostream_appliance_gateway.sweep_token_cache,),
                        on_peer_removed=(autostream_appliance_gateway.evict_gateway_token,))
         webui_thread = start_webui(config_path, settings=settings)

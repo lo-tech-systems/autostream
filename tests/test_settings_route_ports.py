@@ -22,7 +22,7 @@ if _CORE not in sys.path:
 from autostream_config import TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS
 from autostream_settings import SettingsStore
 from autostream_webui_api import send_settings_post_json
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 
 
 def _state(tmp_path: Path, raw: dict):

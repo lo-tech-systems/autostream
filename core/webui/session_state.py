@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_state.py
+"""webui/session_state.py
 
 Shared state and locks for the autostream Web UI.
 """

@@ -24,7 +24,7 @@ from autostream_config import (
     normalize_input_type,
 )
 from autostream_state import store
-from autostream_webui_common import settings_card_html
+from webui.common import settings_card_html
 from webui.browser.setup import cards_bluetooth, context
 
 

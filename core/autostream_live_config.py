@@ -648,7 +648,7 @@ def _validate_audio_path(value: object) -> str:
     if v == "max" and not is_high_performance_pi():
         # Defends against a stale browser tab (the Best tier is filtered
         # out of the rendered options on this hardware, see settings_card_html
-        # in autostream_webui_common.py) or a hand-crafted request.
+        # in webui/common.py) or a hand-crafted request.
         raise ValueError("Best quality is only available on Pi 4/5-class hardware")
     return v
 

@@ -33,16 +33,14 @@ from autostream_align import parse_result_entries
 from autostream_intents import Intent, Origin, submit
 from autostream_state import store
 from autostream_state.live import get_align_review, get_align_status
-from autostream_webui_api import send_json
-import autostream_webui_static as static
-from autostream_webui_assets import INFO_MODAL_HTML
-from autostream_webui_common import (
-    _config_snapshot,
+from webui import static
+from webui.assets import INFO_MODAL_HTML
+from webui.common import (
     build_page_html,
     build_top_banner_html,
-    send_html,
 )
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
 
 _log = logging.getLogger(__name__)
 
@@ -60,7 +58,7 @@ def _offsets_supported(state: WebUIState) -> bool:
     """
     try:
         from autostream_state.live import get_capabilities
-        base_url = _config_snapshot(state).owntone.base_url
+        base_url = common._config_snapshot(state).owntone.base_url
         return bool(get_capabilities(base_url, timeout=3).can_set_output_offset)
     except Exception:
         _log.debug("align: capability probe failed", exc_info=True)
@@ -74,7 +72,7 @@ def _offsets_supported(state: WebUIState) -> bool:
 def send_align_page(handler, state: WebUIState) -> None:
     parsed = None
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception:
         parsed = None
     dark_mode = parsed.webui.dark_mode if parsed else False
@@ -151,7 +149,7 @@ def send_align_page(handler, state: WebUIState) -> None:
         active_tab="setup",
         dark_mode=dark_mode,
     )
-    send_html(handler, 200, html_body)
+    common.send_html(handler, 200, html_body)
 
 
 def _render_outputs_section(state: WebUIState) -> str:
@@ -159,7 +157,7 @@ def _render_outputs_section(state: WebUIState) -> str:
     calibration-volume slider. Fetches outputs the same way AlignRun.start
     does -- best-effort, never fails the page if the backend is down."""
     try:
-        base_url = _config_snapshot(state).owntone.base_url
+        base_url = common._config_snapshot(state).owntone.base_url
     except Exception:
         base_url = ""
 
@@ -309,7 +307,7 @@ def send_align_start_json(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     output_ids = payload.get("output_ids")
@@ -318,18 +316,18 @@ def send_align_start_json(handler, state: WebUIState, body: str) -> None:
         or len(output_ids) < 2
         or not all(isinstance(oid, str) and oid.strip() for oid in output_ids)
     ):
-        send_json(handler, 400, {"ok": False, "error": "output_ids must list at least two outputs"})
+        common.send_json(handler, 400, {"ok": False, "error": "output_ids must list at least two outputs"})
         return
 
     volume = payload.get("volume")
     if isinstance(volume, bool) or not isinstance(volume, int) or not (1 <= volume <= 100):
-        send_json(handler, 400, {"ok": False, "error": "volume must be a whole number between 1 and 100"})
+        common.send_json(handler, 400, {"ok": False, "error": "volume must be a whole number between 1 and 100"})
         return
 
     # Authoritative capability gate: without per-output offset support the
     # run could measure but Apply would change nothing audible.
     if not _offsets_supported(state):
-        send_json(handler, 200, {
+        common.send_json(handler, 200, {
             "ok": False,
             "error": "The connected player does not support per-output offsets",
         })
@@ -344,30 +342,30 @@ def send_align_start_json(handler, state: WebUIState, body: str) -> None:
         "align.start", {"output_ids": output_ids, "volume": volume, "ret_url": ret_url},
         Origin.USER, "webui", context=state))
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": reply.error})
+        common.send_json(handler, 200, {"ok": False, "error": reply.error})
         return
-    send_json(handler, 200, {"ok": True, "launch_url": reply.result["launch_url"]})
+    common.send_json(handler, 200, {"ok": True, "launch_url": reply.result["launch_url"]})
 
 
 def send_align_abort_json(handler, state: WebUIState) -> None:
     submit(Intent("align.abort", {}, Origin.USER, "webui"))
-    send_json(handler, 200, {"ok": True})
+    common.send_json(handler, 200, {"ok": True})
 
 
 def send_align_status_json(handler, state: WebUIState) -> None:
-    send_json(handler, 200, get_align_status())
+    common.send_json(handler, 200, get_align_status())
 
 
 def send_align_apply_json(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     offsets = payload.get("offsets")
     if not isinstance(offsets, dict) or not offsets:
-        send_json(handler, 400, {"ok": False, "error": "offsets required"})
+        common.send_json(handler, 400, {"ok": False, "error": "offsets required"})
         return
 
     applied = {}
@@ -381,9 +379,9 @@ def send_align_apply_json(handler, state: WebUIState, body: str) -> None:
 
     submit(Intent("align.discard", {}, Origin.USER, "webui"))
 
-    send_json(handler, 200, {"ok": True, "applied": applied})
+    common.send_json(handler, 200, {"ok": True, "applied": applied})
 
 
 def send_align_discard_json(handler, state: WebUIState) -> None:
     submit(Intent("align.discard", {}, Origin.USER, "webui"))
-    send_json(handler, 200, {"ok": True})
+    common.send_json(handler, 200, {"ok": True})

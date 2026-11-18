@@ -250,7 +250,7 @@ class TestPollerAndShutdown:
 
 class TestWebUIStateReads:
     def test_monitor_devices_are_fresh_copies_of_the_part(self, tmp_path, fake_store):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         wstate = WebUIState(str(tmp_path / "c.json"), str(tmp_path / "s.json"), settings=fixed_view())
         fake_store.devices(monitor_devices=[{"hw": "hw:1,0", "card": "C", "name": "N", "label": "L"}])
         got = wstate.get_monitor_devices()
@@ -259,7 +259,7 @@ class TestWebUIStateReads:
         assert wstate.get_monitor_devices()[0]["label"] == "L"
 
     def test_an_empty_part_reads_as_no_devices_and_no_status(self, tmp_path):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         wstate = WebUIState(str(tmp_path / "c.json"), str(tmp_path / "s.json"), settings=fixed_view())
         assert wstate.get_monitor_devices() == []
         assert wstate.get_bluetooth_status() is None

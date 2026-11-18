@@ -22,6 +22,7 @@ if _CORE not in sys.path:
 import autostream_logging as log_setup
 import autostream_webui_api as api
 from fake_store import FakeStore
+import webui.common as webui_common
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def _call(reachable: bool):
     handler = MagicMock()
     handler.wfile = io.BytesIO()
     cfg = SimpleNamespace(owntone=SimpleNamespace(base_url="http://localhost:3689"))
-    with patch.object(api, "_config_snapshot", return_value=cfg),          patch.object(api, "_session_playing", return_value=False):
+    with patch.object(webui_common, "_config_snapshot", return_value=cfg),          patch.object(webui_common, "_session_playing", return_value=False):
         api.send_audio_status_json(handler, MagicMock())
 
 

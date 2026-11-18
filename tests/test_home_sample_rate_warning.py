@@ -122,7 +122,7 @@ def _home_state(tmp_path) -> dict:
             fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="host"),
-            patch("autostream_appliance_models.get_app_version", return_value="2.0.0"),
+            patch("webui.system.updates.get_app_version", return_value="2.0.0"),
         ):
             stack.enter_context(p)
         return models.build_home_state(store().snapshot(), MagicMock())
@@ -175,7 +175,7 @@ def _render_home(levels=None, show_input_detail=False) -> str:
     from track_id.models import disabled_snapshot
     with ExitStack() as stack:
         for p in (
-            patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+            patch("webui.common._config_snapshot", return_value=parsed),
             patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),

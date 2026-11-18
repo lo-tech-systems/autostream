@@ -15,7 +15,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from autostream_webui_common import build_appliance_selector_html
+from webui.common import build_appliance_selector_html
 
 
 # ---------------------------------------------------------------------------

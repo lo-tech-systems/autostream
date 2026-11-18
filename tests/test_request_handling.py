@@ -335,7 +335,7 @@ class TestFactoryResetFailure:
         sent = []
         def fake_send_json(h, code, data):
             sent.append((code, data))
-        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+        with patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_post_handlers.factory_reset_system",
                    side_effect=RuntimeError("helper failed")):
             ph.handle_factory_reset_post(handler, MagicMock(), MagicMock())

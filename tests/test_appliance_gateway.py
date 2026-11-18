@@ -259,7 +259,7 @@ class TestBackoff:
         handler = _make_handler()
         with gw._state_lock:
             gw._record_failure_locked(key, "10.0.0.10")
-        with patch("autostream_appliance_gateway.send_browser_api_error") as mock_err:
+        with patch("webui.common.send_browser_api_error") as mock_err:
             in_backoff = gw._check_and_emit_backoff(handler, aid, "*write*", sighting)
         assert in_backoff is False
         mock_err.assert_not_called()
@@ -1039,7 +1039,7 @@ class TestSendAppliancesJson:
              patch("autostream_appliance_gateway.get_all_appliances", return_value=fake_peers), \
              patch("autostream_appliance_gateway._local_hostname", return_value="home"), \
              patch("autostream_appliance_gateway._local_version", return_value="1.0.0"), \
-             patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json):
+             patch("webui.common.send_json", side_effect=fake_send_json):
             gw.send_appliances_json(handler, MagicMock())
 
         return sent_codes, sent_data
@@ -1065,7 +1065,7 @@ class TestSendAppliancesJson:
             sent_codes.append(code)
             sent_data.append(data)
         with patch("autostream_appliance_gateway.get_appliance_id", return_value=None), \
-             patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json):
+             patch("webui.common.send_json", side_effect=fake_send_json):
             gw.send_appliances_json(handler, MagicMock())
         assert sent_codes == [500]
         assert sent_data[0]["error"] == "appliance_identity_unavailable"
@@ -1103,11 +1103,11 @@ class TestSendGatewayHomeJson:
 
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=(resolution, sighting)), \
-             patch("autostream_appliance_gateway._config_snapshot", return_value=PARSED), \
+             patch("webui.common._config_snapshot", return_value=PARSED), \
              patch("autostream_appliance_gateway.build_home_state",
                    return_value=home_data or {"ok": True}) as build, \
-             patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json), \
-             patch("autostream_appliance_gateway.send_browser_api_error",
+             patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_browser_api_error",
                    side_effect=fake_browser_err):
             gw.send_gateway_home_json(handler, state, aid)
 
@@ -1148,7 +1148,7 @@ class TestSendGatewayHomeJson:
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=("remote", sighting)), \
              patch.object(gw, "_coalesced_remote_get", return_value=(200, remote_data)), \
-             patch("autostream_appliance_gateway.send_json",
+             patch("webui.common.send_json",
                    side_effect=lambda h, c, d: (sent_codes.append(c), sent_data.append(d))):
             gw.send_gateway_home_json(handler, state, "a" * 20)
 
@@ -1184,8 +1184,8 @@ class TestSendGatewayRepeatJson:
              patch("autostream_appliance_gateway.apply_repeat_arm_request",
                    return_value=apply_result) as apply_mock, \
              patch.object(gw, "_remote_request", return_value=remote_result) as remote_mock, \
-             patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json), \
-             patch("autostream_appliance_gateway.send_browser_api_error",
+             patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_browser_api_error",
                    side_effect=fake_browser_err):
             gw.send_gateway_repeat_json(handler, state, aid, body_str)
 
@@ -1266,8 +1266,8 @@ class TestSendGatewayOutputJsonSilenceChoice:
 
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=("bound", None)), \
-             patch("autostream_appliance_gateway._config_snapshot") as mock_parse, \
-             patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json), \
+             patch("webui.common._config_snapshot") as mock_parse, \
+             patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_player_service.update_output", return_value=ActionResult(ok=True)), \
              patch("autostream_player_service.submit_output_pin", return_value=ActionResult(ok=True)):
             mock_parse.return_value.owntone.base_url = "http://localhost:3689"
@@ -1320,8 +1320,8 @@ class TestHandleRemoteResponse:
             sent_codes.append(code)
             sent_errors.append(error)
 
-        with patch("autostream_appliance_gateway.send_json", side_effect=fake_json), \
-             patch("autostream_appliance_gateway.send_browser_api_error",
+        with patch("webui.common.send_json", side_effect=fake_json), \
+             patch("webui.common.send_browser_api_error",
                    side_effect=fake_browser_err):
             gw._handle_remote_response(handler, "a" * 20, status, data)
 
@@ -1413,7 +1413,7 @@ class TestGatewayLogging:
         with gw._state_lock:
             gw._backoff_state[(aid, scope)] = (time.monotonic() + 10, 0)
         with caplog.at_level(logging.DEBUG), \
-             patch("autostream_appliance_gateway.send_browser_api_error"):
+             patch("webui.common.send_browser_api_error"):
             gw._check_and_emit_backoff(handler, aid, scope)
         assert any("serving backoff" in r.message and aid in r.message for r in caplog.records)
 
@@ -1422,7 +1422,7 @@ class TestGatewayLogging:
         scope = "/api/federation/v1/home"
         handler = _make_handler()
         with caplog.at_level(logging.DEBUG), \
-             patch("autostream_appliance_gateway.send_browser_api_error"):
+             patch("webui.common.send_browser_api_error"):
             gw._check_and_emit_backoff(handler, aid, scope)
         assert not any("serving backoff" in r.message for r in caplog.records)
 
@@ -1527,7 +1527,7 @@ class TestGatewayLogging:
     def test_error_response_to_browser_logged(self, caplog):
         aid = "a" * 20
         handler = _make_handler()
-        with patch("autostream_appliance_gateway.send_browser_api_error"), \
+        with patch("webui.common.send_browser_api_error"), \
              caplog.at_level(logging.DEBUG):
             gw._handle_remote_response(
                 handler, aid, 0, {"ok": False, "error": "remote_timeout"},
@@ -1537,7 +1537,7 @@ class TestGatewayLogging:
     def test_success_response_not_logged_as_error(self, caplog):
         aid = "a" * 20
         handler = _make_handler()
-        with patch("autostream_appliance_gateway.send_json"), \
+        with patch("webui.common.send_json"), \
              caplog.at_level(logging.DEBUG):
             gw._handle_remote_response(handler, aid, 200, {"ok": True})
         assert not any("error response" in r.message for r in caplog.records)
@@ -1551,8 +1551,8 @@ class TestGatewayOutputRequester:
         parsed.owntone.output_airplay_modes = {}
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=("bound", None)), \
-             patch("autostream_appliance_gateway._config_snapshot", return_value=parsed), \
-             patch("autostream_appliance_gateway.send_json"), \
+             patch("webui.common._config_snapshot", return_value=parsed), \
+             patch("webui.common.send_json"), \
              patch("autostream_appliance_gateway.submit_output_change",
                    return_value={"ok": True}) as mut:
             gw.send_gateway_output_json(

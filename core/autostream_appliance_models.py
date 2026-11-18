@@ -19,7 +19,7 @@ from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
-from autostream_webui_common import get_app_version
+from webui.system import updates
 
 # ---------------------------------------------------------------------------
 # Output-list builder (shared between Home page and federation)
@@ -117,7 +117,7 @@ def build_home_state(snap, parsed) -> dict:
         "appliance": {
             "id": get_appliance_id() or "",
             "hostname": hostname,
-            "version": get_app_version(),
+            "version": updates.get_app_version(),
         },
         "preferences": {
             "show_master_volume": parsed.webui.show_master_volume,

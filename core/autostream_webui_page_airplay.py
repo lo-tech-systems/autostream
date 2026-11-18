@@ -21,9 +21,9 @@ from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_
 from autostream_config import input_type_label, normalize_input_type
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname, reboot_system
-from autostream_webui_components import output_card_html, slider_html
-import autostream_webui_static as static
-from autostream_webui_assets import (
+from webui.components import output_card_html, slider_html
+from webui import static
+from webui.assets import (
     A2HS_PROMPT_HTML,
     BANNER_LOGO_HTML,
     ICON_BLUETOOTH,
@@ -32,15 +32,14 @@ from autostream_webui_assets import (
     ICON_TURNTABLE,
     INFO_MODAL_HTML,
 )
-from autostream_webui_common import (
-    _config_snapshot,
+from webui.common import (
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
     no_input_configured_notice_html,
-    send_html,
 )
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
 
 
 # Wall-clock tolerance, in seconds, for transient emptiness of the backend's
@@ -106,7 +105,7 @@ def send_airplay_page(
         return hostname.strip() or "autostream"
 
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception:
         # If we're here something bad happened - user should have been redirected to the setup page
         # if the INI is missing. Hence, take the nuclear option and inform the user that something
@@ -135,7 +134,7 @@ def send_airplay_page(
 
         # Best-effort response; never prevent reboot.
         try:
-            send_html(handler, 500, body)
+            common.send_html(handler, 500, body)
             try:
                 handler.wfile.flush()
             except Exception:
@@ -564,7 +563,7 @@ def send_airplay_page(
         dark_mode=parsed.webui.dark_mode,
     )
     try:
-        send_html(handler, 200, html_body)
+        common.send_html(handler, 200, html_body)
     except Exception:
         logging.exception("Failed sending airplay page response.")
 
@@ -583,7 +582,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     Definitive resolution errors (not_found, etc.) return immediately to /.
     """
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception:
         try:
             handler.send_error(500, "Configuration unavailable")
@@ -755,6 +754,6 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         remote_id=appliance_id,
     )
     try:
-        send_html(handler, 200, html_body)
+        common.send_html(handler, 200, html_body)
     except Exception:
         logging.exception("Failed sending remote home page response.")

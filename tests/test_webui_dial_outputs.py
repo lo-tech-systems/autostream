@@ -43,7 +43,7 @@ from autostream_webui_api import (
     send_dial_outputs_post_json,
     send_dial_outputs_set_post_json,
 )
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
@@ -129,7 +129,7 @@ def _invoke_list(
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
-        patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
+        patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_output_usage.get_usage_snapshot", return_value=usage_snapshot or {}),
     ):
         send_dial_outputs_post_json(handler, state, json_obj)
@@ -163,7 +163,7 @@ def _invoke_set(
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
-        patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
+        patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_webui_api.submit_output_change", mutation_mock),
         patch("autostream_player_service.config_airplay_mode_to_backend", mode_mock),
     ):
@@ -497,7 +497,7 @@ class TestOutputsSetValidation:
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.dial_speaks_v2", return_value=True),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
-            patch("autostream_webui_api._config_snapshot", return_value=_parsed()),
+            patch("webui.common._config_snapshot", return_value=_parsed()),
             patch("autostream_player_service.submit_output_pin") as submit,
             caplog.at_level(_logging.DEBUG),
         ):

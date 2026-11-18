@@ -76,7 +76,7 @@ class TestCallSites:
     def test_authorize_pushes_after_the_write_and_replies_after_both(self):
         calls, fake_send_json = _recorder()
         with (
-            patch("autostream_webui_dials.send_json", side_effect=fake_send_json),
+            patch("webui.common.send_json", side_effect=fake_send_json),
             patch("autostream_dial_push.write_dial_entry",
                   side_effect=lambda u, n: calls.append(("write", u, n))),
             patch("autostream_dial_push.validate_dial_name", return_value=True),
@@ -91,7 +91,7 @@ class TestCallSites:
     def test_revoke_pushes_after_the_removal_and_replies_after_both(self):
         calls, fake_send_json = _recorder()
         with (
-            patch("autostream_webui_dials.send_json", side_effect=fake_send_json),
+            patch("webui.common.send_json", side_effect=fake_send_json),
             patch("autostream_dial_push.remove_dial_entry",
                   side_effect=lambda u: calls.append(("remove", u))),
             patch("autostream_dial_push.notify_dial_auth_changed",
@@ -107,7 +107,7 @@ class TestCallSites:
         must never turn a successful authorize into an error: the handler
         wraps the call in try/except."""
         with (
-            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("webui.common.send_json") as mock_send_json,
             patch("autostream_dial_push.write_dial_entry"),
             patch("autostream_dial_push.validate_dial_name", return_value=True),
             patch("autostream_dial_push.notify_dial_auth_changed",
@@ -119,7 +119,7 @@ class TestCallSites:
 
     def test_revoke_response_not_delayed_by_notify_failure(self):
         with (
-            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("webui.common.send_json") as mock_send_json,
             patch("autostream_dial_push.remove_dial_entry"),
             patch("autostream_dial_push.notify_dial_auth_changed",
                   side_effect=RuntimeError("boom")),
@@ -130,7 +130,7 @@ class TestCallSites:
 
     def test_an_invalid_name_answers_400_and_writes_and_queues_nothing(self):
         with (
-            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("webui.common.send_json") as mock_send_json,
             patch("autostream_dial_push.write_dial_entry") as write,
             patch("autostream_dial_push.notify_dial_auth_changed") as notify,
         ):
@@ -141,7 +141,7 @@ class TestCallSites:
         notify.assert_not_called()
 
     def test_the_other_refusals_keep_their_bodies(self):
-        with patch("autostream_webui_dials.send_json") as mock_send_json:
+        with patch("webui.common.send_json") as mock_send_json:
             handle_dial_authorize_post(MagicMock(), {"name": "Kitchen"})
             handle_dial_authorize_post(MagicMock(), {"uuid": UUID})
             handle_dial_revoke_post(MagicMock(), {"uuid": ""})
@@ -153,7 +153,7 @@ class TestCallSites:
 
     def test_a_raising_write_answers_500_and_queues_no_push(self):
         with (
-            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("webui.common.send_json") as mock_send_json,
             patch("autostream_dial_push.write_dial_entry", side_effect=OSError("read-only")),
             patch("autostream_dial_push.validate_dial_name", return_value=True),
             patch("autostream_dial_push.notify_dial_auth_changed") as notify,
@@ -164,7 +164,7 @@ class TestCallSites:
 
     def test_a_raising_removal_answers_500_and_queues_no_push(self):
         with (
-            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("webui.common.send_json") as mock_send_json,
             patch("autostream_dial_push.remove_dial_entry", side_effect=OSError("read-only")),
             patch("autostream_dial_push.notify_dial_auth_changed") as notify,
         ):
@@ -177,7 +177,7 @@ class TestCallSites:
         seen = []
         with (
             patch("autostream_webui_dials.submit", side_effect=_submitted(seen)),
-            patch("autostream_webui_dials.send_json"),
+            patch("webui.common.send_json"),
             patch("autostream_dial_push.write_dial_entry") as write,
             patch("autostream_dial_push.validate_dial_name", return_value=True),
             patch("autostream_dial_push.remove_dial_entry"),

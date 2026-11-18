@@ -147,7 +147,7 @@ def _render_remote_equaliser(*, appliance_id: str = REMOTE_APPLIANCE_ID, **_fake
     state.config_path = "dummy.ini"
     parsed = MagicMock()
     parsed.webui.dark_mode = False
-    with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+    with patch("webui.common._config_snapshot", return_value=parsed), \
          patch("autostream_webui_page_equaliser.get_appliance_id", return_value=LOCAL_APPLIANCE_ID), \
          patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
          patch("autostream_webui_page_equaliser.get_system_hostname", return_value="autostream"):
@@ -160,9 +160,9 @@ def _render_about(*, license_text: str = "", **_fakes) -> bytes:
 
     handler, chunks = _handler("/about")
     state = MagicMock()
-    with patch("autostream_webui_page_about.get_app_version", return_value="1.2.3"), \
+    with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
          patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
-         patch("autostream_webui_page_about._config_snapshot", return_value=None), \
+         patch("webui.common._config_snapshot", return_value=None), \
          patch("autostream_webui_page_about.load_license_text", return_value=license_text), \
          patch("autostream_webui_page_about.render_license_md", return_value=""):
         about.send_about_page(handler, state)
@@ -281,7 +281,7 @@ def _render_first_boot_appliance(**_fakes) -> bytes:
 
 
 def _render_hostname_changed(*, hostname: str = "autostream", **_fakes) -> bytes:
-    from autostream_webui_common import send_hostname_changed_page  # noqa: PLC0415
+    from webui.common import send_hostname_changed_page  # noqa: PLC0415
 
     handler, chunks = _handler("/")
     handler.headers = {"Host": "old.local"}
@@ -318,7 +318,7 @@ def _setup_session(*, bt_enabled=False, bt_status=None, dial_sightings=(), dial_
     Bluetooth) replaced by plain fakes."""
     from _setup_card_test_helpers import setup_page_mocks  # noqa: PLC0415
     from autostream_settings import SettingsStore, as_view  # noqa: PLC0415
-    from autostream_webui_state import WebUIState  # noqa: PLC0415
+    from webui.session_state import WebUIState  # noqa: PLC0415
     from fake_store import fake_outputs  # noqa: PLC0415
 
     auth = _auth()

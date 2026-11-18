@@ -28,9 +28,9 @@ import sys
 import tracemalloc
 
 PAGE_MODULES = (
-    "autostream_webui_assets",
-    "autostream_webui_common",
-    "autostream_webui_components",
+    "webui.assets",
+    "webui.common",
+    "webui.components",
     "autostream_auth",
     "autostream_webui_page_about",
     "autostream_webui_page_airplay",

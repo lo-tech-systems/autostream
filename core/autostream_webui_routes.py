@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional, Union
 from urllib.parse import parse_qs
+from webui import common
 
 
 class AuthRequirement(Enum):
@@ -303,7 +304,7 @@ def _csrf_failure_response(handler, webui_mod, path: str) -> None:
         handler._redirect_with_error_flash("Settings not saved, please try again")
     elif path.startswith("/api/"):
         fresh_csrf = webui_mod.AUTH.ensure_session(handler)
-        webui_mod.send_json(
+        common.send_json(
             handler, 403, {"ok": False, "error": "csrf_stale", "csrf_token": fresh_csrf}
         )
     else:
@@ -404,7 +405,7 @@ def dispatch(handler, method: str, path: str) -> bool:
         and route_obj.unconfigured_only
         and not handler._commissioning_required()
     ):
-        _webui_mod.send_json(handler, 409, {"ok": False, "error": "already_configured"})
+        common.send_json(handler, 409, {"ok": False, "error": "already_configured"})
         return True
 
     # --- Commissioning gate (POST/PUT: after CSRF, per legacy ordering) ---
@@ -413,7 +414,7 @@ def dispatch(handler, method: str, path: str) -> bool:
         and not route_obj.allow_unconfigured
         and handler._commissioning_required()
     ):
-        _webui_mod.send_json(handler, 409, {"ok": False, "error": "appliance_unconfigured"})
+        common.send_json(handler, 409, {"ok": False, "error": "appliance_unconfigured"})
         return True
 
     if route_obj.auth == AuthRequirement.FULL:

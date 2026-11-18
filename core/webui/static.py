@@ -1,4 +1,4 @@
-"""autostream_webui_static -- URLs and text of the files nginx serves under /static/.
+"""webui/static.py -- URLs and text of the files nginx serves under /static/.
 
 A URL carries ?v= and the first ten hex digits of the file's SHA-256, read once
 per file and kept for the life of the process, so a changed file gets a new URL
@@ -14,6 +14,8 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
+from webui.system import updates
+
 STATIC_PREFIX = "/static/"
 _VERSION_LEN = 10
 
@@ -26,10 +28,11 @@ _warned: set[str] = set()
 
 
 def static_root() -> Path:
-    """The served directory: <this file's directory>/nginx/static when it exists
+    """The served directory: <install directory>/nginx/static when it exists
     (the installed tree, /opt/autostream/nginx/static), else <repo>/nginx/static
-    (the source tree, for tests and tools)."""
-    here = Path(__file__).resolve().parent
+    (the source tree, for tests and tools). The install directory is the one that
+    holds the webui package, and in the source tree that is core/."""
+    here = Path(__file__).resolve().parent.parent
     installed = here / "nginx" / "static"
     if installed.is_dir():
         return installed
@@ -64,10 +67,7 @@ def asset_version(rel: str) -> str:
         digest = hashlib.sha256((static_root() / rel).read_bytes()).hexdigest()[:_VERSION_LEN]
     except OSError as exc:
         _warn_once(rel, str(exc))
-        # Imported here because the common module links its stylesheet through
-        # this one.
-        import autostream_webui_common as common  # noqa: PLC0415
-        digest = common.get_app_version()
+        digest = updates.get_app_version()
     with _lock:
         return _versions.setdefault(rel, digest)
 

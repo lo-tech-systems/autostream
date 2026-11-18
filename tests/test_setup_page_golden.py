@@ -183,7 +183,7 @@ def _normalise(html: str) -> str:
 def _render_full_page(tmp_path: Path) -> str:
     from webui.browser.setup.page import send_setup_page
     from autostream_settings import SettingsStore
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
 
     cfg = _minimal_cfg(tmp_path)
     store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -237,7 +237,7 @@ def _render_card_detail(tmp_path: Path, key: str) -> str:
     state."""
     from webui.browser.setup.page import handle_setup_card_get
     from autostream_settings import SettingsStore
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
 
     cfg = _minimal_cfg(tmp_path)
     store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -313,7 +313,7 @@ class TestSetupPageBrokenConfigFailurePath:
     def test_broken_config_redirects_to_home(self, tmp_path: Path):
         from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         cfg = _minimal_cfg(tmp_path)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -324,7 +324,7 @@ class TestSetupPageBrokenConfigFailurePath:
         auth = MagicMock()
 
         with patch(
-            "webui.browser.setup.context._config_snapshot",
+            "webui.common._config_snapshot",
             side_effect=RuntimeError("broken config for characterisation test"),
         ):
             send_setup_page(handler, state, auth, flash_msg="")

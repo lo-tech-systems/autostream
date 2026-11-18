@@ -1491,7 +1491,7 @@ class TestRestartModal:
     daemon silently."""
 
     def test_modal_markup_has_no_footer_or_buttons(self):
-        from autostream_webui_assets import RESTART_MODAL_HTML
+        from webui.assets import RESTART_MODAL_HTML
         assert 'id="restartModal"' in RESTART_MODAL_HTML
         assert "modal-overlay" in RESTART_MODAL_HTML
         assert "modal-ft" not in RESTART_MODAL_HTML

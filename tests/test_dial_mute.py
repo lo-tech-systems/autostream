@@ -133,10 +133,10 @@ def _post(fn, json_obj, parsed=None, authorized=True):
         captured["code"] = code
         captured["body"] = body
 
-    with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+    with patch("webui.common.send_json", side_effect=fake_send_json), \
          patch("autostream_webui_api.dial_authorization",
                return_value="authorized" if authorized else "not_authorized"), \
-         patch("autostream_webui_api._config_snapshot", return_value=parsed or _make_parsed_config()):
+         patch("webui.common._config_snapshot", return_value=parsed or _make_parsed_config()):
         getattr(api, fn)(MagicMock(), MagicMock(), json_obj)
     return captured
 

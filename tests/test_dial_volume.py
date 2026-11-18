@@ -28,7 +28,7 @@ if _core not in sys.path:
 
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 from autostream_webui_api import send_dial_volume_post_json
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 from fake_store import FakeStore
 from settings_fixtures import fixed_view
 
@@ -99,7 +99,7 @@ def _invoke(
         return parsed
 
     with patch("autostream_webui_api.dial_authorization", return_value="authorized" if authorized else "not_authorized"), \
-         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot), \
+         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot), \
          patch("autostream_player_service.update_output", update_mock):
         send_dial_volume_post_json(handler, state, json_obj)
 

@@ -119,10 +119,10 @@ def _dial(fn, body, parsed=None):
         captured["code"] = code
         captured["body"] = payload
 
-    with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+    with patch("webui.common.send_json", side_effect=fake_send_json), \
          patch("autostream_webui_api.dial_authorization",
                return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
-         patch("autostream_webui_api._config_snapshot", return_value=parsed or _parsed_config()), \
+         patch("webui.common._config_snapshot", return_value=parsed or _parsed_config()), \
          patch("autostream_webui_api.get_appliance_id", return_value=None):
         getattr(api, fn)(_handler(), MagicMock(), {"dial_id": "uid", **body})
     return captured
@@ -270,10 +270,10 @@ class TestDialMute:
     def test_config_error(self, writes):
         import autostream_webui_api as api
         captured = {}
-        with patch("autostream_webui_api.send_json", side_effect=lambda h, c, b: captured.update(body=b)), \
+        with patch("webui.common.send_json", side_effect=lambda h, c, b: captured.update(body=b)), \
              patch("autostream_webui_api.dial_authorization",
                    return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
-             patch("autostream_webui_api._config_snapshot", side_effect=RuntimeError("boom")):
+             patch("webui.common._config_snapshot", side_effect=RuntimeError("boom")):
             api.send_dial_mute_post_json(_handler(), MagicMock(), {"dial_id": "uid", "action": "mute"})
         assert captured["body"] == {"ok": False, "error": "config_error"}
 
@@ -367,13 +367,13 @@ class TestStatusMuteAware:
             captured["code"] = code
             captured["body"] = body
 
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+        with patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.dial_authorization",
                    return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
-             patch("autostream_webui_api._config_snapshot", return_value=_parsed_config()), \
+             patch("webui.common._config_snapshot", return_value=_parsed_config()), \
              fake_outputs(outputs), \
              patch("autostream_webui_api.get_appliance_id", return_value=None), \
-             patch("autostream_webui_api._session_playing", return_value=False), \
+             patch("webui.common._session_playing", return_value=False), \
              fake_repeat(None), \
              fake_track(_disabled_track_id_snapshot()):
             if muted_before:
@@ -506,7 +506,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
              fake_session({"active": False, "source": None}), \
              fake_repeat(None), \
              patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
-             patch("autostream_appliance_models.get_app_version", return_value="1.0"), \
+             patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_appliance_models.get_appliance_id", return_value="id"):
             mock_playback.return_value = SimpleNamespace(
                 to_public_dict=lambda: {}, stylus_banner_text="", belt_banner_text="", bearing_banner_text="",
@@ -528,7 +528,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
             owntone=SimpleNamespace(output_name=""),
             webui=SimpleNamespace(hidden_outputs=()),
         )
-        with patch("autostream_webui_api._config_snapshot", return_value=parsed),              patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+        with patch("webui.common._config_snapshot", return_value=parsed),              patch("webui.common.send_json", side_effect=fake_send_json):
             api.send_owntone_outputs_state_json(_handler(), MagicMock())
         assert captured["code"] == 200
         assert captured["body"]["muted"] is True
@@ -574,7 +574,7 @@ class TestWebUIMuteControlRemoved:
     def test_mute_icon_markup_and_slash_path(self):
         """ICON_SPEAKER_MUTED itself is kept (matches the dial's own glyph)
         even though the WebUI no longer renders it anywhere."""
-        from autostream_webui_assets import ICON_SPEAKER_MUTED
+        from webui.assets import ICON_SPEAKER_MUTED
         assert "<svg" in ICON_SPEAKER_MUTED
         assert "currentColor" in ICON_SPEAKER_MUTED
         # The slash is centred on the speaker body, matching the dial's own
@@ -582,7 +582,7 @@ class TestWebUIMuteControlRemoved:
         assert 'd="M1 5l14 14"' in ICON_SPEAKER_MUTED
 
     def test_page_js_no_longer_contains_mute_indicator_functions(self):
-        import autostream_webui_assets as assets
+        import webui.assets as assets
         src = inspect_source(assets)
         assert "updateMuteIndicator" not in src
         assert "unmuteMaster" not in src
@@ -661,7 +661,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
 
     from contextlib import ExitStack
     patches = [
-        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
@@ -708,7 +708,7 @@ def _render_remote_home_html() -> str:
 
     from contextlib import ExitStack
     patches = [
-        patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_webui_page_airplay.get_appliance_id", return_value="1" * 20),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),

@@ -13,10 +13,10 @@ from datetime import datetime, timezone
 
 from autostream_dials import parse_dial_entries, sighting_needs_update
 from autostream_sysutils import SDCARD_HEALTH_METHODS
-from autostream_webui_assets import ICON_PADLOCK_LOCKED
-from autostream_webui_common import settings_card_html
-import autostream_webui_common
+from webui.assets import ICON_PADLOCK_LOCKED
+from webui.common import settings_card_html
 from webui.browser.setup import context
+from webui.system import updates
 
 try:
     from autostream_dials import get_all_sightings as _get_dial_sightings
@@ -352,7 +352,7 @@ def _setup_dial_cards_html() -> tuple:
     if _n_needs_update:
         _dials_summary += f" · {_n_needs_update} need update"
     _dials_summary = html.escape(_dials_summary)
-    _app_ver = autostream_webui_common.get_app_version()
+    _app_ver = updates.get_app_version()
     _dial_cards_html = ""
     for _entry in _authorized_entries:
         _sighting = _sightings_by_uuid.get(_entry.uuid)

@@ -27,8 +27,8 @@ import logging
 from autostream_dials import get_dial_sighting
 from autostream_intents import Intent, submit
 from autostream_state import Origin
-from autostream_webui_api import send_json, send_browser_api_error, _NGINX_INTERCEPTED_STATUSES
-from autostream_webui_common import send_bytes
+from webui.common import _NGINX_INTERCEPTED_STATUSES
+from webui import common
 
 _PROXY_TIMEOUT = 4  # seconds — short; dial is on the same LAN
 
@@ -103,7 +103,7 @@ def _get_sighting_or_error(handler, uuid: str):
     """Return DialSighting for uuid, or send a tunneled 404 and return None."""
     sighting = get_dial_sighting(uuid)
     if sighting is None:
-        send_browser_api_error(handler, 404, "dial_offline", retryable=True)
+        common.send_browser_api_error(handler, 404, "dial_offline", retryable=True)
     return sighting
 
 
@@ -120,7 +120,7 @@ def _normalize_target_response(
     """
     if target_status not in _NGINX_INTERCEPTED_STATUSES:
         # Native pass-through — NGINX will not intercept this status.
-        send_json(handler, target_status, data)
+        common.send_json(handler, target_status, data)
         return
 
     # Tunnel the intercepted status.  Use the target's stable error identifier
@@ -148,7 +148,7 @@ def _normalize_target_response(
         if k not in reserved:
             payload[k] = v
 
-    send_json(handler, 200, payload)
+    common.send_json(handler, 200, payload)
 
 
 def _proxy_get(handler, uuid: str, dial_path: str) -> None:
@@ -159,11 +159,11 @@ def _proxy_get(handler, uuid: str, dial_path: str) -> None:
         target_status, data = _proxy_call("GET", sighting.ip, sighting.port, dial_path)
     except OSError as e:
         logging.debug("dial proxy GET %s: %s", dial_path, e)
-        send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
+        common.send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
         return
     except _BadTargetResponse as e:
         logging.debug("dial proxy GET %s bad response: %s", dial_path, e)
-        send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
+        common.send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
         return
     _normalize_target_response(handler, target_status, data)
 
@@ -178,11 +178,11 @@ def _proxy_post(handler, uuid: str, dial_path: str, body_dict) -> None:
                                           dial_path, body=body_bytes)
     except OSError as e:
         logging.debug("dial proxy POST %s: %s", dial_path, e)
-        send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
+        common.send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
         return
     except _BadTargetResponse as e:
         logging.debug("dial proxy POST %s bad response: %s", dial_path, e)
-        send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
+        common.send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
         return
     _normalize_target_response(handler, target_status, data)
 
@@ -205,15 +205,15 @@ def _proxy_get_bytes(handler, uuid: str, dial_path: str, *, accept_type: str) ->
         raw = resp.read(_MAX_PROXY_IMAGE_BYTES + 1)
     except OSError as e:
         logging.debug("dial proxy GET %s: %s", dial_path, e)
-        send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
+        common.send_browser_api_error(handler, 502, "dial_unreachable", retryable=True)
         return
     finally:
         conn.close()
     if len(raw) > _MAX_PROXY_IMAGE_BYTES or 300 <= status <= 399:
-        send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
+        common.send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
         return
     if status == 200 and content_type == accept_type:
-        send_bytes(handler, 200, accept_type, raw, extra_headers={"Cache-Control": "no-store"})
+        common.send_bytes(handler, 200, accept_type, raw, extra_headers={"Cache-Control": "no-store"})
         return
     if content_type == "application/json":
         try:
@@ -223,7 +223,7 @@ def _proxy_get_bytes(handler, uuid: str, dial_path: str, *, accept_type: str) ->
         if isinstance(data, dict):
             _normalize_target_response(handler, status, data)
             return
-    send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
+    common.send_browser_api_error(handler, 502, "dial_bad_response", retryable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ def dispatch_dial_management_post(handler, path: str, json_obj) -> None:
     else:
         # Known dispatcher, unknown management path — tunnel the semantic 404
         # so it survives NGINX interception on the browser boundary.
-        send_browser_api_error(handler, 404, "not_found")
+        common.send_browser_api_error(handler, 404, "not_found")
 
 
 # ---------------------------------------------------------------------------
@@ -258,10 +258,10 @@ def handle_dial_authorize_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     name = json_obj.get("name", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     if not isinstance(name, str) or not name:
-        send_json(handler, 400, {"ok": False, "error": "missing_name"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_name"})
         return
     reply = submit(Intent("dials.authorize", {"uuid": uuid, "name": name},
                           Origin.USER, "webui"))
@@ -271,7 +271,7 @@ def handle_dial_authorize_post(handler, json_obj: dict) -> None:
 def handle_dial_revoke_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     reply = submit(Intent("dials.revoke", {"uuid": uuid}, Origin.USER, "webui"))
     _send_auth_reply(handler, reply)
@@ -279,11 +279,11 @@ def handle_dial_revoke_post(handler, json_obj: dict) -> None:
 
 def _send_auth_reply(handler, reply) -> None:
     if reply.ok:
-        send_json(handler, 200, {"ok": True})
+        common.send_json(handler, 200, {"ok": True})
     elif reply.error == "invalid_name":
-        send_json(handler, 400, {"ok": False, "error": "invalid_name"})
+        common.send_json(handler, 400, {"ok": False, "error": "invalid_name"})
     else:
-        send_json(handler, 500, {"ok": False, "error": reply.error or "internal_error"})
+        common.send_json(handler, 500, {"ok": False, "error": reply.error or "internal_error"})
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +293,7 @@ def _send_auth_reply(handler, reply) -> None:
 def handle_dial_configure_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     body = {k: v for k, v in json_obj.items() if k != "uuid"}
     _proxy_post(handler, uuid, "/configure", body)
@@ -302,7 +302,7 @@ def handle_dial_configure_post(handler, json_obj: dict) -> None:
 def handle_dial_pin_recovery_complete_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     body = {k: v for k, v in json_obj.items() if k != "uuid"}
     _proxy_post(handler, uuid, "/configure", body)
@@ -311,7 +311,7 @@ def handle_dial_pin_recovery_complete_post(handler, json_obj: dict) -> None:
 def handle_dial_recovery_arm_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     _proxy_post(handler, uuid, "/recovery/arm", None)
 
@@ -319,7 +319,7 @@ def handle_dial_recovery_arm_post(handler, json_obj: dict) -> None:
 def handle_dial_recovery_disarm_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     _proxy_post(handler, uuid, "/recovery/disarm", None)
 
@@ -355,7 +355,7 @@ def handle_dial_screen_settings_get(handler, uuid: str) -> None:
 def handle_dial_screen_settings_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     body = {k: v for k, v in json_obj.items() if k != "uuid"}
     _proxy_post(handler, uuid, "/screen/settings", body)
@@ -380,7 +380,7 @@ def handle_dial_sdcard_health_get(handler, uuid: str) -> None:
 def handle_dial_sdcard_health_post(handler, json_obj: dict) -> None:
     uuid = json_obj.get("uuid", "")
     if not isinstance(uuid, str) or not uuid:
-        send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
+        common.send_json(handler, 400, {"ok": False, "error": "missing_uuid"})
         return
     body = {k: v for k, v in json_obj.items() if k != "uuid"}
     _proxy_post(handler, uuid, "/sdcard-health", body)

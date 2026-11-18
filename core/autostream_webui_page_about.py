@@ -11,7 +11,7 @@ Responsibilities:
     copyright/license.
   - Provides a Logs button to reach the log viewer.
 
-Shared helpers (imported from autostream_webui_common):
+Shared helpers (imported from webui.common and webui.system.updates):
   - get_app_version  -- read installed application version
   - load_license_text -- read the LICENSE / LICENCE file
   - render_license_md -- convert the LICENSE Markdown to HTML
@@ -42,18 +42,17 @@ from autostream_sysutils import (
     sdcard_health_display,
 )
 
-import autostream_webui_static as static
-from autostream_webui_common import (
-    _config_snapshot,
+from webui import static
+from webui.common import (
     build_page_html,
     build_top_banner_html,
-    get_app_version,
     load_license_text,
     render_license_md,
-    send_html,
 )
 
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
+from webui.system import updates
 
 _log = logging.getLogger(__name__)
 
@@ -105,13 +104,13 @@ def _about_detail_header(title: str) -> str:
 
 def send_about_page(handler, state: WebUIState) -> None:
     """Render and send the About page."""
-    version = get_app_version()
+    version = updates.get_app_version()
     lic_html, lic_spacer = build_top_banner_html()
 
     # Config is read defensively; the page degrades gracefully if it fails.
     parsed = None
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception:
         parsed = None
 
@@ -287,7 +286,7 @@ def send_about_page(handler, state: WebUIState) -> None:
         active_tab="about",
         dark_mode=_dark_mode,
     )
-    send_html(handler, 200, html_body)
+    common.send_html(handler, 200, html_body)
 
 
 # -----------------------------------------------------------------------------
@@ -296,13 +295,12 @@ def send_about_page(handler, state: WebUIState) -> None:
 
 def send_about_system_json(handler) -> None:
     """Collect and send the JSON payload for /api/about/system."""
-    from autostream_webui_api import send_json
     try:
         payload = _collect_system_info()
-        send_json(handler, 200, payload)
+        common.send_json(handler, 200, payload)
     except Exception:
         _log.exception("about/system: unexpected collector error")
-        send_json(handler, 500, {"ok": False, "error": "system_info_unavailable"})
+        common.send_json(handler, 500, {"ok": False, "error": "system_info_unavailable"})
 
 
 def _build_text(version: str, connected: bool) -> str:
@@ -345,7 +343,7 @@ def _collect_system_info() -> dict:
     """Collect all System Info fields.  Partial failures degrade individual fields."""
     # 1. Autostream version (cached, immutable for process lifetime)
     try:
-        autostream_version = get_app_version()
+        autostream_version = updates.get_app_version()
     except Exception:
         autostream_version = "unknown"
 

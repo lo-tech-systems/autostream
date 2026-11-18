@@ -54,7 +54,7 @@ from autostream_webui_api import (
     calculate_master_volume,
     send_dial_status_post_json,
 )
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 from track_id.models import (
     TrackArtwork,
     TrackIdentificationSnapshot,
@@ -180,7 +180,7 @@ def _invoke(
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
-        patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
+        patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_player_service.update_output", update_mock),
         fake_session(session_state if session_state is not None
               else {"active": playing,
@@ -319,7 +319,7 @@ class TestPlayingField:
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
-            patch("autostream_webui_api._config_snapshot", return_value=parsed),
+            patch("webui.common._config_snapshot", return_value=parsed),
             fake_session({"active": True, "source": "replay"}),
             fake_repeat(None),
             fake_track(disabled_snapshot()),
@@ -691,7 +691,7 @@ class TestFailurePaths:
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             fake_session({"active": False, "source": None}),
-            patch("autostream_webui_api._config_snapshot",
+            patch("webui.common._config_snapshot",
                   side_effect=OSError("disk full")),
         ):
             send_dial_status_post_json(handler, state, {"dial_id": DIAL_ID})
@@ -717,7 +717,7 @@ class TestFailurePaths:
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             fake_session({"active": False, "source": None}),
-            patch("autostream_webui_api._config_snapshot", return_value=parsed),
+            patch("webui.common._config_snapshot", return_value=parsed),
         ):
             send_dial_status_post_json(handler, state, {"dial_id": DIAL_ID})
         code, body = _response(handler)

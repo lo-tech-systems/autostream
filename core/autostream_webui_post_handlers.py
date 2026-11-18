@@ -23,9 +23,9 @@ from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_player_service import config_airplay_mode_to_backend
 from autostream_sysutils import factory_reset_system
 
-from autostream_webui_common import _config_snapshot
-from autostream_webui_state import WebUIState
-from autostream_webui_api import send_json, send_settings_post_json
+from webui.session_state import WebUIState
+from autostream_webui_api import send_settings_post_json
+from webui import common
 
 
 # -----------------------------------------------------------------------------
@@ -37,7 +37,7 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
         payload = json.loads(body)
         out_id = str(payload.get("id") or "").strip()
 
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
 
         offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id) if out_id else None
         offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
@@ -49,10 +49,10 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
             payload, requester="webui", pin_requester=REQUESTER_WEBUI,
             offset_ms=offset_ms, mode=mode,
         )
-        send_json(handler, 200, result)
+        common.send_json(handler, 200, result)
     except Exception as e:
         logging.error("Update failed: %s", e)
-        send_json(handler, 200, {"ok": False, "error": str(e)})
+        common.send_json(handler, 200, {"ok": False, "error": str(e)})
 
 
 # -----------------------------------------------------------------------------
@@ -65,7 +65,7 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     try:
@@ -81,16 +81,16 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
         eq_100hz_db = float(payload.get("eq_100hz_db", 0.0))
         eq_8khz_db = float(payload.get("eq_8khz_db", 0.0))
     except Exception:
-        send_json(handler, 400, {"ok": False, "error": "Invalid EQ payload"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid EQ payload"})
         return
 
     if input_index not in (1, 2):
-        send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
+        common.send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
         return
 
     for val in (eq_40hz_db, eq_100hz_db, eq_8khz_db):
         if not math.isfinite(val) or val < -10.0 or val > 10.0:
-            send_json(handler, 400, {"ok": False, "error": "EQ gain must be between -10 and 10 dB"})
+            common.send_json(handler, 400, {"ok": False, "error": "EQ gain must be between -10 and 10 dB"})
             return
 
     reply = submit(Intent(
@@ -99,10 +99,10 @@ def handle_live_input_eq_update(handler, state: WebUIState, body: str) -> None:
          "eq_8khz_db": eq_8khz_db},
         Origin.USER, "webui", context=state))
     if not reply.ok:
-        send_json(handler, 200, {"ok": False, "error": "Could not update live EQ"})
+        common.send_json(handler, 200, {"ok": False, "error": "Could not update live EQ"})
         return
 
-    send_json(handler, 200, {
+    common.send_json(handler, 200, {
         "ok": True,
         "input": input_index,
         "eq_40hz_db": eq_40hz_db,
@@ -116,7 +116,7 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
-        send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid JSON"})
         return
 
     try:
@@ -125,11 +125,11 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
             raise TypeError("bool")
         input_index = int(raw_index)
     except Exception:
-        send_json(handler, 400, {"ok": False, "error": "Invalid gain payload"})
+        common.send_json(handler, 400, {"ok": False, "error": "Invalid gain payload"})
         return
 
     if input_index not in (1, 2):
-        send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
+        common.send_json(handler, 400, {"ok": False, "error": "input must be 1 or 2"})
         return
 
     field = f"audio{input_index}.gain_db"
@@ -157,7 +157,7 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
     submit(Intent("settings.discard", {}, Origin.USER, "webui", context=state))
     try:
         factory_reset_system()
-        send_json(handler, 200, {"ok": True})
+        common.send_json(handler, 200, {"ok": True})
     except Exception as e:
         logging.error("handle_factory_reset_post: scheduling failed: %s", e)
-        send_json(handler, 500, {"ok": False, "error": "Factory reset could not be scheduled", "detail": str(e)})
+        common.send_json(handler, 500, {"ok": False, "error": "Factory reset could not be scheduled", "detail": str(e)})

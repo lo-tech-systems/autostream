@@ -33,8 +33,8 @@ _HEAVY_DEPS = [
     "autostream_core",
     "autostream_player_service",
     "autostream_players",
-    "autostream_webui_common",
-    "autostream_webui_state",
+    "webui.common",
+    "webui.session_state",
 ]
 
 _ABSENT = object()  # sentinel for "key was not in sys.modules before setup"

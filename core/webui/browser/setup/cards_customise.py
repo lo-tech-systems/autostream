@@ -11,8 +11,8 @@ from __future__ import annotations
 import html
 
 from autostream_state import store
-from autostream_webui_common import settings_card_html
-from autostream_webui_components import toggle_html
+from webui.common import settings_card_html
+from webui.components import toggle_html
 from webui.browser.setup import context
 
 

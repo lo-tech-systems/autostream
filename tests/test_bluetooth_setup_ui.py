@@ -96,7 +96,7 @@ class _SetupRenderer:
         audio2_capture_device: str = "hw:2,0",
     ) -> str:
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
         from _setup_card_test_helpers import render_full_setup_with_cards
 
@@ -216,7 +216,7 @@ class TestBluetoothDisabledGating:
         Bluetooth helper entirely absent (ImportError fallback path)."""
         from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
 
         cfg = _minimal_cfg(tmp_path)

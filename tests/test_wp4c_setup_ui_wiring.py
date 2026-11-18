@@ -88,7 +88,7 @@ class _SetupRenderer:
 
     def render(self, tmp_path: Path, audio1: dict | None = None) -> str:
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
         from _setup_card_test_helpers import render_full_setup_with_cards
 
@@ -432,7 +432,7 @@ class TestInput1EnableToggle:
         cfg.write_text(json.dumps(data), encoding="utf-8")
 
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
         from _setup_card_test_helpers import render_full_setup_with_cards
 
@@ -505,7 +505,7 @@ class TestSetupPageLiveEnabled:
         """The setup page always has liveEnabled=true; first-boot uses dedicated pages."""
         from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
 
         cfg = _minimal_cfg(tmp_path)
@@ -617,7 +617,7 @@ class TestPlaybackPanelCardSplit:
         # test drives send_setup_page() directly against a config carrying
         # an explicit audio_path instead.
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
         from _setup_card_test_helpers import render_full_setup_with_cards
 

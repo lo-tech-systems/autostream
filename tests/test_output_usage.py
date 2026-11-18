@@ -1037,7 +1037,7 @@ class TestAudioStatusPlayingFromSession:
         import json as _json
         import autostream_webui_api as api_mod
         from autostream_players import ListOutputsResult, OutputInfo
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         handler = MagicMock()
         handler.wfile = io.BytesIO()
@@ -1054,7 +1054,7 @@ class TestAudioStatusPlayingFromSession:
             FakeStore().outputs(list(result.outputs))
         else:
             FakeStore().outputs_unreachable()
-        with patch("autostream_webui_api._config_snapshot", return_value=parsed), \
+        with patch("webui.common._config_snapshot", return_value=parsed), \
              fake_session(session_state):
             api_mod.send_audio_status_json(handler, state)
         return _json.loads(handler.wfile.getvalue())

@@ -1,11 +1,11 @@
-"""autostream_webui_assets.py
+"""webui/assets.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Web assets (e.g. CSS) to support the autostream web front-end.
 """
 
-import autostream_webui_static as static
+from webui import static
 
 BANNER_LOGO_HTML = """
   <div class="banner-logo-wrap">

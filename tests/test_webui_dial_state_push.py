@@ -861,8 +861,8 @@ class TestCallSites:
             calls.clear()
             try:
                 with patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-                     patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-                     patch("autostream_webui_api.send_json", side_effect=lambda h, c, b: sent.append(dict(b))):
+                     patch("webui.common._config_snapshot", return_value=parsed), \
+                     patch("webui.common.send_json", side_effect=lambda h, c, b: sent.append(dict(b))):
                     getattr(api, route)(object(), object(), {"dial_id": "dial-1", **body})
             finally:
                 state.store().unsubscribe(handle)

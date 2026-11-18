@@ -66,7 +66,7 @@ def _minimal_cfg(tmp_path: Path, **audio_overrides) -> Path:
 
 def _make_state(tmp_path: Path, **audio_overrides):
     from autostream_settings import SettingsStore
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
     cfg = _minimal_cfg(tmp_path, **audio_overrides)
     store = SettingsStore(str(cfg), _save_interval_seconds=9999)
     state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
@@ -451,14 +451,14 @@ class TestBluetoothStatusCopies:
     that nested dict shared between callers."""
 
     def test_the_status_is_what_the_part_holds(self, tmp_path, fake_store):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
         fake_store.devices(bluetooth_status=status)
         assert state.get_bluetooth_status() == status
 
     def test_mutating_the_published_dict_does_not_affect_the_part(self, tmp_path, fake_store):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
         fake_store.devices(bluetooth_status=status)
@@ -469,7 +469,7 @@ class TestBluetoothStatusCopies:
         assert cached["link"] == "connected"
 
     def test_mutating_returned_value_does_not_affect_the_next_read(self, tmp_path, fake_store):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
         fake_store.devices(bluetooth_status=status)
@@ -481,7 +481,7 @@ class TestBluetoothStatusCopies:
         assert again["link"] == "connected"
 
     def test_a_part_without_a_status_gives_none(self, tmp_path, fake_store):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         fake_store.devices(bluetooth_status={"ok": True, "paired": None})
         fake_store.devices(bluetooth_status=None)
@@ -1479,9 +1479,9 @@ class TestAboutPageBluetoothRow:
         buf = io.BytesIO()
         handler.wfile = buf
         state = MagicMock()
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.2.3"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
              patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
-             patch("autostream_webui_page_about._config_snapshot", return_value=None), \
+             patch("webui.common._config_snapshot", return_value=None), \
              patch("autostream_webui_page_about.load_license_text", return_value=""), \
              patch("autostream_webui_page_about.render_license_md", return_value=""):
             _about.send_about_page(handler, state)

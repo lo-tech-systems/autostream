@@ -29,11 +29,12 @@ from autostream_dials import (
 )
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 import autostream_webui_api as api
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 from track_id.models import disabled_snapshot
 from autostream_state.outputs import get_authority
 from fake_store import FakeStore, fake_repeat, fake_session, fake_track
 from settings_fixtures import fixed_view
+import webui.common as webui_common
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -71,7 +72,7 @@ def _sighting(dial_proto: str | None):
 
 def _reference(code: int, payload: dict):
     ref = _Capture()
-    api.send_json(ref, code, payload)
+    webui_common.send_json(ref, code, payload)
     return ref.result()
 
 
@@ -173,7 +174,7 @@ def _success(fn, body, dial_proto):
         patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
         patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
         patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto)),
-        patch("autostream_webui_api._config_snapshot", return_value=parsed),
+        patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_player_service.update_output", return_value=ActionResult(ok=True)),
         fake_session({"active": True, "source": "input1"}),
         fake_repeat(None),

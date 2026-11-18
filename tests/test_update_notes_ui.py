@@ -67,7 +67,7 @@ def _updates_iife(src: str) -> str:
 class TestInfoModalEmbedded:
     """The shared info modal must be embedded exactly once in the setup page.
 
-    The modal markup is an imported constant from autostream_webui_assets and
+    The modal markup is an imported constant from webui.assets and
     its script is read from a static file, not literal text in the page-setup
     module, so these are asserted against the fully rendered page rather than
     raw source. The import itself is covered separately below.

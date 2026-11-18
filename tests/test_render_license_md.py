@@ -15,7 +15,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from autostream_webui_common import render_license_md
+from webui.common import render_license_md
 
 
 class TestHeadings:

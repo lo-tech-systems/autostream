@@ -13,8 +13,8 @@ import html
 from typing import Optional
 
 from autostream_sysutils import SDCARD_HEALTH_METHODS
-from autostream_webui_common import settings_card_html
-from autostream_webui_state import WebUIState
+from webui.common import settings_card_html
+from webui.session_state import WebUIState
 from webui.browser.setup import context
 
 

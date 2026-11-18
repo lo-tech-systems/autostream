@@ -58,7 +58,7 @@ def _make_get_handler(path: str) -> "ConfigWebHandler":
 
 
 def _fake_state(tmp_path):
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
     cfg = tmp_path / "autostream.json"
     cfg.write_text("{}")
     st = tmp_path / "state.json"
@@ -200,7 +200,7 @@ class TestFirstBootPinRedirect:
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", _fake_state(tmp_path)), \
              patch("autostream_webui.is_commissioning_required", return_value=True), \
-             patch("autostream_webui.send_json") as mock_json, \
+             patch("webui.common.send_json") as mock_json, \
              patch(f"autostream_webui.{page}") as mock_page:
             handler.do_GET()
 
@@ -229,7 +229,7 @@ class TestSetupPageNoInitialSetupMode:
     def _render(self, tmp_path) -> str:
         from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
 
         cfg_path = str(tmp_path / "config.json")
@@ -280,7 +280,7 @@ class TestOwntonPageNoInitialSetupMode:
     def _render(self, tmp_path) -> str:
         from autostream_webui_page_owntone import send_owntone_setup_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         cfg_path = str(tmp_path / "config.json")
         (tmp_path / "config.json").write_text(json.dumps({
@@ -382,7 +382,7 @@ class TestPostCommissioningGate:
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", state), \
              patch("autostream_webui.is_commissioning_required", return_value=True), \
-             patch("autostream_webui.send_json") as mock_json:
+             patch("webui.common.send_json") as mock_json:
             handler.do_POST()
         # 409 appliance_unconfigured expected
         calls = [(c[0][1], c[0][2]) for c in mock_json.call_args_list]
@@ -395,7 +395,7 @@ class TestPostCommissioningGate:
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", state), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_json") as mock_json:
+             patch("webui.common.send_json") as mock_json:
             handler.do_POST()
         calls = [(c[0][1], c[0][2]) for c in mock_json.call_args_list]
         assert any(code == 409 for code, _ in calls), f"Expected 409 but got {calls}"
@@ -405,7 +405,7 @@ class TestPostCommissioningGate:
         handler, mgr = self._make_post_handler("/api/settings", b'{"field":"x","value":"y"}')
         state = _fake_state(tmp_path)
         blocked_with_commissioning_error = False
-        original_send_json = __import__("autostream_webui_api").send_json
+        original_send_json = __import__("webui.common", fromlist=["send_json"]).send_json
 
         def track_send_json(h, code, data):
             nonlocal blocked_with_commissioning_error
@@ -416,7 +416,7 @@ class TestPostCommissioningGate:
         with patch("autostream_webui.AUTH", mgr), \
              patch("autostream_webui.STATE", state), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_json", side_effect=track_send_json):
+             patch("webui.common.send_json", side_effect=track_send_json):
             handler.do_POST()
         assert not blocked_with_commissioning_error, (
             "POST /api/settings must not be blocked with commissioning error when configured"

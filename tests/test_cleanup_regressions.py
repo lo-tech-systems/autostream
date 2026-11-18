@@ -6,7 +6,7 @@ Covers:
 - Internal design identifiers removed from dial module docstrings.
 - UPDATED markers removed from autostream-nginx.conf.
 - Corrected privileged-helper default path in autostream_sysutils.py docstring.
-- Corrected module header in autostream_webui_assets.py.
+- Corrected module header in webui/assets.py.
 - Embedded-asset and page source files compile cleanly (SyntaxWarning = error).
 """
 from __future__ import annotations
@@ -133,15 +133,15 @@ def test_sysutils_docstring_correct_helper_path():
 
 
 # ---------------------------------------------------------------------------
-# 5. autostream_webui_assets.py module header is correct
+# 5. webui/assets.py module header is correct
 # ---------------------------------------------------------------------------
 
 def test_webui_assets_module_header_correct():
     """Module header must name the correct file and have a complete description."""
-    src = _source_text.module_text("autostream_webui_assets")
+    src = _source_text.module_text("webui.assets")
     # Correct filename in header
-    assert '"""autostream_webui_assets.py' in src, (
-        "Module header must name the file as autostream_webui_assets.py"
+    assert '"""webui/assets.py' in src, (
+        "Module header must name the file as webui/assets.py"
     )
     # No truncated "autostrea" description
     assert "for autostrea\n" not in src, (
@@ -158,12 +158,14 @@ _ASSET_MODULES = sorted(
     [
         *(REPO_ROOT / "core").glob("autostream_webui*.py"),
         *(REPO_ROOT / "core").glob("autostream_appliance_*.py"),
+        *(REPO_ROOT / "core" / "webui").rglob("*.py"),
         REPO_ROOT / "dial" / "dial_webui_assets.py",
     ]
 )
 
 
-@pytest.mark.parametrize("module_path", _ASSET_MODULES, ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "module_path", _ASSET_MODULES, ids=lambda p: p.relative_to(REPO_ROOT).as_posix())
 def test_asset_module_compiles_cleanly(module_path):
     """Each embedded-asset/page module must compile without SyntaxWarning."""
     import warnings

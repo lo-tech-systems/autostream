@@ -51,7 +51,7 @@ def _arrange():
 
 def _reply(route, state):
     sent: dict = {}
-    with patch("autostream_webui_api.send_json",
+    with patch("webui.common.send_json",
                side_effect=lambda h, code, body: sent.update(code=code, body=body)):
         route(MagicMock(), state)
     return sent["code"], sent["body"]
@@ -107,5 +107,5 @@ def test_the_status_reply_carries_its_fields_from_the_snapshot(state):
 
 
 def test_the_web_helpers_have_no_file_loader():
-    import autostream_webui_common
-    assert not hasattr(autostream_webui_common, "locked_load_config")
+    import webui.common as web_common
+    assert not hasattr(web_common, "locked_load_config")

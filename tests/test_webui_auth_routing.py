@@ -252,8 +252,8 @@ class TestFederationRoutesSkipBrowserAuth:
              patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
-             patch("autostream_webui_common._config_snapshot", return_value=fake_cfg), \
-             patch("autostream_webui.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
+             patch("webui.common._config_snapshot", return_value=fake_cfg), \
+             patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             handler.do_POST()
         codes = [c for c, _ in sent]
         assert 403 not in codes, "Federation route must not return 403 CSRF error"
@@ -270,7 +270,7 @@ class TestFederationRoutesSkipBrowserAuth:
              patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
-             patch("autostream_webui.send_json"), \
+             patch("webui.common.send_json"), \
              patch.object(mgr, "validate_csrf") as mock_csrf:
             handler.do_POST()
         mock_csrf.assert_not_called()

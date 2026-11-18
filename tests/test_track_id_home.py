@@ -96,7 +96,7 @@ def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
         fake_playback(playback),
         patch("autostream_appliance_models.get_appliance_id", return_value="aabbcc"),
         patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
-        patch("autostream_appliance_models.get_app_version", return_value="1.0.0"),
+        patch("webui.system.updates.get_app_version", return_value="1.0.0"),
         fake_track(snap),
     ]
     with ExitStack() as stack:

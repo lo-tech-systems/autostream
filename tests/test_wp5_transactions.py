@@ -27,6 +27,7 @@ import pytest
 from _setup_card_test_helpers import setup_page_mocks
 from _source_text import static_text
 from fake_store import fake_outputs_result
+import webui.system.updates as updates
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -67,7 +68,7 @@ def _response(handler: MagicMock) -> tuple[int, dict]:
 
 def _make_state(tmp_path: Path):
     from autostream_settings import SettingsStore
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
     cfg = _minimal_cfg(tmp_path)
     store = SettingsStore(str(cfg), _save_interval_seconds=9999)
     state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
@@ -171,7 +172,7 @@ class TestAdvertisementEndpoint:
         from autostream_webui_api import send_advertisement_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.get_app_version", return_value="1.0.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0.0"), \
              patch("autostream_appliances.reconcile_appliance_announcement",
                    return_value=reconcile_ok, create=True):
             send_advertisement_post_json(handler, state, json.dumps({"value": value}))
@@ -215,10 +216,9 @@ class TestAdvertisementEndpoint:
         mock_mod = MagicMock()
         mock_mod.reconcile_appliance_announcement = MagicMock(return_value=True)
         with patch.dict(sys.modules, {"autostream_appliances": mock_mod}), \
-             patch("autostream_webui_api.get_app_version", return_value="1.0.0", create=True):
+             patch("webui.system.updates.get_app_version", return_value="1.0.0", create=True):
             # The function imports reconcile inside; patch where it's imported
-            import autostream_webui_common as _common
-            with patch.object(_common, "get_app_version", return_value="1.0.0", create=True):
+            with patch.object(updates, "get_app_version", return_value="1.0.0", create=True):
                 send_advertisement_post_json(handler, state, json.dumps({"value": True}))
 
         code, data = _response(handler)
@@ -237,9 +237,8 @@ class TestAdvertisementEndpoint:
         mock_mod = MagicMock()
         mock_mod.reconcile_appliance_announcement = MagicMock(return_value=False)
         with patch.dict(sys.modules, {"autostream_appliances": mock_mod}), \
-             patch("autostream_webui_api.get_app_version", return_value="1.0.0", create=True):
-            import autostream_webui_common as _common
-            with patch.object(_common, "get_app_version", return_value="1.0.0", create=True):
+             patch("webui.system.updates.get_app_version", return_value="1.0.0", create=True):
+            with patch.object(updates, "get_app_version", return_value="1.0.0", create=True):
                 send_advertisement_post_json(handler, state, json.dumps({"value": True}))
 
         code, data = _response(handler)
@@ -260,8 +259,7 @@ class TestAdvertisementEndpoint:
         mock_mod = MagicMock()
         mock_mod.reconcile_appliance_announcement = MagicMock(return_value=True)
         with patch.dict(sys.modules, {"autostream_appliances": mock_mod}):
-            import autostream_webui_common as _common
-            with patch.object(_common, "get_app_version", return_value="1.0.0", create=True):
+            with patch.object(updates, "get_app_version", return_value="1.0.0", create=True):
                 send_advertisement_post_json(handler, state, json.dumps({"value": True}))
         code, data = _response(handler)
         assert code == 200
@@ -382,7 +380,7 @@ class TestMdnsGracePeriodEndpoint:
         handler = _make_handler()
         with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_appliances.set_grace_period") as m_browser, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+             patch("webui.common._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = MagicMock(ok=True, unsupported=False, restart_required=False, message="")
             send_settings_mdns_grace_period_json(handler, state, json.dumps({"value": 5}))
@@ -402,7 +400,7 @@ class TestMdnsGracePeriodEndpoint:
         handler = _make_handler()
         with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_appliances.set_grace_period") as m_browser, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+             patch("webui.common._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = MagicMock(
                 ok=False,
@@ -462,7 +460,7 @@ class TestSaveNowEndpoint:
         store.close(save=False)
 
     def test_a_state_without_a_settings_view_cannot_be_built(self, tmp_path):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         cfg = _minimal_cfg(tmp_path)
         with pytest.raises(TypeError):
             WebUIState(str(cfg), str(tmp_path / "state.json"), settings=None)
@@ -543,7 +541,7 @@ class TestSetupPageTransactionWiring:
     @pytest.fixture
     def html(self, tmp_path: Path) -> str:
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
         from _setup_card_test_helpers import render_full_setup_with_cards
 

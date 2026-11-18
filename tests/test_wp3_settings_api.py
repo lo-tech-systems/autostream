@@ -70,7 +70,7 @@ def _response(handler: MagicMock) -> tuple[int, dict]:
 
 def _make_state(tmp_path: Path, *, with_store: bool = True):
     from autostream_settings import SettingsStore
-    from autostream_webui_state import WebUIState
+    from webui.session_state import WebUIState
     cfg = _minimal_cfg(tmp_path)
     if with_store:
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -177,7 +177,7 @@ class TestSettingsGetJson:
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api._config_snapshot", side_effect=OSError("disk error")):
+            with patch("webui.common._config_snapshot", side_effect=OSError("disk error")):
                 send_settings_get_json(handler, state)
         finally:
             store.close(save=False)
@@ -287,7 +287,7 @@ class TestHostnameControlDependency:
     def test_disabling_hostname_clears_control_other(self, tmp_path):
         from autostream_webui_api import send_settings_post_json
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         cfg = tmp_path / "autostream.json"
         _write_config(cfg, {
@@ -314,7 +314,7 @@ class TestHostnameControlDependency:
         """Enabling hostname display must not override existing control_other_appliances."""
         from autostream_webui_api import send_settings_post_json
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         cfg = tmp_path / "autostream.json"
         _write_config(cfg, {
@@ -700,7 +700,7 @@ class TestAutosaveJs:
 class TestSetupPageAutosaveWiring:
     def _render_setup(self, tmp_path: Path) -> str:
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
         from _setup_card_test_helpers import render_full_setup_with_cards
 

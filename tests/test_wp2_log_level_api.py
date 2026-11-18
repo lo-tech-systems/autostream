@@ -177,7 +177,7 @@ class TestSendLogLevelGetJson:
             sent.append((code, payload))
 
         with patch("autostream_log_policy.get_log_level_state", return_value=fake_result), \
-             patch("autostream_webui_api.send_json", _fake_send_json):
+             patch("webui.common.send_json", _fake_send_json):
             api_mod.send_log_level_get_json(h, state)
 
         assert len(sent) == 1
@@ -194,7 +194,7 @@ class TestSendLogLevelGetJson:
 
         with patch("autostream_log_policy.get_log_level_state",
                    return_value={"ok": False, "error": "read failed"}), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
+             patch("webui.common.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_log_level_get_json(h, state)
 
         assert sent[0][1]["ok"] is False
@@ -217,8 +217,8 @@ class TestSendLogLevelPutJson:
             }
 
         with patch("autostream_log_policy.set_log_level", return_value=set_result), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))), \
-             patch("autostream_webui_api.send_browser_api_error", lambda h, c, e, **kw: sent.append((c, {"error": e}))):
+             patch("webui.common.send_json", lambda h, c, p: sent.append((c, p))), \
+             patch("webui.common.send_browser_api_error", lambda h, c, e, **kw: sent.append((c, {"error": e}))):
             api_mod.send_log_level_put_json(h, state, json_obj, changed_by)
 
         return sent
@@ -257,7 +257,7 @@ class TestSendLogLevelPutJson:
                     "changed_at": None, "changed": True, "applied": {}}
 
         with patch("autostream_log_policy.set_log_level", _fake_set), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: None):
+             patch("webui.common.send_json", lambda h, c, p: None):
             api_mod.send_log_level_put_json(h, state, {"level": "warning"}, "system")
 
         assert captured_changed_by == ["system"]
@@ -273,7 +273,7 @@ class TestSendLogLevelPutJson:
                     "changed_at": None, "changed": True, "applied": {}}
 
         with patch("autostream_log_policy.set_log_level", _fake_set), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: None):
+             patch("webui.common.send_json", lambda h, c, p: None):
             api_mod.send_log_level_put_json(h, state, {"level": "info"}, "user")
 
         assert captured_changed_by == ["user"]
@@ -291,7 +291,7 @@ class TestSendLogLevelPutJson:
                          result={"response": {"ok": True, "level": "info"}})
 
         with patch("autostream_webui_api.submit", _spy), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: None):
+             patch("webui.common.send_json", lambda h, c, p: None):
             api_mod.send_log_level_put_json(h, state, {"level": "info"}, "user")
             api_mod.send_log_level_put_json(h, state, {"level": "info"}, "system")
 
@@ -336,7 +336,7 @@ class TestSendLogLevelPutJsonWatcherForwarding:
         }
 
         with patch("autostream_log_policy.set_log_level", return_value=set_result), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))), \
+             patch("webui.common.send_json", lambda h, c, p: sent.append((c, p))), \
              patch("autostream_watcher_client.forward_log_level_to_watcher") as m_forward:
             api_mod.send_log_level_put_json(h, state, {"level": level}, "user")
 
@@ -362,7 +362,7 @@ class TestSendLogLevelPutJsonWatcherForwarding:
         set_result = {"ok": False, "error": "Unsupported log level: 'verbose'"}
 
         with patch("autostream_log_policy.set_log_level", return_value=set_result), \
-             patch("autostream_webui_api.send_browser_api_error", lambda h, c, e, **kw: sent.append((c, e))), \
+             patch("webui.common.send_browser_api_error", lambda h, c, e, **kw: sent.append((c, e))), \
              patch("autostream_watcher_client.forward_log_level_to_watcher") as m_forward:
             api_mod.send_log_level_put_json(h, state, {"level": "verbose"}, "user")
 
@@ -466,7 +466,7 @@ class TestLogLevelPutRouting:
 
         with patch("autostream_webui.AUTH", auth), \
              patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.send_browser_api_error") as m_error, \
+             patch("webui.common.send_browser_api_error") as m_error, \
              patch("autostream_webui.send_log_level_put_json") as m_put:
             h.do_PUT()
 
@@ -484,7 +484,7 @@ class TestSendPlayingStatusJson:
         sent = []
 
         with fake_session({"active": True, "source": "input1"}), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
+             patch("webui.common.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
         assert sent[0][0] == 200
@@ -498,7 +498,7 @@ class TestSendPlayingStatusJson:
         sent = []
 
         with fake_session({"active": True, "source": "replay"}), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
+             patch("webui.common.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
         assert sent[0][1]["playing"] is True
@@ -508,7 +508,7 @@ class TestSendPlayingStatusJson:
         sent = []
 
         with fake_session({"active": False, "source": None}), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
+             patch("webui.common.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
         assert sent[0][1]["playing"] is False
@@ -519,8 +519,8 @@ class TestSendPlayingStatusJson:
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api._session_playing", side_effect=RuntimeError("oops")), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
+        with patch("webui.common._session_playing", side_effect=RuntimeError("oops")), \
+             patch("webui.common.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
         assert sent[0][0] == 200  # HTTP 200 with explicit uncertain body

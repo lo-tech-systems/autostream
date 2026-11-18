@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from autostream_sysutils import get_system_hostname, sdcard_health_state
-from autostream_webui_common import _config_snapshot
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
 
 
 # -----------------------------------------------------------------------------
@@ -72,7 +72,7 @@ def _setup_build_ctx(handler, state: WebUIState, auth) -> SetupCtx:
     """
     from webui.browser.setup import cards_bluetooth, cards_dials, cards_factory_reset
 
-    parsed = _config_snapshot(state)
+    parsed = common._config_snapshot(state)
     monitor_devices = state.get_monitor_devices()
     _bt_state = cards_bluetooth._setup_compute_bluetooth_state(state)
     try:

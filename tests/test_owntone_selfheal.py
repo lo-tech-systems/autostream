@@ -617,7 +617,7 @@ class TestStatusPassthrough:
         """send_json's allow_nan=False + sanitizing fallback: an unexpected
         nan/inf from any future producer must yield strict JSON with the
         offending values nulled, never an -Infinity payload."""
-        from autostream_webui_api import send_json
+        from webui.common import send_json
 
         handler = MagicMock()
         handler.wfile = MagicMock()

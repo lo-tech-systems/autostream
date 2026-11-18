@@ -39,8 +39,8 @@ def _capture(fn):
     def fake_send_json(handler, code, data):
         sent.append((code, dict(data)))
 
-    with patch("autostream_webui_dials.send_json", side_effect=fake_send_json), \
-         patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+    with patch("webui.common.send_json", side_effect=fake_send_json), \
+         patch("webui.common.send_json", side_effect=fake_send_json):
         fn()
     return sent
 

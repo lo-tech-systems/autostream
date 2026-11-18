@@ -500,8 +500,8 @@ class TestSendNetworkStatusJson:
             captured["error"] = msg
 
         with patch("autostream_watcher_client.watcher_request", return_value=(watcher_status, watcher_data)), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+             patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_browser_api_error", side_effect=fake_error):
             send_network_status_json(handler)
 
         return captured
@@ -551,7 +551,7 @@ class TestSendNetworkStatusJson:
             captured["code"] = code
 
         with patch("autostream_watcher_client.watcher_request", side_effect=Exception("refused")), \
-             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+             patch("webui.common.send_browser_api_error", side_effect=fake_error):
             send_network_status_json(handler)
 
         assert captured["code"] == 503
@@ -582,8 +582,8 @@ class TestSendNetworkSetupJson:
             captured["error"] = msg
 
         with patch("autostream_watcher_client.watcher_request", return_value=(watcher_status, watcher_data)), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+             patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_browser_api_error", side_effect=fake_error):
             send_network_setup_json(handler, body)
 
         return captured
@@ -609,7 +609,7 @@ class TestSendNetworkSetupJson:
 
         handler = _make_handler()
         with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
-             patch("autostream_webui_api.send_json"):
+             patch("webui.common.send_json"):
             send_network_setup_json(handler, {"action": "start_setup", "csrf_token": "tok"})
 
         assert "csrf_token" not in (forwarded.get("body") or {})
@@ -629,7 +629,7 @@ class TestSendNetworkSetupJson:
         def fake_error(h, code, msg):
             captured["code"] = code
 
-        with patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+        with patch("webui.common.send_browser_api_error", side_effect=fake_error):
             send_network_setup_json(handler, "not a dict")  # type: ignore[arg-type]
 
         assert captured["code"] == 400
@@ -650,7 +650,7 @@ class TestSendNetworkSetupJson:
             captured["code"] = code
 
         with patch("autostream_watcher_client.watcher_request", side_effect=OSError("refused")), \
-             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+             patch("webui.common.send_browser_api_error", side_effect=fake_error):
             send_network_setup_json(handler, {"action": "start_setup"})
 
         assert captured["code"] == 503
@@ -676,8 +676,8 @@ class TestSendNetworkRoamingJson:
             captured["error"] = msg
 
         with patch("autostream_watcher_client.watcher_request", return_value=(watcher_status, watcher_data)), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+             patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_browser_api_error", side_effect=fake_error):
             send_network_roaming_json(handler, body)
 
         return captured
@@ -693,7 +693,7 @@ class TestSendNetworkRoamingJson:
 
         handler = _make_handler()
         with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
-             patch("autostream_webui_api.send_json"):
+             patch("webui.common.send_json"):
             send_network_roaming_json(handler, {"managed": True, "csrf_token": "tok"})
 
         assert forwarded["method"] == "POST"
@@ -709,7 +709,7 @@ class TestSendNetworkRoamingJson:
 
         handler = _make_handler()
         with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
-             patch("autostream_webui_api.send_json"):
+             patch("webui.common.send_json"):
             send_network_roaming_json(handler, {"managed": False})
 
         assert forwarded["body"] == {"action": "set_roaming_management", "managed": False}
@@ -745,7 +745,7 @@ class TestSendNetworkRoamingJson:
         def fake_error(h, code, msg):
             captured["code"] = code
 
-        with patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error), \
+        with patch("webui.common.send_browser_api_error", side_effect=fake_error), \
              patch("autostream_watcher_client.watcher_request") as request:
             send_network_roaming_json(handler, "not a dict")  # type: ignore[arg-type]
 
@@ -761,7 +761,7 @@ class TestSendNetworkRoamingJson:
 
         handler = _make_handler()
         with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
-             patch("autostream_webui_api.send_json"):
+             patch("webui.common.send_json"):
             send_network_roaming_json(handler, {"managed": True, "csrf_token": "tok"})
 
         assert "csrf_token" not in (forwarded.get("body") or {})
@@ -782,7 +782,7 @@ class TestSendNetworkRoamingJson:
             captured["code"] = code
 
         with patch("autostream_watcher_client.watcher_request", side_effect=OSError("refused")), \
-             patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
+             patch("webui.common.send_browser_api_error", side_effect=fake_error):
             send_network_roaming_json(handler, {"managed": True})
 
         assert captured["code"] == 503
@@ -835,7 +835,7 @@ class TestRouteWiring:
             "autostream_dials", "autostream_players",
             "autostream_mdns", "autostream_commissioning",
             "autostream_log_policy",
-            "autostream_webui_common", "autostream_webui_dials",
+            "webui.common", "autostream_webui_dials",
             "autostream_webui_page_about", "autostream_webui_page_equaliser",
             "autostream_webui_page_airplay", "autostream_webui_page_logs",
             "autostream_webui_page_owntone", "webui.browser.setup.page",
@@ -853,7 +853,7 @@ class TestRouteWiring:
             del sys.modules["autostream_webui"]
 
         # Provide minimal symbols that autostream_webui imports from stubs
-        sys.modules["autostream_webui_common"].build_nav_bar_html = MagicMock(return_value="")  # type: ignore[attr-defined]
+        sys.modules["webui.common"].build_nav_bar_html = MagicMock(return_value="")  # type: ignore[attr-defined]
         for attr in ("send_about_page", "send_about_system_json"):
             setattr(sys.modules["autostream_webui_page_about"], attr, MagicMock())
         for attr in ("send_equaliser_page", "send_remote_equaliser_page"):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""autostream_webui_common.py
+"""webui/common.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -12,16 +12,15 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
-import subprocess
-import threading
 from datetime import datetime
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from typing import Optional
 
-import autostream_webui_static as static
+from webui import static
 from autostream_settings import SettingsView
-from autostream_auth import FLASH_COOKIE_NAME
+from autostream_auth import FLASH_COOKIE_NAME, parse_cookie_header
 from autostream_bluetooth_client import classify_loopback_hw
 from autostream_config import (
     DEFAULT_STYLUS_LIFE_HOURS,
@@ -29,7 +28,8 @@ from autostream_config import (
 )
 from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
-from autostream_webui_assets import (
+from autostream_state import store
+from webui.assets import (
     logo_banner_html,
     NAV_ICON_ABOUT,
     NAV_ICON_EQUALISER,
@@ -38,7 +38,7 @@ from autostream_webui_assets import (
     NAV_ICON_SETUP,
     VIEWPORT_META,
 )
-from autostream_webui_components import banner_html
+from webui.components import banner_html
 
 import json as _json
 
@@ -49,6 +49,19 @@ def _config_snapshot(state):
     if not isinstance(settings, SettingsView):
         raise TypeError("the web pages need a settings view on their state")
     return settings.snapshot()
+
+
+def _effective_control_other_appliances(state) -> bool:
+    """Return True if this appliance is configured to allow controlling other appliances.
+
+    Fails open (returns True) on any config read error so a misconfiguration
+    never inadvertently locks out functionality.
+    """
+    try:
+        parsed = _config_snapshot(state)
+        return parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
+    except Exception:
+        return True
 
 
 # -----------------------------------------------------------------------------
@@ -73,6 +86,47 @@ def _set_flash_cookie(handler, message: str, *, max_age: int = 30, flash_type: s
         handler._pending_set_cookies = [cookie]
     else:
         pending.append(cookie)
+
+
+def _route_flash_msg_and_type(handler) -> tuple:
+    """Reproduces do_GET's former shared flash-message preamble for a
+    single migrated page route: msg from ?msg=, else the one-shot flash
+    cookie (consumed on read). Only used by routes that used to fall
+    within do_GET's cookie-consuming branch (i.e. not /owntone-restarting
+    and not any /api/* path) -- see that former preamble's comment, now
+    only reachable for the handful of legacy paths still in do_GET's
+    elif chain.
+    """
+    query = urlparse(handler.path).query
+    qs = parse_qs(query)
+    msg = (qs.get("msg") or [""])[0]
+    flash_type = "success"
+    if msg:
+        colon = msg.find(":")
+        if colon > 0 and msg[:colon] in ("error", "warning"):
+            flash_type = msg[:colon]
+            msg = msg[colon + 1:]
+    if not msg:
+        cookies = parse_cookie_header(handler.headers.get("Cookie"))
+        raw = cookies.get(FLASH_COOKIE_NAME, "")
+        if raw:
+            try:
+                decoded = unquote(raw)
+            except Exception:
+                decoded = raw
+            colon = decoded.find(":")
+            if colon > 0 and decoded[:colon] in ("error", "warning"):
+                flash_type = decoded[:colon]
+                msg = decoded[colon + 1:]
+            else:
+                msg = decoded
+            clear_cookie = f"{FLASH_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"
+            pending = getattr(handler, "_pending_set_cookies", None)
+            if pending is None:
+                handler._pending_set_cookies = [clear_cookie]
+            else:
+                pending.append(clear_cookie)
+    return msg, flash_type
 
 
 # -----------------------------------------------------------------------------
@@ -124,6 +178,109 @@ def send_bytes(handler, code: int, content_type: str, body: bytes, *,
     except (BrokenPipeError, ConnectionResetError):
         # Client navigated away / refreshed / closed the tab mid-response.
         return
+
+
+# -----------------------------------------------------------------------------
+# Core JSON response helper
+# -----------------------------------------------------------------------------
+
+# Statuses intercepted by the main autostream NGINX configuration.
+# error_page 404 502 503 504 = @upstream_failed redirects these to an offline
+# page, so they cannot be used as browser transport status for structured JSON.
+# See system/nginx/autostream-nginx.conf and docs/API-ERROR-CONTRACT.md.
+_NGINX_INTERCEPTED_STATUSES: frozenset[int] = frozenset({404, 502, 503, 504})
+
+
+def send_browser_api_error(
+    handler,
+    semantic_status: int,
+    error: str,
+    *,
+    retryable: bool | None = None,
+    extra: dict | None = None,
+) -> None:
+    """Send a structured JSON error that survives the main NGINX boundary.
+
+    For statuses in _NGINX_INTERCEPTED_STATUSES (404/502/503/504) the browser
+    transport status is 200 and error_status carries the semantic code.
+    All other statuses are sent natively.
+
+    Caller-supplied extra fields are merged last; they cannot override ok,
+    error, or error_status.  The caller-provided dict is never mutated.
+    """
+    if not isinstance(semantic_status, int) or not (100 <= semantic_status <= 599):
+        raise ValueError(f"Invalid semantic_status: {semantic_status!r}")
+
+    payload: dict = {"ok": False, "error": error}
+
+    tunneled = semantic_status in _NGINX_INTERCEPTED_STATUSES
+    if tunneled:
+        payload["error_status"] = semantic_status
+
+    if retryable is not None:
+        payload["retryable"] = retryable
+
+    if extra:
+        for k, v in extra.items():
+            if k not in ("ok", "error", "error_status"):
+                payload[k] = v
+
+    transport_status = 200 if tunneled else semantic_status
+    send_json(handler, transport_status, payload)
+
+
+def _json_finite(value):
+    """Recursively replace non-finite floats (nan/inf/-inf) with None.
+
+    Fallback sanitizer for send_json(): Python's json.dumps emits NaN /
+    Infinity / -Infinity by default, which strict parsers (every browser's
+    JSON.parse) reject wholesale -- one stray sentinel invalidates the
+    entire payload.
+    """
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(value, dict):
+        return {k: _json_finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_finite(v) for v in value]
+    return value
+
+
+def send_json(handler, code: int, payload: dict) -> None:
+    try:
+        # allow_nan=False makes a non-JSON-representable float a loud
+        # ValueError here instead of a silently-invalid payload that every
+        # browser rejects while every Python client accepts it.
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
+    except ValueError:
+        logging.exception(
+            "send_json: payload contains non-finite floats; sanitizing "
+            "(fix the producer - keys affected are being nulled)"
+        )
+        body = json.dumps(_json_finite(payload), allow_nan=False).encode("utf-8")
+    try:
+        handler.send_response(code)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Cache-Control", "no-store, max-age=0")
+        handler.send_header("Pragma", "no-cache")
+        handler.send_header("Expires", "0")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client navigated away / refreshed / closed the tab mid-response.
+        return
+
+
+def _session_playing(snap=None) -> bool:
+    """Whether a playback session is active (live input or repeat replay), in
+    *snap* or, when none is given, in the store's current snapshot.
+
+    The outward-facing "is this appliance playing" answer for neighbours,
+    dials, and local automation: reads the unified session state so repeat
+    replay counts.
+    """
+    return bool((snap if snap is not None else store().snapshot()).session.active)
 
 
 def build_hostname_redirect_url(handler, hostname: str, path: str = "/") -> str:
@@ -234,71 +391,6 @@ def no_input_configured_notice_html(parsed) -> str:
         "<a href='/setup'>Setup</a>, or enable Bluetooth."
         "</div>"
     )
-
-
-# -----------------------------------------------------------------------------
-# Application version
-# -----------------------------------------------------------------------------
-
-# Cached on first call; immutable for the process lifetime since an update
-# always triggers a full process restart.
-_app_version_cache: Optional[str] = None
-
-# A leaf lock: the start-up announcement and the web server's prime may both
-# ask at once; they share one helper call.
-_app_version_lock = threading.Lock()
-
-
-def get_app_version() -> str:
-    """Return the installed application version via the privileged helper.
-
-    The result is cached in memory after the first call. Because applying an
-    update always restarts the process, the version cannot change while the
-    process is running.  Every failed helper outcome (exception, nonzero exit,
-    invalid JSON, blank tag) is cached as "unknown" so repeated calls cannot
-    each incur the five-second subprocess timeout.
-    """
-    with _app_version_lock:
-        return _get_app_version_locked()
-
-
-def _get_app_version_locked() -> str:
-    global _app_version_cache
-    if _app_version_cache is not None:
-        return _app_version_cache
-
-    cmd = [
-        "/usr/bin/sudo",
-        "-n",
-        "/usr/local/libexec/autostream/autostream_admin",
-        "version-info",
-    ]
-    try:
-        p = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except Exception:
-        _app_version_cache = "unknown"
-        return _app_version_cache
-
-    if p.returncode != 0:
-        _app_version_cache = "unknown"
-        return _app_version_cache
-
-    try:
-        payload = json.loads(p.stdout or "{}")
-    except Exception:
-        _app_version_cache = "unknown"
-        return _app_version_cache
-
-    version = str(payload.get("release_tag") or "").strip()
-    _app_version_cache = version or "unknown"
-    return _app_version_cache
 
 
 # -----------------------------------------------------------------------------

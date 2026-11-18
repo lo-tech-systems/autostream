@@ -27,7 +27,7 @@ import autostream_core  # noqa: F401  (binds the intent handlers)
 import autostream_webui_api  # noqa: F401  (registers the service-field rows)
 from autostream_intents import Intent, Origin, submit
 from autostream_settings import SettingsStore, SettingsView, as_view, writable_store
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 from settings_fixtures import fixed_view
 
 
@@ -124,7 +124,7 @@ def test_no_module_outside_settings_tests_the_store_type():
 def test_no_web_module_reads_the_private_store_of_a_view():
     offenders = []
     for path in _core_modules():
-        if not path.name.startswith("autostream_webui"):
+        if not (path.name.startswith("autostream_webui") or path.parent.relative_to(_CORE).parts[:1] == ("webui",)):
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Attribute) and node.attr == "_store":
@@ -263,7 +263,7 @@ def test_save_takes_an_optional_timeout(ctx, store):
 # ------------------------------------------------ pages read only the settings
 
 def test_the_snapshot_helper_refuses_settings_that_are_not_a_view():
-    from autostream_webui_common import _config_snapshot
+    from webui.common import _config_snapshot
     state = MagicMock()
     state.settings = MagicMock()
     with pytest.raises(TypeError):

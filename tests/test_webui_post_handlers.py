@@ -94,7 +94,7 @@ def _call_output_update(body: dict, *, tmp_path: Path,
         speakers = [FakeStore.output_row(out_id, "Kitchen", selected=False, volume_percent=0)]
     FakeStore().outputs(speakers)
 
-    with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+    with patch("webui.common.send_json", side_effect=fake_send_json), \
          patch("autostream_player_service.update_output", side_effect=fake_update_output), \
          patch("autostream_player_service.submit_output_pin", side_effect=fake_submit_output_pin):
         handle_output_update(handler, state, json.dumps(body))
@@ -110,7 +110,7 @@ def _call_eq(body: str | dict, tmp_path: Path) -> dict:
     def fake_send_json(h, code, data):
         sent.append((code, data))
 
-    with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+    with patch("webui.common.send_json", side_effect=fake_send_json), \
          patch("autostream_monitor_control.set_live_input_eq", return_value=True):
         handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
@@ -138,8 +138,8 @@ def _call_gain(body: str | dict, tmp_path: Path) -> tuple:
         store = SettingsStore(cfg_path, _save_interval_seconds=9999, _writer=MagicMock())
         state = MagicMock()
         state.settings = as_view(store)
-        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+        with patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_monitor_control.set_live_input_gain", return_value=True):
             handle_live_input_gain_update(MagicMock(), state, body)
     finally:
@@ -271,7 +271,7 @@ class TestLiveInputEQValidation:
         def fake_send_json(h, code, data):
             sent.append((code, data))
 
-        with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
+        with patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_monitor_control.set_live_input_eq", mock_fn):
             handle_live_input_eq_update(MagicMock(), MagicMock(), body)
 
@@ -311,7 +311,7 @@ class TestLiveInputEQValidation:
                 result["eq_40hz_db"] = float("nan")
             return result
 
-        with patch("autostream_webui_post_handlers.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
@@ -336,7 +336,7 @@ class TestLiveInputEQValidation:
                 result["eq_8khz_db"] = float("inf")
             return result
 
-        with patch("autostream_webui_post_handlers.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
@@ -359,7 +359,7 @@ class TestLiveInputEQValidation:
                 result["eq_100hz_db"] = float("-inf")
             return result
 
-        with patch("autostream_webui_post_handlers.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
@@ -432,7 +432,7 @@ class TestLiveInputGainValidation:
             sent.append((code, data))
 
         # Delegate path now goes through autostream_webui_api; patch there.
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+        with patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_monitor_control.set_live_input_gain", mock_fn):
             handle_live_input_gain_update(MagicMock(), MagicMock(), body)
 
@@ -459,7 +459,7 @@ class TestLiveInputGainValidation:
                 result["gain_db"] = float("nan")
             return result
 
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
@@ -481,7 +481,7 @@ class TestLiveInputGainValidation:
                 result["gain_db"] = float("inf")
             return result
 
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
              patch.object(_ph.json, "loads", side_effect=patched_loads):
@@ -822,7 +822,7 @@ class TestPollDrivenPinPromptSource:
 class TestOutputRequesterPassed:
     def test_the_local_handler_names_the_webui_as_requester(self, tmp_path):
         state = _make_state(tmp_path)
-        with patch("autostream_webui_post_handlers.send_json"), \
+        with patch("webui.common.send_json"), \
              patch("autostream_appliance_models.submit_output_change",
                    return_value={"ok": True}) as mut:
             handle_output_update(MagicMock(), state, json.dumps({"id": "1", "selected": True}))
@@ -835,8 +835,8 @@ class TestOutputRequesterPassed:
         parsed.owntone.base_url = "http://localhost:3689"
         parsed.owntone.output_offsets_ms = {}
         parsed.owntone.output_airplay_modes = {}
-        with patch("autostream_webui_api.send_json"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
+        with patch("webui.common.send_json"), \
+             patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.submit_output_change",
                    return_value={"ok": True}) as mut:
             api.send_federation_output_json(

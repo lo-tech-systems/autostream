@@ -25,15 +25,14 @@ from autostream_state.live import get_live_monitor_output_rate
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
-import autostream_webui_static as static
-from autostream_webui_common import (
-    _config_snapshot,
+from webui import static
+from webui.common import (
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
-    send_html,
 )
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
 
 
 def _build_eq_appliances_for_selector() -> list:
@@ -296,7 +295,7 @@ def send_equaliser_page(
 
     parsed = None
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception:
         pass
 
@@ -350,7 +349,7 @@ def send_equaliser_page(
         active_tab="equaliser",
         dark_mode=dark_mode,
     )
-    send_html(handler, 200, page)
+    common.send_html(handler, 200, page)
 
 
 # -----------------------------------------------------------------------------
@@ -370,7 +369,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
     (appliance_unconfigured, identity conflicts, etc.) return to /.
     """
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
     except Exception:
         try:
             handler.send_error(500, "Configuration unavailable")
@@ -455,6 +454,6 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         remote_id=appliance_id,
     )
     try:
-        send_html(handler, 200, page)
+        common.send_html(handler, 200, page)
     except Exception:
         pass

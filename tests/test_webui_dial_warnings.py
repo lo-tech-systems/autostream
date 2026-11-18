@@ -23,7 +23,7 @@ import autostream_webui_routes as routes_mod
 from autostream_state import live
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE, DIAL_CAPABILITIES
 from autostream_webui_api import send_dial_warnings_post_json
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
 from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"

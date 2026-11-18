@@ -126,7 +126,7 @@ def render_home(
 
     with ExitStack() as stack:
         for p in (
-            patch("autostream_webui_page_airplay._config_snapshot",
+            patch("webui.common._config_snapshot",
                   return_value=_parsed_config(show_input_detail)),
             patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
@@ -153,7 +153,7 @@ def render_remote_home(appliance_id: str = REMOTE_APPLIANCE_ID) -> bytes:
     handler, chunks = _fake_handler()
     state = MagicMock()
     state.config_path = "dummy.ini"
-    with patch("autostream_webui_page_airplay._config_snapshot",
+    with patch("webui.common._config_snapshot",
                return_value=_parsed_config(False)), \
          patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20), \
          patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \

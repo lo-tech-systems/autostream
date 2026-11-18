@@ -36,16 +36,14 @@ from autostream_intents import Intent, Origin, submit
 from autostream_settings import SettingsView
 from autostream_state import store
 from autostream_sysutils import get_system_hostname, set_system_hostname
-from autostream_webui_api import send_json
-from autostream_webui_assets import logo_banner_html
-from autostream_webui_common import (
-    _config_snapshot,
+from webui.assets import logo_banner_html
+from webui.common import (
     build_page_html,
     build_top_banner_html,
     send_hostname_changed_page,
-    send_html as _shared_send_html,
 )
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +65,7 @@ def _first_boot_page(title: str, body_html: str, body_suffix: str = "") -> str:
 
 def _send_html(handler, content: str, status: int = 200) -> None:
     """Thin, status-defaulting wrapper over the shared send_html()."""
-    _shared_send_html(handler, status, content)
+    common.send_html(handler, status, content)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +80,7 @@ def send_first_boot_owntone_page(
 ) -> None:
     """Render the OwnTone first-boot step: discover and select the default output."""
     try:
-        snap = _config_snapshot(state)
+        snap = common._config_snapshot(state)
     except Exception:
         snap = None
 
@@ -151,7 +149,7 @@ def send_first_boot_appliance_page(
 ) -> None:
     """Render the Appliance first-boot step: ALSA device, volume, hostname, Finish."""
     try:
-        snap = _config_snapshot(state)
+        snap = common._config_snapshot(state)
     except Exception:
         snap = None
 

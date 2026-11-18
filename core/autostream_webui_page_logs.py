@@ -27,15 +27,14 @@ from autostream_config import get_log_level_options
 
 from autostream_sysutils import tail_lines
 
-import autostream_webui_static as static
-from autostream_webui_common import (
-    _config_snapshot,
+from webui import static
+from webui.common import (
     build_page_html,
     build_top_banner_html,
-    send_html,
 )
 
-from autostream_webui_state import WebUIState
+from webui.session_state import WebUIState
+from webui import common
 
 
 # -----------------------------------------------------------------------------
@@ -88,7 +87,7 @@ def send_logs_page(
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     dark_mode = False
     try:
-        parsed = _config_snapshot(state)
+        parsed = common._config_snapshot(state)
         dark_mode = parsed.webui.dark_mode
         log_path = _resolve_allowed_log_path(parsed.general.log_file)
         lines = tail_lines(str(log_path), 100)
@@ -145,7 +144,7 @@ def send_logs_page(
         active_tab="about",
         dark_mode=dark_mode,
     )
-    send_html(handler, 200, html_body)
+    common.send_html(handler, 200, html_body)
 
 
 BUNDLE_LOG_DIR = Path("/var/log/autostream")

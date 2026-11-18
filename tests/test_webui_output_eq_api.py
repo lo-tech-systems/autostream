@@ -94,7 +94,7 @@ def _call_eq_config(body: dict | str, tmp_path: Path,
 
     state = _make_state(tmp_path)
 
-    with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+    with patch("webui.common.send_json", side_effect=fake_send_json), \
          patch("autostream_monitor_control.set_live_output_gain",
                side_effect=live_exc) if live_exc else patch("autostream_monitor_control.set_live_output_gain"), \
          patch("autostream_monitor_control.set_live_output_eq"), \
@@ -114,7 +114,7 @@ def _call_eq_reset(tmp_path: Path, save_exc=None) -> tuple[int, dict]:
 
     state = _make_state(tmp_path)
 
-    with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+    with patch("webui.common.send_json", side_effect=fake_send_json), \
          patch("autostream_monitor_control.set_live_output_gain"), \
          patch("autostream_monitor_control.set_live_output_eq"), \
          (patch("autostream_monitor_control.save_config", side_effect=save_exc)
@@ -200,7 +200,7 @@ class TestOutputEQConfigAllBandReconstruction:
 
         eq_calls = []
 
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+        with patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_monitor_control.set_live_output_gain"), \
              patch("autostream_monitor_control.set_live_output_auto_trim"), \
              patch("autostream_monitor_control.set_live_output_eq",
@@ -218,7 +218,7 @@ class TestOutputEQConfigAllBandReconstruction:
         gain_calls = []
         eq_calls = []
 
-        with patch("autostream_webui_api.send_json"), \
+        with patch("webui.common.send_json"), \
              patch("autostream_monitor_control.set_live_output_auto_trim"), \
              patch("autostream_monitor_control.set_live_output_gain",
                    side_effect=lambda v, **kw: gain_calls.append(v)), \
@@ -273,7 +273,7 @@ class TestOutputEQReset:
         cfg["output_eq"]["peq1_db"] = 3.0
         state.config_path.write_text(json.dumps(cfg))
 
-        with patch("autostream_webui_api.send_json"), \
+        with patch("webui.common.send_json"), \
              patch("autostream_monitor_control.set_live_output_eq"):
             send_output_eq_reset_json(MagicMock(), state)
 
@@ -287,7 +287,7 @@ class TestOutputEQReset:
         eq_calls = []
         state = _make_state(tmp_path)
 
-        with patch("autostream_webui_api.send_json"), \
+        with patch("webui.common.send_json"), \
              patch("autostream_monitor_control.set_live_output_gain",
                    side_effect=lambda v, **kw: gain_calls.append(v)), \
              patch("autostream_monitor_control.set_live_output_eq",
@@ -313,12 +313,12 @@ class TestUpdateCheckJson:
         def fake_send_json(h, code, data):
             sent.append((code, data))
 
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+        with patch("webui.common.send_json", side_effect=fake_send_json):
             yield sent
 
     def test_nonzero_rc_returns_ok_false(self):
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater", return_value=(1, "", "error")):
             send_update_check_json(MagicMock())
@@ -326,7 +326,7 @@ class TestUpdateCheckJson:
 
     def test_zero_rc_passes_stdout_json(self):
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater",
                    return_value=(0, '{"ok": true, "tag": "v2.0.0"}', "")):
@@ -336,7 +336,7 @@ class TestUpdateCheckJson:
 
     def test_malformed_stdout_returns_ok_false(self):
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater", return_value=(0, "not-json", "")):
             send_update_check_json(MagicMock())
@@ -345,7 +345,7 @@ class TestUpdateCheckJson:
     def test_release_notes_adds_rendered_html(self):
         sent = []
         payload = json.dumps({"ok": True, "tag": "v2.0.0", "release_notes": "- a\n- b"})
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
@@ -358,7 +358,7 @@ class TestUpdateCheckJson:
     def test_hostile_release_notes_are_escaped_in_html(self):
         sent = []
         payload = json.dumps({"ok": True, "release_notes": "<script>alert(1)</script>"})
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
@@ -369,7 +369,7 @@ class TestUpdateCheckJson:
     def test_no_release_notes_key_means_no_html_field(self):
         sent = []
         payload = json.dumps({"ok": True, "tag": "v2.0.0"})
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
@@ -378,7 +378,7 @@ class TestUpdateCheckJson:
     def test_empty_release_notes_means_no_html_field(self):
         sent = []
         payload = json.dumps({"ok": True, "release_notes": ""})
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
@@ -387,7 +387,7 @@ class TestUpdateCheckJson:
     def test_non_dict_stdout_passes_through_unchanged(self):
         sent = []
         payload = json.dumps(["not", "a", "dict"])
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
@@ -401,7 +401,7 @@ class TestUpdateCheckJson:
         state = MagicMock()
         state.settings = MagicMock(spec=SettingsStore)
         state.settings.save_now = MagicMock(side_effect=lambda **kw: order.append("flush"))
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: None), \
              patch("autostream_webui_api.run_updater",
                    side_effect=lambda *a, **kw: (order.append("check"), (0, '{"ok": true}', ""))[1]):
@@ -414,7 +414,7 @@ class TestUpdateCheckJson:
         state = MagicMock()
         state.settings = MagicMock(spec=SettingsStore)
         state.settings.save_now = MagicMock(side_effect=RuntimeError("flush failed"))
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater",
                    return_value=(0, '{"ok": true}', "")):
@@ -423,7 +423,7 @@ class TestUpdateCheckJson:
 
     def test_no_state_runs_check_without_flush(self):
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_updater",
                    return_value=(0, '{"ok": true}', "")):
@@ -439,7 +439,7 @@ class TestUpdateStatusJson:
     def test_nonzero_rc_returns_error_status(self):
         sent = []
         proc = MagicMock(returncode=1, stdout="")
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_admin_cmd", return_value=proc):
             send_update_status_json(MagicMock())
@@ -451,7 +451,7 @@ class TestUpdateStatusJson:
         payload = json.dumps({"ok": True, "status": "success", "percent": 100,
                                "message": "Done", "last_run_at": "2026-01-01"})
         proc = MagicMock(returncode=0, stdout=payload)
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_admin_cmd", return_value=proc):
             send_update_status_json(MagicMock())
@@ -461,7 +461,7 @@ class TestUpdateStatusJson:
     def test_malformed_stdout_returns_error_status(self):
         sent = []
         proc = MagicMock(returncode=0, stdout="not-json")
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui_api.run_admin_cmd", return_value=proc):
             send_update_status_json(MagicMock())

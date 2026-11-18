@@ -347,9 +347,9 @@ class TestPokeSites:
             patch("autostream_playback_tracking.reset_input_stylus",
                   return_value=SimpleNamespace(applied=True, persisted=True,
                                                last_service_at="stamp")),
-            patch("autostream_webui_api._config_snapshot", side_effect=OSError("no config")),
+            patch("webui.common._config_snapshot", side_effect=OSError("no config")),
             fake_playback(SimpleNamespace(inputs={})),
-            patch("autostream_webui_api.send_json"),
+            patch("webui.common.send_json"),
             patch("autostream_dial_warnings.poke") as poke,
         ):
             api.send_service_reset_json(
@@ -363,8 +363,8 @@ class TestPokeSites:
             patch("autostream_playback_tracking.reset_input_stylus",
                   return_value=SimpleNamespace(applied=False, persisted=False,
                                                last_service_at=None)),
-            patch("autostream_webui_api._config_snapshot", side_effect=OSError("no config")),
-            patch("autostream_webui_api.send_json"),
+            patch("webui.common._config_snapshot", side_effect=OSError("no config")),
+            patch("webui.common.send_json"),
             patch("autostream_dial_warnings.poke") as poke,
         ):
             api.send_service_reset_json(
@@ -388,11 +388,11 @@ class TestPokeSites:
             audio1_enabled=True,
         )
         with (
-            patch("autostream_webui_api._config_snapshot", return_value=parsed),
+            patch("webui.common._config_snapshot", return_value=parsed),
             patch("autostream_playback_tracking.update_playback_input_config"),
             patch("autostream_webui_api.classify_loopback_hw", return_value="x"),
             fake_playback(SimpleNamespace(inputs={})),
-            patch("autostream_webui_api.send_json"),
+            patch("webui.common.send_json"),
             patch("autostream_dial_warnings.poke") as poke,
         ):
             api.send_service_config_json(

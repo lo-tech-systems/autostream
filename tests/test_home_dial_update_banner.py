@@ -126,7 +126,7 @@ def _home_state(tmp_path) -> dict:
             fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="host"),
-            patch("autostream_appliance_models.get_app_version", return_value="2.0.0"),
+            patch("webui.system.updates.get_app_version", return_value="2.0.0"),
         ):
             stack.enter_context(p)
         return models.build_home_state(store().snapshot(), MagicMock())
@@ -183,7 +183,7 @@ def _render_home() -> str:
     from track_id.models import disabled_snapshot
     with ExitStack() as stack:
         for p in (
-            patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+            patch("webui.common._config_snapshot", return_value=parsed),
             patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
@@ -269,7 +269,7 @@ class _Entry:
 def _cards(sightings, entries):
     with patch("webui.browser.setup.cards_dials._get_dial_sightings", return_value=sightings), \
          patch("webui.browser.setup.cards_dials.parse_dial_entries", return_value=entries), \
-         patch("autostream_webui_common.get_app_version", return_value="1.0.0"):
+         patch("webui.system.updates.get_app_version", return_value="1.0.0"):
         return cards_dials._setup_dial_cards_html()
 
 

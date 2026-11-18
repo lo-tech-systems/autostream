@@ -18,8 +18,8 @@ def test_core_sources_are_sorted_and_skip_bytecode():
 
 
 def test_module_text_reads_one_module():
-    text = _source_text.module_text("autostream_webui_assets")
-    assert text == _source_text.module_path("autostream_webui_assets").read_text(encoding="utf-8")
+    text = _source_text.module_text("webui.assets")
+    assert text == _source_text.module_path("webui.assets").read_text(encoding="utf-8")
 
 
 def test_module_text_reads_a_package_module():

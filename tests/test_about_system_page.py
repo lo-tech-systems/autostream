@@ -21,6 +21,7 @@ import autostream_state as _state
 from autostream_sysutils import StaticSystemFacts
 import autostream_webui_page_about as _about
 from _source_text import page_with_static
+import webui.system.updates as updates
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +123,7 @@ def _collect_with_mocks(
         return r
 
     _state.store().publish_for_tests("monitor", monitor_info)
-    with patch("autostream_webui_page_about.get_app_version", return_value=autostream_version), \
+    with patch("webui.system.updates.get_app_version", return_value=autostream_version), \
          patch("autostream_webui_page_about._get_wifi_watcher_version", return_value=wifi_watcher_version), \
          patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=owntone_info), \
          patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=vibra_info), \
@@ -493,7 +494,7 @@ class TestMissingDiskAndSd:
         assert result["cpu_temperature"] == {"available": False}
 
     def test_cpu_temperature_read_failure_does_not_sink_payload(self):
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -526,7 +527,7 @@ class TestMissingDiskAndSd:
     def test_cpu_load_failure_does_not_sink_payload(self):
         """A raising collector helper must degrade only its own field, mirroring
         how a None cpu_temperature_c never sets ok=false."""
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -542,7 +543,7 @@ class TestMissingDiskAndSd:
         assert result["cpu_load"] == {"available": False}
 
     def test_memory_failure_does_not_sink_payload(self):
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -796,7 +797,7 @@ class TestSystemctlCommandSecurity:
             r.returncode = 0
             return r
 
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -834,7 +835,7 @@ class TestSystemctlCommandSecurity:
             r.returncode = 0
             return r
 
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -856,7 +857,7 @@ class TestSystemctlCommandSecurity:
 class TestPartialFailureDegradation:
 
     def test_cpu_failure_does_not_set_ok_false(self):
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -872,7 +873,7 @@ class TestPartialFailureDegradation:
         assert result["cpu_temperature_c"] is None
 
     def test_disk_failure_does_not_set_ok_false(self):
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -902,7 +903,7 @@ class TestCollectorNoIO:
 
     def test_does_not_call_resolve_backend(self):
         with patch("autostream_player_service.resolve_backend") as mock_rb, \
-             patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+             patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -923,7 +924,7 @@ class TestCollectorNoIO:
             captured_kwargs.update(kwargs)
             return _owntone_info()
 
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", side_effect=fake_owntone), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -948,7 +949,7 @@ class TestSnapshotReadsAreMemoryOnly:
 
     def test_monitor_read_is_not_live_io(self):
         _state.store().publish_for_tests("monitor", _monitor_info(build="9.9"))
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -1013,57 +1014,51 @@ class TestOwnToneRuntimeInfoNoBaseUrl:
 class TestGetAppVersionCaching:
 
     def setup_method(self):
-        import autostream_webui_common as _c
-        self._original = _c._app_version_cache
-        _c._app_version_cache = None
+        self._original = updates._app_version_cache
+        updates._app_version_cache = None
 
     def teardown_method(self):
-        import autostream_webui_common as _c
-        _c._app_version_cache = self._original
+        updates._app_version_cache = self._original
 
     def test_exception_is_cached_as_unknown(self):
-        import autostream_webui_common as _c
-        with patch("autostream_webui_common.subprocess.run", side_effect=OSError("not found")):
-            v1 = _c.get_app_version()
+        with patch("webui.system.updates.subprocess.run", side_effect=OSError("not found")):
+            v1 = updates.get_app_version()
             # cache should be set now so subprocess not called again
-            with patch("autostream_webui_common.subprocess.run",
+            with patch("webui.system.updates.subprocess.run",
                        side_effect=AssertionError("must not call twice")):
-                v2 = _c.get_app_version()
+                v2 = updates.get_app_version()
         assert v1 == "unknown"
         assert v2 == "unknown"
 
     def test_nonzero_exit_is_cached_as_unknown(self):
-        import autostream_webui_common as _c
         r = MagicMock()
         r.returncode = 1
         r.stdout = ""
-        with patch("autostream_webui_common.subprocess.run", return_value=r):
-            v1 = _c.get_app_version()
-            with patch("autostream_webui_common.subprocess.run",
+        with patch("webui.system.updates.subprocess.run", return_value=r):
+            v1 = updates.get_app_version()
+            with patch("webui.system.updates.subprocess.run",
                        side_effect=AssertionError("must not call twice")):
-                v2 = _c.get_app_version()
+                v2 = updates.get_app_version()
         assert v1 == "unknown"
         assert v2 == "unknown"
 
     def test_invalid_json_is_cached_as_unknown(self):
-        import autostream_webui_common as _c
         r = MagicMock()
         r.returncode = 0
         r.stdout = "not json"
-        with patch("autostream_webui_common.subprocess.run", return_value=r):
-            v1 = _c.get_app_version()
+        with patch("webui.system.updates.subprocess.run", return_value=r):
+            v1 = updates.get_app_version()
         assert v1 == "unknown"
-        assert _c._app_version_cache == "unknown"
+        assert updates._app_version_cache == "unknown"
 
     def test_blank_release_tag_is_cached_as_unknown(self):
-        import autostream_webui_common as _c
         r = MagicMock()
         r.returncode = 0
         r.stdout = '{"release_tag": ""}'
-        with patch("autostream_webui_common.subprocess.run", return_value=r):
-            v1 = _c.get_app_version()
+        with patch("webui.system.updates.subprocess.run", return_value=r):
+            v1 = updates.get_app_version()
         assert v1 == "unknown"
-        assert _c._app_version_cache == "unknown"
+        assert updates._app_version_cache == "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -1157,7 +1152,7 @@ class TestSendJsonHeaders:
         handler.send_response.side_effect = lambda code: sent_responses.append(code)
         handler.send_header.side_effect = lambda k, v: sent_headers.update({k: v})
 
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              fake_playback(_playback_snap()), \
@@ -1253,9 +1248,9 @@ def _render_about_page_html() -> str:
     handler.wfile = buf
     state = MagicMock()
 
-    with patch("autostream_webui_page_about.get_app_version", return_value="1.2.3"), \
+    with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
          patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
-         patch("autostream_webui_page_about._config_snapshot", return_value=None), \
+         patch("webui.common._config_snapshot", return_value=None), \
          patch("autostream_webui_page_about.load_license_text", return_value=""), \
          patch("autostream_webui_page_about.render_license_md", return_value=""):
         _about.send_about_page(handler, state)
@@ -1405,9 +1400,9 @@ class TestAboutPageNoLiveData:
         handler.wfile = io.BytesIO()
         state = MagicMock()
 
-        with patch("autostream_webui_page_about.get_app_version", return_value="1.2.3"), \
+        with patch("webui.system.updates.get_app_version", return_value="1.2.3"), \
              patch("autostream_webui_page_about.build_top_banner_html", return_value=("", "")), \
-             patch("autostream_webui_page_about._config_snapshot", return_value=None), \
+             patch("webui.common._config_snapshot", return_value=None), \
              patch("autostream_webui_page_about.load_license_text", return_value=""), \
              patch("autostream_webui_page_about.render_license_md", return_value=""), \
              patch("autostream_webui_page_about.store") as m_mon, \
@@ -1485,7 +1480,7 @@ class TestSnapshotExceptionIsolation:
         boom = RuntimeError("simulated accessor failure")
 
         patches = {
-            "autostream_webui_page_about.get_app_version":
+            "webui.system.updates.get_app_version":
                 (boom if raise_at == "app_version" else "1.0"),
             "autostream_webui_page_about._get_wifi_watcher_version":
                 (boom if raise_at == "wifi_watcher" else "1.0.0"),
@@ -1525,7 +1520,7 @@ class TestSnapshotExceptionIsolation:
              patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            with ctx["autostream_webui_page_about.get_app_version"], \
+            with ctx["webui.system.updates.get_app_version"], \
                  ctx["autostream_webui_page_about._get_wifi_watcher_version"], \
                  ctx["monitor"], \
                  ctx["autostream_webui_page_about.get_owntone_runtime_info"], \

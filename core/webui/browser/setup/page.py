@@ -16,12 +16,10 @@ import html
 import logging
 from typing import Optional
 
-from autostream_webui_assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED, INFO_MODAL_HTML
-import autostream_webui_static as static
-from autostream_webui_common import build_page_html, build_top_banner_html, send_html
-from autostream_webui_api import send_json
-from autostream_webui_state import WebUIState
-import autostream_webui_common
+from webui.assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED, INFO_MODAL_HTML
+from webui import static
+from webui.common import build_page_html, build_top_banner_html
+from webui.session_state import WebUIState
 from webui.browser.setup import (
     cards_bluetooth,
     cards_customise,
@@ -33,6 +31,8 @@ from webui.browser.setup import (
     cards_track_id,
     context,
 )
+from webui import common
+from webui.system import updates
 
 
 def handle_setup_card_get(handler, state: WebUIState, auth, key: str) -> None:
@@ -44,15 +44,15 @@ def handle_setup_card_get(handler, state: WebUIState, auth, key: str) -> None:
     """
     card = next((c for c in context.CARDS if c.key == key), None)
     if card is None:
-        send_json(handler, 404, {"ok": False, "error": "unknown_card"})
+        common.send_json(handler, 404, {"ok": False, "error": "unknown_card"})
         return
     try:
         ctx = context._setup_build_ctx(handler, state, auth)
     except Exception:
         logging.exception("handle_setup_card_get: failed to build setup context for card %r", key)
-        send_json(handler, 200, {"ok": False, "error": "config_error"})
+        common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
-    send_json(handler, 200, {"ok": True, "html": card.render_detail(ctx)})
+    common.send_json(handler, 200, {"ok": True, "html": card.render_detail(ctx)})
 
 
 # -----------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def send_setup_page(
     factory_reset_modal = ctx.factory_reset["modal"]
     reboot_modal = ctx.factory_reset["reboot_modal"]
 
-    _app_ver = autostream_webui_common.get_app_version()
+    _app_ver = updates.get_app_version()
 
     # Every card's collapsed summary row is rendered eagerly
     # (cheap -- no detail-panel HTML is built for cards the user hasn't
@@ -403,4 +403,4 @@ def send_setup_page(
         active_tab="setup",
         dark_mode=parsed.webui.dark_mode,
     )
-    send_html(handler, 200, html_body)
+    common.send_html(handler, 200, html_body)

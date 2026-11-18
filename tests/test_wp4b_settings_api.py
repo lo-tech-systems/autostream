@@ -72,7 +72,7 @@ def _post(state, field: str, value: Any):
 
     handler.wfile.write.side_effect = _write
 
-    with patch("autostream_webui_api.send_json", side_effect=lambda h, c, d: sent.append({"code": c, "body": d})):
+    with patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append({"code": c, "body": d})):
         send_settings_post_json(handler, state, {"field": field, "value": value})
 
     return sent[0] if sent else {"code": None, "body": {}}

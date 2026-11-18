@@ -51,14 +51,14 @@ def _minimal_cfg(tmp_path: Path) -> Path:
 class TestWebUIStateSettingsAttribute:
     def test_a_state_needs_a_settings_view(self, tmp_path):
         import pytest
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         with pytest.raises(TypeError):
             WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
         with pytest.raises(TypeError):
             WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=None)
 
     def test_settings_stored_from_constructor(self, tmp_path):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_settings import SettingsStore
         cfg = _minimal_cfg(tmp_path)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -69,7 +69,7 @@ class TestWebUIStateSettingsAttribute:
         store.close(save=False)
 
     def test_settings_attribute_mutable(self, tmp_path):
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_settings import SettingsStore
         cfg = _minimal_cfg(tmp_path)
         state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=fixed_view())
@@ -86,9 +86,9 @@ class TestWebUIStateSettingsAttribute:
 
 class TestConfigSnapshot:
     def test_reads_from_store_when_available(self, tmp_path):
-        from autostream_webui_common import _config_snapshot
+        from webui.common import _config_snapshot
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         cfg = _minimal_cfg(tmp_path)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -102,7 +102,7 @@ class TestConfigSnapshot:
 
     def test_refuses_settings_that_are_not_a_view(self, tmp_path):
         import pytest
-        from autostream_webui_common import _config_snapshot
+        from webui.common import _config_snapshot
 
         state = MagicMock()
         state.settings = MagicMock()
@@ -111,9 +111,9 @@ class TestConfigSnapshot:
 
     def test_store_snapshot_is_independent(self, tmp_path):
         """Each _config_snapshot call returns a fresh object."""
-        from autostream_webui_common import _config_snapshot
+        from webui.common import _config_snapshot
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         cfg = _minimal_cfg(tmp_path)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)

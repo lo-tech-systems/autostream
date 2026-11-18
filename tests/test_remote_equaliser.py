@@ -203,7 +203,7 @@ class TestRemoteEqualiserPageContent:
 
         parsed = MagicMock()
         parsed.webui.dark_mode = False
-        with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+        with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"):
@@ -394,7 +394,7 @@ class TestEqualiserCurveSampleRate:
             peq1_db=0.0, peq2_db=0.0, peq3_db=0.0,
             peq4_db=0.0, peq5_db=0.0, peq6_db=0.0,
         )
-        with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+        with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"), \
@@ -422,7 +422,7 @@ class TestEqualiserCurveSampleRate:
 
         parsed = MagicMock()
         parsed.webui.dark_mode = False
-        with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+        with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"), \
@@ -458,7 +458,7 @@ class TestEqualiserCurveSampleRate:
         # No monitor patch here -- real get_live_monitor_output_rate() runs
         # against a socket that doesn't exist in the test sandbox, exercising
         # the actual unreachable-monitor fallback path end to end.
-        with patch("autostream_webui_page_equaliser._config_snapshot", return_value=parsed), \
+        with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"):

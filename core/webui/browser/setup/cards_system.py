@@ -15,9 +15,9 @@ from autostream_players import (
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
 )
-from autostream_webui_common import settings_card_html
-import autostream_webui_common
+from webui.common import settings_card_html
 from webui.browser.setup import cards_bluetooth, context
+from webui.system import updates
 
 
 def _setup_network_card_html() -> str:
@@ -136,7 +136,7 @@ def summary_system(ctx: context.SetupCtx) -> str:
     _au_state = "Auto-update: On" if ctx.parsed.updates.auto_update else "Auto-update: Off"
     if ctx.parsed.updates.update_channel == "dev":
         _au_state += " - Pre-release channel"
-    return html.escape(f"{ctx.current_hostname} · v{autostream_webui_common.get_app_version()} · {_au_state}")
+    return html.escape(f"{ctx.current_hostname} · v{updates.get_app_version()} · {_au_state}")
 
 
 def detail_system(ctx: context.SetupCtx) -> str:

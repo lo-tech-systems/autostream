@@ -226,7 +226,7 @@ def _render_local_home_html() -> str:
     buf_result = MagicMock(ok=True, value="2250")
 
     patches = [
-        _patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+        _patch("webui.common._config_snapshot", return_value=parsed),
         _patch("autostream_webui_page_airplay.get_appliance_id", return_value="00000000000000000000"),
         _patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         _patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
@@ -284,7 +284,7 @@ class TestOutputsEmptyToleranceConstant:
         parsed.repeat.codec = "auto"
 
         patches = [
-            _patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed),
+            _patch("webui.common._config_snapshot", return_value=parsed),
             _patch("autostream_webui_page_airplay.get_appliance_id", return_value="00000000000000000000"),
             _patch("autostream_webui_page_airplay._build_appliances_for_selector", return_value=[]),
             _patch("autostream_webui_page_airplay.build_appliance_selector_html", return_value=""),

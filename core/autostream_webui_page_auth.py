@@ -17,16 +17,17 @@ from __future__ import annotations
 import urllib.parse
 
 import autostream_auth
-import autostream_webui_static as static
-from autostream_webui_assets import LICENSE_BANNER_CSS, logo_banner_html
-from autostream_webui_common import _config_snapshot, build_nav_bar_html, send_html
+from webui import static
+from webui.assets import LICENSE_BANNER_CSS, logo_banner_html
+from webui.common import build_nav_bar_html
+from webui import common
 
 _TITLE = "autostream"
 
 
 def _dark_mode(state) -> bool:
     try:
-        return bool(_config_snapshot(state).webui.dark_mode)
+        return bool(common._config_snapshot(state).webui.dark_mode)
     except Exception:
         return False
 
@@ -91,4 +92,4 @@ def send_auth_page(handler, state, auth, query: str) -> None:
 
     nonce = auth.issue_nonce(handler)
 
-    send_html(handler, 200, render_auth_page(next_path, nonce, bool(err), _dark_mode(state)))
+    common.send_html(handler, 200, render_auth_page(next_path, nonce, bool(err), _dark_mode(state)))

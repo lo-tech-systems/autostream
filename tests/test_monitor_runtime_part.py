@@ -21,6 +21,7 @@ import autostream_core as core
 import autostream_state as state
 import autostream_webui_api as api
 import autostream_selfheal as selfheal
+import webui.common as webui_common
 
 
 def snap():
@@ -79,7 +80,7 @@ class TestHealthPart:
         handler = MagicMock()
         handler.wfile = io.BytesIO()
         with fake_levels([]), \
-             patch.object(api, "_session_playing", return_value=False):
+             patch.object(webui_common, "_session_playing", return_value=False):
             api.send_status_json(handler, None)
         body = json.loads(handler.wfile.getvalue().decode("utf-8"))
         assert body["owntone_selfheal"] == {

@@ -31,7 +31,7 @@ import _source_text
 _SETUP_MOCK_HOMES = {
     "get_system_hostname": "webui.browser.setup.context",
     "get_ap_ssid": "webui.browser.setup.cards_factory_reset",
-    "get_app_version": "autostream_webui_common",
+    "get_app_version": "webui.system.updates",
     "_get_dial_sightings": "webui.browser.setup.cards_dials",
     "parse_dial_entries": "webui.browser.setup.cards_dials",
     "build_top_banner_html": "webui.browser.setup.page",
@@ -39,7 +39,7 @@ _SETUP_MOCK_HOMES = {
     "_bluetooth_installed": "webui.browser.setup.cards_bluetooth",
     "_bluetooth_services_enabled": "webui.browser.setup.cards_bluetooth",
     "_bluetooth_onboard_enabled": "webui.browser.setup.cards_bluetooth",
-    "_config_snapshot": "webui.browser.setup.context",
+    "_config_snapshot": "webui.common",
 }
 
 # What a render sees unless a test says otherwise. The names left out are not

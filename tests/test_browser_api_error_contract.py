@@ -34,13 +34,13 @@ class TestSendBrowserApiError:
 
     def _call(self, semantic_status, error="test_error", **kwargs):
         """Call send_browser_api_error(), capture (transport_status, payload)."""
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         captured = []
 
         def fake_send_json(handler, code, payload):
             captured.append((code, payload))
 
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+        with patch("webui.common.send_json", side_effect=fake_send_json):
             send_browser_api_error(MagicMock(), semantic_status, error, **kwargs)
 
         assert len(captured) == 1
@@ -116,25 +116,25 @@ class TestSendBrowserApiError:
 
     # 9. invalid status values fail predictably
     def test_invalid_status_string_raises(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         with pytest.raises((ValueError, TypeError)):
             send_browser_api_error(MagicMock(), "404", "x")
 
     def test_invalid_status_99_raises(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         with pytest.raises(ValueError):
             send_browser_api_error(MagicMock(), 99, "x")
 
     def test_invalid_status_600_raises(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         with pytest.raises(ValueError):
             send_browser_api_error(MagicMock(), 600, "x")
 
     # 10. payload Content-Type comes from send_json (verified structurally)
     def test_delegates_to_send_json(self):
         """Helper must call send_json, not write headers directly."""
-        from autostream_webui_api import send_browser_api_error
-        with patch("autostream_webui_api.send_json") as mock_sj:
+        from webui.common import send_browser_api_error
+        with patch("webui.common.send_json") as mock_sj:
             send_browser_api_error(MagicMock(), 502, "x")
         mock_sj.assert_called_once()
 
@@ -162,8 +162,8 @@ class TestRouteDistinction:
         conn.getresponse.return_value = resp
 
         with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
             _proxy_get(MagicMock(), uuid, "/configure")
 
@@ -178,8 +178,8 @@ class TestRouteDistinction:
             sent.append((code, data))
 
         with patch("autostream_webui_dials.get_dial_sighting", return_value=None), \
-             patch("autostream_webui_dials.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+             patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_json", side_effect=fake_send_json):
             _proxy_get(MagicMock(), "missing-uuid", "/configure")
 
         assert sent[0][0] == 200
@@ -194,8 +194,8 @@ class TestRouteDistinction:
         def fake_send_json(h, code, data):
             sent.append((code, data))
 
-        with patch("autostream_webui_dials.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+        with patch("webui.common.send_json", side_effect=fake_send_json), \
+             patch("webui.common.send_json", side_effect=fake_send_json):
             dispatch_dial_management_post(MagicMock(), "/api/dial/unknown_path", {})
 
         assert sent[0][0] == 200
@@ -266,7 +266,7 @@ class TestRouteDistinction:
         def fake_send_json(h, code, data):
             sent.append((code, data))
 
-        with patch("autostream_webui_dials.send_json", side_effect=fake_send_json):
+        with patch("webui.common.send_json", side_effect=fake_send_json):
             handle_dial_authorize_post(MagicMock(), {"name": "Test"})
 
         assert sent[0][0] == 400
@@ -280,7 +280,7 @@ class TestRouteDistinction:
         def fake_send_json(h, code, data):
             sent.append((code, data))
 
-        with patch("autostream_webui_dials.send_json", side_effect=fake_send_json):
+        with patch("webui.common.send_json", side_effect=fake_send_json):
             handle_dial_revoke_post(MagicMock(), {})
 
         code, data = sent[0]
@@ -298,9 +298,9 @@ class TestFederationErrorContract:
     def test_federation_401_is_native_not_tunneled(self):
         from autostream_webui_api import send_federation_home_json
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api._config_snapshot", return_value=object()), \
+             patch("webui.common._config_snapshot", return_value=object()), \
              patch("autostream_webui_api.build_home_state",
                    return_value={"ok": True, "outputs": [], "appliance": {},
                                  "preferences": {}, "playback": {}, "input_levels": [],
@@ -312,9 +312,9 @@ class TestFederationErrorContract:
         assert "error_status" not in sent[0][1]
 
     def test_send_browser_api_error_with_400_is_native(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))):
             send_browser_api_error(MagicMock(), 400, "bad_request")
         code, data = sent[0]
@@ -322,9 +322,9 @@ class TestFederationErrorContract:
         assert "error_status" not in data
 
     def test_send_browser_api_error_with_401_is_native(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))):
             send_browser_api_error(MagicMock(), 401, "unauthorized")
         code, data = sent[0]
@@ -332,9 +332,9 @@ class TestFederationErrorContract:
         assert "error_status" not in data
 
     def test_send_browser_api_error_with_409_is_native(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))):
             send_browser_api_error(MagicMock(), 409, "appliance_unconfigured")
         code, data = sent[0]
@@ -342,9 +342,9 @@ class TestFederationErrorContract:
         assert "error_status" not in data
 
     def test_send_browser_api_error_with_429_is_native(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))):
             send_browser_api_error(MagicMock(), 429, "rate_limited")
         code, data = sent[0]
@@ -352,9 +352,9 @@ class TestFederationErrorContract:
         assert "error_status" not in data
 
     def test_send_browser_api_error_with_500_is_native(self):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         sent = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))):
             send_browser_api_error(MagicMock(), 500, "internal_error")
         code, data = sent[0]
@@ -459,7 +459,7 @@ class TestSharedConstantMatchesNginx:
     """The Python intercepted-status constant must match the deployed NGINX set."""
 
     def test_python_constant_matches_nginx_intercepted_set(self):
-        from autostream_webui_api import _NGINX_INTERCEPTED_STATUSES
+        from webui.common import _NGINX_INTERCEPTED_STATUSES
         conf = _conf_main()
         m = re.search(r"error_page\s+([0-9 ]+)\s*=", conf)
         assert m, "error_page directive not found in main nginx conf"
@@ -585,9 +585,9 @@ class TestGatewayErrorContract:
     """
 
     def _call_helper(self, semantic_status: int, error: str, **kwargs):
-        from autostream_webui_api import send_browser_api_error
+        from webui.common import send_browser_api_error
         captured = []
-        with patch("autostream_webui_api.send_json",
+        with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: captured.append((c, d))):
             send_browser_api_error(MagicMock(), semantic_status, error, **kwargs)
         assert len(captured) == 1

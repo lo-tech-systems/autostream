@@ -40,23 +40,23 @@ class TestNoInputConfiguredNoticeHtml:
         return SimpleNamespace(audio1_enabled=audio1_enabled, audio2_enabled=audio2_enabled)
 
     def test_none_snapshot_yields_empty(self):
-        from autostream_webui_common import no_input_configured_notice_html
+        from webui.common import no_input_configured_notice_html
         assert no_input_configured_notice_html(None) == ""
 
     def test_both_enabled_yields_empty(self):
-        from autostream_webui_common import no_input_configured_notice_html
+        from webui.common import no_input_configured_notice_html
         assert no_input_configured_notice_html(self._snap(True, True)) == ""
 
     def test_only_audio1_enabled_yields_empty(self):
-        from autostream_webui_common import no_input_configured_notice_html
+        from webui.common import no_input_configured_notice_html
         assert no_input_configured_notice_html(self._snap(True, False)) == ""
 
     def test_only_audio2_enabled_yields_empty(self):
-        from autostream_webui_common import no_input_configured_notice_html
+        from webui.common import no_input_configured_notice_html
         assert no_input_configured_notice_html(self._snap(False, True)) == ""
 
     def test_neither_enabled_yields_notice(self):
-        from autostream_webui_common import no_input_configured_notice_html
+        from webui.common import no_input_configured_notice_html
         html = no_input_configured_notice_html(self._snap(False, False))
         assert "No input device configured" in html
         assert "/setup" in html
@@ -113,7 +113,7 @@ class TestMainPageBanner:
     def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
         from autostream_webui_page_airplay import send_airplay_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
         from track_id.models import disabled_snapshot
 
@@ -182,7 +182,7 @@ class TestEqualiserPageBannerAbsent:
     def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
         from autostream_webui_page_equaliser import send_equaliser_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
 
         cfg = _minimal_cfg(tmp_path, audio1_enabled=audio1_enabled, audio2_enabled=audio2_enabled)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
@@ -217,7 +217,7 @@ class TestSetupPageBannerAbsent:
     def _render(self, tmp_path: Path, *, audio1_enabled: bool, audio2_enabled: bool) -> str:
         from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
-        from autostream_webui_state import WebUIState
+        from webui.session_state import WebUIState
         from autostream_players import ListOutputsResult
 
         cfg = _minimal_cfg(tmp_path, audio1_enabled=audio1_enabled, audio2_enabled=audio2_enabled)
