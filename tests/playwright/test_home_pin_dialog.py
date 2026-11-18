@@ -233,6 +233,25 @@ class TestHomePinDialog:
         stub.push({"outputs": outputs(speaker(pin_pending=True))})
         expect(page.locator("#pinModal")).to_have_class(_OPEN)
 
+    def test_an_accepted_pin_is_not_asked_for_again_before_the_state_catches_up(
+        self, page: "Page", home_url: str
+    ):
+        stub.stream_on()
+        _open(page, home_url, [{}], speaker(pin_pending=True))
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+        _type_pin(page, "2718")
+        page.locator("#pinModalOk").click()
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        # The reply came first: the copy still has the speaker asking
+        page.wait_for_timeout(500)
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        stub.push({"outputs": outputs(speaker(selected=True))})
+        page.wait_for_timeout(2500)
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        # Once caught up, a new request for a PIN is asked for again
+        stub.push({"outputs": outputs(speaker(pin_pending=True))})
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+
 
 def _input(input_type: str, is_turntable: bool = False) -> dict:
     return {"is_turntable": is_turntable, "is_bluetooth": False, "input_type": input_type}

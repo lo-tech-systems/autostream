@@ -76,7 +76,7 @@ async function pinFlow(id, name, volume, first = '') {
     let r;
     try { r = await submit('output.pin.submit', { id, pin, selected: true, volume, name }); } catch (e) { return false; }
     const res = r.result || {};
-    if (r.ok) { hold('sel:' + id, true, r.version); return true; }
+    if (r.ok) { hold('sel:' + id, true, r.version); hold('pin:' + id, true, r.version); return true; }
     note = '';
     if (res.pin_invalid) { wrongPin.delete(id); note = res.new_pin ? REFUSAL.pin_invalid_new : REFUSAL.pin_invalid; }
     else if (res.busy) note = REFUSAL.busy;
@@ -96,11 +96,14 @@ function noteLateWrongPin(view) {
   if (!busy.has(f.unit_id)) wrongPin.add(f.unit_id);
 }
 
-// A speaker asking for a PIN that nobody else is entering gets the dialog.
+// A speaker asking for a PIN that nobody else is entering gets the dialog. A
+// PIN just accepted is answered before the state that clears the request may
+// arrive, so the speaker is not asked again until the state has caught up.
 function maybePrompt(rows) {
   for (const r of rows) if (!r.pinPending) dismissed.delete(r.id);
   if (promptActive || shown('pinModal')) return;
-  const t = rows.find((r) => r.pinPending && !dismissed.has(r.id) && !busy.has(r.id) && (r.pinClaim === '' || r.pinClaim === 'webui'));
+  const t = rows.find((r) => r.pinPending && !dismissed.has(r.id) && !busy.has(r.id) && !ctx.pending.value('pin:' + r.id, false)
+    && (r.pinClaim === '' || r.pinClaim === 'webui'));
   if (!t) return;
   promptActive = true;
   busy.add(t.id);
