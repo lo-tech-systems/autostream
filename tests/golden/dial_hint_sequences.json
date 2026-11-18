@@ -1,0 +1,121 @@
+{
+ "first_tick_primes_and_emits_nothing": [],
+ "session_start_with_an_identified_track": [
+  [
+   [
+    "session"
+   ],
+   [],
+   5.0
+  ],
+  [
+   [
+    "track"
+   ],
+   [],
+   5.3
+  ]
+ ],
+ "track_change_mid_session": [
+  [
+   [
+    "track"
+   ],
+   [],
+   5.0
+  ]
+ ],
+ "analysing_gap_keeps_the_last_value": [
+  [
+   [
+    "track"
+   ],
+   [],
+   10.0
+  ]
+ ],
+ "seek_ack_hints_repeat": [
+  [
+   [
+    "repeat"
+   ],
+   [],
+   5.0
+  ]
+ ],
+ "arm_ack_starts_a_replay_from_hold_then_the_tick_reports_it": [
+  [
+   [
+    "repeat"
+   ],
+   [],
+   5.0
+  ],
+  [
+   [
+    "repeat"
+   ],
+   [],
+   6.0
+  ]
+ ],
+ "ack_and_tick_inside_one_window": [
+  [
+   [
+    "repeat"
+   ],
+   [],
+   5.0
+  ],
+  [
+   [
+    "repeat"
+   ],
+   [],
+   5.3
+  ]
+ ],
+ "two_edges_inside_one_window": [
+  [
+   [
+    "session"
+   ],
+   [],
+   5.0
+  ],
+  [
+   [
+    "repeat",
+    "session",
+    "track"
+   ],
+   [],
+   5.3
+  ]
+ ],
+ "session_end": [
+  [
+   [
+    "session"
+   ],
+   [],
+   5.0
+  ]
+ ],
+ "daemon_repeat_block_disappears_and_returns": [
+  [
+   [
+    "repeat"
+   ],
+   [],
+   5.0
+  ],
+  [
+   [
+    "repeat"
+   ],
+   [],
+   10.0
+  ]
+ ]
+}
