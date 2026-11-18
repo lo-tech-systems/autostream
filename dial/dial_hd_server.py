@@ -34,8 +34,9 @@ import dial_http_server
 from dial_config import (
     BRIGHTNESS_MAX, BRIGHTNESS_MIN, HD_PORT_DEFAULT, SLEEP_AFTER_CHOICES_S,
 )
+from autostream_peer_client import PeerReply
 from dial_hd_actions import (
-    ACTION_NAME_RE, ACTIONS, Context, InvalidArgument, boolean, integer, prepare,
+    ACTION_NAME_RE, ACTIONS, HD_INTENTS, Context, InvalidArgument, boolean, integer, prepare,
 )
 from dial_hd_backdrop import BackdropStore
 from dial_hd_events import SSE_MAX_CLIENTS, serve_events
@@ -48,6 +49,11 @@ DEV_BIND_ADDRESS = "0.0.0.0"
 CLIENT_WRITE_TIMEOUT_S = 2.0
 MAX_BODY = 4096                 # the same cap the management server applies
 MAX_REQUEST_LINE = 1024
+# How long an intent's route waits for the appliance's answer before it says
+# timeout; above the peer client's own read, so a slow appliance usually
+# answers for itself.
+INTENT_ANSWER_S = 6.0
+APPLIANCE_ID_MAX = 64
 
 # Required on every POST; a cross-site form cannot set it and a cross-origin
 # fetch would need a preflight this server never answers.
@@ -158,6 +164,14 @@ def _one_of(value, choices):
     if isinstance(value, bool) or not isinstance(value, int) or value not in choices:
         raise ValueError
     return value
+
+
+def _intent_reply(reply: PeerReply) -> dict:
+    """The one reply shape of the intents route."""
+    return {
+        "ok": reply.ok, "error": reply.error, "version": reply.version, "boot": reply.boot,
+        "result": dict(reply.result), "retry_after_s": reply.retry_after_s,
+    }
 
 
 def _session_cookie(token: str, max_age: int) -> str:
@@ -275,6 +289,7 @@ class HdServer:
             ("GET", "/api/v1/settings", self._get_settings, False),
             ("POST", "/api/v1/settings", self._post_settings, False),
             ("POST", "/api/v1/actions/", self._post_action, True),
+            ("POST", "/api/v1/intents/", self._post_intent, True),
             ("POST", "/api/v1/panel/", self._post_panel, True),
         ]
         # Reachable on the development listener only.
@@ -673,6 +688,44 @@ class HdServer:
         handler.send_json(
             REASON_STATUS.get(reason, REASON_STATUS_DEFAULT), {"ok": False, "error": reason},
         )
+
+    def _post_intent(self, handler, rest) -> None:
+        """An appliance intent from the page, sent to the appliance through the
+        core. The answer is the appliance's own reply in one shape (a refusal
+        is a 200 too); only a bad body is a 400, and an appliance that takes
+        longer than INTENT_ANSWER_S is a 504 timeout. The arguments are never
+        logged: they can hold a speaker PIN."""
+        if rest not in HD_INTENTS:
+            handler.send_json(200, _intent_reply(PeerReply(False, "unknown_intent", None, None, {}, None)))
+            return
+        body = handler.read_json_body()
+        if body is None:
+            return
+        appliance_id, args = body.get("appliance_id"), body.get("args")
+        if (
+            not isinstance(appliance_id, str) or not 0 < len(appliance_id) <= APPLIANCE_ID_MAX
+            or not appliance_id.isprintable() or not isinstance(args, dict)
+        ):
+            handler.send_json(400, {"ok": False, "error": "invalid_args"})
+            return
+        done = threading.Event()
+        outcome: list = []
+
+        def run() -> None:
+            try:
+                outcome.append(self._core.submit_intent(appliance_id, rest, args, pin_entry=True))
+            except Exception:
+                logging.debug("hd intent failed", exc_info=True)
+            finally:
+                done.set()
+
+        threading.Thread(target=run, daemon=True, name="dial-hd-intent").start()
+        if not done.wait(INTENT_ANSWER_S):
+            handler.send_json(504, _intent_reply(PeerReply(False, "timeout", None, None, {}, None)))
+        elif outcome:
+            handler.send_json(200, _intent_reply(outcome[0]))
+        else:
+            handler.send_json(500, {"ok": False, "error": "internal_error"})
 
     def _get_settings(self, handler, rest) -> None:
         if self._http_server is None:

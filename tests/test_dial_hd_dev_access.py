@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import dial_hd_events as hde
+from autostream_peer_client import PeerReply
 import dial_hd_server as hds
 import dial_http_server as dhs
 import hd_scenarios as hs
@@ -351,6 +352,7 @@ class TestNoSessionNoAccess:
     @pytest.mark.parametrize("path,body", [
         ("/api/v1/actions/focus", {}), ("/api/v1/actions/presence", {}),
         ("/api/v1/settings", {"brightness": 40}), ("/api/v1/panel/sleep", {}),
+        ("/api/v1/intents/outputs.set", {"appliance_id": "a" * 20, "args": {}}),
     ])
     def test_posts_are_401_and_change_nothing(self, dev, core, path, body):
         response, data = post(dev.dev_port, path, body, host=f"127.0.0.1:{dev.dev_port}")
@@ -432,6 +434,56 @@ class TestPresenceIsLocalOnly:
         cookie = signed_in(dev)
         response, _ = api(dev, "/api/v1/actions/focus", cookie, method="POST", body={})
         assert response.status != 403
+
+
+class TestIntentsOnTheDevelopmentListener:
+    BODY = {"appliance_id": "a" * 20, "args": {"id": "u1"}}
+
+    @pytest.fixture
+    def submitted(self, core, monkeypatch):
+        calls = []
+
+        def submit_intent(appliance_id, name, args, *, pin_entry=False):
+            calls.append((appliance_id, name, args, pin_entry))
+            return PeerReply(True, None, 3, "b", {}, None)
+        monkeypatch.setattr(core, "submit_intent", submit_intent, raising=False)
+        return calls
+
+    def test_a_signed_in_session_is_taken(self, dev, submitted):
+        cookie = signed_in(dev)
+        response, data = api(dev, "/api/v1/intents/outputs.set", cookie, method="POST", body=self.BODY)
+        assert response.status == 200
+        assert json.loads(data)["ok"] is True
+        assert submitted == [("a" * 20, "outputs.set", {"id": "u1"}, True)]
+
+    def test_a_session_may_send_a_pin_submission_and_a_transport_intent(self, dev, submitted):
+        cookie = signed_in(dev)
+        for name in ("output.pin.submit", "repeat.transport", "outputs.save_default"):
+            assert api(dev, f"/api/v1/intents/{name}", cookie, method="POST", body=self.BODY)[0].status == 200
+        assert [c[1] for c in submitted] == ["output.pin.submit", "repeat.transport", "outputs.save_default"]
+
+    def test_a_name_outside_the_list_is_unknown_for_a_session_too(self, dev, submitted):
+        cookie = signed_in(dev)
+        response, data = api(dev, "/api/v1/intents/volume.set", cookie, method="POST", body=self.BODY)
+        assert (response.status, error_of(data)) == (200, "unknown_intent")
+        assert submitted == []
+
+    def test_without_a_session_it_is_401_and_nothing_is_sent(self, dev, submitted):
+        response, data = dev_request(
+            dev, "POST", "/api/v1/intents/outputs.set", self.BODY, HEADER)
+        assert (response.status, error_of(data)) == (401, "login_required")
+        assert submitted == []
+
+    def test_without_the_request_header_it_is_403(self, dev, submitted):
+        cookie = signed_in(dev)
+        response, data = dev_request(
+            dev, "POST", "/api/v1/intents/outputs.set", self.BODY, {"Cookie": cookie})
+        assert (response.status, error_of(data)) == (403, "missing_request_header")
+        assert submitted == []
+
+    def test_the_loopback_listener_takes_it_without_a_session(self, server, submitted):
+        response, _ = post(server.port, "/api/v1/intents/outputs.set", self.BODY)
+        assert response.status == 200 and len(submitted) == 1
 
 
 class TestLogin:

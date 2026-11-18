@@ -837,3 +837,255 @@ def test_the_server_never_holds_a_lock_across_a_response(server, core):
     finally:
         stop.set()
         thread.join(2)
+
+
+# ---- the intents route -----------------------------------------------------
+
+from autostream_peer_client import PeerReply  # noqa: E402
+from dial_pool_support import Rig, aid, peer, replay_block, unit as pool_unit  # noqa: E402
+from hd_http_support import error_of, post  # noqa: E402
+
+REPLY_KEYS = {"ok", "error", "version", "boot", "result", "retry_after_s"}
+APPLIANCE = "a" * 20
+
+
+def intent(server, name, body=None, **kwargs):
+    return post(server.port, f"/api/v1/intents/{name}", body, **kwargs)
+
+
+class Recorder:
+    """A stand-in for the core's submit_intent: records each call and answers
+    with *reply*, or runs *behave*."""
+
+    def __init__(self, reply=None, behave=None):
+        self.calls = []
+        self.reply = reply or PeerReply(True, None, 12, "boot-1", {"n": 1}, None)
+        self.behave = behave
+
+    def __call__(self, appliance_id, name, args, *, pin_entry=False):
+        self.calls.append((appliance_id, name, args, pin_entry))
+        if self.behave is not None:
+            return self.behave()
+        return self.reply
+
+
+@pytest.fixture
+def submit(core):
+    recorder = Recorder()
+    core.submit_intent = recorder
+    return recorder
+
+
+class TestIntentsRoute:
+    def test_a_loopback_intent_is_forwarded_with_a_keypad_allowed(self, server, submit):
+        response, data = intent(server, "outputs.set", {"appliance_id": APPLIANCE, "args": {"id": "u1", "selected": True}})
+        assert response.status == 200
+        assert submit.calls == [(APPLIANCE, "outputs.set", {"id": "u1", "selected": True}, True)]
+        assert json.loads(data) == {
+            "ok": True, "error": None, "version": 12, "boot": "boot-1", "result": {"n": 1}, "retry_after_s": None}
+
+    @pytest.mark.parametrize("name", [
+        "outputs.set", "output.pin.submit", "output.eq.set", "output.eq.reset",
+        "repeat.arm", "repeat.seek", "repeat.transport", "outputs.save_default",
+    ])
+    def test_every_loopback_intent_is_taken(self, server, submit, name):
+        response, _ = intent(server, name, {"appliance_id": APPLIANCE, "args": {}})
+        assert response.status == 200 and [c[1] for c in submit.calls] == [name]
+
+    def test_a_refusal_is_a_200_in_the_same_shape(self, server, core):
+        core.submit_intent = Recorder(PeerReply(False, "rate_limited", None, None, {}, 0.6))
+        response, data = intent(server, "repeat.seek", {"appliance_id": APPLIANCE, "args": {"position": 0}})
+        body = json.loads(data)
+        assert response.status == 200 and set(body) == REPLY_KEYS
+        assert (body["ok"], body["error"], body["retry_after_s"]) == (False, "rate_limited", 0.6)
+
+    @pytest.mark.parametrize("name", [
+        "volume.set", "volume.step", "mute.set", "dials.revoke", "outputs.want_default", "nope",
+        "OUTPUTS.SET", "outputs", "x",
+    ])
+    def test_a_name_outside_the_list_is_unknown_and_makes_no_request(self, server, submit, name):
+        response, data = intent(server, name, {"appliance_id": APPLIANCE, "args": {}})
+        body = json.loads(data)
+        assert response.status == 200 and set(body) == REPLY_KEYS
+        assert (body["ok"], body["error"]) == (False, "unknown_intent")
+        assert submit.calls == []
+
+    def test_a_dial_refusal_passes_through_in_the_reply_shape(self, server, core):
+        core.submit_intent = Recorder(PeerReply(False, "wrong_state", None, None, {}, None))
+        response, data = intent(server, "output.eq.reset", {"appliance_id": APPLIANCE, "args": {}})
+        assert (response.status, error_of(data)) == (200, "wrong_state")
+
+    @pytest.mark.parametrize("body", [
+        {}, {"args": {}}, {"appliance_id": APPLIANCE}, {"appliance_id": APPLIANCE, "args": []},
+        {"appliance_id": APPLIANCE, "args": "x"}, {"appliance_id": APPLIANCE, "args": None},
+        {"appliance_id": "", "args": {}}, {"appliance_id": 5, "args": {}}, {"appliance_id": None, "args": {}},
+        {"appliance_id": "a" * 65, "args": {}}, {"appliance_id": "a\nb", "args": {}},
+        {"appliance_id": "a\x00b", "args": {}}, {"appliance_id": ["a"], "args": {}},
+    ])
+    def test_a_bad_body_is_400_invalid_args_and_sends_nothing(self, server, submit, body):
+        response, data = intent(server, "outputs.set", body)
+        assert (response.status, error_of(data)) == (400, "invalid_args")
+        assert submit.calls == []
+
+    def test_an_id_of_sixty_four_characters_is_taken(self, server, submit):
+        response, _ = intent(server, "outputs.set", {"appliance_id": "a" * 64, "args": {}})
+        assert response.status == 200 and submit.calls
+
+    @pytest.mark.parametrize("body, status, error", [
+        (b"not json", 400, "bad_json"), (b"[1]", 400, "body_must_be_object"),
+        (b"x" * 4097, 413, "body_too_large"),
+    ])
+    def test_the_body_checks_are_the_actions_routes(self, server, submit, body, status, error):
+        response, data = intent(server, "outputs.set", body)
+        assert (response.status, error_of(data)) == (status, error)
+        assert submit.calls == []
+
+    def test_a_body_just_under_the_cap_is_read(self, server, submit):
+        body = json.dumps({"appliance_id": APPLIANCE, "args": {"pad": "x" * 3800}}).encode()
+        assert hds.MAX_BODY - 400 < len(body) < hds.MAX_BODY
+        assert intent(server, "outputs.set", body)[0].status == 200
+
+    def test_a_missing_or_wrong_request_header_is_403(self, server, submit):
+        body = json.dumps({"appliance_id": APPLIANCE, "args": {}})
+        for headers in ({}, {"X-Requested-With": "other"}):
+            response, data = request(server, "POST", "/api/v1/intents/outputs.set", body, headers)
+            assert (response.status, error_of(data)) == (403, "missing_request_header")
+        assert submit.calls == []
+
+    @pytest.mark.parametrize("host", ["evil.example", "127.0.0.1:1", "10.0.0.1"])
+    def test_a_wrong_host_is_403(self, server, submit, host):
+        response, data = post(
+            server.port, "/api/v1/intents/outputs.set", {"appliance_id": APPLIANCE, "args": {}}, host=host)
+        assert (response.status, error_of(data)) == (403, "bad_host")
+        assert submit.calls == []
+
+    def test_a_mismatched_origin_is_403(self, server, submit):
+        response, data = post(
+            server.port, "/api/v1/intents/outputs.set", {"appliance_id": APPLIANCE, "args": {}},
+            headers={"Origin": "http://evil.example"})
+        assert (response.status, error_of(data)) == (403, "bad_origin")
+        assert submit.calls == []
+
+    def test_get_is_405_with_allow(self, server):
+        response, _ = request(server, "GET", "/api/v1/intents/outputs.set")
+        assert response.status == 405
+        assert "POST" in response.getheader("Allow")
+
+    def test_a_slow_appliance_is_answered_timeout_at_the_limit(self, server, core, monkeypatch):
+        monkeypatch.setattr(hds, "INTENT_ANSWER_S", 0.2)
+        release = threading.Event()
+        core.submit_intent = Recorder(behave=lambda: release.wait(5) and PeerReply(True, None, 1, "b", {}, None))
+        try:
+            start = time.monotonic()
+            response, data = intent(server, "outputs.set", {"appliance_id": APPLIANCE, "args": {}})
+            assert time.monotonic() - start < 2.0
+            body = json.loads(data)
+            assert response.status == 504 and set(body) == REPLY_KEYS
+            assert (body["ok"], body["error"]) == (False, "timeout")
+        finally:
+            release.set()
+
+    def test_a_slow_intent_holds_no_other_request(self, server, core):
+        release = threading.Event()
+        core.submit_intent = Recorder(behave=lambda: release.wait(5) and PeerReply(True, None, 1, "b", {}, None))
+        results = []
+        thread = threading.Thread(target=lambda: results.append(
+            intent(server, "outputs.set", {"appliance_id": APPLIANCE, "args": {}})[0].status))
+        thread.start()
+        try:
+            time.sleep(0.2)
+            assert request(server, "GET", "/api/v1/state")[0].status == 200
+        finally:
+            release.set()
+            thread.join(5)
+        assert results == [200]
+
+    def test_a_fault_in_the_core_is_a_500(self, server, core):
+        def boom(*args, **kwargs):
+            raise RuntimeError("fault")
+        core.submit_intent = boom
+        response, data = intent(server, "outputs.set", {"appliance_id": APPLIANCE, "args": {}})
+        assert (response.status, error_of(data)) == (500, "internal_error")
+
+    def test_a_pin_is_never_logged(self, server, submit, caplog):
+        caplog.set_level("DEBUG")
+        response, _ = intent(
+            server, "output.pin.submit", {"appliance_id": APPLIANCE, "args": {"id": "u1", "pin": "987654"}})
+        assert response.status == 200
+        assert submit.calls[0][2]["pin"] == "987654"
+        assert "987654" not in caplog.text
+
+    def test_a_pin_is_not_logged_when_the_core_faults_either(self, server, core, caplog):
+        caplog.set_level("DEBUG")
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("fault")
+        core.submit_intent = boom
+        intent(server, "output.pin.submit", {"appliance_id": APPLIANCE, "args": {"id": "u1", "pin": "987654"}})
+        assert "987654" not in caplog.text
+
+    def test_no_intent_is_local_only(self):
+        assert not any("intent" in name or "." in name for name in hds.LOCAL_ONLY_ACTIONS)
+
+
+class TestIntentsTrackRequests:
+    """Through the real core: the route records what the page asked on the
+    request blocks the screens and the `dial` part read."""
+
+    @pytest.fixture
+    def stack(self, tmp_path):
+        rig = Rig()
+        root = tmp_path / "hd"
+        root.mkdir()
+        (root / "index.html").write_bytes(PAGE)
+        client = rig.add("Lounge", peer(
+            "Lounge", playing=True, units=[pool_unit("u1", "Kitchen", volume=40)], bands=[0] * 6,
+            repeat=replay_block("replaying"), version=1))
+        rig.fold()
+        server = hds.HdServer(SimpleNamespace(), rig.core, static_root=root, port=0, muted_fn=lambda s: False)
+        server.start()
+        yield rig, client, server
+        server.stop()
+        rig.close()
+
+    def test_a_speaker_intent_is_pending_while_the_appliance_answers_then_accepted(self, stack):
+        rig, client, server = stack
+        client.gate = threading.Event()
+        results = []
+        thread = threading.Thread(target=lambda: results.append(intent(
+            server, "outputs.set",
+            {"appliance_id": aid("Lounge"), "args": {"id": "u1", "selected": True, "volume": 20}})))
+        thread.start()
+        try:
+            assert rig.wait(lambda: rig.core.snapshot().outputs_request is not None)
+            held = rig.core.snapshot().outputs_request
+            assert (held.kind, held.state, held.shown) == ("output_set", "pending", (True, 20))
+        finally:
+            client.gate.set()
+            thread.join(5)
+        response, data = results[0]
+        assert (response.status, json.loads(data)["ok"]) == (200, True)
+        assert rig.core.snapshot().outputs_request.state == "accepted"
+
+    def test_a_repeat_intent_is_recorded_on_the_transport(self, stack):
+        rig, client, server = stack
+        response, _ = intent(server, "repeat.transport", {"appliance_id": aid("Lounge"), "args": {"action": "stop"}})
+        assert response.status == 200
+        assert rig.core.snapshot().transport.kind == "stop"
+        assert client.sent()[0][1:3] == ("repeat.transport", {"action": "stop"})
+
+    def test_an_appliance_that_is_not_focused_is_wrong_state_and_nothing_is_sent(self, stack):
+        rig, client, server = stack
+        rig.add("Kitchen", peer("Kitchen", units=[pool_unit()]))
+        rig.fold()
+        response, data = intent(server, "output.eq.reset", {"appliance_id": aid("Kitchen"), "args": {}})
+        assert (response.status, error_of(data)) == (200, "wrong_state")
+        assert client.sent() == []
+
+    def test_a_pin_submission_is_pin_capable_and_the_request_is_recorded(self, stack):
+        rig, client, server = stack
+        response, _ = intent(
+            server, "output.pin.submit", {"appliance_id": aid("Lounge"), "args": {"id": "u1", "pin": "1234"}})
+        assert response.status == 200
+        assert rig.core.snapshot().outputs_request.kind == "output_pin"
+        assert client.sent()[0][3] == {"pin_capable": True}
