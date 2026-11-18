@@ -94,6 +94,11 @@ from dial_values import clamp
 from dial_warning_bell import Bell, whole_bell
 from dial_warning_page import Card, WarningsPageState, status_card
 from dial_warning_text import WARNING_DESCRIPTORS
+from dial_touch_surfaces import (
+    SURFACE_CARD1, SURFACE_CARD2, SURFACE_CARD3, SURFACE_EQ, SURFACE_HELD, SURFACE_HIDDEN, SURFACE_IDLE,
+    SURFACE_INFO, SURFACE_INFO_VALUE, SURFACE_OUTPUT, SURFACE_OUTPUTS, SURFACE_PICKER, SURFACE_REPEAT,
+    SURFACE_REPEAT_REPLAY, SURFACE_RESTARTING, SURFACE_SELECTOR, SurfaceState,
+)
 from dial_touch_layout import (
     CARD_BUTTON_ZONES,
     CONTENT_COMPACT,
@@ -1635,7 +1640,7 @@ class DialDisplay:
             and not self._controls_hidden(now)
         )
 
-    def touch_surface(self) -> tuple[str, bool, bool, bool, bool]:
+    def touch_surface(self) -> SurfaceState:
         """(surface, name_active, dots_active, outputs_active, bell_active) for
         dial_touch.TouchStateMachine.set_surface() — see that module's
         SURFACES paragraph. Polled once per loop iteration by
@@ -1707,14 +1712,14 @@ class DialDisplay:
         snap = self._core.snapshot()
         if self._compact_controls_hidden() and self._screen in ("main", "repeat"):
             # (The corner bell is drawn only over playing artwork.)
-            return ("hidden", False, False, False, (
+            return SurfaceState(SURFACE_HIDDEN, False, False, False, (
                 self._screen == "main" and snap.now_playing is not None and self._bell(snap).count > 0))
         if self._screen == "repeat" and self._controls_hidden():
-            return ("hidden", True, snap.dots_active, snap.outputs_available, False)
+            return SurfaceState(SURFACE_HIDDEN, True, snap.dots_active, snap.outputs_available, False)
         if self._screen == "warnings":
             # The card's surface is the one for its button count.
             card = self._warnings_card(self._bell(snap))[1]
-            return (f"card{min(3, len(card.buttons)) if card is not None else 1}", False, False, False, False)
+            return SurfaceState(_card_surface(len(card.buttons) if card is not None else 1), False, False, False, False)
         policy = _policy(self._screen)
         if policy.surface is not None:
             if (
@@ -1727,16 +1732,16 @@ class DialDisplay:
                 s = policy.surface
             # The top band's bell is live on the screens that share it.
             bell = self._screen in ("repeat", "eq") and self._bell(snap).count > 0
-            return (s[0], s[1], s[2], s[3] and snap.outputs_available, bell)
+            return SurfaceState(s[0], s[1], s[2], s[3] and snap.outputs_available, bell)
         bell = self._bell(snap).count > 0
         if snap.now_playing is None:
-            return ("idle", False, False, False, bell)
+            return SurfaceState(SURFACE_IDLE, False, False, False, bell)
         name_active = True
         dots_active = snap.dots_active
         outputs_active = snap.outputs_available
         if self.persistent_overlay_shown():
-            return ("held", name_active, dots_active, outputs_active, bell)
-        return ("hidden", name_active, dots_active, outputs_active, bell)
+            return SurfaceState(SURFACE_HELD, name_active, dots_active, outputs_active, bell)
+        return SurfaceState(SURFACE_HIDDEN, name_active, dots_active, outputs_active, bell)
 
     def noncomposited_generation(self) -> int:
         """Current non-composited-state generation counter.
@@ -4691,14 +4696,14 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "selector": ScreenPolicy(
-        state_attr="_selector", surface=("selector", False, False, False),
+        state_attr="_selector", surface=(SURFACE_SELECTOR, False, False, False),
         open=DialDisplay._open_selector_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "picker": ScreenPolicy(
-        state_attr="_picker", surface=("picker", False, False, False),
+        state_attr="_picker", surface=(SURFACE_PICKER, False, False, False),
         open=DialDisplay._open_picker_locked, paint=DialDisplay._display_list_locked, paged=True,
         # touch activity extends every list screen's clock — picker now
         # matches the selector/outputs lists rather than keeping its own
@@ -4708,7 +4713,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "info": ScreenPolicy(
-        state_attr="_info", surface=("info", False, False, False),
+        state_attr="_info", surface=(SURFACE_INFO, False, False, False),
         open=DialDisplay._open_info_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
@@ -4718,14 +4723,14 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     # full-screen value, closed by a tap anywhere (LIST_BACK) or its own
     # timeout, back to the list it opened from at the same page.
     "info_value": ScreenPolicy(
-        state_attr="_info_value", surface=("info_value", False, False, False),
+        state_attr="_info_value", surface=(SURFACE_INFO_VALUE, False, False, False),
         open=DialDisplay._open_info_value_locked, paint=DialDisplay._display_info_value_locked, paged=False,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="info",
     ),
     "repeat": ScreenPolicy(
-        state_attr="_repeat_screen", surface=("repeat", True, True, True),
+        state_attr="_repeat_screen", surface=(SURFACE_REPEAT, True, True, True),
         open=DialDisplay._open_repeat_locked, paint=DialDisplay._display_repeat_locked, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
@@ -4733,14 +4738,14 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         # The compact tier's own replaying layout: time/back where DOTS
         # would be, Restart/Stop in place of the enable layout's own row —
         # see GEOMETRY_REPEAT_REPLAY and touch_surface().
-        replay_surface=("repeat_replay", True, True, False),
+        replay_surface=(SURFACE_REPEAT_REPLAY, True, True, False),
     ),
     # The EQ page: a third page, reached from the same dots as the repeat
     # screen (see cycle_pages()), rich/large only. No inactivity timeout —
     # the dots (or the poll's own closes) are its only exit, same as
     # repeat.
     "eq": ScreenPolicy(
-        state_attr="_eq", surface=("eq", True, True, True),
+        state_attr="_eq", surface=(SURFACE_EQ, True, True, True),
         open=DialDisplay._open_eq_locked, paint=DialDisplay._display_eq_locked, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
@@ -4748,7 +4753,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         bound_to_appliance=True,
     ),
     "outputs": ScreenPolicy(
-        state_attr="_outputs", surface=("outputs", False, False, False),
+        state_attr="_outputs", surface=(SURFACE_OUTPUTS, False, False, False),
         open=DialDisplay._open_outputs_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
@@ -4756,7 +4761,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         bound_to_appliance=True,
     ),
     "output": ScreenPolicy(
-        state_attr="_output_detail", surface=("output", True, False, False),
+        state_attr="_output_detail", surface=(SURFACE_OUTPUT, True, False, False),
         open=DialDisplay._open_output_locked, paint=DialDisplay._display_output_locked, paged=False,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
@@ -4778,13 +4783,18 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     # panel down, or falls back to main after RESTARTING_TIMEOUT_SECONDS if
     # the reboot request failed.
     "restarting": ScreenPolicy(
-        state_attr="_restarting", surface=("restarting", False, False, False),
+        state_attr="_restarting", surface=(SURFACE_RESTARTING, False, False, False),
         open=DialDisplay._open_restarting_locked, paint=DialDisplay._display_restarting_locked, paged=False,
         inactivity_timeout_s=RESTARTING_TIMEOUT_SECONDS, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
 }
+
+
+def _card_surface(buttons: int) -> str:
+    """The touch surface of a card with *buttons* buttons (one to three)."""
+    return (SURFACE_CARD1, SURFACE_CARD2, SURFACE_CARD3)[min(3, buttons) - 1]
 
 
 def _status_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
@@ -4795,7 +4805,7 @@ def _status_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
     idle timer like the screen it sits over, and comes back on wake if still
     due. Its touch surface is the card for its button count, or the inert
     one named after it when it has none."""
-    surface = f"card{len(desc.buttons)}" if desc.buttons else desc.screen
+    surface = _card_surface(len(desc.buttons)) if desc.buttons else desc.screen
     return ScreenPolicy(
         state_attr="_warning_screen", surface=(surface, False, False, False),
         open=functools.partial(DialDisplay._open_status_locked, warning_id=desc.id),

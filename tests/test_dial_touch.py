@@ -28,6 +28,16 @@ from dial_touch import (  # noqa: E402
     FIRST_REPEAT_S,
     PRESSED_FLASH_S,
     REPEAT_INTERVAL_S,
+    TouchAction,
+    TouchEventSource,
+    TouchStateMachine,
+    _GEOMETRY_FOR_SURFACE,
+    _REPEAT_SURFACES,
+    _REPEATING_ZONES,
+    _SINGLE_SHOT_ZONES,
+    _ZONE_TAP_ZONES,
+)
+from dial_touch_surfaces import (  # noqa: E402
     SURFACE_CARD1,
     SURFACE_CARD2,
     SURFACE_CARD3,
@@ -43,16 +53,8 @@ from dial_touch import (  # noqa: E402
     SURFACE_REPEAT,
     SURFACE_REPEAT_REPLAY,
     SURFACE_RESTARTING,
-    SURFACE_UPDATE,
     SURFACE_SELECTOR,
-    TouchAction,
-    TouchEventSource,
-    TouchStateMachine,
-    _GEOMETRY_FOR_SURFACE,
-    _REPEAT_SURFACES,
-    _REPEATING_ZONES,
-    _SINGLE_SHOT_ZONES,
-    _ZONE_TAP_ZONES,
+    SURFACE_UPDATE,
 )
 from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import (  # noqa: E402

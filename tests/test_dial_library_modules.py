@@ -22,6 +22,7 @@ ALLOWED = {
     "dial_pin_guard": set(),
     "dial_admin": set(),
     "dial_eq_model": {"autostream_eq_bands", "dial_values"},
+    "dial_touch_surfaces": set(),
 }
 
 

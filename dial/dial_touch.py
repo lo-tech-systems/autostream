@@ -121,6 +121,11 @@ import time
 from dataclasses import dataclass
 
 from dial_touch_filter import TouchEvent, TouchEventType
+from dial_touch_surfaces import (
+    SURFACE_CARD1, SURFACE_CARD2, SURFACE_CARD3, SURFACE_EQ, SURFACE_HELD, SURFACE_HIDDEN, SURFACE_IDLE,
+    SURFACE_INFO, SURFACE_INFO_VALUE, SURFACE_OUTPUT, SURFACE_OUTPUTS, SURFACE_PICKER, SURFACE_REPEAT,
+    SURFACE_REPEAT_REPLAY, SURFACE_RESTARTING, SURFACE_SELECTOR, SURFACE_UPDATE, SurfaceState,
+)
 from dial_touch_layout import (
     GEOMETRY_EQ,
     GEOMETRY_IDLE,
@@ -198,56 +203,6 @@ _PHASE_ARMED = "armed"
 # A contact that began while the panel was asleep: it only wakes the screen
 # and does nothing more until it lifts.
 _PHASE_WAKE_ONLY = "wake_only"
-
-# Surfaces set_surface()/TouchEventSource understand — see the module
-# docstring's SURFACES paragraph.
-SURFACE_HIDDEN = "hidden"
-SURFACE_HELD = "held"
-SURFACE_SELECTOR = "selector"
-# The repeat, idle and picker surfaces. All three behave as
-# "held" exactly like SURFACE_SELECTOR: a press arms immediately, there is
-# no reveal step and no dismiss clock — see set_surface() and _arm() below.
-SURFACE_REPEAT = "repeat"
-SURFACE_IDLE = "idle"
-SURFACE_PICKER = "picker"
-# The outputs list and per-output detail surfaces. Both behave as "held"
-# exactly like SURFACE_SELECTOR/SURFACE_PICKER — see set_surface() below.
-SURFACE_OUTPUTS = "outputs"
-SURFACE_OUTPUT = "output"
-# The compact tier's own repeat-replaying surface — reported by the
-# display's touch_surface() in place of SURFACE_REPEAT exactly while that
-# tier's replaying layout (time/back, Restart/Stop) is the one actually
-# painted; every other tier never reports it (see ScreenPolicy.
-# replay_surface). Held like every other non-hidden surface — see
-# set_surface() below.
-SURFACE_REPEAT_REPLAY = "repeat_replay"
-# The idle screen's own read-only info page: held like every other list
-# surface (a press arms immediately, no reveal step). Off the compact tier
-# its own geometry (GEOMETRY_INFO) carries no LIST_ROW entries at all — a
-# tap on a row lands in no zone; on the compact tier the rows ARE tappable,
-# opening the field's own value view below.
-SURFACE_INFO = "info"
-# The compact info page's own drill-in — a tapped field's own full-screen
-# value. Held like every other list surface; its geometry (GEOMETRY_INFO_
-# VALUE) is a single whole-panel LIST_BACK entry, so any press anywhere
-# reports the same zone-tap back to the list.
-SURFACE_INFO_VALUE = "info_value"
-# The EQ page: rich/large only, reached via the page dots. Held like every
-# other secondary surface; hit-tests use the GEOMETRY_EQ table (DOTS/NAME/
-# OUTPUTS reused from the main geometry, plus the bass/treble bar steppers).
-SURFACE_EQ = "eq"
-# A warning or status card: held like every other secondary surface; its
-# geometry is the one for its button count (GEOMETRY_CARD1/2/3).
-SURFACE_CARD1 = "card1"
-SURFACE_CARD2 = "card2"
-SURFACE_CARD3 = "card3"
-# The "Restarting..." screen: held (so the touch side treats it as a
-# visible surface, not a reveal-on-touch one) but with an EMPTY geometry —
-# no press anywhere can arm anything until the reboot takes the panel down.
-SURFACE_RESTARTING = "restarting"
-# The software update progress card has no buttons (empty geometry, so
-# touch does nothing); the result card is a one-button card.
-SURFACE_UPDATE = "update"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -838,7 +793,7 @@ class TouchEventSource:
         # entirely (e.g. tests that don't care, or a display stand-in that
         # predates this feature).
         self._consume_repeat_close_reveal = consume_repeat_close_reveal
-        self._last_surface: tuple[str, bool, bool, bool, bool] | None = None
+        self._last_surface: SurfaceState | None = None
         # The profile's UNROTATED axis signs (swap, invert_x, invert_y),
         # kept so a live rotate toggle can re-derive the mapping. None when
         # the caller did not supply them (e.g. tests constructing directly).
@@ -980,9 +935,9 @@ class TouchEventSource:
         try:
             result = self._get_touch_surface()
         except Exception:
-            result = (SURFACE_HIDDEN, False, False, False, False)
+            result = SurfaceState(SURFACE_HIDDEN, False, False, False, False)
         surface, name_active, dots_active, outputs_active, bell_active = result
-        current = (surface, bool(name_active), bool(dots_active), bool(outputs_active), bool(bell_active))
+        current = SurfaceState(surface, bool(name_active), bool(dots_active), bool(outputs_active), bool(bell_active))
         if current != self._last_surface:
             previous_surface = self._last_surface[0] if self._last_surface is not None else None
             self._last_surface = current
