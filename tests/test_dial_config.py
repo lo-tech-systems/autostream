@@ -1209,29 +1209,29 @@ class TestLayoutSizeSetting:
             })
 
     def test_persisted_resolver_warns_and_yields_none_for_unknown_value(self, caplog):
-        from dial_config import _resolve_persisted_layout_size
+        from dial_config import _resolve_persisted
         with caplog.at_level("WARNING"):
-            result = _resolve_persisted_layout_size("huge", "ili9341_320x240")
+            result = _resolve_persisted("layout_size", "huge", screen_type="ili9341_320x240")
         assert result is None
         assert "layout_size" in caplog.text
 
     def test_persisted_resolver_warns_and_yields_none_for_value_not_offered(self, caplog):
-        from dial_config import _resolve_persisted_layout_size
+        from dial_config import _resolve_persisted
         with caplog.at_level("WARNING"):
-            result = _resolve_persisted_layout_size("medium", "st7789_240x240")
+            result = _resolve_persisted("layout_size", "medium", screen_type="st7789_240x240")
         assert result is None
         assert "layout_size" in caplog.text
 
     def test_persisted_resolver_silent_for_none(self, caplog):
-        from dial_config import _resolve_persisted_layout_size
+        from dial_config import _resolve_persisted
         with caplog.at_level("WARNING"):
-            result = _resolve_persisted_layout_size(None, "ili9341_320x240")
+            result = _resolve_persisted("layout_size", None, screen_type="ili9341_320x240")
         assert result is None
         assert caplog.text == ""
 
     def test_persisted_resolver_accepts_offered_value(self):
-        from dial_config import _resolve_persisted_layout_size
-        assert _resolve_persisted_layout_size("large", "ili9341_320x240") == "large"
+        from dial_config import _resolve_persisted
+        assert _resolve_persisted("layout_size", "large", screen_type="ili9341_320x240") == "large"
 
 
 class TestValidateScreenSettings:

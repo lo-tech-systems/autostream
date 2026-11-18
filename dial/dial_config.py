@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from typing import Callable
 from dataclasses import dataclass, field, replace
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 import autostream_sysutils
@@ -27,7 +29,7 @@ from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES, LAYOUT_
 # Importing it here is safe and preserves the invariant that dial_config never
 # pulls in hardware.
 from dial_touch_controllers import DEFAULT_TOUCH_KEY, TOUCH_CONTROLLERS
-from dial_values import read_env_file
+from dial_values import is_int, read_env_file
 
 HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
 SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
@@ -190,349 +192,220 @@ class InvalidScreenSettings(ValueError):
     """Raised by validate_screen_settings() for a malformed screen settings object."""
 
 
+def _same(value):
+    return value
+
+
+@dataclass(frozen=True)
+class _ScreenField:
+    """One screen setting: how the strict API check and the lenient file load
+    both treat it."""
+    name: str
+    default: object
+    # The strict rule: an error text for a value that breaks it, else None.
+    # The second argument is the screen_type resolved before this field.
+    check: Callable[[object, str], "str | None"]
+    nullable: bool = False        # JSON null is accepted and means None
+    required: bool = False        # the strict check refuses an object without it
+    convert: Callable[[object], object] = _same   # applied to an accepted value
+    coerce_on_load: bool = False  # the lenient load takes bool(value), no check
+    carried: bool = False         # kept from the current config when a POST omits it
+
+
+def _check_bool(name: str):
+    def check(value, screen_type):
+        if not isinstance(value, bool):
+            return f"screen.{name} must be a boolean"
+        return None
+    return check
+
+
+def _check_screen_type(value, screen_type):
+    if not isinstance(value, str):
+        return "screen.screen_type must be a string"
+    if value not in DISPLAY_PROFILES:
+        return f"unknown screen.screen_type: {value!r}"
+    return None
+
+
+def _check_touch_type(value, screen_type):
+    if not isinstance(value, str):
+        return "screen.touch_type must be a string"
+    if value not in TOUCH_CONTROLLERS:
+        return f"unknown screen.touch_type: {value!r}"
+    return None
+
+
+def _check_screen_size(value, screen_type):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not (0.5 <= value <= 20.0):
+        return "screen.screen_size_inches must be a number between 0.5 and 20, or null"
+    return None
+
+
+def _check_layout_size(value, screen_type):
+    if not isinstance(value, str) or value not in LAYOUT_SIZES:
+        return f"screen.layout_size must be one of {sorted(LAYOUT_SIZES)} or null"
+    if value not in layout_sizes_for(DISPLAY_PROFILES[screen_type]):
+        return f"screen.layout_size {value!r} is not available for screen_type {screen_type!r}"
+    return None
+
+
+def _check_scope(name: str):
+    def check(value, screen_type):
+        if not isinstance(value, str) or value not in SCOPES:
+            return f"screen.{name} must be one of {list(SCOPES)}"
+        return None
+    return check
+
+
+def _check_poll_interval(value, screen_type):
+    if not is_int(value) or not (POLL_INTERVAL_MIN_S <= value <= POLL_INTERVAL_MAX_S):
+        return (
+            f"screen.poll_interval_s must be a whole number of seconds from "
+            f"{POLL_INTERVAL_MIN_S} to {POLL_INTERVAL_MAX_S}"
+        )
+    return None
+
+
+def _check_sleep_after(value, screen_type):
+    if not is_int(value) or value not in SLEEP_AFTER_CHOICES_S:
+        return f"screen.sleep_after_s must be one of {list(SLEEP_AFTER_CHOICES_S)}"
+    return None
+
+
+def _check_brightness(value, screen_type):
+    if not is_int(value) or not (BRIGHTNESS_MIN <= value <= BRIGHTNESS_MAX):
+        return f"screen.brightness must be a whole number from {BRIGHTNESS_MIN} to {BRIGHTNESS_MAX}"
+    return None
+
+
+_DEFAULTS = DialDisplayConfig()
+
+
+def _field(name: str, check, **flags) -> _ScreenField:
+    return _ScreenField(name, getattr(_DEFAULTS, name), check, **flags)
+
+
+# Every screen setting, in the order the strict check runs. The rules:
+# - fitted is required; the booleans (rotate, bgr, always_show_controls) are
+#   optional and must be JSON booleans when present, which keeps an older
+#   web UI's whole-object POST (it never sends the newer ones) valid.
+# - screen_type and touch_type are strings naming a known profile or
+#   controller. An unknown one is a hard error rather than a silent fallback,
+#   since silently coercing a wrong driver choice would hide the mistake this
+#   check exists to catch.
+# - screen_size_inches is a number from 0.5 to 20 or null (the profile's own
+#   size).
+# - layout_size is null (the panel's own resolution) or a key of LAYOUT_SIZES
+#   that the selected screen_type offers.
+# - volume_scope and mute_scope are one of SCOPES.
+# - poll_interval_s, sleep_after_s and brightness are JSON integers in their
+#   ranges; panel_power_off is a JSON boolean. These four are carried: a POST
+#   that omits them keeps the configured values.
+_SCREEN_FIELDS = (
+    _field("fitted", _check_bool("fitted"), required=True, coerce_on_load=True),
+    _field("rotate", _check_bool("rotate"), coerce_on_load=True),
+    _field("bgr", _check_bool("bgr"), coerce_on_load=True),
+    _field("screen_type", _check_screen_type),
+    _field("touch_type", _check_touch_type),
+    _field("always_show_controls", _check_bool("always_show_controls"), coerce_on_load=True),
+    _field("screen_size_inches", _check_screen_size, nullable=True, convert=float),
+    _field("layout_size", _check_layout_size, nullable=True),
+    _field("volume_scope", _check_scope("volume_scope")),
+    _field("mute_scope", _check_scope("mute_scope")),
+    _field("poll_interval_s", _check_poll_interval, carried=True),
+    _field("sleep_after_s", _check_sleep_after, carried=True),
+    _field("brightness", _check_brightness, carried=True),
+    _field("panel_power_off", _check_bool("panel_power_off"), carried=True),
+)
+_FIELD_BY_NAME = {f.name: f for f in _SCREEN_FIELDS}
+
+# The settings a POST that omits them leaves as configured.
+CARRIED_SCREEN_FIELDS = tuple(f.name for f in _SCREEN_FIELDS if f.carried)
+
+
 def validate_screen_settings(obj: object) -> DialDisplayConfig:
     """Validate a complete API-supplied `screen` settings object.
 
-    Strict: `fitted` must be a JSON boolean (not 0/1/"true"), the object must be
-    a dict containing only known fields, and `fitted` may not be missing or
-    unrecognised fields present. `rotate` and `bgr` are optional (default to
-    False) so older webuis that omit them still validate, but if present they
-    must also be strict JSON booleans. `screen_type` is optional (defaults to
-    DEFAULT_PROFILE_KEY); if present it must be a string naming a known
-    profile — an unknown value is a hard InvalidScreenSettings error rather
-    than a silent fallback, since silently coercing a wrong driver choice to
-    the default would mask the very mistake this validation exists to catch.
-    `touch_type` is optional (defaults to DEFAULT_TOUCH_KEY, i.e. "none") and
-    follows the exact same rule: if present it must be a string naming a
-    known controller in TOUCH_CONTROLLERS, otherwise InvalidScreenSettings.
-    `always_show_controls` is optional (defaults to False), same rule as
-    `rotate` and `bgr`: if present it must be a strict JSON boolean. This is
-    what keeps an old appliance's whole-object POST (which never sends the
-    field at all) from 400ing, and a new appliance never sends it to a dial
-    whose GET response did not advertise it in the first place.
-    `screen_size_inches` is optional (defaults to None, meaning "use the
-    selected profile's own default"); if present it must be a JSON number
-    (int or float, not bool) between 0.5 and 20 inches, or JSON null — a
-    range wide enough for every SPI panel plausibly wired to this dial while
-    still catching an obvious typo.
-    `layout_size` is optional (defaults to None, meaning "compose at the
-    panel's own resolution"); if present it must be a string naming a key in
-    dial_display_profiles.LAYOUT_SIZES, or JSON null, and that key must be
-    one the selected screen_type actually offers (see layout_sizes_for()) —
-    an offered-elsewhere key is rejected the same as an unknown one.
-    `volume_scope`/`mute_scope` are optional (each defaults to SCOPE_CURRENT);
-    if present each must be a string equal to one of SCOPES, else
-    InvalidScreenSettings — the same "optional-with-default, strict when
-    present" rule as `always_show_controls`, so an old appliance's whole-
-    object POST (which never sends either field) still validates.
-    `poll_interval_s` is optional (defaults to POLL_INTERVAL_DEFAULT_S); if
-    present it must be a JSON integer (not a bool, float or string) from
-    POLL_INTERVAL_MIN_S to POLL_INTERVAL_MAX_S inclusive.
-    `sleep_after_s` is optional (defaults to SLEEP_AFTER_DEFAULT_S); if present
-    it must be a JSON integer equal to one of SLEEP_AFTER_CHOICES_S.
-    `brightness` is optional (defaults to BRIGHTNESS_DEFAULT); if present it
-    must be a JSON integer from BRIGHTNESS_MIN to BRIGHTNESS_MAX inclusive.
-    `panel_power_off` is optional (defaults to False); if present it must be a
-    JSON boolean.
+    Strict: the object must be a dict holding only known fields, `fitted` must
+    be present, and every field present must satisfy its rule in the table
+    above (JSON types are exact: 0/1 or "true" is not a boolean). A field left
+    out takes its default, so an older web UI's POST still validates.
     Raises InvalidScreenSettings on any violation.
     """
     if not isinstance(obj, dict):
         raise InvalidScreenSettings("screen must be an object")
-    unknown = set(obj.keys()) - {
-        "fitted", "rotate", "screen_type", "bgr", "touch_type", "always_show_controls",
-        "screen_size_inches", "layout_size", "volume_scope", "mute_scope",
-        "poll_interval_s", "sleep_after_s", "brightness", "panel_power_off",
-    }
+    unknown = set(obj.keys()) - set(_FIELD_BY_NAME)
     if unknown:
         raise InvalidScreenSettings(f"unknown screen fields: {sorted(unknown)}")
-    if "fitted" not in obj:
-        raise InvalidScreenSettings("screen.fitted is required")
-    fitted = obj["fitted"]
-    if not isinstance(fitted, bool):
-        raise InvalidScreenSettings("screen.fitted must be a boolean")
-    rotate = obj.get("rotate", False)
-    if not isinstance(rotate, bool):
-        raise InvalidScreenSettings("screen.rotate must be a boolean")
-    bgr = obj.get("bgr", False)
-    if not isinstance(bgr, bool):
-        raise InvalidScreenSettings("screen.bgr must be a boolean")
-    screen_type = obj.get("screen_type", DEFAULT_PROFILE_KEY)
-    if not isinstance(screen_type, str):
-        raise InvalidScreenSettings("screen.screen_type must be a string")
-    if screen_type not in DISPLAY_PROFILES:
-        raise InvalidScreenSettings(f"unknown screen.screen_type: {screen_type!r}")
-    touch_type = obj.get("touch_type", DEFAULT_TOUCH_KEY)
-    if not isinstance(touch_type, str):
-        raise InvalidScreenSettings("screen.touch_type must be a string")
-    if touch_type not in TOUCH_CONTROLLERS:
-        raise InvalidScreenSettings(f"unknown screen.touch_type: {touch_type!r}")
-    always_show_controls = obj.get("always_show_controls", False)
-    if not isinstance(always_show_controls, bool):
-        raise InvalidScreenSettings("screen.always_show_controls must be a boolean")
-    screen_size_inches = obj.get("screen_size_inches")
-    if screen_size_inches is not None:
-        if (
-            isinstance(screen_size_inches, bool)
-            or not isinstance(screen_size_inches, (int, float))
-            or not (0.5 <= screen_size_inches <= 20.0)
-        ):
-            raise InvalidScreenSettings(
-                "screen.screen_size_inches must be a number between 0.5 and 20, or null"
-            )
-        screen_size_inches = float(screen_size_inches)
-    layout_size = obj.get("layout_size")
-    if layout_size is not None:
-        if not isinstance(layout_size, str) or layout_size not in LAYOUT_SIZES:
-            raise InvalidScreenSettings(
-                f"screen.layout_size must be one of {sorted(LAYOUT_SIZES)} or null"
-            )
-        if layout_size not in layout_sizes_for(DISPLAY_PROFILES[screen_type]):
-            raise InvalidScreenSettings(
-                f"screen.layout_size {layout_size!r} is not available for screen_type {screen_type!r}"
-            )
-    volume_scope = obj.get("volume_scope", SCOPE_CURRENT)
-    if not isinstance(volume_scope, str) or volume_scope not in SCOPES:
-        raise InvalidScreenSettings(f"screen.volume_scope must be one of {list(SCOPES)}")
-    mute_scope = obj.get("mute_scope", SCOPE_CURRENT)
-    if not isinstance(mute_scope, str) or mute_scope not in SCOPES:
-        raise InvalidScreenSettings(f"screen.mute_scope must be one of {list(SCOPES)}")
-    poll_interval_s = obj.get("poll_interval_s", POLL_INTERVAL_DEFAULT_S)
-    if (
-        isinstance(poll_interval_s, bool)
-        or not isinstance(poll_interval_s, int)
-        or not (POLL_INTERVAL_MIN_S <= poll_interval_s <= POLL_INTERVAL_MAX_S)
-    ):
-        raise InvalidScreenSettings(
-            f"screen.poll_interval_s must be a whole number of seconds from "
-            f"{POLL_INTERVAL_MIN_S} to {POLL_INTERVAL_MAX_S}"
-        )
-    sleep_after_s = obj.get("sleep_after_s", SLEEP_AFTER_DEFAULT_S)
-    if (
-        isinstance(sleep_after_s, bool)
-        or not isinstance(sleep_after_s, int)
-        or sleep_after_s not in SLEEP_AFTER_CHOICES_S
-    ):
-        raise InvalidScreenSettings(
-            f"screen.sleep_after_s must be one of {list(SLEEP_AFTER_CHOICES_S)}"
-        )
-    brightness = obj.get("brightness", BRIGHTNESS_DEFAULT)
-    if (
-        isinstance(brightness, bool)
-        or not isinstance(brightness, int)
-        or not (BRIGHTNESS_MIN <= brightness <= BRIGHTNESS_MAX)
-    ):
-        raise InvalidScreenSettings(
-            f"screen.brightness must be a whole number from "
-            f"{BRIGHTNESS_MIN} to {BRIGHTNESS_MAX}"
-        )
-    panel_power_off = obj.get("panel_power_off", False)
-    if not isinstance(panel_power_off, bool):
-        raise InvalidScreenSettings("screen.panel_power_off must be a boolean")
-    return DialDisplayConfig(
-        fitted=fitted, rotate=rotate, screen_type=screen_type, bgr=bgr,
-        touch_type=touch_type, always_show_controls=always_show_controls,
-        screen_size_inches=screen_size_inches, layout_size=layout_size,
-        volume_scope=volume_scope, mute_scope=mute_scope,
-        poll_interval_s=poll_interval_s,
-        sleep_after_s=sleep_after_s, brightness=brightness,
-        panel_power_off=panel_power_off,
-    )
+    resolved: dict[str, object] = {}
+    for f in _SCREEN_FIELDS:
+        if f.required and f.name not in obj:
+            raise InvalidScreenSettings(f"screen.{f.name} is required")
+        value = obj.get(f.name, f.default)
+        if value is None and f.nullable:
+            resolved[f.name] = None
+            continue
+        error = f.check(value, resolved.get("screen_type", DEFAULT_PROFILE_KEY))
+        if error is not None:
+            raise InvalidScreenSettings(error)
+        resolved[f.name] = f.convert(value)
+    return DialDisplayConfig(**resolved)
 
 
-def _resolve_persisted_screen_type(value: object) -> str:
-    """Resolve a persisted screen_type value, falling back to the default
-    profile with a warning log rather than raising.
+def display_settings(display: DialDisplayConfig) -> dict:
+    """The screen settings as a plain dict: what is saved and what the
+    screen-settings replies report."""
+    return {f.name: getattr(display, f.name) for f in dataclass_fields(display)}
 
-    A corrupt or stale settings file (e.g. after a profile is renamed/removed
-    across an upgrade) must not brick the dial at startup — only the strict
-    API-facing validate_screen_settings() is allowed to reject an unknown
-    profile outright.
+
+def _resolve_persisted(name: str, value: object, *, screen_type: str) -> object:
+    """Resolve a persisted value for screen setting *name*, falling back to
+    its default with a warning log rather than raising.
+
+    A corrupt or stale file (a profile renamed or removed across an upgrade,
+    a screen_type swap that no longer offers a layout size) must not brick the
+    dial at startup: only the strict API-facing validate_screen_settings() may
+    reject a value outright. A missing or null value silently means the
+    default, which is the ordinary "never overridden" state; the booleans that
+    gate the screen are read as plain truthiness.
     """
-    if isinstance(value, str) and value in DISPLAY_PROFILES:
-        return value
-    if value is not None:
-        logging.warning(
-            "dial config: unknown persisted screen_type %r — falling back to %s",
-            value, DEFAULT_PROFILE_KEY,
-        )
-    return DEFAULT_PROFILE_KEY
-
-
-def _resolve_persisted_touch_type(value: object) -> str:
-    """Resolve a persisted touch_type value, falling back to the default
-    controller ("none") with a warning log rather than raising.
-
-    Mirrors _resolve_persisted_screen_type: a corrupt or stale settings file
-    must not brick the dial at startup — only the strict API-facing
-    validate_screen_settings() is allowed to reject an unknown controller
-    outright.
-    """
-    if isinstance(value, str) and value in TOUCH_CONTROLLERS:
-        return value
-    if value is not None:
-        logging.warning(
-            "dial config: unknown persisted touch_type %r — falling back to %s",
-            value, DEFAULT_TOUCH_KEY,
-        )
-    return DEFAULT_TOUCH_KEY
-
-
-def _resolve_persisted_screen_size(value: object) -> float | None:
-    """Resolve a persisted screen_size_inches value, falling back to None
-    (meaning "use the selected profile's own default") with a warning log
-    for anything unusable, rather than raising.
-
-    Mirrors _resolve_persisted_screen_type/_resolve_persisted_touch_type: a
-    corrupt or stale settings file must not brick the dial at startup — only
-    the strict API-facing validate_screen_settings() is allowed to reject an
-    out-of-range value outright. Missing or JSON null both silently mean
-    None — that is the ordinary "never overridden" state, not corruption.
-    """
+    f = _FIELD_BY_NAME[name]
+    if f.coerce_on_load:
+        return bool(value)
     if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not (0.5 <= value <= 20.0):
-        logging.warning(
-            "dial config: unusable persisted screen_size_inches %r — falling back to the "
-            "profile default", value,
-        )
-        return None
-    return float(value)
-
-
-def _resolve_persisted_layout_size(value: object, screen_type: str) -> str | None:
-    """Resolve a persisted layout_size value against the already-resolved
-    *screen_type*, falling back to None (meaning "render at the panel's own
-    size") with a warning log for anything unusable, rather than raising.
-
-    Mirrors the other _resolve_persisted_* helpers above: a corrupt or stale
-    settings file (a renamed/removed size, or a screen_type swap that no
-    longer offers a previously-valid size) must not brick the dial at
-    startup. Missing or JSON null both silently mean None.
-    """
-    if value is None:
-        return None
-    if not isinstance(value, str) or value not in LAYOUT_SIZES:
-        logging.warning(
-            "dial config: unusable persisted layout_size %r — rendering at the "
-            "panel's own size", value,
-        )
-        return None
-    if value not in layout_sizes_for(DISPLAY_PROFILES[screen_type]):
-        logging.warning(
-            "dial config: persisted layout_size %r is not available for screen_type "
-            "%s — rendering at the panel's own size", value, screen_type,
-        )
-        return None
-    return value
-
-
-def _resolve_persisted_scope(value: object) -> str:
-    """Resolve a persisted volume_scope/mute_scope value, falling back to
-    SCOPE_CURRENT with a warning log for anything unusable, rather than
-    raising.
-
-    Mirrors the other _resolve_persisted_* helpers above: a corrupt or stale
-    settings file must not brick the dial at startup — only the strict
-    API-facing validate_screen_settings() is allowed to reject an unknown
-    value outright. Missing (None) silently means SCOPE_CURRENT — that is
-    the ordinary "never overridden" state, not corruption.
-    """
-    if value is None:
-        return SCOPE_CURRENT
-    if isinstance(value, str) and value in SCOPES:
-        return value
+        return f.default
+    error = f.check(value, screen_type)
+    if error is None:
+        return f.convert(value)
     logging.warning(
-        "dial config: unusable persisted scope %r — falling back to %s",
-        value, SCOPE_CURRENT,
+        "dial config: unusable persisted %s %r (%s), using %r", name, value, error, f.default,
     )
-    return SCOPE_CURRENT
+    return f.default
 
 
-def _resolve_persisted_poll_interval(value: object) -> int:
-    """Resolve a persisted poll_interval_s value, falling back to
-    POLL_INTERVAL_DEFAULT_S with a warning log for anything unusable, rather
-    than raising.
-
-    Mirrors the other _resolve_persisted_* helpers above: a corrupt or stale
-    settings file must not brick the dial at startup — only the strict
-    API-facing validate_screen_settings() is allowed to reject an
-    out-of-range value outright. Missing (None) silently means the default.
-    """
-    if value is None:
-        return POLL_INTERVAL_DEFAULT_S
-    if (
-        not isinstance(value, bool) and isinstance(value, int)
-        and POLL_INTERVAL_MIN_S <= value <= POLL_INTERVAL_MAX_S
-    ):
-        return value
-    logging.warning(
-        "dial config: unusable persisted poll_interval_s %r — falling back to %d",
-        value, POLL_INTERVAL_DEFAULT_S,
-    )
-    return POLL_INTERVAL_DEFAULT_S
+def _load_display(block: dict, base: DialDisplayConfig) -> DialDisplayConfig:
+    """The display config in a hardware or settings file block, each missing
+    setting taken from *base* and each unusable one from its default."""
+    resolved: dict[str, object] = {}
+    for f in _SCREEN_FIELDS:
+        resolved[f.name] = _resolve_persisted(
+            f.name, block.get(f.name, getattr(base, f.name)),
+            screen_type=resolved.get("screen_type", base.screen_type),
+        )
+    return DialDisplayConfig(**resolved)
 
 
-def _resolve_persisted_hd_port(value: object) -> int:
+def _resolve_hd_port(value: object) -> int:
     """Resolve the hardware file's hd_port, falling back to HD_PORT_DEFAULT for
     anything that is not a usable unprivileged port. Missing (None) silently
     means the default."""
     if value is None:
         return HD_PORT_DEFAULT
-    if not isinstance(value, bool) and isinstance(value, int) and 1024 <= value <= 65535:
+    if is_int(value) and 1024 <= value <= 65535:
         return value
     logging.warning("dial config: unusable hd_port %r — falling back to %d", value, HD_PORT_DEFAULT)
     return HD_PORT_DEFAULT
-
-
-def _resolve_persisted_sleep_after(value: object) -> int:
-    """Resolve a persisted sleep_after_s value, falling back to
-    SLEEP_AFTER_DEFAULT_S with a warning log for anything unusable, rather
-    than raising. Missing (None) silently means the default."""
-    if value is None:
-        return SLEEP_AFTER_DEFAULT_S
-    if (
-        not isinstance(value, bool) and isinstance(value, int)
-        and value in SLEEP_AFTER_CHOICES_S
-    ):
-        return value
-    logging.warning(
-        "dial config: unusable persisted sleep_after_s %r — falling back to %d",
-        value, SLEEP_AFTER_DEFAULT_S,
-    )
-    return SLEEP_AFTER_DEFAULT_S
-
-
-def _resolve_persisted_brightness(value: object) -> int:
-    """Resolve a persisted brightness value, falling back to
-    BRIGHTNESS_DEFAULT with a warning log for anything unusable, rather than
-    raising. Missing (None) silently means the default."""
-    if value is None:
-        return BRIGHTNESS_DEFAULT
-    if (
-        not isinstance(value, bool) and isinstance(value, int)
-        and BRIGHTNESS_MIN <= value <= BRIGHTNESS_MAX
-    ):
-        return value
-    logging.warning(
-        "dial config: unusable persisted brightness %r — falling back to %d",
-        value, BRIGHTNESS_DEFAULT,
-    )
-    return BRIGHTNESS_DEFAULT
-
-
-def _resolve_persisted_panel_power_off(value: object) -> bool:
-    """Resolve a persisted panel_power_off value, falling back to False with
-    a warning log for anything unusable, rather than raising. Missing (None)
-    silently means off."""
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return value
-    logging.warning(
-        "dial config: unusable persisted panel_power_off %r — falling back to False",
-        value,
-    )
-    return False
 
 
 def load_config() -> DialConfig:
@@ -549,28 +422,12 @@ def load_config() -> DialConfig:
     cfg.sw_gpio   = hw.get('sw_gpio', cfg.sw_gpio)
     cfg.led_gpio  = hw.get('led_gpio')
     cfg.port      = hw.get('port', cfg.port)
-    cfg.hd_port   = _resolve_persisted_hd_port(hw.get('hd_port'))
+    cfg.hd_port   = _resolve_hd_port(hw.get('hd_port'))
     cfg.uuid      = hw.get('uuid', '')
 
     hw_display = hw.get('display')
     if isinstance(hw_display, dict):
-        hw_screen_type = _resolve_persisted_screen_type(hw_display.get('screen_type'))
-        cfg.display = DialDisplayConfig(
-            fitted=bool(hw_display.get('fitted', False)),
-            rotate=bool(hw_display.get('rotate', False)),
-            screen_type=hw_screen_type,
-            bgr=bool(hw_display.get('bgr', False)),
-            touch_type=_resolve_persisted_touch_type(hw_display.get('touch_type')),
-            always_show_controls=bool(hw_display.get('always_show_controls', False)),
-            screen_size_inches=_resolve_persisted_screen_size(hw_display.get('screen_size_inches')),
-            layout_size=_resolve_persisted_layout_size(hw_display.get('layout_size'), hw_screen_type),
-            volume_scope=_resolve_persisted_scope(hw_display.get('volume_scope')),
-            mute_scope=_resolve_persisted_scope(hw_display.get('mute_scope')),
-            poll_interval_s=_resolve_persisted_poll_interval(hw_display.get('poll_interval_s')),
-            sleep_after_s=_resolve_persisted_sleep_after(hw_display.get('sleep_after_s')),
-            brightness=_resolve_persisted_brightness(hw_display.get('brightness')),
-            panel_power_off=_resolve_persisted_panel_power_off(hw_display.get('panel_power_off')),
-        )
+        cfg.display = _load_display(hw_display, cfg.display)
 
     if SETTINGS_PATH.exists():
         s = json.loads(SETTINGS_PATH.read_text(encoding='utf-8'))
@@ -588,49 +445,10 @@ def load_config() -> DialConfig:
         legacy_mute_all_playing = bool(s.get('mute_all_playing', False))
         s_display = s.get('display')
         if isinstance(s_display, dict):
-            s_screen_type = _resolve_persisted_screen_type(
-                s_display.get('screen_type', cfg.display.screen_type)
-            )
-            if 'mute_scope' in s_display:
-                s_mute_scope = _resolve_persisted_scope(s_display.get('mute_scope'))
-            elif legacy_mute_all_playing:
-                s_mute_scope = SCOPE_ALL
-            else:
-                s_mute_scope = _resolve_persisted_scope(cfg.display.mute_scope)
-            cfg.display = DialDisplayConfig(
-                fitted=bool(s_display.get('fitted', cfg.display.fitted)),
-                rotate=bool(s_display.get('rotate', cfg.display.rotate)),
-                screen_type=s_screen_type,
-                bgr=bool(s_display.get('bgr', cfg.display.bgr)),
-                touch_type=_resolve_persisted_touch_type(
-                    s_display.get('touch_type', cfg.display.touch_type)
-                ),
-                always_show_controls=bool(
-                    s_display.get('always_show_controls', cfg.display.always_show_controls)
-                ),
-                screen_size_inches=_resolve_persisted_screen_size(
-                    s_display.get('screen_size_inches', cfg.display.screen_size_inches)
-                ),
-                layout_size=_resolve_persisted_layout_size(
-                    s_display.get('layout_size', cfg.display.layout_size), s_screen_type
-                ),
-                volume_scope=_resolve_persisted_scope(
-                    s_display.get('volume_scope', cfg.display.volume_scope)
-                ),
-                mute_scope=s_mute_scope,
-                poll_interval_s=_resolve_persisted_poll_interval(
-                    s_display.get('poll_interval_s', cfg.display.poll_interval_s)
-                ),
-                sleep_after_s=_resolve_persisted_sleep_after(
-                    s_display.get('sleep_after_s', cfg.display.sleep_after_s)
-                ),
-                brightness=_resolve_persisted_brightness(
-                    s_display.get('brightness', cfg.display.brightness)
-                ),
-                panel_power_off=_resolve_persisted_panel_power_off(
-                    s_display.get('panel_power_off', cfg.display.panel_power_off)
-                ),
-            )
+            display = _load_display(s_display, cfg.display)
+            if 'mute_scope' not in s_display and legacy_mute_all_playing:
+                display = replace(display, mute_scope=SCOPE_ALL)
+            cfg.display = display
         elif legacy_mute_all_playing:
             # No display block at all in this settings file, but the legacy
             # top-level flag is present — migrate it onto the hw-overlay-
@@ -666,22 +484,7 @@ def save_config(cfg: DialConfig) -> None:
         'update_channel': cfg.update_channel,
         'sd_health_monitoring': cfg.sd_health_monitoring,
         'hd_dev_access':  cfg.hd_dev_access,
-        'display':        {
-            'fitted':      cfg.display.fitted,
-            'rotate':      cfg.display.rotate,
-            'screen_type': cfg.display.screen_type,
-            'bgr':         cfg.display.bgr,
-            'touch_type':  cfg.display.touch_type,
-            'always_show_controls': cfg.display.always_show_controls,
-            'screen_size_inches': cfg.display.screen_size_inches,
-            'layout_size': cfg.display.layout_size,
-            'volume_scope': cfg.display.volume_scope,
-            'mute_scope': cfg.display.mute_scope,
-            'poll_interval_s': cfg.display.poll_interval_s,
-            'sleep_after_s': cfg.display.sleep_after_s,
-            'brightness': cfg.display.brightness,
-            'panel_power_off': cfg.display.panel_power_off,
-        },
+        'display':        display_settings(cfg.display),
     }
     with _save_lock:
         autostream_sysutils.atomic_write_file(

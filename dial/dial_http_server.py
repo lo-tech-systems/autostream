@@ -26,8 +26,10 @@ from pathlib import Path
 from typing import Callable
 
 from dial_config import (
+    CARRIED_SCREEN_FIELDS,
     InvalidScreenSettings,
     PIN_RESET_PATH,
+    display_settings,
     effective_scope,
     validate_screen_settings,
 )
@@ -387,23 +389,7 @@ class DialHTTPServer:
         (a DialDisplayConfig), or the current one when omitted."""
         if display is None:
             display = self.display_config
-        return {
-            'fitted':      display.fitted,
-            'rotate':      display.rotate,
-            'screen_type': display.screen_type,
-            'bgr':         display.bgr,
-            'touch_type':  display.touch_type,
-            'always_show_controls': display.always_show_controls,
-            'screen_size_inches': display.screen_size_inches,
-            'layout_size': display.layout_size,
-            'volume_scope': display.volume_scope,
-            'mute_scope': display.mute_scope,
-            'poll_interval_s': display.poll_interval_s,
-            'sleep_after_s': display.sleep_after_s,
-            'brightness': display.brightness,
-            'panel_power_off': display.panel_power_off,
-            'surface': _profile_for(display).surface,
-        }
+        return {**display_settings(display), 'surface': _profile_for(display).surface}
 
     def apply_screen_settings(self, screen) -> tuple[int, dict]:
         """Validate, apply, persist and report a `screen` settings object, as
@@ -422,7 +408,7 @@ class DialHTTPServer:
             # The appliance's screen form never sends these keys, so a
             # save from it keeps the configured values rather than
             # resetting them to the defaults.
-            for key in ('poll_interval_s', 'sleep_after_s', 'brightness', 'panel_power_off'):
+            for key in CARRIED_SCREEN_FIELDS:
                 if key not in screen:
                     screen = {**screen, key: getattr(cfg.display, key)}
             # surface is reported from the profile, never set: drop it
