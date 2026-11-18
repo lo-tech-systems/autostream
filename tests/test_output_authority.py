@@ -3572,3 +3572,24 @@ class TestPinWithSelect:
         ew.fb.results = [error("pin_invalid", "PIN was rejected")]
         out = ew.a.submit_pin("1", "0000", select=True, volume=30).outcome.result(1)[0]
         assert out.error_code == "pin_invalid" and snap().unit("1").selected is False
+
+
+class TestStoppingView:
+    def test_a_deselected_unit_whose_row_is_stopping_reads_stopping(self, aw):
+        put(aw, [group_row(1, "streaming", selected=True), group_row(2)])
+        aw.a.deselect("1", Origin.USER)
+        assert snap().unit("1").stopping is False
+        send(aw, "1", "stopping", selected=False, at_s=0.1)
+        u = snap().unit("1")
+        assert u.stopping is True and u.connecting is False and u.selected is False
+        send(aw, "1", "stopped", selected=False, at_s=1.2)
+        assert snap().unit("1").stopping is False
+
+    def test_a_selected_unit_whose_row_is_stopping_reads_connecting(self, aw):
+        aw.a.note_session(True)
+        put(aw, [group_row(1, "streaming", selected=True), group_row(2)])
+        aw.a.deselect("1", Origin.USER)
+        aw.a.select("1", Origin.USER, volume=30)
+        send(aw, "1", "stopping", selected=True, at_s=0.1)
+        u = snap().unit("1")
+        assert u.stopping is False and u.connecting is True and u.availability == "starting"

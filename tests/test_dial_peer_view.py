@@ -187,6 +187,12 @@ class TestOutputs:
         parts = {"outputs": outputs(unit("p", "Pin", selected=True, availability="password"))}
         assert pv.outputs_state(AID, parts).rows[0].selected is False
 
+    def test_a_speaker_switched_off_while_it_ends_its_session_is_stopping(self):
+        parts = {"outputs": outputs(unit("s", "Stopping", stopping=True), unit("p", "Plain"),
+                                    unit("u", "Used", stopping=True, in_use_by="Kitchen"))}
+        rows = {r.id: r for r in pv.outputs_state(AID, parts).rows}
+        assert rows["s"].stopping and not rows["p"].stopping and not rows["u"].stopping
+
     def test_no_outputs_part(self):
         st = pv.outputs_state(AID, {})
         assert st.rows == () and not st.loaded

@@ -183,9 +183,11 @@ function paint(card, r) {
   const on = pending.value('sel:' + id, r.on);
   const vol = pending.value('vol:' + id, r.volume);
   const connecting = r.connecting && on;
+  // Switched off here while the speaker is still ending its session
+  const stopping = r.stopping && !on;
   const offline = r.offline;
   card.className = 'output-card ' + (r.inUseBy ? 'output-card-in-use' : on ? 'output-card-on' : 'output-card-off')
-    + (connecting ? ' output-card-connecting' : '') + (offline ? ' output-card-offline' : '');
+    + (connecting || stopping ? ' output-card-connecting' : '') + (offline ? ' output-card-offline' : '');
   card.setAttribute('data-auto-start', r.autoStart ? '1' : '0');
   card.setAttribute('data-remote-in-use', r.inUseBy ? '1' : '0');
   card.setAttribute('data-remote-owner', r.inUseBy);
@@ -193,7 +195,7 @@ function paint(card, r) {
   const nm = card.querySelector('.output-card-name');
   nm.firstChild.data = r.name;
   const lab = $('output_label_' + id);
-  lab.textContent = connecting ? CHIP.connecting : offline ? CHIP.offline : '';
+  lab.textContent = connecting ? CHIP.connecting : stopping ? CHIP.stopping : offline ? CHIP.offline : '';
   lab.hidden = !lab.textContent;
   card.querySelector('.output-card-default').style.display = r.autoStart ? '' : 'none';
   const chip = $('output_state_' + id);

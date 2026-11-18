@@ -118,6 +118,25 @@ class TestConnectingCard:
 
 
 @_requires_browser
+class TestStoppingCard:
+    STOPPING = _unit(selected=False, stopping=True)
+
+    def test_a_speaker_switched_off_that_is_ending_its_session_reads_stopping(self, page: "Page", open_card):
+        open_card(self.STOPPING)
+        expect(page.locator("#output_label_tv")).to_have_text("(Stopping)")
+        expect(page.locator("#output_card_tv")).to_have_class(_CONNECTING)
+        expect(page.locator("#output_enabled_tv")).not_to_be_checked()
+        expect(page.locator("#output_enabled_tv")).to_be_enabled()
+
+    def test_the_label_clears_once_it_has_stopped(self, page: "Page", open_card):
+        open_card(self.STOPPING)
+        expect(page.locator("#output_label_tv")).to_have_text("(Stopping)")
+        _push(_unit(selected=False))
+        expect(page.locator("#output_label_tv")).to_be_hidden()
+        expect(page.locator("#output_card_tv")).not_to_have_class(_CONNECTING)
+
+
+@_requires_browser
 class TestOfflineCard:
     def test_in_a_session_it_reads_offline_with_the_switch_on_and_working(self, page: "Page", open_card):
         open_card(OFFLINE_IN_SESSION)

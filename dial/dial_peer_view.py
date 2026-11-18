@@ -136,6 +136,7 @@ class SpeakerRow:
     pin_claim: str
     needs_auth_key: bool = False
     paused: bool = False      # on, and held because it paused itself
+    stopping: bool = False    # switched off here, and the speaker is still ending its session
 
 
 def speaker_rows(parts) -> list[SpeakerRow]:
@@ -159,6 +160,7 @@ def speaker_rows(parts) -> list[SpeakerRow]:
         level = _whole(u.get("volume")) or 0
         connecting = not by and bool(u.get("connecting"))
         paused = not by and on and bool(u.get("held"))
+        stopping = not by and bool(u.get("stopping"))
         rows.append(SpeakerRow(
             id=u["id"], name=u["name"], on=on, volume=clamp_percent(level),
             chip="in-use" if by else "paused" if paused else "on" if on else "off",
@@ -168,12 +170,13 @@ def speaker_rows(parts) -> list[SpeakerRow]:
             # Offline units are skipped above, so the offline terms here are
             # always false; they mirror state_view.js, which can include
             # offline rows.
-            offline=not by and not connecting and offline,
+            offline=not by and not connecting and not stopping and offline,
             disabled=bool(by) or (offline and not in_session),
             pin_pending=bool(reported.get("pin_pending")),
             pin_claim=u.get("pin_claim") or "",
             needs_auth_key=reported.get("needs_auth_key") is True,
             paused=paused,
+            stopping=stopping,
         ))
     rows.sort(key=lambda r: (not r.auto_start, r.name.lower()))
     return rows
@@ -190,6 +193,7 @@ def outputs_state(appliance_id: str, parts, *, fetched_at: float = 0.0) -> Outpu
             id=r.id, name=r.name, selected=r.on, volume=r.volume,
             remote_in_use=bool(r.in_use_by), remote_owner=r.in_use_by or None,
             is_default=r.auto_start, needs_auth_key=r.needs_auth_key, paused=r.paused,
+            stopping=r.stopping and not r.on,
         )
         for r in speaker_rows(parts)
     )

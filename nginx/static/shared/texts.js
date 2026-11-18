@@ -5,6 +5,8 @@ export const START_FAILURE = {
   failed: 'The speaker did not start. autostream keeps trying while the music plays.',
   timed_out: 'The speaker did not answer in time. Check that it is switched on and connected to the network.',
   encoder_capacity: 'The appliance cannot encode another stream at the chosen quality. Turn another speaker off or choose a lighter audio mode.',
+  unreachable: 'The speaker could not be reached. Check that it is switched on and connected to the network.',
+  no_clock: 'The speaker is not following the appliance\'s clock, so it cannot play in time. Restarting the speaker usually clears it.',
   other: 'The speaker did not start.',
 };
 
@@ -46,6 +48,7 @@ export const CHIP = {
   inUse: (by) => 'In Use by ' + (by || 'another appliance'),
   autoStart: 'Auto-Start',
   connecting: ' (Connecting)',
+  stopping: ' (Stopping)',
   offline: ' (offline)',
 };
 

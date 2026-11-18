@@ -140,6 +140,7 @@ class OutputRow:
     is_default: bool = False         # the appliance's configured default output
     needs_auth_key: bool = False     # a speaker that has never been paired (its first PIN is still to be entered)
     paused: bool = False             # on, and held because it paused itself
+    stopping: bool = False           # off, and the speaker is still ending its session
 
 
 # ---- appliance snapshot types --------------------------------------------

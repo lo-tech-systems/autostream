@@ -34,7 +34,7 @@ def _speaker_rows(case):
     return [{
         "id": r.id, "name": r.name, "on": r.on, "volume": r.volume, "chip": r.chip, "paused": r.paused,
         "autoStart": r.auto_start, "inUseBy": r.in_use_by, "inUseId": r.in_use_id,
-        "connecting": r.connecting, "offline": r.offline, "disabled": r.disabled,
+        "connecting": r.connecting, "stopping": r.stopping, "offline": r.offline, "disabled": r.disabled,
         "pinPending": r.pin_pending, "pinClaim": r.pin_claim,
     } for r in rows]
 

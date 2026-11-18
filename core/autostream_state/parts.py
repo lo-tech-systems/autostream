@@ -199,7 +199,7 @@ class StartFailure:
     seq: int                                # starts at 1 per process, +1 per failure; a client shows each seq once
     unit_id: str
     name: str                               # display name at the time of the failure
-    reason: str                             # "pin_required" | "pin_invalid" | "encoder_capacity" | "refused" | "failed" | "timed_out"
+    reason: str                             # "pin_required" | "pin_invalid" | "encoder_capacity" | "refused" | "unreachable" | "no_clock" | "failed" | "timed_out"
     at: float                               # wall clock; not in the digest
     requester: Optional[str] = None         # who asked for the start ("webui", "dial:<id>", "peer"); None: the coordinator
     # With the store's boot id, (boot, seq) names one failure for ever: a
@@ -218,6 +218,7 @@ class OutputUnitView:
     cause: Origin                           # who last changed desired
     reported: Optional[OutputInfo]          # the last row; None while the row is away after a boot change
     connecting: bool = False                # wanted in a session and the player has it, but it is not playing yet
+    stopping: bool = False                  # switched off here and the player is still ending its session
     auto_start: bool = False                # the unit matches a member of the Auto-Start set, or is a placeholder for one
     hidden: bool = False                    # the name is in the hidden-speakers setting (compared casefolded)
     pin_claim: str = ""                     # who is entering a PIN for it ("webui", "dial:<id>"), or ""
@@ -486,7 +487,7 @@ def _outputs_digest(p: OutputsPart) -> tuple:
     return (
         tuple(
             (u.id, u.name, u.shown_selected, u.volume, u.muted, u.availability,
-             _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting,
+             _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting, u.stopping,
              u.auto_start, u.hidden, u.pin_claim, u.in_use_by, u.in_use_id, u.held)
             for u in p.units
         ),

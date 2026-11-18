@@ -37,6 +37,8 @@ START_FAILURE_LINES = {
     "failed": "{name} did not start",
     "timed_out": "{name} did not answer in time",
     "encoder_capacity": "No capacity to stream to {name}",
+    "unreachable": "{name} could not be reached",
+    "no_clock": "{name} is not following the clock",
 }
 START_FAILURE_LINE_FALLBACK = "{name} did not start"
 

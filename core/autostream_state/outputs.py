@@ -890,6 +890,11 @@ class OutputAuthority:
             return r.session_state != "streaming"
         return not r.selected
 
+    @staticmethod
+    def _stopping_locked(u: UnitState) -> bool:
+        """Switched off here while the player is still ending its session."""
+        return not u.desired.selected and u.reported is not None and u.reported.session_state == "stopping"
+
     def _with_outside_fields_locked(self, view: OutputUnitView, claims: dict) -> OutputUnitView:
         """*view* with the fields the authority does not own: whether the user
         hides the speaker, who is entering its PIN, and which other appliance is
@@ -920,7 +925,8 @@ class OutputAuthority:
             view = OutputUnitView(
                 id=u.id, name=name, selected=d.selected, volume=d.volume, muted=d.muted,
                 availability=u.availability, cause=d.cause, reported=u.reported,
-                connecting=self._connecting_locked(u), auto_start=u.id in matched, held=d.held,
+                connecting=self._connecting_locked(u), stopping=self._stopping_locked(u),
+                auto_start=u.id in matched, held=d.held,
             )
             views.append(self._with_outside_fields_locked(view, claims))
         views.extend(self._with_outside_fields_locked(v, claims) for v in self._placeholders_locked())

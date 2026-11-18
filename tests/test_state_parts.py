@@ -417,6 +417,7 @@ class TestOutputsPart:
             state.OutputsPart(units=(self.unit("a", muted=True),), connected=True),
             state.OutputsPart(units=(self.unit("a", availability="starting"),), connected=True),
             state.OutputsPart(units=(self.unit("a", connecting=True),), connected=True),
+            state.OutputsPart(units=(self.unit("a", stopping=True),), connected=True),
             state.OutputsPart(units=(self.unit("a", name="Other"),), connected=True),
             state.OutputsPart(units=(self.unit("a"),), connected=False),
             state.OutputsPart(units=(self.unit("a"),), connected=True, muted_all=True),
