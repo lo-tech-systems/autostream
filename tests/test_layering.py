@@ -38,7 +38,7 @@ appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
 webui_page_align webui_page_equaliser webui_page_first_boot webui_page_logs
 webui_page_owntone webui_page_rebooting webui_page_service webui_page_setup
-webui_post_handlers webui_routes webui_service_schema webui_state
+webui_post_handlers webui_routes webui_service_schema webui_state webui_static
 """.split()
 
 LAYERS: dict[str, str] = {

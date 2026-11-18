@@ -19,6 +19,7 @@ from datetime import datetime
 from urllib.parse import quote, urlparse
 from typing import Optional
 
+import autostream_webui_static as static
 from autostream_auth import FLASH_COOKIE_NAME
 from autostream_bluetooth_client import classify_loopback_hw
 from autostream_config import (
@@ -573,7 +574,7 @@ def build_page_html(
     # static file rather than inlined here — see that file and the
     # `location /static/` block in system/nginx/autostream-nginx.conf. The version
     # query string cache-busts on every release without needing a shorter max-age.
-    style_link = f'<link rel="stylesheet" href="/static/theme.css?v={html.escape(get_app_version())}">'
+    style_link = static.style_tag("theme.css")
     extra_style = f'<style>{extra_css.strip()}</style>' if extra_css.strip() else ""
     nav = build_nav_bar_html(active_tab, service_warn=service_warn, remote_id=remote_id) if show_nav else ""
     body_cls = ' class="has-bottom-nav"' if show_nav else ""

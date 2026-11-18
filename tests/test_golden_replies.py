@@ -103,3 +103,7 @@ class TestNormalise:
         STAMP = "T".join(("-".join(("1999", "01", "02")), "03:04:05Z"))
         text = f"v={gs.FIXED_APP_VERSION} t={gs.FIXED_CSRF_TOKEN} at {STAMP}"
         assert gs.normalise_html(text) == "v={APP_VERSION} t={CSRF_TOKEN} at <n>"
+
+    def test_html_asset_hashes_are_replaced(self):
+        text = "/static/theme.css?v=0123abcd45\" /static/x.js?v=0123abcd45"
+        assert gs.normalise_html(text) == "/static/theme.css?v={ASSET}\" /static/x.js?v={ASSET}"

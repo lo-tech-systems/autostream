@@ -23,6 +23,7 @@ from autostream_config import input_type_label, normalize_input_type
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname, reboot_system
 from autostream_webui_components import output_card_html, slider_html
+import autostream_webui_static as static
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
     A2HS_SCRIPT,
@@ -45,7 +46,6 @@ from autostream_webui_common import (
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
-    get_app_version,
     no_input_configured_notice_html,
     send_html,
 )
@@ -488,8 +488,8 @@ def send_airplay_page(
     ) + CSRF_RECOVERY_SCRIPT
 
     _extra_css = _HOME_PAGE_EXTRA_CSS
-    _poll_js_src = f'<script src="/static/poll.js?v={html.escape(get_app_version())}"></script>'
-    _render_fragments_js_src = f'<script src="/static/render_fragments.js?v={html.escape(get_app_version())}"></script>'
+    _poll_js_src = static.script_tag("poll.js")
+    _render_fragments_js_src = static.script_tag("render_fragments.js")
     _head_extra = f"""{csrf_meta}
 {_poll_js_src}
 {_render_fragments_js_src}
@@ -871,7 +871,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
         + CSRF_RECOVERY_SCRIPT
-        + f'<script src="/static/render_fragments.js?v={html.escape(get_app_version())}"></script>\n'
+        + static.script_tag("render_fragments.js") + "\n"
         + HOME_CARDS_SCRIPT
         + INFO_MODAL_SCRIPT
         + _REMOTE_HOME_SCRIPT

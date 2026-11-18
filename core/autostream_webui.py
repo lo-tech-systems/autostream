@@ -1462,6 +1462,7 @@ def start_webui_background(
     """
     from autostream_settings import SettingsStore
     from autostream_webui_common import get_app_version
+    import autostream_webui_static as static
     global STATE, AUTH
 
     if settings is None:
@@ -1470,7 +1471,7 @@ def start_webui_background(
     # Same theme.css <link>/cache-bust convention as build_page_html(); the
     # login page keeps LICENSE_BANNER_CSS inline rather than folding it into
     # the shared theme (it is currently empty, but stays page-specific).
-    style_link = f'<link rel="stylesheet" href="/static/theme.css?v={html.escape(get_app_version())}">'
+    style_link = static.style_tag("theme.css")
     if LICENSE_BANNER_CSS.strip():
         style_link += f'<style>{LICENSE_BANNER_CSS}</style>'
     AUTH = AuthManager(

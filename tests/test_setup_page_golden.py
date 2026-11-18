@@ -171,6 +171,7 @@ def _normalise(html: str) -> str:
     "passing" by accident if one of these becomes genuinely dynamic again.
     """
     html = html.replace(FIXED_APP_VERSION, "{APP_VERSION}")
+    html = re.sub(r"\?v=[0-9a-f]{10}\b", "?v={ASSET}", html)
     html = html.replace(FIXED_CSRF_TOKEN, "{CSRF_TOKEN}")
     # Belt-and-braces: strip any stray object-identity repr that would make
     # a MagicMock-derived value non-deterministic across runs/machines.

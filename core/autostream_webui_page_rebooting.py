@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import html
 
+import autostream_webui_static as static
 from autostream_webui_assets import VIEWPORT_META
-from autostream_webui_common import build_top_banner_html, get_app_version, send_html
+from autostream_webui_common import build_top_banner_html, send_html
 from autostream_webui_state import WebUIState
 
 
@@ -42,7 +43,7 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
         f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>"
     )
 
-    style_link = f'<link rel="stylesheet" href="/static/theme.css?v={html.escape(get_app_version())}">'
+    style_link = static.style_tag("theme.css")
 
     body = f"""<!doctype html>
       <html lang="en">

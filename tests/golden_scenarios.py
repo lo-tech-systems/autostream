@@ -494,7 +494,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              parse_config=functools.partial(_parse_without_hardware_probe))
     setattrs(airplay, **{k: v for k, v in shared.items()
                          if k in ("get_appliance_id", "_dial_update_banner_text")},
-             get_app_version=lambda: FIXED_APP_VERSION,
              _config_snapshot=lambda state: cfg,
              get_setting=get_setting,
              get_all_appliances=lambda: [],
@@ -729,6 +728,7 @@ _EPOCH = re.compile(r"\b1\d{9}(?:\.\d+)?\b")
 def normalise_html(body: str) -> str:
     """The setup page golden's substitutions, plus timestamps and epoch values."""
     body = body.replace(FIXED_APP_VERSION, "{APP_VERSION}")
+    body = re.sub(r"\?v=[0-9a-f]{10}\b", "?v={ASSET}", body)
     body = body.replace(FIXED_CSRF_TOKEN, "{CSRF_TOKEN}")
     body = re.sub(r"<MagicMock id='\d+'>", "{MOCK}", body)
     body = _TIMESTAMP.sub(PLACEHOLDER, body)

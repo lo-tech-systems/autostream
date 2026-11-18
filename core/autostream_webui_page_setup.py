@@ -67,6 +67,7 @@ from autostream_webui_assets import (
     INFO_MODAL_SCRIPT,
     PIN_MODAL_CSS,
 )
+import autostream_webui_static as static
 from autostream_webui_common import (
     CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
@@ -5995,7 +5996,7 @@ def send_setup_page(
       {factory_reset_js}
       {_bt_pairing_js}
       {_bt_card_js}"""
-    _poll_js_src = f'<script src="/static/poll.js?v={html.escape(_app_ver)}"></script>'
+    _poll_js_src = static.script_tag("poll.js")
     html_body = build_page_html(
         "autostream",
         _body_html,
