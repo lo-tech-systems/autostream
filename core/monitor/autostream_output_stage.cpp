@@ -137,7 +137,10 @@ void OutputStage::thread_func()
                 idle = true;
                 // A partial prefill belongs to the session that just
                 // ended; carrying it into whatever starts next would
-                // splice stale audio ahead of it.
+                // splice stale audio ahead of it. It is audio that never
+                // reached the writer, so it is counted as lost.
+                if (!prefill_buf.empty())
+                    _stats.record_prefill_dropped(prefill_buf.size());
                 prefill_buf.clear();
             }
 
@@ -187,6 +190,7 @@ void OutputStage::thread_func()
             }
             if (!ready)
             {
+                _stats.record_live_wait_timeout();
                 double now = get_monotonic_time();
                 if (now - warn_last_log >= kLiveWaitWarnPeriodSeconds)
                 {
@@ -208,8 +212,10 @@ void OutputStage::thread_func()
 
             // Timer-paced only: the live-clocked branch above re-bases
             // deadline to "now" every block, so a gap measured there would
-            // be meaningless.
+            // be meaningless. The gap includes any overrun of the previous
+            // block's work, which is what a reader of the counter wants.
             double late = std::chrono::duration<double>(std::chrono::steady_clock::now() - deadline).count();
+            _stats.record_late(late);
             if (late > kSchedGapWarnSeconds)
             {
                 double now = get_monotonic_time();
