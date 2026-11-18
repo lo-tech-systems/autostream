@@ -305,6 +305,15 @@ class TestUnitForDevice:
         w.a.step(now=T0)
         assert snap().unit("20").muted is False
 
+    def test_a_level_a_speaker_reports_over_upnp_is_a_device_volume(self, w):
+        # owntone-mini reports a level set on the speaker itself, read from
+        # its UPnP renderer, with its own verb and the level in percent
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute("1", Origin.USER)
+        w.a.on_device_event(DeviceEvent("device_volume", "1", "Speaker 1", "upnp.volume", "31", 1, 1.0))
+        w.a.step(now=T0)
+        assert snap().unit("1").muted is False
+
     def test_a_device_volume_for_zero_reaches_every_selected_unit(self, w, caplog):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50), row(3)])
         w.a.mute_all(Origin.USER)
