@@ -56,10 +56,9 @@ from dial_display import (
     SELECTOR_TIMEOUT_SECONDS,
     WARNING_DESCRIPTORS,
     DialDisplay,
-    DisplayBackend,
-    NoOpBackend,
     create_dial_display,
 )
+from dial_display_backend import DisplayBackend, NoOpBackend
 from dial_warnings import KIND_STATUS, WarningManager
 from dial_test_support import (
     FakeBackend,

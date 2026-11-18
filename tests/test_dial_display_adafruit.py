@@ -36,6 +36,7 @@ except ImportError:
     _numpy_preloaded = None
 
 import dial_display_adafruit as dda
+import dial_display_backend
 import dial_spi_bus
 from dial_display_adafruit import AdafruitDisplayBackend
 from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES, get_profile
@@ -716,8 +717,8 @@ class TestDisplayWindow:
         import dial_display
 
         assert AdafruitDisplayBackend.supports_window_write is True
-        assert dial_display.DisplayBackend.supports_window_write is False
-        assert dial_display.NoOpBackend().display_window(
+        assert dial_display_backend.DisplayBackend.supports_window_write is False
+        assert dial_display_backend.NoOpBackend().display_window(
             Image.new("RGB", (1, 1)), 0, 0, 0, 0
         ) is False
 

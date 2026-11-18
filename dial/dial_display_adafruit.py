@@ -26,7 +26,7 @@ import logging
 import numpy
 
 import dial_spi_bus
-from dial_display import DisplayBackend
+from dial_display_backend import DisplayBackend
 from dial_display_profiles import DisplayProfile, backend_name_for
 from dial_values import is_int
 
