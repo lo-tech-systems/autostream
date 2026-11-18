@@ -106,10 +106,11 @@ def _disable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
 def _outputs_set(intent: Intent, wait: float) -> Outcome:
     user = intent.origin == Origin.USER
     out_id = intent.args["id"]
-    if out_id == store().snapshot().outputs.placeholder_id:
-        # The default speaker's card while the player has no row for it: the
-        # tap is a choice for the session, with nothing to send yet.
-        get_authority().want_default(bool(intent.args["selected"]))
+    member = store().snapshot().outputs.placeholder_member(out_id)
+    if member is not None:
+        # A set member's card while the player has no row for it: the tap is
+        # a choice for the session, with nothing to send yet.
+        get_authority().want_default(bool(intent.args["selected"]), member.key)
         return Outcome(ok=True, result={"ok": True})
     if intent.args["selected"]:
         result = _enable(intent, wait, out_id, user)
@@ -154,11 +155,18 @@ def _deselect_all(intent: Intent, wait: float) -> Outcome:
 
 
 def _want_default(intent: Intent, wait: float) -> Outcome:
-    """The user's tap on the default speaker's card while the player has no
+    """The user's tap on a default speaker's card while the player has no
     row for it. The choice is kept for the session; the speaker starts once
-    it appears."""
+    it appears. Without an id it is the first such card."""
     wanted = bool(intent.args["wanted"])
-    get_authority().want_default(wanted)
+    part = store().snapshot().outputs
+    card = intent.args.get("id")
+    if card:
+        member = part.placeholder_member(card)
+    else:
+        member = next((m for m in part.default_members if m.placeholder), None)
+    if member is not None:
+        get_authority().want_default(wanted, member.key)
     return Outcome(ok=True, result={"ok": True})
 
 

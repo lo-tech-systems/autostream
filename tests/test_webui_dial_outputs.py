@@ -264,7 +264,7 @@ class TestOutputsList:
 
     def test_a_default_the_player_does_not_have_is_not_listed(self):
         from autostream_state.outputs import get_authority
-        get_authority().set_default_output("Zulu", 30)
+        get_authority().set_default_members([("", "Zulu", 30)], 30)
         code, body = _invoke_list(
             {"dial_id": DIAL_ID},
             list_result=_ok_list(_output("1", "Alpha", 10)),

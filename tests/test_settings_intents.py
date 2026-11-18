@@ -242,15 +242,14 @@ def _form(cfg, *steps):
 def test_the_owntone_runtime_step_applies_the_new_values():
     cfg = parse_config({})
     with patch("autostream_live_config.update_live_owntone_runtime", return_value=True) as update:
-        reply = _form(cfg, ("owntone_runtime", {"output_name": "Speaker A", "volume_percent": "35"}))
+        reply = _form(cfg, ("owntone_runtime", {}))
     assert reply.ok is True and reply.result["results"] == [True]
-    assert update.call_args.kwargs["output_name"] == "Speaker A"
-    assert update.call_args.kwargs["volume_percent"] == "35"
+    assert update.call_args.kwargs["output_offsets_ms"] == cfg.owntone.output_offsets_ms
 
 
 def test_a_step_that_is_not_applied_makes_the_outcome_not_ok():
     with patch("autostream_live_config.update_live_owntone_runtime", return_value=False):
-        reply = _form(parse_config({}), ("owntone_runtime", {"output_name": "Speaker A", "volume_percent": "35"}))
+        reply = _form(parse_config({}), ("owntone_runtime", {}))
     assert reply.ok is False and reply.result["results"] == [False]
 
 

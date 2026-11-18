@@ -359,8 +359,7 @@ class TestWp4aLiveEffects:
         store.update(_setup)
         with patch("autostream_live_config.update_live_owntone_runtime", return_value=True) as m:
             resp = _post(state, "owntone.output_name", "Kitchen")
-        args = m.call_args
-        assert args.kwargs.get("output_name") == "Kitchen" or args[1].get("output_name") == "Kitchen"
+        assert m.call_args.kwargs["settings"] is not None and "output_name" not in m.call_args.kwargs
         assert resp["live"] is True
 
     def test_owntone_volume_calls_update_live_runtime(self, tmp_path):
@@ -368,11 +367,10 @@ class TestWp4aLiveEffects:
         def _setup(raw):
             raw.setdefault("owntone", {})["output_name"] = "Main"
         store.update(_setup)
-        with patch("autostream_live_config.update_live_owntone_runtime", return_value=True) as m:
-            resp = _post(state, "owntone.volume_percent", 75)
-        args = m.call_args
-        assert args.kwargs.get("volume_percent") == 75 or args[1].get("volume_percent") == 75
+        resp = _post(state, "owntone.volume_percent", 75)
         assert resp["live"] is True
+        from autostream_state.outputs import get_authority
+        assert get_authority().start_volume() == 75
 
     def test_silence_calls_update_live_silence_seconds(self, tmp_path):
         state, _ = _make_state(str(tmp_path))

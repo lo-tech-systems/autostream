@@ -392,6 +392,7 @@ class TestOutputsPart:
         base = state.OutputsPart(units=(self.unit("a"),), connected=True)
         d = DIGESTS["outputs"]
         assert d(base) == d(state.OutputsPart(units=(self.unit("a"),), connected=True))
+        member = state.DefaultMemberView("k", "", "Kitchen", 30, "default:Kitchen", True, False)
         for changed in (
             state.OutputsPart(units=(self.unit("a", selected=True),), connected=True),
             state.OutputsPart(units=(self.unit("a", volume=5),), connected=True),
@@ -402,8 +403,20 @@ class TestOutputsPart:
             state.OutputsPart(units=(self.unit("a"),), connected=False),
             state.OutputsPart(units=(self.unit("a"),), connected=True, muted_all=True),
             state.OutputsPart(units=(self.unit("a"),), connected=True, silence_chosen=True),
+            state.OutputsPart(units=(self.unit("a", auto_start=True),), connected=True),
+            state.OutputsPart(units=(self.unit("a"),), connected=True, default_matches=True),
+            state.OutputsPart(units=(self.unit("a"),), connected=True, default_members=(member,)),
+            state.OutputsPart(units=(self.unit("a"),), connected=True,
+                              default_members=(dataclasses.replace(member, pending=True),)),
         ):
             assert d(changed) != d(base)
+
+    def test_a_placeholder_member_is_found_by_its_card_id(self):
+        card = state.DefaultMemberView("k", "", "Kitchen", 30, "default:Kitchen", True, False)
+        live = state.DefaultMemberView("l", "l", "Lounge", 30, "l", False, False)
+        p = state.OutputsPart(default_members=(live, card))
+        assert p.placeholder_member("default:Kitchen") is card
+        assert p.placeholder_member("l") is None and p.placeholder_member("x") is None
 
     def test_the_digest_follows_the_pin_fields_and_the_failure_sequence(self):
         from autostream_players import OutputInfo

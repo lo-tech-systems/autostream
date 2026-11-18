@@ -265,7 +265,7 @@ def _start_output_authority(cfg, settings) -> None:
     policy.bind_settings(autostream_live_config.output_policy_settings)
     get_authority().set_policy(policy)
     get_authority().set_include_tv_reader(autostream_live_config.include_tv_for)
-    get_authority().set_default_output(cfg.owntone.output_name, cfg.owntone.volume_percent)
+    autostream_live_config._push_default_set(settings)
     get_authority().start(PlayerServiceBackend(cfg.owntone.base_url))
 
 
@@ -397,7 +397,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         monitors = startup_result.monitors
         if startup_result.abort:
             return
-        get_authority().set_default_output(cfg.owntone.output_name, cfg.owntone.volume_percent)
+        import autostream_live_config
+        autostream_live_config._push_default_set(settings)
         if cfg.owntone.base_url != get_authority().base_url:
             get_authority().set_backend(PlayerServiceBackend(cfg.owntone.base_url))
 

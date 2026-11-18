@@ -516,8 +516,8 @@ class TestRealRows:
 
     def test_the_placeholder_card_is_want_default_on_the_new_and_the_old_route(self, env, player):
         arrange(row("1", "Other"))
-        get_authority().set_default_output("Lounge", 30)
-        placeholder = snap().placeholder_id
+        get_authority().set_default_members([("", "Lounge", 30)], 30)
+        placeholder = snap().default_members[0].unit_id
         assert placeholder
         _, body = env.post("outputs.set", {"args": {"id": placeholder, "selected": False}},
                            headers=env.browser())

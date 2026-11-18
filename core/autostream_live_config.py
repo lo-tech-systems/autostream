@@ -325,20 +325,31 @@ def _normalize_owntone_output_airplay_modes(
     return normalized
 
 
+_default_set_lock = threading.Lock()  # a leaf: serialises the pushes only
+
+
+def _push_default_set(settings: Optional[SettingsStore]) -> None:
+    """Give the output authority the Auto-Start set and start volume the
+    store holds now. Always read from the store, so any order of commits ends
+    with the authority holding the latest."""
+    if settings is None:
+        return
+    with _default_set_lock:
+        o = settings.snapshot().owntone
+        get_authority().set_default_members(
+            [(m.id, m.name, m.volume) for m in o.default_outputs], o.volume_percent,
+        )
+
+
 def update_live_owntone_runtime(
     *,
-    output_name: str,
-    volume_percent: object,
     output_offsets_ms: Optional[dict[str, object]] = None,
     output_airplay_modes: Optional[dict[str, object]] = None,
+    settings: Optional[SettingsStore] = None,
 ) -> bool:
     try:
-        live_output_name = str(output_name or "").strip()
-        try:
-            live_volume_percent = int(str(volume_percent).strip())
-        except Exception:
-            live_volume_percent = 20
-        live_volume_percent = max(0, min(100, live_volume_percent))
+        if settings is None:
+            settings = _output_settings_store
         live_output_offsets_ms = _normalize_owntone_output_offsets(output_offsets_ms)
         live_output_airplay_modes = _normalize_owntone_output_airplay_modes(
             output_airplay_modes
@@ -346,11 +357,13 @@ def update_live_owntone_runtime(
 
         with runtime._monitors_lock:
             for monitor in runtime.all_monitors:
-                monitor.owntone_output_name = live_output_name
-                monitor.owntone_volume_percent = live_volume_percent
+                if settings is not None:
+                    o = settings.snapshot().owntone
+                    monitor.owntone_output_name = o.output_name
+                    monitor.owntone_volume_percent = o.volume_percent
                 monitor.owntone_output_offsets_ms = dict(live_output_offsets_ms)
                 monitor.owntone_output_airplay_modes = dict(live_output_airplay_modes)
-        get_authority().set_default_output(live_output_name, live_volume_percent)
+        _push_default_set(settings)
         return True
     except Exception as e:
         logging.warning("Could not update live OwnTone runtime settings: %s", e)
@@ -615,10 +628,9 @@ def _live_owntone_name(state: object, value: object) -> bool:
         return False
     snap = settings.snapshot()
     return bool(update_live_owntone_runtime(
-        output_name=str(value),
-        volume_percent=snap.owntone.volume_percent,
         output_offsets_ms=snap.owntone.output_offsets_ms,
         output_airplay_modes=snap.owntone.output_airplay_modes,
+        settings=settings,
     ))
 
 
@@ -628,10 +640,9 @@ def _live_owntone_volume(state: object, value: object) -> bool:
         return False
     snap = settings.snapshot()
     return bool(update_live_owntone_runtime(
-        output_name=snap.owntone.output_name,
-        volume_percent=int(value),
         output_offsets_ms=snap.owntone.output_offsets_ms,
         output_airplay_modes=snap.owntone.output_airplay_modes,
+        settings=settings,
     ))
 
 
@@ -1014,8 +1025,6 @@ def _form_apply(intent: Intent, wait: float) -> Outcome:
     for name, params in intent.args["steps"]:
         if name == "owntone_runtime":
             results.append(bool(update_live_owntone_runtime(
-                output_name=params["output_name"],
-                volume_percent=params["volume_percent"],
                 output_offsets_ms=cfg.owntone.output_offsets_ms,
                 output_airplay_modes=cfg.owntone.output_airplay_modes,
             )))
@@ -1189,10 +1198,7 @@ def _owntone_update_live_runtime(state: object) -> None:
         snap = _config_snapshot(state)
         submit(Intent(
             "settings.form_apply",
-            {"steps": (("owntone_runtime", {
-                "output_name": snap.owntone.output_name,
-                "volume_percent": snap.owntone.volume_percent,
-            }),)},
+            {"steps": (("owntone_runtime", {}),)},
             Origin.USER, "webui", context=snap))
     except Exception:
         logging.exception("_owntone_update_live_runtime failed")

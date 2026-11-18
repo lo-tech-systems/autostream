@@ -214,6 +214,7 @@ class OutputUnitView:
     cause: Origin                           # who last changed desired
     reported: Optional[OutputInfo]          # the last row; None while the row is away after a boot change
     connecting: bool = False                # wanted in a session and the player has it, but it is not playing yet
+    auto_start: bool = False                # the unit matches a member of the Auto-Start set, or is a placeholder for one
 
     @property
     def offline(self) -> bool:
@@ -229,6 +230,19 @@ class OutputUnitView:
 
 
 @dataclass(frozen=True)
+class DefaultMemberView:
+    """One member of the Auto-Start set."""
+
+    key: str                                # stable within the set
+    id: str                                 # the saved unit id ("" for a member saved without one)
+    name: str                               # the matched unit's live name, else the saved name
+    volume: int                             # the saved level
+    unit_id: str                            # the matched unit's id, or the placeholder card's id
+    placeholder: bool                       # no unit matches; unit_id is the placeholder card
+    pending: bool                           # still to be added this session
+
+
+@dataclass(frozen=True)
 class OutputsPart:
     units: tuple[OutputUnitView, ...] = ()  # backend row order
     connected: bool = False                 # reads succeed (or a start is pending)
@@ -240,7 +254,8 @@ class OutputsPart:
     start_failure: Optional[StartFailure] = None
     device_events: bool = False             # the player reports receiver commands and device volumes
     include_tv_supported: bool = False      # rows carry has_homepods: an Apple TV's HomePods can play without it
-    placeholder_id: str = ""                # the id of the default speaker's card when it has no unit behind it
+    default_members: tuple[DefaultMemberView, ...] = ()   # the Auto-Start set, in order
+    default_matches: bool = False           # the selection is exactly the set, each member at its saved level
     master_volume: Optional[int] = None     # mean intended level of the selected speakers the player has; None when there are none
     selected_count: int = 0                 # how many speakers that is
 
@@ -254,6 +269,13 @@ class OutputsPart:
         for u in self.units:
             if u.name == name and not u.offline:
                 return u
+        return None
+
+    def placeholder_member(self, unit_id: str) -> Optional[DefaultMemberView]:
+        """The member whose placeholder card has this id, or None."""
+        for m in self.default_members:
+            if m.placeholder and m.unit_id == unit_id:
+                return m
         return None
 
     def selected_units(self) -> tuple[OutputUnitView, ...]:
@@ -453,12 +475,16 @@ def _outputs_digest(p: OutputsPart) -> tuple:
     return (
         tuple(
             (u.id, u.name, u.shown_selected, u.volume, u.muted, u.availability,
-             _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting)
+             _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting,
+             u.auto_start)
             for u in p.units
         ),
         p.connected, p.muted_all, p.silence_chosen,
         p.start_failure.seq if p.start_failure is not None else 0,
         p.device_events, p.include_tv_supported, p.master_volume, p.selected_count,
+        p.default_matches,
+        tuple((m.key, m.name, m.volume, m.unit_id, m.placeholder, m.pending)
+              for m in p.default_members),
     )
 
 

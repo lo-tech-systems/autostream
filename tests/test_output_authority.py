@@ -434,7 +434,7 @@ class TestSelect:
         assert len(w.fb.updates()) == 2
 
     def test_the_start_volume_is_the_configured_default_level(self, w):
-        w.a.set_default_output("Speaker 1", 37)
+        w.a.set_default_members([("", "Speaker 1", 37)], 37)
         assert w.a.start_volume() == 37
 
 
@@ -2533,10 +2533,11 @@ class TestConnecting:
 
 class TestDefaultCard:
     NAME = "Speaker 9"
+    KEY = "name:Speaker 9"
 
     @pytest.fixture(autouse=True)
     def configured(self, w):
-        w.a.set_default_output(self.NAME, 35)
+        w.a.set_default_members([("", self.NAME, 35)], 35)
 
     def test_a_default_the_player_does_not_have_is_listed_offline(self, w):
         merge(w, [row(1)])
@@ -2545,14 +2546,14 @@ class TestDefaultCard:
         assert (card.id, card.name, card.offline) == ("default:" + self.NAME, self.NAME, True)
         assert (card.volume, card.muted, card.availability, card.cause) == (35, False, "gone", Origin.SESSION)
         assert card.reported is None and card.connecting is False
-        assert p.placeholder_id == card.id
+        assert p.placeholder_member(card.id).key == self.KEY and card.auto_start
 
     def test_nothing_is_listed_while_the_player_is_unreachable_or_no_default_is_set(self, w):
         merge(w, [row(1)])
         w.a.mark_unreachable_for_tests()
-        assert all(u.name != self.NAME for u in snap().units) and snap().placeholder_id == ""
+        assert all(u.name != self.NAME for u in snap().units) and snap().default_members[0].placeholder
         merge(w, [row(1)])
-        w.a.set_default_output("", 35)
+        w.a.set_default_members([], 35)
         assert [u.id for u in snap().units] == ["1"]
 
     def test_it_is_selected_in_a_session_until_the_user_chooses_silence(self, w):
@@ -2561,19 +2562,19 @@ class TestDefaultCard:
         assert card().selected is False
         w.a.note_session(True)
         assert card().selected is True
-        w.a.want_default(False)
+        w.a.want_default(False, self.KEY)
         assert card().selected is False and snap().silence_chosen is True
-        w.a.want_default(True)
+        w.a.want_default(True, self.KEY)
         assert card().selected is True and snap().silence_chosen is False
-        w.a.want_default(False)
+        w.a.want_default(False, self.KEY)
         w.a.note_session(False)
         assert card().selected is False and snap().silence_chosen is False
 
     def test_the_tap_writes_nothing_to_the_player(self, w):
         merge(w, [row(1)])
         w.a.note_session(True)
-        w.a.want_default(False)
-        w.a.want_default(True)
+        w.a.want_default(False, self.KEY)
+        w.a.want_default(True, self.KEY)
         assert w.fb.calls == []
 
     def test_it_is_not_a_unit_for_the_authority(self, w):
@@ -2596,7 +2597,7 @@ class TestDefaultCard:
         merge(w, [row(1)])
         merge(w, [row(1), row(9, self.NAME)])
         p = snap()
-        assert [u.id for u in p.units] == ["1", "9"] and p.placeholder_id == ""
+        assert [u.id for u in p.units] == ["1", "9"] and not p.default_members[0].placeholder
         assert p.unit_by_name(self.NAME).id == "9" and not p.unit("9").offline
 
     def test_a_default_whose_row_goes_away_is_kept_past_the_usual_wait(self, w):
@@ -2604,7 +2605,7 @@ class TestDefaultCard:
         merge(w, [row(1)])
         p = snap()
         gone = p.unit("9")
-        assert gone.offline and gone.selected is True and p.placeholder_id == ""
+        assert gone.offline and gone.selected is True and not p.default_members[0].placeholder
         w.t[0] += outputs.ABSENT_KEEP_S + 5
         merge(w, [row(1)])
         assert snap().unit("9") is not None and snap().unit("9").offline
@@ -2628,8 +2629,179 @@ class TestDefaultCard:
         merge(w, [row(1)])
         base = snap()
         w.a.note_session(True)
-        w.a.want_default(False)
+        w.a.want_default(False, self.KEY)
         merge(w, [row(1), row(9, self.NAME)])
         merge(w, [row(1)])
         for digest in (state.outputs_list_digest, state.outputs_volume_digest, state.outputs_mute_digest):
             assert digest(snap()) == digest(base)
+
+
+class TestDefaultSet:
+    """The Auto-Start set: matching, the session's pending members, a card per
+    missing member, and the part's own fields."""
+
+    LOUNGE = ("L1", "Lounge", 30)
+    KITCHEN = ("K1", "Kitchen", 40)
+
+    @pytest.fixture(autouse=True)
+    def configured(self, w):
+        w.a.set_default_members([self.LOUNGE, self.KITCHEN], 20)
+
+    def members(self):
+        return {m.key: m for m in snap().default_members}
+
+    def test_members_match_by_id_first_then_by_name(self, w):
+        merge(w, [row("L1", "Lounge Renamed"), row("X", "Kitchen")])
+        m = self.members()
+        assert (m["L1"].unit_id, m["L1"].name, m["L1"].placeholder) == ("L1", "Lounge Renamed", False)
+        assert (m["K1"].unit_id, m["K1"].placeholder) == ("X", False)
+        assert snap().unit("L1").auto_start and snap().unit("X").auto_start
+
+    def test_a_member_saved_without_an_id_matches_by_exact_name(self, w):
+        w.a.set_default_members([("", "Lounge", 30)], 20)
+        merge(w, [row("1", "lounge"), row("2", "Lounge")])
+        m = self.members()["name:Lounge"]
+        assert m.unit_id == "2" and not snap().unit("1").auto_start
+
+    def test_each_missing_member_has_its_own_card(self, w):
+        merge(w, [row("1", "Other")])
+        p = snap()
+        assert [u.id for u in p.units] == ["1", "L1", "K1"]
+        assert [u.auto_start for u in p.units] == [False, True, True]
+        assert p.placeholder_member("K1").key == "K1" and p.placeholder_member("1") is None
+
+    def test_a_legacy_member_card_is_named_by_its_name(self, w):
+        w.a.set_default_members([("", "Lounge", 30)], 20)
+        merge(w, [row("1")])
+        assert snap().units[-1].id == "default:Lounge"
+        assert snap().placeholder_member("default:Lounge").key == "name:Lounge"
+
+    def test_a_session_start_makes_every_member_pending(self, w):
+        merge(w, [row("L1", "Lounge")])
+        w.a.note_session(True)
+        m = self.members()
+        assert m["L1"].pending and m["K1"].pending
+        assert snap().unit("K1").selected is True
+        w.a.note_session(False)
+        assert not any(m.pending for m in snap().default_members)
+
+    def test_a_selected_member_is_not_shown_pending(self, w):
+        merge(w, [row("L1", "Lounge")])
+        w.a.note_session(True)
+        w.a.select("L1", Origin.SESSION, volume=30)
+        m = self.members()
+        assert not m["L1"].pending and m["K1"].pending
+
+    @pytest.mark.parametrize("cause", [Origin.USER, Origin.POLICY, Origin.DEVICE])
+    def test_a_change_of_speakers_by_the_user_a_device_or_the_policy_clears_pending(self, w, cause):
+        merge(w, [row("L1", "Lounge", selected=True), row("2", "Other", selected=True)])
+        w.a.note_session(True)
+        w.a.deselect("2", cause)
+        assert not any(m.pending for m in snap().default_members)
+
+    def test_deselect_all_by_the_policy_clears_pending_and_a_session_deselect_does_not(self, w):
+        merge(w, [row("L1", "Lounge")])
+        w.a.note_session(True)
+        w.a.deselect_all(Origin.SESSION)
+        assert self.members()["K1"].pending
+        w.a.deselect_all(Origin.POLICY)
+        assert not any(m.pending for m in snap().default_members)
+
+    def test_a_session_select_and_a_volume_change_leave_pending_alone(self, w):
+        merge(w, [row("L1", "Lounge"), row("2", "Other")])
+        w.a.note_session(True)
+        w.a.select("2", Origin.SESSION, volume=30)
+        w.a.set_volume("2", 35, Origin.USER)
+        assert self.members()["K1"].pending
+
+    def test_tapping_a_card_off_clears_only_that_member(self, w):
+        merge(w, [row("1", "Other")])
+        w.a.note_session(True)
+        w.a.want_default(False, "K1")
+        m = self.members()
+        assert m["L1"].pending and not m["K1"].pending
+        assert snap().silence_chosen is False
+        assert snap().unit("L1").selected is True and snap().unit("K1").selected is False
+
+    def test_tapping_the_only_pending_card_off_chooses_silence(self, w):
+        merge(w, [row("1", "Other")])
+        w.a.note_session(True)
+        w.a.want_default(False, "K1")
+        w.a.want_default(False, "L1")
+        assert snap().silence_chosen is True
+        assert not any(m.pending for m in snap().default_members)
+        w.a.want_default(True, "K1")
+        assert snap().silence_chosen is False and self.members()["K1"].pending
+
+    def test_tapping_the_last_card_off_while_a_unit_is_selected_does_not_choose_silence(self, w):
+        merge(w, [row("L1", "Lounge", selected=True)])
+        w.a.note_session(True)
+        w.a.want_default(False, "K1")
+        assert snap().silence_chosen is False
+
+    def test_set_default_members_mid_session_keeps_only_surviving_pending(self, w):
+        merge(w, [row("1", "Other")])
+        w.a.note_session(True)
+        w.a.set_default_members([self.KITCHEN, ("M1", "Music", 10)], 20)
+        m = self.members()
+        assert list(m) == ["K1", "M1"] and m["K1"].pending and not m["M1"].pending
+
+    def test_every_member_card_is_kept_when_its_row_goes_away(self, w):
+        merge(w, [row("L1", "Lounge"), row("K1", "Kitchen"), row("3", "Other")])
+        merge(w, [])
+        w.t[0] += outputs.ABSENT_KEEP_S + 5
+        merge(w, [])
+        p = snap()
+        assert p.unit("L1").offline and p.unit("K1").offline and p.unit("3") is None
+
+    def test_start_volume_is_the_level_for_a_speaker_outside_the_set(self, w):
+        assert w.a.start_volume() == 20
+
+    def test_the_part_changes_with_the_set(self, w):
+        merge(w, [row("L1", "Lounge", selected=True, volume_percent=30)])
+        before = state.store().snapshot().part_versions["outputs"]
+        w.a.set_default_members([self.LOUNGE], 20)
+        assert state.store().snapshot().part_versions["outputs"] > before
+
+
+class TestDefaultMatches:
+    """default_matches is the conjunction of three conditions."""
+
+    @staticmethod
+    def build(w, *, members_on, others_on, level_ok):
+        w.a.set_default_members([("A", "A", 30), ("B", "B", 40)], 20)
+        rows = [
+            row("A", "A", selected=members_on, volume_percent=30),
+            row("B", "B", selected=members_on, volume_percent=40 if level_ok else 41),
+            row("C", "C", selected=others_on, volume_percent=10),
+        ]
+        merge(w, rows)
+        return snap().default_matches
+
+    @pytest.mark.parametrize("members_on", [False, True])
+    @pytest.mark.parametrize("others_on", [False, True])
+    @pytest.mark.parametrize("level_ok", [False, True])
+    def test_the_eight_combinations(self, w, members_on, others_on, level_ok):
+        expected = members_on and not others_on and level_ok
+        assert self.build(w, members_on=members_on, others_on=others_on, level_ok=level_ok) is expected
+
+    def test_an_empty_set_never_matches(self, w):
+        w.a.set_default_members([], 20)
+        merge(w, [row("A", "A", selected=True)])
+        assert snap().default_matches is False
+
+    def test_a_missing_member_never_matches(self, w):
+        w.a.set_default_members([("A", "A", 30), ("Z", "Z", 30)], 20)
+        merge(w, [row("A", "A", selected=True, volume_percent=30)])
+        assert snap().default_matches is False
+
+    def test_a_muted_selection_still_matches_at_its_remembered_level(self, w):
+        w.a.set_default_members([("A", "A", 30)], 20)
+        merge(w, [row("A", "A", selected=True, volume_percent=30)])
+        w.a.mute_all(Origin.USER)
+        assert snap().unit("A").muted and snap().default_matches is True
+
+    def test_a_level_of_zero_is_read_as_the_start_volume(self, w):
+        w.a.set_default_members([("A", "A", 20)], 20)
+        merge(w, [row("A", "A", selected=True, volume_percent=0)])
+        assert snap().default_matches is True

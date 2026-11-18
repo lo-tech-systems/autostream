@@ -116,13 +116,13 @@ class TestEnable:
 
     def test_a_missing_volume_is_the_configured_start_volume(self, player):
         arrange()
-        get_authority().set_default_output("Lounge", 35)
+        get_authority().set_default_members([("", "Lounge", 35)], 35)
         change(on())
         assert player.calls[0][2]["volume_percent"] == 35
 
     def test_a_missing_volume_in_the_intent_is_the_configured_start_volume(self, player):
         arrange()
-        get_authority().set_default_output("Lounge", 22)
+        get_authority().set_default_members([("", "Lounge", 22)], 22)
         submit(Intent("outputs.set", {"id": ID, "selected": True}, Origin.USER, "webui"))
         assert player.calls[0][2]["volume_percent"] == 22
 
@@ -812,7 +812,7 @@ class TestOfflineDefault:
 
     @pytest.fixture(autouse=True)
     def _configured(self):
-        get_authority().set_default_output("Kitchen", 42)
+        get_authority().set_default_members([("", "Kitchen", 42)], 42)
 
     def test_select_default_does_not_find_a_card_with_no_row(self, player, usage):
         arrange(row("1", "Hall"))
@@ -846,3 +846,70 @@ class TestOfflineDefault:
         arrange(row("1", "Hall"), row("2", "Kitchen"))
         change({"id": "2", "selected": True, "volume": 30})
         assert player.calls and player.calls[0][1] == "2"
+
+
+class TestDefaultSetCards:
+    @pytest.fixture(autouse=True)
+    def _configured(self):
+        get_authority().set_default_members([("L1", "Lounge", 30), ("K1", "Kitchen", 40)], 20)
+
+    def test_a_tap_on_one_card_leaves_the_other_pending(self, player):
+        arrange(row("1", "Hall"))
+        get_authority().note_session(True)
+        assert change({"id": "K1", "selected": False}) == {"ok": True}
+        pending = {m.key: m.pending for m in snap().default_members}
+        assert pending == {"L1": True, "K1": False}
+        assert snap().silence_chosen is False
+        assert player.calls == []
+
+    def test_want_default_names_its_card_by_id(self, player):
+        arrange(row("1", "Hall"))
+        get_authority().note_session(True)
+        reply = submit(Intent("outputs.want_default", {"wanted": False, "id": "K1"}, Origin.USER, "webui"))
+        assert reply.ok is True
+        assert {m.key: m.pending for m in snap().default_members} == {"L1": True, "K1": False}
+
+    def test_want_default_without_an_id_means_the_first_card(self, player):
+        arrange(row("1", "Hall"))
+        get_authority().note_session(True)
+        submit(Intent("outputs.want_default", {"wanted": False}, Origin.USER, "webui"))
+        assert {m.key: m.pending for m in snap().default_members} == {"L1": False, "K1": True}
+
+
+class TestPushDefaultSet:
+    def _store(self, tmp_path, owntone):
+        import json
+        from unittest.mock import MagicMock
+
+        from autostream_settings import SettingsStore
+
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps({"owntone": owntone}))
+        return SettingsStore(str(path), _save_interval_seconds=9999, _writer=MagicMock())
+
+    def test_the_authority_gets_the_set_and_the_start_volume_from_the_store(self, tmp_path):
+        import autostream_live_config as live
+
+        store = self._store(tmp_path, {
+            "volume_percent": 25,
+            "default_outputs": [{"id": "L1", "name": "Lounge", "volume": 30}, {"name": "Kitchen", "volume": 40}],
+        })
+        live._push_default_set(store)
+        members = [(m.key, m.name, m.volume) for m in snap().default_members]
+        assert members == [("L1", "Lounge", 30), ("name:Kitchen", "Kitchen", 40)]
+        assert get_authority().start_volume() == 25
+
+    def test_a_legacy_name_is_pushed_as_one_member(self, tmp_path):
+        import autostream_live_config as live
+
+        live._push_default_set(self._store(tmp_path, {"output_name": "Lounge", "volume_percent": 35}))
+        assert [(m.key, m.volume) for m in snap().default_members] == [("name:Lounge", 35)]
+        assert get_authority().start_volume() == 35
+
+    def test_the_runtime_update_pushes_the_store_without_a_passed_set(self, tmp_path):
+        import autostream_live_config as live
+
+        store = self._store(tmp_path, {"output_name": "Hall", "volume_percent": 18})
+        assert live.update_live_owntone_runtime(settings=store) is True
+        assert [m.name for m in snap().default_members] == ["Hall"]
+        assert get_authority().start_volume() == 18

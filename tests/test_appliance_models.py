@@ -183,7 +183,7 @@ class TestBuildOutputList:
 
     def test_the_default_with_no_row_is_listed_only_when_asked(self):
         from autostream_state.outputs import get_authority
-        get_authority().set_default_output("Zulu", 30)
+        get_authority().set_default_members([("", "Zulu", 30)], 30)
         units = _units([_out("1", "Alpha")])
         assert [o["name"] for o in webui_home_model.build_output_list(_parsed(output_name="Zulu"), units)] == ["Alpha"]
         listed = webui_home_model.build_output_list(_parsed(output_name="Zulu"), units, include_offline=True)
@@ -195,7 +195,7 @@ class TestBuildOutputList:
 
     def test_the_offline_default_is_disabled_only_outside_a_session(self):
         from autostream_state.outputs import get_authority
-        get_authority().set_default_output("Zulu", 30)
+        get_authority().set_default_members([("", "Zulu", 30)], 30)
         units = _units([_out("1", "Alpha")])
         outside = webui_home_model.build_output_list(
             _parsed(output_name="Zulu"), units, include_offline=True, session_active=False)
@@ -207,7 +207,7 @@ class TestBuildOutputList:
 
     def test_only_the_default_is_listed_offline(self):
         from autostream_state.outputs import get_authority
-        get_authority().set_default_output("Zulu", 30)
+        get_authority().set_default_members([("", "Zulu", 30)], 30)
         FakeStore().outputs([_out("1", "Alpha", selected=True), _out("2", "Beta")])
         units = FakeStore().outputs([_out("2", "Beta")]).outputs.units
         assert sorted(u.name for u in units if u.offline) == ["Alpha", "Zulu"]

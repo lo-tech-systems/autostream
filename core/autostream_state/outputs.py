@@ -64,7 +64,7 @@ from autostream_players import (
 )
 
 from .origin import Origin
-from .parts import OutputsPart, OutputUnitView, StartFailure
+from .parts import DefaultMemberView, OutputsPart, OutputUnitView, StartFailure
 from .store import store
 
 LOG = logging.getLogger("autostream.outputs")
@@ -248,6 +248,15 @@ class UnitDesired:
 
 
 @dataclass
+class _Member:
+    """One speaker of the Auto-Start set."""
+    key: str
+    id: str                           # "" for a member saved before its id was known
+    name: str
+    volume: int
+
+
+@dataclass
 class UnitState:
     id: str
     name: str
@@ -406,9 +415,9 @@ class OutputAuthority:
         self._mute_held = False
         self._mute_counter = 0
         self._silence_chosen = False
-        self._default_name = ""
-        self._default_volume = 0
-        self._default_last_id = ""
+        self._members: tuple[_Member, ...] = ()
+        self._start_volume = 20
+        self._pending: set[str] = set()   # member keys still to add this session
         self._start_failure: Optional[StartFailure] = None
         self._failure_seq = 0
         self._session_active = False
@@ -620,18 +629,29 @@ class OutputAuthority:
             return None
         return -(-sum(levels) // len(levels))
 
-    def set_default_output(self, name: str, volume: int) -> None:
-        """The configured default speaker and the level it starts at. The
-        default's card is always listed: when the player has no row for it, a
-        placeholder view stands in until the row appears."""
+    def set_default_members(self, members: Sequence[tuple[str, str, int]], start_volume: int) -> None:
+        """The Auto-Start set, (id, name, volume) in order, and the level a
+        speaker outside it starts at. Each member's card is always listed:
+        when the player has no row for it, a placeholder view stands in until
+        the row appears. A member removed mid-session stops being added; one
+        added is not, the user's speakers stand."""
         self._touched = True
+        built: list[_Member] = []
+        seen: set[str] = set()
+        for uid, name, volume in members:
+            uid = str(uid or "").strip()
+            name = str(name or "").strip()
+            if not name:
+                continue
+            key = uid or "name:" + name
+            if key in seen:
+                continue
+            seen.add(key)
+            built.append(_Member(key=key, id=uid, name=name, volume=_clamp(volume)))
         with self._lock:
-            self._default_name = str(name or "").strip()
-            self._default_volume = _clamp(volume)
-            self._default_last_id = ""
-            for u in self._units.values():
-                if self._default_name and u.name == self._default_name:
-                    self._default_last_id = u.id
+            self._members = tuple(built)
+            self._start_volume = _clamp(start_volume)
+            self._pending &= seen
             pending = self._publish_locked(Origin.SYSTEM, None)
         pending.notify()
 
@@ -639,33 +659,95 @@ class OutputAuthority:
         """The level a speaker starts at when nothing else is asked: the
         configured start volume."""
         with self._lock:
-            return self._default_volume
+            return self._start_volume
 
-    def want_default(self, wanted: bool) -> Applied:
-        """The user switched the default speaker's card on or off while the
-        player has no row for it. Nothing is sent: the choice is the session's
-        silence flag, which the self-heal reads, and the speaker starts once
-        its row appears."""
+    def _member_unit_locked(self, m: _Member) -> Optional[UnitState]:
+        """The unit a member stands for: by id, else by exact name."""
+        if m.id and m.id in self._units:
+            return self._units[m.id]
+        for u in self._units.values():
+            if u.name == m.name:
+                return u
+        return None
+
+    def _placeholder_pending_locked(self) -> bool:
+        return any(
+            m.key in self._pending and self._member_unit_locked(m) is None
+            for m in self._members
+        )
+
+    def want_default(self, wanted: bool, key: str) -> Applied:
+        """The user switched a default speaker's card on or off while the
+        player has no row for it. Nothing is sent: the choice is the member's
+        pending flag and the session's silence flag, which the self-heal
+        reads, and the speaker starts once its row appears. Another member's
+        pending flag is not touched."""
         self._touched = True
         with self._lock:
-            self._silence_chosen = not bool(wanted)
+            if wanted:
+                if any(m.key == key for m in self._members):
+                    self._pending.add(key)
+                self._silence_chosen = False
+            else:
+                self._pending.discard(key)
+                if not self._selected_locked() and not self._placeholder_pending_locked():
+                    self._silence_chosen = True
             pending = self._publish_locked(Origin.USER, None)
         pending.notify()
         return Applied(version=store().snapshot().version, outcome=None)
 
-    def _placeholder_locked(self) -> Optional[OutputUnitView]:
-        """The default speaker's card for a player that has no unit by that
-        name, or None."""
-        name = self._default_name
-        if not name or not self._connected:
-            return None
-        if any(u.name == name for u in self._units.values()):
-            return None
-        return OutputUnitView(
-            id=self._default_last_id or "default:" + name, name=name,
-            selected=self._session_active and not self._silence_chosen,
-            volume=self._default_volume, muted=False, availability="gone",
-            cause=Origin.SESSION, reported=None,
+    def _placeholders_locked(self) -> list:
+        """A card for each member the player has no unit for."""
+        if not self._connected:
+            return []
+        out = []
+        for m in self._members:
+            if self._member_unit_locked(m) is not None:
+                continue
+            out.append(OutputUnitView(
+                id=m.id or "default:" + m.name, name=m.name,
+                selected=self._session_active and m.key in self._pending,
+                volume=m.volume, muted=False, availability="gone",
+                cause=Origin.SESSION, reported=None, auto_start=True,
+            ))
+        return out
+
+    def _member_views_locked(self, views: list) -> tuple:
+        by_id = {v.id: v for v in views}
+        out = []
+        for m in self._members:
+            mu = self._member_unit_locked(m)
+            if mu is not None:
+                out.append(DefaultMemberView(
+                    key=m.key, id=m.id, name=by_id[mu.id].name, volume=m.volume,
+                    unit_id=mu.id, placeholder=False, pending=m.key in self._pending,
+                ))
+            else:
+                out.append(DefaultMemberView(
+                    key=m.key, id=m.id, name=m.name, volume=m.volume,
+                    unit_id=m.id or "default:" + m.name, placeholder=True,
+                    pending=m.key in self._pending,
+                ))
+        return tuple(out)
+
+    def _default_matches_locked(self, views: list) -> bool:
+        """The selection is exactly the set, each member at its saved level."""
+        if not self._members:
+            return False
+        by_id = {v.id: v for v in views}
+        member_units = set()
+        for m in self._members:
+            mu = self._member_unit_locked(m)
+            if mu is None:
+                return False
+            v = by_id[mu.id]
+            if v.offline or not v.shown_selected:
+                return False
+            if m.volume != (v.volume or self._start_volume):
+                return False
+            member_units.add(mu.id)
+        return not any(
+            v.shown_selected and not v.offline and v.id not in member_units for v in views
         )
 
     def _connecting_locked(self, u: UnitState) -> bool:
@@ -681,6 +763,13 @@ class OutputAuthority:
 
     def _build_part_locked(self) -> OutputsPart:
         views = []
+        matched: dict[str, _Member] = {}
+        for m in self._members:
+            mu = self._member_unit_locked(m)
+            if mu is not None and mu.id not in matched:
+                matched[mu.id] = m
+                if mu.desired.selected:
+                    self._pending.discard(m.key)
         for u in self._ordered_units_locked():
             d = u.desired
             level = d.remembered_level if d.muted and d.remembered_level is not None else d.volume
@@ -688,13 +777,12 @@ class OutputAuthority:
             views.append(OutputUnitView(
                 id=u.id, name=name, selected=d.selected, volume=level, muted=d.muted,
                 availability=u.availability, cause=d.cause, reported=u.reported,
-                connecting=self._connecting_locked(u),
+                connecting=self._connecting_locked(u), auto_start=u.id in matched,
             ))
-        placeholder = self._placeholder_locked()
-        if placeholder is not None:
-            views.append(placeholder)
+        views.extend(self._placeholders_locked())
         return OutputsPart(
-            placeholder_id=placeholder.id if placeholder is not None else "",
+            default_members=self._member_views_locked(views),
+            default_matches=self._default_matches_locked(views),
             units=tuple(views), connected=self._connected, backend_boot=self._backend_boot,
             backend_restarts=self._backend_restarts,
             event_source=self._event_kind, muted_all=self._muted_all_locked(),
@@ -866,8 +954,10 @@ class OutputAuthority:
             if u is None:
                 return self._refused("unknown_output")
             self._deselect_locked(u, cause, now)
-            if cause in (Origin.USER, Origin.POLICY, Origin.DEVICE) and not self._selected_locked():
-                self._silence_chosen = True
+            if cause in (Origin.USER, Origin.POLICY, Origin.DEVICE):
+                self._pending.clear()
+                if not self._selected_locked():
+                    self._silence_chosen = True
             batch = _Batch(1)
             self._enqueue(_Write("deselect", unit_id, u.desired_seq, {}, [(batch, 0)]))
             pending = self._publish_locked(cause, requester)
@@ -882,6 +972,7 @@ class OutputAuthority:
                     self._deselect_locked(u, cause, now)
             if cause in (Origin.USER, Origin.POLICY, Origin.DEVICE):
                 self._silence_chosen = True
+                self._pending.clear()
             if cause == Origin.SESSION:
                 self._mute_held = False
             batch = _Batch(1)
@@ -1187,6 +1278,7 @@ class OutputAuthority:
         with self._lock:
             self._session_active = bool(active)
             self._items.put(("session", bool(active)))
+            self._pending = {m.key for m in self._members} if active else set()
             if not active:
                 self._silence_chosen = False
                 for u in self._units.values():
@@ -1569,8 +1661,6 @@ class OutputAuthority:
             seen.add(uid)
             order.append(uid)
             u = self._units.get(uid)
-            if self._default_name and row.name == self._default_name:
-                self._default_last_id = uid
             if u is None:
                 u = UnitState(
                     id=uid, name=row.name,
@@ -1596,13 +1686,16 @@ class OutputAuthority:
             self._update_unit_locked(u, row, now, fx)
         self._row_order = order
 
+        default_units = {
+            mu.id for mu in (self._member_unit_locked(m) for m in self._members) if mu is not None
+        }
         for uid in list(self._units):
             if uid in seen:
                 continue
             u = self._units[uid]
-            # The default speaker's card is never dropped: it reads offline
-            # until the player has a row for it again.
-            is_default = bool(self._default_name) and u.name == self._default_name
+            # A set member's card is never dropped: it reads offline until the
+            # player has a row for it again.
+            is_default = uid in default_units
             if u.absent_since is None:
                 if boot_changed or u.was_streaming or is_default:
                     u.absent_since = now
