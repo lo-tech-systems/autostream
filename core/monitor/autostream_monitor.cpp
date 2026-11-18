@@ -1718,6 +1718,10 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
     //      the stage mixes never applies a stale negative trim.
     //   5. Enable the new input while still under _fifo_mutex, so its first
     //      block cannot be mixed before the trim reset above has taken effect.
+    //   6. Log both changes after the lock is released. The output thread
+    //      runs at real-time priority and this thread does not, so the lock
+    //      is held for two atomic stores and nothing else: no formatting, no
+    //      allocation, no logger mutex.
     if (allow)
     {
         // Step 1: detect a real handoff before mutating any state.
@@ -1736,6 +1740,7 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
         }
 
         // Steps 3-5: acquire mutex, conditionally reset trim, enable new input.
+        float previous_trim_db = 0.0f;
         {
             std::lock_guard<std::mutex> lock(_fifo_mutex);
 
@@ -1743,11 +1748,16 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
             // apply() call (also under _fifo_mutex -- see OutputStage's
             // thread_func()) never sees a stale negative trim.
             if (is_handoff)
-                _output_processor.reset_auto_trim();
+                previous_trim_db = _output_processor.take_auto_trim();
 
             // Step 5: enable the new input while holding the lock.
-            ch->set_allow_capture(true);
+            ch->store_allow_capture(true);
         }
+
+        // Step 6: the log lines, once the output thread can run.
+        if (is_handoff)
+            OutputProcessor::log_auto_trim_reset(previous_trim_db);
+        ch->log_allow_capture(true);
     }
     else
     {

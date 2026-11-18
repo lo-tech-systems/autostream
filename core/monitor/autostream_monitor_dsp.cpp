@@ -355,13 +355,22 @@ void OutputProcessor::set_auto_trim_enabled(bool enabled)
     _auto_trim_enabled.store(enabled, std::memory_order_relaxed);
 }
 
-void OutputProcessor::reset_auto_trim()
+float OutputProcessor::take_auto_trim()
 {
-    float prev = _auto_trim_db.exchange(0.0f, std::memory_order_relaxed);
-    if (prev != 0.0f)
-        LOG_INFO("[output] Auto-trim reset to 0.0 dB (was %.2f dB)", prev);
+    return _auto_trim_db.exchange(0.0f, std::memory_order_relaxed);
+}
+
+void OutputProcessor::log_auto_trim_reset(float previous_trim_db)
+{
+    if (previous_trim_db != 0.0f)
+        LOG_INFO("[output] Auto-trim reset to 0.0 dB (was %.2f dB)", previous_trim_db);
     else
         LOG_DEBUG("[output] Auto-trim reset (was already 0.0 dB)");
+}
+
+void OutputProcessor::reset_auto_trim()
+{
+    log_auto_trim_reset(take_auto_trim());
 }
 
 OutputGainState OutputProcessor::get_gain_state() const

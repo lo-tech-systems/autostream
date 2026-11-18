@@ -317,6 +317,13 @@ public:
     // Safe to call from any thread at any time.
     void reset_auto_trim();
 
+    // The reset behind reset_auto_trim() with no log line: one atomic
+    // exchange, returning the trim that was in force. For a caller that
+    // holds a lock the output thread also takes and logs once it has let
+    // go, through log_auto_trim_reset().
+    float take_auto_trim();
+    static void log_auto_trim_reset(float previous_trim_db);
+
     // Return the maximum absolute sample value (in dB above 0 dBFS) seen
     // since the last call, and atomically reset the accumulator to zero.
     // Returns 0.0f when no sample has exceeded 1.0 in absolute value.
@@ -3261,6 +3268,12 @@ public:
     // Allow or suppress writing to the FIFO.
     // When false, this channel continues monitoring levels but writes nothing.
     void set_allow_capture(bool allow);
+
+    // The two halves of set_allow_capture(): the store alone, and its log
+    // line alone, for a caller that holds a lock the output thread also
+    // takes and wants to log only once it has let go.
+    void store_allow_capture(bool allow);
+    void log_allow_capture(bool allow) const;
 
     // Replace the EQ band list for this input.
     // Applied on the resampled output (48000 Hz) in the process thread.

@@ -1008,10 +1008,20 @@ void InputChannel::stop()
     LOG_INFO("[input%d] Stopped", _index);
 }
 
-void InputChannel::set_allow_capture(bool allow)
+void InputChannel::store_allow_capture(bool allow)
 {
     _allow_capture.store(allow);
+}
+
+void InputChannel::log_allow_capture(bool allow) const
+{
     LOG_DEBUG("[input%d] allow_capture=%s", _index, allow ? "true" : "false");
+}
+
+void InputChannel::set_allow_capture(bool allow)
+{
+    store_allow_capture(allow);
+    log_allow_capture(allow);
 }
 
 InputChannelStatus InputChannel::get_status() const

@@ -1396,6 +1396,23 @@ static void test_output_processor_reset_auto_trim()
     CHECK_CLOSE(s.auto_trim_db, 0.0f, 1e-6f, "reset_auto_trim clears to 0");
 }
 
+static void test_output_processor_take_auto_trim_returns_previous()
+{
+    OutputProcessor op;
+    op.set_auto_trim_enabled(true);
+    op.set_manual_gain(6.0f);
+    std::vector<float> samples(512, 0.8f);   // +6 dB pushes 0.8 above 1.0, so the trim cuts
+    op.apply(samples.data(), 256);
+    float before = op.get_gain_state().auto_trim_db;
+    CHECK(before < 0.0f, "a clipping block accumulates a negative trim");
+
+    float taken = op.take_auto_trim();
+    CHECK_CLOSE(taken, before, 1e-6f, "take_auto_trim returns the trim that was in force");
+    CHECK_CLOSE(op.get_gain_state().auto_trim_db, 0.0f, 1e-6f, "take_auto_trim leaves the trim at zero");
+    CHECK_CLOSE(op.take_auto_trim(), 0.0f, 1e-6f, "a second take returns zero");
+    CHECK(op.get_gain_state().auto_trim_enabled, "taking the trim does not disable auto-trim");
+}
+
 static void test_output_processor_flat_input_produces_no_clip()
 {
     OutputProcessor op;
@@ -1774,6 +1791,7 @@ int main()
     test_output_processor_set_manual_gain();
     test_output_processor_auto_trim_enable_resets_trim();
     test_output_processor_reset_auto_trim();
+    test_output_processor_take_auto_trim_returns_previous();
     test_output_processor_flat_input_produces_no_clip();
     test_output_processor_clip_detected_for_over_unity();
 
