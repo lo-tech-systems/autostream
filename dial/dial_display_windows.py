@@ -7,7 +7,7 @@ a machine word at a time with numpy, changed rows are coalesced into runs
 and each run into column segments, and the segments are merged greedily
 wherever the fixed price of one more windowed write is more than the
 unchanged pixels a merge would send. Pure planning: no hardware, no Pillow
-beyond the image's own tobytes(). frame_words() returns None for an image
+beyond the image's own tobytes(), crop() and getbbox(). frame_words() returns None for an image
 it cannot view, and the caller keeps its whole-region path.
 
 Rectangles are (x0, y0, x1, y1) in panel pixels with x1/y1 exclusive, the
@@ -232,3 +232,55 @@ def plan_windows(new: FrameWords, last: FrameWords, width: int, height: int) -> 
     if sum(_cost(r) for r in rects) > _cost(whole):
         return None
     return rects
+
+
+# Splitting one changed region into separately written windows pays only
+# when the unchanged rows left out between them cost more to send than a
+# further write's own fixed overhead: about 2.9 ms per windowed write
+# against about 0.7 us per pixel on the shipped panel, so a gap has to be
+# at least this many pixels. At most a few windows per frame; beyond that
+# the single bounding box is sent as before.
+_WINDOW_SPLIT_MIN_GAP_PX = 4096
+_WINDOW_SPLIT_MAX_WINDOWS = 3
+
+
+def dirty_windows(diff, bbox) -> list:
+    """Split *bbox*, the changed region of the difference image *diff*,
+    into up to _WINDOW_SPLIT_MAX_WINDOWS vertically separated windows
+    wherever a run of unchanged rows at least _WINDOW_SPLIT_MIN_GAP_PX
+    pixels tall lies between changed ones, each window shrunk to its own
+    changed columns. Returns [bbox] whenever no split would pay or more
+    windows than that would be needed. Every changed pixel lies inside
+    exactly one returned window, so the caller's write is complete
+    whichever way this decides. Pure; Pillow's own getbbox does the
+    scanning, on strips no taller than the gap."""
+    left, upper, right, lower = bbox
+    width = right - left
+    if width <= 0:
+        return [bbox]
+    gap = max(1, -(-_WINDOW_SPLIT_MIN_GAP_PX // width))
+    if lower - upper < 3 * gap:
+        return [bbox]
+    runs = []
+    y = upper
+    while y < lower:
+        strip_lower = min(lower, y + gap)
+        strip_box = diff.crop((left, y, right, strip_lower)).getbbox()
+        if strip_box is not None:
+            top, bottom = y + strip_box[1], y + strip_box[3]
+            if runs and runs[-1][1] == y:
+                runs[-1][1] = bottom
+            elif runs and y + strip_box[1] - runs[-1][1] < gap:
+                runs[-1][1] = bottom
+            else:
+                runs.append([top, bottom])
+                if len(runs) > _WINDOW_SPLIT_MAX_WINDOWS:
+                    return [bbox]
+        y = strip_lower
+    if len(runs) < 2:
+        return [bbox]
+    windows = []
+    for top, bottom in runs:
+        box = diff.crop((left, top, right, bottom)).getbbox()
+        windows.append((left + box[0], top + box[1], left + box[2], top + box[3]))
+    return windows

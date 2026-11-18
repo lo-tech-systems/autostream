@@ -896,12 +896,12 @@ class TestPushFrameWindowed:
         assert len(fb.windows) == windows_before
 
     # -----------------------------------------------------------------
-    # _dirty_windows(): splitting one changed region into separately
+    # dirty_windows(): splitting one changed region into separately
     # written windows when the unchanged rows between them are wide
     # enough to be worth the extra write. The fake backend is 128 px
     # wide, so the row-count gap the split requires is ceil(4096/128) =
     # 32 rows; a change narrower than the full width needs proportionally
-    # more unchanged rows to justify a split (see _dirty_windows).
+    # more unchanged rows to justify a split (see dirty_windows).
     # -----------------------------------------------------------------
 
     def test_two_far_apart_changes_write_two_windows(self):
@@ -1178,7 +1178,7 @@ class TestPushFrameWindowed:
 
     def test_dirty_windows_cover_every_changed_pixel(self):
         import random
-        from dial_display import _dirty_windows
+        from dial_display_windows import dirty_windows
 
         rng = random.Random(12345)
         for _ in range(20):
@@ -1197,7 +1197,7 @@ class TestPushFrameWindowed:
             bbox = diff.getbbox()
             if bbox is None:
                 continue
-            windows = _dirty_windows(diff, bbox)
+            windows = dirty_windows(diff, bbox)
 
             covered = Image.new("L", (width, height), 0)
             for win in windows:

@@ -92,7 +92,7 @@ from dial_display_state import (
     unauthorised_hint,
     wrap_page,
 )
-from dial_display_windows import bounding_box, frame_words, plan_windows
+from dial_display_windows import bounding_box, dirty_windows, frame_words, plan_windows
 from dial_core_state import (
     AUTH_UNAUTHORIZED, PIN_ERRORS, OutputRow,
     awaiting_title, title_fallback,
@@ -233,16 +233,6 @@ RESTARTING_TIMEOUT_SECONDS = 90.0
 # touch side has published: nothing drawn. See _effective_overlay_locked().
 _HIDDEN_OVERLAY = OverlayState()
 
-# Splitting one changed region into separately written windows pays only
-# when the unchanged rows left out between them cost more to send than a
-# further write's own fixed overhead: about 2.9 ms per windowed write
-# against about 0.7 us per pixel on the shipped panel, so a gap has to be
-# at least this many pixels. At most a few windows per frame; beyond that
-# the single bounding box is sent as before.
-_WINDOW_SPLIT_MIN_GAP_PX = 4096
-_WINDOW_SPLIT_MAX_WINDOWS = 3
-
-
 # ---------------------------------------------------------------------------
 # Screen policy table
 #
@@ -307,48 +297,6 @@ def _resample_filter(source: tuple[int, int], target: tuple[int, int]):
     if target[0] < source[0] or target[1] < source[1]:
         return _RESAMPLE_BOX
     return _RESAMPLE_NEAREST
-
-
-def _dirty_windows(diff, bbox) -> list:
-    """Split *bbox*, the changed region of the difference image *diff*,
-    into up to _WINDOW_SPLIT_MAX_WINDOWS vertically separated windows
-    wherever a run of unchanged rows at least _WINDOW_SPLIT_MIN_GAP_PX
-    pixels tall lies between changed ones, each window shrunk to its own
-    changed columns. Returns [bbox] whenever no split would pay or more
-    windows than that would be needed. Every changed pixel lies inside
-    exactly one returned window, so the caller's write is complete
-    whichever way this decides. Pure; Pillow's own getbbox does the
-    scanning, on strips no taller than the gap."""
-    left, upper, right, lower = bbox
-    width = right - left
-    if width <= 0:
-        return [bbox]
-    gap = max(1, -(-_WINDOW_SPLIT_MIN_GAP_PX // width))
-    if lower - upper < 3 * gap:
-        return [bbox]
-    runs = []
-    y = upper
-    while y < lower:
-        strip_lower = min(lower, y + gap)
-        strip_box = diff.crop((left, y, right, strip_lower)).getbbox()
-        if strip_box is not None:
-            top, bottom = y + strip_box[1], y + strip_box[3]
-            if runs and runs[-1][1] == y:
-                runs[-1][1] = bottom
-            elif runs and y + strip_box[1] - runs[-1][1] < gap:
-                runs[-1][1] = bottom
-            else:
-                runs.append([top, bottom])
-                if len(runs) > _WINDOW_SPLIT_MAX_WINDOWS:
-                    return [bbox]
-        y = strip_lower
-    if len(runs) < 2:
-        return [bbox]
-    windows = []
-    for top, bottom in runs:
-        box = diff.crop((left, top, right, bottom)).getbbox()
-        windows.append((left + box[0], top + box[1], left + box[2], top + box[3]))
-    return windows
 
 
 def _repeat_counter_value(rec, now: float) -> float:
@@ -1758,7 +1706,7 @@ class DialDisplay:
         panel already shows when the backend can write a window: as many
         separate rectangles as the cost model says pay for themselves (see
         dial_display_windows), or, if planning fails, the bounding
-        box split in up to a few places (see _dirty_windows).
+        box split in up to a few places (see dirty_windows).
 
         The frame reaching here is final: rotate and colour order were
         applied by the compositor and the resample to physical size by the
@@ -1794,7 +1742,7 @@ class DialDisplay:
                 bbox = diff.getbbox()
                 if bbox is None:
                     return
-                boxes = _dirty_windows(diff, bbox)
+                boxes = dirty_windows(diff, bbox)
             elif not boxes:
                 self._panel_words = (composed, new_words)
                 return
