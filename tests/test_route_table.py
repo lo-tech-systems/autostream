@@ -213,6 +213,8 @@ _BROWSER_GET_EXPECTED = [
     ("/api/owntone/outputs_state", AuthRequirement.NONE, "api", True, True),
     ("/api/owntone/outputs",       AuthRequirement.FULL, "page", True, True),
     ("/api/audio/status",          AuthRequirement.NONE, "api", False, True),
+    ("/api/v1/events",            AuthRequirement.NONE, "api", False, True),
+    ("/api/v1/state",             AuthRequirement.FULL, "api", False, True),
     ("/api/about/system",          AuthRequirement.NONE, "api", False, False),
     ("/api/settings",              AuthRequirement.FULL, "api", False, False),
     ("/api/output_eq/status",      AuthRequirement.NONE, "api", False, False),

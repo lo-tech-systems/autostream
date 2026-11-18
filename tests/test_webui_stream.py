@@ -25,9 +25,9 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_state import (
-    PART_NAMES, HealthPart, Origin, OutputsPart, OutputUnitView, RepeatPart, SessionPart,
-    SettingsPart, TrackPart)
+    PART_NAMES, HealthPart, Origin, OutputsPart, OutputUnitView, TrackPart)
 from autostream_state.store import StateStore
+from stream_helpers import Client, Publisher, wait_for
 from track_id.models import disabled_snapshot
 from webui import stream
 
@@ -35,44 +35,6 @@ from webui import stream
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
-
-def wait_for(predicate, timeout: float = 3.0, step: float = 0.01) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(step)
-    return predicate()
-
-
-class Publisher:
-    """Publishes to three parts of a store, each call moving the part."""
-
-    def __init__(self, store: StateStore) -> None:
-        owner = "test_owner"
-        self._writers = {
-            "settings": store.claim("settings", owner),
-            "session": store.claim("session", owner),
-            "repeat": store.claim("repeat", owner),
-            "outputs": store.claim("outputs", owner),
-        }
-        self._n = {}
-
-    def bump(self, part: str):
-        """Publish a new value to *part*; return the Pending (not notified)."""
-        n = self._n[part] = self._n.get(part, 0) + 1
-        w = self._writers[part]
-        if part == "settings":
-            return w.publish(SettingsPart(generation=n))
-        if part == "session":
-            return w.publish(SessionPart(True, f"input{n}"))
-        if part == "repeat":
-            return w.publish(RepeatPart(block={"enabled": n % 2 == 1}))
-        return w.publish(OutputsPart(muted_all=n % 2 == 1))
-
-    def __call__(self, part: str) -> None:
-        self.bump(part).notify()
-
 
 class _Wfile:
     def __init__(self, sock) -> None:
@@ -104,53 +66,6 @@ class FakeHandler:
 
     def end_headers(self) -> None:
         self.wfile.write(b"".join(self._head) + b"\r\n")
-
-
-class Client:
-    """The reading end of a stream: collects what arrives."""
-
-    def __init__(self, sock) -> None:
-        self.sock = sock
-        self.buf = b""
-
-    def pull(self, seconds: float) -> None:
-        """Read whatever arrives within *seconds*."""
-        end = time.monotonic() + seconds
-        while True:
-            left = end - time.monotonic()
-            if left <= 0:
-                return
-            self.sock.settimeout(left)
-            try:
-                chunk = self.sock.recv(65536)
-            except (socket.timeout, OSError):
-                return
-            if not chunk:
-                return
-            self.buf += chunk
-
-    def pull_until(self, needle: bytes, timeout: float = 3.0) -> bool:
-        end = time.monotonic() + timeout
-        while needle not in self.buf and time.monotonic() < end:
-            self.pull(0.05)
-        return needle in self.buf
-
-    @property
-    def body(self) -> bytes:
-        head, sep, rest = self.buf.partition(b"\r\n\r\n")
-        return rest if sep else b""
-
-    def events(self) -> list:
-        """The change events in the body, as dicts with their ids."""
-        out = []
-        for block in self.body.split(b"\n\n"):
-            lines = block.decode("ascii", "replace").split("\n")
-            if "event: change" in lines:
-                data = next(line for line in lines if line.startswith("data: "))
-                event = json.loads(data[len("data: "):])
-                event["id"] = next(line for line in lines if line.startswith("id: "))[4:]
-                out.append(event)
-        return out
 
 
 class Running:

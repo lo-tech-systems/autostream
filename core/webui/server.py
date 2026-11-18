@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from autostream_auth import AuthManager, FLASH_COOKIE_NAME
 import autostream_commissioning as commissioning
 from autostream_settings import SettingsView
+from autostream_state import store
 
 import webui.browser.about
 import webui.browser.align
@@ -49,6 +50,7 @@ import webui.dial.management
 import webui.peer.federation
 import webui.peer.gateway
 import webui.repeat
+import webui.stream
 import webui.system.bluetooth
 import webui.system.network
 import webui.system.power
@@ -84,6 +86,7 @@ _ROUTE_MODULES = (
     webui.peer.federation,
     webui.peer.gateway,
     webui.repeat,
+    webui.stream,
     webui.system.bluetooth,
     webui.system.network,
     webui.system.power,
@@ -453,6 +456,11 @@ def start_server(deps: WebUIDeps) -> threading.Thread:
             # Prime the app-version cache before the HTTP server starts so the
             # first /api/about/system request never incurs the helper timeout.
             updates.get_app_version()
+
+            # One hub for every state stream, subscribed before requests are served.
+            hub = webui.stream.StreamHub(store())
+            hub.start()
+            webui.stream.install(hub)
 
             httpd = ThreadingHTTPServer((deps.host, deps.port), ConfigWebHandler)
             logging.info("Web UI available at http://%s:%d", deps.host, deps.port)

@@ -149,6 +149,43 @@ def test_the_startup_hook_runs_once_on_the_web_thread_before_serving():
     assert thread.name != threading.current_thread().name
 
 
+def test_start_server_installs_a_subscribed_hub_over_the_store_before_serving():
+    import autostream_state
+    import webui.server as server
+    import webui.stream as stream
+    from settings_fixtures import fixed_view
+
+    seen: dict = {}
+    done = threading.Event()
+
+    class _FakeHttpd:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def serve_forever(self):
+            hub = stream._HUB
+            seen["hub"] = hub
+            seen["subscribed"] = hub is not None and hub._handle is not None
+            seen["store"] = hub.store if hub is not None else None
+            done.set()
+
+    stream.install(None)
+    try:
+        with patch.object(server, "ThreadingHTTPServer", _FakeHttpd),              patch.object(server, "AuthManager"),              patch.object(server.updates, "get_app_version"):
+            thread = server.start_server(server.WebUIDeps(
+                "c.json", "s.json", settings=fixed_view(), port=0,
+            ))
+            assert done.wait(timeout=5)
+            thread.join(timeout=5)
+        assert isinstance(seen["hub"], stream.StreamHub)
+        assert seen["store"] is autostream_state.store()
+        assert seen["subscribed"] is True
+    finally:
+        if seen.get("hub") is not None:
+            seen["hub"].stop()
+        stream.install(None)
+
+
 def _package_inits() -> list[Path]:
     return sorted(p for p in WEBUI_DIR.rglob("__init__.py") if "__pycache__" not in p.parts)
 
