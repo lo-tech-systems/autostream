@@ -63,19 +63,15 @@ from autostream_bluetooth_client import (
     classify_loopback_hw,
 )
 from autostream_config import (
-    CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
     input_type_label,
     is_valid_monitor_device_id,
-    load_config,
     normalize_airplay_mode,
     normalize_input_type,
     normalize_output_usage_poll_interval,
     normalize_update_channel,
-    parse_config,
-    save_config,
 )
 from autostream_rpi import get_appliance_id
 from autostream_dials import (
@@ -87,6 +83,7 @@ from autostream_dials import (
     dial_speaks_v2,
 )
 from autostream_intents import Intent, submit
+from autostream_settings import SettingsView
 from autostream_state import Origin, active_track, session_source_input_index, store
 from autostream_dial_warnings import current_warnings, warnings_payload
 from autostream_state.live import get_live_output_eq_status
@@ -482,26 +479,23 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "Unknown field"})
         return
 
-    section, key, normaliser = _SERVICE_FIELD_MAP[field]
+    section, key, _normaliser = _SERVICE_FIELD_MAP[field]
 
     try:
-        normalised = normaliser(value)
-    except Exception as e:
-        send_json(handler, 400, {"ok": False, "error": f"Invalid value: {e}"})
-        return
-
-    try:
-        from autostream_settings import SettingsStore as _SettingsStore
-        _store = getattr(state, "settings", None)
-        if isinstance(_store, _SettingsStore):
-            p = _store.snapshot()
-            _store.update(lambda raw: raw.setdefault(section, {}).update({key: normalised}))
-        else:
-            with CONFIG_IO_LOCK:
-                cfg = load_config(state.config_path)
-                p = parse_config(cfg)
-                cfg.setdefault(section, {})[key] = normalised
-                save_config(state.config_path, cfg)
+        # The pre-write parse, which the live-update args below start from.
+        p = _config_snapshot(state)
+        reply = submit(Intent(
+            "settings.service_field.set", {"path": field, "value": value}, Origin.USER, "webui",
+            context=state))
+        if not reply.ok:
+            if "invalid" in reply.result:
+                send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
+            elif "unavailable" in reply.result:
+                send_json(handler, 500, {"ok": False, "error": "Settings store unavailable"})
+            else:
+                send_json(handler, 200, {"ok": False, "error": reply.error})
+            return
+        normalised = reply.result["value"]
 
         # Build live-update args from the pre-write parse, substituting the one
         # changed key. This avoids a second parse_config call on the same object.
@@ -643,10 +637,9 @@ def send_update_check_json(handler, state=None) -> None:
     # disk, while settings changes (e.g. the pre-release channel toggle) are
     # flushed to disk on a debounced interval -- force the flush first so a
     # check issued right after a toggle cannot run against the old channel.
-    settings = getattr(state, "settings", None)
-    if settings is not None:
+    if getattr(state, "settings", None) is not None:
         try:
-            settings.save_now(timeout=5.0)
+            submit(Intent("settings.save", {"timeout": 5.0}, Origin.USER, "webui", context=state))
         except Exception:
             pass  # best effort; the check still runs against current disk state
     rc, out, err = run_updater(["check"], timeout=60)
@@ -1727,15 +1720,13 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
     section, key, validator, live_fn = _SETTINGS_FIELDS[field]
     raw_value = json_obj["value"]
 
-    from autostream_settings import SettingsStore as _SettingsStore
-
     # audio1.capture_device may be cleared to an empty string only while
     # input 1 is disabled (audio1.enabled=false) -- the field validator
     # otherwise rejects empty values unconditionally, same as it always has.
     if field == "audio1.capture_device" and isinstance(raw_value, str) and not raw_value.strip():
         settings_probe = getattr(state, "settings", None)
         audio1_enabled = True
-        if isinstance(settings_probe, _SettingsStore):
+        if isinstance(settings_probe, SettingsView):
             try:
                 audio1_enabled = bool(settings_probe.snapshot().audio1_enabled)
             except Exception:
@@ -1752,7 +1743,7 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
             return
 
     settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    if not isinstance(settings, SettingsView):
         send_json(handler, 200, {"ok": False, "field": field, "error": "Settings store unavailable"})
         return
 
@@ -2980,7 +2971,7 @@ def _bt_pairing_set_field(state, settings, field: str, value) -> tuple[bool, Opt
     guard exactly like a user editing the Setup page would. Returns ``(ok,
     error_or_None)``; never raises.
     """
-    section, key, validator, live_fn = _SETTINGS_FIELDS[field]
+    validator = _SETTINGS_FIELDS[field][2]
     try:
         normalized = validator(value)
     except ValueError as e:
@@ -3011,29 +3002,15 @@ def _bt_pairing_set_field(state, settings, field: str, value) -> tuple[bool, Opt
         if other_value == normalized:
             return False, "that device is already assigned to the other input"
 
-    def _mutator(raw: dict) -> None:
-        if field in ("audio1.capture_device", "audio2.capture_device") and normalized:
-            other_section = "audio2" if field == "audio1.capture_device" else "audio1"
-            other_value = str(raw.get(other_section, {}).get("capture_device") or "").strip()
-            if other_value == normalized:
-                raise _DuplicateCaptureDeviceError(
-                    "that device is already assigned to the other input"
-                )
-        raw.setdefault(section, {})[key] = normalized
-
-    try:
-        settings.update(_mutator)
-    except _DuplicateCaptureDeviceError as e:
-        return False, str(e)
-    except Exception:
-        logging.exception("_bt_pairing_set_field: store update failed for %s", field)
+    # The schema row's own cross-validation repeats the duplicate-device check
+    # under the store lock, and its live effect runs with the commit.
+    reply = submit(Intent(
+        "settings.apply", {"changes": ((field, normalized),)}, Origin.USER, "webui",
+        context=state))
+    if not reply.ok:
+        if "invalid" in reply.result:
+            return False, reply.result["invalid"]
         return False, "internal error"
-
-    if live_fn is not None:
-        try:
-            live_fn(state, normalized)
-        except Exception:
-            logging.exception("_bt_pairing_set_field: live effect failed for %s", field)
 
     return True, None
 
@@ -3062,9 +3039,8 @@ def _bt_pair_auto_configure(state) -> Optional[dict]:
     API response), or ``None`` when there is no settings store to act on
     (nothing could be determined or changed).
     """
-    from autostream_settings import SettingsStore as _SettingsStore
     settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    if not isinstance(settings, SettingsView):
         return None
 
     try:

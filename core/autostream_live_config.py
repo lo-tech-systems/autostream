@@ -41,6 +41,7 @@ from autostream_config import (
     BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
+    FIFO_PATH,
     DEVICE_PAUSE_SCOPE_DEFAULT,
     DEVICE_PAUSE_SCOPES,
     PLAY_GUARD_SECONDS_DEFAULT,
@@ -81,7 +82,7 @@ from autostream_players import (
     SETTING_USER_AGENT,
 )
 from autostream_rpi import is_high_performance_pi
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, writable_store
 from autostream_settings_schema import (
     CrossFieldValidationError,
     LiveClass,
@@ -97,8 +98,7 @@ _OWNER = "autostream_live_config"
 
 
 def _store_of(state: object) -> Optional[SettingsStore]:
-    settings = getattr(state, "settings", None)
-    return settings if isinstance(settings, SettingsStore) else None
+    return writable_store(getattr(state, "settings", None))
 
 
 def _validate_bool(value: object) -> bool:
@@ -126,9 +126,8 @@ def _live_gain_2(state: object, value: object) -> bool:
 
 
 def _live_eq_1(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     return bool(monitor_control.set_live_input_eq(
@@ -140,9 +139,8 @@ def _live_eq_1(state: object, value: object) -> bool:
 
 
 def _live_eq_2(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     return bool(monitor_control.set_live_input_eq(
@@ -188,9 +186,8 @@ def _validate_repeat_target_minutes(value: object) -> int:
 
 
 def _live_repeat_enabled(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     return bool(monitor_control.set_live_repeat_enabled(bool(value), snap.repeat.codec, snap.repeat.target_minutes))
@@ -210,9 +207,8 @@ def _live_repeat_codec(state: object, value: object) -> bool:
     at the next unrelated enable/disable. See _live_repeat_target_minutes()'s
     own docstring for the staleness caveat, which applies identically here.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     if not snap.repeat.enabled:
@@ -256,9 +252,8 @@ def _live_repeat_target_minutes(state: object, value: object) -> bool:
     reflects the daemon's actual target, so the mismatch is visible and
     recoverable by re-selecting the target.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     if not snap.repeat.enabled:
@@ -615,9 +610,8 @@ def _validate_output_name(value: object) -> str:
 
 
 def _live_owntone_name(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     return bool(update_live_owntone_runtime(
@@ -629,9 +623,8 @@ def _live_owntone_name(state: object, value: object) -> bool:
 
 
 def _live_owntone_volume(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     return bool(update_live_owntone_runtime(
@@ -673,9 +666,8 @@ def _live_audio_path(state: object, value: object) -> bool:
     the tolerated-to-fail treatment already used for the daemon-side repeat
     policy push elsewhere in this codebase.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is None:
         return False
     snap = settings.snapshot()
     base_url = snap.owntone.base_url
@@ -750,9 +742,8 @@ def _debounce_coordinator_reload(state: object, delay: float = 0.3) -> None:
             _coordinator_reload_timer.cancel()
 
         def _do_reload():
-            from autostream_settings import SettingsStore as _SettingsStore
-            settings = getattr(state, "settings", None)
-            if isinstance(settings, _SettingsStore):
+            settings = writable_store(getattr(state, "settings", None))
+            if settings is not None:
                 settings.save_now()
             submit(Intent("settings.reload", {"reason": "settings changed"},
                           Origin.SYSTEM, "webui"))
@@ -770,9 +761,8 @@ def _debounce_coordinator_reload(state: object, delay: float = 0.3) -> None:
 # last-registered snapshot read actually runs.
 def _debounce_track_id_rebuild(state: object, delay: float = 0.3) -> None:
     def _do_rebuild():
-        from autostream_settings import SettingsStore as _SettingsStore
-        settings = getattr(state, "settings", None)
-        if isinstance(settings, _SettingsStore):
+        settings = writable_store(getattr(state, "settings", None))
+        if settings is not None:
             try:
                 snap = settings.snapshot()
                 identification.apply_track_id_config_live_from_parsed(snap)
@@ -793,9 +783,8 @@ def _live_capture_2(state: object, value: object) -> bool:
 
 
 def _live_audio1_enabled(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is not None:
         snap = settings.snapshot()
         playback_tracking.update_playback_input_config(
             1,
@@ -814,9 +803,8 @@ def _live_audio1_enabled(state: object, value: object) -> bool:
 
 
 def _live_audio2_enabled(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is not None:
         snap = settings.snapshot()
         playback_tracking.update_playback_input_config(
             2,
@@ -872,9 +860,8 @@ def _sync_playback_input_config(snap, input_index: int) -> None:
 def _live_input_type(state: object, input_index: int, value: object) -> bool:
     # Runs after the store has committed the type, flag and preset, so the
     # snapshot already holds the threshold to push with the type.
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
+    settings = writable_store(getattr(state, "settings", None))
+    if settings is not None:
         snap = settings.snapshot()
         _sync_playback_input_config(snap, input_index)
         a = snap.audio1 if input_index == 1 else snap.audio2
@@ -1006,7 +993,9 @@ def _settings_save(intent: Intent, wait: float) -> Outcome:
     settings = _store_of(intent.context)
     if settings is None:
         return Outcome(ok=False, error="Settings store not available")
-    if settings.save_now():
+    timeout = intent.args.get("timeout")
+    saved = settings.save_now() if timeout is None else settings.save_now(timeout=timeout)
+    if saved:
         return Outcome(ok=True)
     return Outcome(ok=False, error="Settings could not be saved")
 
@@ -1117,12 +1106,100 @@ def _auto_update(intent: Intent, wait: float) -> Outcome:
     return Outcome(ok=True)
 
 
+def _service_field_set(intent: Intent, wait: float) -> Outcome:
+    """Write one service-life field: the raw value goes through the field's
+    own normaliser, then is stored as a plain write (no live effect; the
+    route pushes the playback tracker itself). *context* is the request's
+    state, whose store is written. The result's value is what was stored."""
+    settings = _store_of(intent.context)
+    if settings is None:
+        return Outcome(ok=False, error="Settings store unavailable", result={"unavailable": True})
+    path = intent.args["path"]
+    spec = get_field_spec(path) if path.startswith("service_") else None
+    if spec is None or spec.normalise is None or spec.section is None or spec.key is None:
+        return Outcome(ok=False, error="Unknown field", result={"unknown": True})
+    try:
+        normalised = spec.normalise(intent.args["value"])
+    except Exception as exc:
+        message = f"Invalid value: {exc}"
+        return Outcome(ok=False, error=message, result={"invalid": message})
+    section, key = spec.section, spec.key
+    try:
+        settings.update(lambda raw: raw.setdefault(section, {}).update({key: normalised}))
+    except Exception as exc:
+        logging.exception("settings.service_field.set: store write failed")
+        return Outcome(ok=False, error=str(exc), result={"failed": True})
+    return Outcome(ok=True, result={"value": normalised})
+
+
+def _settings_discard(intent: Intent, wait: float) -> Outcome:
+    """Stop the store without saving its unsaved changes (before a factory
+    reset, which wipes the configuration anyway)."""
+    settings = _store_of(intent.context)
+    if settings is None:
+        return Outcome(ok=False, error="Settings store unavailable")
+    try:
+        settings.close(save=False)
+    except Exception:
+        logging.warning("settings.discard: store close failed", exc_info=True)
+        return Outcome(ok=False, error="Settings store could not be closed")
+    return Outcome(ok=True)
+
+
+def _first_boot_commit(intent: Intent, wait: float) -> Outcome:
+    """Store one first-boot step. Step "output" records the chosen OwnTone
+    output. Step "finish" records the Appliance page: input 1 (or, when it is
+    skipped, only its disabled flag), the volume and the fixed FIFO path.
+    *context* is the request's state, whose store is written."""
+    settings = _store_of(intent.context)
+    if settings is None:
+        return Outcome(ok=False, error="Settings store unavailable", result={"unavailable": True})
+    args = intent.args
+    if args["step"] == "output":
+        output_name = args.get("output_name")
+        if not output_name:
+            return Outcome(ok=False, error="invalid_args")
+
+        def _mutator(raw: dict) -> None:
+            raw.setdefault("owntone", {}).update({"output_name": output_name})
+    else:
+        skip_input1 = bool(args.get("skip_input1"))
+        capture_device = args.get("capture_device")
+        input_type = args.get("input_type")
+        volume_percent = args.get("volume_percent")
+        if volume_percent is None or (not skip_input1 and (not capture_device or not input_type)):
+            return Outcome(ok=False, error="invalid_args")
+
+        def _mutator(raw: dict) -> None:
+            if skip_input1:
+                # Leave capture_device/turntable untouched -- only the
+                # enabled flag changes, so a device chosen in the dropdown
+                # before tapping Skip is not silently persisted.
+                raw.setdefault("audio1", {})["enabled"] = False
+            else:
+                raw.setdefault("audio1", {})["capture_device"] = capture_device
+                raw.setdefault("audio1", {})["enabled"] = True
+                set_input_type(raw, 1, input_type)
+            raw.setdefault("owntone", {})["volume_percent"] = volume_percent
+            # Fixed appliance path, not something first boot can choose
+            raw.setdefault("general", {})["fifo_path"] = FIFO_PATH
+    try:
+        settings.update(_mutator)
+    except Exception as exc:
+        logging.exception("first_boot.commit: store update failed")
+        return Outcome(ok=False, error=str(exc), result={"failed": True})
+    return Outcome(ok=True)
+
+
 bind("settings.apply", _settings_apply, owner=_OWNER)
 bind("settings.save", _settings_save, owner=_OWNER)
 bind("settings.reload", _settings_reload, owner=_OWNER)
 bind("settings.form_apply", _form_apply, owner=_OWNER)
 bind("settings.advertisement", _advertisement, owner=_OWNER)
 bind("settings.auto_update", _auto_update, owner=_OWNER)
+bind("settings.service_field.set", _service_field_set, owner=_OWNER)
+bind("settings.discard", _settings_discard, owner=_OWNER)
+bind("first_boot.commit", _first_boot_commit, owner=_OWNER)
 
 
 # ---------------------------------------------------------------------------
@@ -1378,9 +1455,8 @@ def apply_output_offset(state: object, output_id: str, raw_offset) -> dict:
         if max_negative > -2000:
             offset_ms = max(max_negative, offset_ms)
 
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = getattr(state, "settings", None)
-    if not isinstance(_store, _SettingsStore):
+    _store = writable_store(getattr(state, "settings", None))
+    if _store is None:
         return {"ok": False, "error": "Settings store unavailable"}
 
     try:
@@ -1540,10 +1616,8 @@ def _reset_buffered_output_modes(state: object) -> list[str]:
     mode if the setting were later turned back on, or when an undiscovered
     speaker reappears. Returns the output ids that were changed.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-
-    _store = getattr(state, "settings", None)
-    if not isinstance(_store, _SettingsStore):
+    _store = writable_store(getattr(state, "settings", None))
+    if _store is None:
         logging.warning("buffered-audio off: settings store unavailable, modes not reset")
         return []
 

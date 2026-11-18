@@ -204,7 +204,12 @@ def _build_rows() -> dict:
             {"changes"},
             {Origin.USER, Origin.SYSTEM},
         ),
-        _row("settings.save", {}, (), {Origin.USER, Origin.SYSTEM}),
+        _row(
+            "settings.save",
+            {"timeout": v.optional(v.number(0.5, 30, error="invalid_timeout"))},
+            (),
+            {Origin.USER, Origin.SYSTEM},
+        ),
         _row(
             "settings.reload",
             {"reason": v.text(error="invalid_reason", max_len=64)},
@@ -233,6 +238,30 @@ def _build_rows() -> dict:
             "settings.auto_update",
             {"value": v.boolean(error="value must be a boolean")},
             {"value"},
+            {Origin.USER},
+        ),
+        _row(
+            "settings.service_field.set",
+            {
+                # A service_*_life_*_inputN field name and the raw posted value.
+                "path": v.text(error=_BAD_BODY, max_len=64),
+                "value": v.anything(),
+            },
+            {"path", "value"},
+            {Origin.USER},
+        ),
+        _row("settings.discard", {}, (), {Origin.USER}),
+        _row(
+            "first_boot.commit",
+            {
+                "step": v.choice("output", "finish", error=_BAD_BODY),
+                "output_name": v.optional(v.text(error=_BAD_BODY, max_len=256)),
+                "capture_device": v.optional(v.text(error=_BAD_BODY, max_len=256)),
+                "input_type": v.optional(v.text(error=_BAD_BODY, max_len=256)),
+                "skip_input1": v.optional(v.boolean(error=_BAD_BODY)),
+                "volume_percent": v.optional(v.integer(0, 100, error=_BAD_BODY, clamp=True)),
+            },
+            {"step"},
             {Origin.USER},
         ),
         _row(

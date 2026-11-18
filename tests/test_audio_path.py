@@ -619,13 +619,13 @@ class TestValidateAudioPath:
 
 class TestLiveAudioPath:
     def _make_state(self, tmp_path, initial=None):
-        from autostream_settings import SettingsStore
+        from autostream_settings import SettingsStore, as_view
         config_path = str(tmp_path / "config.json")
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(initial or {"owntone": {"base_url": "http://localhost:3689"}}, f)
         store = SettingsStore(config_path, _save_interval_seconds=9999, _writer=MagicMock())
         state = MagicMock()
-        state.settings = store
+        state.settings = as_view(store)
         return state, store
 
     def test_pushes_resample_quality_and_syncs_args(self, tmp_path):

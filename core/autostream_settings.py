@@ -452,3 +452,49 @@ class SettingsStore:
                     self._dirty = False
                     logging.debug("Settings: periodic save complete.")
                 # else: a new mutation arrived during the write; store stays dirty.
+
+
+class SettingsView:
+    """The settings as the web pages see them: read-only. A write is an
+    AttributeError; writes go through the intent rows."""
+
+    __slots__ = ("_store",)
+
+    def __init__(self, store: SettingsStore) -> None:
+        self._store = store
+
+    def snapshot(self) -> AutostreamConfig:
+        """The store's current parsed settings (see SettingsStore.snapshot)."""
+        return self._store.snapshot()
+
+    def raw_snapshot(self) -> dict:
+        """A deep copy of the store's raw configuration dict."""
+        return self._store.raw_snapshot()
+
+    @property
+    def generation(self) -> int:
+        """How many commits the settings have had since the store started."""
+        return self._store.generation
+
+    @property
+    def config_path(self) -> str:
+        """The path to the configuration file managed by the store."""
+        return self._store.config_path
+
+
+def writable_store(settings: object) -> Optional[SettingsStore]:
+    """The store behind a view, a store itself, else None. For intent handlers
+    (L2); the web modules may not import it (it is not on their allowlist)."""
+    if isinstance(settings, SettingsStore):
+        return settings
+    if isinstance(settings, SettingsView):
+        return settings._store
+    return None
+
+
+def as_view(value: object) -> object:
+    """A store wrapped in a SettingsView; a view, None or any other object (a
+    test's MagicMock) returned as it is, so it takes the file fallback as today."""
+    if isinstance(value, SettingsStore):
+        return SettingsView(value)
+    return value

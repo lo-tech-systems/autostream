@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from autostream_intents.table import Intent, Outcome, bind
+from autostream_settings import writable_store
 from autostream_state import live
 from autostream_config import (
     CONFIG_IO_LOCK,
@@ -338,7 +339,7 @@ def _log_level_set(intent: Intent, wait: float) -> Outcome:
         state.config_path,
         intent.args["level"],
         changed_by=intent.args["changed_by"],
-        settings=getattr(state, "settings", None),
+        settings=writable_store(getattr(state, "settings", None)),
     )
     if result.get("ok"):
         return Outcome(ok=True, result={"response": result})

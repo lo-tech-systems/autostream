@@ -131,14 +131,14 @@ def _call_gain(body: str | dict, tmp_path: Path) -> tuple:
     # both paths so all send_json calls are captured.
     # Provide a real SettingsStore so valid requests reach the success path.
     import tempfile, os
-    from autostream_settings import SettingsStore
+    from autostream_settings import SettingsStore, as_view
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as tf:
         tf.write("{}")
         cfg_path = tf.name
     try:
         store = SettingsStore(cfg_path, _save_interval_seconds=9999, _writer=MagicMock())
         state = MagicMock()
-        state.settings = store
+        state.settings = as_view(store)
         with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_monitor_control.set_live_input_gain", return_value=True):

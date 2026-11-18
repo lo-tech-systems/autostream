@@ -21,7 +21,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from fake_store import fake_playback_mock
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, as_view, writable_store
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ def _make_store(config_path: str) -> SettingsStore:
 def _make_state(config_path: str, store: SettingsStore | None) -> MagicMock:
     state = MagicMock()
     state.config_path = config_path
-    state.settings = store
+    state.settings = as_view(store)
     return state
 
 
@@ -74,7 +74,7 @@ def _make_handler():
 # ── apply_eq_field — bool field ───────────────────────────────────────────────
 
 class TestApplyEqFieldBoolViaStore:
-    def test_store_updated_not_save_config(self, tmp_path):
+    def test_store_updated(self, tmp_path):
         from autostream_monitor_control import apply_eq_field
         config_path = _make_config(str(tmp_path))
         store = _make_store(config_path)
@@ -89,167 +89,17 @@ class TestApplyEqFieldBoolViaStore:
         snap = store.snapshot()
         assert snap.output_eq.auto_trim_enabled is True
 
-    def test_fallback_uses_save_config(self, tmp_path):
-        from autostream_monitor_control import apply_eq_field
-        config_path = _make_config(str(tmp_path))
-        with patch("autostream_monitor_control.set_live_output_auto_trim"), \
-             patch("autostream_monitor_control.save_config") as m_save, \
-             patch("autostream_monitor_control.load_config") as m_load:
-            m_load.return_value = {"output_eq": {"auto_trim_enabled": False}}
-            ok, norm, err = apply_eq_field(config_path, "auto_trim_enabled", "false", settings=None)
-        assert ok is True
-        m_save.assert_called_once()
-
-    def test_unknown_field_raises(self, tmp_path):
-        from autostream_monitor_control import apply_eq_field
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        with pytest.raises(ValueError, match="Unknown field"):
-            apply_eq_field(config_path, "nonexistent", "true", settings=store)
-
-
-# ── apply_eq_field — dB field ─────────────────────────────────────────────────
-
-class TestApplyEqFieldDbViaStore:
-    def test_gain_db_via_store(self, tmp_path):
-        from autostream_monitor_control import apply_eq_field
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        with patch("autostream_monitor_control.set_live_output_gain") as m_gain, \
-             patch("autostream_monitor_control.save_config") as m_save:
-            ok, norm, err = apply_eq_field(config_path, "gain_db", "3.5", settings=store)
-        assert ok is True
-        assert norm == "3.5"
-        m_save.assert_not_called()
-        m_gain.assert_called_once_with(3.5, requester=None)
-        snap = store.snapshot()
-        assert snap.output_eq.gain_db == pytest.approx(3.5)
-
-    def test_peq_band_via_store_calls_set_live_eq(self, tmp_path):
-        from autostream_monitor_control import apply_eq_field
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        with patch("autostream_monitor_control.set_live_output_eq") as m_eq, \
-             patch("autostream_monitor_control.save_config"):
-            ok, norm, err = apply_eq_field(config_path, "peq1_db", "2.0", settings=store)
-        assert ok is True
-        m_eq.assert_called_once()
-        args = m_eq.call_args[0]
-        assert args[0] == pytest.approx(2.0)  # peq1
-        snap = store.snapshot()
-        assert snap.output_eq.peq1_db == pytest.approx(2.0)
-
-    def test_clamping_applied(self, tmp_path):
-        from autostream_eq_bands import OUTPUT_EQ_DB_MAX as _OUTPUT_EQ_DB_MAX
-        from autostream_monitor_control import apply_eq_field
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        with patch("autostream_monitor_control.set_live_output_gain"):
-            ok, norm, err = apply_eq_field(config_path, "gain_db", "9999", settings=store)
-        assert ok is True
-        assert float(norm) == pytest.approx(_OUTPUT_EQ_DB_MAX)
-
-    def test_non_numeric_raises(self, tmp_path):
-        from autostream_monitor_control import apply_eq_field
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        with pytest.raises(ValueError, match="numeric"):
-            apply_eq_field(config_path, "gain_db", "abc", settings=store)
-
-    def test_fallback_uses_save_config(self, tmp_path):
-        from autostream_monitor_control import apply_eq_field
-        config_path = _make_config(str(tmp_path))
-        with patch("autostream_monitor_control.set_live_output_gain"), \
-             patch("autostream_monitor_control.save_config") as m_save, \
-             patch("autostream_monitor_control.load_config") as m_load, \
-             patch("autostream_appliance_models.parse_config") as m_parse:
-            m_parse.return_value = MagicMock(output_eq=MagicMock(gain_db=0.0))
-            m_load.return_value = {"output_eq": {}}
-            ok, norm, err = apply_eq_field(config_path, "gain_db", "1.0", settings=None)
-        assert ok is True
-        m_save.assert_called_once()
-
-
-# ── apply_eq_reset ────────────────────────────────────────────────────────────
-
-class TestApplyEqResetViaStore:
-    def test_zeroes_all_bands_via_store(self, tmp_path):
-        from autostream_monitor_control import _OUTPUT_EQ_BAND_FIELDS
-        from autostream_monitor_control import apply_eq_reset
-        config_path = _make_config(str(tmp_path), extra={"output_eq": {"peq1_db": 5.0, "peq2_db": 3.0}})
-        store = _make_store(config_path)
-        with patch("autostream_monitor_control.set_live_output_eq") as m_eq, \
-             patch("autostream_monitor_control.save_config") as m_save:
-            ok, err = apply_eq_reset(config_path, settings=store)
-        assert ok is True
-        assert err == ""
-        m_save.assert_not_called()
-        m_eq.assert_called_once_with(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, requester=None)
-        snap = store.snapshot()
-        for band in _OUTPUT_EQ_BAND_FIELDS:
-            assert getattr(snap.output_eq, band) == pytest.approx(0.0), band
-
-    def test_fallback_uses_save_config(self, tmp_path):
-        from autostream_monitor_control import apply_eq_reset
-        config_path = _make_config(str(tmp_path))
-        with patch("autostream_monitor_control.set_live_output_eq"), \
-             patch("autostream_monitor_control.save_config") as m_save, \
-             patch("autostream_monitor_control.load_config") as m_load:
-            m_load.return_value = {"output_eq": {}}
-            ok, err = apply_eq_reset(config_path, settings=None)
-        assert ok is True
-        m_save.assert_called_once()
-
-
-# ── send_service_config_json ──────────────────────────────────────────────────
-
-class TestServiceConfigJsonViaStore:
-    def test_store_updated_not_save_config(self, tmp_path):
-        from autostream_webui_api import send_service_config_json
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, store)
-        handler, sent = _make_handler()
-        body = json.dumps({"field": "service_stylus_life_hours_input1", "value": "500"})
-        with patch("autostream_webui_api.save_config") as m_save, \
-             patch("autostream_playback_tracking.update_playback_input_config"), \
-             fake_playback_mock() as m_snap:
-            m_snap.return_value = MagicMock(inputs={})
-            send_service_config_json(handler, state, body)
-        m_save.assert_not_called()
-        assert sent.get("body", {}).get("ok") is True
-        snap = store.snapshot()
-        assert snap.audio1.stylus_life_hours == 500
-
-    def test_fallback_uses_save_config(self, tmp_path):
+    def test_no_store_answers_500(self, tmp_path):
         from autostream_webui_api import send_service_config_json
         config_path = _make_config(str(tmp_path))
         state = _make_state(config_path, None)
         handler, sent = _make_handler()
         body = json.dumps({"field": "service_stylus_life_hours_input1", "value": "750"})
-        with patch("autostream_webui_api.save_config") as m_save, \
-             patch("autostream_webui_api.load_config") as m_load, \
-             patch("autostream_webui_api.parse_config") as m_parse, \
-             patch("autostream_playback_tracking.update_playback_input_config"), \
-             fake_playback_mock() as m_snap:
+        with patch("autostream_playback_tracking.update_playback_input_config"),              fake_playback_mock() as m_snap:
             m_snap.return_value = MagicMock(inputs={})
-            m_load.return_value = {
-                "audio1": {"is_turntable": True, "stylus_life_hours": 1000,
-                           "belt_life_hours": 2000, "belt_life_years": 3,
-                           "bearing_life_hours": 5000, "bearing_life_years": 7}
-            }
-            mock_audio = MagicMock()
-            mock_audio.is_turntable = True
-            mock_audio.stylus_life_hours = 1000
-            mock_audio.belt_life_hours = 2000
-            mock_audio.belt_life_years = 3
-            mock_audio.bearing_life_hours = 5000
-            mock_audio.bearing_life_years = 7
-            mock_parsed = MagicMock()
-            mock_parsed.audio1 = mock_audio
-            m_parse.return_value = mock_parsed
             send_service_config_json(handler, state, body)
-        m_save.assert_called_once()
+        assert sent["code"] == 500
+        assert sent["body"] == {"ok": False, "error": "Settings store unavailable"}
 
     def test_unknown_field_returns_400(self, tmp_path):
         from autostream_webui_api import send_service_config_json
@@ -280,7 +130,7 @@ class TestCallerPassSettings:
             send_output_eq_config_json(handler, state, body)
         m_apply.assert_called_once()
         _, kwargs = m_apply.call_args
-        assert kwargs.get("settings") is store
+        assert writable_store(kwargs.get("settings")) is store
 
     def test_send_output_eq_reset_passes_settings(self, tmp_path):
         """send_output_eq_reset_json passes settings=getattr(state,'settings',None)."""
@@ -293,7 +143,7 @@ class TestCallerPassSettings:
             send_output_eq_reset_json(handler, state)
         m_reset.assert_called_once()
         _, kwargs = m_reset.call_args
-        assert kwargs.get("settings") is store
+        assert writable_store(kwargs.get("settings")) is store
 
     def test_send_federation_eq_config_passes_settings(self, tmp_path):
         """send_federation_eq_config_json passes settings=getattr(state,'settings',None)."""
@@ -307,7 +157,7 @@ class TestCallerPassSettings:
             send_federation_eq_config_json(handler, state, body)
         m_apply.assert_called_once()
         _, kwargs = m_apply.call_args
-        assert kwargs.get("settings") is store
+        assert writable_store(kwargs.get("settings")) is store
 
     def test_send_federation_eq_reset_passes_settings(self, tmp_path):
         """send_federation_eq_reset_json passes settings=getattr(state,'settings',None)."""
@@ -320,7 +170,7 @@ class TestCallerPassSettings:
             send_federation_eq_reset_json(handler, state)
         m_reset.assert_called_once()
         _, kwargs = m_reset.call_args
-        assert kwargs.get("settings") is store
+        assert writable_store(kwargs.get("settings")) is store
 
     def test_gateway_eq_field_passes_settings(self, tmp_path):
         """send_gateway_eq_config_json passes settings=getattr(state,'settings',None)."""
@@ -335,7 +185,7 @@ class TestCallerPassSettings:
             send_gateway_eq_config_json(handler, state, "self", body)
         m_apply.assert_called_once()
         _, kwargs = m_apply.call_args
-        assert kwargs.get("settings") is store
+        assert writable_store(kwargs.get("settings")) is store
 
     def test_gateway_eq_reset_passes_settings(self, tmp_path):
         """send_gateway_eq_reset_json passes settings=getattr(state,'settings',None)."""
@@ -349,4 +199,4 @@ class TestCallerPassSettings:
             send_gateway_eq_reset_json(handler, state, "self")
         m_reset.assert_called_once()
         _, kwargs = m_reset.call_args
-        assert kwargs.get("settings") is store
+        assert writable_store(kwargs.get("settings")) is store

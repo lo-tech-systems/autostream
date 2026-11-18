@@ -21,20 +21,19 @@ from typing import Optional
 
 from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
-    FIFO_PATH,
     INPUT_TYPE_LABELS,
     INPUT_TYPES,
     load_state,
     mark_configured,
     normalize_input_type,
     parse_config,
-    set_input_type,
 )
 from autostream_commissioning import (
     is_technically_complete,
     mark_commissioning_complete,
 )
 from autostream_intents import Intent, Origin, submit
+from autostream_settings import SettingsView
 from autostream_state import store
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from autostream_webui_api import send_json
@@ -268,20 +267,18 @@ def handle_first_boot_continue_post(handler, state: WebUIState, auth, body: str)
         send_first_boot_owntone_page(handler, state, auth, error="Please select an output.")
         return
 
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = getattr(state, "settings", None)
-    if not isinstance(_store, _SettingsStore):
+    if not isinstance(getattr(state, "settings", None), SettingsView):
         send_first_boot_owntone_page(
             handler, state, auth, error="Settings store unavailable."
         )
         return
 
-    try:
-        _store.update(lambda raw: raw.setdefault("owntone", {}).update({"output_name": output_name}))
-    except Exception as exc:
-        logging.exception("handle_first_boot_continue_post: store update failed")
+    reply = submit(Intent(
+        "first_boot.commit", {"step": "output", "output_name": output_name},
+        Origin.USER, "webui", context=state))
+    if not reply.ok:
         send_first_boot_owntone_page(
-            handler, state, auth, error=f"Could not save output selection: {exc}"
+            handler, state, auth, error=f"Could not save output selection: {reply.error}"
         )
         return
 
@@ -309,9 +306,8 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
         vals = form.get(name) or []
         return str(vals[0]).strip() if vals else default
 
-    from autostream_settings import SettingsStore as _SettingsStore
     _store = getattr(state, "settings", None)
-    if not isinstance(_store, _SettingsStore):
+    if not isinstance(_store, SettingsView):
         send_first_boot_appliance_page(
             handler, state, auth, error="Settings store unavailable."
         )
@@ -342,25 +338,14 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     hostname_changed = bool(hostname_raw and hostname_raw != old_hn)
 
     # Commit all values to store (including FIFO default if not already set)
-    try:
-        def _mutator(raw: dict) -> None:
-            if skip_input1:
-                # Leave capture_device/turntable untouched -- only the
-                # enabled flag changes, so a device chosen in the dropdown
-                # before tapping Skip is not silently persisted.
-                raw.setdefault("audio1", {})["enabled"] = False
-            else:
-                raw.setdefault("audio1", {})["capture_device"] = audio1_dev
-                raw.setdefault("audio1", {})["enabled"] = True
-                set_input_type(raw, 1, audio1_type)
-            raw.setdefault("owntone", {})["volume_percent"] = volume_percent
-            # Fixed appliance path, not something first boot can choose
-            raw.setdefault("general", {})["fifo_path"] = FIFO_PATH
-        _store.update(_mutator)
-    except Exception as exc:
-        logging.exception("handle_first_boot_finish_post: store update failed")
+    commit = {"step": "finish", "skip_input1": skip_input1, "volume_percent": volume_percent}
+    if not skip_input1:
+        commit["capture_device"] = audio1_dev
+        commit["input_type"] = audio1_type
+    reply = submit(Intent("first_boot.commit", commit, Origin.USER, "webui", context=state))
+    if not reply.ok:
         send_first_boot_appliance_page(
-            handler, state, auth, error=f"Could not save settings: {exc}"
+            handler, state, auth, error=f"Could not save settings: {reply.error}"
         )
         return
 
@@ -384,7 +369,7 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
             return
 
     # Synchronous save — must succeed before marking configured
-    if not _store.save_now():
+    if not submit(Intent("settings.save", {"timeout": 10.0}, Origin.USER, "webui", context=state)).ok:
         logging.error("handle_first_boot_finish_post: save_now failed or timed out")
         send_first_boot_appliance_page(
             handler, state, auth, error="Settings could not be saved. Please try again."

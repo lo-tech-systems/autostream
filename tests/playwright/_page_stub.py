@@ -78,7 +78,7 @@ def _handler(path: str = "/") -> tuple[MagicMock, list]:
 
 def _scratch_state(tmp: str, config_extra: dict | None = None) -> MagicMock:
     """A state with a real settings store over a scratch configuration file."""
-    from autostream_settings import SettingsStore  # noqa: PLC0415
+    from autostream_settings import SettingsStore, as_view  # noqa: PLC0415
 
     cfg: dict = {
         "owntone": {"base_url": "http://localhost:3689", "output_name": "", "volume_percent": 20},
@@ -96,7 +96,7 @@ def _scratch_state(tmp: str, config_extra: dict | None = None) -> MagicMock:
     state = MagicMock()
     state.config_path = str(config_path)
     state.state_path = str(state_path)
-    state.settings = SettingsStore(str(config_path), _save_interval_seconds=9999, _writer=MagicMock())
+    state.settings = as_view(SettingsStore(str(config_path), _save_interval_seconds=9999, _writer=MagicMock()))
     state.get_monitor_devices.return_value = [{"hw": "hw:0,0", "label": "USB Audio"}]
     return state
 

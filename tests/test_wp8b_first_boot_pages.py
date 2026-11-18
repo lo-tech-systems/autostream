@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, as_view
 from fake_store import fake_outputs_result
 
 
@@ -64,7 +64,7 @@ def _make_state(tmp_path: str, store: SettingsStore | None) -> MagicMock:
     state = MagicMock()
     state.config_path = config_path
     state.state_path = state_path
-    state.settings = store
+    state.settings = as_view(store)
     state.get_monitor_devices.return_value = [
         {"hw": VALID_ALSA, "label": "USB Audio"},
     ]
@@ -245,7 +245,7 @@ class TestFirstBootFinishPost:
         state = MagicMock()
         state.config_path = config_path
         state.state_path = state_path
-        state.settings = store
+        state.settings = as_view(store)
         state.get_monitor_devices.return_value = [{"hw": VALID_ALSA, "label": "USB Audio"}]
         return state, store, config_path, state_path
 

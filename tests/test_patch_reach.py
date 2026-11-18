@@ -438,7 +438,6 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_webui_post_handlers.py', 2, 'autostream_appliance_models', 'submit_output_change'),
     ('test_webui_post_handlers.py', 2, 'autostream_webui_common', 'get_app_version'),
     ('test_wp2_log_level_api.py', 2, 'autostream_webui_api', 'send_json'),
-    ('test_wp2_settings_ownership.py', 1, 'autostream_settings', 'SettingsStore'),
     ('test_wp2_settings_ownership.py', 2, 'autostream_settings', 'SettingsStore'),
     ('test_wp3_settings_api.py', 1, 'autostream_webui_page_setup', '_set_flash_cookie'),
     ('test_wp4c_setup_ui_wiring.py', 1, 'autostream_webui_page_setup', '_set_flash_cookie'),

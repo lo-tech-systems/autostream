@@ -18,6 +18,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+from autostream_settings import SettingsStore, as_view
 from fake_store import fake_playback
 from autostream_webui_api import send_service_config_json, send_service_reset_json
 
@@ -66,6 +67,7 @@ def _make_state(tmp_path: Path) -> MagicMock:
     cfg_path.write_text(json.dumps(_minimal_cfg()), encoding="utf-8")
     state = MagicMock()
     state.config_path = cfg_path
+    state.settings = as_view(SettingsStore(str(cfg_path), _save_interval_seconds=9999, _writer=MagicMock()))
     return state
 
 
@@ -212,7 +214,7 @@ class TestServiceConfigSuccess:
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_playback_tracking.update_playback_input_config"), \
              fake_playback(MagicMock(inputs={})), \
-             patch("autostream_webui_api.save_config", side_effect=OSError("disk full")):
+             patch.object(SettingsStore, "update", side_effect=OSError("disk full")):
             send_service_config_json(
                 MagicMock(), state,
                 json.dumps({"field": "service_stylus_life_hours_input1", "value": "300"}),

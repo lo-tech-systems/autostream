@@ -490,13 +490,7 @@ def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
     Dirty in-memory settings are discarded rather than flushed; factory reset
     wipes the config file anyway so saving first would be misleading.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if isinstance(settings, _SettingsStore):
-        try:
-            settings.close(save=False)
-        except Exception:
-            logging.warning("handle_factory_reset_post: store close failed", exc_info=True)
+    submit(Intent("settings.discard", {}, Origin.USER, "webui", context=state))
     try:
         factory_reset_system()
         send_json(handler, 200, {"ok": True})

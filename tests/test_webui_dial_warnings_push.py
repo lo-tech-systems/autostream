@@ -371,11 +371,15 @@ class TestPokeSites:
                 MagicMock(), MagicMock(), json.dumps({"item": "stylus", "input": 1}))
         poke.assert_not_called()
 
-    def test_service_config_save_pokes(self):
+    def test_service_config_save_pokes(self, tmp_path):
         import autostream_webui_api as api
+        from autostream_settings import SettingsStore, as_view
 
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}", encoding="utf-8")
         state = MagicMock()
-        state.settings = None
+        state.settings = as_view(SettingsStore(
+            str(cfg_path), _save_interval_seconds=9999, _writer=MagicMock()))
         parsed = SimpleNamespace(
             audio1=SimpleNamespace(is_turntable=True, input_type="turntable",
                                    capture_device="x", stylus_life_hours=1,
@@ -384,9 +388,7 @@ class TestPokeSites:
             audio1_enabled=True,
         )
         with (
-            patch("autostream_webui_api.load_config", return_value={}),
-            patch("autostream_webui_api.parse_config", return_value=parsed),
-            patch("autostream_webui_api.save_config"),
+            patch("autostream_webui_api._config_snapshot", return_value=parsed),
             patch("autostream_playback_tracking.update_playback_input_config"),
             patch("autostream_webui_api.classify_loopback_hw", return_value="x"),
             fake_playback(SimpleNamespace(inputs={})),

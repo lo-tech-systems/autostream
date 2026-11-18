@@ -58,7 +58,9 @@ class TestWebUIStateSettingsAttribute:
         cfg = _minimal_cfg(tmp_path)
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
         state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
-        assert state.settings is store
+        from autostream_settings import SettingsView, writable_store
+        assert isinstance(state.settings, SettingsView)
+        assert writable_store(state.settings) is store
         store.close(save=False)
 
     def test_settings_attribute_mutable(self, tmp_path):
@@ -69,7 +71,8 @@ class TestWebUIStateSettingsAttribute:
         assert state.settings is None
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
         state.settings = store
-        assert state.settings is store
+        from autostream_settings import writable_store
+        assert writable_store(state.settings) is store
         store.close(save=False)
 
 
@@ -153,8 +156,9 @@ class TestStartWebuiBackground:
             # Give the thread a brief moment to set globals
             t.join(timeout=2.0)
 
+            from autostream_settings import writable_store
             assert _wm.STATE is not None
-            assert _wm.STATE.settings is store
+            assert writable_store(_wm.STATE.settings) is store
 
         store.close(save=False)
 
@@ -183,8 +187,9 @@ class TestStartWebuiBackground:
 
             assert _wm.STATE is not None
             assert _wm.STATE.settings is not None
-            assert isinstance(_wm.STATE.settings, SettingsStore)
-            _wm.STATE.settings.close(save=False)
+            from autostream_settings import SettingsView, writable_store
+            assert isinstance(_wm.STATE.settings, SettingsView)
+            writable_store(_wm.STATE.settings).close(save=False)
 
     def test_startup_pushes_mdns_grace_period(self, tmp_path):
         from autostream_settings import SettingsStore

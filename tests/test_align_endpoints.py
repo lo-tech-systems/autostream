@@ -35,7 +35,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, as_view
 from autostream_align import AlignArrival, AlignOutputSnapshot, AlignResult
 
 
@@ -71,7 +71,7 @@ def _make_state(config_path: str, state_path: str, store: SettingsStore, align_r
     state = MagicMock()
     state.config_path = config_path
     state.state_path = state_path
-    state.settings = store
+    state.settings = as_view(store)
     state.align_run = align_run
     return state
 

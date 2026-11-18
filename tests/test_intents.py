@@ -150,6 +150,7 @@ class TestRows:
             "output.eq.set", "output.eq.reset",
             "settings.apply", "settings.save", "settings.reload", "settings.form_apply",
             "settings.advertisement", "settings.auto_update",
+            "settings.service_field.set", "settings.discard", "first_boot.commit",
             "backend.setting.set", "log.level.set",
             "receiver.pause", "receiver.play", "outputs.pause_off",
             "input.counters.reset", "input.playback_config.set",

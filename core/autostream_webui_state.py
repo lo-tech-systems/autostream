@@ -10,10 +10,11 @@ import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
+from autostream_settings import as_view
 from autostream_state import store, thaw
 
 if TYPE_CHECKING:
-    from autostream_settings import SettingsStore
+    from autostream_settings import SettingsView
 
 
 class WebUIState:
@@ -24,14 +25,15 @@ class WebUIState:
         config_path: str,
         state_path: str,
         *,
-        settings: "Optional[SettingsStore]" = None,
+        settings: "Optional[SettingsView]" = None,
     ) -> None:
         self.config_path = config_path
         self.state_path = state_path
-        # The canonical in-memory settings store shared with the coordinator.
-        # Set to a SettingsStore instance at process startup.  Page renderers
-        # call state.settings.snapshot() rather than re-reading the config file.
-        self.settings: "Optional[SettingsStore]" = settings
+        # The canonical in-memory settings shared with the coordinator, seen
+        # read-only: a store assigned here is wrapped in a view.  Page
+        # renderers call state.settings.snapshot() rather than re-reading the
+        # config file; writes go through the settings intents.
+        self.settings = settings
 
         # OwnTone restart state
         self._init_owntone_restart()
@@ -40,6 +42,14 @@ class WebUIState:
         # lifetime; AlignRun itself refuses to start a second concurrent run.
         from autostream_align import AlignRun
         self.align_run = AlignRun()
+
+    @property
+    def settings(self) -> "Optional[SettingsView]":
+        return self._settings
+
+    @settings.setter
+    def settings(self, value) -> None:
+        self._settings = as_view(value)
 
     # -------------------------------------------------------------------------
     # Devices part: capture devices and the Bluetooth daemon status

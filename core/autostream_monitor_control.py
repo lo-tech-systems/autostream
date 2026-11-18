@@ -403,8 +403,8 @@ def apply_eq_field(
     bands, not the output gain or auto-trim. *requester* names who asked, so
     that dial is left out of the hint.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = settings if isinstance(settings, _SettingsStore) else None
+    from autostream_settings import writable_store
+    _store = writable_store(settings)
 
     if field not in _OUTPUT_EQ_ALL_FIELDS:
         raise ValueError(f"Unknown field: {field!r}")
@@ -487,8 +487,8 @@ def apply_eq_fields(
 
     Returns (ok, error_message).
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = settings if isinstance(settings, _SettingsStore) else None
+    from autostream_settings import writable_store
+    _store = writable_store(settings)
 
     from autostream_settings_schema import SETTINGS_SCHEMA
     normalised: dict = {}
@@ -534,8 +534,8 @@ def apply_eq_reset(
 
     When *settings* is a SettingsStore instance, uses it for atomic persistence.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    _store = settings if isinstance(settings, _SettingsStore) else None
+    from autostream_settings import writable_store
+    _store = writable_store(settings)
 
     try:
         if _store is not None:
@@ -594,13 +594,13 @@ def _repeat_seek(intent: Intent, wait: float) -> Outcome:
 def _input_eq_set(intent: Intent, wait: float) -> Outcome:
     """Store the three bands of one input, then apply them to the running
     daemon. *context* is the request's state, whose settings store is written."""
-    from autostream_settings import SettingsStore
+    from autostream_settings import writable_store
 
     args = intent.args
     index = args["input"]
     bands = {key: float(args[key]) for key in ("eq_40hz_db", "eq_100hz_db", "eq_8khz_db")}
-    settings = getattr(intent.context, "settings", None)
-    if isinstance(settings, SettingsStore):
+    settings = writable_store(getattr(intent.context, "settings", None))
+    if settings is not None:
         section = f"audio{index}"
         try:
             def _mutate(raw: dict) -> None:

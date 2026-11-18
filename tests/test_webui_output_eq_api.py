@@ -19,6 +19,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+from autostream_settings import SettingsStore
 from autostream_webui_api import (
     send_output_eq_config_json,
     send_output_eq_reset_json,
@@ -398,6 +399,7 @@ class TestUpdateCheckJson:
         # must be flushed before the check subprocess runs.
         order = []
         state = MagicMock()
+        state.settings = MagicMock(spec=SettingsStore)
         state.settings.save_now = MagicMock(side_effect=lambda **kw: order.append("flush"))
         with patch("autostream_webui_api.send_json",
                    side_effect=lambda h, c, d: None), \
@@ -410,6 +412,7 @@ class TestUpdateCheckJson:
     def test_settings_flush_failure_does_not_break_check(self):
         sent = []
         state = MagicMock()
+        state.settings = MagicMock(spec=SettingsStore)
         state.settings.save_now = MagicMock(side_effect=RuntimeError("flush failed"))
         with patch("autostream_webui_api.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \

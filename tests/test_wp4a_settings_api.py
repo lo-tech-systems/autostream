@@ -26,7 +26,7 @@ import pytest
 # ── path setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, as_view
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
     send_settings_post_json,
@@ -55,7 +55,7 @@ def _make_state(tmp_path: str, with_store: bool = True):
             _save_interval_seconds=9999,
             _writer=MagicMock(),
         )
-        state.settings = store
+        state.settings = as_view(store)
         return state, store
     state.settings = MagicMock()  # not a SettingsStore
     return state, None

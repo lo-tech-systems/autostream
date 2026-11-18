@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 import autostream_core as _core_mod
 from autostream_audio_monitor import AudioMonitor
 from autostream_monitor_client import MonitorClient
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, as_view
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
     send_settings_post_json,
@@ -52,7 +52,7 @@ def _make_state(tmp_path: str):
         json.dump({}, f)
     store = SettingsStore(config_path, _save_interval_seconds=9999, _writer=MagicMock())
     state = MagicMock()
-    state.settings = store
+    state.settings = as_view(store)
     return state, store
 
 
@@ -617,9 +617,9 @@ class TestCoordinatorReloadDebounce:
                     live_config._coordinator_reload_timer.cancel()
 
                 def _do():
-                    from autostream_settings import SettingsStore as _SS
-                    settings = getattr(s, "settings", None)
-                    if isinstance(settings, _SS):
+                    from autostream_settings import writable_store
+                    settings = writable_store(getattr(s, "settings", None))
+                    if settings is not None:
                         settings.save_now()
                     runtime.request_config_reload()
                     fired.set()

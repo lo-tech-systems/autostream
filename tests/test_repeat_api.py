@@ -47,7 +47,7 @@ from autostream_config import (
     REPEAT_TARGET_MINUTES_MIN,
     REPEAT_TARGET_MINUTES_MAX,
 )
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, as_view
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
     send_repeat_post_json,
@@ -101,7 +101,7 @@ def _make_state(tmp_path: str):
     state = MagicMock()
     state.config_path = config_path
     store = SettingsStore(config_path, _save_interval_seconds=9999, _writer=MagicMock())
-    state.settings = store
+    state.settings = as_view(store)
     return state, store
 
 

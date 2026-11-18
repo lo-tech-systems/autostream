@@ -41,6 +41,7 @@ import json
 if __name__ == "__main__":
     sys.modules.setdefault("autostream_webui", sys.modules[__name__])
 
+from autostream_intents import Intent, Origin, submit
 from autostream_sysutils import (
     reboot_system,
 )
@@ -221,13 +222,12 @@ def _settings_save_barrier(state) -> bool:
     proceed; this indicates a program wiring fault rather than a user- or
     network-facing risk.
     """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
+    from autostream_settings import SettingsView
+    if not isinstance(getattr(state, "settings", None), SettingsView):
         import logging as _logging
         _logging.error("_settings_save_barrier: no SettingsStore attached; skipping flush")
         return True
-    return settings.save_now()
+    return submit(Intent("settings.save", {"timeout": 10.0}, Origin.USER, "webui", context=state)).ok
 
 
 def _effective_control_other_appliances(state) -> bool:
