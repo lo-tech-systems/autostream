@@ -39,6 +39,18 @@
 // A "frame" throughout this file is one interleaved stereo sample pair; a
 // block is block_frames() frames, i.e. block_frames()*2 floats.
 
+// The output stream is treated as freshly started -- re-primed with a
+// cold-start prefill, and the previous stream ended -- once it has gone this
+// long without a write. Below this, a transition (a crossfade, an input
+// switch) just keeps writing block by block; the pipe and OwnTone's own
+// buffer are still warm.
+constexpr double kOutputColdStartSeconds = 1.0;
+
+inline bool output_gap_is_cold(double last_write_time, double now)
+{
+    return last_write_time <= 0.0 || now - last_write_time > kOutputColdStartSeconds;
+}
+
 enum class OutputSource
 {
     Live1  = 0,

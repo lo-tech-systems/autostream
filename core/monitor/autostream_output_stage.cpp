@@ -17,13 +17,6 @@
 
 namespace
 {
-    // The stream is treated as freshly started -- and re-primed with a
-    // cold-start prefill -- once it has gone this long without a successful
-    // write. Below this, a transition (a crossfade, an input switch) just
-    // keeps writing block by block; the pipe and OwnTone's own buffer are
-    // still warm, so no prefill is needed.
-    constexpr double kColdStartSeconds = 1.0;
-
     // Size of the cold-start prefill itself, once triggered.
     constexpr double kPrefillSeconds = 0.5;
 
@@ -220,7 +213,7 @@ void OutputStage::thread_func()
             * static_cast<size_t>(AudioMonitor::output_bytes_per_frame());
 
         double now = get_monotonic_time();
-        bool cold_start = (last_write_time <= 0.0) || (now - last_write_time > kColdStartSeconds);
+        bool cold_start = output_gap_is_cold(last_write_time, now);
 
         if (cold_start)
         {

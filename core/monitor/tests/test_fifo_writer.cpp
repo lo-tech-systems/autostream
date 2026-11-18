@@ -26,10 +26,13 @@
 #include "autostream_monitor.h"
 
 #include <cerrno>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -286,6 +289,79 @@ static void test_backlog_overflow_drops_wholesale()
 }
 
 // ---------------------------------------------------------------------------
+// (4) end_stream() drops the backlog, closes the stall streak at the last
+//     write attempt and keeps the fd, so the next stream starts clean.
+// ---------------------------------------------------------------------------
+
+static void test_end_stream_drops_backlog_and_closes_streak()
+{
+    FifoFixture fx;
+    FifoWriter  writer;
+    writer.set_path(fx.path);
+
+    {
+        std::vector<uint8_t> priming = make_pattern(16, /*base=*/0);
+        CHECK(writer.write(priming.data(), priming.size()), "priming write succeeds");
+        fx.read_available(priming.size());
+    }
+
+    int pipe_cap = ::fcntl(fx.reader_fd, F_GETPIPE_SZ);
+    CHECK(pipe_cap > 0, "F_GETPIPE_SZ reports the pipe's current capacity");
+
+    const size_t tail_len = 777;
+    std::vector<uint8_t> fill = make_pattern(static_cast<size_t>(pipe_cap) + tail_len, /*base=*/1);
+    CHECK(!writer.write(fill.data(), fill.size()), "the fill write leaves a tail in the backlog");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    double last_write_time = get_monotonic_time();
+    // Time that passes after the last write attempt is not part of the streak.
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    FifoWriter::StreamEnd end = writer.end_stream(last_write_time);
+    CHECK(end.dropped_bytes == tail_len, "the queued tail is reported as dropped");
+    CHECK(end.stall_seconds > 0.0, "the open streak is reported");
+    CHECK(std::fabs(end.stall_seconds - 0.1) < 0.05,
+          "the streak ends at the last write attempt, not at the call");
+    CHECK(writer.stalled_seconds() == 0.0, "the streak is closed");
+    CHECK(writer.is_open(), "the fd stays open");
+
+    std::vector<uint8_t> drained = fx.read_available(static_cast<size_t>(pipe_cap) + tail_len);
+    CHECK(drained.size() == static_cast<size_t>(pipe_cap),
+          "the pipe holds only what it had accepted; the tail is gone");
+
+    std::vector<uint8_t> next_block = make_pattern(2048, /*base=*/97);
+    CHECK(writer.write(next_block.data(), next_block.size()), "the next stream's block is delivered");
+    std::vector<uint8_t> got = fx.read_available(next_block.size() + tail_len);
+    CHECK(got == next_block, "the next block arrives with no trace of the dropped tail");
+    CHECK(fx.nothing_more_available(), "nothing further is queued");
+}
+
+// ---------------------------------------------------------------------------
+// (5) end_stream() on a healthy writer changes nothing.
+// ---------------------------------------------------------------------------
+
+static void test_end_stream_on_a_healthy_writer_changes_nothing()
+{
+    FifoFixture fx;
+    FifoWriter  writer;
+    writer.set_path(fx.path);
+
+    std::vector<uint8_t> block = make_pattern(4096, /*base=*/0);
+    CHECK(writer.write(block.data(), block.size()), "write succeeds");
+    CHECK(fx.read_available(block.size()) == block, "the block reached the pipe");
+
+    FifoWriter::StreamEnd end = writer.end_stream(get_monotonic_time());
+    CHECK(end.dropped_bytes == 0, "nothing was queued");
+    CHECK(end.stall_seconds == 0.0, "no streak was open");
+    CHECK(writer.is_open(), "the fd stays open");
+
+    std::vector<uint8_t> next_block = make_pattern(1024, /*base=*/5);
+    CHECK(writer.write(next_block.data(), next_block.size()), "the next write succeeds");
+    CHECK(fx.read_available(next_block.size()) == next_block, "the next block is byte-exact");
+    CHECK(fx.nothing_more_available(), "nothing further is queued");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -294,6 +370,8 @@ int main()
     test_plain_write_byte_exact();
     test_backlog_fills_and_drains_in_order();
     test_backlog_overflow_drops_wholesale();
+    test_end_stream_drops_backlog_and_closes_streak();
+    test_end_stream_on_a_healthy_writer_changes_nothing();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);

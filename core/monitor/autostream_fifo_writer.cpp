@@ -13,6 +13,7 @@
 
 #include "autostream_monitor.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 
@@ -264,6 +265,22 @@ bool FifoWriter::write_impl(const void* data, size_t len)
     // lets the stream resume without a resync once the reader catches up.
     append_to_backlog(ptr + written, len - written);
     return false;
+}
+
+FifoWriter::StreamEnd FifoWriter::end_stream(double last_write_time)
+{
+    StreamEnd end;
+    end.dropped_bytes = _backlog.size() - _backlog_pos;
+    _backlog.clear();
+    _backlog_pos = 0;
+
+    double since = _stall_since.load(std::memory_order_relaxed);
+    if (since != 0.0)
+    {
+        end.stall_seconds = std::max(0.0, last_write_time - since);
+        _stall_since.store(0.0, std::memory_order_relaxed);
+    }
+    return end;
 }
 
 void FifoWriter::close()

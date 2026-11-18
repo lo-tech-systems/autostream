@@ -710,28 +710,36 @@ public:
     bool is_open()             const { return _fd >= 0; }
     const std::string& path()  const { return _path; }
 
+    // What end_stream() discarded and closed.
+    struct StreamEnd
+    {
+        size_t dropped_bytes = 0;    // backlog discarded: queued for a reader that never took it
+        double stall_seconds = 0.0;  // the streak it closed, ending at the last write attempt; 0.0 if none was open
+    };
+
+    // Ends the current stream: drops the backlog, closes any open stall
+    // streak and keeps the fd open. last_write_time is the monotonic time of
+    // the stream's last write attempt; the streak is measured to that
+    // moment, so idle time after the stream is not counted.
+    // Caller must hold AudioMonitor::_fifo_mutex.
+    StreamEnd end_stream(double last_write_time);
+
     // Seconds this writer has been CONTINUOUSLY failing/dropping
     // (ENXIO/EAGAIN/EPIPE/etc, see write()) since the last successful write,
     // for get_status()'s top-level "fifo.stalled_seconds" (docs/AUTOSTREAM-
     // MONITOR.md) -- an owntone-hang watchdog signal. 0.0 whenever the last
-    // write() succeeded, OR (via reset_stall()) whenever this writer is not
-    // currently the active FIFO writer at all (idle input / replay owns the
-    // pipe) -- a stall streak must never be reported as still-growing during
-    // a period this writer was not even being asked to write.
-    // Single relaxed atomic, no lock: called from the audio process thread's
-    // hot path (write()/the caller's inactive-branch reset) and read from the
-    // control thread (get_status()) -- staleness of a few blocks is fine,
-    // never a correctness issue for a monitoring-only signal.
+    // write() succeeded, OR once end_stream() has closed the streak because
+    // the output went idle -- a stall streak must never be reported as
+    // still-growing during a period this writer was not being asked to write.
+    // Single relaxed atomic, no lock: written on the output thread (write()
+    // and end_stream()) and read from the control thread (get_status()) --
+    // staleness of a few blocks is fine, never a correctness issue for a
+    // monitoring-only signal.
     double stalled_seconds() const
     {
         double since = _stall_since.load(std::memory_order_relaxed);
         return since > 0.0 ? (get_monotonic_time() - since) : 0.0;
     }
-
-    // Cheap: called by InputChannel::process_thread_func() whenever this
-    // input is NOT the active FIFO writer this block (see stalled_seconds()'s
-    // comment). A no-op once already 0.
-    void reset_stall() { _stall_since.store(0.0, std::memory_order_relaxed); }
 
 private:
     bool try_open();    // internal: attempt non-blocking open

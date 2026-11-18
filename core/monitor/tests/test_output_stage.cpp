@@ -315,6 +315,19 @@ static void test_push_beyond_capacity_drops_and_counts()
 }
 
 // ---------------------------------------------------------------------------
+// (10) The cold-start predicate: nothing written yet is cold, a gap up to
+//      and including the cold-start interval is not, anything longer is.
+// ---------------------------------------------------------------------------
+
+static void test_output_gap_is_cold()
+{
+    CHECK(output_gap_is_cold(0.0, 100.0), "nothing written yet is a cold start");
+    CHECK(!output_gap_is_cold(100.0, 100.5), "a half-second gap is warm");
+    CHECK(!output_gap_is_cold(100.0, 100.0 + kOutputColdStartSeconds), "a gap of exactly the interval is warm");
+    CHECK(output_gap_is_cold(100.0, 101.001), "a gap just over the interval is cold");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -331,6 +344,7 @@ int main()
     test_live_clock_source_ordering();
     test_zero_gain_source_drained_not_summed();
     test_push_beyond_capacity_drops_and_counts();
+    test_output_gap_is_cold();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);
