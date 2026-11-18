@@ -1,0 +1,200 @@
+{
+ "POST /api/dial/volume +5 idle": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/volume +5 one_output_playing_input1": {
+  "status": 200,
+  "body": "{\"ok\": true, \"volume\": 45, \"muted\": false}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    45
+   ]
+  ]
+ },
+ "POST /api/dial/volume +5 two_outputs_one_muted": {
+  "status": 200,
+  "body": "{\"ok\": true, \"muted\": false, \"volume\": 50}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    40
+   ],
+   [
+    "update_output",
+    "1002",
+    60
+   ]
+  ]
+ },
+ "POST /api/dial/volume +5 replay_holding": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/volume +5 replaying": {
+  "status": 200,
+  "body": "{\"ok\": true, \"volume\": 45, \"muted\": false}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    45
+   ]
+  ]
+ },
+ "POST /api/dial/volume +5 monitor_down": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/volume +5 backend_unreachable": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"backend_unavailable\"}",
+  "calls": []
+ },
+ "POST /api/dial/volume -5 idle": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/volume -5 one_output_playing_input1": {
+  "status": 200,
+  "body": "{\"ok\": true, \"volume\": 35, \"muted\": false}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    35
+   ]
+  ]
+ },
+ "POST /api/dial/volume -5 two_outputs_one_muted": {
+  "status": 200,
+  "body": "{\"ok\": true, \"volume\": 50, \"muted\": true}",
+  "calls": []
+ },
+ "POST /api/dial/volume -5 replay_holding": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/volume -5 replaying": {
+  "status": 200,
+  "body": "{\"ok\": true, \"volume\": 35, \"muted\": false}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    35
+   ]
+  ]
+ },
+ "POST /api/dial/volume -5 monitor_down": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/volume -5 backend_unreachable": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"backend_unavailable\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute mute idle": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute mute one_output_playing_input1": {
+  "status": 200,
+  "body": "{\"ok\": true, \"muted\": true}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    0
+   ]
+  ]
+ },
+ "POST /api/dial/mute mute two_outputs_one_muted": {
+  "status": 200,
+  "body": "{\"ok\": true, \"muted\": true}",
+  "calls": []
+ },
+ "POST /api/dial/mute mute replay_holding": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute mute replaying": {
+  "status": 200,
+  "body": "{\"ok\": true, \"muted\": true}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    0
+   ]
+  ]
+ },
+ "POST /api/dial/mute mute monitor_down": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute mute backend_unreachable": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"backend_unavailable\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute restore idle": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute restore one_output_playing_input1": {
+  "status": 200,
+  "body": "{\"ok\": true, \"muted\": false}",
+  "calls": []
+ },
+ "POST /api/dial/mute restore two_outputs_one_muted": {
+  "status": 200,
+  "body": "{\"ok\": true, \"muted\": false}",
+  "calls": [
+   [
+    "update_output",
+    "1001",
+    40
+   ],
+   [
+    "update_output",
+    "1002",
+    60
+   ]
+  ]
+ },
+ "POST /api/dial/mute restore replay_holding": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute restore replaying": {
+  "status": 200,
+  "body": "{\"ok\": true, \"muted\": false}",
+  "calls": []
+ },
+ "POST /api/dial/mute restore monitor_down": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute restore backend_unreachable": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"backend_unavailable\"}",
+  "calls": []
+ }
+}
