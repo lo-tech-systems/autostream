@@ -36,7 +36,7 @@ class TestProtocolWarning:
     def test_a_lower_number_gives_update_appliance(self):
         warning = cs.protocol_warning(entry(proto=3), OWN)
         assert warning.id == cs.PROTOCOL_WARNING_ID == "update_appliance"
-        assert warning.severity == "warning" and warning.dismissal == "week"
+        assert warning.severity == "warning"
         assert warning.title == "Update Lounge"
         assert warning.message == "Its software is older than this dial's. Update it from its web UI."
         assert warning.appliance_name == "Lounge"
@@ -45,7 +45,7 @@ class TestProtocolWarning:
     def test_a_higher_number_gives_update_dial(self, proto):
         warning = cs.protocol_warning(entry(proto=proto), OWN)
         assert warning.id == cs.DIAL_WARNING_ID == "update_dial"
-        assert warning.severity == "warning" and warning.dismissal == "week"
+        assert warning.severity == "warning"
         assert warning.title == "Update this dial"
         assert warning.message == "Lounge needs a newer dial"
         assert warning.appliance_name == "Lounge"

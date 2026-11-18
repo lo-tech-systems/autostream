@@ -1401,9 +1401,9 @@ def token_colour(page, name):
         " document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; }", name)
 
 
-def lounge_warning_while_on_kitchen(*, snoozed=False, dismissal="week"):
+def lounge_warning_while_on_kitchen(*, snoozed=False):
     """The Lounge has a stylus warning while the Kitchen is the focus."""
-    base = hs.SCENARIOS["appliance_warning" if dismissal == "week" else "appliance_warning_notice"]
+    base = hs.SCENARIOS["appliance_warning"]
     kitchen = hs.appliance(KITCHEN, "Kitchen", playing=True, master_volume=35, muted=False)
     changes = dict(
         appliances=(kitchen, base.snapshot.appliances[0]),
@@ -1546,15 +1546,6 @@ class TestApplianceWarnings:
         page.wait_for_timeout(150)
         assert sent == [("warning_dismiss", {"warning_id": LOUNGE_STYLUS})]
 
-    def test_a_notice_has_an_ok_button(self, page, hd):
-        hd.show(hs.SCENARIOS["appliance_warning_notice"])
-        sent = watch_actions(page)
-        open_page(page, hd)
-        assert page.locator("#card-buttons button").all_text_contents() == ["OK"]
-        page.locator("#card-buttons button").click()
-        page.wait_for_timeout(150)
-        assert sent == [("warning_dismiss", {"warning_id": LOUNGE_STYLUS})]
-
     def test_the_row_carries_a_badge_with_the_count(self, page, hd):
         hd.show(hs.SCENARIOS["appliance_warning"])
         open_page(page, hd)
@@ -1591,7 +1582,7 @@ class TestApplianceWarnings:
         hd.show(hs.SCENARIOS["appliance_warning"])
         open_page(page, hd)
         assert bell_colour(page) == "rgb(233, 113, 50)"
-        hd.show(hs.SCENARIOS["appliance_warning_notice"])
+        hd.show(hs.SCENARIOS["appliance_warning_info"])
         open_page(page, hd)
         expect(rows(page).first.locator(".warn-badge")).to_have_class(re.compile("sev-info"))
         assert bell_colour(page) == token_colour(page, "--color-accent")

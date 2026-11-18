@@ -66,7 +66,7 @@ class TestCorpus:
             "playing_untitled", "playing_untitled_input", "replay_hold", "replaying", "fading_out", "replay_elsewhere", "in_use_speaker",
             "unreachable", "unauthorized", "recovery_pending", "eq_none", "eq_six",
             "warning_sdhealth", "warning_update", "warning_update_result", "warning_nowifi",
-            "appliance_warning", "appliance_warning_notice", "disconnected",
+            "appliance_warning", "appliance_warning_info", "disconnected",
             "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited",
             "pin_expired", "power_requested", "power_failed",
             "start_failure_refused", "start_failure_elsewhere", "start_failure_late_pin",
@@ -382,11 +382,11 @@ class TestWarnings:
         assert card["title"] == "Technics stylus" and card["message"] == "Needs changing soon."
         assert state["appliances"][0]["warnings"] == [{
             "key": key, "id": "stylus_in1", "severity": "warning", "title": "Technics stylus",
-            "message": "Needs changing soon.", "dismissal": "week", "snoozed": False}]
+            "message": "Needs changing soon.", "snoozed": False}]
 
-    def test_a_notice_reads_ok(self):
-        card = _state("appliance_warning_notice")["warnings"]["cards"][0]
-        assert card["buttons"] == [{"label": "OK", "action": "dismiss"}]
+    def test_an_info_warning_is_an_info_card(self):
+        card = _state("appliance_warning_info")["warnings"]["cards"][0]
+        assert card["buttons"] == [{"label": "Dismiss", "action": "dismiss"}]
         assert card["severity"] == "info"
 
     def test_an_appliance_on_an_older_protocol_lists_the_update_warning(self):
@@ -397,7 +397,7 @@ class TestWarnings:
         assert block["warnings"] == [{
             "key": key, "id": "update_appliance", "severity": "warning", "title": "Update Lounge",
             "message": "Its software is older than this dial's. Update it from its web UI.",
-            "dismissal": "week", "snoozed": False}]
+            "snoozed": False}]
         assert state["warnings"]["cards"][0]["id"] == key
 
     def test_a_snooze_runs_to_a_wall_clock_time(self):
@@ -472,7 +472,7 @@ class TestNothingLeaks:
         hostile = "<img src=x onerror=alert(1)>"
         body = {"appliance_id": hs.LOUNGE, "warnings": [{
             "id": "evil", "severity": "critical", "title": hostile,
-            "message": "a‮b\x00c  d</script>", "dismissal": "day"}]}
+            "message": "a‮b\x00c  d</script>"}]}
         cleaned = validate_appliance_warnings(body, hs.LOUNGE)
         assert cleaned[0].title == hostile
         scenario = hs.SCENARIOS["appliance_warning"]

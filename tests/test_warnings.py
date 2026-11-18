@@ -62,12 +62,12 @@ class TestRows:
 
     def test_psu_now(self):
         e = only(w.derive(make(throttled=0x1)))
-        assert (e.id, e.severity, e.kind, e.title, e.message, e.link, e.snooze) == (
-            "psu", "critical", "psu", "Power supply", "Low voltage now", None, "day")
+        assert (e.id, e.severity, e.kind, e.title, e.message, e.link) == (
+            "psu", "critical", "psu", "Power supply", "Low voltage now", None)
 
     def test_psu_since_boot_only(self):
         e = only(w.derive(make(throttled=0x10000)))
-        assert (e.severity, e.message, e.snooze) == ("warning", "Low voltage seen earlier", "week")
+        assert (e.severity, e.message) == ("warning", "Low voltage seen earlier")
 
     def test_now_wins_over_earlier(self):
         assert only(w.derive(make(throttled=0x10001))).message == "Low voltage now"
@@ -78,18 +78,18 @@ class TestRows:
 
     def test_cpu_hot_and_too_hot(self):
         hot = only(w.derive(make(cpu_status="high", cpu_temp_c=71.6)))
-        assert (hot.id, hot.severity, hot.message, hot.snooze) == (
-            "cpu_temp", "warning", "Running hot, 72 °C", "day")
+        assert (hot.id, hot.severity, hot.message) == (
+            "cpu_temp", "warning", "Running hot, 72 °C")
         crit = only(w.derive(make(cpu_status="critical", cpu_temp_c=81.2)))
         assert (crit.severity, crit.message) == ("critical", "Too hot, 81 °C")
 
     def test_sd_failing_and_low(self):
         bad = only(w.derive(make(sd_percent=8, sd_level="failing")))
-        assert (bad.severity, bad.message, bad.link, bad.snooze, bad.title) == (
-            "critical", "8% life left, replace now", "/about", "day", "microSD card")
+        assert (bad.severity, bad.message, bad.link, bad.title) == (
+            "critical", "8% life left, replace now", "/about", "microSD card")
         low = only(w.derive(make(sd_percent=18, sd_level="low")))
-        assert (low.severity, low.message, low.snooze) == (
-            "warning", "18% life left, replace soon", "week")
+        assert (low.severity, low.message) == (
+            "warning", "18% life left, replace soon")
 
     def test_sd_unknown_says_nothing(self):
         assert w.derive(make(sd_percent=None, sd_level="low")) == ()
@@ -97,12 +97,12 @@ class TestRows:
     def test_stylus_overdue_and_due(self):
         over = only(w.derive(make({1: snap(stylus="overdue")})))
         assert (over.id, over.severity, over.kind, over.subject, over.title, over.message,
-                over.link, over.snooze) == (
+                over.link) == (
             "stylus_in1", "warning", "stylus", "Turntable", "Turntable stylus",
-            "Change now", "/service", "day")
+            "Change now", "/service")
         due = only(w.derive(make({1: snap(stylus="due", remaining=4.46)})))
-        assert (due.severity, due.message, due.snooze) == (
-            "info", "Change soon, 4.5 h left", "week")
+        assert (due.severity, due.message) == (
+            "info", "Change soon, 4.5 h left")
         assert only(w.derive(make({1: snap(stylus="due")}))).message == "Change soon"
 
     def test_a_stylus_with_no_life_set_says_nothing(self):
@@ -114,32 +114,32 @@ class TestRows:
     @pytest.mark.parametrize("item,title", [("belt", "drive belt"), ("bearing", "main bearing")])
     def test_belt_and_bearing(self, item, title):
         over = only(w.derive(make({2: snap("CD", **{item: "overdue"})})))
-        assert (over.id, over.kind, over.title, over.message, over.severity, over.snooze) == (
-            f"{item}_in2", item, f"CD {title}", "Service now", "warning", "day")
+        assert (over.id, over.kind, over.title, over.message, over.severity) == (
+            f"{item}_in2", item, f"CD {title}", "Service now", "warning")
         due = only(w.derive(make({2: snap("CD", **{item: "due"})})))
-        assert (due.message, due.severity, due.snooze) == ("Service soon", "info", "week")
+        assert (due.message, due.severity) == ("Service soon", "info")
 
     def test_sample_rate(self):
         e = only(w.derive(make({1: snap(), 2: snap("CD")}, entries=[mismatch(2)])))
-        assert (e.id, e.severity, e.kind, e.subject, e.title, e.message, e.link, e.snooze) == (
+        assert (e.id, e.severity, e.kind, e.subject, e.title, e.message, e.link) == (
             "sample_rate_in2", "warning", "sample_rate", "CD", "CD sample rate",
-            "Turn on rate matching", "/setup#input2", "week")
+            "Turn on rate matching", "/setup#input2")
 
     def test_dial_update_wording(self):
         one = only(w.derive(make(dials_needing_update=1)))
-        assert (one.id, one.title, one.message, one.link, one.snooze) == (
-            "dial_update", "Dials", "1 needs updating", "/setup#dials", "week")
+        assert (one.id, one.title, one.message, one.link) == (
+            "dial_update", "Dials", "1 needs updating", "/setup#dials")
         assert only(w.derive(make(dials_needing_update=3))).message == "3 need updating"
 
     def test_licence(self):
         e = only(w.derive(make(unlicensed=True)))
-        assert (e.id, e.severity, e.message, e.link, e.snooze) == (
-            "licence", "warning", "This system is unlicensed", None, "none")
+        assert (e.id, e.severity, e.message, e.link) == (
+            "licence", "warning", "This system is unlicensed", None)
 
     def test_no_input(self):
         e = only(w.derive(make({1: snap(enabled=False), 2: snap(enabled=False)})))
-        assert (e.id, e.severity, e.title, e.message, e.link, e.snooze) == (
-            "no_input", "info", "No input", "Set up an input in the web UI", "/setup", "week")
+        assert (e.id, e.severity, e.title, e.message, e.link) == (
+            "no_input", "info", "No input", "Set up an input in the web UI", "/setup")
 
     def test_no_inputs_known_yet_is_not_no_input(self):
         assert w.derive(make({})) == ()

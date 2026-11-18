@@ -253,7 +253,7 @@ class TestFocused:
 
 def entry(i, **kw):
     base = {"id": f"w{i}", "severity": "warning", "title": f"Warning {i}", "message": "m",
-            "snooze": "week", "incident": ""}
+            "incident": ""}
     base.update(kw)
     return base
 
@@ -264,10 +264,10 @@ class TestWarnings:
         a = rig.fold().appliance(aid("Kitchen"))
         assert [w.id for w in a.warnings] == [f"w{i}" for i in range(16)]
 
-    def test_snooze_is_the_dismissal_and_the_manager_holds_them(self, rig):
-        rig.add("Kitchen", peer("Kitchen", warnings=[entry(1, snooze="day")]))
+    def test_the_name_is_the_source_and_the_manager_holds_them(self, rig):
+        rig.add("Kitchen", peer("Kitchen", warnings=[entry(1)]))
         a = rig.fold().appliance(aid("Kitchen"))
-        assert a.warnings[0].dismissal == "day" and a.warnings[0].appliance_name == "Kitchen"
+        assert a.warnings[0].appliance_name == "Kitchen"
         assert rig.core.warnings.descriptor(appliance_warning_key(aid("Kitchen"), "w1")) is not None
 
     def test_a_cleared_list_ends_the_incidents(self, rig):

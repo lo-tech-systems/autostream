@@ -82,11 +82,11 @@ def _title(label: str, suffix: str) -> str:
     return f"{label_text} {suffix}" if label_text else suffix.capitalize()
 
 
-def _entry(id, severity, kind, title, message, link, snooze, subject="") -> WarningEntry:
+def _entry(id, severity, kind, title, message, link, subject="") -> WarningEntry:
     return WarningEntry(
         id=id, incident="", severity=severity, kind=kind, subject=subject,
         title=_fit(title, TITLE_MAX), message=_fit(message, MESSAGE_MAX),
-        link=link, snooze=snooze,
+        link=link,
     )
 
 
@@ -127,13 +127,13 @@ def _maintenance(playback) -> list[tuple[int, WarningEntry]]:
             entry_id = f"{item}_in{int(index)}"
             if state == "overdue":
                 entry = _entry(entry_id, "warning", item, title, overdue_text,
-                               "/service", "day", subject=snap.label)
+                               "/service", subject=snap.label)
             else:
                 message = due_text
                 if item == "stylus" and snap.stylus_remaining_hours is not None:
                     message = f"{due_text}, {snap.stylus_remaining_hours:.1f} h left"
                 entry = _entry(entry_id, "info", item, title, message,
-                               "/service", "week", subject=snap.label)
+                               "/service", subject=snap.label)
             out.append((int(index), entry))
     return out
 
@@ -148,7 +148,7 @@ def _sample_rates(i: Inputs) -> list[tuple[int, WarningEntry]]:
         out.append((e.index, _entry(
             f"sample_rate_in{e.index}", "warning", "sample_rate",
             _title(label, "sample rate"), "Turn on rate matching",
-            f"/setup#input{e.index}", "week", subject=label)))
+            f"/setup#input{e.index}", subject=label)))
     return out
 
 
@@ -157,10 +157,10 @@ def _power(throttled: Optional[int]) -> list[WarningEntry]:
         return []
     if throttled & 0x1:
         return [_entry("psu", "critical", "psu", "Power supply",
-                       "Low voltage now", None, "day")]
+                       "Low voltage now", None)]
     if (throttled >> 16) & 0x1:
         return [_entry("psu", "warning", "psu", "Power supply",
-                       "Low voltage seen earlier", None, "week")]
+                       "Low voltage seen earlier", None)]
     return []
 
 
@@ -170,9 +170,9 @@ def _temperature(status: str, temp_c: Optional[float]) -> list[WarningEntry]:
     degrees = "" if temp_c is None else f", {round(temp_c)} °C"
     if status == "critical":
         return [_entry("cpu_temp", "critical", "cpu_temp", "CPU temperature",
-                       f"Too hot{degrees}", None, "day")]
+                       f"Too hot{degrees}", None)]
     return [_entry("cpu_temp", "warning", "cpu_temp", "CPU temperature",
-                   f"Running hot{degrees}", None, "day")]
+                   f"Running hot{degrees}", None)]
 
 
 def _card(level: str, percent: Optional[int]) -> list[WarningEntry]:
@@ -180,16 +180,16 @@ def _card(level: str, percent: Optional[int]) -> list[WarningEntry]:
         return []
     if level == "failing":
         return [_entry("sd_health", "critical", "sd_health", "microSD card",
-                       f"{percent}% life left, replace now", "/about", "day")]
+                       f"{percent}% life left, replace now", "/about")]
     return [_entry("sd_health", "warning", "sd_health", "microSD card",
-                   f"{percent}% life left, replace soon", "/about", "week")]
+                   f"{percent}% life left, replace soon", "/about")]
 
 
 def _no_input(playback) -> list[WarningEntry]:
     snaps = list(playback.inputs.values())
     if snaps and not any(s.enabled for s in snaps):
         return [_entry("no_input", "info", "no_input", "No input",
-                       "Set up an input in the web UI", "/setup", "week")]
+                       "Set up an input in the web UI", "/setup")]
     return []
 
 
@@ -211,11 +211,11 @@ def derive(i: Inputs) -> tuple[WarningEntry, ...]:
         ranked.append((0, _entry(
             "dial_update", "warning", "dial_update", "Dials",
             "1 needs updating" if n == 1 else f"{n} need updating",
-            "/setup#dials", "week")))
+            "/setup#dials")))
     if i.unlicensed:
         ranked.append((0, _entry(
             "licence", "warning", "licence", "Licence",
-            "This system is unlicensed", None, "none")))
+            "This system is unlicensed", None)))
     ranked.extend((0, e) for e in _no_input(i.playback))
 
     ranked.sort(key=lambda r: (

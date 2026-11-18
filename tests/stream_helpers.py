@@ -64,7 +64,7 @@ class Publisher:
             return w.publish(DialsPart(generation=n))
         if part == "warnings":
             return w.publish(WarningsPart((WarningEntry(
-                f"w{n}", "", "info", "no_input", "", "No input", "Set up an input", None, "week"),)))
+                f"w{n}", "", "info", "no_input", "", "No input", "Set up an input", None),)))
         if part == "appliance":
             return w.publish(AppliancePart(hostname=f"host{n}", configured=True))
         return w.publish(OutputsPart(muted_all=n % 2 == 1))

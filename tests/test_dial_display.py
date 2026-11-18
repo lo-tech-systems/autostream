@@ -10330,9 +10330,9 @@ _APP_AID = "a" * 20
 
 
 def _app_warning(wid="stylus", severity="warning", title="Technics stylus",
-                 message="Needs changing soon.", dismissal="week"):
+                 message="Needs changing soon."):
     from dial_core_state import ApplianceWarning
-    return ApplianceWarning(wid, severity, title, message, dismissal)
+    return ApplianceWarning(wid, severity, title, message)
 
 
 def _app_key(wid="stylus"):
@@ -10472,9 +10472,9 @@ class TestApplianceWarningPaging:
         self._page(display)
         assert display._screen == "main"
 
-    def test_a_day_hint_snoozes_a_day_and_the_page_returns_after_it(self, rig):
+    def test_a_dismiss_snoozes_a_day_and_the_page_returns_after_it(self, rig):
         display = rig
-        self._set(display, _app_warning(dismissal="day"))
+        self._set(display, _app_warning())
         self._page(display)
         self._dismiss(display)
         display.core.flush_warnings()
@@ -10486,27 +10486,6 @@ class TestApplianceWarningPaging:
         display.clock.t += 2.0
         self._page(display)
         assert display._screen == "appliance_warning"
-
-    def test_a_none_hint_shows_an_ok_cell_that_holds_until_the_appliance_clears_it(self, rig):
-        display = rig
-        self._set(display, _app_warning("n", "info", "Firmware", "Updated.", dismissal="none"))
-        self._page(display)
-        assert self._painted_view(display).buttons == ("OK",)
-        self._dismiss(display)
-        assert display._screen == "main"
-        assert display.core.warnings.is_snoozed(_app_key("n"))
-        display.core.flush_warnings()
-        assert not display.snooze_file.exists() or _app_key("n") not in json.loads(display.snooze_file.read_text())
-        display.clock.t += 400 * 86400.0
-        self._page(display)
-        assert display._screen == "main"
-        self._set(display, _app_warning("n", "info", "Firmware", "Updated.", dismissal="none"))
-        self._page(display)
-        assert display._screen == "main"
-        self._set(display)                                     # the appliance stops reporting it
-        self._set(display, _app_warning("n", "info", "Firmware", "Updated.", dismissal="none"))
-        self._page(display)
-        assert display._screen == "appliance_warning"          # a new incident shows again
 
     def test_escalation_keeps_a_snooze_so_the_page_stays_away(self, rig):
         display = rig
@@ -10612,13 +10591,12 @@ class TestApplianceWarningTouchZones:
         assert _GEOMETRY_FOR_SURFACE[policy.surface[0]] == GEOMETRY_SDHEALTH
 
     @pytest.mark.parametrize("tier", sorted(_TIER_PANELS))
-    @pytest.mark.parametrize("dismissal", ["day", "week", "none"])
-    def test_the_cell_is_hit_in_the_bottom_row_and_the_message_row_is_dead(self, tier, dismissal):
+    def test_the_cell_is_hit_in_the_bottom_row_and_the_message_row_is_dead(self, tier):
         from dial_touch_layout import hit_test, sdhealth_layout_for
         from dial_warning_text import appliance_warning_descriptor
         width, height, mm = _TIER_PANELS[tier]
         metrics = metrics_for(width, height, mm)
-        desc = appliance_warning_descriptor(_APP_AID, _app_warning(dismissal=dismissal))
+        desc = appliance_warning_descriptor(_APP_AID, _app_warning())
         (button,) = desc.buttons
         assert button.zone == TouchZone.SDHEALTH_DISMISS
         layout = sdhealth_layout_for(width, height, metrics=metrics)
@@ -10638,7 +10616,7 @@ class TestApplianceWarningsAndTheView:
         _fold(display)
         aid = display._core.snapshot().appliances[0].appliance_id
         set_appliance_warnings(display, 
-            aid, (ApplianceWarning("stylus", "critical", "Replace stylus", "", "day"),))
+            aid, (ApplianceWarning("stylus", "critical", "Replace stylus", ""),))
         warning_active(display, "sdhealth", severity=40)
         assert display._screen_request == "sdhealth"
 

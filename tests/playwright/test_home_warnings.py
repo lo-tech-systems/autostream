@@ -34,7 +34,7 @@ def entry(kind: str, severity: str = "warning", *, title: str | None = None, mes
           subject: str = "", link: str | None = None) -> dict:
     return {"id": f"{kind}_{subject or 'x'}", "incident": "", "severity": severity, "kind": kind,
             "subject": subject, "title": title or kind.title(), "message": message or f"{kind} message",
-            "link": link, "snooze": "none"}
+            "link": link}
 
 
 def _warnings(*entries: dict) -> dict:

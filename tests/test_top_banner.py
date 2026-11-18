@@ -15,7 +15,7 @@ from webui import common  # noqa: E402
 
 def _entry(severity: str, title: str, message: str, kind: str = "psu", link=None) -> WarningEntry:
     return WarningEntry(id=kind, incident="", severity=severity, kind=kind, subject="", title=title,
-                        message=message, link=link, snooze="none")
+                        message=message, link=link)
 
 
 def _snap(*entries: WarningEntry):

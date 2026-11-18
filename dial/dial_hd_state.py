@@ -147,7 +147,6 @@ def _appliance_warnings(appliance, snoozed_until: dict, wall_now: float) -> list
             "severity": warning.severity,
             "title": warning.title,
             "message": warning.message,
-            "dismissal": warning.dismissal,
             "snoozed": until is not None and until > wall_now,
         })
     return out

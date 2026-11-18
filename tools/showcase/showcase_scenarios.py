@@ -116,7 +116,7 @@ def _stylus_scenario(track: Track):
     ident = IDS[track.appliance]
     warning = ApplianceWarning(
         "stylus_in1", "warning", "Stylus wear", "The stylus has played for about 450 hours.",
-        "week", appliance_name=track.appliance,
+        appliance_name=track.appliance,
     )
     key = appliance_warning_key(ident, warning.id)
     descriptor = appliance_warning_descriptor(ident, warning)

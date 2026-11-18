@@ -120,12 +120,11 @@ class TestApplianceState:
         assert state(snap({"warnings": {"entries": []}})).supplies_warnings is True
         assert state(snap({})).supplies_warnings is False
 
-    def test_warnings_carry_the_name_and_map_snooze(self):
+    def test_warnings_carry_the_name(self):
         entries = [{"id": "psu", "incident": "", "severity": "critical", "kind": "psu",
-                    "subject": "", "title": "Power supply", "message": "Weak", "link": None,
-                    "snooze": "week"}]
+                    "subject": "", "title": "Power supply", "message": "Weak", "link": None}]
         a = state(snap({"warnings": {"entries": entries}}))
-        assert a.warnings == (ApplianceWarning("psu", "critical", "Power supply", "Weak", "week", "Turntable"),)
+        assert a.warnings == (ApplianceWarning("psu", "critical", "Power supply", "Weak", appliance_name="Turntable"),)
 
     def test_no_snapshot_yet(self):
         a = state(None)
@@ -137,7 +136,7 @@ class TestApplianceState:
 
 class TestWarnings:
     def _entry(self, i, **kw):
-        base = {"id": f"w{i}", "severity": "info", "title": f"T{i}", "message": "m", "snooze": "day"}
+        base = {"id": f"w{i}", "severity": "info", "title": f"T{i}", "message": "m"}
         base.update(kw)
         return base
 
@@ -152,9 +151,9 @@ class TestWarnings:
     def test_guard_drops_bad_entries_and_clamps_values(self):
         out = pv.appliance_warnings([
             "junk", self._entry(1, id="BAD ID"), self._entry(2, title=""),
-            self._entry(3, severity="loud", snooze="never"), self._entry(4, id="w3"),
+            self._entry(3, severity="loud"), self._entry(4, id="w3"),
         ], "X")
-        assert [(w.id, w.severity, w.dismissal) for w in out] == [("w3", "info", "day")]
+        assert [(w.id, w.severity) for w in out] == [("w3", "info")]
 
     def test_none_entries(self):
         assert pv.appliance_warnings(None, "X") == ()

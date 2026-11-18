@@ -36,7 +36,6 @@
           "severity": "info",
           "title": "Technics stylus",
           "message": "Needs changing soon.",
-          "dismissal": "none",
           "snoozed": false
         }
       ],
@@ -64,7 +63,7 @@
         "source": "Lounge",
         "buttons": [
           {
-            "label": "OK",
+            "label": "Dismiss",
             "action": "dismiss"
           }
         ],

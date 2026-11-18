@@ -107,7 +107,6 @@ severe first, at most 16. Each entry:
 | `title` | At most 40 characters. |
 | `message` | At most 32 characters. |
 | `link` | The Web UI page that deals with it (`/service`, `/setup#input2`, `/setup#dials`, `/setup`, `/about`), or `null`. |
-| `snooze` | How long a person may reasonably hide it: `day`, `week` or `none`. |
 
 ### `outputs`
 

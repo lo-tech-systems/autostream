@@ -327,9 +327,9 @@ def replay_scenario(name: str, state: str, **repeat_kwargs) -> Scenario:
     return Scenario(name, _replay_snapshot(state, **repeat_kwargs), muted=None if state == "hold" else False)
 
 
-def _stylus_warning(dismissal="week", severity="warning"):
+def _stylus_warning(severity="warning"):
     return ApplianceWarning(
-        "stylus_in1", severity, "Technics stylus", "Needs changing soon.", dismissal,
+        "stylus_in1", severity, "Technics stylus", "Needs changing soon.",
         appliance_name="Lounge",
     )
 
@@ -425,8 +425,7 @@ def _build() -> dict:
         network=NetworkView(link=LINK_DOWN),
     ), muted=None))
     add(_appliance_warning_scenario("appliance_warning", _stylus_warning()))
-    add(_appliance_warning_scenario(
-        "appliance_warning_notice", _stylus_warning(dismissal="none", severity="info")))
+    add(_appliance_warning_scenario("appliance_warning_info", _stylus_warning(severity="info")))
     needs_update = _appliance_warning_scenario(
         "appliance_needs_update", _update_warning(), proto=2, supplies=False)
     add(needs_update.with_snapshot(appliances=tuple(

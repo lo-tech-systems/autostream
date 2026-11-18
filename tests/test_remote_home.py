@@ -172,7 +172,7 @@ class TestPage:
     def test_this_appliances_warnings_are_not_the_banner(self, rig):
         r = ready(rig())
         state.store().publish_for_tests("warnings", state.WarningsPart((state.WarningEntry(
-            "w", "", "critical", "k", "", "Local fault", "m", None, "week"),)))
+            "w", "", "critical", "k", "", "Local fault", "m", None),)))
         _, body = self.island(r)
         assert "Local fault" not in body
 

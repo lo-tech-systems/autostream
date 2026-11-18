@@ -540,7 +540,7 @@ def _reply(*warnings, appliance_id=TARGET, **extra):
 
 def _warn(**kw):
     base = {"id": "stylus", "severity": "warning", "title": "Replace stylus",
-            "message": "500 h played", "dismissal": "week"}
+            "message": "500 h played"}
     base.update(kw)
     return base
 
@@ -552,7 +552,7 @@ def _validate(body, appliance_id=TARGET):
 class TestApplianceWarningValidator:
     def test_a_good_reply_comes_through_whole(self):
         (w,) = _validate(_reply(_warn()))
-        assert w == cs.ApplianceWarning("stylus", "warning", "Replace stylus", "500 h played", "week")
+        assert w == cs.ApplianceWarning("stylus", "warning", "Replace stylus", "500 h played")
         assert w.appliance_name == ""
 
     def test_raw_text_and_bytes_are_parsed(self):
@@ -635,16 +635,6 @@ class TestApplianceWarningValidator:
     def test_the_known_severities_are_kept(self, value):
         (w,) = _validate(_reply(_warn(severity=value)))
         assert w.severity == value.strip().lower()
-
-    @pytest.mark.parametrize("value", ["forever", "", None, 9, "Week;rm"])
-    def test_an_unknown_dismissal_hint_takes_the_default(self, value):
-        (w,) = _validate(_reply(_warn(dismissal=value)))
-        assert w.dismissal == cs.APPLIANCE_WARNING_DEFAULT_DISMISSAL == cs.DISMISS_DAY
-
-    @pytest.mark.parametrize("value", ["day", "week", "none"])
-    def test_the_known_dismissal_hints_are_kept(self, value):
-        (w,) = _validate(_reply(_warn(dismissal=value)))
-        assert w.dismissal == value
 
     @pytest.mark.parametrize("bad", [
         "", "Stylus", "has space", "a/b", "a:b", "../x", "a" * 33, "café", "x\n", "x\x00",

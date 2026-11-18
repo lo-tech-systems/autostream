@@ -354,10 +354,8 @@ def repeat_record(block, now: float) -> RepeatRecord | None:
 
 def appliance_warnings(entries, name: str, *, limit: int = APPLIANCE_WARNINGS_MAX) -> tuple[ApplianceWarning, ...]:
     """The part's warnings as the dial keeps them, after the field rules for
-    data from another device. The part's *snooze* is the dial's dismissal
-    hint; every warning carries *name* as its source."""
-    kept = [dict(e, dismissal=e.get("snooze")) for e in entries or () if isinstance(e, Mapping)]
-    return attribute_appliance_warnings(appliance_warning_entries(kept, limit), name)
+    data from another device; every warning carries *name* as its source."""
+    return attribute_appliance_warnings(appliance_warning_entries(list(entries or ()), limit), name)
 
 
 def _auth(snap) -> str:

@@ -561,14 +561,6 @@ APPLIANCE_WARNING_SEVERITIES = (SEVERITY_INFO, SEVERITY_WARNING, SEVERITY_CRITIC
 # An unknown or missing severity reads as the mildest.
 APPLIANCE_WARNING_DEFAULT_SEVERITY = SEVERITY_INFO
 
-# How the appliance suggests a Dismiss should hold: a day, a week, or not at
-# all (a notice with no Dismiss). Anything else reads as a day.
-DISMISS_DAY = "day"
-DISMISS_WEEK = "week"
-DISMISS_NONE = "none"
-APPLIANCE_WARNING_DISMISSALS = (DISMISS_DAY, DISMISS_WEEK, DISMISS_NONE)
-APPLIANCE_WARNING_DEFAULT_DISMISSAL = DISMISS_DAY
-
 
 @dataclass(frozen=True)
 class ApplianceWarning:
@@ -579,7 +571,6 @@ class ApplianceWarning:
     severity: str           # one of APPLIANCE_WARNING_SEVERITIES
     title: str              # non-empty, at most APPLIANCE_WARNING_TITLE_MAX characters
     message: str            # at most APPLIANCE_WARNING_MESSAGE_MAX characters
-    dismissal: str          # one of APPLIANCE_WARNING_DISMISSALS
     appliance_name: str = ""  # the roster's display name, set by the core
 
 
@@ -627,8 +618,8 @@ def protocol_warning(entry, own_protocol: int) -> ApplianceWarning | None:
     number (entry.dial_proto_version: the hello's when it has been read, else
     the one its record advertises) differs from *own_protocol*; None when they
     agree or the appliance has not said one. A lower number gives "Update
-    <appliance>"; a higher one gives "Update this dial". Severity "warning",
-    dismissal "week". Access is not asked: a mismatch opens no stream, so it
+    <appliance>"; a higher one gives "Update this dial". Severity "warning".
+    Access is not asked: a mismatch opens no stream, so it
     is never learned. Pure."""
     appliance_id = getattr(entry, "appliance_id", "")
     if not appliance_id:
@@ -642,12 +633,12 @@ def protocol_warning(entry, own_protocol: int) -> ApplianceWarning | None:
         return ApplianceWarning(
             id=PROTOCOL_WARNING_ID, severity=SEVERITY_WARNING,
             title=_clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
-            message=_PROTOCOL_WARNING_MESSAGE, dismissal=DISMISS_WEEK, appliance_name=name,
+            message=_PROTOCOL_WARNING_MESSAGE, appliance_name=name,
         )
     return ApplianceWarning(
         id=DIAL_WARNING_ID, severity=SEVERITY_WARNING, title="Update this dial",
         message=_clean_text(f"{name} needs a newer dial", APPLIANCE_WARNING_MESSAGE_MAX),
-        dismissal=DISMISS_WEEK, appliance_name=name,
+        appliance_name=name,
     )
 
 
@@ -658,13 +649,13 @@ def validate_appliance_warnings(body, appliance_id: str) -> tuple[ApplianceWarni
     the appliance the request was made of.
 
     The expected shape is {"appliance_id": "<id>", "warnings": [{"id":
-    "<id>", "severity": "<name>", "title": "<text>", "message": "<text>",
-    "dismissal": "<hint>"}, ...]}. The reply is refused (()) when it is too
+    "<id>", "severity": "<name>", "title": "<text>", "message": "<text>"},
+    ...]}. The reply is refused (()) when it is too
     large, is not JSON, is not an object, names a different appliance than
     *appliance_id* or has no list of warnings. Within a list: an entry that
     is not an object, has an invalid or repeated id, or has no title once
     cleaned is dropped; over-long text and a long list are truncated, not
-    refused; severity and dismissal fall back to their defaults. Never
+    refused; severity falls back to its default. Never
     raises."""
     try:
         if not isinstance(appliance_id, str) or not appliance_id:
@@ -686,8 +677,8 @@ def validate_appliance_warnings(body, appliance_id: str) -> tuple[ApplianceWarni
 def appliance_warning_entries(entries, limit: int) -> tuple[ApplianceWarning, ...]:
     """The usable warnings among *entries*, at most *limit* of them: an entry
     that is not an object, has an invalid or repeated id, or has no title once
-    cleaned is dropped; over-long text is truncated; severity and dismissal
-    fall back to their defaults. At most four times *limit* entries are
+    cleaned is dropped; over-long text is truncated; severity falls back
+    to its default. At most four times *limit* entries are
     examined. Never raises."""
     try:
         out: list[ApplianceWarning] = []
@@ -716,10 +707,6 @@ def appliance_warning_entries(entries, limit: int) -> tuple[ApplianceWarning, ..
                 ),
                 title=title,
                 message=_clean_text(entry.get("message"), APPLIANCE_WARNING_MESSAGE_MAX),
-                dismissal=_enum_or_default(
-                    entry.get("dismissal"), APPLIANCE_WARNING_DISMISSALS,
-                    APPLIANCE_WARNING_DEFAULT_DISMISSAL,
-                ),
             ))
         return tuple(out)
     except Exception:

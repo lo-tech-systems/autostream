@@ -346,12 +346,12 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d._run_warning_action(dd._WARNING_BY_ID["sdhealth"], dd.ACTION_DISMISS)
     elif kind == "appliance_warnings":
         # ("appliance_warnings", appliance_id, [(id, severity, title,
-        # message, dismissal), ...]) -- the validated set the appliance's
+        # message), ...]) -- the validated set the appliance's
         # warnings worker hands the core, replacing the appliance's last.
         _, aid, rows = step
         set_appliance_warnings(d, aid, tuple(ApplianceWarning(*row) for row in rows))
     elif kind == "appliance_tap":
-        # A tap on the one cell of the page showing (Dismiss, or OK).
+        # A tap on the one cell of the page showing (Dismiss).
         d.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
@@ -1814,9 +1814,8 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
     ])
 
     # An appliance's warnings page below every warning of the dial's own:
-    # the SD card warning shows first, then the critical stylus warning (a
-    # week's snooze), then the belt warning (a day's). The day's snooze
-    # runs out and only the belt page returns.
+    # the SD card warning shows first, then the critical stylus warning,
+    # then the belt warning. The day's snooze runs out and both return.
     aid = _aid("aw1")
     lounge = _idle_row("Lounge", aid)
     add("appliance_warning_pages_below_sdhealth", [
@@ -1824,8 +1823,8 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("poll",),
         ("repaint",),
         ("appliance_warnings", aid, [
-            ("stylus_in1", "critical", "Technics stylus", "Needs changing now.", "week"),
-            ("belt_in1", "warning", "Drive belt", "Service due soon.", "day"),
+            ("stylus_in1", "critical", "Technics stylus", "Needs changing now."),
+            ("belt_in1", "warning", "Drive belt", "Service due soon."),
         ]),
         ("sd_health_view", STATUS_VALID, 12),
         ("repaint",),               # sdhealth first
@@ -1843,40 +1842,9 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),               # nothing left
         ("advance", 86401.0),
         ("tick_warnings",),
-        ("repaint",),               # the day's snooze is over, the week's is not
+        ("repaint",),               # the day's snooze is over
         ("appliance_tap",),
         ("repaint",),
-    ])
-
-    # A notice (dismissal "none") has one OK cell that holds until the
-    # appliance stops reporting it: a long wait and the same report again
-    # bring nothing back, a fresh report after it was cleared does, and the
-    # appliance withdrawing it closes the open page.
-    aid = _aid("aw2")
-    kitchen = _idle_row("Kitchen", aid)
-    notice = [("fw", "info", "Firmware", "Updated to 2.0.", "none")]
-    add("appliance_warning_ok_holds_until_cleared", [
-        ("roster", [kitchen]),
-        ("poll",),
-        ("repaint",),
-        ("appliance_warnings", aid, notice),
-        ("tick_warnings",),
-        ("repaint",),               # the notice, one OK cell
-        ("appliance_tap",),
-        ("repaint",),               # OK: back to idle
-        ("advance", 30 * 86400.0),
-        ("tick_warnings",),
-        ("repaint",),
-        ("appliance_warnings", aid, notice),
-        ("tick_warnings",),
-        ("repaint",),               # unchanged report: still away
-        ("appliance_warnings", aid, []),
-        ("appliance_warnings", aid, notice),
-        ("tick_warnings",),
-        ("repaint",),               # a new incident shows again
-        ("appliance_warnings", aid, []),
-        ("tick_warnings",),
-        ("repaint",),               # withdrawn while up: the page closes
     ])
 
     return scenarios

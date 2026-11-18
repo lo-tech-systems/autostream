@@ -3385,8 +3385,7 @@
        "subject": "",
        "title": "Power supply",
        "message": "Low voltage now",
-       "link": null,
-       "snooze": "day"
+       "link": null
       }
      ]
     }
@@ -3421,8 +3420,7 @@
        "subject": "",
        "title": "Power supply",
        "message": "Low voltage now",
-       "link": null,
-       "snooze": "day"
+       "link": null
       },
       {
        "id": "sd_health",
@@ -3432,8 +3430,7 @@
        "subject": "",
        "title": "SD card",
        "message": "4% life left, replace now",
-       "link": null,
-       "snooze": "day"
+       "link": null
       }
      ]
     }
@@ -3473,8 +3470,7 @@
        "subject": "CD",
        "title": "CD sample rate",
        "message": "Turn on rate matching",
-       "link": "/setup#input1",
-       "snooze": "day"
+       "link": "/setup#input1"
       }
      ]
     }
@@ -3510,8 +3506,7 @@
        "subject": "CD",
        "title": "CD sample rate",
        "message": "Turn on rate matching",
-       "link": "/setup#input1",
-       "snooze": "day"
+       "link": "/setup#input1"
       }
      ]
     }
@@ -3547,8 +3542,7 @@
        "subject": "Turntable",
        "title": "Turntable stylus",
        "message": "Change now",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       },
       {
        "id": "stylus_in2",
@@ -3558,8 +3552,7 @@
        "subject": "Tape",
        "title": "Tape stylus",
        "message": "Change now",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       }
      ]
     }
@@ -3595,8 +3588,7 @@
        "subject": "Turntable",
        "title": "Turntable stylus",
        "message": "Change now",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       },
       {
        "id": "stylus_in2",
@@ -3606,8 +3598,7 @@
        "subject": "Tape",
        "title": "Tape stylus",
        "message": "Change soon",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       }
      ]
     }
@@ -3649,8 +3640,7 @@
        "subject": "",
        "title": "No input",
        "message": "No input is set up",
-       "link": "/setup",
-       "snooze": "day"
+       "link": "/setup"
       },
       {
        "id": "n2",
@@ -3660,8 +3650,7 @@
        "subject": "",
        "title": "No input",
        "message": "No input is set up",
-       "link": "/setup",
-       "snooze": "day"
+       "link": "/setup"
       }
      ]
     }
@@ -3703,8 +3692,7 @@
        "subject": "CD",
        "title": "CD sample rate",
        "message": "Turn on rate matching",
-       "link": "/setup#input1",
-       "snooze": "day"
+       "link": "/setup#input1"
       },
       {
        "id": "stylus_in1",
@@ -3714,8 +3702,7 @@
        "subject": "Turntable",
        "title": "Turntable stylus",
        "message": "Change now",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       },
       {
        "id": "belt_in1",
@@ -3725,8 +3712,7 @@
        "subject": "Turntable",
        "title": "Turntable drive belt",
        "message": "Service soon",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       },
       {
        "id": "no_input",
@@ -3736,8 +3722,7 @@
        "subject": "",
        "title": "No input",
        "message": "No input is set up",
-       "link": "/setup",
-       "snooze": "day"
+       "link": "/setup"
       }
      ]
     }
@@ -3791,8 +3776,7 @@
        "subject": "",
        "title": "Power supply",
        "message": "Low voltage now",
-       "link": null,
-       "snooze": "day"
+       "link": null
       },
       {
        "id": "belt_in1",
@@ -3802,8 +3786,7 @@
        "subject": "Turntable",
        "title": "Turntable drive belt",
        "message": "Service soon",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       }
      ]
     }
@@ -3845,8 +3828,7 @@
        "subject": "Turntable",
        "title": "Turntable stylus",
        "message": "Change now",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       },
       {
        "id": "belt_in1",
@@ -3856,8 +3838,7 @@
        "subject": "Turntable",
        "title": "Turntable drive belt",
        "message": "Service soon",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       }
      ]
     }
@@ -3899,8 +3880,7 @@
        "subject": "Turntable",
        "title": "Turntable drive belt",
        "message": "Service soon",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       }
      ]
     }
@@ -3936,8 +3916,7 @@
        "subject": "Turntable",
        "title": "Turntable drive belt",
        "message": "Service soon",
-       "link": "/service",
-       "snooze": "day"
+       "link": "/service"
       }
      ]
     }

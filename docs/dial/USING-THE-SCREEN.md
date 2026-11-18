@@ -426,11 +426,8 @@ These are the quietest warnings the dial shows:
 - The card closes by itself if the appliance stops reporting the warning, for
   instance after you reset the counter in its Service page.
 
-The button depends on the warning. Most say **Dismiss**, which hides the card
-for a day or a week (the appliance chooses) and brings it back after that if
-the cause is still there. The snooze survives a restart. A plain notice that
-cannot be snoozed has an **OK** button instead, which closes the card until
-the appliance reports the notice again.
+The button says **Dismiss**, which hides the card for a day and brings it
+back after that if the cause is still there. The snooze survives a restart.
 
 Compact panels show the same card in the same layout as the SD card warning.
 

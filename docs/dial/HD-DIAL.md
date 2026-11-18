@@ -244,10 +244,8 @@ power-supply voltage. These are quieter than the dial's own warnings:
   how urgent the worst warning is. Tap the badge to read the card.
 - When you are following that appliance, its most urgent warning also opens
   as a card by itself.
-- **Dismiss** hides a warning for a day or a week (the appliance suggests
-  which) and it returns after that if the cause is still there. A notice that
-  cannot be snoozed has an **OK** button instead and is put away until the
-  appliance reports it again.
+- **Dismiss** hides a warning for a day and it returns after that if the
+  cause is still there.
 - An appliance warning never wakes a sleeping screen.
 
 Resetting the counter in the appliance's Service page clears its warning.

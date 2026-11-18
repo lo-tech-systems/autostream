@@ -322,7 +322,6 @@ class WarningEntry:
     title: str
     message: str
     link: Optional[str]                     # a page of the web UI, or None
-    snooze: str                             # "day" | "week" | "none"
 
 
 @dataclass(frozen=True)
@@ -523,7 +522,7 @@ def _dials_digest(p: DialsPart) -> int:
 
 def _warnings_digest(p: WarningsPart) -> tuple:
     return tuple(
-        (e.id, e.incident, e.severity, e.kind, e.subject, e.title, e.message, e.link, e.snooze)
+        (e.id, e.incident, e.severity, e.kind, e.subject, e.title, e.message, e.link)
         for e in p.entries
     )
 
