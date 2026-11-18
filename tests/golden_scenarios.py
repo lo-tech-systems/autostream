@@ -506,7 +506,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
         for name, value in values.items():
             monkeypatch.setattr(module, name, value)
 
-    shared = dict(_dial_update_banner_text=lambda: "")
     import autostream_rpi as rpi
     import webui.common as web_common
     setattrs(rpi, get_appliance_id=lambda: APPLIANCE_ID)
@@ -522,8 +521,9 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     setattrs(models,
              get_system_hostname=lambda: "golden.local",
              _wall=lambda: FIXED_WALL_CLOCK,
+             _dial_update_banner_text=lambda: "",
              get_live_output_eq_status=lambda: scenario.eq_status)
-    setattrs(airplay, **shared,
+    setattrs(airplay,
              get_setting=get_setting,
              get_all_appliances=lambda: [],
              get_system_hostname=lambda: "golden.local",
