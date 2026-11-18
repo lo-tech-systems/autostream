@@ -162,7 +162,9 @@ input.hslider:disabled { opacity: 0.4; cursor: default; }
 /* Right column: the artwork zone over three fixed rows. The zone takes
    whatever height the rows leave, so a filled replay row shrinks the zone
    and the frame in it, never the rows. The backdrop fills the zone and the
-   frame is the largest square that fits inside it, under the height cap. */
+   frame is the largest square that fits inside it, under the height cap.
+   The frame is the logo image's own background colour, so the logo shows
+   no box inside it. */
 .right {
     --gap: 10px; --art-inset: 12px;
     min-width: 0; min-height: 0;
@@ -177,7 +179,7 @@ input.hslider:disabled { opacity: 0.4; cursor: default; }
     --art: min(54vh, calc(100cqw - 2 * var(--art-inset)), calc(100cqh - 2 * var(--art-inset)));
     position: relative; width: var(--art); height: var(--art);
     padding: 7px; border-radius: 14px;
-    border: 1px solid var(--color-border-card); background: var(--color-surface-pane);
+    border: 1px solid var(--color-border-card); background: var(--color-bg);
 }
 /* The pictures lie over each other inside the frame's padding. An absolutely
    placed image does not stretch between insets, so each gets a size too. */

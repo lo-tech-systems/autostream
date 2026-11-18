@@ -174,6 +174,15 @@ class TestStates:
         assert abs(box["width"] - box["height"]) <= 1
         assert page.evaluate("getComputedStyle(document.querySelector('.art-frame')).borderTopWidth") == "1px"
 
+    def test_the_frame_is_the_logo_images_own_background_colour(self, page, hd):
+        from PIL import Image
+        logo = Path(__file__).resolve().parents[2] / "images" / "autostream-logo-centred-dark.png"
+        r, g, b = Image.open(logo).convert("RGB").getpixel((0, 0))
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        open_page(page, hd)
+        background = page.evaluate("getComputedStyle(document.querySelector('.art-frame')).backgroundColor")
+        assert background == f"rgb({r}, {g}, {b})"
+
     def test_nothing_playing_shows_the_logo(self, page, hd):
         hd.show(hs.SCENARIOS["nothing_playing"])
         open_page(page, hd)
