@@ -3317,3 +3317,23 @@ class TestAsleepTouchWiring:
         t = TestBuildTouchSourceWiring()
         with t._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_wake"]()
+
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+def test_configure_logging_limits_repeated_lines_on_both_handlers():
+    import logging
+    import autostream_logging
+    import dial_main
+
+    with patch("dial_main.os.makedirs"), \
+         patch("dial_main.logging.FileHandler", side_effect=lambda path: logging.NullHandler()), \
+         patch("dial_main.logging.basicConfig") as basic_config:
+        dial_main._configure_logging()
+
+    handlers = basic_config.call_args.kwargs["handlers"]
+    assert len(handlers) == 2
+    for handler in handlers:
+        assert any(isinstance(f, autostream_logging.RateLimitFilter) for f in handler.filters)

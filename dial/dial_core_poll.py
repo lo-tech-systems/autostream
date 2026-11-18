@@ -22,7 +22,6 @@ import math
 import os
 import re
 import sys
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -36,6 +35,13 @@ from dial_auth import (
     OUTCOME_UNAUTHORIZED,
     auth_map,
 )
+# autostream_logging is deployed flat beside the dial package; in the repo it
+# lives in core/.
+try:
+    import autostream_logging as log_setup
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
+    import autostream_logging as log_setup  # noqa: E402
 import dial_capabilities
 from dial_capabilities import Capabilities, appliance_capabilities  # noqa: F401
 from dial_core_state import (
@@ -363,26 +369,20 @@ def drain_push_probes(
 
 
 class RateLimitedLogger:
-    """Emits the first occurrence and every 10th consecutive repeat of a key.
+    """Emits at most one record per key each LOG_INTERVAL_SECONDS.
 
-    A different key resets the count so its own first occurrence is visible
-    immediately, per the dial logging policy.
+    Every key has its own timer, so a different key is visible immediately,
+    per the dial logging policy.
     """
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._last_key: str | None = None
-        self._count = 0
+    LOG_INTERVAL_SECONDS = 60.0
+
+    def __init__(self, clock: Callable[[], float] | None = None) -> None:
+        self._clock = clock
 
     def log(self, level: int, key: str, msg: str, *args) -> None:
-        with self._lock:
-            if key != self._last_key:
-                self._last_key = key
-                self._count = 1
-            else:
-                self._count += 1
-            should_log = self._count == 1 or self._count % 10 == 0
-        if should_log:
+        now = (self._clock or time.monotonic)()
+        if log_setup.log_every((key,), self.LOG_INTERVAL_SECONDS, now=now):
             logging.log(level, msg, *args)
 
 

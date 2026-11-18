@@ -61,8 +61,8 @@ accept a list of any length: exactly one target for "current" scope, every
 playing target for "all". Targets are pre-deduplicated by mDNS service name
 via get_playing_targets() so no IP-based dedup is needed here.
 
-Failure logging is rate-limited: WARNING on the 1st failure and every 10th
-thereafter per target IP; DEBUG for all intermediate failures.  403 and 412
+Failure logging is rate-limited: WARNING on the first failure and then at
+most once a minute per target IP; DEBUG for the failures in between.  403 and 412
 responses (unauthorized UUID) are DEBUG-only — expected on mixed-network LAN
 — but also recorded in the auth map exactly as a status poll's refusal is, so
 a dial refused on volume or mute learns it without waiting for a poll (see
@@ -78,9 +78,18 @@ import queue
 import threading
 import time
 import urllib.error
+import os
+import sys
 import urllib.request
 from typing import Tuple, Union
 
+# autostream_logging is deployed flat beside the dial package; in the repo it
+# lives in core/.
+try:
+    import autostream_logging as log_setup
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
+    import autostream_logging as log_setup  # noqa: E402
 from dial_auth import AUTH_UNAUTHORIZED, OUTCOME_UNAUTHORIZED, auth_map
 from dial_target_status import (
     _is_untyped_refusal,
@@ -757,7 +766,7 @@ def _note_refusal(target, err: urllib.error.HTTPError) -> None:
 def _log_volume_failure(ip: str, fmt: str, *args) -> None:
     n = _fail_counts.get(ip, 0) + 1
     _fail_counts[ip] = n
-    if n == 1 or n % 10 == 0:
+    if log_setup.log_every(("volume", ip), 60.0):
         logging.warning("volume POST %s: " + fmt + " (failure #%d)", ip, *args, n)
     else:
         logging.debug("volume POST %s: " + fmt, ip, *args)
@@ -766,7 +775,7 @@ def _log_volume_failure(ip: str, fmt: str, *args) -> None:
 def _log_mute_failure(ip: str, fmt: str, *args) -> None:
     n = _fail_counts.get(ip, 0) + 1
     _fail_counts[ip] = n
-    if n == 1 or n % 10 == 0:
+    if log_setup.log_every(("mute", ip), 60.0):
         logging.warning("mute POST %s: " + fmt + " (failure #%d)", ip, *args, n)
     else:
         logging.debug("mute POST %s: " + fmt, ip, *args)

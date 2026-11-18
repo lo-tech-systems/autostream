@@ -1996,32 +1996,39 @@ class TestCreateDialDisplay:
 # ---------------------------------------------------------------------------
 
 class TestRateLimitedLogger:
+    def _limiter(self):
+        clock = [1000.0]
+        return dd._RateLimitedLogger(clock=lambda: clock[0]), clock
+
     def test_first_occurrence_logs(self):
-        limiter = dd._RateLimitedLogger()
+        limiter, _ = self._limiter()
         with patch("logging.log") as mock_log:
             limiter.log(30, "keyA", "msg %s", "x")
         mock_log.assert_called_once()
 
-    def test_repeats_suppressed_until_tenth(self):
-        limiter = dd._RateLimitedLogger()
+    def test_repeats_suppressed_within_the_interval(self):
+        limiter, clock = self._limiter()
         with patch("logging.log") as mock_log:
             for _ in range(9):
+                clock[0] += 1.0
                 limiter.log(30, "keyA", "msg")
         assert mock_log.call_count == 1  # only the first of these 9
 
-    def test_tenth_repeat_logs(self):
-        limiter = dd._RateLimitedLogger()
+    def test_logs_again_after_the_interval(self):
+        limiter, clock = self._limiter()
         with patch("logging.log") as mock_log:
-            for _ in range(10):
-                limiter.log(30, "keyA", "msg")
-        assert mock_log.call_count == 2  # 1st and 10th
+            limiter.log(30, "keyA", "msg")
+            clock[0] += limiter.LOG_INTERVAL_SECONDS
+            limiter.log(30, "keyA", "msg")
+        assert mock_log.call_count == 2
 
-    def test_different_key_resets_and_logs_immediately(self):
-        limiter = dd._RateLimitedLogger()
+    def test_different_key_logs_immediately(self):
+        limiter, _ = self._limiter()
         with patch("logging.log") as mock_log:
             for _ in range(5):
                 limiter.log(30, "keyA", "msg")
             limiter.log(30, "keyB", "other")
+            limiter.log(30, "keyA", "msg")
         assert mock_log.call_count == 2  # first of keyA, first of keyB
 
 
@@ -4367,27 +4374,28 @@ def _artwork_display(url=_SECRET_URL):
 
 
 class TestArtworkLogging:
-    def test_artwork_failures_log_first_and_tenth(self, caplog):
+    def test_artwork_failures_log_once_a_minute(self, caplog):
         display, result = _artwork_display()
-        with patch("dial_core.fetch_target_status", return_value=result), \
-                patch("dial_core_poll.default_fetch_artwork", return_value=(None, "timeout")) as fetch, \
-                caplog.at_level(logging.WARNING):
+        clock = [1000.0]
+        with patch("dial_core_poll.time.monotonic", lambda: clock[0]),                 patch("dial_core.fetch_target_status", return_value=result),                 patch("dial_core_poll.default_fetch_artwork", return_value=(None, "timeout")) as fetch,                 caplog.at_level(logging.WARNING):
             for _ in range(11):
                 display._poll_once()
-        assert fetch.call_count == 11           # every poll retries
+            clock[0] += 61.0
+            display._poll_once()
+        assert fetch.call_count == 12           # every poll retries
         records = [r for r in caplog.records if "artwork fetch failed" in r.getMessage()]
         assert len(records) == 2
         assert display.get_status()["showing"] == "logo"
         assert display.get_status()["last_error"] == "artwork_fetch_failed"
 
-    def test_artwork_decode_failures_log_first_and_tenth(self, caplog):
+    def test_artwork_decode_failures_log_once_a_minute(self, caplog):
         display, result = _artwork_display()
-        with patch("dial_core.fetch_target_status", return_value=result), \
-                patch("dial_core_poll.default_fetch_artwork", return_value=(b"bad", "")), \
-                patch("dial_display.decode_artwork", return_value=None), \
-                caplog.at_level(logging.WARNING):
+        clock = [1000.0]
+        with patch("dial_core_poll.time.monotonic", lambda: clock[0]),                 patch("dial_core.fetch_target_status", return_value=result),                 patch("dial_core_poll.default_fetch_artwork", return_value=(b"bad", "")),                 patch("dial_display.decode_artwork", return_value=None),                 caplog.at_level(logging.WARNING):
             for _ in range(11):
                 display._poll_once()
+            clock[0] += 61.0
+            display._poll_once()
         records = [r for r in caplog.records if "artwork decode failed" in r.getMessage()]
         assert len(records) == 2
 

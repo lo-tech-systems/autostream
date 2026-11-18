@@ -1,10 +1,12 @@
 """autostream_logging.py -- logging setup and the live platform log level.
 
-Standard library only at module level (the dial ships this module too):
-the configuration helpers are imported inside the functions that need them.
+Standard library only (the dial ships this module too): the configuration
+helpers are looked up at call time by the two functions that need them, which
+the dial never calls.
 """
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import sys
@@ -14,6 +16,11 @@ from typing import Callable, Hashable
 
 
 _live_platform_log_level = "warning"
+
+
+def _config():
+    return importlib.import_module("autostream_config")
+
 
 # Third-party libraries that are noisy at DEBUG (connection-pool churn,
 # per-request lines) but rarely useful outside deep diagnostics. Pinned to
@@ -36,7 +43,9 @@ def _pin_third_party_loggers(normalized_level: str) -> None:
 def setup_logging(log_file: str, log_level: str) -> None:
     """Route all records through a queue to the log file and stdout."""
     global _live_platform_log_level
-    from autostream_config import normalize_log_level, python_log_level_value
+    config = _config()
+    normalize_log_level = config.normalize_log_level
+    python_log_level_value = config.python_log_level_value
 
     normalized = normalize_log_level(log_level)
     log_dir = os.path.dirname(log_file)
@@ -88,7 +97,9 @@ def setup_logging(log_file: str, log_level: str) -> None:
 def update_live_log_level(log_level: str) -> str:
     """Apply the platform log level to the running Python process."""
     global _live_platform_log_level
-    from autostream_config import normalize_log_level, python_log_level_value
+    config = _config()
+    normalize_log_level = config.normalize_log_level
+    python_log_level_value = config.python_log_level_value
 
     normalized = normalize_log_level(log_level)
     target_level = python_log_level_value(normalized)

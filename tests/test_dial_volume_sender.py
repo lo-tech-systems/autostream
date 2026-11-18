@@ -2,7 +2,7 @@
 
 Covers: _send_one() URL/body/timeout, ok=false application failure,
 403 debug-only, clamp detection, fail-count reset; _log_volume_failure()
-warning on 1st and every 10th, debug in between; _fan_out() concurrent
+warning on the first and then once a minute, debug in between; _fan_out() concurrent
 dispatch and clamped aggregate; queue coalescing and LED flash.
 
 Also covers the deterministic mute fan-out (_fan_out_mute/_send_one_mute) —
@@ -316,17 +316,38 @@ class TestLogVolumeFailureRateLimit:
         assert not warnings, "2nd failure must not log at WARNING"
         assert debugs, "2nd failure must log at DEBUG"
 
-    def test_tenth_failure_logs_warning(self, caplog):
+    def test_warning_again_after_a_minute(self, caplog):
         import logging
         ip = "3.3.3.3"
-        for _ in range(9):
+        clock = [1000.0]
+        with patch("autostream_logging.time.monotonic", lambda: clock[0]):
             dv._log_volume_failure(ip, "err")
+            for _ in range(9):
+                dv._log_volume_failure(ip, "err")
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG):
+                dv._log_volume_failure(ip, "err")          # 11th, same minute
+                clock[0] += 61.0
+                dv._log_volume_failure(ip, "err")          # a minute on
+        levels = [r.levelno for r in caplog.records if ip in r.getMessage()]
+        assert levels == [logging.DEBUG, logging.WARNING]
+
+    def test_mute_failures_have_their_own_timer(self, caplog):
+        import logging
+        ip = "4.4.4.4"
+        dv._log_volume_failure(ip, "err")
         caplog.clear()
         with caplog.at_level(logging.DEBUG):
-            dv._log_volume_failure(ip, "err")  # 10th → WARNING
-        warnings = [r for r in caplog.records
-                    if r.levelno >= logging.WARNING and ip in r.getMessage()]
-        assert warnings, "Every 10th failure must log at WARNING"
+            dv._log_mute_failure(ip, "err")
+        assert [r.levelno for r in caplog.records if ip in r.getMessage()] == [logging.WARNING]
+
+    def test_targets_have_their_own_timers(self, caplog):
+        import logging
+        dv._log_volume_failure("5.5.5.5", "err")
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            dv._log_volume_failure("6.6.6.6", "err")
+        assert [r.levelno for r in caplog.records if "6.6.6.6" in r.getMessage()] == [logging.WARNING]
 
 
 # ---------------------------------------------------------------------------

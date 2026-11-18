@@ -1716,7 +1716,8 @@ install_code_tree() {
     # executable's import resolves on every install/update.
     for name in autostream_rpi autostream_system_stats autostream_appliance_identity \
                 autostream_licensing autostream_dial_gpio autostream_sysutils \
-                autostream_mdns autostream_artwork autostream_wifi_network; do
+                autostream_mdns autostream_artwork autostream_wifi_network \
+                autostream_logging; do
         install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/core/${name}.py" "${dest}/${name}.py"
     done
     # wifi_watcher's split sibling modules (imported beside it).

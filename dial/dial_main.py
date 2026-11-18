@@ -55,6 +55,12 @@ try:
 except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
     from autostream_sysutils import log_lifecycle  # noqa: E402
+# autostream_logging is deployed flat beside the dial package too.
+try:
+    import autostream_logging as log_setup
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
+    import autostream_logging as log_setup  # noqa: E402
 from dial_outputs import start_outputs_worker
 from dial_repeat import start_repeat_worker
 from dial_target_status import enrich_targets
@@ -76,14 +82,19 @@ def _configure_logging() -> str:
         level = logging.WARNING
     log_file = "/var/log/autostream/autostream-dial.log"
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    handlers = [
+        logging.FileHandler(log_file),
+        logging.StreamHandler(sys.stdout),
+    ]
+    # Identical warnings are limited per handler so a failing neighbour cannot
+    # flood the SD card.
+    for handler in handlers:
+        log_setup.install_rate_limit(handler)
     logging.basicConfig(
         level=level,
         format="%(asctime)s: %(message)s",
         datefmt="%d-%b-%y %H:%M:%S",
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout),
-        ],
+        handlers=handlers,
     )
     # Suppress library noise at INFO; still visible at DEBUG.
     logging.getLogger('gpiozero').setLevel(logging.WARNING)
