@@ -27,6 +27,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from autostream_settings import SettingsStore
+from fake_store import fake_outputs_result
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ class TestFirstBootOwtonePage:
         _list = MagicMock()
         _list.ok = True
         _list.outputs = []
-        with patch("autostream_webui_page_first_boot.list_outputs", return_value=_list):
+        with fake_outputs_result(_list):
             send_first_boot_owntone_page(handler, state, auth)
         return _render(handler, written)
 
@@ -130,7 +131,7 @@ class TestFirstBootOwtonePage:
         auth = _make_auth()
         handler, written = _make_handler()
         _list = MagicMock(); _list.ok = False; _list.outputs = []
-        with patch("autostream_webui_page_first_boot.list_outputs", return_value=_list):
+        with fake_outputs_result(_list):
             send_first_boot_owntone_page(handler, state, auth, error="No OwnTone")
         html = _render(handler, written)
         assert "No OwnTone" in html
@@ -189,7 +190,7 @@ class TestFirstBootContinuePost:
         handler, written = _make_handler()
         body = "output_name="
         _list = MagicMock(); _list.ok = True; _list.outputs = []
-        with patch("autostream_webui_page_first_boot.list_outputs", return_value=_list):
+        with fake_outputs_result(_list):
             handle_first_boot_continue_post(handler, state, auth, body)
         html = _render(handler, written)
         assert "Please select an output" in html
@@ -222,7 +223,7 @@ class TestFirstBootContinuePost:
         auth = _make_auth()
         handler, written = _make_handler()
         _list = MagicMock(); _list.ok = True; _list.outputs = []
-        with patch("autostream_webui_page_first_boot.list_outputs", return_value=_list):
+        with fake_outputs_result(_list):
             handle_first_boot_continue_post(handler, state, auth, "output_name=X")
         html = _render(handler, written)
         assert "unavailable" in html.lower()

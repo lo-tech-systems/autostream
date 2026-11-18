@@ -49,7 +49,11 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_mute_state as mute_state
-from fake_store import fake_levels, fake_playback, fake_playback_mock, fake_repeat, fake_session, fake_track
+from fake_store import (
+    FakeStore, fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_repeat,
+    fake_session, fake_track,
+)
+from autostream_players import OutputInfo
 
 
 @pytest.fixture(autouse=True)
@@ -148,11 +152,7 @@ class TestMuteStateModule:
 # ---------------------------------------------------------------------------
 
 def _output(id_: str, volume: int, selected: bool = True):
-    o = SimpleNamespace()
-    o.id = id_
-    o.volume_percent = volume
-    o.selected = selected
-    return o
+    return OutputInfo(id=id_, name=id_, selected=selected, volume_percent=volume)
 
 
 def _list_result(outputs, ok=True):
@@ -415,7 +415,7 @@ class TestStatusMuteAware:
              patch("autostream_webui_api.dial_authorization",
                    return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
              patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs", return_value=_list_result(outputs)), \
+             fake_outputs(outputs), \
              patch("autostream_webui_api.get_appliance_id", return_value=None), \
              patch("autostream_webui_api._session_playing", return_value=False), \
              fake_repeat(None), \
@@ -546,11 +546,8 @@ class TestBuildOutputListAndHomeStateMuteAware:
             owntone=SimpleNamespace(output_name="Speaker"),
             webui=SimpleNamespace(hidden_outputs=()),
         )
-        out = SimpleNamespace(
-            id="o1", name="Speaker", selected=True, volume_percent=0,
-            needs_auth_key=False, requires_auth=False, pin_pending=False,
-        )
-        rows = models.build_output_list(parsed, [out])
+        out = OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=0)
+        rows = models.build_output_list(parsed, FakeStore().outputs([out]).outputs.units)
         assert rows[0]["volume"] == 40
 
     def test_build_output_list_reports_actual_while_unmuted(self):
@@ -559,11 +556,8 @@ class TestBuildOutputListAndHomeStateMuteAware:
             owntone=SimpleNamespace(output_name="Speaker"),
             webui=SimpleNamespace(hidden_outputs=()),
         )
-        out = SimpleNamespace(
-            id="o1", name="Speaker", selected=True, volume_percent=33,
-            needs_auth_key=False, requires_auth=False, pin_pending=False,
-        )
-        rows = models.build_output_list(parsed, [out])
+        out = OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=33)
+        rows = models.build_output_list(parsed, FakeStore().outputs([out]).outputs.units)
         assert rows[0]["volume"] == 33
 
     def test_build_home_state_carries_muted_flag(self):
@@ -573,7 +567,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
              patch("autostream_appliance_models.parse_config") as mock_parse, \
              fake_levels([]), \
              fake_playback_mock() as mock_playback, \
-             patch("autostream_appliance_models.list_outputs", return_value=_list_result([])), \
+             fake_outputs([]), \
              patch("autostream_appliance_models.get_setting") as mock_setting, \
              patch("autostream_appliance_models.active_track") as mock_ti, \
              fake_session({"active": False, "source": None}), \
@@ -722,7 +716,6 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
     playback.has_warning = False
     playback.to_public_dict.return_value = {}
 
-    list_result = MagicMock(ok=False, outputs=[])
     buf_result = MagicMock(ok=True, value="2250")
     input_levels = (
         [{"label": "Input 1", "is_above_threshold": True, "detected_hz": 0.0}]
@@ -737,7 +730,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
         fake_levels(input_levels),
         fake_playback(playback),
-        patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
+        fake_outputs([], connected=False),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
         fake_track(_disabled_ti_snapshot()),
         patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),

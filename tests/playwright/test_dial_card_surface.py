@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fake_store import fake_outputs_result
 
 try:
     from playwright.sync_api import Page, expect  # type: ignore[attr-defined]
@@ -77,7 +78,7 @@ def _render() -> tuple[bytes, bytes]:
         cfg = Path(tmp) / "config.json"
         cfg.write_text(_CONFIG, encoding="utf-8")
         state = WebUIState(str(cfg), str(Path(tmp) / "state.json"))
-        with patch("autostream_webui_page_setup.list_outputs", return_value=outputs), \
+        with fake_outputs_result(outputs), \
              patch("autostream_webui_page_setup.get_ap_ssid", return_value="autostream-setup"), \
              patch("autostream_webui_page_setup.get_system_hostname", return_value="autostream"), \
              patch("autostream_webui_page_setup.suggested_silence_threshold_dbfs", return_value=-50.0), \

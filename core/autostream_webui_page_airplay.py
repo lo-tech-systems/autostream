@@ -19,7 +19,7 @@ from autostream_appliances import get_all_appliances
 from autostream_core import (
     format_khz,
 )
-from autostream_player_service import get_setting, list_outputs
+from autostream_player_service import get_setting
 from autostream_state import active_track, store
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_config import input_type_label, normalize_input_type
@@ -409,17 +409,16 @@ def send_airplay_page(
     except Exception:
         vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
 
-    outputs_result = list_outputs(owntone_base_url, timeout=3)
-    raw_outputs = list(outputs_result.outputs) if outputs_result.ok else []
-    if not outputs_result.ok:
+    outputs_part = store().snapshot().outputs
+    if not outputs_part.connected:
         _placeholder_state = "unreachable"
-    elif not raw_outputs:
+    elif not outputs_part.reported_rows():
         _placeholder_state = "empty"
     else:
         _placeholder_state = "hidden"
 
     # Filter and sort outputs through the shared model helper, then annotate with occupancy.
-    output_dicts = build_output_list(parsed, raw_outputs)
+    output_dicts = build_output_list(parsed, outputs_part.units) if outputs_part.connected else []
     try:
         from autostream_output_usage import annotate_outputs as _annotate_outputs
         output_dicts = _annotate_outputs(output_dicts)

@@ -36,7 +36,8 @@ from autostream_commissioning import (
 )
 from autostream_core import update_playback_input_config
 from autostream_runtime import request_config_reload
-from autostream_player_service import list_outputs, output_supported_config_modes
+from autostream_player_service import output_supported_config_modes
+from autostream_state import store
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from autostream_webui_api import send_json
 from autostream_webui_assets import AUTOSAVE_JS, BANNER_HTML
@@ -91,8 +92,8 @@ def send_first_boot_owntone_page(
     base_url = snap.owntone.base_url if snap else "http://localhost:3689"
     current_output = (snap.owntone.output_name or "") if snap else ""
 
-    outputs_result = list_outputs(base_url, timeout=3)
-    outputs = list(outputs_result.outputs) if outputs_result.ok else []
+    outputs_part = store().snapshot().outputs
+    outputs = list(outputs_part.reported_rows()) if outputs_part.connected else []
 
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
 

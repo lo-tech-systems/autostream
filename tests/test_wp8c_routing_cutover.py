@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fake_store import fake_outputs_result
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
@@ -243,10 +244,10 @@ class TestSetupPageNoInitialSetupMode:
         auth.get_csrf_token.return_value = "tok"
         auth.get_boot_pin_value.return_value = "1234"
 
+        fake_outputs_result(ListOutputsResult(ok=False, error="x"))
         with patch.multiple(
             "autostream_webui_page_setup",
             get_system_hostname=MagicMock(return_value="autostream"),
-            list_outputs=MagicMock(return_value=ListOutputsResult(ok=False, error="x")),
             get_ap_ssid=MagicMock(return_value="autostream_AP"),
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),

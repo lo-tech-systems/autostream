@@ -30,6 +30,7 @@ import json
 import logging
 
 from autostream_align import parse_result_entries
+from autostream_state import store
 from autostream_webui_api import apply_output_offset, send_json
 from autostream_webui_assets import COMMON_MODAL_CSS, INFO_MODAL_HTML, INFO_MODAL_SCRIPT
 from autostream_webui_common import (
@@ -163,12 +164,11 @@ def _render_outputs_section(state: WebUIState) -> str:
     outputs = []
     if base_url:
         try:
-            import autostream_player_service as player_service
-            result = player_service.list_outputs(base_url, timeout=3)
-            if result.ok:
-                outputs = list(result.outputs)
+            part = store().snapshot().outputs
+            if part.connected:
+                outputs = list(part.reported_rows())
         except Exception:
-            _log.debug("align page: could not list outputs", exc_info=True)
+            _log.debug("align page: could not read outputs", exc_info=True)
 
     if not outputs:
         return (

@@ -236,10 +236,10 @@ class AlignRun:
         if self._input_actively_streaming():
             return False, "Cannot calibrate while an input is actively streaming"
 
-        outputs_result = self._player_service.list_outputs(base_url, timeout=3)
-        if not outputs_result.ok:
+        outputs_part = store().snapshot().outputs
+        if not outputs_part.connected:
             return False, "Could not list outputs"
-        all_outputs = list(outputs_result.outputs)
+        all_outputs = list(outputs_part.reported_rows())
         by_id = {out.id: out for out in all_outputs}
 
         unknown = [oid for oid in ids if oid not in by_id]

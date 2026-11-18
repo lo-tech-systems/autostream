@@ -138,6 +138,24 @@ def fake_repeat(block):
     return contextlib.nullcontext()
 
 
+def fake_outputs(rows, connected: bool = True):
+    """Put the given output rows into the output authority and return a
+    context manager that does nothing, so it can stand in a ``with`` statement
+    where a test used to patch the output list."""
+    fake = FakeStore()
+    if connected:
+        fake.outputs(list(rows))
+    else:
+        fake.outputs_unreachable()
+    return contextlib.nullcontext()
+
+
+def fake_outputs_result(result):
+    """As fake_outputs, from a ListOutputsResult-like value: its rows when it
+    is ok, otherwise a player that does not answer."""
+    return fake_outputs(list(result.outputs), connected=bool(result.ok))
+
+
 def fake_levels(levels, banner: str = ""):
     """Put the given Web UI level items into the inputs part (one entry per
     item) and return a context manager that does nothing, so it can stand in

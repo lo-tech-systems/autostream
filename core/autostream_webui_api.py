@@ -365,13 +365,10 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
         send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
 
-    outputs_result = list_outputs(parsed.owntone.base_url, timeout=2)
-    if not outputs_result.ok:
-        logging.error(
-            "Owntone outputs request failed: %s",
-            outputs_result.message,
-        )
-    outputs = list(outputs_result.outputs) if outputs_result.ok else []
+    part = store().snapshot().outputs
+    if not part.connected:
+        logging.error("Owntone outputs request failed: the player is not answering")
+    outputs = list(part.reported_rows()) if part.connected else []
 
     hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
 
@@ -845,32 +842,19 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
         send_json(handler, 200, {"playing": playing, "outputs": None,
                                  "error": "backend_unavailable"})
         return
-    try:
-        result = list_outputs(parsed.owntone.base_url, timeout=2)
-    except Exception as e:
+    part = store().snapshot().outputs
+    if not part.connected:
         _audio_status_fail_count += 1
         n = _audio_status_fail_count
         if log_setup.log_every(("audio_status", "list_outputs"), 60.0):
-            logging.warning("audio/status: list_outputs failed (call #%d): %s", n, e)
+            logging.warning("audio/status: outputs unavailable (call #%d)", n)
         else:
-            logging.debug("audio/status: list_outputs failed: %s", e)
-        send_json(handler, 200, {"playing": playing, "outputs": None,
-                                 "error": "backend_unavailable"})
-        return
-    if not result.ok:
-        _audio_status_fail_count += 1
-        n = _audio_status_fail_count
-        if log_setup.log_every(("audio_status", "list_outputs"), 60.0):
-            logging.warning("audio/status: list_outputs not ok (call #%d): %s",
-                            n, result.message)
-        else:
-            logging.debug("audio/status: list_outputs not ok: %s",
-                          result.message)
+            logging.debug("audio/status: outputs unavailable")
         send_json(handler, 200, {"playing": playing, "outputs": None,
                                  "error": "backend_unavailable"})
         return
     _audio_status_fail_count = 0
-    names = [o.name for o in result.outputs if o.selected]
+    names = [u.name for u in part.units if u.reported is not None and u.shown_selected]
     send_json(handler, 200, {"playing": playing, "outputs": names})
 
 
@@ -1158,27 +1142,20 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
 
-    try:
-        result = list_outputs(base_url, timeout=1.0)
-    except Exception as e:
-        logging.warning("dial status: list_outputs raised: %s", e)
-        send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
-        return
-
-    if not result.ok:
-        logging.warning("dial status: list_outputs not ok: %s", result.error)
+    snap = store().snapshot()
+    if not snap.outputs.connected:
+        logging.warning("dial status: the player is not answering")
         send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
         return
 
     muted = mute_state.is_muted()
-    snap = store().snapshot()
-    reported_outputs = (
-        [
-            _with_volume(o, mute_state.intended_level(o.id, o.volume_percent))
-            for o in result.outputs
-        ]
-        if muted else result.outputs
-    )
+    reported_outputs = [
+        SimpleNamespace(
+            id=u.id, selected=u.shown_selected,
+            volume_percent=mute_state.intended_level(u.id, u.volume),
+        )
+        for u in snap.outputs.units if u.reported is not None
+    ]
     master_volume, selected_output_count = calculate_master_volume(reported_outputs)
     response = {
         "ok": True,
@@ -1305,10 +1282,10 @@ def _dial_outputs_list(parsed) -> Optional[list]:
     trimmed to the fields the dial needs, including whether each output is the
     configured default. None when OwnTone is unreachable.
     """
-    result = list_outputs(parsed.owntone.base_url, timeout=1.0)
-    if not result.ok:
+    part = store().snapshot().outputs
+    if not part.connected:
         return None
-    outputs = build_output_list(parsed, list(result.outputs))
+    outputs = build_output_list(parsed, part.units)
     from autostream_output_usage import annotate_outputs
     return [
         {

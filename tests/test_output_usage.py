@@ -1048,8 +1048,12 @@ class TestAudioStatusPlayingFromSession:
                 ok=True,
                 outputs=(OutputInfo(id="a", name="Kitchen", selected=True, volume_percent=40),),
             )
+        from fake_store import FakeStore
+        if result.ok:
+            FakeStore().outputs(list(result.outputs))
+        else:
+            FakeStore().outputs_unreachable()
         with patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs", return_value=result), \
              fake_session(session_state):
             api_mod.send_audio_status_json(handler, state)
         return _json.loads(handler.wfile.getvalue())

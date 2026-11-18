@@ -21,7 +21,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels, fake_playback, fake_playback_mock, fake_track
+from fake_store import fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_track
 import autostream_appliance_models as models
 import autostream_dials as dials
 import autostream_webui_page_setup as setup
@@ -123,8 +123,7 @@ def _home_state(tmp_path) -> dict:
             patch("autostream_appliance_models.parse_config", return_value=MagicMock()),
             patch("autostream_appliance_models.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
-            patch("autostream_appliance_models.list_outputs",
-                  return_value=MagicMock(ok=True, outputs=[])),
+            fake_outputs([]),
             fake_levels([]),
             fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
@@ -192,8 +191,7 @@ def _render_home() -> str:
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
             fake_levels([]),
             fake_playback(snap),
-            patch("autostream_webui_page_airplay.list_outputs",
-                  return_value=MagicMock(ok=False, outputs=[])),
+            fake_outputs([], connected=False),
             patch("autostream_webui_page_airplay.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
             fake_track(disabled_snapshot()),

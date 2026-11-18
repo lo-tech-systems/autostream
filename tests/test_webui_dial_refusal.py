@@ -31,7 +31,7 @@ from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 import autostream_webui_api as api
 from autostream_webui_state import WebUIState
 from track_id.models import disabled_snapshot
-from fake_store import fake_repeat, fake_session, fake_track
+from fake_store import FakeStore, fake_repeat, fake_session, fake_track
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -163,6 +163,7 @@ def _success(fn, body, dial_proto):
     ))
     parsed = MagicMock()
     parsed.owntone.base_url = BASE_URL
+    FakeStore().outputs(list(outputs.outputs))
     with (
         patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
         patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),

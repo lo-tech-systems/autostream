@@ -210,6 +210,10 @@ class OutputsPart:
         """The units that are desired selected."""
         return tuple(u for u in self.units if u.selected)
 
+    def reported_rows(self) -> tuple[OutputInfo, ...]:
+        """The player's last row of every unit that has one, in row order."""
+        return tuple(u.reported for u in self.units if u.reported is not None)
+
 
 def empty_playback_snapshot() -> PlaybackSnapshot:
     return PlaybackSnapshot(

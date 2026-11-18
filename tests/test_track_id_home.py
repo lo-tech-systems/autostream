@@ -20,7 +20,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels, fake_playback, fake_track
+from fake_store import fake_levels, fake_outputs, fake_playback, fake_track
 import autostream_appliance_models as models
 import autostream_core as core
 from track_id.models import (
@@ -76,7 +76,6 @@ def _make_config_file(tmp_path: Path) -> Path:
 def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
     """Call build_home_state() with all external dependencies patched."""
     buf_result = MagicMock(ok=True, value="100")
-    out_result = MagicMock(ok=True, outputs=[])
     playback = MagicMock()
     playback.to_public_dict.return_value = {}
     playback.stylus_banner_text = ""
@@ -87,7 +86,7 @@ def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
 
     patches = [
         patch("autostream_appliance_models.get_setting", return_value=buf_result),
-        patch("autostream_appliance_models.list_outputs", return_value=out_result),
+        fake_outputs([]),
         fake_levels([]),
         fake_playback(playback),
         patch("autostream_appliance_models.get_appliance_id", return_value="aabbcc"),

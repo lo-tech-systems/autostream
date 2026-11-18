@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fake_store import fake_levels, fake_playback, fake_track
+from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -137,8 +137,7 @@ class TestMainPageBanner:
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
             fake_levels([]),
             fake_playback(_make_playback_snapshot()),
-            patch("autostream_webui_page_airplay.list_outputs",
-                  return_value=ListOutputsResult(ok=False, error="unreachable")),
+            fake_outputs_result(ListOutputsResult(ok=False, error="unreachable")),
             patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
             fake_track(disabled_snapshot()),
         ]
@@ -231,10 +230,10 @@ class TestSetupPageBannerAbsent:
         auth.get_csrf_token.return_value = "test-csrf"
         auth.get_boot_pin_value.return_value = "1234"
 
+        fake_outputs_result(ListOutputsResult(ok=False, error="unreachable"))
         with patch.multiple(
             "autostream_webui_page_setup",
             get_system_hostname=MagicMock(return_value="autostream"),
-            list_outputs=MagicMock(return_value=ListOutputsResult(ok=False, error="unreachable")),
             get_ap_ssid=MagicMock(return_value="autostream_AP"),
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),

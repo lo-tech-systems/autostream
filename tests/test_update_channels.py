@@ -32,6 +32,7 @@ from autostream_update_support import (
     _sanitise_release_notes,
     _version_key,
 )
+from fake_store import fake_outputs_result
 
 
 # ---------------------------------------------------------------------------
@@ -883,10 +884,10 @@ class TestSetupPageChannelToggle:
         auth.get_boot_pin_value.return_value = "1234"
 
         _list_result = MagicMock(ok=True, outputs=[])
+        fake_outputs_result(_list_result)
         with patch.multiple(
             "autostream_webui_page_setup",
             get_system_hostname=MagicMock(return_value="testhost"),
-            list_outputs=MagicMock(return_value=_list_result),
             get_ap_ssid=MagicMock(return_value="autostream_TEST"),
             get_app_version=MagicMock(return_value="1.0.0-test"),
             _get_dial_sightings=MagicMock(return_value=[]),

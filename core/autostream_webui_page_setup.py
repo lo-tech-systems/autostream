@@ -44,7 +44,6 @@ from autostream_core import (
     update_live_owntone_runtime,
     update_playback_input_config,
 )
-from autostream_player_service import list_outputs
 from autostream_state import store
 from autostream_players import (
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
@@ -1243,10 +1242,10 @@ def _setup_factory_reset_html(auth) -> dict:
 def _setup_playback_defaults_card_html(parsed) -> str:
     """Playback panel -- "Default Speakers" / "Default Volume" card."""
     owntone_outputs_html = ""
-    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
-    if outputs_result.ok:
+    outputs_part = store().snapshot().outputs
+    if outputs_part.connected:
         hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
-        for out in outputs_result.outputs:
+        for out in outputs_part.reported_rows():
             nm = str(out.name or "")
             if not nm:
                 continue

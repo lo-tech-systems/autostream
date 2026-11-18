@@ -23,6 +23,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_appliance_models as models
+from autostream_players import OutputInfo
+from fake_store import FakeStore, fake_outputs
 
 
 # ---------------------------------------------------------------------------
@@ -37,12 +39,17 @@ def _out(
     needs_auth_key: bool = False,
     requires_auth: bool = False,
     pin_pending: bool = False,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> OutputInfo:
+    return OutputInfo(
         id=id_, name=name, selected=selected, volume_percent=volume,
         needs_auth_key=needs_auth_key, requires_auth=requires_auth,
         pin_pending=pin_pending,
     )
+
+
+def _units(rows):
+    """The authority's units for *rows*, as the readers receive them."""
+    return FakeStore().outputs(list(rows)).outputs.units
 
 
 def _parsed(
@@ -142,55 +149,55 @@ def _deep_update(d: dict, u: dict) -> dict:
 
 class TestBuildOutputList:
     def test_empty_owntone_outputs_returns_empty(self):
-        assert models.build_output_list(_parsed(), []) == []
+        assert models.build_output_list(_parsed(), _units([])) == []
 
     def test_output_without_id_or_name_excluded(self):
         raw = [_out("", ""), _out("1", ""), _out("", "AirPlay")]
-        result = models.build_output_list(_parsed(), raw)
+        result = models.build_output_list(_parsed(), _units(raw))
         assert result == []
 
     def test_all_valid_outputs_included(self):
         raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(), raw)
+        result = models.build_output_list(_parsed(), _units(raw))
         assert len(result) == 2
 
     def test_hidden_unselected_non_default_excluded(self):
         raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(hidden_outputs=["Bedroom"]), raw)
+        result = models.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
         assert len(result) == 1
         assert result[0]["name"] == "Kitchen"
 
     def test_hidden_but_selected_still_included(self):
         raw = [_out("1", "Bedroom", selected=True), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(hidden_outputs=["Bedroom"]), raw)
+        result = models.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
         assert any(o["name"] == "Bedroom" for o in result)
 
     def test_hidden_case_insensitive(self):
         raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = models.build_output_list(_parsed(hidden_outputs=["BEDROOM"]), raw)
+        result = models.build_output_list(_parsed(hidden_outputs=["BEDROOM"]), _units(raw))
         assert all(o["name"] != "Bedroom" for o in result)
 
     def test_default_output_sorted_first(self):
         raw = [_out("2", "Zulu"), _out("1", "Alpha"), _out("3", "Garden")]
-        result = models.build_output_list(_parsed(output_name="Zulu"), raw)
+        result = models.build_output_list(_parsed(output_name="Zulu"), _units(raw))
         assert result[0]["name"] == "Zulu"
         assert result[0]["is_default"] is True
 
     def test_non_default_alphabetical_after_default(self):
         raw = [_out("3", "Zulu"), _out("1", "Charlie"), _out("2", "Alpha")]
-        result = models.build_output_list(_parsed(output_name="Zulu"), raw)
+        result = models.build_output_list(_parsed(output_name="Zulu"), _units(raw))
         assert result[0]["name"] == "Zulu"
         assert [o["name"] for o in result[1:]] == ["Alpha", "Charlie"]
 
     def test_volume_clamped_to_0_100(self):
         raw = [_out("1", "A", volume=200), _out("2", "B", volume=-5)]
-        result = models.build_output_list(_parsed(), raw)
+        result = models.build_output_list(_parsed(), _units(raw))
         assert result[0]["volume"] == 100
         assert result[1]["volume"] == 0
 
     def test_result_dict_has_required_keys(self):
         raw = [_out("1", "Room")]
-        result = models.build_output_list(_parsed(), raw)
+        result = models.build_output_list(_parsed(), _units(raw))
         assert set(result[0].keys()) == {
             "id", "name", "selected", "volume", "is_default",
             "needs_auth_key", "requires_auth", "pin_pending", "pin_claim",
@@ -198,19 +205,19 @@ class TestBuildOutputList:
 
     def test_selected_flag_preserved(self):
         raw = [_out("1", "Room", selected=True)]
-        result = models.build_output_list(_parsed(), raw)
+        result = models.build_output_list(_parsed(), _units(raw))
         assert result[0]["selected"] is True
 
     def test_needs_auth_key_true_passed_through(self):
         raw = [_out("1", "Apple TV", needs_auth_key=True, requires_auth=True, pin_pending=True)]
-        result = models.build_output_list(_parsed(), raw)
+        result = models.build_output_list(_parsed(), _units(raw))
         assert result[0]["needs_auth_key"] is True
         assert result[0]["requires_auth"] is True
         assert result[0]["pin_pending"] is True
 
     def test_needs_auth_key_false_passed_through(self):
         raw = [_out("1", "Room")]
-        result = models.build_output_list(_parsed(), raw)
+        result = models.build_output_list(_parsed(), _units(raw))
         assert result[0]["needs_auth_key"] is False
         assert result[0]["requires_auth"] is False
         assert result[0]["pin_pending"] is False
@@ -403,7 +410,6 @@ class TestApplyEqReset:
 class TestBuildHomeStateLocal:
     def _patch_home(self, cfg_path, *, outputs=None, vu_ms=100):
         buf_result = MagicMock(ok=True, value=str(vu_ms))
-        out_result = MagicMock(ok=True, outputs=outputs or [])
         playback = MagicMock()
         playback.to_public_dict.return_value = {}
         playback.stylus_banner_text = ""
@@ -411,7 +417,7 @@ class TestBuildHomeStateLocal:
         playback.bearing_banner_text = ""
         return (
             patch("autostream_appliance_models.get_setting", return_value=buf_result),
-            patch("autostream_appliance_models.list_outputs", return_value=out_result),
+            fake_outputs(outputs or []),
             fake_levels([]),
             fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
@@ -575,7 +581,6 @@ class TestBuildHomeStateFederation:
     def test_federation_completes_within_budget(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         buf_result = MagicMock(ok=True, value="100")
-        out_result = MagicMock(ok=True, outputs=[])
         playback = MagicMock()
         playback.to_public_dict.return_value = {}
         playback.stylus_banner_text = ""
@@ -584,7 +589,7 @@ class TestBuildHomeStateFederation:
         deadline = time.monotonic() + 5.0
 
         with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
-             patch("autostream_appliance_models.list_outputs", return_value=out_result), \
+             fake_outputs([]), \
              fake_levels([]), \
              fake_playback(playback), \
              patch("autostream_appliance_models.get_appliance_id", return_value=""), \
@@ -629,7 +634,6 @@ class TestBuildHomeStateAnnotation:
         import autostream_output_usage as ou
 
         buf_result = MagicMock(ok=True, value="100")
-        out_result = MagicMock(ok=True, outputs=owntone_outputs)
         playback = MagicMock()
         playback.to_public_dict.return_value = {}
         playback.stylus_banner_text = ""
@@ -662,7 +666,7 @@ class TestBuildHomeStateAnnotation:
         @contextmanager
         def _ctx():
             with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
-                 patch("autostream_appliance_models.list_outputs", return_value=out_result), \
+                 fake_outputs(owntone_outputs), \
                  fake_levels([]), \
                  fake_playback(playback), \
                  patch("autostream_appliance_models.get_appliance_id", return_value=""), \
@@ -675,10 +679,7 @@ class TestBuildHomeStateAnnotation:
         return _ctx()
 
     def _make_out(self, id_, name, selected=False):
-        return SimpleNamespace(
-            id=id_, name=name, selected=selected, volume_percent=50,
-            needs_auth_key=False, requires_auth=False, pin_pending=False,
-        )
+        return _out(id_, name, selected=selected)
 
     def test_unselected_occupied_output_marked_remote_in_use(self, tmp_path):
         from unittest.mock import MagicMock
@@ -833,7 +834,7 @@ class TestPinClaimInList:
         fresh.claim("1", "dial:abc")
         with patch.object(_pairing, "STATE", fresh):
             rows = models.build_output_list(
-                _parsed(), [_out("1", "Bedroom"), _out("2", "Kitchen")])
+                _parsed(), _units([_out("1", "Bedroom"), _out("2", "Kitchen")]))
         by_id = {r["id"]: r for r in rows}
         assert by_id["1"]["pin_claim"] == "dial:abc"
         assert by_id["2"]["pin_claim"] == ""

@@ -1,8 +1,8 @@
 """tests/test_audio_status_log_cadence.py
 
-GET /api/audio/status logs a failure to list the outputs at WARNING on the
-first failure and then at most once a minute; in between the failure is
-logged at DEBUG. The clock is injected, so no test waits.
+GET /api/audio/status logs that the outputs are unavailable at WARNING the
+first time and then at most once a minute; in between it is logged at DEBUG.
+The clock is injected, so no test waits.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ if _CORE not in sys.path:
 
 import autostream_logging as log_setup
 import autostream_webui_api as api
+from fake_store import FakeStore
 
 
 @pytest.fixture
@@ -34,48 +35,43 @@ def clock(monkeypatch):
     return now
 
 
-def _call(outputs_result):
+def _call(reachable: bool):
+    if reachable:
+        FakeStore().outputs([])
+    else:
+        FakeStore().outputs_unreachable()
     handler = MagicMock()
     handler.wfile = io.BytesIO()
     cfg = SimpleNamespace(owntone=SimpleNamespace(base_url="http://localhost:3689"))
-    with patch.object(api, "_config_snapshot", return_value=cfg), \
-         patch.object(api, "_session_playing", return_value=False), \
-         patch.object(api, "list_outputs", **outputs_result):
+    with patch.object(api, "_config_snapshot", return_value=cfg),          patch.object(api, "_session_playing", return_value=False):
         api.send_audio_status_json(handler, MagicMock())
 
 
 def _levels(caplog):
-    return [r.levelno for r in caplog.records if "list_outputs" in r.getMessage()]
+    return [r.levelno for r in caplog.records if "audio/status" in r.getMessage()]
 
 
-RAISES = {"side_effect": OSError("connection refused")}
-NOT_OK = {"return_value": SimpleNamespace(ok=False, message="refused", outputs=())}
-
-
-@pytest.mark.parametrize("failure", [RAISES, NOT_OK], ids=["raises", "not-ok"])
 def test_first_failure_warns_repeats_inside_a_minute_do_not_and_after_a_minute_it_warns_again(
-        failure, clock, caplog):
+        clock, caplog):
     caplog.set_level(logging.DEBUG)
 
-    _call(failure)
+    _call(False)
     assert _levels(caplog) == [logging.WARNING]
 
     caplog.clear()
     clock[0] += 10.0
-    _call(failure)
+    _call(False)
     clock[0] += 49.0
-    _call(failure)
+    _call(False)
     assert _levels(caplog) == [logging.DEBUG, logging.DEBUG]
 
     caplog.clear()
     clock[0] += 2.0   # 61 s after the first warning
-    _call(failure)
+    _call(False)
     assert _levels(caplog) == [logging.WARNING]
 
 
-def test_the_two_failure_kinds_share_one_timer(clock, caplog):
+def test_a_reachable_player_logs_nothing(clock, caplog):
     caplog.set_level(logging.DEBUG)
-    _call(RAISES)
-    clock[0] += 5.0
-    _call(NOT_OK)
-    assert _levels(caplog) == [logging.WARNING, logging.DEBUG]
+    _call(True)
+    assert _levels(caplog) == []

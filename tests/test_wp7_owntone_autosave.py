@@ -27,6 +27,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from autostream_settings import SettingsStore
+from fake_store import fake_outputs_result
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -975,7 +976,7 @@ class TestOwntoneSetupPage:
         def _fake_get_setting(base_url, setting_key, timeout=3):
             return _results_by_key.get(setting_key, _default_result)
 
-        with patch("autostream_webui_page_owntone.list_outputs", return_value=_list_result), \
+        with fake_outputs_result(_list_result), \
              patch("autostream_webui_page_owntone.get_capabilities", return_value=_cap), \
              patch("autostream_webui_page_owntone.get_setting", side_effect=_fake_get_setting), \
              patch("autostream_webui_page_owntone.load_state", return_value={}):

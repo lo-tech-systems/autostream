@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 import pytest
+from fake_store import fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -563,10 +564,10 @@ class TestSetupPageTransactionWiring:
         auth.get_boot_pin_value.return_value = "1234"
 
         _list_result = ListOutputsResult(ok=False, error="unreachable")
+        fake_outputs_result(_list_result)
         with patch.multiple(
             "autostream_webui_page_setup",
             get_system_hostname=MagicMock(return_value="autostream"),
-            list_outputs=MagicMock(return_value=_list_result),
             get_ap_ssid=MagicMock(return_value="autostream_AP"),
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),

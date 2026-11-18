@@ -38,6 +38,7 @@ if _core not in sys.path:
 from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_players import ListOutputsResult, OutputInfo
+from fake_store import FakeStore
 from autostream_webui_api import (
     send_dial_outputs_post_json,
     send_dial_outputs_set_post_json,
@@ -113,6 +114,10 @@ def _invoke_list(
         list_result = _ok_list()
     if parsed is None:
         parsed = _parsed()
+    if list_result.ok:
+        FakeStore().outputs(list(list_result.outputs))
+    else:
+        FakeStore().outputs_unreachable()
 
     def _cfg_snapshot(_state):
         if config_error:
@@ -124,7 +129,6 @@ def _invoke_list(
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
-        patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_output_usage.get_usage_snapshot", return_value=usage_snapshot or {}),
     ):
         send_dial_outputs_post_json(handler, state, json_obj)
@@ -368,7 +372,7 @@ class TestOutputsList:
         assert rows["Kitchen"]["remote_owner"] == ""
         assert "remote_owner_service" not in rows["Bedroom"]
 
-    def test_backend_unavailable_when_list_outputs_not_ok(self):
+    def test_backend_unavailable_when_the_player_is_not_answering(self):
         code, body = _invoke_list({"dial_id": DIAL_ID}, list_result=_fail_list())
         assert code == 200
         assert body == {"ok": False, "error": "backend_unavailable"}

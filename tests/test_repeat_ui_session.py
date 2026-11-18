@@ -97,7 +97,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
         fake_levels([]),
         fake_playback(playback),
-        patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
+        fake_outputs_result(list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
         fake_track(disabled_snapshot()),
         patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
@@ -404,7 +404,7 @@ class TestStoppingState:
 #      of the actual replay-origin input.
 # ---------------------------------------------------------------------------
 
-from fake_store import fake_levels, fake_playback, fake_track
+from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 import autostream_core as _core_mod
 from autostream_core import AudioMonitor as _AudioMonitor
 from track_id.models import disabled_snapshot as _disabled_snapshot

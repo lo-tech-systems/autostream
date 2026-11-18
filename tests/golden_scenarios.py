@@ -445,6 +445,11 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
 
     levels = [dict(lv) for lv in scenario.levels]
     fake = FakeStore()
+    # The readers take the output list from the authority's snapshot.
+    if scenario.outputs is None:
+        fake.outputs_unreachable()
+    else:
+        fake.outputs(list(scenario.outputs))
     fake.monitor(monitor_build="golden", log_level="info",
                  connected=scenario.monitor_connected, last_seen_at=1000.0)
     fake.health(**scenario.selfheal)
@@ -499,8 +504,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              },
              parse_config=functools.partial(_parse_without_hardware_probe))
     setattrs(airplay, **{k: v for k, v in shared.items()
-                         if k in ("list_outputs", "get_appliance_id",
-                                  "_dial_update_banner_text")},
+                         if k in ("get_appliance_id", "_dial_update_banner_text")},
              get_app_version=lambda: FIXED_APP_VERSION,
              _config_snapshot=lambda state: cfg,
              get_setting=get_setting,

@@ -33,6 +33,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import _source_text
+from fake_store import fake_outputs
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -643,11 +644,8 @@ def _render_setup_page() -> str:
         "audio1": {"capture_device": "hw:0,0"},
     })
 
-    list_out = MagicMock()
-    list_out.ok = False
-
     with patch(f"{mod}._config_snapshot", new=lambda state: parsed), \
-         patch(f"{mod}.list_outputs", new=lambda base_url, timeout: list_out), \
+         fake_outputs([], connected=False), \
          patch(f"{mod}.build_top_banner_html", new=lambda **kw: ("", "")), \
          patch(f"{mod}.get_system_hostname", new=lambda: "test-host"), \
          patch(f"{mod}.get_app_version", new=lambda: "1.0.0"), \

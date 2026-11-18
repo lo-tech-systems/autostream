@@ -40,7 +40,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fake_store import fake_levels, fake_playback, fake_track
+from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -130,10 +130,10 @@ def _render_setup_page(
 
     _list_result = ListOutputsResult(ok=False, error="unreachable")
 
+    fake_outputs_result(_list_result)
     with patch.multiple(
         "autostream_webui_page_setup",
         get_system_hostname=MagicMock(return_value="autostream"),
-        list_outputs=MagicMock(return_value=_list_result),
         get_ap_ssid=MagicMock(return_value="autostream_AP"),
         get_app_version=MagicMock(return_value="1.0.0"),
         _get_dial_sightings=MagicMock(return_value=[]),
@@ -456,7 +456,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
         fake_levels([]),
         fake_playback(playback),
-        patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
+        fake_outputs_result(list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
         fake_track(disabled_snapshot()),
         patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),

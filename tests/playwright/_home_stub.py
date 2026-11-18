@@ -18,6 +18,7 @@ from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from fake_store import fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 
@@ -122,8 +123,7 @@ def render_home(
             fake_playback(snap),
             patch("autostream_webui_page_airplay._dial_update_banner_text",
                   return_value=banners.get("dial_update", "")),
-            patch("autostream_webui_page_airplay.list_outputs",
-                  return_value=MagicMock(ok=False, outputs=[])),
+            fake_outputs_result(MagicMock(ok=False, outputs=[])),
             patch("autostream_webui_page_airplay.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
             fake_track(disabled_snapshot()),

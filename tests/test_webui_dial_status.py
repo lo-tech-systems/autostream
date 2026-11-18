@@ -63,7 +63,7 @@ from track_id.models import (
 )
 import autostream_session as session
 import autostream_state
-from fake_store import fake_repeat, fake_session, fake_track
+from fake_store import FakeStore, fake_repeat, fake_session, fake_track
 import autostream_repeat as repeat
 
 DIAL_ID = "test-dial-uuid-1234"
@@ -110,6 +110,14 @@ def _fail_list(msg: str = "connection refused") -> ListOutputsResult:
     return ListOutputsResult(ok=False, error=msg)
 
 
+def _arrange_outputs(result: ListOutputsResult) -> None:
+    """Put what the player answered into the output authority's snapshot."""
+    if result.ok:
+        FakeStore().outputs(list(result.outputs))
+    else:
+        FakeStore().outputs_unreachable()
+
+
 def _invoke(
     json_obj: dict,
     *,
@@ -149,6 +157,7 @@ def _invoke(
         auth_state = AUTH_AUTHORIZED if authorized else AUTH_NOT_AUTHORIZED
 
     update_mock = MagicMock()
+    _arrange_outputs(list_result)
 
     parsed = MagicMock()
     parsed.owntone.base_url = BASE_URL
@@ -164,7 +173,6 @@ def _invoke(
         patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
-        patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_webui_api.update_output", update_mock),
         fake_session(session_state if session_state is not None
               else {"active": playing,
@@ -299,11 +307,11 @@ class TestPlayingField:
         handler = _make_handler()
         parsed = MagicMock()
         parsed.owntone.base_url = BASE_URL
+        _arrange_outputs(_ok_list())
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
-            patch("autostream_webui_api.list_outputs", return_value=_ok_list()),
             fake_session({"active": True, "source": "replay"}),
             fake_repeat(None),
             fake_track(disabled_snapshot()),
@@ -647,18 +655,17 @@ class TestFailurePaths:
         assert code == 200
         assert body == {"ok": False, "error": "backend_unavailable"}
 
-    def test_backend_exception_returns_backend_unavailable(self):
+    def test_an_unreachable_player_returns_backend_unavailable(self):
         state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
         handler = _make_handler()
         parsed = MagicMock()
         parsed.owntone.base_url = BASE_URL
+        _arrange_outputs(_fail_list("refused"))
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             fake_session({"active": False, "source": None}),
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
-            patch("autostream_webui_api.list_outputs",
-                  side_effect=ConnectionRefusedError("refused")),
         ):
             send_dial_status_post_json(handler, state, {"dial_id": DIAL_ID})
         code, body = _response(handler)

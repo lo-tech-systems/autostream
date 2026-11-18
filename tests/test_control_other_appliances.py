@@ -24,7 +24,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels, fake_playback
+from fake_store import FakeStore, fake_levels, fake_outputs_result, fake_playback
 import autostream_config as c
 from autostream_webui_common import build_appliance_selector_html
 
@@ -729,7 +729,7 @@ class TestLocalHomeInUseCardHTML:
         playback.has_warning = False
         playback.to_public_dict.return_value = {}
 
-        list_result = MagicMock(ok=True, outputs=[{}])
+        list_result = MagicMock(ok=True, outputs=[FakeStore.output_row("1", "Kitchen")])
         buf_result = MagicMock(ok=True, value="2250")
 
         with patch("autostream_webui_page_airplay._config_snapshot", return_value=parsed), \
@@ -738,7 +738,7 @@ class TestLocalHomeInUseCardHTML:
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"), \
              fake_levels([]), \
              fake_playback(playback), \
-             patch("autostream_webui_page_airplay.list_outputs", return_value=list_result), \
+             fake_outputs_result(list_result), \
              patch("autostream_webui_page_airplay.build_output_list",
                    return_value=[self._IN_USE_OUTPUT]), \
              patch("autostream_output_usage.annotate_outputs", side_effect=lambda x: x), \

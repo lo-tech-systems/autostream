@@ -47,6 +47,7 @@ from autostream_player_service import (
     list_outputs,
     output_supported_config_modes,
 )
+from autostream_state import store
 from autostream_sysutils import run_admin_cmd
 from autostream_webui_common import CSRF_RECOVERY_SCRIPT, _config_snapshot, build_page_html, build_top_banner_html, locked_load_config, send_html
 from autostream_webui_assets import AUTOSAVE_JS, COMMON_MODAL_CSS, RESTART_MODAL_HTML
@@ -258,8 +259,8 @@ def send_owntone_setup_page(
         return
 
     hidden_set = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
-    outputs_result = list_outputs(parsed.owntone.base_url, timeout=3)
-    outputs = list(outputs_result.outputs) if outputs_result.ok else []
+    outputs_part = store().snapshot().outputs
+    outputs = list(outputs_part.reported_rows()) if outputs_part.connected else []
     capabilities = get_capabilities(parsed.owntone.base_url, timeout=3)
 
     known_outputs = dict(parsed.owntone.known_outputs)

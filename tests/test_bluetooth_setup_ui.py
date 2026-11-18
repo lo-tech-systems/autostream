@@ -118,10 +118,10 @@ class _SetupRenderer:
         if bt_status is not None:
             state.get_bluetooth_status = lambda: bt_status  # type: ignore[attr-defined]
 
+        fake_outputs_result(_list_result)
         with patch.multiple(
             "autostream_webui_page_setup",
             get_system_hostname=MagicMock(return_value="autostream"),
-            list_outputs=MagicMock(return_value=_list_result),
             get_ap_ssid=MagicMock(return_value="autostream_AP"),
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),
@@ -233,10 +233,10 @@ class TestBluetoothDisabledGating:
         auth.get_boot_pin_value.return_value = "1234"
         _list_result = ListOutputsResult(ok=False, error="unreachable")
 
+        fake_outputs_result(_list_result)
         with patch.multiple(
             "autostream_webui_page_setup",
             get_system_hostname=MagicMock(return_value="autostream"),
-            list_outputs=MagicMock(return_value=_list_result),
             get_ap_ssid=MagicMock(return_value="autostream_AP"),
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),
@@ -576,6 +576,7 @@ class TestBluetoothOptionMarkup:
 
 
 import re
+from fake_store import fake_outputs_result
 
 
 # ---------------------------------------------------------------------------

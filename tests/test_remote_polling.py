@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from fake_store import fake_levels, fake_playback, fake_track
+from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -240,7 +240,7 @@ def _render_local_home_html() -> str:
         _patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
         fake_levels([]),
         fake_playback(playback),
-        _patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
+        fake_outputs_result(list_result),
         _patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
         fake_track(disabled_snapshot()),
         _patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),

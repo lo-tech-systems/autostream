@@ -51,22 +51,24 @@ class FakeOutput:
         self.offset_ms = offset_ms
 
 
-class FakeListOutputsResult:
-    def __init__(self, ok, outputs=()):
-        self.ok = ok
-        self.outputs = outputs
-        self.error = "" if ok else "boom"
-
-
 class FakePlayerService:
+    """The player calls the orchestrator still makes. The output list it works
+    from comes from the output authority, which this puts in place."""
+
     def __init__(self, outputs, list_ok=True):
+        from autostream_players import OutputInfo
+        from fake_store import FakeStore
         self._outputs = outputs
-        self._list_ok = list_ok
         self.volume_calls = []  # list of (output_id, volume_percent)
         self.enabled_calls = []  # list of (output_id, enabled)
-
-    def list_outputs(self, base_url, timeout=3):
-        return FakeListOutputsResult(self._list_ok, tuple(self._outputs))
+        if list_ok:
+            FakeStore().outputs([
+                OutputInfo(id=o.id, name=o.name, selected=o.selected,
+                           volume_percent=o.volume_percent, offset_ms=o.offset_ms)
+                for o in outputs
+            ])
+        else:
+            FakeStore().outputs_unreachable()
 
     def set_output_volume(self, base_url, output_id, volume_percent, timeout=3):
         self.volume_calls.append((output_id, volume_percent))

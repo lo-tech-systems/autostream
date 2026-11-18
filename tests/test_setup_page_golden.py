@@ -157,18 +157,6 @@ class _DialEntry:
         self.last_seen = last_seen
 
 
-class _OutputInfo:
-    def __init__(self, name):
-        self.name = name
-
-
-class _ListOutputsResult:
-    def __init__(self, ok, outputs=(), error=""):
-        self.ok = ok
-        self.outputs = outputs
-        self.error = error
-
-
 class _BackendCapabilities:
     def __init__(self, can_set_output_offset=True):
         self.can_set_output_offset = can_set_output_offset
@@ -207,11 +195,11 @@ def _render_full_page(tmp_path: Path) -> str:
     auth.get_csrf_token.return_value = FIXED_CSRF_TOKEN
     auth.get_boot_pin_value.return_value = "1234"
 
-    outputs = (
-        _OutputInfo("Living Room Speaker"),
-        _OutputInfo("Kitchen Speaker"),
-    )
-    list_result = _ListOutputsResult(ok=True, outputs=outputs)
+    from fake_store import FakeStore
+    FakeStore().outputs([
+        FakeStore.output_row("1", "Living Room Speaker"),
+        FakeStore.output_row("2", "Kitchen Speaker"),
+    ])
 
     sightings = [_DialSighting("dial-aaaa-1111", "Hallway Dial", "1.0.0-golden", pin_recovery=False)]
     entries = [_DialEntry("dial-aaaa-1111", "Hallway Dial", current_name="Hallway Dial")]
@@ -219,7 +207,6 @@ def _render_full_page(tmp_path: Path) -> str:
     with patch.multiple(
         "autostream_webui_page_setup",
         get_system_hostname=MagicMock(return_value="autostream-golden"),
-        list_outputs=MagicMock(return_value=list_result),
         get_ap_ssid=MagicMock(return_value="autostream_AP"),
         get_app_version=MagicMock(return_value=FIXED_APP_VERSION),
         _get_dial_sightings=MagicMock(return_value=sightings),
@@ -266,11 +253,11 @@ def _render_card_detail(tmp_path: Path, key: str) -> str:
     auth.get_csrf_token.return_value = FIXED_CSRF_TOKEN
     auth.get_boot_pin_value.return_value = "1234"
 
-    outputs = (
-        _OutputInfo("Living Room Speaker"),
-        _OutputInfo("Kitchen Speaker"),
-    )
-    list_result = _ListOutputsResult(ok=True, outputs=outputs)
+    from fake_store import FakeStore
+    FakeStore().outputs([
+        FakeStore.output_row("1", "Living Room Speaker"),
+        FakeStore.output_row("2", "Kitchen Speaker"),
+    ])
 
     sightings = [_DialSighting("dial-aaaa-1111", "Hallway Dial", "1.0.0-golden", pin_recovery=False)]
     entries = [_DialEntry("dial-aaaa-1111", "Hallway Dial", current_name="Hallway Dial")]
@@ -278,7 +265,6 @@ def _render_card_detail(tmp_path: Path, key: str) -> str:
     with patch.multiple(
         "autostream_webui_page_setup",
         get_system_hostname=MagicMock(return_value="autostream-golden"),
-        list_outputs=MagicMock(return_value=list_result),
         get_ap_ssid=MagicMock(return_value="autostream_AP"),
         get_app_version=MagicMock(return_value=FIXED_APP_VERSION),
         _get_dial_sightings=MagicMock(return_value=sightings),

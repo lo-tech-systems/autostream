@@ -8,7 +8,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 import math
 import threading
@@ -182,8 +181,9 @@ for _eq_field in _OUTPUT_EQ_BOOL_FIELDS:
     register_field(f"output_eq.{_eq_field}", "output_eq", _eq_field, _normalize_output_eq_bool)
 
 
-def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
-    """Filter and sort OwnTone outputs into the standard dict representation.
+def build_output_list(parsed, units) -> list[dict]:
+    """Filter and sort the output authority's units into the standard dict
+    representation.
 
     Applies hidden-output filtering, puts the configured default first, then
     alphabetical order.  Returns dicts with keys: id, name, selected, volume,
@@ -205,24 +205,27 @@ def build_output_list(parsed, owntone_outputs: list) -> list[dict]:
     }
 
     result: list[dict] = []
-    for out in owntone_outputs:
-        out_id = str(out.id or "").strip()
-        name = str(out.name or "").strip()
+    for unit in units:
+        row = unit.reported
+        if row is None:
+            continue  # the player has no row for it at the moment
+        out_id = str(unit.id or "").strip()
+        name = str(unit.name or "").strip()
         if not out_id or not name:
             continue
-        selected = bool(out.selected)
+        selected = bool(unit.shown_selected)
         if name.casefold() in hidden and not selected and name != default_output_name:
             continue
-        vol = max(0, min(100, int(out.volume_percent)))
+        vol = max(0, min(100, int(unit.volume)))
         result.append({
             "id": out_id,
             "name": name,
             "selected": selected,
             "volume": mute_state.intended_level(out_id, vol),
             "is_default": (name == default_output_name),
-            "needs_auth_key": bool(out.needs_auth_key),
-            "requires_auth": bool(out.requires_auth),
-            "pin_pending": bool(out.pin_pending),
+            "needs_auth_key": bool(row.needs_auth_key),
+            "requires_auth": bool(row.requires_auth),
+            "pin_pending": bool(row.pin_pending),
             "pin_claim": pairing.holder(out_id),
         })
 
@@ -242,12 +245,13 @@ def build_home_state(
 ) -> dict:
     """Build the aggregate Home state dict.
 
-    When *deadline* is set (a time.monotonic() value), OwnTone calls share the
-    remaining budget and run concurrently to fit within the federation 1.5-second
-    internal budget.  A sub-call that misses the budget produces the reachable-
-    appliance waiting model rather than falsely marking the appliance offline.
+    The output list comes from the output authority's snapshot. When *deadline*
+    is set (a time.monotonic() value), the one remaining OwnTone call (the
+    start-buffer setting) is given what is left of the federation 1.5-second
+    internal budget; a call that misses it produces the reachable-appliance
+    waiting model rather than falsely marking the appliance offline.
 
-    When *deadline* is None (local mode) the existing sequential timeouts are used.
+    When *deadline* is None (local mode) the existing timeout is used.
 
     Returns a dict with keys: ok, appliance, preferences, playback, input_levels,
     warnings, outputs, vu_delay_ms.
@@ -284,35 +288,20 @@ def build_home_state(
     outputs: list[dict] = []
 
     if deadline is None:
-        # Local mode: sequential calls with existing timeouts.
         try:
             buf_result = get_setting(owntone_base_url, SETTING_START_BUFFER_MS, timeout=1)
             vu_delay_ms = int(buf_result.value) if buf_result.ok else SETTING_START_BUFFER_MS_DEFAULT
         except Exception:
             vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
-        try:
-            outputs_result = list_outputs(owntone_base_url, timeout=3)
-            if outputs_result.ok:
-                outputs = build_output_list(parsed, list(outputs_result.outputs))
-        except Exception:
-            pass
     else:
-        # Federation mode: concurrent calls within deadline budget.
-        remaining = max(0.0, deadline - time.monotonic())
-        # Reserve a small margin for overhead; cap per-call at remaining / 2.
-        per_call = min(remaining / 2, 1.5)
+        # Federation mode: the one call shares what is left of the budget.
+        # Reserve a small margin for overhead.
+        per_call = min(max(0.0, deadline - time.monotonic()), 1.5)
         if per_call > 0.05:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                fut_buf = pool.submit(
-                    _safe_get_setting, owntone_base_url, per_call
-                )
-                fut_out = pool.submit(
-                    _safe_list_outputs, owntone_base_url, per_call
-                )
-                vu_delay_ms = fut_buf.result()
-                raw_outputs = fut_out.result()
-                if raw_outputs is not None:
-                    outputs = build_output_list(parsed, raw_outputs)
+            vu_delay_ms = _safe_get_setting(owntone_base_url, per_call)
+
+    if snap.outputs.connected:
+        outputs = build_output_list(parsed, snap.outputs.units)
 
     try:
         from autostream_output_usage import annotate_outputs
@@ -384,14 +373,6 @@ def _safe_get_setting(base_url: str, timeout: float) -> int:
         return int(result.value) if result.ok else SETTING_START_BUFFER_MS_DEFAULT
     except Exception:
         return SETTING_START_BUFFER_MS_DEFAULT
-
-
-def _safe_list_outputs(base_url: str, timeout: float) -> Optional[list]:
-    try:
-        result = list_outputs(base_url, timeout=timeout)
-        return list(result.outputs) if result.ok else None
-    except Exception:
-        return None
 
 
 def _local_appliance_info() -> dict:

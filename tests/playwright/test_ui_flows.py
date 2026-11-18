@@ -29,6 +29,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fake_store import fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 
@@ -142,8 +143,7 @@ def _render_production_setup_page() -> tuple[bytes, dict[str, bytes]]:
         state = WebUIState(str(cfg_path), str(Path(tmp) / "state.json"))
         handler = _CapturingHandler()
 
-        with patch("autostream_webui_page_setup.list_outputs",
-                   return_value=outputs_mock), \
+        with fake_outputs_result(outputs_mock), \
              patch("autostream_webui_page_setup.get_ap_ssid",
                    return_value="autostream-setup"), \
              patch("autostream_webui_page_setup.get_system_hostname",
