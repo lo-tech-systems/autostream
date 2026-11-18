@@ -344,6 +344,15 @@ _REPEAT_LAYOUTS = {
 }
 
 
+def _repeat_layout_key(snapshot, appliance_id: str):
+    """What of *appliance_id*'s repeat record in *snapshot* the repeat page
+    draws, other than the replay counter (which repaints on its own second):
+    whether it is available, its state and whether it is armed."""
+    entry = snapshot.appliance(appliance_id)
+    rec = entry.repeat if entry is not None else None
+    return None if rec is None else (rec.available, rec.state, rec.armed)
+
+
 # The row-list screens built from a ListScreenState: the placeholder shown
 # with no rows, and the mapping from a core row to a list row.
 _ROW_LISTS = {
@@ -3010,10 +3019,12 @@ class DialDisplay:
             self._screen_request = None
 
     def _follow_screen_data(self, prev, new) -> None:
-        """What a change in the core's outputs or EQ state means for the pages showing them: a
-        repaint when one is up, the outputs list clamped to the page its rows still reach, and the
-        per-output page sent back to the list when its output has gone. Runs on the repaint thread
-        (or whoever drives the fold), never with self._lock held."""
+        """What a change in the core's outputs, EQ or repeat state means for the pages showing
+        them: a repaint when one is up, the outputs list clamped to the page its rows still reach,
+        and the per-output page sent back to the list when its output has gone. The repeat page
+        repaints when its appliance's record changes what it draws, such as Armed after a tap,
+        which the appliance confirms in a later push. Runs on the repaint thread (or whoever drives
+        the fold), never with self._lock held."""
         if new.outputs != prev.outputs:
             with self._lock:
                 state = self._outputs
@@ -3033,6 +3044,10 @@ class DialDisplay:
                 self._overlay_signal.set()
         if new.eq != prev.eq and self._eq is not None:
             self._overlay_signal.set()
+        screen = self._repeat_screen
+        if self._screen == "repeat" and screen is not None:
+            if _repeat_layout_key(prev, screen.appliance_id) != _repeat_layout_key(new, screen.appliance_id):
+                self._overlay_signal.set()
 
     def _apply_snapshot(self, prev, new) -> None:
         """What a snapshot means for the screen. Anything that makes the

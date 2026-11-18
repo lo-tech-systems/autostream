@@ -443,6 +443,63 @@ class TestRepeatScreenComposePath:
         assert display._picker is None
 
 
+class TestRepeatScreenFollowsItsRecord:
+    """The appliance confirms an arm in a later push, so the repeat page
+    repaints when its record changes what the page draws."""
+
+    def _open(self):
+        aid = "5" * 20
+        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
+        display, fb, _ = make_display(targets=[t], repeat_capable=True)
+        display.enable()
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", armed=False))
+        display.cycle_pages()
+        with display._lock:
+            display._repaint_current_locked()
+        assert display._screen == "repeat"
+        return display, fb, aid
+
+    def _fold(self, display):
+        for _ in range(6):
+            if not display._overlay_signal.is_set():
+                return
+            display._repaint_once()
+
+    def test_an_arm_the_appliance_confirms_is_drawn(self):
+        display, fb, aid = self._open()
+        self._fold(display)
+        before = len(fb.displayed)
+        _poll_focused_with_repeat(display, fb, aid, _repeat_obj(state="idle", armed=True))
+        self._fold(display)
+        assert len(fb.displayed) > before
+        with display._lock:
+            assert display._build_repeat_view_locked(display._repeat_screen, time.monotonic()).armed
+
+    def test_a_record_that_changes_nothing_drawn_asks_for_no_repaint(self):
+        display, _, aid = self._open()
+        prev = display._core.snapshot()
+        entry = prev.appliance(aid)
+        moved = dataclasses.replace(entry.repeat, observed_at=entry.repeat.observed_at + 5.0,
+                                    recording_seconds=entry.repeat.recording_seconds + 5.0)
+        new = dataclasses.replace(prev, appliances=tuple(
+            dataclasses.replace(a, repeat=moved) if a.appliance_id == aid else a for a in prev.appliances))
+        display._overlay_signal.clear()
+        display._follow_screen_data(prev, new)
+        assert not display._overlay_signal.is_set()
+
+    @pytest.mark.parametrize("field,value", [("armed", True), ("state", "hold"), ("available", False)])
+    def test_a_change_the_page_draws_asks_for_a_repaint(self, field, value):
+        display, _, aid = self._open()
+        prev = display._core.snapshot()
+        entry = prev.appliance(aid)
+        changed = dataclasses.replace(entry.repeat, **{field: value})
+        new = dataclasses.replace(prev, appliances=tuple(
+            dataclasses.replace(a, repeat=changed) if a.appliance_id == aid else a for a in prev.appliances))
+        display._overlay_signal.clear()
+        display._follow_screen_data(prev, new)
+        assert display._overlay_signal.is_set()
+
+
 class TestRepeatViewTopBandAndBaseImage:
     """Item 3 (the top band's muted/volume readout) and item 6 (the
     replaying layout's artwork/logo base image), as fed by
