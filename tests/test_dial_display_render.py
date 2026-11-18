@@ -3182,7 +3182,14 @@ _UNBROKEN = ("S" * 40, "W" * 40, "M" * 120)
 _TYPICAL = ("Lounge", "Technics stylus", "Needs changing soon (7.5 h remaining). Reset in Service.")
 
 
-def _fit_plan(tier, source, title, message, severity="warning"):
+_TYPICAL_DETAIL = "Played 450 h of its 500 h life. Last changed 3 Mar 2026."
+_WORST_DETAIL = (
+    "The power supply cannot hold the voltage up when the board is busy. Use a supply rated for this board "
+    "and a good cable."
+)[:120]
+
+
+def _fit_plan(tier, source, title, message, severity="warning", detail=""):
     """(draw, message row, metrics, title and message lines, source band) for
     one tier; the lines are laid out in the row left under the band and rule."""
     from PIL import ImageDraw
@@ -3191,7 +3198,10 @@ def _fit_plan(tier, source, title, message, severity="warning"):
     metrics = metrics_for(width, height, mm)
     layout = warning_layout_for(width, height, buttons=1, metrics=metrics)
     rect = layout.message
-    body = Body(BODY_WARNING, title=title, line=message, buttons=("Close",), source=source, severity=severity)
+    body = Body(
+        BODY_WARNING, title=title, line=message, buttons=("Close",), source=source, severity=severity,
+        detail=detail,
+    )
     draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
     band = _plan_warning_band(draw, rect, body, metrics, layout.source_band_h)
     below = (rect[0], rect[1] + band[2] + band[3], rect[2], rect[3])
@@ -3220,6 +3230,55 @@ class TestApplianceWarningText:
         assert band[2] + band[3] + sum(size * 1.2 for _, _, size, _ in plan) <= rect[3] - rect[1]
         for text, font in [(t, f) for t, f, _, _ in plan] + [(band[0], band[1])]:
             assert _text_size(draw, text, font)[0] <= max_w, text
+
+    @staticmethod
+    def _detail_lines(plan, detail):
+        """The plan's detail lines (everything after the empty gap entry)."""
+        gap = [i for i, (text, *_) in enumerate(plan) if not text]
+        assert len(gap) <= 1
+        return [text for text, *_ in plan[gap[0] + 1:]] if gap else None
+
+    def test_a_typical_detail_is_planned_whole_at_320x240(self):
+        _, _, metrics, plan, _ = _fit_plan(
+            "rich_320x240", "Turntable", "Technics stylus", "Change now", detail=_TYPICAL_DETAIL)
+        lines = self._detail_lines(plan, _TYPICAL_DETAIL)
+        assert lines and " ".join(lines) == _TYPICAL_DETAIL
+        small = max(9, round(metrics.font_body * 0.8))
+        assert all(size == small for _, _, size, _ in plan[-len(lines):])
+
+    def test_the_gap_is_an_empty_entry_between_the_message_and_the_detail(self):
+        _, _, _, plan, _ = _fit_plan(
+            "rich_320x240", "Turntable", "Technics stylus", "Change now", detail=_TYPICAL_DETAIL)
+        at = [i for i, (text, *_) in enumerate(plan) if not text]
+        assert len(at) == 1 and plan[at[0] - 1][0] == "Change now"
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    @pytest.mark.parametrize("detail", [_TYPICAL_DETAIL, "18% of its life left.", _WORST_DETAIL])
+    @pytest.mark.parametrize("texts", [
+        (_WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE), _UNBROKEN, _TYPICAL, ("Lounge", "Power supply", ""),
+    ], ids=["worst", "unbroken", "typical", "title_only"])
+    def test_a_detail_is_whole_or_absent_and_the_rest_is_unchanged_when_absent(self, tier, texts, detail):
+        draw, rect, metrics, plan, band = _fit_plan(tier, *texts, detail=detail)
+        _, _, _, plain, _ = _fit_plan(tier, *texts)
+        lines = self._detail_lines(plan, detail)
+        if lines is None:
+            assert plan == plain
+        else:
+            assert " ".join(lines) == detail
+        max_w = rect[2] - rect[0] - 2 * metrics.pad
+        assert band[2] + band[3] + sum(size * 1.2 for _, _, size, _ in plan) <= rect[3] - rect[1]
+        for text, font, _, _ in plan:
+            assert _text_size(draw, text, font)[0] <= max_w
+
+    def test_a_detail_that_cannot_fit_whole_is_dropped_and_the_card_is_as_without_it(self):
+        _, _, _, plan, _ = _fit_plan(
+            "base_160x128", _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE, detail=_WORST_DETAIL)
+        _, _, _, plain, _ = _fit_plan("base_160x128", _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
+        assert self._detail_lines(plan, _WORST_DETAIL) is None and plan == plain
+
+    def test_a_card_with_no_detail_is_planned_as_it_always_was(self):
+        _, _, _, plan, _ = _fit_plan("rich_320x240", *_TYPICAL)
+        assert self._detail_lines(plan, "") is None
 
     @pytest.mark.parametrize("tier", ["compact_128x128", "compact_240x240", "rich_320x240"])
     def test_the_longest_title_is_shown_whole_where_the_row_has_room(self, tier):

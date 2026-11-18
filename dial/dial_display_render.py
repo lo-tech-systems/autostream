@@ -861,7 +861,12 @@ def _plan_warning_text(
     as the row allows, the last ellipsized, and the message (small size)
     gets the height that is left, ellipsized, or is dropped when there is
     none. Returns [] when no font loads or the row holds no line at all.
-    Pure: measuring calls only."""
+    A detail (body.detail) is tried first: at the small size, under the
+    message with a gap of half a small line (an empty entry, so the drawer
+    and the fit arithmetic count it like any line), and only if title,
+    message and detail all fit whole on one rung of the ladder; it is never
+    shortened. When it does not fit it is left out and the plan is what it
+    would be without one. Pure: measuring calls only."""
     pad = metrics.pad
     max_w = rect[2] - rect[0] - 2 * pad
     max_h = rect[3] - rect[1]
@@ -872,17 +877,29 @@ def _plan_warning_text(
     if any(font is None for font in fonts.values()) or max_w <= 0:
         return []
 
-    def fitted(title_px: int, message_px: int):
+    def fitted(title_px: int, message_px: int, extra: int = 0):
         title = _wrap_words(draw, body.title, fonts[title_px], max_w)
         message = _wrap_words(draw, body.line, fonts[message_px], max_w) if body.line else ()
-        if (len(title) * title_px + len(message) * message_px) * 1.2 <= max_h:
+        if (len(title) * title_px + len(message) * message_px + extra) * 1.2 <= max_h:
             return title, message
         return None
 
+    ladder = ((readout_px, body_px), (readout_px, small_px), (body_px, body_px), (body_px, small_px))
+    if body.detail:
+        detail = _wrap_words(draw, body.detail, fonts[small_px], max_w)
+        gap = small_px // 2
+        for title_px, message_px in ladder:
+            shown = fitted(title_px, message_px, extra=len(detail) * small_px + gap)
+            if shown is not None:
+                title, message = shown
+                out = [(line, fonts[title_px], title_px, GLYPH_RGB) for line in title]
+                out.extend((line, fonts[message_px], message_px, GLYPH_RGB) for line in message)
+                out.append(("", fonts[small_px], gap, GLYPH_RGB))
+                out.extend((line, fonts[small_px], small_px, GLYPH_RGB) for line in detail)
+                return out
+
     chosen = None
-    for title_px, message_px in (
-        (readout_px, body_px), (readout_px, small_px), (body_px, body_px), (body_px, small_px),
-    ):
+    for title_px, message_px in ladder:
         chosen = fitted(title_px, message_px)
         if chosen is not None:
             break
@@ -915,7 +932,8 @@ def _draw_fitted_warning_text(
     top = max(y0, y0 + (y1 - y0 - sum(size * 1.2 for _, _, size, _ in lines)) / 2)
     for text, font, size, color in lines:
         row = (x0, int(round(top)), x1, int(round(top + size * 1.2)))
-        _draw_label_centered(draw, row, text, font, color)
+        if text:
+            _draw_label_centered(draw, row, text, font, color)
         top += size * 1.2
 
 
