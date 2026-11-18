@@ -122,33 +122,6 @@ class TestApplyEqFieldBoolViaStore:
 class TestCallerPassSettings:
     """Verify that webui_api callers forward settings= to apply_eq_field/reset."""
 
-    def test_send_output_eq_config_passes_settings(self, tmp_path):
-        """send_output_eq_config_json passes settings=getattr(state,'settings',None)."""
-        from webui.browser.equaliser import send_output_eq_config_json
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, store)
-        handler, sent = _make_handler()
-        body = json.dumps({"field": "gain_db", "value": "1.5"})
-        with patch("autostream_monitor_control.apply_eq_field", return_value=(True, "1.5", "")) as m_apply:
-            send_output_eq_config_json(handler, state, body)
-        m_apply.assert_called_once()
-        _, kwargs = m_apply.call_args
-        assert writable_store(kwargs.get("settings")) is store
-
-    def test_send_output_eq_reset_passes_settings(self, tmp_path):
-        """send_output_eq_reset_json passes settings=getattr(state,'settings',None)."""
-        from webui.browser.equaliser import send_output_eq_reset_json
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, store)
-        handler, sent = _make_handler()
-        with patch("autostream_monitor_control.apply_eq_reset", return_value=(True, "")) as m_reset:
-            send_output_eq_reset_json(handler, state)
-        m_reset.assert_called_once()
-        _, kwargs = m_reset.call_args
-        assert writable_store(kwargs.get("settings")) is store
-
     def test_send_federation_eq_config_passes_settings(self, tmp_path):
         """send_federation_eq_config_json passes settings=getattr(state,'settings',None)."""
         from webui.peer.federation import send_federation_eq_config_json

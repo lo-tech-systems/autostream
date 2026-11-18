@@ -910,8 +910,8 @@ def send_gateway_eq_reset_json(handler, state, appliance_id: str) -> None:
 def send_gateway_repeat_json(handler, state, appliance_id: str, body_str: str) -> None:  # noqa: ARG001
     """POST /api/appliances/<id>/repeat (browser CSRF already validated by caller).
 
-    Same {"armed": bool} request/response contract as POST /api/repeat --
-    see webui/repeat.py apply_repeat_arm_request().
+    The {"armed": bool} request/response contract is in
+    webui/repeat.py apply_repeat_arm_request().
     """
     resolution, sighting = resolve_appliance(appliance_id)
     if resolution not in ("bound", "remote"):

@@ -3,11 +3,10 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-The repeat-arm request shared by the Home page, the dial and the peer routes.
+The repeat-arm request shared by the peer routes.
 
 Contents:
   - apply_repeat_arm_request         -- the arm request itself
-  - send_repeat_post_json            -- POST /api/repeat
 """
 
 from __future__ import annotations
@@ -16,21 +15,19 @@ import json
 from autostream_intents import Intent, submit
 from autostream_state import Origin
 from autostream_pin_pairing import REQUESTER_WEBUI
-from webui import common
 
 
 def apply_repeat_arm_request(body: str, *, requester: str = REQUESTER_WEBUI) -> tuple[int, dict]:
     """Validate and apply an {"armed": bool} repeat arm/disarm request.
 
-    Shared core logic for POST /api/repeat (below), POST
-    /api/federation/v1/repeat (send_federation_repeat_json), and the
-    bound-appliance path of POST /api/appliances/<id>/repeat
-    (webui.peer.gateway.send_gateway_repeat_json) -- all three
-    apply to this same appliance's daemon, so the validation and
-    response-shape contract lives in one place rather than three.
+    Shared core logic for POST /api/federation/v1/repeat
+    (send_federation_repeat_json) and the bound-appliance path of
+    POST /api/appliances/<id>/repeat (webui.peer.gateway.send_gateway_repeat_json)
+    -- both apply to this same appliance's daemon, so the validation and
+    response-shape contract lives in one place.
 
     Session arm is runtime-only: no settings write accompanies
-    this call, and current armed/replay state is read back from /api/status
+    this call, and current armed/replay state is read back from the state
     (the daemon is the single source of truth -- no WebUIState mirror).
 
     Returns (http_status, response_dict):
@@ -61,14 +58,3 @@ def apply_repeat_arm_request(body: str, *, requester: str = REQUESTER_WEBUI) -> 
         return 200, {"ok": False, "armed": armed, "error": "Could not update repeat arm state"}
 
     return 200, {"ok": True, "armed": armed}
-
-
-def send_repeat_post_json(handler, state, body: str) -> None:
-    """POST /api/repeat -- arm/disarm repeat-recording replay.
-
-    Request: {"armed": bool}
-
-    See apply_repeat_arm_request() for the full validation/response contract.
-    """
-    status, resp = apply_repeat_arm_request(body)
-    common.send_json(handler, status, resp)

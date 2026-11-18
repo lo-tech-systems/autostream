@@ -11,7 +11,6 @@ import from here without risking a circular import.
 
 from __future__ import annotations
 
-import html
 
 
 def banner_html(banner_id: str, message_html: str) -> tuple[str, str]:
@@ -78,74 +77,3 @@ def toggle_html(
         f'{indent}  <span class="switch"></span>\n'
         f'{indent}</label>'
     )
-
-
-def output_card_html(
-    *,
-    out_id,
-    name: str,
-    selected: bool,
-    volume,
-    is_default: bool,
-    remote_in_use: bool = False,
-    remote_owner: str = "",
-    connecting: bool = False,
-    offline: bool = False,
-    disabled: bool = False,
-) -> str:
-    """Render one output card, matching the local Home page's markup exactly.
-
-    DELIBERATE DUAL-RENDER EXCEPTION (remote-shell JS mirroring): this is
-    mirrored by the JS function
-    ``renderOutputList()``/``buildOutputCardElement()`` in
-    ``nginx/static/render_fragments.js`` (served statically like
-    poll.js/theme.css, not inlined). Any change to the
-    output-card markup/classes/data-* attributes here must be reflected
-    there too, or the local and remote Home pages will visibly drift apart.
-    """
-    safe_name = html.escape(name)
-    default_badge = '<span class="output-card-default">Default</span>' if is_default else ""
-    if remote_in_use:
-        state_text = html.escape(f"In Use by {remote_owner}" if remote_owner else "In Use")
-        state_cls = "in-use"
-        card_state_cls = "output-card-in-use"
-        cb_disabled = " disabled"
-    else:
-        state_text = "On" if selected else "Off"
-        state_cls = "on" if selected else "off"
-        card_state_cls = "output-card-on" if selected else "output-card-off"
-        cb_disabled = ""
-    state_label = ""
-    if not remote_in_use:
-        if connecting:
-            state_label = " (Connecting)"
-            card_state_cls += " output-card-connecting"
-        elif offline:
-            state_label = " (offline)"
-            card_state_cls += " output-card-offline"
-        if disabled:
-            cb_disabled = " disabled"
-    label_hidden = "" if state_label else " hidden"
-    slider_disabled = " disabled" if offline and not remote_in_use else ""
-    is_default_attr = "1" if is_default else "0"
-    data_remote_in_use = "1" if remote_in_use else "0"
-    safe_remote_owner = html.escape(remote_owner)
-    return f"""
-          <div class="output-card {card_state_cls}" id="output_card_{out_id}" data-output-id="{out_id}" data-is-default="{is_default_attr}" data-remote-in-use="{data_remote_in_use}" data-remote-owner="{safe_remote_owner}">
-            <div class="output-card-head">
-              <div class="output-card-meta">
-                <div class="output-card-name">{safe_name}<span class="output-card-state-label" id="output_label_{out_id}"{label_hidden}>{state_label}</span></div>
-                {default_badge}
-                <span class="output-state-chip {state_cls}" id="output_state_{out_id}">{state_text}</span>
-              </div>
-              <label class="output-toggle" onclick="event.stopPropagation();">
-                <input type="checkbox" id="output_enabled_{out_id}"{' checked' if selected else ''}{cb_disabled} onchange="onToggleOutput('{out_id}')">
-                <span class="switch" aria-hidden="true"></span>
-              </label>
-            </div>
-            <div class="output-slider-wrap" id="output_slider_wrap_{out_id}" onclick="event.stopPropagation();"{' hidden' if not selected else ''}>
-              <div class="slider-header"><span>Volume:</span><span id="vol_label_{out_id}" data-volume-label-for="{out_id}"></span></div>
-              <input type="range" id="vol_slider_{out_id}" min="0" max="100" step="1" value="{volume}"{slider_disabled} oninput="updateVolumeLabel('{out_id}', this.value)" onchange="onVolumeChange('{out_id}', this.value)">
-            </div>
-          </div>
-        """

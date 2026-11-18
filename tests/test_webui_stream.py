@@ -237,24 +237,24 @@ def test_changed_parts_names_the_parts_moved_since_the_clients_version(store, pu
 
 def test_event_bytes_is_one_compact_ascii_event(store, pub):
     snap = _scripted(store, pub)
-    raw = proto_stream.event_bytes(snap, ("session", "outputs"), False)
+    raw = proto_stream.event_bytes(snap, False)
     raw.decode("ascii")
     assert raw.endswith(b"\n\n")
     lines = raw.decode().split("\n")
     assert lines[0] == f"id: {snap.boot}-{snap.version}"
     assert lines[1] == "event: change"
     assert lines[2] == (
-        'data: {"boot":"%s","version":%d,"resync":false,"parts":["session","outputs"],"data":{}}'
+        'data: {"boot":"%s","version":%d,"resync":false,"data":{}}'
         % (snap.boot, snap.version))
     assert lines[3:] == ["", ""]
     assert proto_stream.event_id(snap) == f"{snap.boot}-{snap.version}"
 
 
 def test_event_bytes_marks_a_resync(store):
-    raw = proto_stream.event_bytes(store.snapshot(), tuple(PART_NAMES), True)
+    raw = proto_stream.event_bytes(store.snapshot(), True)
     data = json.loads(raw.decode().split("data: ")[1])
     assert data["resync"] is True
-    assert data["parts"] == list(PART_NAMES)
+    assert data["data"] == {}
 
 
 # -----------------------------------------------------------------------------
@@ -437,7 +437,7 @@ def test_a_new_client_gets_the_retry_and_a_resync_event(store, pub, run):
     assert r.client.body.startswith(b"retry: 2000\n\n")
     (event,) = r.client.events()
     assert event["resync"] is True
-    assert event["parts"] == list(PART_NAMES)
+    assert event["data"] == {}
     assert event["version"] == store.snapshot().version
     assert event["id"] == f"{store.snapshot().boot}-{store.snapshot().version}"
     assert r.handler.close_connection is True
@@ -457,7 +457,7 @@ def test_a_current_client_hears_nothing_until_the_heartbeat_then_the_next_change
     pub("session")
     assert r.client.pull_until(b"event: change")
     (event,) = r.client.events()
-    assert event["parts"] == ["session"]
+    assert list(event["data"]) == ["session"]
     assert event["resync"] is False
 
 
@@ -469,7 +469,7 @@ def test_an_older_id_gets_one_event_with_the_parts_moved_since(store, pub, run):
     r = run(headers={"Last-Event-ID": f"{old.boot}-{old.version}"})
     assert r.client.pull_until(b"event: change")
     (event,) = r.client.events()
-    assert event["parts"] == ["session", "outputs"]
+    assert list(event["data"]) == ["session", "outputs"]
     assert event["resync"] is False
 
 
@@ -479,7 +479,7 @@ def test_the_query_resumes_when_there_is_no_header(store, pub, run):
     pub("session")
     r = run(path=f"/api/v1/events?since={old.boot}-{old.version}")
     assert r.client.pull_until(b"event: change")
-    assert r.client.events()[0]["parts"] == ["session"]
+    assert list(r.client.events()[0]["data"]) == ["session"]
 
 
 def test_publishes_within_the_window_become_one_event(store, pub, run):
@@ -492,7 +492,7 @@ def test_publishes_within_the_window_become_one_event(store, pub, run):
     assert r.client.pull_until(b"event: change")
     r.client.pull(0.5)
     (event,) = r.client.events()
-    assert event["parts"] == ["session", "settings"]
+    assert list(event["data"]) == ["session", "settings"]
     assert event["version"] == store.snapshot().version
 
 
@@ -515,7 +515,7 @@ def test_a_change_made_while_another_threads_batch_is_open_is_not_lost_or_repeat
     pub("settings")                 # wakes the stream; the snapshot already holds both
     assert r.client.pull_until(b"event: change")
     (early,) = r.client.events()
-    assert early["parts"] == ["session", "settings"]
+    assert list(early["data"]) == ["session", "settings"]
     close.set()                     # the batch's own change arrives now
     t.join(3.0)
     r.client.pull(0.8)
@@ -615,13 +615,13 @@ def test_a_busy_stream_ends_at_its_lifetime_and_loses_nothing_at_the_cut(
     expected = [p for p in PART_NAMES if final.part_versions.get(p, 0) > since.version]
     got = resumed.client.events()
     if expected:
-        assert [e["parts"] for e in got] == [expected]
+        assert [list(e["data"]) for e in got] == [expected]
         assert got[0]["resync"] is False
     else:
         assert got == []
     told = set()
     for e in events + got:
-        told.update(e["parts"])
+        told.update(e["data"])
     assert {"settings", "session"} <= told
 
 
@@ -856,7 +856,7 @@ def _events(r, count):
 def test_event_bytes_carries_the_listed_parts_as_given(store, pub):
     snap = _scripted(store, pub)
     blobs = {n: proto_state.part_json(snap, n) for n in ("session", "outputs")}
-    raw = proto_stream.event_bytes(snap, ("session", "outputs"), False, blobs)
+    raw = proto_stream.event_bytes(snap, False, blobs)
     raw.decode("ascii")
     event = json.loads(raw.decode().split("data: ")[1])
     assert event["data"] == _part_data(snap, "session", "outputs")
@@ -870,7 +870,7 @@ def test_a_change_event_carries_the_data_of_the_parts_that_moved(hub, pub, run):
     pub("session")
     assert _events(r, 2)
     first, second = r.client.events()
-    assert second["parts"] == ["session"]
+    assert list(second["data"]) == ["session"]
     assert second["data"] == _part_data(hub.store.snapshot(), "session")
     assert first["resync"] is True and first["data"] == {}
 
@@ -884,7 +884,7 @@ def test_a_resumed_stream_gets_data_for_the_parts_newer_than_its_version(hub, pu
     assert r.client.pull_until(b"event: change")
     (event,) = r.client.events()
     assert event["resync"] is False
-    assert event["parts"] == ["session", "outputs"]
+    assert list(event["data"]) == ["session", "outputs"]
     assert event["data"] == _part_data(hub.store.snapshot(), "session", "outputs")
 
 
@@ -894,7 +894,6 @@ def test_a_resync_names_every_part_and_carries_no_data(hub, pub, run):
     assert r.client.pull_until(b"event: change")
     (event,) = r.client.events()
     assert event["resync"] is True
-    assert event["parts"] == list(PART_NAMES)
     assert event["data"] == {}
 
 

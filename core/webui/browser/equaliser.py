@@ -18,13 +18,10 @@ Responsibilities:
 from __future__ import annotations
 
 import html
-import json
 import math
 
 from autostream_appliances import get_all_appliances
-from autostream_intents import Intent, submit
-from autostream_state import Origin
-from autostream_state.live import get_live_monitor_output_rate, get_live_output_eq_status
+from autostream_state.live import get_live_monitor_output_rate
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 import autostream_rpi as rpi
 from autostream_sysutils import get_system_hostname
@@ -457,71 +454,6 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
 
 
 # -----------------------------------------------------------------------------
-# Output equaliser endpoints
-# -----------------------------------------------------------------------------
-
-# -----------------------------------------------------------------------------
-# Output EQ JSON endpoints
-# -----------------------------------------------------------------------------
-
-def send_output_eq_config_json(handler, state, body: str) -> None:
-    """POST /api/output_eq/config -- auto-save one output EQ field.
-
-    Request body (JSON):
-        { "field": "<field_name>", "value": "<raw_value>" }
-
-    Accepted fields:
-        gain_db, auto_trim_enabled, peq1_db ... peq6_db
-    """
-    try:
-        payload = json.loads(body or "{}")
-        field = str(payload.get("field", "")).strip()
-        value_raw = str(payload.get("value", "")).strip()
-    except Exception:
-        common.send_json(handler, 400, {"ok": False, "error": "Invalid request body"})
-        return
-
-    reply = submit(Intent(
-        "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "webui", context=state))
-    if "invalid" in reply.result:
-        common.send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
-        return
-
-    if not reply.ok:
-        common.send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
-        return
-
-    common.send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
-
-
-def send_output_eq_reset_json(handler, state) -> None:
-    """POST /api/output_eq/reset — zero all EQ bands; does not change output gain or auto-trim."""
-    reply = submit(Intent("output.eq.reset", {}, Origin.USER, "webui", context=state))
-    if not reply.ok:
-        common.send_json(handler, 200, {"ok": False, "error": reply.result.get("error", reply.error)})
-        return
-    common.send_json(handler, 200, {"ok": True})
-
-
-def send_output_eq_status_json(handler) -> None:
-    """GET /api/output_eq/status -- return live output trim state from the monitor.
-
-    Response (JSON):
-        { "ok": true,
-          "output_auto_trim_enabled": bool,
-          "output_auto_trim_db": float,
-          "effective_output_gain_db": float }
-    or on monitor unavailable:
-        { "ok": false, "error": "Monitor unavailable" }
-    """
-    status = get_live_output_eq_status()
-    if status is None:
-        common.send_json(handler, 200, {"ok": False, "error": "Monitor unavailable"})
-        return
-    common.send_json(handler, 200, {"ok": True, **status})
-
-
-# -----------------------------------------------------------------------------
 # Route-table adapters: the calling convention the dispatcher uses (handler,
 # state[, body]) in front of the senders above.
 # -----------------------------------------------------------------------------
@@ -529,11 +461,3 @@ def send_output_eq_status_json(handler) -> None:
 
 def _route_get_equaliser(handler, state):
     send_equaliser_page(handler, state)
-
-
-def _route_get_output_eq_status(handler, state):
-    send_output_eq_status_json(handler)
-
-
-def _route_post_output_eq_reset(handler, state, body_str):
-    send_output_eq_reset_json(handler, state)

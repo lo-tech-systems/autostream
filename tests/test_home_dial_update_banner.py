@@ -8,7 +8,6 @@ now count.
 """
 from __future__ import annotations
 
-import json
 import sys
 from contextlib import ExitStack
 from pathlib import Path
@@ -21,11 +20,10 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_track
+from fake_store import fake_levels, fake_outputs, fake_playback, fake_track
 import webui.browser.home_model as models
 from autostream_state import store
 import autostream_dials as dials
-from webui.browser.home_api import send_status_json
 from webui.browser.home import send_airplay_page
 import webui.browser.setup.cards_dials as cards_dials
 import webui.browser.home_model as webui_home_model
@@ -80,36 +78,8 @@ class TestBannerText:
 
 
 # ---------------------------------------------------------------------------
-# Status payload and home state
+# Home state
 # ---------------------------------------------------------------------------
-
-def _status_body() -> dict:
-    sent: dict = {}
-    h = MagicMock()
-    h.send_response.side_effect = lambda code: sent.__setitem__("code", code)
-    h.wfile.write.side_effect = lambda data: sent.__setitem__("body", json.loads(data))
-    with fake_playback_mock() as gp:
-        gp.return_value.to_public_dict.return_value = {}
-        gp.return_value.stylus_banner_text = ""
-        gp.return_value.belt_banner_text = ""
-        gp.return_value.bearing_banner_text = ""
-        send_status_json(h)
-    return sent["body"]
-
-
-class TestStatusPayload:
-    def test_status_carries_banner_text_for_legacy_dial(self):
-        with _sightings(_sighting("a", "")):
-            assert _status_body()["dial_update_banner_text"] == _BANNER
-
-    def test_status_banner_text_empty_when_all_current(self):
-        with _sightings(_sighting("a", "v3")):
-            assert _status_body()["dial_update_banner_text"] == ""
-
-    def test_status_banner_text_empty_when_none_sighted(self):
-        with _sightings():
-            assert _status_body()["dial_update_banner_text"] == ""
-
 
 def _home_state(tmp_path) -> dict:
     cfg = tmp_path / "autostream.json"

@@ -41,7 +41,6 @@ import webui.browser.home
 import webui.browser.home_api
 import webui.browser.logs
 import webui.browser.owntone
-import webui.browser.post_handlers
 import webui.browser.rebooting
 import webui.browser.service
 import webui.browser.setup.page
@@ -80,7 +79,6 @@ _ROUTE_MODULES = (
     webui.browser.home_api,
     webui.browser.logs,
     webui.browser.owntone,
-    webui.browser.post_handlers,
     webui.browser.rebooting,
     webui.browser.service,
     webui.browser.setup.page,
@@ -102,8 +100,7 @@ _ROUTE_MODULES = (
 # DEBUG (see ConfigWebHandler.log_message) since they dominate the resting
 # INFO log volume without carrying diagnostic value.
 #
-# All of these polling paths (/api/status, /api/audio/status,
-# /api/owntone/outputs_state, /api/owntone/outputs, /api/network/status,
+# All of these polling paths (/api/audio/status, /api/network/status,
 # /api/appliances, /api/playing-status, GET /api/log-level) are now
 # declared poll_log=True on their route-table entries instead (PUT
 # /api/log-level stays poll_log=False, preserving the GET-only demotion
@@ -287,8 +284,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             allowed = (
                 path.startswith("/auth")
                 or path.startswith("/api/auth/")
-                or path.startswith("/api/owntone/outputs")
-                or path.startswith("/api/owntone/outputs_state")
                 or path.startswith("/api/owntone/ready")
                 or path.startswith("/first-boot/")
                 or path.startswith("/owntone-restarting")
@@ -382,8 +377,6 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 or path.startswith("/api/auth/")
                 or path == "/first-boot/owntone/continue"
                 or path == "/first-boot/appliance/finish"
-                or path == "/api/output"
-                or path == "/api/output_eq/reset"
                 or path == "/api/service/reset"
             )
             if not _post_commissioning_allowed:

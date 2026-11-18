@@ -105,9 +105,6 @@ def _make_handler(path: str, sess_token: str, csrf_token: str) -> "ConfigWebHand
 # the stub.  The stub is the first downstream call that would be made if the
 # auth guard were absent, so assert_not_called() proves the guard fired.
 _PROTECTED = [
-    ("/setup",              "webui.browser.setup.page._route_post_setup_form"),
-    ("/api/input_eq",       "webui.browser.post_handlers.handle_live_input_eq_update"),
-    ("/api/input_gain",     "webui.browser.post_handlers.handle_live_input_gain_update"),
     ("/api/update/apply",   "webui.system.updates.run_updater"),
     ("/api/reboot",         "webui.system.power.reboot_system"),
     ("/api/factory-reset",  "webui.system.power.handle_factory_reset_post"),
@@ -121,14 +118,7 @@ _PROTECTED = [
 # stub.  These routes are intentionally accessible to any trusted-LAN user
 # and must not be gated by a PIN session.
 _PUBLIC = [
-    ("/api/output",          "webui.browser.post_handlers.handle_output_update"),
-    ("/api/output_eq/reset", "webui.browser.equaliser.send_output_eq_reset_json"),
     ("/api/service/reset",   "webui.browser.api_service.send_service_reset_json"),
-    # Home-page repeat button: playback action, same sensitivity class as
-    # /api/output's enable/volume -- must work without a PIN session (an
-    # in-memory-only session would otherwise 401 the button for anyone who
-    # hadn't opened the setup pages, and after every autostream restart).
-    ("/api/repeat",          "webui.repeat.send_repeat_post_json"),
 ]
 
 
@@ -179,20 +169,17 @@ class TestPostRouterAuthEnforcement:
 class TestRetiredFormRoutes:
     """Routes whose form POST was retired must no longer reach mutation handlers."""
 
-    def test_owntone_setup_post_returns_405(self):
-        """POST /owntone-setup must return 405 — form POST retired in favour of autosave."""
+    @pytest.mark.parametrize("path", ["/setup", "/owntone-setup"])
+    def test_form_post_is_not_routed(self, path):
+        """POST /setup and POST /owntone-setup are gone; settings autosave."""
         mgr = _make_manager()
         sess_token, csrf_token = _csrf_session(mgr)
-        handler = _make_handler("/owntone-setup", sess_token, csrf_token)
-        sent = []
-        def _cap(code, *a, **kw):
-            sent.append(code)
-        handler.send_response = _cap
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False):
+        handler = _make_handler(path, sess_token, csrf_token)
+
+        with patch("webui.session_state.AUTH", mgr),              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)),              patch("autostream_commissioning.is_commissioning_required", return_value=False):
             handler.do_POST()
-        assert sent and sent[0] == 405
+
+        handler.send_error.assert_called_once_with(404, "Not found")
 
     def test_logs_post_returns_404(self):
         """POST /logs has been removed; log-level changes use PUT /api/log-level."""

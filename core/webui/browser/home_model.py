@@ -156,24 +156,6 @@ def build_home_state(snap, parsed) -> dict:
     return reply
 
 
-def home_status_fields(snap) -> dict:
-    """The input levels, playback, warnings and track identification of the
-    Home status reply, all from one snapshot."""
-    playback = snap.playback
-    return {
-        "input_levels": snap.inputs.levels(),
-        "playback": playback.to_public_dict(),
-        "warnings": {
-            "stylus": playback.stylus_banner_text or "",
-            "belt": playback.belt_banner_text or "",
-            "bearing": playback.bearing_banner_text or "",
-            "dial_update": _dial_update_banner_text(),
-            "sample_rate": snap.inputs.sample_rate_warning_text,
-        },
-        "track_identification": active_track(snap).to_public_dict(),
-    }
-
-
 # The wall clock for the age of a start failure; tests replace it.
 _wall = time.time
 
@@ -190,26 +172,6 @@ def start_failure_reply(snap) -> dict:
     }
 
 
-def home_outputs_reply(snap, parsed) -> dict:
-    """The Home speaker list reply: the outputs of one snapshot (empty while
-    the player is unreachable), shaped by the parsed settings, the
-    all-speakers mute, and, only when a start has failed, that failure."""
-    outputs: list[dict] = []
-    if snap.outputs.connected:
-        outputs = build_output_list(
-            parsed, snap.outputs.units, include_offline=True, session_active=snap.session.active,
-        )
-    try:
-        from autostream_state.live import annotate_outputs
-        outputs = annotate_outputs(outputs)
-    except Exception:
-        pass
-    reply = {"ok": True, "outputs": outputs, "muted": snap.outputs.muted_all}
-    if snap.outputs.start_failure is not None:
-        reply["start_failure"] = start_failure_reply(snap)
-    return reply
-
-
 def _dial_update_banner_text() -> str:
     """Dial-update banner text, or "" when none is due or the dial scanner
     is unavailable (never raises)."""
@@ -224,9 +186,8 @@ def _session_and_repeat_fields(snap) -> dict:
     """Return the "session" (always present) and "repeat" (present only when
     the daemon has reported one) fields for build_home_state()'s dict.
 
-    Sourced identically to send_status_json (webui/browser/home_api.py): the
-    session comes from the caller's snapshot, and the repeat block is passed
-    through verbatim when present -- omitted entirely (not a KeyError) when
+    The session comes from the caller's snapshot, and the repeat block is
+    passed through verbatim when present -- omitted entirely (not a KeyError) when
     the daemon has never reported one, so an older backend degrades by
     absence rather than by error.
     """

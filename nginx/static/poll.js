@@ -8,7 +8,7 @@
 //
 // Usage:
 //   var p = Poller({
-//     url: '/api/status',       // string, or a function returning a string
+//     url: '/api/playing-status', // string, or a function returning a string
 //     intervalMs: 1500,
 //     onData: function(json) { ... },
 //     isSuppressed: function() { return false; },   // optional

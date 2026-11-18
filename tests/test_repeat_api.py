@@ -9,10 +9,9 @@ Python contract against a MonitorClient/socket double, not a real daemon.
 Tests cover:
   P1 - Settings five-file contract (repeat.enabled/repeat.codec)
   P2 - Live apply, not reload
-  P3 - POST /api/repeat validation + auth (auth enforcement lives in
-       tests/test_webui_auth_routing.py's protected-route manifest)
-  P4 - /api/status repeat + session passthrough (present verbatim / omitted
-       when absent; session always present)
+  P3 - the repeat arm request validation
+  P4 - the repeat and session state parts (repeat block present verbatim /
+       absent; session always present)
   P5 - Unified playback-session tracker: the source_vector
        {input1, input2, replay} diff and its three events (session_started /
        session_ended / source_changed) driving idle-stop gating and
@@ -48,10 +47,10 @@ from autostream_config import (
     REPEAT_TARGET_MINUTES_MAX,
 )
 from autostream_settings import SettingsStore, as_view
-from webui.browser.home_api import send_status_json
 from webui.browser.api_settings import send_settings_post_json
 from webui.browser.api_settings import send_settings_get_json
-from webui.repeat import send_repeat_post_json
+from webui.repeat import apply_repeat_arm_request
+from webui.protocol import state as _protocol_state
 from webui.browser.api_settings import _SETTINGS_FIELDS
 from autostream_live_config import _validate_repeat_target_minutes
 from autostream_live_config import _validate_repeat_codec
@@ -79,6 +78,11 @@ def get_session_state() -> dict:
 
 def get_repeat_status():
     return autostream_state.store().snapshot().repeat.block
+
+
+def _part_body(name: str) -> dict:
+    """One state part as the state route shows it."""
+    return json.loads(_protocol_state.part_json(autostream_state.store().snapshot(), name))
 
 
 from fake_store import fake_playback_mock, fake_repeat
@@ -491,64 +495,49 @@ class TestP2LiveCodecPulse:
         assert m.call_count == 2
 
 
-# ── P3: /api/repeat endpoint ───────────────────────────────────────────────────
-# Auth/PIN enforcement for this route is asserted in
-# tests/test_webui_auth_routing.py (added to _PROTECTED there).
+# ── P3: the repeat arm request ─────────────────────────────────────────────────
+# Auth for the browser route is by intent now; the request the peer routes
+# share is checked here.
 
 class TestP3RepeatEndpoint:
     def test_valid_armed_true_calls_live_setter(self):
-        responses: list = []
-        h = _handler(responses)
         with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
-            send_repeat_post_json(h, MagicMock(), json.dumps({"armed": True}))
+            code, body = apply_repeat_arm_request(json.dumps({"armed": True}))
         m.assert_called_once_with(True, requester="webui")
-        body = responses[0]["body"]
         assert body == {"ok": True, "armed": True}
-        assert responses[0]["code"] == 200
+        assert code == 200
 
     def test_valid_armed_false_calls_live_setter(self):
-        responses: list = []
-        h = _handler(responses)
         with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
-            send_repeat_post_json(h, MagicMock(), json.dumps({"armed": False}))
+            _code, body = apply_repeat_arm_request(json.dumps({"armed": False}))
         m.assert_called_once_with(False, requester="webui")
-        assert responses[0]["body"]["ok"] is True
+        assert body["ok"] is True
 
     def test_missing_armed_is_400(self):
-        responses: list = []
-        h = _handler(responses)
-        send_repeat_post_json(h, MagicMock(), json.dumps({}))
-        assert responses[0]["code"] == 400
-        assert responses[0]["body"]["ok"] is False
+        code, body = apply_repeat_arm_request(json.dumps({}))
+        assert code == 400
+        assert body["ok"] is False
 
     def test_non_bool_armed_is_400(self):
-        responses: list = []
-        h = _handler(responses)
-        send_repeat_post_json(h, MagicMock(), json.dumps({"armed": "yes"}))
-        assert responses[0]["code"] == 400
+        code, _body = apply_repeat_arm_request(json.dumps({"armed": "yes"}))
+        assert code == 400
 
     def test_invalid_json_is_400(self):
-        responses: list = []
-        h = _handler(responses)
-        send_repeat_post_json(h, MagicMock(), "{not json")
-        assert responses[0]["code"] == 400
+        code, _body = apply_repeat_arm_request("{not json")
+        assert code == 400
 
     def test_non_object_json_is_400(self):
-        responses: list = []
-        h = _handler(responses)
-        send_repeat_post_json(h, MagicMock(), json.dumps([1, 2, 3]))
-        assert responses[0]["code"] == 400
+        code, _body = apply_repeat_arm_request(json.dumps([1, 2, 3]))
+        assert code == 400
 
     def test_daemon_rejection_returns_ok_false_200(self):
-        responses: list = []
-        h = _handler(responses)
         with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value=None):
-            send_repeat_post_json(h, MagicMock(), json.dumps({"armed": True}))
-        assert responses[0]["code"] == 200
-        assert responses[0]["body"]["ok"] is False
+            code, body = apply_repeat_arm_request(json.dumps({"armed": True}))
+        assert code == 200
+        assert body["ok"] is False
 
 
-# ── P4: Status passthrough ─────────────────────────────────────────────────────
+# ── P4: The repeat and session parts ───────────────────────────────────────────
 
 class TestP4StatusPassthrough:
     def test_repeat_block_present_when_cached(self):
@@ -563,31 +552,13 @@ class TestP4StatusPassthrough:
         }
         _set_repeat_status(repeat_block)
         try:
-            responses: list = []
-            h = _handler(responses)
-            with fake_playback_mock() as gp:
-                gp.return_value.to_public_dict.return_value = {}
-                gp.return_value.stylus_banner_text = ""
-                gp.return_value.belt_banner_text = ""
-                gp.return_value.bearing_banner_text = ""
-                send_status_json(h)
-            body = responses[0]["body"]
-            assert body["repeat"] == repeat_block
+            assert _part_body("repeat")["block"] == repeat_block
         finally:
             _set_repeat_status(None)
 
     def test_repeat_block_omitted_when_absent(self):
         _set_repeat_status(None)
-        responses: list = []
-        h = _handler(responses)
-        with fake_playback_mock() as gp:
-            gp.return_value.to_public_dict.return_value = {}
-            gp.return_value.stylus_banner_text = ""
-            gp.return_value.belt_banner_text = ""
-            gp.return_value.bearing_banner_text = ""
-            send_status_json(h)
-        body = responses[0]["body"]
-        assert "repeat" not in body
+        assert _part_body("repeat")["block"] is None
 
     def test_get_repeat_status_ignores_non_dict(self):
         _set_repeat_status("not-a-dict")  # e.g. malformed daemon response
@@ -596,50 +567,24 @@ class TestP4StatusPassthrough:
         finally:
             _set_repeat_status(None)
 
-    # -- session: always present, unlike "repeat" above --
+    # -- session: always present, unlike the repeat block above --
 
-    def test_session_always_present_and_playing_follows_session_active(self):
-        """session.active true + source='replay' while replaying; the
-        top-level "playing" flag is session.active-driven, not a raw
-        is_capturing check (this is the fix for "UI playing flag false
-        during replay")."""
+    def test_session_always_present_and_active_while_replaying(self):
+        """session.active is true with source 'replay' while replaying, though
+        no input is capturing."""
         _set_session_state(True, "replay")
         try:
-            responses: list = []
-            h = _handler(responses)
-            with fake_playback_mock() as gp:
-                gp.return_value.to_public_dict.return_value = {}
-                gp.return_value.stylus_banner_text = ""
-                gp.return_value.belt_banner_text = ""
-                gp.return_value.bearing_banner_text = ""
-                send_status_json(h)
-            body = responses[0]["body"]
-            assert body["session"] == {"active": True, "source": "replay"}
-            assert body["playing"] is True, (
-                "playing must follow session.active even though no input is "
-                "capturing"
-            )
+            assert _part_body("session") == {"active": True, "source": "replay"}
         finally:
             _set_session_state(False, None)
 
     def test_session_present_when_no_repeat_feature(self):
-        """session must not be gated on the "repeat" block's presence (old
-        binary / repeat never enabled) -- unlike "repeat", it is always
-        emitted."""
+        """The session part is not gated on the repeat block's presence (old
+        binary, repeat never enabled)."""
         _set_repeat_status(None)
         _set_session_state(False, None)
-        responses: list = []
-        h = _handler(responses)
-        with fake_playback_mock() as gp:
-            gp.return_value.to_public_dict.return_value = {}
-            gp.return_value.stylus_banner_text = ""
-            gp.return_value.belt_banner_text = ""
-            gp.return_value.bearing_banner_text = ""
-            send_status_json(h)
-        body = responses[0]["body"]
-        assert body["session"] == {"active": False, "source": None}
-        assert body["playing"] is False
-        assert "repeat" not in body
+        assert _part_body("session") == {"active": False, "source": None}
+        assert _part_body("repeat")["block"] is None
 
 
 # ── P5: Unified playback-session tracker ─────────────────────────────────────

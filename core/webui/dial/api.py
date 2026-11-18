@@ -400,8 +400,7 @@ def send_dial_repeat_arm_post_json(handler, state: WebUIState, json_obj: dict) -
 
     UUID-in-body auth via _dial_auth_gate, same as POST /api/dial/status.
     Submits the arm intent directly, never apply_repeat_arm_request
-    (that string-body API stays the contract for POST /api/repeat, federation
-    and the gateway). Arm is allowed in every daemon state -- the daemon's
+    (that string-body API stays the contract for federation and the gateway). Arm is allowed in every daemon state -- the daemon's
     Armed/Disarmed cells decide what it means.
     """
     dial_id = _dial_auth_gate(handler, json_obj)

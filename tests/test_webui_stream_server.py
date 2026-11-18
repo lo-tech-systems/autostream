@@ -81,7 +81,7 @@ def test_a_publish_reaches_a_held_client_promptly(server, publish):
         publish("session")
         assert wait_for(lambda: (c.pull(0.05), len(c.events()) == 2)[1], 3.0)
         assert time.monotonic() - t0 < 1.5
-        assert c.events()[-1]["parts"] == ["session"]
+        assert list(c.events()[-1]["data"]) == ["session"]
     finally:
         c.close()
 
@@ -178,7 +178,10 @@ def test_the_state_route_without_a_pin_returns_the_snapshot(server, publish):
     status, body = server.get("/api/v1/state")
     assert status == 200
     got = json.loads(body)
-    assert got == proto_state.state_json(server.store.snapshot(), clients=0)
+    # The wall clock moves between the two builds; everything else is as held.
+    expected = proto_state.state_json(server.store.snapshot(), clients=0)
+    assert abs(got.pop("time") - expected.pop("time")) < 5.0
+    assert got == expected
     assert len(got["boot"]) == 16 and all(ch in "0123456789abcdef" for ch in got["boot"])
 
 
@@ -205,7 +208,8 @@ def test_the_state_body_has_the_shape_of_the_snapshot(scenario_id, monkeypatch):
     hub = proto_hub.StreamHub(store)
     body = json.loads(hub.state_body(), parse_constant=_no_constant)
     snap = store.snapshot()
-    assert list(body) == ["boot", "version", "protocol", "clients", "part_versions", "parts"]
+    assert list(body) == ["boot", "version", "protocol", "time", "clients", "part_versions", "parts"]
+    assert isinstance(body["time"], float)
     assert body["protocol"] == 4
     assert set(body["parts"]) == set(state.PART_NAMES)
     assert set(body["part_versions"]) <= set(state.PART_NAMES)
@@ -227,7 +231,7 @@ def test_other_requests_are_served_while_streams_are_held(server, monkeypatch):
         slowest = 0.0
         for _ in range(50):
             t0 = time.monotonic()
-            status, _body = server.get("/api/status")
+            status, _body = server.get("/api/v1/state")
             slowest = max(slowest, time.monotonic() - t0)
             assert status == 200
         assert slowest < 0.5
@@ -260,7 +264,7 @@ def test_an_empty_parts_returns_the_top_level_and_the_appliance(server, publish)
     assert status == 200
     got = json.loads(body)
     assert got["parts"] == {"appliance": full_appliance(server)}
-    assert set(got) == {"boot", "version", "protocol", "clients", "part_versions", "parts"}
+    assert set(got) == {"boot", "version", "protocol", "time", "clients", "part_versions", "parts"}
 
 
 @pytest.mark.parametrize("query", ["parts=nonsense", "parts=session,nonsense", "parts=session,,settings"])

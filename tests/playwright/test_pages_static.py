@@ -49,10 +49,6 @@ def _watch_errors(page: "Page") -> list:
 @pytest.fixture(autouse=True)
 def _clean_stub():
     yield
-    stub.STATUS.clear()
-    stub.STATUS_POLLS.clear()
-    stub.OUTPUTS.clear()
-    stub.POLLS.clear()
     stub.REMOTE_HOME.clear()
     stub.REMOTE_HOME_POLLS.clear()
     stub.POSTS.clear()

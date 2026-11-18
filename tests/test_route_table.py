@@ -11,7 +11,7 @@ Four groups:
      temporary routes registered onto a scratch table, with a minimal
      mocked handler, so these tests don't depend on the two real pilot
      routes' specific semantics.
-  3. Pilot-route parity -- GET /about and POST /api/repeat must behave
+  3. Pilot-route parity -- GET /about and POST /api/service/config must behave
      identically via do_GET/do_POST as the route table intends,
      reusing the assertion style of test_webui_auth_routing.py.
 """
@@ -176,7 +176,7 @@ class TestTableIntegrity:
     def test_pilot_routes_are_registered(self):
         keys = {(r.path, tuple(r.methods)) for r in webui_routes.ROUTES}
         assert ("/about", ("GET",)) in keys
-        assert ("/api/repeat", ("POST",)) in keys
+        assert ("/api/service/config", ("POST",)) in keys
 
     def test_register_rejects_exact_duplicate(self):
         scratch = []
@@ -209,20 +209,15 @@ _BROWSER_GET_EXPECTED = [
     ("/owntone-restarting",        AuthRequirement.FULL, "page", True, False),
     # /first-boot/owntone and /first-boot/appliance are covered in the
     # stateful table below (they also carry unconfigured_only).
-    ("/api/status",                AuthRequirement.NONE, "api", False, True),
-    ("/api/owntone/outputs_state", AuthRequirement.NONE, "api", True, True),
-    ("/api/owntone/outputs",       AuthRequirement.FULL, "page", True, True),
     ("/api/audio/status",          AuthRequirement.NONE, "api", False, True),
     ("/api/v1/events",            AuthRequirement.NONE, "api", True, True),
     ("/api/v1/state",             AuthRequirement.NONE, "api", True, True),
     ("/api/about/system",          AuthRequirement.NONE, "api", False, False),
     ("/api/settings",              AuthRequirement.FULL, "api", False, False),
-    ("/api/output_eq/status",      AuthRequirement.NONE, "api", False, False),
     ("/api/owntone/ready",         AuthRequirement.FULL, "page", True, False),
     ("/api/align/status",          AuthRequirement.FULL, "api", False, False),
     ("/api/network/status",        AuthRequirement.FULL, "api", False, True),
     ("/api/bluetooth/status",      AuthRequirement.FULL, "api", False, False),
-    ("/api/inputs/levels",         AuthRequirement.FULL, "api", False, True),
     ("/api/bluetooth/scan_results", AuthRequirement.FULL, "api", False, False),
     ("/api/bluetooth/pair_status", AuthRequirement.FULL, "api", False, False),
     ("/api/update/check",          AuthRequirement.FULL, "page", False, False),
@@ -263,8 +258,7 @@ class TestBrowserGetRouteParity:
 
     def test_polling_paths_removed_from_legacy_tuple(self):
         migrated_pollers = {
-            "/api/status", "/api/audio/status", "/api/owntone/outputs_state",
-            "/api/owntone/outputs", "/api/network/status",
+            "/api/audio/status", "/api/network/status",
         }
         for p in migrated_pollers:
             assert p not in webui_server._POLLING_LOG_PATHS, (
@@ -277,20 +271,15 @@ class TestBrowserGetRouteParity:
 #     auth/allow_unconfigured/requires_body for every browser POST API
 #     route. See the long comment above this route group's registrations
 #     in webui/routes.py for the derivation rules, including the
-#     deliberate output_eq/service reset-vs-config allow_unconfigured
+#     deliberate service reset-vs-config allow_unconfigured
 #     asymmetry and the /api/owntone/* commissioning allowlist applying
 #     despite FULL auth.
 # ---------------------------------------------------------------------------
 
 # (path, auth, allow_unconfigured, requires_body)
 _BROWSER_POST_EXPECTED = [
-    ("/api/output",                     AuthRequirement.CSRF, True, True),
-    ("/api/output_eq/config",           AuthRequirement.CSRF, False, True),
-    ("/api/output_eq/reset",            AuthRequirement.CSRF, True, False),
     ("/api/service/config",             AuthRequirement.CSRF, False, True),
     ("/api/service/reset",              AuthRequirement.CSRF, True, True),
-    ("/api/input_eq",                   AuthRequirement.FULL, False, True),
-    ("/api/input_gain",                 AuthRequirement.FULL, False, True),
     ("/api/settings",                   AuthRequirement.FULL, False, False),
     ("/api/settings/hostname",          AuthRequirement.FULL, False, False),
     ("/api/settings/advertisement",     AuthRequirement.FULL, False, False),
@@ -442,8 +431,8 @@ class TestSpecialSchemeRouteParity:
 
 # ---------------------------------------------------------------------------
 # 1e. Stateful / commissioning browser routes: auth, first-boot, and
-#     logs-download pages (GET); auth verify, pin change, setup/owntone-setup
-#     forms, first-boot continuation, and dial device-management actions
+#     logs-download pages (GET); auth verify, pin change,
+#     first-boot continuation, and dial device-management actions
 #     (POST). Grouped separately from the plain GET/POST tables above
 #     because every route here carries commissioning-window semantics
 #     (unconfigured_only) that the plain tables don't need to express.
@@ -461,8 +450,6 @@ _STATEFUL_GET_EXPECTED = [
 _STATEFUL_POST_EXPECTED = [
     ("/api/auth/verify",              AuthRequirement.NONE, True, False),
     ("/api/pin/change",               AuthRequirement.CSRF, False, False),
-    ("/setup",                        AuthRequirement.CSRF, False, False),
-    ("/owntone-setup",                AuthRequirement.CSRF, False, False),
     ("/first-boot/owntone/continue",  AuthRequirement.FULL, True, True),
     ("/first-boot/appliance/finish",  AuthRequirement.FULL, True, True),
     ("/api/dial/authorize",           AuthRequirement.FULL, False, False),
@@ -679,58 +666,58 @@ class TestPilotRouteAboutPage:
 
 
 @_skip_no_webui
-class TestPilotRouteApiRepeat:
-    """POST /api/repeat: AuthRequirement.CSRF, no PIN gate (matches the
-    _PUBLIC manifest in test_webui_auth_routing.py).
+class TestPilotRouteApiServiceConfig:
+    """POST /api/service/config: AuthRequirement.CSRF, a body required, not
+    allowed before commissioning is complete.
     """
 
-    def test_repeat_allows_unauthenticated_with_valid_csrf(self):
+    def test_service_config_allows_unauthenticated_with_valid_csrf(self):
         mgr = _make_manager()
         sess_token, csrf_token = _csrf_session(mgr)
         body = b'{"armed": true}'
-        h = _make_handler("/api/repeat", "POST", sess_token, csrf_token, body=body)
+        h = _make_handler("/api/service/config", "POST", sess_token, csrf_token, body=body)
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("webui.repeat.send_repeat_post_json") as stub:
+             patch("webui.browser.api_service.send_service_config_json") as stub:
             h.do_POST()
         stub.assert_called_once()
 
-    def test_repeat_rejects_missing_csrf(self):
+    def test_service_config_rejects_missing_csrf(self):
         mgr = _make_manager()
         _csrf_session(mgr)  # session exists, but token below is wrong
         body = b'{"armed": true}'
-        h = _make_handler("/api/repeat", "POST", "", "", body=body)
+        h = _make_handler("/api/service/config", "POST", "", "", body=body)
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("webui.repeat.send_repeat_post_json") as stub:
+             patch("webui.browser.api_service.send_service_config_json") as stub:
             h.do_POST()
         stub.assert_not_called()
 
-    def test_repeat_missing_body_matches_legacy_400(self):
+    def test_service_config_missing_body_matches_legacy_400(self):
         mgr = _make_manager()
         sess_token, csrf_token = _csrf_session(mgr)
-        h = _make_handler("/api/repeat", "POST", sess_token, csrf_token, body=b"")
+        h = _make_handler("/api/service/config", "POST", sess_token, csrf_token, body=b"")
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("webui.repeat.send_repeat_post_json") as stub:
+             patch("webui.browser.api_service.send_service_config_json") as stub:
             h.do_POST()
         stub.assert_not_called()
         h.send_error.assert_called_once_with(400, "Missing request body")
 
-    def test_repeat_gated_during_commissioning(self):
+    def test_service_config_gated_during_commissioning(self):
         mgr = _make_manager()
         sess_token, csrf_token = _csrf_session(mgr)
         body = b'{"armed": true}'
-        h = _make_handler("/api/repeat", "POST", sess_token, csrf_token, body=body)
+        h = _make_handler("/api/service/config", "POST", sess_token, csrf_token, body=body)
         sent = []
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("webui.repeat.send_repeat_post_json") as stub:
+             patch("webui.browser.api_service.send_service_config_json") as stub:
             h.do_POST()
         stub.assert_not_called()
         assert sent and sent[0][0] == 409

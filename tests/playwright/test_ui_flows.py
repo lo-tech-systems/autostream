@@ -237,7 +237,7 @@ class TestSetupPage:
         assert not errors, f"JavaScript errors on /setup load: {errors}"
 
     def test_no_js_errors_after_polling_interval(self, page: "Page", base_url: str):
-        """Real page polls /api/owntone/outputs every 2 s; stub returns valid JSON."""
+        """The Setup page reads the state every 2 s; the stub returns valid JSON."""
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(f"{base_url}/setup")

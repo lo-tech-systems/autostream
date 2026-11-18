@@ -178,8 +178,7 @@ def send_federation_eq_status_json(handler, state: WebUIState) -> None:  # noqa:
 
 def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> None:  # noqa: ARG001
     """POST /api/federation/v1/repeat -- arm/disarm repeat replay on the local
-    appliance.  Same request/response contract as POST /api/repeat -- see
-    apply_repeat_arm_request().
+    appliance.  See apply_repeat_arm_request() for the request/response contract.
     """
     status, resp = repeat.apply_repeat_arm_request(body_str, requester="peer")
     common.send_json(handler, status, resp)

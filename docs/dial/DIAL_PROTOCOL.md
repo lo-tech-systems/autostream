@@ -324,8 +324,8 @@ no-op) while the next restore falls back to the configured default volume for an
 
 **Outputs touched while muted.** An output enabled, or whose volume is changed, while the
 appliance is muted stays silent: its requested level becomes what the restore action brings
-it to, rather than being applied immediately. This applies uniformly across `POST
-/api/output` (the browser), `POST /api/dial/outputs/set` (the dial) and federation - muted
+it to, rather than being applied immediately. This applies uniformly across the intents route
+(the browser), `POST /api/dial/outputs/set` (the dial) and federation - muted
 means silent regardless of which client last touched an output.
 
 **Request body:**

@@ -40,7 +40,6 @@ Read these files before implementing a new adapter:
 - `core/autostream_owntone_mini.py`
 - `core/autostream_core.py`
 - `core/webui/browser/owntone.py`
-- `core/webui/browser/post_handlers.py`
 
 The two existing OwnTone adapters are the best reference implementations:
 

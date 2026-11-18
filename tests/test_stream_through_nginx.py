@@ -173,7 +173,7 @@ def test_the_general_location_still_gives_up_on_a_silent_backend_after_fifteen_s
     t.start()
     n = _Nginx(tmp_path, silent.getsockname()[1])
     try:
-        c = n.connect("/api/status")
+        c = n.connect("/api/v1/state")
         t0 = time.monotonic()
         assert c.pull_until(b"\r\n\r\n", 25.0)
         took = time.monotonic() - t0

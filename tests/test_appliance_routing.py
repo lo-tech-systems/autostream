@@ -371,12 +371,12 @@ class TestStaleCsrfRecovery:
     minted session (cookie) and CSRF token so the page's fetch shim can
     transparently retry, instead of the click silently doing nothing."""
 
-    def _post_output_with_stale_session(self):
+    def _post_with_stale_session(self):
         mgr = _make_auth(pin=None)
         # Cookie references a session the manager has never seen (restart).
         body = json.dumps({"id": "out1", "selected": True, "volume": 50}).encode()
         handler = _make_post_handler(
-            "/api/output",
+            "/api/service/config",
             sess_token="stale-token-from-before-the-restart",
             csrf_token="stale-csrf-from-the-old-page",
             body=body,
@@ -388,7 +388,7 @@ class TestStaleCsrfRecovery:
         return mgr, handler
 
     def test_stale_session_gets_json_403_with_fresh_token(self):
-        mgr, handler = self._post_output_with_stale_session()
+        mgr, handler = self._post_with_stale_session()
         handler.send_response.assert_called_once_with(403)
         payload = json.loads(handler.wfile.getvalue().decode("utf-8"))
         assert payload["ok"] is False
@@ -399,7 +399,7 @@ class TestStaleCsrfRecovery:
         assert len(fresh) == 1
 
     def test_stale_session_response_sets_fresh_cookie(self):
-        mgr, handler = self._post_output_with_stale_session()
+        mgr, handler = self._post_with_stale_session()
         cookie = handler._pending_auth_cookie
         assert cookie and SESSION_COOKIE_NAME in cookie
         token = cookie.split(f"{SESSION_COOKIE_NAME}=", 1)[1].split(";", 1)[0]

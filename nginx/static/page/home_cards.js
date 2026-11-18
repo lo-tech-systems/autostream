@@ -273,7 +273,7 @@ window.__CONTROL_OTHER_APPLIANCES = pageData.control_other_appliances;
   }
 
   async function postOutputUpdate(id, selected, volume){
-    const r = await fetch(window.__OUTPUT_URL || '/api/output',{
+    const r = await fetch(window.__OUTPUT_URL,{
       method:'POST',
       credentials:'same-origin',
       signal: AbortSignal.timeout(5000),
@@ -297,7 +297,7 @@ window.__CONTROL_OTHER_APPLIANCES = pageData.control_other_appliances;
   }
 
   async function postPairAndEnable(id, pin, volume) {
-    const r = await fetch(window.__OUTPUT_URL || '/api/output', {
+    const r = await fetch(window.__OUTPUT_URL, {
       method:'POST',
       credentials:'same-origin',
       signal: AbortSignal.timeout(5000),
@@ -943,7 +943,7 @@ window.__CONTROL_OTHER_APPLIANCES = pageData.control_other_appliances;
     // the full stopping treatment from the server's own fading_out flag on
     // the next poll, so nothing is lost by being conservative here.
     _setRepeatStopping(kind === 'stop');
-    fetch(window.__REPEAT_URL || '/api/repeat', {
+    fetch(window.__REPEAT_URL, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': window.__CSRF || '' },

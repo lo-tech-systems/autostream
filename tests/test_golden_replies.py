@@ -57,7 +57,7 @@ def test_every_scenario_is_exercised_by_every_route():
         "replaying", "monitor_down", "backend_unreachable",
     }
     assert gs.families() == [
-        "status", "outputs", "volume_mute", "eq", "repeat", "warnings", "levels"]
+        "status", "outputs", "volume_mute", "eq", "repeat", "warnings"]
 
 
 def test_a_backend_call_the_scenario_did_not_provide_fails(monkeypatch):

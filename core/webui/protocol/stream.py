@@ -89,11 +89,11 @@ def changed_parts(snap, since: Optional[Since]) -> tuple[tuple[str, ...], bool]:
     return tuple(p for p in PART_NAMES if snap.part_versions.get(p, 0) > since.version), False
 
 
-def event_bytes(snap, parts, resync: bool, data=None) -> bytes:
-    """One change event. *data* maps a listed part's name to its JSON bytes as
-    the state route shows it; a resync carries none."""
+def event_bytes(snap, resync: bool, data=None) -> bytes:
+    """One change event. *data* maps each changed part's name to its JSON bytes
+    as the state route shows it; a resync carries none."""
     head = json.dumps(
-        {"boot": snap.boot, "version": snap.version, "resync": bool(resync), "parts": list(parts)},
+        {"boot": snap.boot, "version": snap.version, "resync": bool(resync)},
         separators=(",", ":"))
     blobs = b",".join(json.dumps(name).encode("ascii") + b":" + blob
                       for name, blob in (data or {}).items())
@@ -104,7 +104,7 @@ def event_bytes(snap, parts, resync: bool, data=None) -> bytes:
 def _event(hub, snap, parts, resync: bool) -> bytes:
     """The event for *parts* of *snap*, with their data unless it is a resync."""
     data = {} if resync else {name: hub.part_bytes(snap, name) for name in parts}
-    return event_bytes(snap, parts, resync, data)
+    return event_bytes(snap, resync, data)
 
 
 # -----------------------------------------------------------------------------

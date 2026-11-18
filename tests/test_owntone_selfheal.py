@@ -544,31 +544,25 @@ class TestMaybeRetryOwntoneRecoveryLog:
         assert "recovered after 1 failure(s)" in recovered[0].getMessage()
 
 
-# ── /api/status passthrough ─────────────────────────────────────────────────
+# ── health part passthrough ────────────────────────────────────────────────
+
+def _health_part_json() -> bytes:
+    from autostream_state import store
+    from webui.protocol import state as protocol_state
+    return protocol_state.part_json(store().snapshot(), "health")
+
 
 class TestStatusPassthrough:
-    def test_owntone_selfheal_block_present_in_status_json(self):
-        from webui.browser.home_api import send_status_json
+    def test_owntone_selfheal_counters_present_in_the_health_part(self):
+        import json
 
         selfheal._set_owntone_selfheal_state(
             reconcile_fired_count=2, reconcile_last_fired_at=42.0,
             watchdog_armed=True, watchdog_restart_count=1,
             watchdog_last_restart_at=99.0,
         )
-        handler = MagicMock()
-        handler.wfile = MagicMock()
-        sent = {}
-
-        def _wfile_write(data):
-            import json
-            sent["body"] = json.loads(data)
-
-        handler.wfile.write.side_effect = _wfile_write
-
-        with fake_levels([]):
-            send_status_json(handler)
-
-        assert sent["body"]["owntone_selfheal"] == {
+        body = json.loads(_health_part_json())
+        assert body == {
             "reconcile_fired_count": 2,
             "reconcile_last_fired_at": 42.0,
             "watchdog_armed": True,
@@ -580,28 +574,14 @@ class TestStatusPassthrough:
         """Regression: the watchdog's float('-inf') "never restarted"
         sentinel must not reach the JSON boundary. json.dumps emits
         -Infinity (invalid JSON) which every browser's JSON.parse rejects
-        wholesale, silently breaking every /api/status consumer in the web
+        wholesale, silently breaking every consumer of the state in the web
         UI while all Python-side parsing accepted it."""
-        from webui.browser.home_api import send_status_json
-
         selfheal._set_owntone_selfheal_state(
             reconcile_fired_count=0, reconcile_last_fired_at=float("-inf"),
             watchdog_armed=True, watchdog_restart_count=0,
             watchdog_last_restart_at=float("-inf"),
         )
-        handler = MagicMock()
-        handler.wfile = MagicMock()
-        sent = {}
-
-        def _wfile_write(data):
-            sent["raw"] = data
-
-        handler.wfile.write.side_effect = _wfile_write
-
-        with fake_levels([]):
-            send_status_json(handler)
-
-        raw = sent["raw"].decode("utf-8")
+        raw = _health_part_json().decode("utf-8")
         assert "Infinity" not in raw and "NaN" not in raw
 
         import json as _json
@@ -610,7 +590,7 @@ class TestStatusPassthrough:
             raise AssertionError(f"non-strict JSON constant emitted: {name}")
 
         body = _json.loads(raw, parse_constant=_reject_constant)
-        assert body["owntone_selfheal"]["watchdog_last_restart_at"] is None
+        assert body["watchdog_last_restart_at"] is None
 
     def test_send_json_sanitizes_unexpected_nonfinite(self):
         """send_json's allow_nan=False + sanitizing fallback: an unexpected

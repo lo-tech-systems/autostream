@@ -25,10 +25,8 @@ The protocol routes serve ``PARTS``, the state parts a test arranges
   entry of ``REPLIES`` merged over it. ``POSTS`` has the body of each POST or
   PUT, ``POST_PATHS`` its path and ``POST_TOKENS`` its ``X-CSRF-Token``.
 
-The older routes stay for the remote Home page and Setup: ``/api/status`` from
-``STATUS`` and ``/api/owntone/outputs_state`` from ``OUTPUTS`` (``START_FAILURE``
-is its ``start_failure`` field), the remote Home poll from ``REMOTE_HOME``;
-each is served only while its dict is non-empty. ``PATHS`` lists the path of
+The remote Home poll is served from ``REMOTE_HOME`` while that dict is
+non-empty. ``PATHS`` lists the path of
 every ``/api/*`` GET answered, and ``API`` maps a GET path to its reply.
 ``start_server``, ``set_page`` and ``render_home`` reset the stream.
 """
@@ -57,13 +55,8 @@ REMOTE_APPLIANCE_ID = "aabbccdd1122334455aa"
 PAGE: bytes = b""
 REPLIES: list = []
 POSTS: list = []
-OUTPUTS: list = []
-POLLS: list = []
-STATUS: dict = {}
-STATUS_POLLS: list = []
 REMOTE_HOME: dict = {}
 REMOTE_HOME_POLLS: list = []
-START_FAILURE: dict = {}
 PATHS: list = []
 API: dict = {}
 POST_PATHS: list = []
@@ -333,15 +326,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(state_body(names)).encode(), "application/json")
         elif path == "/api/v1/events" and STREAM["mode"] == "serve":
             self._serve_stream()
-        elif self.path.startswith("/api/owntone/outputs_state"):
-            POLLS.append(1)
-            reply = {"ok": True, "outputs": OUTPUTS}
-            if START_FAILURE:
-                reply["start_failure"] = dict(START_FAILURE)
-            self._send(json.dumps(reply).encode(), "application/json")
-        elif self.path.startswith("/api/status") and STATUS:
-            STATUS_POLLS.append(1)
-            self._send(json.dumps(STATUS).encode(), "application/json")
         elif path.startswith("/api/appliances/") and path.endswith("/home") and REMOTE_HOME:
             REMOTE_HOME_POLLS.append(1)
             self._send(json.dumps(REMOTE_HOME).encode(), "application/json")

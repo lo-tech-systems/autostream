@@ -216,13 +216,13 @@ class TestUtf8Decoding:
 
     def test_invalid_utf8_json_body_returns_400(self):
         body = b'{"key": "\xff\xfe"}'  # invalid UTF-8 in JSON
-        h = self._post_with_body("/api/output_eq/reset", body)
+        h = self._post_with_body("/api/service/config", body)
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
 
     def test_invalid_utf8_form_body_returns_400(self):
         body = b"field=\xff\xfe"  # invalid UTF-8 in form data
-        h = self._post_with_body("/api/output_eq/reset", body, content_type="application/x-www-form-urlencoded")
+        h = self._post_with_body("/api/service/config", body, content_type="application/x-www-form-urlencoded")
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
 
@@ -243,18 +243,18 @@ class TestNonObjectJson:
             h.do_POST()
         return h
 
-    def test_json_array_on_output_eq_reset_returns_400(self):
-        h = self._post_json("/api/output_eq/reset", [1, 2, 3])
+    def test_json_array_on_service_config_returns_400(self):
+        h = self._post_json("/api/service/config", [1, 2, 3])
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
 
-    def test_json_string_on_output_eq_reset_returns_400(self):
-        h = self._post_json("/api/output_eq/reset", "hello")
+    def test_json_string_on_service_config_returns_400(self):
+        h = self._post_json("/api/service/config", "hello")
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
 
-    def test_json_number_on_api_output_returns_400(self):
-        h = self._post_json("/api/output", 42)
+    def test_json_number_on_service_config_returns_400(self):
+        h = self._post_json("/api/service/config", 42)
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
 

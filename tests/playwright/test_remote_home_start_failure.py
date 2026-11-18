@@ -57,13 +57,9 @@ def remote_url():
 def _clean_stub():
     stub.REMOTE_HOME.clear()
     stub.REMOTE_HOME_POLLS.clear()
-    stub.START_FAILURE.clear()
-    stub.OUTPUTS[:] = []
     yield
     stub.REMOTE_HOME.clear()
     stub.REMOTE_HOME_POLLS.clear()
-    stub.START_FAILURE.clear()
-    stub.OUTPUTS[:] = []
     stub.set_page(render_remote_home())
 
 

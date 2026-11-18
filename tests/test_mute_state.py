@@ -53,7 +53,6 @@ from autostream_players import ActionResult, OutputInfo
 from autostream_state import Origin, store
 from autostream_state.outputs import PlayerServiceBackend, get_authority
 import webui.browser.home_model as webui_home_model
-import webui.browser.home_api as webui_home_api
 import webui.dial.api as webui_dial_api
 import webui.routes as webui_routes
 
@@ -518,23 +517,13 @@ class TestBuildOutputListAndHomeStateMuteAware:
             home = webui_home_model.build_home_state(store().snapshot(), parsed)
         assert home["muted"] is True
 
-    def test_owntone_outputs_state_route_carries_muted(self, writes):
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
+    def test_the_outputs_part_carries_muted_all(self, writes):
+        import json
+        from webui.protocol import state as protocol_state
         _muted(writes, _output("o1", 40))
-        parsed = SimpleNamespace(
-            owntone=SimpleNamespace(default_outputs=()),
-            webui=SimpleNamespace(hidden_outputs=()),
-        )
-        with patch("webui.common._config_snapshot", return_value=parsed),              patch("webui.common.send_json", side_effect=fake_send_json):
-            webui_home_api.send_owntone_outputs_state_json(_handler(), MagicMock())
-        assert captured["code"] == 200
-        assert captured["body"]["muted"] is True
-        assert [o["id"] for o in captured["body"]["outputs"]] == ["o1"]
+        body = json.loads(protocol_state.part_json(store().snapshot(), "outputs"))
+        assert body["muted_all"] is True
+        assert [u["id"] for u in body["units"]] == ["o1"]
 
 
 # ---------------------------------------------------------------------------

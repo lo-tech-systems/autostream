@@ -190,7 +190,7 @@ var pageData = (function () {
         var _repeatToggleToken = 0;
         // After a target/enable change the daemon tears the arena down and
         // rebuilds it (typically well under a second), but the status cache
-        // backing /api/status refreshes on its own ~1-2s poll -- so the note
+        // backing the state refreshes on its own ~1-2s poll -- so the note
         // switches to "Calculating..." immediately and polls until a FRESH
         // figure (requested_minutes matching the new target, capacity
         // recomputed) is back, rather than either freezing on the stale

@@ -1,44 +1,4 @@
 {
- "GET /api/output_eq/status idle": {
-  "status": 200,
-  "body": "{\"ok\": true, \"output_auto_trim_enabled\": false, \"output_auto_trim_db\": 0.0, \"effective_output_gain_db\": 0.0}",
-  "calls": []
- },
- "GET /api/output_eq/status one_output_start_refused": {
-  "status": 200,
-  "body": "{\"ok\": true, \"output_auto_trim_enabled\": false, \"output_auto_trim_db\": 0.0, \"effective_output_gain_db\": 0.0}",
-  "calls": []
- },
- "GET /api/output_eq/status one_output_playing_input1": {
-  "status": 200,
-  "body": "{\"ok\": true, \"output_auto_trim_enabled\": true, \"output_auto_trim_db\": -1.5, \"effective_output_gain_db\": -1.5}",
-  "calls": []
- },
- "GET /api/output_eq/status two_outputs_one_muted": {
-  "status": 200,
-  "body": "{\"ok\": true, \"output_auto_trim_enabled\": false, \"output_auto_trim_db\": 0.0, \"effective_output_gain_db\": 0.0}",
-  "calls": []
- },
- "GET /api/output_eq/status replay_holding": {
-  "status": 200,
-  "body": "{\"ok\": true, \"output_auto_trim_enabled\": false, \"output_auto_trim_db\": 0.0, \"effective_output_gain_db\": 0.0}",
-  "calls": []
- },
- "GET /api/output_eq/status replaying": {
-  "status": 200,
-  "body": "{\"ok\": true, \"output_auto_trim_enabled\": false, \"output_auto_trim_db\": 0.0, \"effective_output_gain_db\": 0.0}",
-  "calls": []
- },
- "GET /api/output_eq/status monitor_down": {
-  "status": 200,
-  "body": "{\"ok\": false, \"error\": \"Monitor unavailable\"}",
-  "calls": []
- },
- "GET /api/output_eq/status backend_unreachable": {
-  "status": 200,
-  "body": "{\"ok\": true, \"output_auto_trim_enabled\": false, \"output_auto_trim_db\": 0.0, \"effective_output_gain_db\": 0.0}",
-  "calls": []
- },
  "POST /api/dial/eq idle": {
   "status": 200,
   "body": "{\"ok\": true, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"bass_db\": 2, \"treble_db\": -3, \"bands\": [{\"id\": \"peq1\", \"frequency_hz\": 40, \"type\": \"low_shelf\", \"gain_db\": 2.0, \"min_db\": -12, \"max_db\": 12}, {\"id\": \"peq2\", \"frequency_hz\": 100, \"type\": \"peak\", \"gain_db\": 0.0, \"min_db\": -12, \"max_db\": 12}, {\"id\": \"peq3\", \"frequency_hz\": 300, \"type\": \"peak\", \"gain_db\": 0.0, \"min_db\": -12, \"max_db\": 12}, {\"id\": \"peq4\", \"frequency_hz\": 1000, \"type\": \"peak\", \"gain_db\": 0.0, \"min_db\": -12, \"max_db\": 12}, {\"id\": \"peq5\", \"frequency_hz\": 4000, \"type\": \"peak\", \"gain_db\": 0.0, \"min_db\": -12, \"max_db\": 12}, {\"id\": \"peq6\", \"frequency_hz\": 10000, \"type\": \"high_shelf\", \"gain_db\": -3.0, \"min_db\": -12, \"max_db\": 12}]}",

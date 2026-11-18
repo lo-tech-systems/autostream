@@ -420,7 +420,3 @@ def _route_get_setup(handler, state):
 def _route_get_setup_card(handler, state):
     key = handler._normalized_path().rsplit("/", 1)[-1]
     handle_setup_card_get(handler, state, session_state.AUTH, key)
-
-
-def _route_post_setup_form(handler, state, body_str):
-    common.send_json(handler, 405, {"ok": False, "error": "form_post_disabled"})

@@ -330,7 +330,7 @@ class TestSetupBufferTargetSelect:
         """A target change must (a) immediately show 'Calculating…' rather
         than leaving the old figure up as if it were the answer, (b) reject
         status snapshots whose requested_minutes doesn't match the
-        just-selected target (the /api/status cache lags the change, so the
+        just-selected target (the state cache lags the change, so the
         first snapshot back is usually the OLD arena's figure), and (c) fall
         back to an unconditional refresh after the retry window so an old
         monitor build that never reports requested_minutes can't leave
@@ -588,7 +588,7 @@ class TestHomeRepeatButton:
     def test_button_click_wired_to_post_api_repeat(self):
         html = _render_remote_home_page()
         assert "onRepeatButtonClick()" in html
-        assert "fetch(window.__REPEAT_URL || '/api/repeat'" in html
+        assert "fetch(window.__REPEAT_URL," in html
         assert "armed: newArmed" in html
 
     def test_refresh_status_calls_update_repeat_button(self):

@@ -2,7 +2,7 @@
 
 Acceptance tests: home-page UI for the unified session model.
 
-Contract (coordinator-side): /api/status
+Contract (coordinator-side): the remote home poll
 gains a top-level "session": {"active": bool, "source": null|"input1"|
 "input2"|"replay"}. The authoritative playing/active flag for the home page
 is d.session.active, with a fallback to the pre-existing level-threshold
@@ -216,7 +216,7 @@ class TestOptimisticClickState:
         # Class + transient title applied synchronously, before fetch() below.
         click_src = remote_home_html.split("function onRepeatButtonClick()", 1)[1]
         opt_idx = click_src.index("__repeatOptimistic = { active: newArmed")
-        fetch_idx = click_src.index("fetch(window.__REPEAT_URL || '/api/repeat'")
+        fetch_idx = click_src.index("fetch(window.__REPEAT_URL,")
         assert opt_idx < fetch_idx
         between = click_src[opt_idx:fetch_idx]
         assert "btn.classList.add('active');" in between

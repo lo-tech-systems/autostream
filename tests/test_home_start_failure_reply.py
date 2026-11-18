@@ -1,4 +1,4 @@
-"""The Home speaker list reply and the failed start it may carry."""
+"""The failed start the Home page may be told of."""
 from __future__ import annotations
 
 import pytest
@@ -24,17 +24,12 @@ def _rows():
 
 
 def _reply(snap):
-    return webui_home_model.home_outputs_reply(snap, _parsed())
+    return {"start_failure": webui_home_model.start_failure_reply(snap)}
 
 
-def _parsed():
-    from autostream_config import parse_config
-    return parse_config({}, None, high_perf=False)
-
-
-def test_the_key_is_absent_when_no_start_has_failed(fake):
+def test_the_part_has_no_failure_when_no_start_has_failed(fake):
     snap = fake.outputs(_rows())
-    assert "start_failure" not in _reply(snap)
+    assert snap.outputs.start_failure is None
 
 
 def test_the_key_carries_the_failure_the_boot_and_its_age(fake):

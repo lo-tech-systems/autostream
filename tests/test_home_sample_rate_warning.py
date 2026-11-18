@@ -10,7 +10,6 @@ from the per-input levels.  The input card's rate line (shown only with the
 from __future__ import annotations
 
 import contextlib
-import json
 import re
 import sys
 from contextlib import ExitStack
@@ -24,11 +23,10 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import FakeStore, fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_track
+from fake_store import FakeStore, fake_outputs, fake_playback, fake_track
 import webui.browser.home_model as models
 from autostream_state import store
 from autostream_input_status import SAMPLE_RATE_MISMATCH_BANNER_TEXT
-from webui.browser.home_api import send_status_json
 from webui.browser.home import send_airplay_page
 import webui.browser.home_model as webui_home_model
 
@@ -58,55 +56,8 @@ class TestBannerText:
 
 
 # ---------------------------------------------------------------------------
-# Status payload and home state
+# Home state
 # ---------------------------------------------------------------------------
-
-def _status_body(state=None) -> dict:
-    sent: dict = {}
-    h = MagicMock()
-    h.send_response.side_effect = lambda code: sent.__setitem__("code", code)
-    h.wfile.write.side_effect = lambda data: sent.__setitem__("body", json.loads(data))
-    with fake_playback_mock() as gp:
-        gp.return_value.to_public_dict.return_value = {}
-        gp.return_value.stylus_banner_text = ""
-        gp.return_value.belt_banner_text = ""
-        gp.return_value.bearing_banner_text = ""
-        send_status_json(h, state)
-    return sent["body"]
-
-
-class TestStatusPayload:
-    def test_status_carries_the_banner_text_for_a_mismatch(self):
-        with _monitors(1):
-            assert _status_body()["sample_rate_banner_text"] == _BANNER
-
-    def test_status_banner_text_empty_without_a_mismatch(self):
-        with _monitors():
-            assert _status_body()["sample_rate_banner_text"] == ""
-
-    def test_status_banner_text_empty_with_no_monitors(self):
-        with patch("autostream_runtime.all_monitors", []):
-            assert _status_body()["sample_rate_banner_text"] == ""
-
-    def test_both_inputs_mismatched_give_the_one_string(self):
-        with _monitors(1, 2):
-            assert _status_body()["sample_rate_banner_text"] == _BANNER
-
-    def test_status_with_a_state_takes_the_text_from_the_snapshot(self):
-        with _monitors(1):
-            assert _status_body(MagicMock())["sample_rate_banner_text"] == _BANNER
-
-    def test_status_with_a_state_has_no_text_without_a_mismatch(self):
-        with _monitors():
-            assert _status_body(MagicMock())["sample_rate_banner_text"] == ""
-
-    def test_status_keeps_the_other_banner_keys(self):
-        with _monitors(1):
-            body = _status_body()
-        for key in ("playback_banner_text", "belt_banner_text", "bearing_banner_text",
-                    "dial_update_banner_text"):
-            assert key in body
-
 
 def _home_state(tmp_path) -> dict:
     cfg = tmp_path / "autostream.json"

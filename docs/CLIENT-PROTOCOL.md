@@ -48,6 +48,7 @@ and is served. A dial or another appliance must send it.
   "boot": "3f9a0c1d2e4b5a69",
   "version": 4812,
   "protocol": 4,
+  "time": 1766000000.5,
   "clients": 3,
   "part_versions": {"outputs": 4810, "warnings": 4377},
   "parts": {"appliance": {...}, "outputs": {...}}
@@ -58,6 +59,8 @@ and is served. A dial or another appliance must send it.
   state restarted from scratch.
 - `version` counts every change to any part; `part_versions` gives the
   version at which each part last moved.
+- `time` is the appliance's wall clock in seconds, so a page never compares
+  its own clock with the appliance's.
 - `clients` is the number of open event streams.
 - `parts` holds each part under its name. The state is split into the parts
   `session`, `repeat`, `track`, `inputs`, `monitor`, `playback`, `health`,
@@ -134,17 +137,16 @@ blank line. Then each change is one event:
 ```
 id: 3f9a0c1d2e4b5a69-4812
 event: change
-data: {"boot":"3f9a0c1d2e4b5a69","version":4812,"resync":false,"parts":["outputs","warnings"],"data":{"outputs":{...},"warnings":{...}}}
+data: {"boot":"3f9a0c1d2e4b5a69","version":4812,"resync":false,"data":{"outputs":{...},"warnings":{...}}}
 ```
 
-- `parts` lists the parts that moved since the version the client last had.
-- `data` holds the new value of each listed part, as `GET /api/v1/state`
-  shows it. Values that change continuously (levels, last-seen times) are as
+- `data` holds the new value of each part that moved since the version the
+  client last had, keyed by part name, as `GET /api/v1/state` shows it. Values that change continuously (levels, last-seen times) are as
   they were when the part last moved; a client that shows them reads the
   state route.
 - `resync` is `true` when the appliance cannot say what moved: a new client,
-  a restarted appliance, or an id it does not know. `parts` is then every
-  part, `data` is empty, and the client fetches `GET /api/v1/state`.
+  a restarted appliance, or an id it does not know. `data` is then empty,
+  and the client fetches `GET /api/v1/state`.
 
 To resume, send the last id as the `Last-Event-ID` header, or as `?since=`.
 The stream mechanics (keep-alive comments, the folding of changes within

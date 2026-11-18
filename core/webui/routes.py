@@ -17,9 +17,9 @@ not registered below still falls through to the legacy do_GET/do_POST/
 do_PUT if/elif chains untouched.
 
 Handlers are registered by *name* (a dotted string such as
-``webui.repeat.send_repeat_post_json``, looked up in ``sys.modules`` at
+``webui.repeat.apply_repeat_arm_request``, looked up in ``sys.modules`` at
 dispatch time), not by direct function reference. This is deliberate:
-tests patch handlers via ``patch("webui.repeat.send_repeat_post_json")``
+tests patch handlers via ``patch("webui.repeat.apply_repeat_arm_request")``
 etc, and a module attribute lookup at call time (rather than a reference
 captured once at import time) is required for that patching to take
 effect. Every module a string names must already be imported when the
@@ -451,15 +451,13 @@ def dispatch(handler, method: str, path: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Simplest routes: one open GET page, one CSRF-protected POST API.
+# Simplest routes: one open GET page.
 #
-# Their legacy branches are simple single-line dispatches with no
+# Its legacy branch is a simple single-line dispatch with no
 # route-specific pre/post logic to preserve beyond what dispatch()
 # already reproduces above:
 #   GET  /about       -- AuthRequirement.NONE (in AUTH.ALLOWLIST_PATHS,
 #                         no per-branch check in the legacy do_GET chain)
-#   POST /api/repeat   -- AuthRequirement.CSRF (deliberately no PIN gate --
-#                         see the comment carried over from do_POST below)
 # ---------------------------------------------------------------------------
 
 register(
@@ -470,28 +468,6 @@ register(
         auth=AuthRequirement.NONE,
         kind="page",
         allow_unconfigured=False,
-    )
-)
-
-register(
-    Route(
-        path="/api/repeat",
-        methods=("POST",),
-        handler="webui.repeat.send_repeat_post_json",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=False,
-        requires_body=True,
-        comment=(
-            "Deliberately NOT PIN-gated: the repeat button lives on the "
-            "home page, public consumer surface (like /api/output's "
-            "enable/volume controls). Arm/disarm is a playback action of "
-            "the same sensitivity class as toggling an output -- "
-            "requiring a PIN here would make the button 401 for any "
-            "visitor who had not opened the (gated) setup pages, and "
-            "silently after every autostream restart (in-memory "
-            "sessions)."
-        ),
     )
 )
 
@@ -516,14 +492,12 @@ register(
 #     redirect_to_auth(...)`) was these routes' *only* guard, and it always
 #     redirects (never 401) regardless of path shape -- so "page" is the
 #     faithful kind even for routes that are semantically APIs (e.g.
-#     /api/owntone/outputs, /api/update/check, /api/update/status).
+#     /api/update/check, /api/update/status).
 #
 # allow_unconfigured mirrors do_GET's commissioning allowlist (now also
 # removed there): a path is allow_unconfigured=True iff it started with
 # one of "/first-boot/", "/owntone-restarting", "/rebooting", "/logs", or
-# "/api/owntone/outputs"/"/api/owntone/outputs_state"/"/api/owntone/ready"
-# (all three matched by the same "/api/owntone/outputs"/"/api/owntone/ready"
-# startswith checks in that allowlist).
+# "/api/owntone/ready".
 #
 # poll_log=True is set for the polling paths migrated in this batch;
 # they're removed from ConfigWebHandler._POLLING_LOG_PATHS in
@@ -676,43 +650,6 @@ register(
 
 register(
     Route(
-        path="/api/status",
-        methods=("GET",),
-        handler="webui.browser.home_api.send_status_json",
-        auth=AuthRequirement.NONE,
-        kind="api",
-        allow_unconfigured=False,
-        poll_log=True,
-    )
-)
-
-register(
-    Route(
-        path="/api/owntone/outputs_state",
-        methods=("GET",),
-        handler="webui.browser.home_api.send_owntone_outputs_state_json",
-        auth=AuthRequirement.NONE,
-        kind="api",
-        allow_unconfigured=True,
-        poll_log=True,
-    )
-)
-
-register(
-    Route(
-        path="/api/owntone/outputs",
-        methods=("GET",),
-        handler="webui.browser.home_api.send_owntone_outputs_json",
-        auth=AuthRequirement.FULL,
-        kind="page",
-        allow_unconfigured=True,
-        poll_log=True,
-        comment="No inline check in legacy, and NOT in AUTH.ALLOWLIST_PATHS (unlike outputs_state) -- guarded solely by the general requires_auth() gate.",
-    )
-)
-
-register(
-    Route(
         path="/api/audio/status",
         methods=("GET",),
         handler="webui.browser.home_api.send_audio_status_json",
@@ -784,17 +721,6 @@ register(
 
 register(
     Route(
-        path="/api/output_eq/status",
-        methods=("GET",),
-        handler="webui.browser.equaliser._route_get_output_eq_status",
-        auth=AuthRequirement.NONE,
-        kind="api",
-        allow_unconfigured=False,
-    )
-)
-
-register(
-    Route(
         path="/api/owntone/ready",
         methods=("GET",),
         handler="webui.browser.owntone.send_owntone_ready_json",
@@ -836,18 +762,6 @@ register(
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
-    )
-)
-
-register(
-    Route(
-        path="/api/inputs/levels",
-        methods=("GET",),
-        handler="webui.browser.home_api.send_input_levels_json",
-        auth=AuthRequirement.FULL,
-        kind="api",
-        allow_unconfigured=False,
-        poll_log=True,
     )
 )
 
@@ -906,8 +820,7 @@ register(
 #   - No inline `require_authenticated_if_pin_enabled` call -> CSRF only
 #     (every POST/PUT route already gets the CSRF check ahead of the
 #     commissioning gate and the per-arm code, per dispatch()'s stage
-#     order -- see its docstring). This is the output/output_eq/service
-#     class: /api/output, /api/output_eq/config, /api/output_eq/reset,
+#     order -- see its docstring). This is the service class:
 #     /api/service/config, /api/service/reset.
 #   - Inline `require_authenticated_if_pin_enabled(self)` -> FULL. Every
 #     route below that has one calls it with no redirect_path, so
@@ -917,13 +830,11 @@ register(
 #
 # allow_unconfigured mirrors do_POST's former commissioning allowlist (the
 # "_post_commissioning_allowed" local, now deleted there):
-#   `path.startswith("/api/owntone/") or ... or path == "/api/output" or
-#    path == "/api/output_eq/reset" or path == "/api/service/reset"`
+#   `path.startswith("/api/owntone/") or ... or path == "/api/service/reset"`
 # This is a deliberate, easy-to-miss asymmetry, preserved exactly:
-#   - /api/output, /api/output_eq/reset, /api/service/reset are
-#     allow_unconfigured=True, but /api/output_eq/config and
+#   - /api/service/reset is allow_unconfigured=True, but
 #     /api/service/config (same CSRF-only auth class, same "reset vs
-#     config" pairing) are NOT -- only the *reset* siblings were
+#     config" pairing) is NOT -- only the *reset* sibling was
 #     commissioning-allowed in the legacy chain.
 #   - Every /api/owntone/* POST route (output-visibility, output-mode,
 #     output-offset, uncompressed-audio, buffered-audio, start-buffer,
@@ -959,41 +870,6 @@ register(
 
 register(
     Route(
-        path="/api/output",
-        methods=("POST",),
-        handler="webui.browser.post_handlers.handle_output_update",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=True,
-        requires_body=True,
-    )
-)
-
-register(
-    Route(
-        path="/api/output_eq/config",
-        methods=("POST",),
-        handler="webui.browser.equaliser.send_output_eq_config_json",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=False,
-        requires_body=True,
-    )
-)
-
-register(
-    Route(
-        path="/api/output_eq/reset",
-        methods=("POST",),
-        handler="webui.browser.equaliser._route_post_output_eq_reset",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=True,
-    )
-)
-
-register(
-    Route(
         path="/api/service/config",
         methods=("POST",),
         handler="webui.browser.api_service.send_service_config_json",
@@ -1012,30 +888,6 @@ register(
         auth=AuthRequirement.CSRF,
         kind="api",
         allow_unconfigured=True,
-        requires_body=True,
-    )
-)
-
-register(
-    Route(
-        path="/api/input_eq",
-        methods=("POST",),
-        handler="webui.browser.post_handlers.handle_live_input_eq_update",
-        auth=AuthRequirement.FULL,
-        kind="api",
-        allow_unconfigured=False,
-        requires_body=True,
-    )
-)
-
-register(
-    Route(
-        path="/api/input_gain",
-        methods=("POST",),
-        handler="webui.browser.post_handlers.handle_live_input_gain_update",
-        auth=AuthRequirement.FULL,
-        kind="api",
-        allow_unconfigured=False,
         requires_body=True,
     )
 )
@@ -1717,35 +1569,6 @@ register(
 )
 
 # --- Stateful pages: setup / owntone-setup form posts -----------------------
-
-register(
-    Route(
-        path="/setup",
-        methods=("POST",),
-        handler="webui.browser.setup.page._route_post_setup_form",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=False,
-        comment=(
-            "The Setup form is retired: /setup is not in do_POST's commissioning "
-            "allowlist, so a commissioning-time POST is blocked upstream (409) "
-            "before it reaches this arm, and once configured it unconditionally "
-            "405s (allow_unconfigured=False gives the same 409)."
-        ),
-    )
-)
-
-register(
-    Route(
-        path="/owntone-setup",
-        methods=("POST",),
-        handler="webui.browser.owntone._route_post_owntone_setup_form",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=False,
-        comment="Always 405s once CSRF/commissioning pass -- form POST retired in favour of autosave.",
-    )
-)
 
 # --- Stateful pages: first-boot GET + POST pairs -----------------------------
 #

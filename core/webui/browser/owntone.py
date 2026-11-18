@@ -676,7 +676,3 @@ def send_owntone_setup_page(
 
 def _route_get_owntone_setup(handler, state):
     send_owntone_setup_page(handler, state, session_state.AUTH)
-
-
-def _route_post_owntone_setup_form(handler, state, body_str):
-    common.send_json(handler, 405, {"ok": False, "error": "form_post_disabled"})

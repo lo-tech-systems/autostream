@@ -1,14 +1,12 @@
 """Priority 7 — webui post handlers tests.
 
-Covers handle_output_update (output ID, PIN auth, pin_required/pin_invalid,
-offset/mode forwarding) and handle_live_input_eq_update / handle_live_input_gain_update
-(malformed JSON, bool-as-number, NaN/Infinity, invalid input IDs, out-of-range).
+Covers the output change the browser routes make (output ID, PIN auth,
+pin_required/pin_invalid, offset/mode forwarding, occupancy protection).
 """
 from __future__ import annotations
 
 import inspect
 import json
-import math
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,9 +21,24 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from webui.browser.post_handlers import handle_output_update
-from webui.browser.post_handlers import handle_live_input_gain_update
-from webui.browser.post_handlers import handle_live_input_eq_update
+from webui import common
+from webui.browser import home_model
+
+
+def handle_output_update(handler, state, body: str) -> None:
+    """The output change the browser routes make: the request's speaker with its
+    configured offset and mode, applied through submit_output_change."""
+    try:
+        payload = json.loads(body)
+        out_id = str(payload.get("id") or "").strip()
+        start = common.output_start_args(state, out_id) if out_id else {}
+        result = home_model.submit_output_change(
+            payload, requester="webui", pin_requester="webui",
+            offset_ms=start.get("offset_ms"), mode=start.get("mode"),
+        )
+        common.send_json(handler, 200, result)
+    except Exception as e:
+        common.send_json(handler, 200, {"ok": False, "error": str(e)})
 
 
 # ---------------------------------------------------------------------------
@@ -97,56 +110,6 @@ def _call_output_update(body: dict, *, tmp_path: Path,
         handle_output_update(handler, state, json.dumps(body))
 
     return {"calls": sent, "writes": writes}
-
-
-def _call_eq(body: str | dict, tmp_path: Path) -> dict:
-    if isinstance(body, dict):
-        body = json.dumps(body)
-    sent = []
-
-    def fake_send_json(h, code, data):
-        sent.append((code, data))
-
-    with patch("webui.common.send_json", side_effect=fake_send_json), \
-         patch("autostream_monitor_control.set_live_input_eq", return_value=True):
-        handle_live_input_eq_update(MagicMock(), MagicMock(), body)
-
-    return sent[0] if sent else (None, {})
-
-
-def _call_gain(body: str | dict, tmp_path: Path) -> tuple:
-    if isinstance(body, dict):
-        body = json.dumps(body)
-    sent = []
-
-    def fake_send_json(h, code, data):
-        sent.append((code, data))
-
-    # handle_live_input_gain_update partially validates (JSON, input index) and
-    # then delegates to send_settings_post_json in autostream_webui_api. Patch
-    # both paths so all send_json calls are captured.
-    # Provide a real SettingsStore so valid requests reach the success path.
-    import tempfile, os
-    from autostream_settings import SettingsStore, as_view
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as tf:
-        tf.write("{}")
-        cfg_path = tf.name
-    try:
-        store = SettingsStore(cfg_path, _save_interval_seconds=9999, _writer=MagicMock())
-        state = MagicMock()
-        state.settings = as_view(store)
-        with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_monitor_control.set_live_input_gain", return_value=True):
-            handle_live_input_gain_update(MagicMock(), state, body)
-    finally:
-        store.close(save=False)
-        try:
-            os.unlink(cfg_path)
-        except OSError:
-            pass
-
-    return sent[0] if sent else (None, {})
 
 
 # ---------------------------------------------------------------------------
@@ -221,274 +184,6 @@ class TestOutputUpdatePIN:
 
 
 # ---------------------------------------------------------------------------
-# handle_live_input_eq_update: input validation
-# ---------------------------------------------------------------------------
-
-class TestLiveInputEQValidation:
-    def test_malformed_json_returns_400(self, tmp_path):
-        code, data = _call_eq("not-json", tmp_path)
-        assert code == 400
-        assert data["ok"] is False
-
-    def test_invalid_input_id_0_returns_400(self, tmp_path):
-        code, data = _call_eq({"input": 0, "eq_40hz_db": 0}, tmp_path)
-        assert code == 400
-        assert "input" in data["error"]
-
-    def test_invalid_input_id_3_returns_400(self, tmp_path):
-        code, data = _call_eq({"input": 3, "eq_40hz_db": 0}, tmp_path)
-        assert code == 400
-
-    def test_eq_too_low_returns_400(self, tmp_path):
-        code, data = _call_eq({"input": 1, "eq_40hz_db": -11}, tmp_path)
-        assert code == 400
-
-    def test_eq_too_high_returns_400(self, tmp_path):
-        code, data = _call_eq({"input": 1, "eq_40hz_db": 11}, tmp_path)
-        assert code == 400
-
-    def test_eq_boundary_10_accepted(self, tmp_path):
-        code, data = _call_eq({"input": 1, "eq_40hz_db": 10.0,
-                                "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path)
-        assert code == 200
-        assert data["ok"] is True
-
-    def test_eq_boundary_minus10_accepted(self, tmp_path):
-        code, data = _call_eq({"input": 2, "eq_40hz_db": -10.0,
-                                "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path)
-        assert code == 200
-
-    def _call_eq_with_mock_eq(self, body, tmp_path):
-        """Return (code, data, mock_set_live_input_eq) so callers can assert not called."""
-        if isinstance(body, dict):
-            body = json.dumps(body)
-        sent = []
-        mock_fn = MagicMock(return_value=True)
-
-        def fake_send_json(h, code, data):
-            sent.append((code, data))
-
-        with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_monitor_control.set_live_input_eq", mock_fn):
-            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
-
-        code, data = sent[0] if sent else (None, {})
-        return code, data, mock_fn
-
-    def test_bool_as_number_rejected(self, tmp_path):
-        # Boolean True must not be accepted as an EQ value (float(True)=1.0 would slip through
-        # a naive range check). The handler must reject booleans explicitly.
-        code, data, mock_eq = self._call_eq_with_mock_eq(
-            {"input": 1, "eq_40hz_db": True, "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path
-        )
-        assert code == 400
-        assert data["ok"] is False
-        mock_eq.assert_not_called()
-
-    def test_false_as_number_rejected(self, tmp_path):
-        code, data, mock_eq = self._call_eq_with_mock_eq(
-            {"input": 1, "eq_40hz_db": False, "eq_100hz_db": 0, "eq_8khz_db": 0}, tmp_path
-        )
-        assert code == 400
-        mock_eq.assert_not_called()
-
-    def test_nan_value_rejected(self, tmp_path):
-        # Inject NaN via json.loads patching; the handler must reject it with 400
-        # and must NOT call set_live_input_eq.
-        body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
-        sent = []
-        mock_eq = MagicMock(return_value=True)
-
-        import webui.browser.post_handlers as _ph
-        orig_loads = webui_post_handlers.json.loads
-
-        def patched_loads(s, **kw):
-            result = orig_loads(s, **kw)
-            if isinstance(result, dict):
-                result["eq_40hz_db"] = float("nan")
-            return result
-
-        with patch("webui.common.send_json",
-                   side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
-             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
-            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
-
-        code, data = sent[0]
-        assert code == 400
-        assert data["ok"] is False
-        mock_eq.assert_not_called()
-
-    def test_infinity_rejected(self, tmp_path):
-        # math.inf > 10.0 is True so range check should catch it; confirm 400 + no monitor call.
-        body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
-        sent = []
-        mock_eq = MagicMock(return_value=True)
-        import webui.browser.post_handlers as _ph
-        orig_loads = webui_post_handlers.json.loads
-
-        def patched_loads(s, **kw):
-            result = orig_loads(s, **kw)
-            if isinstance(result, dict):
-                result["eq_8khz_db"] = float("inf")
-            return result
-
-        with patch("webui.common.send_json",
-                   side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
-             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
-            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
-
-        code, data = sent[0]
-        assert code == 400
-        mock_eq.assert_not_called()
-
-    def test_negative_infinity_rejected(self, tmp_path):
-        body = json.dumps({"input": 1, "eq_40hz_db": 0, "eq_100hz_db": 0, "eq_8khz_db": 0})
-        sent = []
-        mock_eq = MagicMock(return_value=True)
-        import webui.browser.post_handlers as _ph
-        orig_loads = webui_post_handlers.json.loads
-
-        def patched_loads(s, **kw):
-            result = orig_loads(s, **kw)
-            if isinstance(result, dict):
-                result["eq_100hz_db"] = float("-inf")
-            return result
-
-        with patch("webui.common.send_json",
-                   side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_monitor_control.set_live_input_eq", mock_eq), \
-             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
-            handle_live_input_eq_update(MagicMock(), MagicMock(), body)
-
-        code, data = sent[0]
-        assert code == 400
-        mock_eq.assert_not_called()
-
-    def test_valid_eq_returns_200_with_values(self, tmp_path):
-        code, data = _call_eq(
-            {"input": 1, "eq_40hz_db": 3.5, "eq_100hz_db": -2.0, "eq_8khz_db": 1.0},
-            tmp_path,
-        )
-        assert code == 200
-        assert data["ok"] is True
-        assert data["eq_40hz_db"] == pytest.approx(3.5)
-        assert data["input"] == 1
-
-
-# ---------------------------------------------------------------------------
-# handle_live_input_gain_update: input validation
-# ---------------------------------------------------------------------------
-
-class TestLiveInputGainValidation:
-    def test_malformed_json_returns_400(self, tmp_path):
-        code, data = _call_gain("not-json", tmp_path)
-        assert code == 400
-
-    def test_invalid_input_0_returns_400(self, tmp_path):
-        code, data = _call_gain({"input": 0, "gain_db": 0}, tmp_path)
-        assert code == 400
-
-    def test_invalid_input_3_returns_400(self, tmp_path):
-        code, data = _call_gain({"input": 3, "gain_db": 0}, tmp_path)
-        assert code == 400
-
-    def test_gain_too_low_returns_400(self, tmp_path):
-        code, data = _call_gain({"input": 1, "gain_db": -11}, tmp_path)
-        assert code == 400
-
-    def test_gain_too_high_returns_400(self, tmp_path):
-        code, data = _call_gain({"input": 1, "gain_db": 11}, tmp_path)
-        assert code == 400
-
-    def test_gain_boundary_10_accepted(self, tmp_path):
-        code, data = _call_gain({"input": 1, "gain_db": 10.0}, tmp_path)
-        assert code == 200
-
-    def test_gain_boundary_minus10_accepted(self, tmp_path):
-        code, data = _call_gain({"input": 2, "gain_db": -10.0}, tmp_path)
-        assert code == 200
-
-    def test_valid_gain_returns_200_with_values(self, tmp_path):
-        code, data = _call_gain({"input": 2, "gain_db": 5.5}, tmp_path)
-        assert code == 200
-        assert data["ok"] is True
-        # handle_live_input_gain_update delegates to send_settings_post_json;
-        # response uses "field"/"value" instead of "input"/"gain_db".
-        assert data["value"] == pytest.approx(5.5)
-        assert data["field"] == "audio2.gain_db"
-
-    def _call_gain_with_mock(self, body, tmp_path):
-        if isinstance(body, dict):
-            body = json.dumps(body)
-        sent = []
-        mock_fn = MagicMock(return_value=True)
-
-        def fake_send_json(h, code, data):
-            sent.append((code, data))
-
-        # Delegate path now goes through autostream_webui_api; patch there.
-        with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_monitor_control.set_live_input_gain", mock_fn):
-            handle_live_input_gain_update(MagicMock(), MagicMock(), body)
-
-        code, data = sent[0] if sent else (None, {})
-        return code, data, mock_fn
-
-    def test_gain_bool_true_rejected(self, tmp_path):
-        code, data, mock_gain = self._call_gain_with_mock(
-            {"input": 1, "gain_db": True}, tmp_path
-        )
-        assert code == 400
-        assert data["ok"] is False
-        mock_gain.assert_not_called()
-
-    def test_gain_nan_rejected(self, tmp_path):
-        body = json.dumps({"input": 1, "gain_db": 0})
-        sent = []
-        import webui.browser.post_handlers as _ph
-        orig_loads = webui_post_handlers.json.loads
-
-        def patched_loads(s, **kw):
-            result = orig_loads(s, **kw)
-            if isinstance(result, dict):
-                result["gain_db"] = float("nan")
-            return result
-
-        with patch("webui.common.send_json",
-                   side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
-             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
-            handle_live_input_gain_update(MagicMock(), MagicMock(), body)
-
-        code, data = sent[0]
-        assert code == 400
-        assert data["ok"] is False
-
-    def test_gain_infinity_rejected(self, tmp_path):
-        body = json.dumps({"input": 1, "gain_db": 0})
-        sent = []
-        import webui.browser.post_handlers as _ph
-        orig_loads = webui_post_handlers.json.loads
-
-        def patched_loads(s, **kw):
-            result = orig_loads(s, **kw)
-            if isinstance(result, dict):
-                result["gain_db"] = float("inf")
-            return result
-
-        with patch("webui.common.send_json",
-                   side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_monitor_control.set_live_input_gain", return_value=True), \
-             patch.object(webui_post_handlers.json, "loads", side_effect=patched_loads):
-            handle_live_input_gain_update(MagicMock(), MagicMock(), body)
-
-        code, data = sent[0]
-        assert code == 400
-
-
-# ---------------------------------------------------------------------------
 # handle_output_update: offset and mode forwarding
 # ---------------------------------------------------------------------------
 
@@ -522,7 +217,6 @@ class TestOutputUpdateForwarding:
 
 from autostream_state import Origin
 import webui.browser.home_model as webui_home_model
-import webui.browser.post_handlers as webui_post_handlers
 import webui.peer.federation as webui_federation
 
 
@@ -813,9 +507,6 @@ class TestPollDrivenPinPromptSource:
 
     def test_home_cards_script_defines_maybe_prompt_for_pin(self):
         assert "function maybePromptForPin" in _source_text.static_text("page/home_cards.js")
-
-    def test_airplay_page_calls_maybe_prompt_for_pin_from_outputs_poll(self):
-        assert "maybePromptForPin(j.outputs)" in _source_text.static_text("page/home.js")
 
 
 class TestOutputRequesterPassed:

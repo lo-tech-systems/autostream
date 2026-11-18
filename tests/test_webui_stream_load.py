@@ -149,7 +149,7 @@ def test_eight_clients_one_stalled_three_publishers(monkeypatch, caplog):
             assert versions == sorted(versions)
             told = set()
             for e in events:
-                told.update(e["parts"])
+                told.update(e["data"])
             assert {"outputs", "session", "repeat"} <= told
             assert events[-1]["version"] == final.version
 
