@@ -28,21 +28,20 @@ flagged rather than guessed.
 Nothing playing, on any autostream appliance the dial can see, shows the
 plain autostream logo:
 
-![Idle screen showing the autostream logo, a Wi-Fi status icon top left and an information badge top right](images/idle-rich.png)
+![Idle screen showing the autostream logo with a Wi-Fi status icon top left](images/showcase/spi-dial/idle.png)
 
-*Rich idle screen: logo, Wi-Fi icon (top left), info badge (top right).*
+*Rich idle screen: logo and Wi-Fi icon (top left).*
 
-![Idle screen on the small compact panel](images/idle-compact.png)
+![Idle screen on the small compact panel](images/showcase/spi-dial/compact/idle.png)
 
-*Compact idle screen: the same logo, icon and badge, just tighter.*
+*Compact idle screen: the same logo and icon, just tighter.*
 
-Two small corner controls sit on every idle screen, rich or compact:
+Two small corner controls sit on the idle screen, rich or compact:
 
-- **Top right, the "i" badge** opens the [info page](#info-page). It's
-  always there, whether or not anything is playing.
 - **Top left, the Wi-Fi icon** shows the dial's own network status (see
-  below) and opens the [No-WiFi page](#no-wifi-and-restart) when the link
-  is down.
+  below) and opens the [Info page](#info-page).
+- **Top right, the bell**, when the dial has warnings. It is not there
+  otherwise. See [The warning bell](#the-warning-bell).
 
 Tapping anywhere else on the idle screen opens the replay picker, but only
 if a held recording is actually available to replay; otherwise the tap
@@ -77,12 +76,11 @@ than red. This means the dial hasn't connected since it started up (for
 example, straight after a reboot), so dropping to red would wrongly
 suggest something has gone wrong, when it may simply not have joined yet.*
 
-The distinction matters for what a tap on the icon does. While the dial is
-still connecting (grey/blank), a tap opens the No-WiFi page, but nothing
-opens it for you: you have to go looking. Once the dial has been connected
-and then loses the link (grey/red), the No-WiFi page opens on its own after
-a few seconds of being down, without you needing to tap anything. See
-[No-WiFi and Restart](#no-wifi-and-restart).
+A tap on the icon opens the [Info page](#info-page), whatever it is showing.
+When the dial has been connected and then loses the link, it also raises a
+No WiFi warning in the [bell](#no-wifi-and-restart) after a few seconds. A
+dial that is still connecting for the first time raises none, so a reboot
+does not look like a fault.
 
 ## Starting up
 
@@ -116,6 +114,9 @@ both show a speaker icon, easy to mix up:
 
 - The **top-right speaker icon and volume number** open the
   [outputs list](#per-output-control) (rich panels only, see below).
+- The **bell**, when the dial has warnings, sits in the top band beside the
+  volume (on a compact panel, beside the page dots). Tap it to read them; see
+  [The warning bell](#the-warning-bell).
 - The **bottom-right mute button** toggles mute. It always shows the same
   crossed-speaker icon; when muted, the whole button lights up solid so you
   can see the state at a glance, rather than the icon itself changing.
@@ -128,7 +129,9 @@ the appliance is still selected and playing, just silent.*
 Tapping the artwork itself (the middle of the screen, between the two
 bands) hides both bands for about six seconds, so you can see the artwork
 without anything overlaid. Tap anywhere on the screen to bring the bands
-back before the six seconds is up.
+back before the six seconds is up. If the dial has warnings, a bell on a dark
+disc stays in the top-right corner of the bare artwork, and a tap on it opens
+its card at once.
 
 Other taps on this screen:
 
@@ -338,54 +341,114 @@ list as on the other two pages; there's no mute control on this page.*
 
 ## Info page
 
-Reachable from the idle screen's "i" badge on every tier. Shows a handful
-of read-only diagnostic fields about the dial itself: its configured name,
-firmware version, IP address, Wi-Fi network and signal, free disk space,
-and its SD card's remaining health, where monitoring is turned on.
+Opened by tapping the Wi-Fi icon in the top-left corner of the idle screen.
+It shows a handful of read-only diagnostic fields about the dial itself, in
+this order: the Wi-Fi network, its signal, the IP address, the dial's
+configured name, the firmware version, free disk space, and the SD card's
+remaining health, where monitoring is turned on. The HD dial's pull-down lists
+the same fields in the same order.
 
-![Info list showing field names and values side by side, e.g. Dial name / Firmware / IPv4](images/info-list-rich.png)
+![Info list showing field names and values side by side, starting with WiFi and Signal](images/showcase/spi-dial/info-list.png)
 
 *Rich: a plain scrollable list, name and value together. Rows aren't
 tappable here, there's nothing more to drill into.*
 
 Compact shows names only, since there isn't room for both:
 
-![Compact info list showing just the field names, e.g. Dial name / Firmware](images/info-list-compact.png)
+![Compact info list showing just the field names, starting with WiFi and Signal](images/showcase/spi-dial/compact/info-list.png)
 
 *Compact: field names only, in the same picker-shaped rows the replay
 picker uses. Tap a row to see its value.*
 
-![Full-screen view of a single field's value, e.g. Dial name over "Kitchen dial"](images/info-value-compact.png)
+![Full-screen view of a single field's value, the IPv4 address](images/showcase/spi-dial/compact/info-value.png)
 
 *The value drill-in a compact row opens: one field, full screen.*
 
 Values fill in within about a second of opening the page; expect to see
-placeholder dashes very briefly first.
+placeholder dashes very briefly first. The page closes by itself after a
+short while without a touch.
 
-## No-WiFi and Restart
+## The warning bell
 
-Opened by tapping the flashing Wi-Fi icon on the idle screen, or on its own
-once the link has been down for a few seconds, but only if the dial has
-connected at some point since it last started. If it's still connecting
-for the first time, the page waits for you to tap the icon rather than
-opening itself.
+When the dial has something to tell you, it shows a bell with a count. It
+never opens a card on its own: a warning waits until you tap the bell. The
+count includes the dial's own warnings (No WiFi, microSD Health and **Update
+this dial**) and the warnings of every appliance the dial lists, such as a
+stylus near the end of its life. The bell's colour follows the most urgent of
+them: blue for information, orange for a warning, red for a critical one. With
+no warnings there is no bell.
 
-![No-WiFi modal with "No WiFi" over Dismiss and Restart, shown over a dimmed idle backdrop](images/nowifi-rich.png)
+Where the bell is drawn depends on what the screen is showing:
 
-*Rich: a modal card over the dimmed idle screen.*
+- **Idle:** in the top-right corner, opposite the Wi-Fi icon.
 
-![The same page filling the whole compact panel](images/nowifi-compact.png)
+  ![Idle screen with the Wi-Fi icon top left and nothing top right](images/showcase/spi-dial/idle.png)
 
-*Compact: the same Dismiss/Restart layout, filling the panel instead of a
-card.*
+  *Idle with nothing to report: only the Wi-Fi icon.*
 
-**Dismiss** closes the page without doing anything else. It stays closed
-for the rest of this outage: the icon keeps flashing, and a tap on it
-reopens the page if you change your mind. Reconnecting closes it
-automatically and resets Dismiss for next time.
+  ![The same idle screen with a bell showing the count 2 top right](images/showcase/spi-dial/idle-warnings.png)
+
+  *Idle with two warnings.*
+
+- **Playing, with the controls shown:** in the top band beside the volume (the
+  appliance name is shortened to make room). On the compact panel it sits beside
+  the page dots.
+
+  ![Now playing with a bell showing the count 2 beside the appliance name](images/showcase/spi-dial/now-playing-warnings.png)
+
+- **Playing, with the controls hidden:** on a dark disc in the top-right
+  corner of the artwork. This is the one place where a first touch does more
+  than bring the controls back: tapping the bell opens its card straight away.
+  A tap anywhere else still reveals the controls first.
+
+  ![Resting artwork with the bell on a dark disc in the corner](images/showcase/spi-dial/now-playing-artwork-only-warnings.png)
+
+The knob still sets the volume whatever the screen is showing.
+
+Tap the bell to open a card:
+
+![A warnings card reading Stylus wear and Over 450 hours played, with Next and Close](images/showcase/spi-dial/appliance-warning-paged.png)
+
+*One warning at a time. Small text at the top says where it comes from and
+which of the bell's warnings this is ("Turntable · 1 of 2").*
+
+- **Next** shows the following warning and wraps round to the first after the
+  last. It is only there when the bell holds more than one.
+- **Close** puts the card away. It does nothing else: nothing is hidden or
+  postponed, and the bell keeps counting for as long as the cause is there. The
+  card also closes by itself after a short while without a touch, and it does
+  not keep the screen awake.
+- A warning with an action of its own has it beside these (**Restart** for No
+  WiFi, below).
+
+A warning leaves the bell when its cause goes. If the card is showing it at
+the time, the card moves on to the next one, and closes if there is none. A
+warning that starts while a card is open is not added to that card; it is in the
+bell when you next open it. A card does not open while an update is showing or
+the dial is restarting.
+
+## No WiFi and Restart
+
+When the dial has been connected since it last started and then loses the
+network for a few seconds, it raises a **No WiFi** warning, and the Wi-Fi icon
+flashes (see [above](#wi-fi-status-icon)). Open the bell to read it. If the
+dial has not connected at all since it started, for example straight after a
+reboot, there is no warning: it may simply not have joined yet.
+
+![No WiFi card with Restart and Close](images/showcase/spi-dial/no-wifi.png)
+
+*Rich: a card over the dimmed idle screen.*
+
+![The same card on the compact panel](images/showcase/spi-dial/compact/no-wifi.png)
+
+*Compact: the same two buttons, over the whole panel.*
+
+**Close** puts the card away; the bell stays while the dial is off the
+network. Getting back on the network clears the warning by itself.
 
 **Restart** reboots the dial. It shows "Restarting..." immediately and asks
-for the reboot in the background:
+for the reboot in the background. If the network has come back by the time you
+tap it, the warning has gone and nothing restarts.
 
 ![Restarting splash reading "Restarting..." on a plain dark background](images/restarting-rich.png)
 
@@ -394,47 +457,41 @@ screen down. Identical on every tier.*
 
 ## SD card warning
 
-Shown when SD card health monitoring is turned on (from the appliance's
-Setup page) and the card's remaining endurance drops low. Like the No-WiFi
-page, it can appear over now-playing as well as the idle screen, and looks
-the same way on both tiers: a title, a body line with the remaining
-percentage, and one **Dismiss** button spanning the width of the card.
+Shown in the bell when SD card health monitoring is turned on (from the
+appliance's Setup page) and the card's remaining endurance drops low. The card
+has a title, a body line with the remaining percentage and a **Close** button.
+Under 3 percent the warning counts as critical and the bell turns red.
 
-**Dismiss** closes the warning without doing anything else. It stays closed
-until the reading recovers or the dial restarts; if you don't tap it at
-all, the page closes on its own after a minute so it never sits over
-now-playing indefinitely. Either way, the current reading stays visible on
-the [info page](#info-page).
+![SD card warning with the title microSD Health and the body 4%: Replace Soon](images/showcase/spi-dial/sd-health.png)
+
+**Close** puts the card away and does nothing more; the warning stays in the
+bell until the reading recovers. Like every warnings card it closes by itself
+after a short while without a touch. The current reading is also on the
+[Info page](#info-page).
 
 ## Appliance warnings
 
 An autostream appliance can ask the dial to show a warning of its own. The
 appliance sends these for maintenance and power: a stylus near or past the end
 of its life, a drive belt or main bearing due for service, or a power supply
-that has dipped below its voltage. They appear on the screen as a card like
-the SD card warning: the appliance's name in small text on top, then a title
-(for example "Input 1 stylus"), a short message (for example "Change soon,
-7.5 h left"), and one button spanning the card.
+that has dipped below its voltage. They are counted in the dial's bell and shown
+on the same card as the others: the appliance's name in small text on top
+(with the warning's place, "1 of 2", when there is more than one), then a title
+(for example "Stylus wear"), a short message (for example "Over 450 hours
+played") and **Close**, with **Next** when the bell holds more than one.
 
-These are the quietest warnings the dial shows:
+![An appliance's warning card with Close alone](images/showcase/spi-dial/appliance-warning.png)
 
-- The card only opens over the now-playing screen, and only while the screen
-  is awake. It never wakes a sleeping panel and never opens over a list or
-  another page.
-- If the dial has other warnings due (No-WiFi, SD card health), those come
-  first.
-- The card closes by itself if the appliance stops reporting the warning, for
-  instance after you reset the counter in its Service page.
+- A warning never wakes a sleeping panel and never opens by itself.
+- It leaves the bell when the appliance stops reporting it, for instance after
+  you reset the counter in its Service page.
+- **Close** hides nothing. While the cause is there, the bell keeps counting it.
 
-The button says **Dismiss**, which hides the card for a day and brings it
-back after that if the cause is still there. The snooze survives a restart.
-
-Compact panels show the same card in the same layout as the SD card warning.
-
-A card reading **Update \<appliance\>** is the dial's own: that appliance runs older
-software than the dial, and should be updated from its web UI. It looks and
-behaves like the appliance's warnings, and the dial keeps working with that
-appliance in the meantime.
+**Update this dial** is the dial's own warning, shown in the same way. Its
+message names the appliances that run newer software than the dial, for example
+"Turntable, CD Player need a newer dial". It is one entry however many
+appliances are ahead of the dial. Update the dial from the appliance's web UI;
+the dial keeps working with those appliances in the meantime.
 
 ## Software update
 
@@ -451,7 +508,8 @@ does. If the update is retried after an interruption, the bar starts again
 from the start.
 
 When the update reaches its restart, the card gives way to the same
-**Restarting...** screen the No-WiFi page uses. The panel then goes dark while
+**Restarting...** screen that a restart from the No WiFi card uses. The panel
+then goes dark while
 the dial reboots, and shows **Starting...** when it comes back. While the new
 version is being checked the screen carries on as normal.
 
@@ -463,10 +521,13 @@ Then a result card tells you how it went:
   failed its check and the dial went back to the old one, or **<old number>
   kept** if the update stopped before anything was replaced.
 
-The result card has one **Dismiss** button. If nobody dismisses it, it clears
+The result card has one **Close** button. If nobody closes it, it clears
 itself after an hour, since an update can take about 40 minutes and may well
 be left unattended. A result is shown once: it does not come back after
-Dismiss, after it clears itself, or after the dial restarts.
+Close, after it clears itself, or after the dial restarts.
+
+These cards are the only ones that open by themselves, because they say what
+the dial is doing. Warnings never do; they wait in the [bell](#the-warning-bell).
 
 If the dial has no screen, none of this applies; follow the update from the
 appliance's Dials panel instead.

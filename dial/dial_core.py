@@ -26,7 +26,7 @@ Every appliance is held by its own PeerClient in a peer pool
 clients' snapshots into one publish when the pool signals a change (paced to
 a few folds a second) and at the fold interval, so a decision bound to time
 moves on, and once a second does the housekeeping (the update watch,
-expiring warnings, the snooze write, the replay position). The snapshot a
+expiring warnings, the replay position). The snapshot a
 fold publishes carries a new `ticks` count and a `TickContext` saying what
 the fold started from, which is how a view tells a finished fold from the
 writes in between. What housekeeping does to the warning screens is queued

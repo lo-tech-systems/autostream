@@ -36,14 +36,14 @@ SIZES = ((800, 480), (1024, 600))
 DEFAULT_OUT = REPO_ROOT / "build" / "showcase-shots"
 # The published pictures: the folder, the HD pictures in it and their size.
 DOCS_OUT = REPO_ROOT / "docs" / "dial" / "images" / "showcase"
-DOCS_HD = ("now-playing-jazz", "appliances", "equaliser-six-band", "pulldown")
+DOCS_HD = ("now-playing-jazz", "appliances", "equaliser-six-band", "pulldown", "warning-stylus")
 DOCS_SIZES = ((1024, 600),)
 
 # What the pull-down's "This dial" list shows, as on a real installation; the
 # preview serves FakePanel.INFO_ROWS, so it is replaced here.
 INFO_ROWS = (
-    ("Dial name", "Lounge dial"), ("Firmware", "0.7.0"), ("IPv4", "192.168.1.42"),
-    ("WiFi", "HomeNet"), ("Signal", "Strong"), ("Disk free", "21.4 GB"), ("SD health", "96%"),
+    ("WiFi", "HomeNet"), ("Signal", "Strong"), ("IPv4", "192.168.1.42"),
+    ("Dial name", "Lounge dial"), ("Firmware", "0.7.0"), ("Disk free", "21.4 GB"), ("SD health", "96%"),
 )
 PULLDOWN_BASE = "now-playing-jazz"
 PULLDOWN_NAME = "pulldown"
@@ -88,6 +88,9 @@ def capture_hd(out: Path, engine: str, only: "set | None", sizes=SIZES) -> list:
                         "() => document.getElementById('sheet').getBoundingClientRect().top === 0")
                     page.wait_for_function(
                         "() => document.querySelectorAll('#info .info-row').length === 7")
+                elif action == "bell":
+                    page.locator(".appliance .warn-badge").first.click()
+                    page.locator("#card-title").wait_for(state="visible")
                 elif action == "scroll-speakers":
                     page.evaluate("() => { const l = document.getElementById('speakers-list');"
                                   " l.scrollTop = l.scrollHeight; }")

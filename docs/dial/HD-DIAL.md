@@ -125,6 +125,7 @@ then they are in name order.
 - The appliance's default speaker carries a Default label, as on the appliance's
   Home page.
 - Speakers have their own on/off switch and volume slider.
+- The Auto-Start pin is a square button at the right of the SPEAKERS heading, the same size and shape as the dial's bell. It sets the speakers that are on as the ones that start with each session, as the pin does on the appliance's Home page (see [Playback setup](../SETUP-PLAYBACK.md#auto-start-speakers)).
 - Switching on a speaker that needs pairing (a new Apple TV, for example)
   makes that device show a code, and a keypad card opens on the dial. Enter
   the code and press OK; the card says Pairing while the appliance checks it,
@@ -145,8 +146,12 @@ then they are in name order.
 
 ### Now playing and volume
 
-The right side shows the artwork, the track and artist, a mute button and the
-master volume slider. The artwork sits on a soft, blurred copy of itself, and
+The right side shows the artwork, the track and artist, and a volume row. The
+row reads, left to right, a mute button, a minus button, the master volume
+slider and a plus button. There is no number: the slider's position shows the
+level. Minus and plus step the volume by the dial's configured step size, the
+same as a turn of the knob, and a press of either counts as a touch of the
+dial. The artwork sits on a soft, blurred copy of itself, and
 the logo does the same when nothing is playing. When the track changes, the
 picture and its blurred backdrop fade into the new one together (a plain
 change if the screen is set to reduce motion). With nothing playing the side
@@ -214,8 +219,10 @@ Pull the handle at the top of the screen down (or tap it) to open a sheet:
 - **Brightness** slider.
 - **Sleep after**: 1 min, 5 min, 15 min or Never.
 - **Sleep now**, which puts the screen to sleep straight away.
-- **This dial**: the dial's name, firmware version, IP address, Wi-Fi network
-  and signal, free disk space and, where monitoring is on, SD card health.
+- **This dial**: the Wi-Fi network and signal, IP address, the dial's name,
+  firmware version, free disk space and, where monitoring is on, SD card
+  health. The small screen's Info page lists the same fields in the same
+  order.
 - A **power button** at the top right, which shuts the dial down.
 
 Changes apply at once and are saved by the dial. The sheet closes
@@ -232,27 +239,41 @@ development (see below) refuses it.
 
 ### Warnings
 
-The screen shows the same warning cards as the small screen: No WiFi (with
-Restart), microSD Health, and software update progress and result. They appear
-in the middle of the screen over a dimmed page.
+Warnings never open a card by themselves. A bell shows that something needs
+a look, and a tap on it opens the card.
 
-Appliances can also send warnings of their own, such as a stylus nearing the
-end of its life, a drive belt or main bearing due for service, or a low
-power-supply voltage. These are quieter than the dial's own warnings:
+- **The dial's bell** sits at the right of the APPLIANCES heading. It counts
+  the dial's own warnings: No WiFi, microSD Health, and **Update this dial**,
+  which names the appliances that run newer software than the dial. It is an
+  outline with no number while there is nothing to report, and filled with the
+  count once there is. Its colour follows the most urgent warning: blue for
+  information, orange for a warning and red for a critical one.
+- **An appliance's bell** sits on that appliance's row, with its own count and
+  colour. An appliance can send warnings of its own, such as a stylus nearing
+  the end of its life, a drive belt or main bearing due for service, or a low
+  power-supply voltage.
 
-- A small badge with a count appears on that appliance's row, coloured by
-  how urgent the worst warning is. Tap the badge to read the card.
-- When you are following that appliance, its most urgent warning also opens
-  as a card by itself.
-- **Dismiss** hides a warning for a day and it returns after that if the
-  cause is still there.
-- An appliance warning never wakes a sleeping screen.
+Tap a bell to open a card over a dimmed page. The card names where the warning
+comes from and, when the bell holds more than one, which it is ("Turntable ·
+1 of 2"). **Next** moves to the following one and wraps round after the last.
+No WiFi also offers **Restart**, which reboots the dial. **Close** puts the
+card away and does nothing else: the bell keeps counting for as long as the
+cause is there, and the warning is not hidden or postponed. A warning goes
+when its cause does, for instance when you reset a counter in the appliance's
+Service page or the dial gets back on the network, and the card moves on if it
+was showing that one.
 
-Resetting the counter in the appliance's Service page clears its warning.
+Tap the dial's bell when it is an outline and the card reads **Dial is
+healthy**, with the dial's name and version.
 
-**Update \<appliance\>** is the dial's own warning, shown in the same way, when that
-appliance runs older software than the dial. Update it from its web UI. The
-dial keeps working with it in the meantime.
+A warning never wakes a sleeping screen. A software update does: its card shows
+the progress, then the result, and a result (**Updated** or **Update failed**)
+is put away with **Close**. These cards do appear by themselves, because they
+say what the dial is doing.
+
+**Update this dial** is shown when an appliance runs newer software than the
+dial. Update the dial from the appliance's web UI. The dial keeps working with
+that appliance in the meantime.
 
 ### Sleep and waking
 
@@ -367,7 +388,7 @@ header, and every POST must carry the header `X-Requested-With: autostream-hd`.
 | `GET /api/v1/state` | The page's state, built fresh for the request: `{boot, version, time, part_versions, parts}`. `parts` holds two parts. `dial` is what the dial itself knows: the appliance roster, which one is focused, warnings, panel and screen settings, the held artwork and the dial's own pending requests. `focused` is the focused appliance's own readings (session, repeat record, track, inputs, speakers and equaliser) exactly as the appliance reported them, with its id, boot, version, reachability and whether this dial may control it. It is `null` when nothing is focused. `time` is the dial's clock; deadlines in `dial` are readings on it. |
 | `GET /api/v1/events?since=<boot>-<version>` | A server-sent event stream. Each `change` event carries only the parts that changed since the last one, with the id `<boot>-<version>`. A page that is not at the current version of this boot is sent `resync: true` and fetches the state. At most four pages are served at once, and nothing is built while none is connected. |
 | `POST /api/v1/intents/<name>` | A change to the focused appliance, with the body `{"appliance_id": "...", "args": {...}}`. The dial sends it on to the appliance and answers with the appliance's own reply, `{ok, error, version, boot, result, retry_after_s}`, as a 200 even when the appliance refuses it. A bad body is a 400, a name outside the list below is answered `unknown_intent`, and an appliance that takes more than six seconds is a 504 `timeout`. The arguments are never logged, because they can hold a speaker's PIN. |
-| `POST /api/v1/actions/<name>` | Things the dial does itself: `focus`, `volume_set`, `volume_step`, `mute_toggle`, `start_failure_dismiss`, `status_close`, `dial_restart`, `dial_shutdown` and `presence`. The answer is `{"ok": true}` or `{"ok": false, "error": "..."}` with a 4xx status. |
+| `POST /api/v1/actions/<name>` | Things the dial does itself: `focus`, `volume_set`, `volume_step` (one configured step; its `direction` is 1 for up or -1 for down), `mute_toggle`, `start_failure_dismiss`, `status_close` (closes an update result card), `dial_restart`, `dial_shutdown` and `presence`. The answer is `{"ok": true}` or `{"ok": false, "error": "..."}` with a 4xx status. |
 | `POST /api/v1/settings`, `POST /api/v1/panel/<wake\|sleep\|activity>`, `GET /api/v1/info` | The pull-down settings, the panel's sleep and wake, and the information sheet. |
 | `GET /api/v1/artwork/<key>`, `GET /api/v1/logo/backdrop` | The held artwork and its blurred backdrop, and the backdrop of the logo. |
 

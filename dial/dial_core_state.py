@@ -550,7 +550,7 @@ APPLIANCE_WARNINGS_MAX_SCAN = 4 * APPLIANCE_WARNINGS_MAX
 # Longest title and message kept, in characters; longer ones are truncated.
 APPLIANCE_WARNING_TITLE_MAX = 40
 APPLIANCE_WARNING_MESSAGE_MAX = 120
-# A warning id is short and plain, so it can key a snooze safely.
+# A warning id is short and plain, so it is safe to use as a key.
 APPLIANCE_WARNING_ID_RE = re.compile(r"[a-z0-9_-]{1,32}")
 
 SEVERITY_INFO = "info"

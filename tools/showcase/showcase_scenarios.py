@@ -134,7 +134,8 @@ def _stylus_scenario(track: Track):
 def build() -> list:
     """The showcase scenarios, in order, as (Scenario, action) pairs; the
     action is "" or what to do in the page once it has loaded ("eq" opens the
-    equaliser, "scroll-speakers" scrolls the speaker list to its end).
+    equaliser, "bell" taps the appliance's warning bell, "scroll-speakers" scrolls the
+    speaker list to its end).
     Scenario names are the file-name stems of the captured pictures."""
     jazz, folk, rock = BY_KEY["jazz"], BY_KEY["folk"], BY_KEY["rock"]
     classical, soul, electronic, ambient = (
@@ -177,8 +178,8 @@ def build() -> list:
         hs.appliance(IDS[name], name, master_volume=40, muted=False, ip=f"192.0.2.{21 + n}")
         for n, name in enumerate(("Turntable", "CD Player")))), muted=None)
 
-    # A warning card: the stylus reminder.
-    out.append((_stylus_scenario(jazz), ""))
+    # A warning card: the stylus reminder, opened by a tap on its appliance's bell.
+    out.append((_stylus_scenario(jazz), "bell"))
     return out
 
 

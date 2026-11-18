@@ -14,6 +14,7 @@ The HD dial's page at 1024x600.
 - `appliances-1024x600.png`: the appliance list, with a turntable playing and a CD player idle.
 - `equaliser-six-band-1024x600.png`: the six-band equaliser page.
 - `pulldown-1024x600.png`: the pull-down panel open, with screen settings and the dial's details.
+- `warning-stylus-1024x600.png`: a warning card opened by a tap on the bell on an appliance's row.
 
 ## spi-dial
 
@@ -30,14 +31,16 @@ Start-up and system screens:
 - `updating.png`: a software update in progress, with its step and progress bar.
 - `updated.png`: the update finished, showing the new version.
 - `update-failed.png`: the update failed and the previous version was restored.
-- `no-wifi.png`: the No WiFi card, with Dismiss and Restart.
-- `sd-health.png`: the microSD health warning.
-- `appliance-warning.png`: a warning from an appliance (the stylus reminder), with Dismiss.
-- `appliance-notice.png`: the same kind of card as a notice that is put away with OK.
+- `no-wifi.png`: the No WiFi card, with Restart and Close.
+- `sd-health.png`: the microSD health warning, with Close.
+- `appliance-warning.png`: a warning from an appliance (the stylus reminder), with Close.
+- `appliance-warning-paged.png`: the same card when the bell holds more than one warning, with the warning's place ("1 of 2") and Next.
 
 Idle:
 
-- `idle.png`: nothing playing, with the Wi-Fi signal and the information badge.
+- `idle.png`: nothing playing, with the Wi-Fi signal.
+- `idle-warnings.png`: idle with the warning bell (two warnings, orange).
+- `idle-critical.png`: idle with the bell in red for a critical warning.
 - `idle-replay-available.png`: idle with the replay logo, offered when a recording can be replayed.
 - `idle-wifi-connecting.png`: the Wi-Fi icon dimmed while the dial connects.
 - `idle-wifi-lost.png`: the Wi-Fi icon in red after the link is lost.
@@ -47,6 +50,9 @@ Now playing:
 - `now-playing.png`: now playing with the controls shown.
 - `now-playing-muted.png`: the same, muted.
 - `now-playing-artwork-only.png`: the cover alone, with the controls hidden.
+- `now-playing-warnings.png`: now playing with the warning bell in the top band.
+- `now-playing-critical.png`: the same with a critical warning, the bell in red.
+- `now-playing-artwork-only-warnings.png`: the cover alone, with the bell on a dark disc in the corner.
 - `now-playing-replay-timer.png`: the replay position shown briefly over the cover (rich layout only).
 
 Appliances and speakers (rich layout only):
@@ -80,7 +86,7 @@ Playwright and the WebKit engine installed:
 
     python tools/showcase/capture.py --docs
 
-This rewrites every picture here: the four HD pages and all the SPI screens.
+This rewrites every picture here: the five HD pages and all the SPI screens.
 To capture into another folder instead, give it as the argument; that run
 also writes the 800x480 HD pages. See `tools/showcase/README.md` for the
 options.

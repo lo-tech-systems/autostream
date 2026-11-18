@@ -32,8 +32,9 @@ view](#the-hd-page-is-a-second-view).
 | `dial_core_state.py` | The snapshot dataclasses and the pure decisions made over them (focus resolution, walk order, volume target choice, picker rows, warning attribution). No I/O, no threads, no locks, no clock reads. |
 | `dial_artwork.py` | The artwork download the core's artwork thread runs, with its size and time limits and a rate-limited failure log. |
 | `dial_warning_text.py` | The warning table and its fixed strings (No-WiFi, SD health, update cards) and the builder for appliance-supplied warnings. Pure data, no drawing. |
-| `dial_warnings.py` | The warning manager: registration, which status is due, which warning a view would open. |
+| `dial_warnings.py` | The warning manager: registration, which status is due, and which warnings are active. A warning is told from a status (an update running or finished), which is a screen of its own. Nothing is stored: a warning counts for as long as its cause is there. |
 | `dial_warning_bell.py` | What a warning bell holds: the dial's own warnings, one appliance's, or the whole set, worst first. Pure. |
+| `dial_warning_page.py` | The small screen's warnings card: which entry of a bell is on show, what Next does, and the card that the buttons resolve against. It also builds the card a status screen shows. Pure. |
 | `dial_display.py` | `DialDisplay`: the SPI view. Screen policy, the repaint thread, composing and pushing frames, panel sleep and wake, the artwork reveal slide, the pressed channel and the touch surface. |
 | `dial_display_compositor.py`, `dial_display_image.py`, `dial_display_profiles.py`, `dial_display_adafruit.py` | Drawing, image policy, panel profiles and the hardware backend. |
 | `dial_touch*.py` | Touch drivers, filtering and the zone layout. The touch source calls core actions through the view's taps. |
@@ -42,7 +43,8 @@ view](#the-hd-page-is-a-second-view).
 | `dial_hd_backdrop.py` | `BackdropStore`: the page's blurred backdrops, rendered on first request on the handler thread and kept in memory, one per artwork key and one for the logo. |
 | `dial_hd_events.py` | `ChangeHub`: turns the core's change signals into a sequence number, builds each state body once per change and feeds the event stream. |
 | `dial_hd_state.py` | `build_parts()`: the pure function that turns a core snapshot into the page's two state parts, `dial` and `focused`. |
-| `dial_hd_actions.py` | The page's actions as one table onto core methods, with the argument checks. |
+| `dial_hd_actions.py` | The page's actions as one table onto core methods, with the argument checks: focus, volume set and step, mute, putting away a start failure, closing a status card, restart, shutdown and presence. |
+| `dial/hd/hd-bell.js` | The HD page's warning bells: the dial's own in the APPLIANCES header, the card that pages through a bell's warnings, and the "Dial is healthy" card. It sits beside the page's other modules (`hd-paint.js`, `hd-actions.js` and the rest). |
 | `dial_hd_panel.py` | `HdPanel`: the HD dial's sleep, wake and brightness, and the sysfs backlight writes. |
 | `dial_hd_ddc.py` | The HDMI panel's backlight over DDC/CI through i2c-dev: the packet codec, panel detection, and `DdcBacklight`, which has the same interface as the sysfs backlight and applies levels on its own worker thread. |
 | `dial_main.py` | Entry point. Builds the core first, then the display, workers, inputs and HTTP server. Also holds the headless stand-in for the display. |
@@ -51,7 +53,7 @@ view](#the-hd-page-is-a-second-view).
 
 | Thread | Owner | What it does |
 |---|---|---|
-| `dial-core` | core | Folds the peer clients' snapshots into one publish when a client signals a change (a fold asked for within 0.4 s of the last one's end waits for that gap) and at the fold interval. Once a second it also does housekeeping: the update watch, expiring warnings, the snooze write, and the replay position read while an appliance replays. |
+| `dial-core` | core | Folds the peer clients' snapshots into one publish when a client signals a change (a fold asked for within 0.4 s of the last one's end waits for that gap) and at the fold interval. Once a second it also does housekeeping: the update watch, expiring warnings, and the replay position read while an appliance replays. |
 | `dial-display-repaint` | view | Waits for a core snapshot or an overlay signal, folds the newest snapshot into the screen and paints. This is the only thread that composes and pushes frames. |
 | `touch-event-source` | touch | Reads the touch controller and turns touches into taps. Taps call core actions (never while holding the view lock) and the view's own screen changes. |
 | one per appliance | peer clients | Each holds one appliance's state from its change stream and signals the core when it moves. |
@@ -168,8 +170,8 @@ latest, so a caller never waits on the bus). Asleep is level 0: the DDC
 backlight dims the panel to its minimum and leaves it powered, and only powers
 it off when the dial's `panel_power_off` setting is on, read on its worker each
 time a level is applied so a change needs no restart. The idle clock starts when nothing is playing and
-restarts on activity. Playback starting, or a warning that interrupts, wakes
-the panel; an appliance warning, which never interrupts, does not. The panel
+restarts on activity. Playback starting, or an update card, wakes
+the panel; a warning, which only changes its bell, does not. The panel
 never calls into the core.
 
 **Development listener.** When the dial's `hd_dev_access` setting is on (and a
