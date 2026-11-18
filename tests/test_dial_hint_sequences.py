@@ -35,6 +35,7 @@ if _CORE not in sys.path:
 
 import autostream_core as core
 import autostream_dial_push as dp
+import autostream_state
 from track_id.models import TrackIdentificationSnapshot, state_status_text
 
 GOLDEN = Path(__file__).parent / "golden" / "dial_hint_sequences.json"
@@ -206,8 +207,8 @@ class Driver:
         monkeypatch.setattr(core, "_repeat_status", None)
         monkeypatch.setattr(core, "_session_state", {"active": False, "source": None})
         self.watches = (
-            dp.ChangeWatch("repeat", lambda: core.repeat_digest(core.get_repeat_status())),
-            dp.ChangeWatch("track", lambda: core.track_digest(
+            dp.ChangeWatch("repeat", lambda: autostream_state.repeat_digest(core.get_repeat_status())),
+            dp.ChangeWatch("track", lambda: autostream_state.track_digest(
                 core.get_active_track_identification_snapshot())),
         )
 

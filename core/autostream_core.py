@@ -32,6 +32,7 @@ import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
 import autostream_runtime as runtime
+import autostream_state
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
     INPUT_TYPE_DEFAULT,
@@ -48,8 +49,6 @@ from autostream_dial_push import (
     ChangeWatch,
     hint_dials_after_cycle,
     notify_state_changed,
-    repeat_digest,
-    track_digest,
 )
 from autostream_bluetooth_client import (
     BluetoothClient,
@@ -4960,8 +4959,9 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     # a reload or a daemon reconnect compares the state before with the
     # state after.
     dial_hint_watches = (
-        ChangeWatch("repeat", lambda: repeat_digest(get_repeat_status())),
-        ChangeWatch("track", lambda: track_digest(get_active_track_identification_snapshot())),
+        ChangeWatch("repeat", lambda: autostream_state.repeat_digest(get_repeat_status())),
+        ChangeWatch("track", lambda: autostream_state.track_digest(
+            get_active_track_identification_snapshot())),
     )
 
     # Outer loop: runs once normally; repeats after a config reload.

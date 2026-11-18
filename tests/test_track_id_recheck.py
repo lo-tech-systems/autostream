@@ -25,7 +25,7 @@ for _p in (str(REPO_ROOT / "core"), str(REPO_ROOT / "tests")):
 import autostream_core as core
 from autostream_artwork import ArtworkImage
 from autostream_core import NowPlayingMetadata
-from autostream_dial_push import track_digest
+from autostream_state import track_digest
 from autostream_webui_api import _dial_track_id_dict
 from track_id.models import (
     STATE_ANALYSING,

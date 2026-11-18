@@ -1,0 +1,319 @@
+"""tests/test_state_parts.py
+
+The part types: defaults, digests, freezing and the pure helpers that read
+one snapshot.
+"""
+from __future__ import annotations
+
+import copy
+import dataclasses
+import json
+import math
+import pickle
+import sys
+from pathlib import Path
+
+import pytest
+
+_CORE = str(Path(__file__).resolve().parent.parent / "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
+import autostream_state as state
+from autostream_playback_stats import PlaybackSnapshot
+from autostream_state import FrozenDict, thaw
+from autostream_state.freeze import deep_freeze
+from autostream_state.parts import DIGESTS, PART_NAMES
+from track_id.models import (
+    STATE_IDENTIFIED,
+    TrackIdentificationSnapshot,
+    disabled_snapshot,
+    state_status_text,
+    waiting_snapshot,
+)
+
+
+def identified(index: int, title: str = "Title") -> TrackIdentificationSnapshot:
+    return TrackIdentificationSnapshot(
+        enabled=True, state=STATE_IDENTIFIED, status_text=state_status_text(STATE_IDENTIFIED),
+        input_index=index, title=title, artist="Artist", album="Album",
+    )
+
+
+def entry(index, **kw):
+    base = dict(
+        device="hw:0", input_type="line", capturing=False, replay_origin=False,
+        rate_note="note", sample_rate_text="text", rate_mismatch_hz=0,
+        level=FrozenDict({"index": index, "dbfs": -40.0, "vu_history": FrozenDict()}),
+    )
+    base.update(kw)
+    return state.InputEntry(index=index, **base)
+
+
+def snap(**parts):
+    return dataclasses.replace(state.Snapshot(), **parts)
+
+
+class TestDefaults:
+    @pytest.mark.parametrize("cls", [
+        state.SessionPart, state.RepeatPart, state.TrackPart, state.InputsPart,
+        state.MonitorRuntimeInfo, state.HealthPart, state.SettingsPart, state.Snapshot,
+    ])
+    def test_each_part_constructs_with_no_arguments(self, cls):
+        assert cls() == cls()
+
+    def test_defaults_equal_the_initial_values_of_the_state_they_replace(self):
+        assert state.SessionPart().as_dict() == {"active": False, "source": None}
+        assert state.RepeatPart().block is None
+        assert state.TrackPart().entries == {} and state.TrackPart().service_enabled is False
+        assert state.InputsPart() == state.InputsPart((), 0, "")
+        mon = state.MonitorRuntimeInfo()
+        assert (mon.monitor_build, mon.log_level, mon.connected, mon.last_seen_at) == (
+            "unknown", "unknown", False, 0.0)
+        assert state.HealthPart().as_json() == {
+            "reconcile_fired_count": 0, "reconcile_last_fired_at": 0.0,
+            "watchdog_armed": False, "watchdog_restart_count": 0,
+            "watchdog_last_restart_at": 0.0,
+        }
+        assert state.SettingsPart().generation == 0
+
+    def test_the_playback_default_is_an_empty_snapshot(self):
+        empty = state.empty_playback_snapshot()
+        assert isinstance(empty, PlaybackSnapshot)
+        assert empty.inputs == {} and empty.stylus_banner_text is None
+        assert empty.stylus_warning_indices == () and empty.has_warning is False
+
+    def test_the_rate_texts_are_the_setup_page_texts(self):
+        assert state.RATE_MATCHING_NOTE_DEFAULT.startswith("Follows the sample rate of the source.")
+        assert state.SAMPLE_RATE_TEXT_NOT_RUNNING == "Sample rate: not running"
+        assert state.MISSING_RATE_TEXTS == (
+            state.RATE_MATCHING_NOTE_DEFAULT, state.SAMPLE_RATE_TEXT_NOT_RUNNING)
+
+    def test_every_part_has_a_digest(self):
+        assert set(DIGESTS) == set(PART_NAMES)
+
+
+class TestDigests:
+    def test_monitor_digest_ignores_last_seen_at(self):
+        a = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "info", True, 1.0))
+        b = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "info", True, 2.0))
+        c = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "debug", True, 1.0))
+        assert a == b and a != c
+
+    def test_inputs_digest_ignores_the_level_but_not_the_texts(self):
+        a = state.InputsPart((entry(1),))
+        b = state.InputsPart((entry(1, level=FrozenDict({"index": 1, "dbfs": -10.0})),))
+        c = state.InputsPart((entry(1, sample_rate_text="other"),))
+        d = state.InputsPart((entry(1),), sample_rate_mismatch_input=1)
+        assert DIGESTS["inputs"](a) == DIGESTS["inputs"](b)
+        assert DIGESTS["inputs"](a) != DIGESTS["inputs"](c)
+        assert DIGESTS["inputs"](a) != DIGESTS["inputs"](d)
+
+    def test_repeat_digest_ignores_positions(self):
+        a = state.RepeatPart(FrozenDict({"enabled": True, "recording": {"active": True, "seconds": 3.0}}))
+        b = state.RepeatPart(FrozenDict({"enabled": True, "recording": {"active": True, "seconds": 9.0}}))
+        assert DIGESTS["repeat"](a) == DIGESTS["repeat"](b)
+
+    def test_track_digest_ignores_timestamps_and_keys_on_the_input(self):
+        t1 = identified(1)
+        t2 = dataclasses.replace(t1, updated_at=5.0, last_attempt_at=4.0)
+        a = state.TrackPart(FrozenDict({1: t1}), True)
+        b = state.TrackPart(FrozenDict({1: t2}), True)
+        c = state.TrackPart(FrozenDict({2: t1}), True)
+        d = state.TrackPart(FrozenDict({1: t1}), False)
+        assert DIGESTS["track"](a) == DIGESTS["track"](b)
+        assert len({DIGESTS["track"](a), DIGESTS["track"](c), DIGESTS["track"](d)}) == 3
+
+    def test_playback_digest_moves_on_a_banner(self):
+        empty = state.empty_playback_snapshot()
+        assert DIGESTS["playback"](empty) == DIGESTS["playback"](state.empty_playback_snapshot())
+        banner = dataclasses.replace(empty, stylus_banner_text="Stylus due")
+        assert DIGESTS["playback"](empty) != DIGESTS["playback"](banner)
+
+    def test_health_digest_is_all_five_fields(self):
+        base = state.HealthPart()
+        for name, value in [
+            ("reconcile_fired_count", 1), ("reconcile_last_fired_at", 2.0),
+            ("watchdog_armed", True), ("watchdog_restart_count", 3),
+            ("watchdog_last_restart_at", -math.inf),
+        ]:
+            assert DIGESTS["health"](dataclasses.replace(base, **{name: value})) != DIGESTS["health"](base)
+
+    def test_health_json_maps_non_finite_to_none(self):
+        part = state.HealthPart(watchdog_last_restart_at=-math.inf)
+        assert part.as_json()["watchdog_last_restart_at"] is None
+        json.dumps(part.as_json(), allow_nan=False)
+
+    def test_settings_and_session_digests(self):
+        assert DIGESTS["settings"](state.SettingsPart(3)) == 3
+        assert DIGESTS["session"](state.SessionPart(True, "replay")) == (True, "replay")
+
+
+class TestFrozenDict:
+    def test_json_bytes_equal_a_plain_dicts(self):
+        plain = {"a": 1, "b": [1, 2, {"c": None}], "d": {"e": 1.5}}
+        frozen = deep_freeze(plain)
+        assert isinstance(frozen, dict)
+        assert json.dumps(frozen) == json.dumps(plain)
+        assert json.dumps(frozen, indent=2, sort_keys=True) == json.dumps(plain, indent=2, sort_keys=True)
+
+    @pytest.mark.parametrize("call", [
+        lambda d: d.__setitem__("x", 1),
+        lambda d: d.__delitem__("a"),
+        lambda d: d.clear(),
+        lambda d: d.pop("a"),
+        lambda d: d.popitem(),
+        lambda d: d.setdefault("x", 1),
+        lambda d: d.update({"x": 1}),
+        lambda d: d.__ior__({"x": 1}),
+    ])
+    def test_every_mutating_method_raises(self, call):
+        with pytest.raises(TypeError):
+            call(FrozenDict({"a": 1}))
+
+    def test_hash_works_and_equal_dicts_hash_equal(self):
+        a = FrozenDict({"a": 1, "b": (1, 2)})
+        b = FrozenDict({"b": (1, 2), "a": 1})
+        assert hash(a) == hash(b)
+        assert {a, b} == {a}
+
+    def test_pickle_round_trip_gives_a_frozen_dict(self):
+        a = FrozenDict({"a": 1})
+        back = pickle.loads(pickle.dumps(a))
+        assert type(back) is FrozenDict and back == a
+
+    def test_copies_are_plain_mutable_dicts(self):
+        a = deep_freeze({"a": {"b": [1, 2]}})
+        for dup in (copy.copy(a), copy.deepcopy(a), a.copy()):
+            assert type(dup) is dict
+            dup["z"] = 1
+        deep = copy.deepcopy(a)
+        assert type(deep["a"]) is dict
+        deep["a"]["b2"] = 1
+
+    def test_thaw_gives_a_plain_mutable_deep_copy(self):
+        a = deep_freeze({"a": {"b": [1, 2]}})
+        t = thaw(a)
+        assert t == {"a": {"b": [1, 2]}}
+        assert type(t) is dict and type(t["a"]) is dict and type(t["a"]["b"]) is list
+
+
+class TestDeepFreeze:
+    def test_containers_become_their_immutable_forms(self):
+        out = deep_freeze({"l": [1, [2]], "s": {1, 2}})
+        assert type(out) is FrozenDict
+        assert out["l"] == (1, (2,))
+        assert out["s"] == frozenset({1, 2})
+
+    def test_an_already_frozen_value_is_returned_as_it_is(self):
+        value = deep_freeze({"a": (1, 2)})
+        assert deep_freeze(value) is value
+        part = state.SessionPart(True, "input1")
+        assert deep_freeze(part) is part
+
+    def test_a_frozen_dataclass_is_rebuilt_with_frozen_fields(self):
+        part = state.RepeatPart({"a": [1]})
+        out = deep_freeze(part)
+        assert type(out.block) is FrozenDict and out.block["a"] == (1,)
+
+    def test_a_mutable_dataclass_and_other_objects_are_refused(self):
+        @dataclasses.dataclass
+        class Loose:
+            x: int = 0
+
+        with pytest.raises(TypeError):
+            deep_freeze(Loose())
+        with pytest.raises(TypeError):
+            deep_freeze(object())
+
+    def test_enums_and_scalars_pass(self):
+        assert deep_freeze(state.Origin.USER) is state.Origin.USER
+        assert deep_freeze(None) is None and deep_freeze("x") == "x" and deep_freeze(1.5) == 1.5
+
+
+class TestHelpers:
+    def test_replay_origin_input(self):
+        block = {"replay": {"active": True}, "recording": {"origin_input": 2}}
+        assert state.replay_origin_input(block) == 2
+        assert state.replay_origin_input({"replay": {"active": False}, "recording": {"origin_input": 2}}) is None
+        assert state.replay_origin_input(None) is None
+        assert state.replay_origin_input({"replay": {"active": True}}) is None
+
+    def test_repeat_recording_origin_does_not_need_replay(self):
+        assert state.repeat_recording_origin({"recording": {"origin_input": 1}}) == 1
+        assert state.repeat_recording_origin({"recording": {"origin_input": True}}) is None
+        assert state.repeat_recording_origin("x") is None
+
+    def test_session_source_input_index(self):
+        assert state.session_source_input_index(snap()) is None
+        assert state.session_source_input_index(snap(session=state.SessionPart(True, "input2"))) == 2
+        block = FrozenDict({"replay": {"active": True}, "recording": {"origin_input": 1}})
+        assert state.session_source_input_index(snap(
+            session=state.SessionPart(True, "replay"), repeat=state.RepeatPart(block))) == 1
+        assert state.session_source_input_index(snap(session=state.SessionPart(True, "bogus"))) is None
+
+    def test_track_for_input_falls_back_to_disabled(self):
+        t = identified(1)
+        s = snap(track=state.TrackPart(FrozenDict({1: t}), True))
+        assert state.track_for_input(s, 1) is t
+        assert state.track_for_input(s, 2) == disabled_snapshot()
+
+    def test_the_inputs_part_readers(self):
+        part = state.InputsPart((entry(1), entry(2, rate_note="n2", sample_rate_text="t2")))
+        assert part.entry(2).index == 2 and part.entry(3) is None
+        assert part.rate_texts(2) == ("n2", "t2")
+        assert part.rate_texts(3) == state.MISSING_RATE_TEXTS
+        levels = part.levels()
+        assert [lv["index"] for lv in levels] == [1, 2]
+        levels[0]["dbfs"] = 0
+        assert part.levels()[0]["dbfs"] == -40.0
+
+
+class TestActiveTrack:
+    """Each branch of the choice of the track shown."""
+
+    T1, T2 = identified(1, "one"), identified(2, "two")
+
+    def build(self, *, source=None, entries, service=True, repeat=None):
+        return snap(
+            session=state.SessionPart(source is not None, source),
+            repeat=state.RepeatPart(repeat),
+            inputs=state.InputsPart(tuple(entries)),
+            track=state.TrackPart(FrozenDict({1: self.T1, 2: self.T2}), service),
+        )
+
+    def test_the_session_source_wins_over_a_capture_flicker_on_another_input(self):
+        s = self.build(source="input1", entries=[entry(1), entry(2, capturing=True)])
+        assert state.active_track(s) is self.T1
+
+    def test_a_replay_session_uses_the_replay_origin_input(self):
+        s = self.build(source="replay", entries=[entry(1), entry(2, replay_origin=True)])
+        assert state.active_track(s) is self.T2
+
+    def test_a_replay_session_with_no_origin_falls_through_to_capturing(self):
+        s = self.build(source="replay", entries=[entry(1, capturing=True), entry(2)])
+        assert state.active_track(s) is self.T1
+
+    def test_a_session_source_naming_no_input_falls_through(self):
+        s = self.build(source="input9", entries=[entry(1), entry(2, capturing=True)])
+        assert state.active_track(s) is self.T2
+
+    def test_a_malformed_session_source_falls_through(self):
+        s = self.build(source="weird", entries=[entry(1), entry(2, capturing=True)])
+        assert state.active_track(s) is self.T2
+
+    def test_without_a_session_the_first_capturing_input_is_used(self):
+        s = self.build(entries=[entry(1), entry(2, capturing=True)])
+        assert state.active_track(s) is self.T2
+
+    def test_then_the_first_replay_origin_input(self):
+        s = self.build(entries=[entry(1), entry(2, replay_origin=True)])
+        assert state.active_track(s) is self.T2
+
+    def test_nothing_sourcing_with_a_service_is_waiting(self):
+        s = self.build(entries=[entry(1), entry(2)], service=True)
+        assert state.active_track(s) == waiting_snapshot()
+
+    def test_nothing_sourcing_without_a_service_is_disabled(self):
+        s = self.build(entries=[entry(1), entry(2)], service=False)
+        assert state.active_track(s) == disabled_snapshot()

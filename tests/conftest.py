@@ -352,3 +352,38 @@ def _reset_pin_pairing():
     m = _mod("autostream_pin_pairing")
     if m is not None:
         m.STATE.reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_state_store():
+    """Give every test a fresh state store, and fail the test that leaves a
+    publish un-notified.
+
+    A writer that publishes and forgets to call notify() on the result leaves
+    subscribers uninformed, which no assertion of the test would notice. The
+    store keeps a record of every such publish in test mode, whether the
+    result is still alive or already collected, so no collection is forced
+    here: on a full run a collection after every test costs more than the
+    tests themselves.
+    """
+    repo_core = str(Path(__file__).parent.parent / "core")
+    if repo_core not in sys.path:
+        sys.path.insert(0, repo_core)
+    import autostream_state
+
+    autostream_state.store().reset_for_tests()
+    yield
+    leaked = autostream_state.store().take_leaked()
+    if leaked:
+        pytest.fail(
+            "state: %d publish(es) never notified; created at:\n%s"
+            % (len(leaked), "\n---\n".join(leaked)),
+            pytrace=False,
+        )
+
+
+@pytest.fixture
+def fake_store():
+    """Put parts into the process state store without their owners."""
+    from fake_store import FakeStore
+    return FakeStore()

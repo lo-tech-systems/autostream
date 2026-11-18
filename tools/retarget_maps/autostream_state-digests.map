@@ -1,0 +1,3 @@
+# The dial-hint digests moved into the state parts.
+autostream_dial_push.repeat_digest -> autostream_state.repeat_digest  alias=state
+autostream_dial_push.track_digest -> autostream_state.track_digest  alias=state

@@ -24,7 +24,6 @@ import logging
 import threading
 import time
 
-from track_id.models import STATE_ANALYSING, STATE_IDENTIFIED
 
 STATE_PUSH_PATH = "/state-changed"
 # A change is pushed at once; further changes inside this window are pushed
@@ -150,41 +149,6 @@ def notify_state_changed(*kinds: str, except_dial: str | None = None) -> None:
         )
     except Exception:
         logging.debug("dial push: notify failed", exc_info=True)
-
-
-def repeat_digest(rs) -> tuple:
-    """The parts of the daemon's repeat block a dial shows: whether the
-    feature is on and armed, whether it is recording, holds a recording, is
-    replaying or fading out. Positions and durations move every cycle and
-    are left out."""
-    if not isinstance(rs, dict):
-        return ()
-    rec = rs.get("recording") if isinstance(rs.get("recording"), dict) else {}
-    rep = rs.get("replay") if isinstance(rs.get("replay"), dict) else {}
-    return (
-        bool(rs.get("enabled")), bool(rs.get("armed")), bool(rec.get("active")),
-        (rec.get("seconds") or 0) > 0, bool(rep.get("active")), bool(rep.get("fading_out")),
-    )
-
-
-def track_digest(snap) -> tuple | None:
-    """The parts of a track identification snapshot a dial shows: whether a
-    track is identified and, if so, its title, artist, album and artwork.
-    While an attempt is in flight there is nothing to say (None); the
-    timestamps and the attempt states a dial does not tell apart are left
-    out."""
-    state = getattr(snap, "state", None)
-    if state == STATE_ANALYSING:
-        return None
-    identified = state == STATE_IDENTIFIED
-    artwork = (getattr(snap, "artwork_url", "") or "") if identified else ""
-    if not artwork.startswith(("http://", "https://")):
-        artwork = ""
-    text = (
-        tuple(getattr(snap, name, "") or "" for name in ("title", "artist", "album"))
-        if identified else ("", "", "")
-    )
-    return (bool(getattr(snap, "enabled", False)), identified) + text + (artwork,)
 
 
 class ChangeWatch:

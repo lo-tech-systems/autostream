@@ -1,0 +1,104 @@
+"""tests/test_state_lock_order.py
+
+The lock-order rules of the state store, checked with recording locks:
+
+  1. Nothing is acquired while the store lock is held.
+  3. No subscriber is called while the calling thread holds the store lock or
+     a domain lock.
+  5. The function given to update() takes no lock.
+"""
+from __future__ import annotations
+
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+_CORE = str(Path(__file__).resolve().parent.parent / "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
+import lockcheck
+import autostream_state as state
+from autostream_state import SessionPart, SettingsPart
+from autostream_state.store import StateStore
+
+
+@pytest.fixture
+def st():
+    s = StateStore()
+    s.reset_for_tests(track_locks=True)
+    lockcheck.install(s)
+    yield s
+    lockcheck.uninstall()
+
+
+def test_publish_update_and_notify_acquire_nothing_under_the_store_lock(st):
+    session = st.claim("session", "test_owner")
+    settings = st.claim("settings", "test_owner")
+    domain = lockcheck.TrackedLock("domain")
+    st.subscribe(lambda change: None)
+    with domain:
+        pending = session.publish(SessionPart(True, "input1"))
+        pending2 = settings.update(lambda cur: SettingsPart(cur.generation + 1))
+    pending.notify()
+    pending2.notify()
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
+    assert st.lock_violations == []
+
+
+def test_the_detector_sees_a_lock_taken_inside_update(st):
+    settings = st.claim("settings", "test_owner")
+    domain = lockcheck.TrackedLock("domain")
+
+    def fn(cur):
+        with domain:
+            return SettingsPart(cur.generation + 1)
+
+    settings.update(fn).notify()
+    assert lockcheck.ACQUIRED_UNDER_STORE == ["domain"]
+
+
+def test_subscribers_run_with_no_lock_held_after_the_writers_lock_is_released(st):
+    session = st.claim("session", "test_owner")
+    domain = lockcheck.TrackedLock("domain")
+    held_in_call = []
+    st.subscribe(lambda change: held_in_call.append(lockcheck.held()))
+    with domain:
+        pending = session.publish(SessionPart(True, "input1"))
+    pending.notify()
+    assert held_in_call == [frozenset()]
+    assert st.lock_violations == []
+
+
+def test_notify_inside_a_domain_lock_is_reported(st):
+    session = st.claim("session", "test_owner")
+    domain = lockcheck.TrackedLock("domain")
+    st.subscribe(lambda change: None)
+    with domain:
+        session.publish(SessionPart(True, "input1")).notify()
+    assert st.lock_violations == [("subscriber called holding", ("domain",))]
+
+
+def test_a_batch_close_calls_the_subscriber_with_no_lock_held(st):
+    session = st.claim("session", "test_owner")
+    seen = []
+    st.subscribe(lambda change: seen.append(lockcheck.held()))
+    with st.batch():
+        session.publish(SessionPart(True, "input1")).notify()
+    assert seen == [frozenset()]
+    assert st.lock_violations == []
+
+
+def test_wait_for_change_wakes_while_publishers_run(st):
+    session = st.claim("session", "test_owner")
+    result = []
+    t = threading.Thread(target=lambda: result.append(st.wait_for_change(0, 5.0)))
+    t.start()
+    time.sleep(0.05)
+    session.publish(SessionPart(True, "input1")).notify()
+    t.join(5)
+    assert result and result[0].version == 1
+    assert st.lock_violations == []

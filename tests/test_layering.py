@@ -44,6 +44,7 @@ webui_post_handlers webui_routes webui_service_schema webui_state
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
     "track_id": "L0",
+    "autostream_state": "L1a",
     **{f"autostream_{n}": "L2" for n in _L2},
     **{f"autostream_{n}": "L3" for n in _L3},
     "autostream_core": "L4",

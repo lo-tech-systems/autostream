@@ -35,6 +35,7 @@ if _core not in sys.path:
 import autostream_dial_push as dp
 import autostream_webui_dials as wd
 from autostream_dials import DialSighting
+import autostream_state as state
 
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
 PATH = "/state-changed"
@@ -535,7 +536,7 @@ def _waiting():
 def _track_watch(snaps):
     """A track watch that reads the given snapshots in turn."""
     feed = iter(snaps)
-    return dp.ChangeWatch("track", lambda: dp.track_digest(next(feed)))
+    return dp.ChangeWatch("track", lambda: state.track_digest(next(feed)))
 
 
 class TestDigests:
@@ -549,7 +550,7 @@ class TestDigests:
         return rs
 
     def test_repeat_digest_moves_on_what_a_dial_shows(self):
-        base = dp.repeat_digest(self._block())
+        base = state.repeat_digest(self._block())
         for changed in (
             self._block(armed=False),
             self._block(enabled=False),
@@ -558,58 +559,58 @@ class TestDigests:
             self._block(replay={"active": True, "fading_out": False}),
             self._block(replay={"active": False, "fading_out": True}),
         ):
-            assert dp.repeat_digest(changed) != base
+            assert state.repeat_digest(changed) != base
 
     def test_repeat_digest_ignores_positions_and_growing_seconds(self):
-        a = dp.repeat_digest(self._block())
-        b = dp.repeat_digest(self._block(recording={"active": True, "seconds": 4.0}))
-        c = dp.repeat_digest(self._block(
+        a = state.repeat_digest(self._block())
+        b = state.repeat_digest(self._block(recording={"active": True, "seconds": 4.0}))
+        c = state.repeat_digest(self._block(
             replay={"active": False, "fading_out": False, "position_seconds": 9.5}))
         assert a == b == c
 
     def test_repeat_digest_of_a_non_dict_is_empty(self):
-        assert dp.repeat_digest(None) == ()
-        assert dp.repeat_digest("x") == ()
+        assert state.repeat_digest(None) == ()
+        assert state.repeat_digest("x") == ()
 
     def test_repeat_digest_tolerates_missing_blocks(self):
-        assert dp.repeat_digest({}) == (False, False, False, False, False, False)
+        assert state.repeat_digest({}) == (False, False, False, False, False, False)
 
     def _snap(self, **over):
         return _snap(**over)
 
     def test_track_digest_moves_on_title_or_artwork(self):
-        base = dp.track_digest(self._snap())
-        assert dp.track_digest(self._snap(title="U")) != base
-        assert dp.track_digest(self._snap(artwork_url="http://x/2")) != base
-        assert dp.track_digest(self._snap(state="waiting")) != base
+        base = state.track_digest(self._snap())
+        assert state.track_digest(self._snap(title="U")) != base
+        assert state.track_digest(self._snap(artwork_url="http://x/2")) != base
+        assert state.track_digest(self._snap(state="waiting")) != base
 
     def test_track_digest_ignores_timestamps(self):
-        base = dp.track_digest(self._snap())
-        assert dp.track_digest(self._snap(updated_at=9.0, last_attempt_at=8.0)) == base
+        base = state.track_digest(self._snap())
+        assert state.track_digest(self._snap(updated_at=9.0, last_attempt_at=8.0)) == base
 
     def test_track_digest_of_an_analysing_snapshot_is_no_reading(self):
-        assert dp.track_digest(self._snap(state="analysing", title="")) is None
+        assert state.track_digest(self._snap(state="analysing", title="")) is None
 
     def test_track_digest_of_nothing_is_not_identified(self):
-        assert dp.track_digest(None) == (False, False, "", "", "", "")
+        assert state.track_digest(None) == (False, False, "", "", "", "")
 
     def test_track_digest_does_not_tell_unidentified_states_apart(self):
-        assert (dp.track_digest(self._snap(state="not_found", title="", artwork_url=""))
-                == dp.track_digest(self._snap(state="waiting", title="", artwork_url="")))
+        assert (state.track_digest(self._snap(state="not_found", title="", artwork_url=""))
+                == state.track_digest(self._snap(state="waiting", title="", artwork_url="")))
 
     def test_artwork_that_is_not_http_is_left_out(self):
-        assert dp.track_digest(self._snap(artwork_url="file:///x.png"))[-1] == ""
-        assert dp.track_digest(self._snap(artwork_url=None))[-1] == ""
-        assert dp.track_digest(self._snap(artwork_url="https://x/1"))[-1] == "https://x/1"
+        assert state.track_digest(self._snap(artwork_url="file:///x.png"))[-1] == ""
+        assert state.track_digest(self._snap(artwork_url=None))[-1] == ""
+        assert state.track_digest(self._snap(artwork_url="https://x/1"))[-1] == "https://x/1"
 
     def test_artwork_on_an_unidentified_snapshot_is_left_out(self):
-        digest = dp.track_digest(self._snap(state="not_found", artwork_url="http://x/1"))
+        digest = state.track_digest(self._snap(state="not_found", artwork_url="http://x/1"))
         assert digest[-1] == ""
         assert digest[2:5] == ("", "", "")
 
     def test_repeat_digest_is_never_none(self):
         for value in (None, {}, [], "x", 3, self._block()):
-            assert dp.repeat_digest(value) is not None
+            assert state.repeat_digest(value) is not None
 
 
 class TestChangeWatch:
@@ -925,10 +926,11 @@ class TestRepeatAndLoopCallSites:
         assert src.index(
             "_sync_playing_announcement(session_source is not None, version)") < hook
         assert hook < src.index("_teardown_identification_after_replay_end(")
-        assert ('ChangeWatch("repeat", lambda: repeat_digest(get_repeat_status()))'
-                in src)
-        assert ('ChangeWatch("track", lambda: track_digest('
-                'get_active_track_identification_snapshot()))' in src)
+        flat = " ".join(src.split())
+        assert ('ChangeWatch("repeat", lambda: '
+                'autostream_state.repeat_digest(get_repeat_status()))' in flat)
+        assert ('ChangeWatch("track", lambda: autostream_state.track_digest( '
+                'get_active_track_identification_snapshot()))' in flat)
         assert (src.index("dial_hint_watches = (")
                 < src.index("\n    while not runtime.stop_flag.is_set():"))
 
@@ -941,8 +943,8 @@ class TestRepeatAndLoopCallSites:
                    side_effect=lambda: snap["v"]), \
              patch.object(dp, "notify_state_changed") as notify:
             watches = (
-                dp.ChangeWatch("repeat", lambda: dp.repeat_digest(core.get_repeat_status())),
-                dp.ChangeWatch("track", lambda: dp.track_digest(
+                dp.ChangeWatch("repeat", lambda: state.repeat_digest(core.get_repeat_status())),
+                dp.ChangeWatch("track", lambda: state.track_digest(
                     core.get_active_track_identification_snapshot())),
             )
             for w in watches:
