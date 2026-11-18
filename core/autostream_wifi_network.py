@@ -1399,6 +1399,29 @@ def parse_connection_fields(stdout) -> Optional[dict[str, str]]:
     return fields
 
 
+def fields_needing_write(current: Optional[dict[str, str]],
+                         wanted: dict[str, str]) -> dict[str, str]:
+    """Return the part of *wanted* that differs from the *current* profile values.
+
+    *current* is a ``parse_connection_fields`` result; ``None`` (an unknown
+    state) or a key missing from it counts as differing, so an unreadable
+    profile is always written.  A BSSID compares case-insensitively and a
+    channel of ``0`` is the same unset value as an empty one.
+    """
+    def norm(key: str, value: str) -> str:
+        value = (value or "").strip()
+        if key == "802-11-wireless.bssid":
+            return value.lower()
+        if key == "802-11-wireless.channel" and value == "0":
+            return ""
+        return value
+
+    if current is None:
+        return dict(wanted)
+    return {k: v for k, v in wanted.items()
+            if k not in current or norm(k, current[k]) != norm(k, v)}
+
+
 def get_profile_uuid(con_name: str) -> str:
     """Return the UUID of a profile by exact name, or "" if not found/ambiguous."""
     r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"],

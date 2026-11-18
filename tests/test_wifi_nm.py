@@ -128,7 +128,8 @@ class TestNMClientBounds:
             nm.add_ap_connection("wlan0", "ssid", "Hotspot")
             nm.set_autoconnect_no("u", "n")
             nm.profile_fields("u", "n", ("k",))
-        assert rc.call_count == 11
+            nm.set_bssid("u", "")
+        assert rc.call_count == 14
         for call in rc.call_args_list:
             assert call.kwargs.get("timeout") is not None
 
@@ -155,6 +156,65 @@ class TestProfileFields:
         r = MagicMock(returncode=10, stdout="")
         with patch.object(wifi_nm, "run_cmd", return_value=r):
             assert nm.profile_fields("u1", "", ("k",)) is None
+
+
+def _answer(*replies):
+    """A run_cmd stand-in returning the replies in order (stdout, rc)."""
+    it = iter(replies)
+
+    def fake(cmd, **kwargs):
+        out, rc = next(it)
+        return MagicMock(returncode=rc, stdout=out, stderr="")
+    return fake
+
+
+class TestReadBeforeWrite:
+    BSSID = "802-11-wireless.bssid"
+
+    def test_set_bssid_skips_write_when_already_blank(self, nm):
+        with patch.object(wifi_nm, "run_cmd", side_effect=_answer((self.BSSID + ":\n", 0))) as rc:
+            r = nm.set_bssid("u1", "")
+        assert rc.call_count == 1
+        assert rc.call_args.args[0][:5] == ["nmcli", "-t", "-f", self.BSSID, "connection"]
+        assert r.returncode == 0
+
+    def test_set_bssid_skips_write_when_pin_already_matches(self, nm):
+        reply = self.BSSID + r":AA\:BB\:CC\:DD\:EE\:FF" + "\n"
+        with patch.object(wifi_nm, "run_cmd", side_effect=_answer((reply, 0))) as rc:
+            r = nm.set_bssid("u1", "aa:bb:cc:dd:ee:ff")
+        assert rc.call_count == 1 and r.returncode == 0
+
+    def test_set_bssid_writes_when_pinned(self, nm):
+        reply = self.BSSID + r":AA\:BB\:CC\:DD\:EE\:FF" + "\n"
+        with patch.object(wifi_nm, "run_cmd", side_effect=_answer((reply, 0), ("", 0))) as rc:
+            nm.set_bssid("u1", "")
+        assert rc.call_count == 2
+        assert rc.call_args.args[0] == [
+            "nmcli", "connection", "modify", "uuid", "u1", self.BSSID, ""]
+        assert rc.call_args.kwargs["timeout"] == QUICK_TIMEOUT
+
+    def test_clear_restrictions_skips_when_all_empty(self, nm):
+        keys = ("connection.interface-name", "802-11-wireless.channel")
+        reply = "connection.interface-name:\n802-11-wireless.channel:0\n"
+        with patch.object(wifi_nm, "run_cmd", side_effect=_answer((reply, 0))) as rc:
+            r = nm.clear_restrictions("u1", keys)
+        assert rc.call_count == 1 and r.returncode == 0
+
+    def test_clear_restrictions_writes_only_differing_keys(self, nm):
+        keys = ("connection.interface-name", "802-11-wireless.band")
+        reply = "connection.interface-name:wlan1\n802-11-wireless.band:\n"
+        with patch.object(wifi_nm, "run_cmd", side_effect=_answer((reply, 0), ("", 0))) as rc:
+            nm.clear_restrictions("u1", keys)
+        assert rc.call_args.args[0] == [
+            "nmcli", "connection", "modify", "uuid", "u1", "connection.interface-name", ""]
+
+    def test_read_failure_writes_in_full(self, nm):
+        keys = ("connection.interface-name", "802-11-wireless.band")
+        with patch.object(wifi_nm, "run_cmd", side_effect=_answer(("", 1), ("", 0))) as rc:
+            nm.clear_restrictions("u1", keys)
+        assert rc.call_args.args[0] == [
+            "nmcli", "connection", "modify", "uuid", "u1",
+            "connection.interface-name", "", "802-11-wireless.band", ""]
 
 
 class TestTeardownTolerance:

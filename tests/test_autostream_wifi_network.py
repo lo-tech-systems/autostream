@@ -602,6 +602,32 @@ class TestConnectionFields:
         assert wifi_net.parse_connection_fields(None) is None
 
 
+class TestFieldsNeedingWrite:
+    BSSID = "802-11-wireless.bssid"
+    CHANNEL = "802-11-wireless.channel"
+
+    def test_equal_values_need_nothing(self):
+        assert wifi_net.fields_needing_write({"a": "x", "b": ""}, {"a": "x", "b": ""}) == {}
+
+    def test_differing_value_is_returned(self):
+        assert wifi_net.fields_needing_write({"a": "x", "b": ""}, {"a": "y", "b": ""}) == {"a": "y"}
+
+    def test_missing_key_counts_as_differing(self):
+        assert wifi_net.fields_needing_write({}, {"a": ""}) == {"a": ""}
+
+    def test_unknown_state_writes_everything(self):
+        assert wifi_net.fields_needing_write(None, {"a": "", "b": "z"}) == {"a": "", "b": "z"}
+
+    def test_bssid_compares_case_insensitively(self):
+        cur = {self.BSSID: "aa:bb:cc:dd:ee:ff"}
+        assert wifi_net.fields_needing_write(cur, {self.BSSID: "AA:BB:CC:DD:EE:FF"}) == {}
+
+    def test_channel_zero_is_the_unset_value(self):
+        assert wifi_net.fields_needing_write({self.CHANNEL: "0"}, {self.CHANNEL: ""}) == {}
+        assert wifi_net.fields_needing_write({self.CHANNEL: "6"}, {self.CHANNEL: ""}) == {
+            self.CHANNEL: ""}
+
+
 class TestScanMerge:
     def test_parse_skips_hidden_and_nonnumeric(self):
         out = "Home:80\n:60\nBad:notnum\n"

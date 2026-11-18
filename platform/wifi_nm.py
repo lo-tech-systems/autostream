@@ -18,6 +18,7 @@ functions this client calls.  Deployed beside the watcher on the system Python.
 from __future__ import annotations
 
 import logging
+import subprocess
 from typing import Optional
 
 from autostream_sysutils import run_cmd
@@ -75,9 +76,30 @@ class NMClient:
     # ---- restriction clearing ----
 
     def clear_restrictions(self, uuid: str, keys):
-        """Clear the given cross-adapter restriction keys on a profile."""
-        return run_cmd(wifi_net.clear_restrictions_cmd(uuid, keys),
-                       timeout=self._quick_timeout)
+        """Clear the given cross-adapter restriction keys on a profile.
+
+        Only the keys that are not already empty are written; when none are,
+        nothing is written and a successful result is returned.
+        """
+        keys = tuple(keys)
+        return self._write_if_differs(
+            uuid, {k: "" for k in keys},
+            lambda differing: wifi_net.clear_restrictions_cmd(uuid, tuple(differing)))
+
+    def _write_if_differs(self, uuid: str, wanted: dict, build_cmd):
+        """Read *wanted*'s keys, then run ``build_cmd(differing_keys)`` only if
+        some differ.  Every profile write makes NetworkManager regenerate its
+        netplan configuration, so a write that changes nothing is costly.  An
+        unreadable profile is written in full.  When nothing needs writing the
+        result is a synthetic success, so callers' return-code checks hold.
+        """
+        current = self.profile_fields(uuid, "", tuple(wanted))
+        differing = wifi_net.fields_needing_write(current, wanted)
+        if not differing:
+            return subprocess.CompletedProcess(
+                args=wifi_net.connection_fields_cmd(["uuid", uuid], tuple(wanted)),
+                returncode=0, stdout="", stderr="")
+        return run_cmd(build_cmd(tuple(differing)), timeout=self._quick_timeout)
 
     # ---- BSSID pin ----
 
@@ -93,8 +115,9 @@ class NMClient:
 
     def set_bssid(self, uuid: str, bssid: str):
         """Pin (or, with an empty *bssid*, clear) a profile's BSSID property."""
-        return run_cmd(wifi_net.set_bssid_cmd(uuid, bssid),
-                       timeout=self._quick_timeout)
+        return self._write_if_differs(
+            uuid, {"802-11-wireless.bssid": bssid},
+            lambda _differing: wifi_net.set_bssid_cmd(uuid, bssid))
 
     # ---- deletion ----
 
