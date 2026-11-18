@@ -1225,7 +1225,24 @@ std::string AudioMonitor::api_get_status()
         // failing/dropping writes (see FifoWriter::stalled_seconds()'s doc
         // comment).
         double fifo_stalled_seconds = _fifo_writer.stalled_seconds();
-        oss << ",\"fifo\":{\"stalled_seconds\":" << fifo_stalled_seconds << "}";
+        // Cumulative ways the writer lost or queued audio, from relaxed
+        // atomic reads (see FifoWriter::counters()); pipe_bytes and the
+        // backlog figures are current, the rest count since daemon start.
+        FifoWriter::Counters fc = _fifo_writer.counters();
+        oss << ",\"fifo\":{"
+            << "\"stalled_seconds\":"     << fifo_stalled_seconds    << ","
+            << "\"no_reader_bytes\":"     << fc.no_reader_bytes      << ","
+            << "\"overflow_bytes\":"      << fc.overflow_bytes       << ","
+            << "\"overflow_events\":"     << fc.overflow_events      << ","
+            << "\"error_bytes\":"         << fc.error_bytes          << ","
+            << "\"write_errors\":"        << fc.write_errors         << ","
+            << "\"stranded_bytes\":"      << fc.stranded_bytes       << ","
+            << "\"opens\":"               << fc.opens                << ","
+            << "\"stall_events\":"        << fc.stall_events         << ","
+            << "\"stall_max_seconds\":"   << fc.stall_max_seconds    << ","
+            << "\"pipe_bytes\":"          << fc.pipe_bytes           << ","
+            << "\"backlog_bytes\":"       << fc.backlog_bytes        << ","
+            << "\"backlog_peak_bytes\":"  << fc.backlog_peak_bytes   << "}";
     }
 
     {
@@ -1239,6 +1256,27 @@ std::string AudioMonitor::api_get_status()
             << "\"live1\":"  << oc.underrun_frames[0] << ","
             << "\"live2\":"  << oc.underrun_frames[1] << ","
             << "\"replay\":" << oc.underrun_frames[2] << "}";
+
+        // Frames a producer could not push because its ring was full.
+        oss << ",\"ring_drops\":{"
+            << "\"live1\":"  << oc.dropped_frames[0] << ","
+            << "\"live2\":"  << oc.dropped_frames[1] << ","
+            << "\"replay\":" << oc.dropped_frames[2] << "}";
+
+        // The output thread's own timing and loss counters; the mean lock
+        // wait is over the blocks that had to wait at all.
+        OutputThreadStats::Counters ot = _output_stage.counters();
+        double lock_wait_mean_us = ot.lock_contended > 0
+            ? static_cast<double>(ot.lock_wait_total_us) / static_cast<double>(ot.lock_contended)
+            : 0.0;
+        oss << ",\"output_thread\":{"
+            << "\"lock_contended\":"        << ot.lock_contended        << ","
+            << "\"lock_wait_mean_us\":"     << lock_wait_mean_us        << ","
+            << "\"lock_wait_max_us\":"      << ot.lock_wait_max_us      << ","
+            << "\"lock_waits_over_1ms\":"   << ot.lock_waits_over_1ms   << ","
+            << "\"sched_late_max_us\":"     << ot.sched_late_max_us     << ","
+            << "\"live_wait_timeouts\":"    << ot.live_wait_timeouts    << ","
+            << "\"prefill_dropped_bytes\":" << ot.prefill_dropped_bytes << "}";
     }
 
     {

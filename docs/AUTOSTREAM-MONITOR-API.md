@@ -1103,12 +1103,38 @@ Success response:
     "dropped_frames":0
   },
   "fifo":{
-    "stalled_seconds":0.0
+    "stalled_seconds":0.0,
+    "no_reader_bytes":0,
+    "overflow_bytes":0,
+    "overflow_events":0,
+    "error_bytes":0,
+    "write_errors":0,
+    "stranded_bytes":0,
+    "opens":1,
+    "stall_events":0,
+    "stall_max_seconds":0.0,
+    "pipe_bytes":1048576,
+    "backlog_bytes":0,
+    "backlog_peak_bytes":0
   },
   "underruns":{
     "live1":0,
     "live2":0,
     "replay":0
+  },
+  "ring_drops":{
+    "live1":0,
+    "live2":0,
+    "replay":0
+  },
+  "output_thread":{
+    "lock_contended":0,
+    "lock_wait_mean_us":0.0,
+    "lock_wait_max_us":0,
+    "lock_waits_over_1ms":0,
+    "sched_late_max_us":0,
+    "live_wait_timeouts":0,
+    "prefill_dropped_bytes":0
   },
   "repeat":{
     "enabled":true,
@@ -1242,6 +1268,23 @@ Top-level fields:
     growing value with an active capture/replay session means bytes are not
     reaching the reader even though the monitor itself is alive and
     responding to `get_status`
+  - the other fields are loss and health counters. Every count is since daemon
+    start, except `pipe_bytes`, `backlog_bytes` and the stall figures noted
+    below
+  - `no_reader_bytes`: bytes discarded because the pipe was not open and
+    could not be opened (no reader attached)
+  - `overflow_bytes`, `overflow_events`: bytes discarded, and how many times,
+    because the backlog of blocks the pipe would not take reached its cap
+  - `error_bytes`, `write_errors`: bytes discarded, and how many times, on a
+    hard write error (the pipe was closed and the backlog dropped with it)
+  - `stranded_bytes`: bytes still queued when a stream ended, and so dropped
+  - `opens`: successful opens of the pipe; reopens are `opens - 1`
+  - `stall_events`: failure streaks started; `stall_max_seconds` is the
+    longest streak that has ended
+  - `pipe_bytes`: size of the kernel pipe at the last open; `-1` while it is
+    not open
+  - `backlog_bytes`: bytes queued after the last write; `backlog_peak_bytes`
+    is the most queued at any point
 - `underruns`
   - cumulative count, since daemon start, of output frames that had to be
     padded with silence because a mixer source came up short at mix time, one
@@ -1253,6 +1296,22 @@ Top-level fields:
     here) apart from audio lost earlier at capture (the per-input
     `capture_overruns`/`capture_ring_drops` below); a clean session leaves all
     three flat
+- `ring_drops`
+  - cumulative count, since daemon start, of frames a source could not hand
+    to the output stage because its ring was full, one field per source:
+    `live1`, `live2`, `replay`; frame counts, not events
+- `output_thread`
+  - the output stage's own timing and loss counters, since daemon start
+  - `lock_contended`: blocks for which the thread had to wait to take the
+    processor lock; `lock_wait_mean_us` and `lock_wait_max_us` are the mean
+    and longest of those waits in microseconds, and `lock_waits_over_1ms`
+    counts the waits longer than a millisecond
+  - `sched_late_max_us`: the latest a timer-paced wake has been past its
+    deadline, in microseconds
+  - `live_wait_timeouts`: times a live-clocked wait gave up and the block went
+    out padded
+  - `prefill_dropped_bytes`: bytes of a partial cold-start prefill discarded
+    when the output went idle before it filled
 - `repeat`
   - snapshot of the "repeat" feature's state (record + replay + the
     live-interrupt crossfade trigger)
