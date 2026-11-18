@@ -67,7 +67,9 @@ showing:
 - When the output is on, a **Volume:** slider (0-100%) underneath.
 
 While autostream is starting a speaker that should be playing, its name is followed by
-**(Connecting)**. An Auto-Start speaker that is not currently on the network stays in the list
+**(Connecting)**. A speaker you have switched off that is still ending its session shows
+**(Stopping)** until it has stopped; switching it on again meanwhile is fine, and it starts
+once the stop is done. An Auto-Start speaker that is not currently on the network stays in the list
 with **(offline)** after its name, its volume slider is disabled, and its toggle is disabled
 until a listening session is running. If an Auto-Start speaker fails to start, autostream keeps
 retrying it while the music plays. A speaker that drops out while it is playing is tried
@@ -77,13 +79,18 @@ it could not be started.
 Turning an output on sends its current volume to the appliance immediately; toggling it off
 does the same. If the output requires a device PIN (a fresh Apple TV pairing, for example), a
 PIN entry dialog appears: enter the code shown on the device and the speaker is paired and
-switched on in one go. A wrong code lets you try again; after several quick attempts the
+switched on in one go. A wrong code lets you try again; with an Apple TV the dialog says
+**That PIN was not accepted. A new PIN is showing on the TV.**, so enter the new code. After
+several quick attempts the
 dialog asks you to wait a few seconds. If an HD dial asked for the speaker, the dial shows
 the keypad and this page waits for it. On an appliance running an older version the code is
 accepted but the speaker stays off; switch it on again and it plays.
 
 If a speaker does not start, a **Could not start** dialog names it and gives the likely
-reason. Another appliance's Home page shows the same dialog for a speaker on that appliance.
+reason: it turned the request down, it could not be reached, it did not answer in time, or
+it is not following the appliance's clock (restarting the speaker usually clears that). While
+someone is entering a speaker's PIN on another page or a dial, switching it on here is
+refused, so the PIN on the screen is not replaced. Another appliance's Home page shows the same dialog for a speaker on that appliance.
 
 ### Auto-Start speakers
 

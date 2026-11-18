@@ -101,6 +101,24 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   "Volume changes made at any speaker apply to all playing speakers" on, a
   paused or muted speaker's level still moves with the others, so it comes
   back in proportion.
+- changed: speakers start and stop together. The player answers at once and
+  reports each speaker's progress as it happens, so the speaker list stays
+  responsive while a speaker is slow or cannot be reached, and one speaker no
+  longer holds up the others.
+- new: a speaker that has been switched off but is still ending its session
+  reads "Name (Stopping)" on the Home page and the HD dial, and "Stopping" in
+  a small-screen dial's speaker list, until it has stopped.
+- new: a speaker that fails to start says why: it could not be reached, it did
+  not answer in time, it is not following the appliance's clock, or it turned
+  the request down. A speaker that is not following the clock is tried twice
+  more before the notice.
+- changed: a wrong PIN for an Apple TV now brings up a new PIN on the TV, and
+  the dialog says so: "That PIN was not accepted. A new PIN is showing on the
+  TV." The right PIN pairs the speaker and switches it on without another tap,
+  on the Home page and the HD dial. While someone is entering a speaker's PIN,
+  switching it on elsewhere is refused, so the PIN on the screen is not
+  replaced.
+- changed: a stereo pair pauses and resumes as one from the Home app.
 
 ### Dials
 
