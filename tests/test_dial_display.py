@@ -6823,7 +6823,7 @@ class TestOnOutputsResult:
         """A display with the outputs screen up for *appliance_id* and the
         core holding *rows* for it (nothing when *held* is False)."""
         display, fb, gt = make_display(targets=[])
-        display._outputs = dd.OutputsState(
+        display._outputs = dd.OutputsScreenState(
             appliance_id=appliance_id, service_name="Kitchen",
             page=page, opened_at=time.monotonic(),
         )

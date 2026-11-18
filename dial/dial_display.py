@@ -503,7 +503,7 @@ class InfoValueState:
 
 
 @dataclass(frozen=True)
-class OutputsState:
+class OutputsScreenState:
     """The outputs list screen: which appliance it is showing, its paging
     and the inactivity clock. The rows are the core's, read from its
     snapshot at paint time (see DialDisplay._rows_of)."""
@@ -672,7 +672,7 @@ def _offerable(rows: "tuple[OutputRow, ...]") -> "tuple[OutputRow, ...]":
     return tuple(r for r in rows if not r.remote_in_use)
 
 
-def _held_outputs(snapshot, state: "OutputsState | None"):
+def _held_outputs(snapshot, state: "OutputsScreenState | None"):
     """The core's outputs state for the appliance the outputs screen *state*
     shows, or None when the core holds none for it."""
     held = snapshot.outputs
@@ -964,7 +964,7 @@ class DialDisplay:
         # output_toggle_tap()/output_volume_tap() entries, mirroring
         # self._repeat_screen's discipline. Its rows are the core's, less
         # the outputs another appliance has taken, read at use.
-        self._outputs: OutputsState | None = None
+        self._outputs: OutputsScreenState | None = None
         # The EQ page's own state (appliance, clock) — same discipline; its
         # bands are the core's.
         self._eq: "EqScreenState | None" = None
@@ -2581,14 +2581,14 @@ class DialDisplay:
         """Every row of a list screen's *state*: its own for the selector,
         picker and info pages, the core's last fetched outputs (less those
         another appliance has taken) for the outputs list."""
-        if isinstance(state, OutputsState):
+        if isinstance(state, OutputsScreenState):
             held = _held_outputs(self._core.snapshot(), state)
             return _offerable(held.rows) if held is not None else ()
         return state.rows
 
     def _current_page_rows(self, state) -> tuple:
         """The current page's slice of *state*'s rows (see _rows_of()), for
-        a SelectorState, PickerState, InfoState or OutputsState. Shared by
+        a SelectorState, PickerState, InfoState or OutputsScreenState. Shared by
         the touch-thread pick entries (lock-free) and the repaint-thread list
         builders so the two can never disagree about which rows are on
         screen; rows_per_page comes from dial_touch_layout, the same source
@@ -3112,7 +3112,7 @@ class DialDisplay:
             self._outputs_return = self._screen
         elif self._screen != "output":
             self._outputs_return = "main"
-        self._outputs = OutputsState(
+        self._outputs = OutputsScreenState(
             appliance_id=entry.appliance_id, service_name=entry.service_name,
             page=0, opened_at=time.monotonic(),
         )
