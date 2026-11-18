@@ -24,7 +24,8 @@ if _CORE not in sys.path:
 import autostream_logging as log_setup
 from nginx_helpers import copy_for_unprivileged_check
 from stream_helpers import Client, Publisher, RealServer, wait_for
-from webui import stream
+import webui.protocol.hub as proto_hub
+import webui.protocol.stream as proto_stream
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NGINX_DIR = REPO_ROOT / "system" / "nginx"
@@ -140,7 +141,7 @@ def test_an_event_reaches_the_client_through_nginx_as_it_is_written(server, fron
 
 
 def test_a_quiet_stream_outlives_the_general_read_timeout(server, front, monkeypatch):
-    monkeypatch.setattr(stream, "HEARTBEAT_S", 20.0)
+    monkeypatch.setattr(proto_stream, "HEARTBEAT_S", 20.0)
     publish = Publisher(server.store)
     c = front.connect()
     try:
@@ -191,7 +192,7 @@ def test_the_general_location_still_gives_up_on_a_silent_backend_after_fifteen_s
 def test_the_refusal_reaches_the_client_as_the_tunnelled_reply(server, front):
     held = []
     try:
-        for _ in range(stream.MAX_CLIENTS):
+        for _ in range(proto_hub.MAX_CLIENTS):
             c = front.connect()
             held.append(c)
             assert c.pull_until(b"retry: 2000")

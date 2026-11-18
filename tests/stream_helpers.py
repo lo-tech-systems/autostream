@@ -19,6 +19,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_state import OutputsPart, RepeatPart, SessionPart, SettingsPart
+import webui.protocol.hub as proto_hub
 
 
 def wait_for(predicate, timeout: float = 3.0, step: float = 0.01) -> bool:
@@ -125,14 +126,13 @@ class RealServer:
         from autostream_auth import AuthManager
         from autostream_state.store import StateStore
         from settings_fixtures import viewed_state
-        from webui import session_state, stream
+        from webui import session_state
         from webui.server import ConfigWebHandler
 
-        self.stream = stream
         self.store = StateStore()
-        self.hub = stream.StreamHub(self.store)
+        self.hub = proto_hub.StreamHub(self.store)
         self.hub.start()
-        stream.install(self.hub)
+        proto_hub.install(self.hub)
         self.auth = AuthManager(config_path="dummy.ini")
         self.auth._pin_loaded = True
         self.auth._pin_value = pin
@@ -176,7 +176,7 @@ class RealServer:
 
     def close(self) -> None:
         self.hub.stop()
-        self.stream.install(None)
+        proto_hub.install(None)
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(5.0)

@@ -49,8 +49,10 @@ import webui.dial.api
 import webui.dial.management
 import webui.peer.federation
 import webui.peer.gateway
+import webui.protocol.hub
+import webui.protocol.state
+import webui.protocol.stream
 import webui.repeat
-import webui.stream
 import webui.system.bluetooth
 import webui.system.network
 import webui.system.power
@@ -85,8 +87,9 @@ _ROUTE_MODULES = (
     webui.dial.management,
     webui.peer.federation,
     webui.peer.gateway,
+    webui.protocol.state,
+    webui.protocol.stream,
     webui.repeat,
-    webui.stream,
     webui.system.bluetooth,
     webui.system.network,
     webui.system.power,
@@ -458,9 +461,9 @@ def start_server(deps: WebUIDeps) -> threading.Thread:
             updates.get_app_version()
 
             # One hub for every state stream, subscribed before requests are served.
-            hub = webui.stream.StreamHub(store())
+            hub = webui.protocol.hub.StreamHub(store())
             hub.start()
-            webui.stream.install(hub)
+            webui.protocol.hub.install(hub)
 
             httpd = ThreadingHTTPServer((deps.host, deps.port), ConfigWebHandler)
             logging.info("Web UI available at http://%s:%d", deps.host, deps.port)

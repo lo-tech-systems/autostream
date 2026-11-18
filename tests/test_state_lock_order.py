@@ -44,6 +44,7 @@ from autostream_state.store import StateStore
 import autostream_playback_tracking as playback_tracking
 import autostream_input_status as input_status
 import autostream_audio_monitor as audio_monitor
+import webui.protocol.hub as proto_hub
 
 
 @pytest.fixture
@@ -630,10 +631,9 @@ def test_the_include_tv_reader_runs_without_the_authority_lock(authority, tmp_pa
 
 
 def test_the_stream_hub_takes_only_its_own_condition_and_is_called_with_no_lock_held(st):
-    from webui import stream
 
     session = st.claim("session", "test_owner")
-    hub = stream.StreamHub(st)
+    hub = proto_hub.StreamHub(st)
     hub._cond = threading.Condition(lockcheck.TrackedLock("stream_hub"))
     hub.start()
     stop = threading.Event()

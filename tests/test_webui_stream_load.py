@@ -22,7 +22,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from stream_helpers import Publisher, RealServer, wait_for
-from webui import stream
+import webui.protocol.hub as proto_hub
+import webui.protocol.stream as proto_stream
 
 PUBLISH_SECONDS = 10.0
 PUBLISHES_PER_SECOND = 50
@@ -38,10 +39,10 @@ def test_eight_clients_one_stalled_three_publishers(monkeypatch, caplog):
     baseline_threads = threading.active_count()
     # Each event carries a 16 KB comment so the kernel buffers of the client
     # that never reads really fill, and a blocked write times out quickly.
-    real_event_bytes = stream.event_bytes
-    monkeypatch.setattr(stream, "event_bytes",
+    real_event_bytes = proto_stream.event_bytes
+    monkeypatch.setattr(proto_stream, "event_bytes",
                         lambda *a: b": " + b"x" * 16384 + b"\n\n" + real_event_bytes(*a))
-    monkeypatch.setattr(stream, "WRITE_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(proto_stream, "WRITE_TIMEOUT_S", 0.5)
     server = RealServer(monkeypatch)
     store = server.store
     changes = []
@@ -54,11 +55,11 @@ def test_eight_clients_one_stalled_three_publishers(monkeypatch, caplog):
     try:
         stalled = server.connect(rcvbuf=2048)
         assert stalled.pull_until(b"retry: 2000")        # then never read again
-        for _ in range(stream.MAX_CLIENTS - 1):
+        for _ in range(proto_hub.MAX_CLIENTS - 1):
             c = server.connect()
             assert c.pull_until(b"retry: 2000")
             readers.append(c)
-        assert server.hub.client_count() == stream.MAX_CLIENTS
+        assert server.hub.client_count() == proto_hub.MAX_CLIENTS
         for c in readers:
             t = threading.Thread(target=_read_forever, args=(c, stop_reading), daemon=True)
             t.start()
@@ -154,7 +155,7 @@ def test_eight_clients_one_stalled_three_publishers(monkeypatch, caplog):
 
         ended = [r for r in caplog.records if "state stream: ended (timeout)" in r.getMessage()]
         assert len(ended) >= 1
-        assert server.hub.client_count() == stream.MAX_CLIENTS
+        assert server.hub.client_count() == proto_hub.MAX_CLIENTS
 
         lags.sort()
         assert lags[int(len(lags) * 0.99)] < 0.005

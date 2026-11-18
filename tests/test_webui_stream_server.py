@@ -24,7 +24,8 @@ import autostream_logging as log_setup
 import autostream_state as state
 from autostream_auth import SESSION_COOKIE_NAME, Session
 from stream_helpers import Publisher, RealServer, wait_for
-from webui import stream
+import webui.protocol.hub as proto_hub
+import webui.protocol.state as proto_state
 
 
 @pytest.fixture
@@ -87,7 +88,7 @@ def test_a_publish_reaches_a_held_client_promptly(server, publish):
 
 def test_the_ninth_client_is_refused_and_a_freed_slot_is_taken(server, caplog):
     caplog.set_level(logging.INFO)
-    held = _held(server, stream.MAX_CLIENTS)
+    held = _held(server, proto_hub.MAX_CLIENTS)
     try:
         assert server.hub.client_count() == 8
         ninth = server.connect()
@@ -177,12 +178,12 @@ def test_the_state_route_without_a_pin_returns_the_snapshot(server, publish):
     status, body = server.get("/api/v1/state")
     assert status == 200
     got = json.loads(body)
-    assert got == stream.state_json(server.store.snapshot(), clients=0)
+    assert got == proto_state.state_json(server.store.snapshot(), clients=0)
     assert len(got["boot"]) == 16 and all(ch in "0123456789abcdef" for ch in got["boot"])
 
 
 def test_without_a_hub_both_routes_answer_not_found(server):
-    stream.install(None)
+    proto_hub.install(None)
     for path in ("/api/v1/events", "/api/v1/state"):
         status, body = server.get(path)
         assert status == 200
@@ -201,7 +202,7 @@ def test_the_state_body_has_the_shape_of_the_snapshot(scenario_id, monkeypatch):
 
     golden_scenarios.apply(golden_scenarios.SCENARIOS[scenario_id], monkeypatch)
     store = state.store()
-    hub = stream.StreamHub(store)
+    hub = proto_hub.StreamHub(store)
     body = json.loads(hub.state_body(), parse_constant=_no_constant)
     snap = store.snapshot()
     assert list(body) == ["boot", "version", "clients", "part_versions", "parts"]
@@ -220,7 +221,7 @@ def test_other_requests_are_served_while_streams_are_held(server, monkeypatch):
     import golden_scenarios
 
     golden_scenarios.apply(golden_scenarios.SCENARIOS["idle"], monkeypatch)
-    held = _held(server, stream.MAX_CLIENTS)
+    held = _held(server, proto_hub.MAX_CLIENTS)
     try:
         slowest = 0.0
         for _ in range(50):

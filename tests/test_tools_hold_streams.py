@@ -20,7 +20,8 @@ for _p in (_ROOT / "core", _ROOT / "tools"):
 import autostream_logging as log_setup
 import hold_streams
 from stream_helpers import Publisher, RealServer
-from webui import stream
+import webui.protocol.hub as proto_hub
+import webui.protocol.stream as proto_stream
 
 
 @pytest.fixture
@@ -32,7 +33,7 @@ def server(monkeypatch):
 
 
 def test_it_counts_events_and_resumes_a_stream_the_server_ended(server, monkeypatch, capsys):
-    monkeypatch.setattr(stream, "MAX_AGE_S", 1.0)
+    monkeypatch.setattr(proto_stream, "MAX_AGE_S", 1.0)
     publish = Publisher(server.store)
     timer = threading.Timer(0.4, lambda: publish("session"))
     timer.start()
@@ -54,7 +55,7 @@ def test_it_counts_events_and_resumes_a_stream_the_server_ended(server, monkeypa
 
 
 def test_a_refused_client_is_reported_and_fails_the_run(server, capsys):
-    held = [server.connect() for _ in range(stream.MAX_CLIENTS)]
+    held = [server.connect() for _ in range(proto_hub.MAX_CLIENTS)]
     try:
         for c in held:
             assert c.pull_until(b"retry: 2000")

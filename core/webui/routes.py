@@ -728,7 +728,7 @@ register(
     Route(
         path="/api/v1/events",
         methods=("GET",),
-        handler="webui.stream.send_events",
+        handler="webui.protocol.stream.send_events",
         auth=AuthRequirement.NONE,
         kind="api",
         allow_unconfigured=False,
@@ -740,7 +740,7 @@ register(
     Route(
         path="/api/v1/state",
         methods=("GET",),
-        handler="webui.stream.send_state_json",
+        handler="webui.protocol.state.send_state_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,

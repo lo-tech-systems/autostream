@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 import autostream_state as state
 from autostream_state import FrozenDict
+import webui.protocol.hub as proto_hub
 
 
 def percentiles(samples: list[float]) -> tuple[float, float]:
@@ -51,9 +52,8 @@ def inputs_part(i: int) -> state.InputsPart:
 def hub_row(st, session, n: int, waiters: int = 8) -> tuple[float, float]:
     """Publish with notify while a stream hub is subscribed and *waiters*
     threads are parked on it, as eight open streams are."""
-    from webui import stream
 
-    hub = stream.StreamHub(st)
+    hub = proto_hub.StreamHub(st)
     hub.start()
     stop = threading.Event()
 
