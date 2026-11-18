@@ -50,7 +50,8 @@
         "observed_at": 999.0
       },
       "warnings": [],
-      "webui": "http://192.0.2.20:80/"
+      "webui": "http://192.0.2.20:80/",
+      "update_needed": false
     }
   ],
   "now_playing": {

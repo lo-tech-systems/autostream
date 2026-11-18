@@ -39,32 +39,54 @@ atomic, so two takers would split the effects between them, each effect going
 to exactly one; a core with no view attached keeps only the newest
 `EFFECTS_BACKLOG_MAX`.
 
+With a peer pool attached (`attach_pool`) the core polls nothing: each
+appliance's PeerClient holds its state, and the core thread folds the
+clients' snapshots into one publish when the pool signals a change (paced
+the same way) and at the poll interval. The fold ends a tick as a poll did.
+The controls' requests go out on one request lane (dial_core_requests), the
+HD page's intents on the caller's own thread (`submit_intent`), and artwork
+on a short-lived thread of its own.
+
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
 import dataclasses
 import logging
+import os
+import sys
 import threading
 import time
 import zlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Callable
 
+# autostream_peer_client is deployed flat beside the dial package; in the repo
+# it lives in core/.
+try:
+    from autostream_peer_client import PeerReply, roster_view
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
+    from autostream_peer_client import PeerReply, roster_view  # noqa: E402
+
 import dial_capabilities
+import dial_core_focus
 import dial_core_poll
+import dial_core_requests as rq
+import dial_peer_view
 from dial_appliance_fetch import _FetchTarget
 from dial_appliance_fetch import enqueue as _enqueue_appliance_fetch
 from dial_auth import OUTCOME_UNAUTHORIZED, auth_map
 from dial_capabilities import CAPABILITIES_ENDPOINT_PROTO, appliance_capabilities
 from dial_config import SCOPE_ALL
 from dial_core_state import (
-    ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
+    ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
     DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
     ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
     FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN, START_FAILURE_HOLD_S,
     NowPlaying, OutputsState, StartFailureNotice, input_label_from_record, outputs_tap, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
-    appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
+    appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, display_order, dots_active,
     eq_available, eq_gain, idle_affordance, outputs_available, parse_start_failure,
     protocol_warning, reopen_for_pin, reporting_for, resolve_focus, six_band,
     start_failure_action, started_refused, validate_appliance_warnings, visible_targets,
@@ -73,6 +95,7 @@ from dial_core_state import (
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
+from dial_mdns import PlayingTarget
 from dial_mdns import get_roster as _default_get_roster
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
 from dial_target_status import enrich_targets, fetch_target_status
@@ -128,6 +151,31 @@ EFFECTS_BACKLOG_MAX = 256
 # appliance has not yet reached the playing set (see the empty-targets
 # branch of the poll tick).
 FOCUS_PENDING_GRACE_S = 10.0
+# While an appliance is replaying, its repeat part is read again this often:
+# the position is not part of the change stream.
+REPEAT_FETCH_S = 5.0
+
+# The intents submit_intent forwards for the HD page; any other name is
+# refused without a request.
+SUBMIT_INTENTS = frozenset((
+    "outputs.set", "output.pin.submit", "output.eq.set", "output.eq.reset",
+    "repeat.arm", "repeat.seek", "repeat.transport", "outputs.save_default",
+))
+# The core's own refusal names as the page is sent them: the appliance's or the
+# library's name where one says the same, else the dial's own.
+_REFUSAL_NAMES = {"unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch",
+                  "not_polling": "wrong_state"}
+# What each intent needs of the appliance, and the repeat states it acts from.
+_INTENT_CAPABILITY = {
+    "outputs.set": "dial_outputs", "output.pin.submit": "dial_outputs",
+    "outputs.save_default": "dial_outputs", "output.eq.set": "dial_eq", "output.eq.reset": "dial_eq",
+    "repeat.arm": "repeat_capable", "repeat.seek": "repeat_capable", "repeat.transport": "repeat_capable",
+}
+_INTENT_REPEAT_STATES = {
+    "repeat.seek": ("replaying", "hold"), "repeat.transport": ("replaying",),
+    "repeat.arm": ("recording", "pending", "idle"),
+}
+_INTENT_KINDS = {"repeat.seek": "seek", "repeat.transport": "stop", "repeat.arm": "arm"}
 
 # FocusState fields the display's delegating properties write one at a time.
 _FOCUS_FIELDS = frozenset((
@@ -192,6 +240,10 @@ class _CoreState:
     protocol_warnings: dict             # appliance id -> the dial's own "Update" warning for it; private
     start_failure: object | None        # the raised StartFailureNotice, published
     start_failure_seen: dict            # appliance id -> (boot, seq) handled; private
+    focused_peer: object | None = None  # the focused appliance's PeerSnapshot as last folded
+    peers: dict = dataclasses.field(default_factory=dict)          # appliance id -> its last folded PeerSnapshot
+    views: dict = dataclasses.field(default_factory=dict)          # appliance id -> ApplianceState mapped from it
+    playing_since: dict = dataclasses.field(default_factory=dict)  # appliance id -> core clock its session was first folded
 
 
 # Held in the state for the core's own use, never published as such.
@@ -199,7 +251,7 @@ _PRIVATE_FIELDS = (
     "roster", "repeats", "eq_optimistic",
     "outputs_refresh_at", "outputs_watch", "eq_watch",
     "wifi_down_streak", "sd_low", "appliance_warnings", "statuses", "start_failure_seen",
-    "protocol_warnings",
+    "protocol_warnings", "peers", "views", "playing_since",
 )
 
 _SNAPSHOT_FIELDS = tuple(
@@ -465,6 +517,19 @@ class DialCore:
         self._volume_scope: Callable[[], str] | None = None
         self._address_source: Callable[[], str] | None = None
         self._address_at = 0.0
+        # The appliances as the peer pool holds them (see attach_pool). Until a
+        # pool is attached the core polls. The fold's bookkeeping belongs to
+        # the core thread; the other threads only raise the wake.
+        self.pool = None
+        self._registry = None
+        self._lane: rq.RequestLane | None = None
+        self._own_requester = f"dial:{dial_id}"
+        self._sightings: dict = {}
+        self._waiting: dict[str, rq.Waiting] = {}      # request lane name -> what its shown value waits for
+        self._artwork_url: str | None = None           # the URL whose artwork is held or being fetched
+        self._repeat_fetch_at: dict[str, float] = {}
+        self._failures_read: set[str] = set()          # appliances whose start failure has been read once
+        self._focus_subscribers: dict[int, Callable[[], None]] = {}
         self._sync_warnings_locked(self._state)
         self._snapshot = self._build_snapshot_locked()
 
@@ -835,7 +900,10 @@ class DialCore:
 
     def fetch_outputs(self, appliance_id: str) -> bool:
         """Ask for a fresh outputs list for *appliance_id* now, whoever is
-        watching. False when the appliance is not on the roster."""
+        watching. False when the appliance is not on the roster. With a pool
+        attached the list is always held, so there is nothing to ask for."""
+        if self.pool is not None:
+            return appliance_id in self._state.views
         entry = _roster_entry(self._state.roster, appliance_id)
         if entry is None:
             return False
@@ -844,7 +912,10 @@ class DialCore:
 
     def fetch_eq(self, appliance_id: str) -> bool:
         """Ask for a fresh EQ reading for *appliance_id* now. False when the
-        appliance is not on the roster."""
+        appliance is not on the roster. With a pool attached the bands are
+        always held."""
+        if self.pool is not None:
+            return appliance_id in self._state.views
         entry = _roster_entry(self._state.roster, appliance_id)
         if entry is None:
             return False
@@ -863,7 +934,10 @@ class DialCore:
         refetches it every OUTPUTS_REFRESH_S as `refresh_watched` is
         called. The last watcher leaving drops the state. Interest in an
         appliance that is not the focused one is held, and acted on once
-        it becomes so."""
+        it becomes so. With a pool attached the focused appliance's outputs
+        are always held, and this does nothing."""
+        if self.pool is not None:
+            return
         fetch_now = []
 
         def mutate(state: _CoreState) -> "bool | None":
@@ -897,7 +971,9 @@ class DialCore:
     ) -> None:
         """The EQ counterpart of `watch_outputs`, with no periodic refresh:
         a reading is asked for as the first interest arrives and after a
-        set."""
+        set. With a pool attached it does nothing."""
+        if self.pool is not None:
+            return
         fetch_now = []
 
         def mutate(state: _CoreState) -> "bool | None":
@@ -930,7 +1006,9 @@ class DialCore:
         """The housekeeping tick: ask again for the outputs list of the
         focused or reporting appliance when it is watched and was last asked
         for OUTPUTS_REFRESH_S or more ago. *now* is the caller's monotonic
-        time."""
+        time. With a pool attached it does nothing."""
+        if self.pool is not None:
+            return
         focused = self._focused_id()
         fetch_now = []
 
@@ -1018,10 +1096,19 @@ class DialCore:
     # -- requests --
 
     def _refusal(self, appliance_id: str, capability: str) -> ActionResult | None:
-        entry = _roster_entry(self._state.roster, appliance_id)
+        return self._refusal_in(self._state, appliance_id, capability)
+
+    def _refusal_in(self, state: _CoreState, appliance_id: str, capability: str) -> ActionResult | None:
+        """Why a request needing *capability* cannot go to *appliance_id*, or
+        None. With a pool the capability is the appliance's own state, which
+        has every capability or none (one protocol)."""
+        entry = _roster_entry(state.roster, appliance_id)
         if entry is None:
             return ActionResult(False, "unknown_appliance")
-        if not _capability_flag(appliance_capabilities(entry), capability):
+        if self.pool is not None:
+            if not getattr(entry, capability, False):
+                return ActionResult(False, "no_capability")
+        elif not _capability_flag(appliance_capabilities(entry), capability):
             return ActionResult(False, "no_capability")
         if entry.auth == AUTH_UNAUTHORIZED:
             return ActionResult(False, "unauthorized")
@@ -1064,7 +1151,10 @@ class DialCore:
         if row is None or row.remote_in_use or (selected is None and volume is None and pin is None):
             return ActionResult(False, "wrong_state")
         entry = _roster_entry(self._state.roster, appliance_id)
-        pin_ready = pin_capable_outputs(appliance_capabilities(entry).outputs_version)
+        if self.pool is not None:
+            pin_ready = pin_capable_outputs(entry.dial_outputs_version)
+        else:
+            pin_ready = pin_capable_outputs(appliance_capabilities(entry).outputs_version)
         if pin is not None and not pin_ready:
             return ActionResult(False, "no_capability")
         shown_selected = True if pin is not None else (row.selected if selected is None else selected)
@@ -1073,6 +1163,11 @@ class DialCore:
             output_id=output_id, shown=(shown_selected, row.volume if volume is None else volume),
         )
         self._publish(begin)
+        if self.pool is not None:
+            intent = (rq.output_pin(output_id, pin) if pin is not None else rq.output_set(
+                output_id, selected=shown_selected, volume=volume, pin_entry=pin_entry))
+            self._send(appliance_id, intent, token)
+            return ActionResult(True, token=token)
         enqueue_set(
             _OutputsTarget(appliance_id, entry.ip, entry.port), output_id,
             selected=shown_selected, volume=volume, pin=pin, pin_capable=bool(pin_entry and pin_ready),
@@ -1126,7 +1221,10 @@ class DialCore:
             if value is not None:
                 pairs.append((band_id, value))
         self.set_eq_override(tuple(pairs), now + EQ_OPTIMISTIC_WINDOW_S)
-        _enqueue_eq_set(_EqTarget(appliance_id, entry.ip, entry.port), dict(gains))
+        if self.pool is not None:
+            self._send(appliance_id, rq.eq_set(dict(gains)), now)
+        else:
+            _enqueue_eq_set(_EqTarget(appliance_id, entry.ip, entry.port), dict(gains))
         return ActionResult(True)
 
     def step_eq(self, appliance_id: str, band_id: str, delta: int) -> ActionResult:
@@ -1160,6 +1258,12 @@ class DialCore:
         held = self._snapshot.eq
         if held is None or held.appliance_id != appliance_id:
             return ActionResult(False, "not_polling")
+        if self.pool is not None:
+            # One reset intent; every band shows zero meanwhile.
+            now = self._clock()
+            self.set_eq_override(tuple((b.id, 0) for b in held.bands), now + EQ_OPTIMISTIC_WINDOW_S)
+            self._send(appliance_id, rq.eq_reset(), now)
+            return ActionResult(True)
         if not six_band(held.capability_version):
             band_ids = DERIVED_EQ_IDS
         else:
@@ -1277,10 +1381,16 @@ class DialCore:
         None when it can: the appliance must be known, repeat-capable and
         not have refused this dial, hold a usable record, and have that
         record in one of *states*."""
-        refusal = self._refusal(appliance_id, "repeat_capable")
+        return self._repeat_refusal_in(self._state, appliance_id, states)
+
+    def _repeat_refusal_in(self, state: _CoreState, appliance_id: str, states: tuple) -> ActionResult | None:
+        refusal = self._refusal_in(state, appliance_id, "repeat_capable")
         if refusal is not None:
             return refusal
-        record = repeat_store.get(appliance_id, self._clock())
+        if self.pool is not None:
+            record = getattr(_roster_entry(state.roster, appliance_id), "repeat", None)
+        else:
+            record = repeat_store.get(appliance_id, self._clock())
         if record is None or not record.available:
             return ActionResult(False, "no_record")
         if record.state not in states:
@@ -1291,7 +1401,10 @@ class DialCore:
         """Record the request as pending and hand it to the repeat worker."""
         entry = _roster_entry(self._state.roster, appliance_id)
         token = self.begin_transport(appliance_id, action)
-        enqueue_transport(_RepeatTarget(appliance_id, entry.ip, entry.port), action, 0.0, token)
+        if self.pool is not None:
+            self._send(appliance_id, rq.replay_stop() if action == "stop" else rq.replay_seek(), token)
+        else:
+            enqueue_transport(_RepeatTarget(appliance_id, entry.ip, entry.port), action, 0.0, token)
         return ActionResult(True, token=token)
 
     def start_replay(self, appliance_id: str) -> ActionResult:
@@ -1304,9 +1417,8 @@ class DialCore:
         if refusal is not None:
             return refusal
         entry = _roster_entry(self._state.roster, appliance_id)
-        self.set_focus_pending(
-            appliance_id, entry.service_name, self._clock() + FOCUS_PENDING_GRACE_S,
-        )
+        grace = dial_core_focus.FOCUS_PENDING_GRACE_S if self.pool is not None else FOCUS_PENDING_GRACE_S
+        self.set_focus_pending(appliance_id, entry.service_name, self._clock() + grace)
         self._poll_wake.set()
         return self._send_transport(appliance_id, "seek")
 
@@ -1338,7 +1450,10 @@ class DialCore:
             return refusal
         entry = _roster_entry(self._state.roster, appliance_id)
         token = self.begin_transport(appliance_id, "arm")
-        enqueue_arm(_RepeatTarget(appliance_id, entry.ip, entry.port), bool(armed), token)
+        if self.pool is not None:
+            self._send(appliance_id, rq.repeat_arm(bool(armed)), token)
+        else:
+            enqueue_arm(_RepeatTarget(appliance_id, entry.ip, entry.port), bool(armed), token)
         return ActionResult(True, token=token)
 
     def _resolve_transport(
@@ -1416,7 +1531,13 @@ class DialCore:
     def _derive_appliances_locked(self, state: _CoreState) -> tuple:
         """The appliance list for the roster and repeat records held. An
         appliance that has left the roster loses its warnings (their
-        incidents end with it)."""
+        incidents end with it). With a pool the list is the appliances' own
+        mapped states, each carrying its warnings and the dial's own for it."""
+        if self.pool is not None:
+            merged = self._all_warnings(state)
+            return tuple(display_order(
+                dataclasses.replace(v, warnings=merged.get(aid, ())) for aid, v in state.views.items()
+            ))
         known = {getattr(r, "appliance_id", "") for r in state.roster}
         stale = [aid for aid in state.appliance_warnings if aid not in known]
         if stale:
@@ -1690,29 +1811,42 @@ class DialCore:
                     seen.add(w.id)
                     clean.append(w)
             new = attribute_appliance_warnings(clean, current.name)
-            old = state.appliance_warnings.get(appliance_id, ())
-            if new == old:
+            if not self._store_appliance_warnings_locked(state, appliance_id, new):
                 return False
-            for warning in old:
-                if warning.id not in seen:
-                    self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
-            for warning in new:
-                key = appliance_warning_key(appliance_id, warning.id)
-                self.warnings.register(appliance_warning_descriptor(appliance_id, warning))
-                self.warnings.set_active(key, warning.severity)
-            held = dict(state.appliance_warnings)
-            if new:
-                held[appliance_id] = new
+            if self.pool is not None:
+                state.appliances = self._derive_appliances_locked(state)
             else:
-                held.pop(appliance_id, None)
-            state.appliance_warnings = held
-            state.appliances = appliance_states(
-                state.roster, state.repeats, self._all_warnings(state), self._capabilities,
-                state.statuses,
-            )
+                state.appliances = appliance_states(
+                    state.roster, state.repeats, self._all_warnings(state), self._capabilities,
+                    state.statuses,
+                )
             self._sync_warnings_locked(state)
         self._publish(mutate)
         return outcome[0]
+
+    def _store_appliance_warnings_locked(self, state: _CoreState, appliance_id: str, new: tuple) -> bool:
+        """Replace the appliance's held warnings with *new* (validated and
+        attributed): each is registered on the manager and reported active,
+        and those no longer present end their incidents. False when *new* is
+        what is held."""
+        old = state.appliance_warnings.get(appliance_id, ())
+        if new == old:
+            return False
+        kept = {w.id for w in new}
+        for warning in old:
+            if warning.id not in kept:
+                self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
+        for warning in new:
+            key = appliance_warning_key(appliance_id, warning.id)
+            self.warnings.register(appliance_warning_descriptor(appliance_id, warning))
+            self.warnings.set_active(key, warning.severity)
+        held = dict(state.appliance_warnings)
+        if new:
+            held[appliance_id] = new
+        else:
+            held.pop(appliance_id, None)
+        state.appliance_warnings = held
+        return True
 
     def set_mute_scope(self, scope: Callable[[], str]) -> None:
         """Say how far a mute toggle reaches: *scope* returns the dial's
@@ -1902,7 +2036,17 @@ class DialCore:
             return None
         for r in self._state.roster:
             if r.appliance_id == focus_id:
-                return r if r.auth != AUTH_UNAUTHORIZED else None
+                if r.auth == AUTH_UNAUTHORIZED:
+                    return None
+                if self.pool is not None:
+                    # The volume worker addresses a playing record.
+                    return PlayingTarget(
+                        ip=r.ip, port=r.port, name=r.name, dial_api=True, audio_status=True,
+                        dial_status=r.dial_status, service_name=r.service_name,
+                        appliance_id=r.appliance_id, auth=r.auth,
+                        dial_proto_version=r.dial_proto_version,
+                    )
+                return r
         return None
 
 
@@ -1930,9 +2074,12 @@ class DialCore:
 
     def set_polling(self, enabled: bool) -> None:
         """Turn the poll on or off. Off, a tick only clears what polling
-        sets and polls nothing. Turning it on polls at once."""
+        sets and polls nothing. Turning it on polls at once. With a pool
+        attached the appliances are always held, and this changes nothing."""
         enabled = bool(enabled)
         was, self._polling = self._polling, enabled
+        if self.pool is not None:
+            return
 
         def mutate(state: _CoreState) -> "bool | None":
             if state.polling == enabled:
@@ -1946,7 +2093,9 @@ class DialCore:
         """Set how often the poll runs, in seconds. A value that is not a
         positive number reads as the default, so a bad setting never stops
         the poll. A change cuts the current wait short, so the new interval
-        applies from the next tick."""
+        applies from the next tick. Ignored with a pool attached."""
+        if self.pool is not None:
+            return
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not seconds > 0:
             seconds = DEFAULT_POLL_INTERVAL_S
         if seconds != self._poll_interval:
@@ -2032,6 +2181,8 @@ class DialCore:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        if self._lane is not None:
+            self._lane.start()
         try:
             self._thread = threading.Thread(target=self._run, daemon=True, name="dial-core")
             self._thread.start()
@@ -2044,6 +2195,11 @@ class DialCore:
         """Stop the `dial-core` thread, waiting up to two seconds for it."""
         self._stop.set()
         self._poll_wake.set()
+        if self._lane is not None:
+            try:
+                self._lane.stop()
+            except RuntimeError:
+                pass    # its thread had not finished starting; it ends on the stop item
         thread = self._thread
         if thread is not None:
             try:
@@ -2072,8 +2228,9 @@ class DialCore:
                     break
                 self._poll_wake.clear()
                 try:
-                    self._drain_push_probes()
-                    self._drain_state_pushes()
+                    if self.pool is None:
+                        self._drain_push_probes()
+                        self._drain_state_pushes()
                     self.poll_once()
                 except Exception:
                     logging.debug("dial core: poll iteration raised", exc_info=True)
@@ -2091,10 +2248,13 @@ class DialCore:
         snooze write, and the refresh of watched outputs and EQ. What it did
         to the warnings is queued for a view and the subscribers are told."""
         effects = self.tick_housekeeping(now)
-        self.refresh_watched(now)
         self._expire_start_failure(now)
-        self._refresh_capabilities(now)
-        self._refresh_appliance_warnings(now)
+        if self.pool is not None:
+            self._fetch_replay_positions(now)
+        else:
+            self.refresh_watched(now)
+            self._refresh_capabilities(now)
+            self._refresh_appliance_warnings(now)
         self._refresh_protocol_warnings()
         self._refresh_dial_info(now)
         if effects.changes or effects.restarting or effects.signal:
@@ -2324,7 +2484,10 @@ class DialCore:
     def poll_once(self) -> None:
         """Run one poll tick on the calling thread and publish its end: the
         loop's step, and what a test calls to poll without the thread. Not
-        for two threads at once."""
+        for two threads at once. With a pool attached it is a fold."""
+        if self.pool is not None:
+            self.fold_once()
+            return
         state = self._state
         previous_reporting_id = state.focus.reporting_id
         previous_now_playing = state.now_playing
@@ -2804,6 +2967,534 @@ class DialCore:
         self._reconcile_if_due(roster, visited, now)
         self._refresh_idle_affordance(roster, now)
         return visible_ids
+
+    # ---- the pool ------------------------------------------------------------
+
+    def attach_pool(self, pool, registry) -> None:
+        """Read every appliance from *pool* (one PeerClient each) and
+        *registry* (where each was sighted) instead of polling, and send the
+        controls' requests through the pool's clients. The core thread folds
+        the clients' snapshots when the pool signals a change, and at the poll
+        interval so a decision bound to time moves on: one publish per wake,
+        however many clients moved. Call once, before start()."""
+        self.pool = pool
+        self._registry = registry
+        self._lane = rq.RequestLane(pool.get, self._on_lane_done)
+        pool.subscribe(self._poll_wake.set)
+        if self._thread is not None:
+            self._lane.start()
+
+        def mutate(state: _CoreState) -> None:
+            state.polling = True
+        self._publish(mutate)
+        self._poll_wake.set()
+
+    def focused_client(self):
+        """The PeerClient of the appliance the dial follows (the manual focus,
+        else the reporting appliance), for writes; None when there is none."""
+        focused = self._snapshot.focused_id()
+        return self.pool.get(focused) if self.pool is not None and focused else None
+
+    def subscribe_focus(self, callback: Callable[[], None]) -> int:
+        """Register a zero-argument callback, called on the core thread when
+        the focused appliance changes. Returns a handle for
+        `unsubscribe_focus`. Like `subscribe`, it must only signal."""
+        with self._lock:
+            handle = self._next_handle
+            self._next_handle += 1
+            self._focus_subscribers[handle] = callback
+        return handle
+
+    def unsubscribe_focus(self, handle: int) -> None:
+        with self._lock:
+            self._focus_subscribers.pop(handle, None)
+
+    # -- sending --
+
+    def _send(self, appliance_id: str, intent: rq.Intent, token: float) -> None:
+        """Queue *intent* for *appliance_id* on the request lane."""
+        self._lane.enqueue(rq.LaneItem(
+            appliance_id, intent.kind, intent.name, intent.args, intent.extra_body, token,
+        ))
+
+    def _on_lane_done(self, item: rq.LaneItem, result) -> None:
+        """The request lane's result: a reply is folded into its request; a
+        fetch needs nothing, since the merged parts reach the fold through the
+        client's own signal."""
+        if item.kind != "fetch":
+            self._fold_reply(item.appliance_id, item.kind, item.token, result)
+
+    def _fold_reply(self, appliance_id: str, kind: str, token: float, reply) -> None:
+        """Fold an appliance's reply into the request carrying *token*. An ok
+        reply makes it accepted and keeps its shown value until the
+        appliance's folded state has caught up with the reply
+        (dial_core_requests.settled); a refusal or a transport outcome makes it
+        rejected with that name. What it meant is queued for a view as an
+        `OutputsEffect` or a `RepeatEffect`. An accepted replay start opens the
+        accepted-replay window, and an accepted seek or stop asks once for the
+        replay position; a refused replay request drops a pending focus on
+        that appliance. An EQ reply has no request record: the values set show
+        for their window whatever it says."""
+        if kind in OUTPUT_KINDS:
+            lane = "outputs_request"
+        elif kind in ("seek", "stop", "arm"):
+            lane = "transport"
+        else:
+            if not reply.ok:
+                logging.info("dial core: %s refused (%s)", kind, reply.error)
+            return
+        now = self._clock()
+        resolved = []
+
+        def mutate(state: _CoreState) -> "bool | None":
+            held = getattr(state, lane)
+            if held is None or held.requested_at != token or held.state != "pending":
+                return False
+            new = rq.fold_reply(held, reply, now)
+            self._waiting.pop(lane, None)
+            if new.state == "accepted" and new.shown is not None:
+                folded = state.peers.get(appliance_id)
+                waiting = rq.wait_for(new, reply, folded)
+                if waiting is None or rq.settled(waiting, folded):
+                    new = dataclasses.replace(new, shown=None)
+                else:
+                    self._waiting[lane] = waiting
+            setattr(state, lane, new)
+            resolved.append((held, new))
+        self._publish(mutate)
+
+        if lane == "outputs_request":
+            if resolved:
+                held, new = resolved[0]
+                self._queue_effects(OutputsEffect(
+                    appliance_id, held.output_id or "", held.kind, new.state, new.error, token,
+                ))
+            return
+        if reply.ok:
+            accepted = kind == "seek" and self.accept_replay(appliance_id, now + ACCEPTED_REPLAY_GRACE_S)
+            if kind in ("seek", "stop") and self._lane is not None:
+                self._lane.enqueue(rq.LaneItem(appliance_id, "fetch", parts=("repeat",)))
+            outcome = RepeatOutcome(True, accepted, bool(resolved) and resolved[0][0].kind == "stop")
+        else:
+            self.drop_pending_focus(appliance_id)
+            outcome = RepeatOutcome(False, False, False)
+        self._queue_effects(RepeatEffect(appliance_id, outcome, token))
+
+    def submit_intent(self, appliance_id: str, name: str, args, *, pin_entry: bool = False) -> PeerReply:
+        """Send the HD page's intent *name* with *args* to *appliance_id* on
+        the calling thread, never behind the request lane, and return the
+        reply. The local checks the controls make come first, and the request
+        is recorded (on `outputs_request` for a speaker or PIN intent, on
+        `transport` for a repeat one) under the core lock before anything is
+        sent, so the screens see it as they see their own. A local refusal is
+        a reply with the dial's name for it: unknown_intent, unknown_appliance,
+        wrong_state (not the focused appliance, a speaker row that is not held
+        or is in use, a PIN of the wrong shape), no_record, or the
+        appliance's or library's name where one says the same
+        (dial_not_authorized, protocol_mismatch). *pin_entry* says the caller
+        can show a keypad; a PIN submission always says so. Bounded by the
+        client's own read."""
+        if name not in SUBMIT_INTENTS:
+            return _local_refusal("unknown_intent")
+        args = dict(args) if isinstance(args, dict) else {}
+        now = self._clock()
+        begun: dict = {}
+
+        def mutate(state: _CoreState) -> "bool | None":
+            refusal = self._intent_refusal_locked(state, appliance_id, name, args)
+            if refusal is not None:
+                begun["refusal"] = refusal
+                return False
+            record = self._intent_record_locked(state, appliance_id, name, args)
+            if record is None:
+                return False
+            lane, kind, output_id, shown = record
+            setattr(state, lane, TransportRequest(
+                appliance_id, kind, now, "pending", now, None, output_id, 0, shown,
+            ))
+            begun["kind"] = kind
+        self._publish(mutate)
+        if "refusal" in begun:
+            return _local_refusal(begun["refusal"])
+        client = self.pool.get(appliance_id) if self.pool is not None else None
+        if client is None:
+            reply = PeerReply(False, "unreachable", None, None, {}, None)
+        else:
+            pin_capable = pin_entry or name == "output.pin.submit"
+            reply = client.submit(name, args, extra_body={"pin_capable": True} if pin_capable else None)
+        if "kind" in begun:
+            self._fold_reply(appliance_id, begun["kind"], now, reply)
+        return reply
+
+    def _intent_refusal_locked(self, state: _CoreState, appliance_id: str, name: str, args: dict) -> str | None:
+        """The name submit_intent refuses *name* with, or None. Core lock held."""
+        refusal = self._refusal_in(state, appliance_id, _INTENT_CAPABILITY[name])
+        if refusal is not None:
+            return _REFUSAL_NAMES.get(refusal.reason, refusal.reason)
+        if self.pool is None or appliance_id != (state.focus.manual_id or state.focus.reporting_id):
+            return "wrong_state"
+        if name in _INTENT_REPEAT_STATES:
+            refusal = self._repeat_refusal_in(state, appliance_id, _INTENT_REPEAT_STATES[name])
+            return None if refusal is None else _REFUSAL_NAMES.get(refusal.reason, refusal.reason)
+        if name in ("outputs.set", "output.pin.submit"):
+            row = self._output_row_in(state, appliance_id, args.get("id"))
+            if row is None or row.remote_in_use:
+                return "wrong_state"
+            pin = args.get("pin")
+            if name == "output.pin.submit" and not (isinstance(pin, str) and PIN_RE.match(pin)):
+                return "wrong_state"
+        return None
+
+    def _intent_record_locked(self, state: _CoreState, appliance_id: str, name: str, args: dict):
+        """(lane, kind, output_id, shown) recording intent *name*, or None for
+        an intent with no request record. Core lock held; the checks have
+        passed."""
+        if name in _INTENT_KINDS:
+            return "transport", _INTENT_KINDS[name], None, None
+        if name not in ("outputs.set", "output.pin.submit"):
+            return None
+        row = self._output_row_in(state, appliance_id, args.get("id"))
+        if name == "output.pin.submit":
+            return "outputs_request", "output_pin", row.id, (True, row.volume)
+        selected, volume = args.get("selected"), args.get("volume")
+        shown = (
+            selected if isinstance(selected, bool) else row.selected,
+            volume if isinstance(volume, int) and not isinstance(volume, bool) else row.volume,
+        )
+        return "outputs_request", "output_set", row.id, shown
+
+    @staticmethod
+    def _output_row_in(state: _CoreState, appliance_id: str, output_id):
+        held = state.outputs
+        if held is None or held.appliance_id != appliance_id:
+            return None
+        return next((r for r in held.rows if r.id == output_id), None)
+
+    # -- the fold --
+
+    def fold_once(self) -> CoreSnapshot:
+        """Fold every client's snapshot into one publish: the appliance list,
+        the focus (dial_core_focus.choose_focus), now playing, the focused
+        appliance's outputs and EQ, each appliance's warnings and start
+        failure, and the requests its state has overtaken. The publish ends a
+        tick, as a poll did. Core thread only (or a test without it)."""
+        now = self._clock()
+        sightings = dict(self._registry.sightings()) if self._registry is not None else {}
+        clients = self.pool.clients()
+        snaps = {}
+        for appliance_id in sightings:
+            client = clients.get(appliance_id)
+            if client is not None:
+                snaps[appliance_id] = client.snapshot()
+        order = [e.id for e in roster_view(sightings, snaps)]
+        held_views, held_peers, held_since = self._state.views, self._state.peers, self._state.playing_since
+        playing_since: dict = {}
+        views: dict = {}
+        promotions = 0
+        for appliance_id in order:
+            snap = snaps.get(appliance_id)
+            if snap is not None and dial_peer_view.playing(snap.parts):
+                playing_since[appliance_id] = held_since.get(appliance_id, now)
+            before = held_views.get(appliance_id)
+            view = before
+            if (view is None or held_peers.get(appliance_id) is not snap
+                    or self._sightings.get(appliance_id) != sightings[appliance_id]):
+                view = dial_peer_view.appliance_state(
+                    sightings[appliance_id], snap, now=now,
+                    playing_since=playing_since.get(appliance_id, 0.0),
+                )
+            if before is not None and before.auth != AUTH_AUTHORIZED and view.auth == AUTH_AUTHORIZED:
+                promotions += 1
+            views[appliance_id] = view
+        self._sightings = sightings
+        roster = [views[appliance_id] for appliance_id in order]
+        tracks = {appliance_id: dial_peer_view.active_track(s.parts) for appliance_id, s in snaps.items()}
+        failures = self._read_start_failures(snaps)
+        prev_playing = self._prev_playing_ids
+
+        def decide(focus: FocusState):
+            choice = dial_core_focus.choose_focus(
+                roster, focus, now, tracks=tracks, prev_playing_ids=prev_playing)
+            hold = not choice.visible and self._idle_hold(choice.clear_reason is not None)
+            return choice, hold, (None if hold else _now_playing_for(choice, views, snaps))
+
+        focus_read = self._state.focus
+        choice, hold, now_playing = decide(focus_read)
+        self._observe(choice, snaps, now)
+        shown = self._state.now_playing if hold else now_playing
+        service = shown.service_name if shown is not None else None
+        readout = (service, shown_volume(service))
+        effects: list = []
+        lines: list = []
+        focus_moved: list = []
+
+        def mutate(state: _CoreState) -> None:
+            nonlocal choice, hold, now_playing
+            if state.focus is not focus_read:
+                # A tap moved the focus since it was read: decide again from it.
+                choice, hold, now_playing = decide(state.focus)
+            before = state.focus.manual_id or state.focus.reporting_id
+            tick = TickContext(
+                state.focus.reporting_id, state.now_playing, state.idle_affordance,
+                choice.clear_reason is not None, choice.idle_focus is not None,
+            )
+            state.polling = True
+            state.peers = snaps
+            state.views = views
+            state.playing_since = playing_since
+            state.roster = roster
+            state.auth_promotions += promotions
+            self._fold_part_warnings_locked(state, lines)
+            self._fold_start_failures_locked(state, failures, effects, lines)
+            if hold:
+                # The view keeps what is shown until its screen is done.
+                state.focus = dataclasses.replace(
+                    state.focus, manual_id=choice.manual_id, pending=choice.pending,
+                    accepted_replay=choice.accepted_replay, source_service_name=None,
+                )
+            else:
+                state.now_playing = now_playing
+                state.focus = dataclasses.replace(
+                    choice.apply(state.focus),
+                    idle_focus=now_playing is not None and not now_playing.playing,
+                )
+            self._fold_focused_locked(state, now, availability=not hold)
+            state.visible_playing = tuple(sorted(e.appliance_id for e in choice.visible))
+            state.idle_affordance = any(
+                e.auth == AUTH_AUTHORIZED and e.repeat_capable and e.repeat is not None
+                and e.repeat.state == "hold" for e in roster
+            )
+            self._settle_locked(state)
+            state.volume_readout = readout
+            state.appliances = self._derive_appliances_locked(state)
+            self._sync_warnings_locked(state)
+            state.tick = tick
+            state.ticks += 1
+            if (state.focus.manual_id or state.focus.reporting_id) != before:
+                focus_moved.append(True)
+        snapshot = self._publish(mutate)
+
+        self._prev_playing_ids = (
+            {e.appliance_id for e in roster if e.playing} | {e.appliance_id for e in choice.visible})
+        if choice.clear_reason is not None:
+            logging.info("dial display: manual focus cleared (%s)", choice.clear_reason)
+        for line in lines:
+            logging.info("dial core: %s", line)
+        for effect in effects:
+            self._queue_effects(effect)
+        if not hold:
+            self._follow_artwork(choice.selection.url if choice.visible else None)
+        if focus_moved:
+            with self._lock:
+                callbacks = tuple(self._focus_subscribers.values())
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    logging.debug("dial core: focus subscriber raised", exc_info=True)
+        return snapshot
+
+    def _read_start_failures(self, snaps: dict) -> dict:
+        """Each appliance's start failure as the report the core acts on. The
+        part carries the failure's wall-clock time; on the first reading of an
+        appliance's outputs (the dial has just started, or just met it) its
+        age is worked out from that, so an old failure is not news, and after
+        that a failure that appears is new."""
+        failures = {}
+        for appliance_id, snap in snaps.items():
+            outputs = snap.parts.get("outputs")
+            if not isinstance(outputs, Mapping):
+                continue
+            raw = outputs.get("start_failure")
+            age = 0
+            if appliance_id not in self._failures_read:
+                self._failures_read.add(appliance_id)
+                at = raw.get("at") if isinstance(raw, Mapping) else None
+                if isinstance(at, (int, float)) and not isinstance(at, bool):
+                    age = max(0, int(time.time() - at))
+            failures[appliance_id] = dial_peer_view.start_failure(
+                raw, snap.boot or "", self._own_requester, age_s=age)
+        return failures
+
+    def _fold_part_warnings_locked(self, state: _CoreState, lines: list) -> None:
+        """Hold each appliance's warnings as its warnings part lists them; an
+        appliance that has refused this dial, or has gone, holds none."""
+        for appliance_id, view in state.views.items():
+            new = view.warnings if view.auth != AUTH_UNAUTHORIZED else ()
+            if self._store_appliance_warnings_locked(state, appliance_id, new):
+                lines.append(f"appliance warnings: {view.name} {len(new)} warning(s)")
+        for appliance_id in [a for a in state.appliance_warnings if a not in state.views]:
+            self._store_appliance_warnings_locked(state, appliance_id, ())
+
+    def _fold_focused_locked(self, state: _CoreState, now: float, *, availability: bool) -> None:
+        """The focused (or reporting) appliance's snapshot, outputs and EQ, as
+        folded now, and (with *availability*) what it offers: the EQ page
+        (unless the view vetoes it), the page dots and the outputs list. An EQ
+        tap whose window has passed goes."""
+        focused = state.focus.manual_id or state.focus.reporting_id
+        snap = state.peers.get(focused) if focused else None
+        state.focused_peer = snap
+        if snap is None:
+            state.outputs = state.eq = None
+        else:
+            outputs = dial_peer_view.outputs_state(focused, snap.parts, fetched_at=now)
+            held = state.outputs
+            if (held is not None and held.appliance_id == focused
+                    and (held.rows, held.loaded) == (outputs.rows, outputs.loaded)):
+                outputs = held
+            state.outputs = outputs
+            state.eq = dial_peer_view.eq_state(focused, snap.parts)
+        pairs, expires_at = state.eq_optimistic
+        if (pairs or expires_at) and expires_at <= now:
+            state.eq_optimistic = ((), 0.0)
+        if not availability:
+            return
+        entry = state.views.get(focused) if focused else None
+        usable = entry is not None and entry.auth != AUTH_UNAUTHORIZED
+        state.eq_available = bool(usable and entry.dial_eq and not self._eq_veto())
+        state.outputs_available = bool(usable and entry.dial_outputs)
+        state.dots_active = dots_active(entry.repeat if entry is not None else None, state.eq_available)
+
+    def _settle_locked(self, state: _CoreState) -> None:
+        """Drop the shown value of each accepted request that the appliance's
+        folded state has overtaken (or that a newer request has replaced)."""
+        for lane, waiting in list(self._waiting.items()):
+            request = getattr(state, lane)
+            if request is None or request.requested_at != waiting.token or request.shown is None:
+                del self._waiting[lane]
+            elif rq.settled(waiting, state.peers.get(waiting.appliance_id)):
+                setattr(state, lane, dataclasses.replace(request, shown=None))
+                del self._waiting[lane]
+
+    def _observe(self, choice, snaps: dict, now: float) -> None:
+        """Tell the volume worker's store what the shown appliances report:
+        each one's mute flag, and the reporting appliance's master volume.
+        With nothing playing the store is cleared. Never with the core lock
+        held."""
+        io = self._io
+        if not choice.visible:
+            io.observe_volume(None, None)
+            io.observe_mute(None, None)
+            return
+        reporting = choice.reporting
+        shown = list(choice.visible)
+        if reporting is not None and all(e.appliance_id != reporting.appliance_id for e in shown):
+            shown.append(reporting)
+        if reporting is not None:
+            # The reporting appliance last, as the poll observed it.
+            shown.sort(key=lambda e: e.appliance_id == reporting.appliance_id)
+        for entry in shown:
+            snap = snaps.get(entry.appliance_id)
+            heard = snap.heard_at if snap is not None and snap.heard_at > 0 else now
+            io.observe_mute(entry.service_name, entry.muted, requested_at=heard, status_reports_mute=True)
+        io.forget_mute({e.service_name for e in choice.visible})
+        if reporting is not None:
+            volume = reporting.master_volume
+            io.observe_volume(
+                reporting.service_name,
+                volume if isinstance(volume, int) and not isinstance(volume, bool) else None,
+            )
+
+    # -- artwork --
+
+    def _follow_artwork(self, url: str | None) -> None:
+        """Hold the artwork for *url*: a short-lived thread fetches it when it
+        is new, so a slow download never holds the core or a request. With no
+        URL the held artwork is released."""
+        if not url:
+            with self._lock:
+                self._artwork_url = None
+            self.clear_artwork()
+            return
+        with self._lock:
+            if self._artwork_url == url:
+                return
+            self._artwork_url = url
+        held = self._state.artwork
+        if held is not None and held.key == artwork_key(url):
+            return
+        self.clear_artwork()
+        threading.Thread(target=self._artwork_worker, args=(url,), daemon=True, name="dial-artwork").start()
+
+    def _artwork_worker(self, url: str) -> None:
+        """Fetch the artwork for *url* and hold it, unless the URL is no
+        longer the one followed by then. A failed fetch is asked for again by
+        a later fold; a URL that may not be fetched is not."""
+        io = self._io
+        art = None
+        try:
+            if not io.artwork_eligible(url):
+                logging.debug("dial display: unsupported artwork url candidate")
+                return
+            art = dial_core_poll.fetch_artwork_bytes(
+                url, io.log_limiter, fetch=io.fetch_artwork,
+                timeout=dial_core_poll.ARTWORK_FETCH_TIMEOUT_SECONDS,
+                on_error=io.on_artwork_error, now_fn=self._clock,
+            )
+        except Exception:
+            logging.debug("dial core: artwork fetch raised", exc_info=True)
+        if art is None:
+            with self._lock:
+                if self._artwork_url == url:
+                    self._artwork_url = None
+            return
+        art = dataclasses.replace(art, url="")
+
+        def mutate(state: _CoreState) -> "bool | None":
+            if self._artwork_url != url:
+                return False
+            state.artwork = art
+        self._publish(mutate)
+
+    # -- replay position --
+
+    def _fetch_replay_positions(self, now: float) -> None:
+        """The housekeeping step: every REPEAT_FETCH_S while an appliance's
+        repeat record is replaying, ask for its repeat part on the request
+        lane, so the position moves on whatever screen is shown, or none."""
+        if self._lane is None:
+            return
+        replaying = {
+            a.appliance_id for a in self._snapshot.appliances
+            if a.repeat is not None and a.repeat.state == "replaying"
+        }
+        for appliance_id in [a for a in self._repeat_fetch_at if a not in replaying]:
+            del self._repeat_fetch_at[appliance_id]
+        for appliance_id in replaying:
+            since = self._repeat_fetch_at.setdefault(appliance_id, now)
+            if now - since >= REPEAT_FETCH_S:
+                self._repeat_fetch_at[appliance_id] = now
+                self._lane.enqueue(rq.LaneItem(appliance_id, "fetch", parts=("repeat",)))
+
+
+def _local_refusal(error: str) -> PeerReply:
+    """A refusal made on the dial, in the shape of an appliance's reply."""
+    return PeerReply(False, error, None, None, {}, None)
+
+
+def _now_playing_for(choice, views: dict, snaps: dict) -> NowPlaying | None:
+    """What the focus decided is shown: the reporting appliance and the
+    selected track (an idle focus shows its name, not playing); with nothing
+    playing, an idle focus or a pending focus by name; else nothing."""
+    if choice.visible:
+        reporting = choice.reporting
+        if reporting is None:
+            return None
+        selection = choice.selection
+        view = views.get(reporting.appliance_id)
+        snap = snaps.get(reporting.appliance_id)
+        return NowPlaying(
+            reporting.service_name, selection.artist, selection.title,
+            view.master_volume if view is not None else None, album=selection.album,
+            input_label=dial_peer_view.now_playing(snap.parts).input_label if snap is not None else "",
+            playing=choice.idle_focus is None,
+        )
+    if choice.idle_focus is not None:
+        idle = choice.idle_focus
+        return NowPlaying(idle.service_name, "", "", idle.master_volume, playing=False)
+    if choice.pending is not None:
+        return NowPlaying(choice.pending[1], "", "", None, playing=False)
+    return None
 
 
 def create_dial_core(cfg, get_display_targets: Callable, get_roster: Callable = _default_get_roster) -> DialCore:

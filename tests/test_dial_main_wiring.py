@@ -110,9 +110,7 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
          patch("dial_main.stop_playing_browser"), \
          patch("dial_main.stop_general_browser"), \
          patch("dial_main.start_volume_worker") as volume_worker, \
-         patch("dial_main.start_repeat_worker") as repeat_worker, \
-         patch("dial_main.start_outputs_worker") as outputs_worker, \
-         patch("dial_main.start_eq_worker") as eq_worker, \
+         patch("dial_main.PeerRegistry") as registry_class, \
          patch("dial_main.start_network_worker") as network_worker, \
          patch("dial_main.dial_sdhealth.start") as sdhealth_start, \
          patch("dial_main.DialControlServer"), \
@@ -123,8 +121,8 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
         dm.main()
 
     captured.update(
-        volume_worker=volume_worker, repeat_worker=repeat_worker, outputs_worker=outputs_worker,
-        eq_worker=eq_worker, network_worker=network_worker, sdhealth_start=sdhealth_start,
+        volume_worker=volume_worker, registry_class=registry_class,
+        network_worker=network_worker, sdhealth_start=sdhealth_start,
         playing_browser=playing_browser,
     )
     return captured
@@ -151,7 +149,6 @@ class TestCoreWiring:
     def test_the_workers_and_pollers_report_to_the_core(self):
         captured = _run_core_wiring()
         core = captured["core"]
-        assert captured["repeat_worker"].call_args.kwargs["on_result"] == core.on_repeat_result
         assert captured["volume_worker"].call_args.kwargs["on_readout_changed"] == core.readout_changed
         assert captured["network_worker"].call_args.kwargs["on_view"] == core.on_network_view
         assert captured["sdhealth_start"].call_args.kwargs["on_view"] == core.on_sd_health_view
@@ -166,11 +163,11 @@ class TestCoreWiring:
         kwargs = captured["playing_browser"].call_args.kwargs
         assert kwargs["on_remove"] == captured["core"].request_poll
 
-    def test_the_outputs_and_eq_results_go_straight_to_the_core(self):
+    def test_the_core_reads_the_appliances_from_the_pool(self):
         captured = _run_core_wiring()
-        core = captured["core"]
-        assert captured["outputs_worker"].call_args.kwargs["on_result"] == core.on_outputs_result
-        assert captured["eq_worker"].call_args.kwargs["on_result"] == core.on_eq_result
+        assert captured["core"].pool is not None
+        captured["registry_class"].assert_called_once_with(local_id=None)
+        captured["registry_class"].return_value.start.assert_called_once()
 
     def test_the_core_publishes_who_the_dial_is_and_what_inputs_run(self):
         info = _run_core_wiring()["core"].snapshot().dial
@@ -187,14 +184,13 @@ class TestCoreWiring:
         mute.assert_not_called()
         mute_all.assert_called_once_with()
 
-    def test_a_screenless_dial_builds_a_core_that_does_not_poll(self):
+    def test_a_screenless_dial_holds_the_appliances_too(self):
         captured = _run_core_wiring(fitted=False)
-        assert captured["core"].snapshot().polling is False
+        assert captured["core"].snapshot().polling is True
 
-    def test_a_fitted_dial_polls_at_its_configured_interval(self):
+    def test_a_fitted_dial_holds_the_appliances(self):
         captured = _run_core_wiring(fitted=True)
         assert captured["core"].snapshot().polling is True
-        assert captured["core"]._poll_interval == 4
 
 
 class TestHeadlessWiring:
@@ -204,14 +200,12 @@ class TestHeadlessWiring:
         assert "display built" not in captured["order"]
         assert captured["order"].index("core.start") < captured["order"].index("core.stop")
         assert core.snapshot().polling is True
-        assert captured["outputs_worker"].call_args.kwargs["on_result"] == core.on_outputs_result
-        assert captured["eq_worker"].call_args.kwargs["on_result"] == core.on_eq_result
-        assert captured["repeat_worker"].call_args.kwargs["on_result"] == core.on_repeat_result
+        assert core.pool is not None
         assert captured["network_worker"].call_args.kwargs["on_view"] == core.on_network_view
 
-    def test_a_screenless_headless_dial_does_not_poll(self):
+    def test_a_screenless_headless_dial_holds_the_appliances_too(self):
         captured = _run_core_wiring(fitted=False, display_import_fails=True)
-        assert captured["core"].snapshot().polling is False
+        assert captured["core"].snapshot().polling is True
 
 
 class TestKioskSurfaceWiring:
@@ -219,14 +213,13 @@ class TestKioskSurfaceWiring:
         captured = _run_core_wiring(fitted=True, screen_type="hd_kiosk")
         assert "display built" not in captured["order"]
 
-    def test_a_fitted_kiosk_dial_polls_at_its_configured_interval(self):
+    def test_a_fitted_kiosk_dial_holds_the_appliances(self):
         captured = _run_core_wiring(fitted=True, screen_type="hd_kiosk")
         assert captured["core"].snapshot().polling is True
-        assert captured["core"]._poll_interval == 4
 
-    def test_an_unfitted_kiosk_dial_does_not_poll(self):
+    def test_an_unfitted_kiosk_dial_holds_the_appliances_too(self):
         captured = _run_core_wiring(fitted=False, screen_type="hd_kiosk")
-        assert captured["core"].snapshot().polling is False
+        assert captured["core"].snapshot().polling is True
 
     def test_a_kiosk_dial_lists_the_page_as_an_input_and_can_confirm_presence(self):
         captured = _run_core_wiring(fitted=True, screen_type="hd_kiosk")

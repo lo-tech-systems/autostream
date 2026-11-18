@@ -270,7 +270,8 @@ class TestDialValidatorCrossCheck:
     def test_limits_agree_with_the_dial(self):
         assert dw.TITLE_MAX == dial_core_state.APPLIANCE_WARNING_TITLE_MAX
         assert dw.MESSAGE_MAX == dial_core_state.APPLIANCE_WARNING_MESSAGE_MAX
-        assert dw.WARNINGS_MAX == dial_core_state.APPLIANCE_WARNINGS_MAX
+        # The dial keeps more than this route sends.
+        assert dw.WARNINGS_MAX <= dial_core_state.APPLIANCE_WARNINGS_MAX
 
     def test_empty_set_is_a_clean_empty_reply(self):
         assert self._through_the_dial([]) == ()

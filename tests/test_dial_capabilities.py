@@ -556,15 +556,3 @@ class TestCoreFold:
         core = _core(_entry(proto=2, dial_eq=True))
         state = core.snapshot().appliances[0]
         assert state.dial_eq_version == 1 and not state.supplies_warnings
-
-
-class TestResultRouting:
-    def test_each_kind_reaches_its_core_method(self):
-        from dial_main import _on_appliance_fetch_result
-        core = MagicMock()
-        route = _on_appliance_fetch_result(core)
-        route("capabilities", AID, "0.8.0", 200, {"a": 1})
-        route("warnings", AID, "", 412, {"b": 2})
-        route("other", AID, "", 200, {})
-        core.on_capabilities_result.assert_called_once_with(AID, "0.8.0", 200, {"a": 1})
-        core.on_warnings_result.assert_called_once_with(AID, 412, {"b": 2})

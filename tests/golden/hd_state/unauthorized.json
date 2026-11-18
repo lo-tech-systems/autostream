@@ -41,7 +41,8 @@
       },
       "repeat": null,
       "warnings": [],
-      "webui": "http://192.0.2.20:80/"
+      "webui": "http://192.0.2.20:80/",
+      "update_needed": false
     },
     {
       "id": "bbbbbbbbbbbbbbbbbbbb",
@@ -61,7 +62,8 @@
       },
       "repeat": null,
       "warnings": [],
-      "webui": "http://192.0.2.20:80/"
+      "webui": "http://192.0.2.20:80/",
+      "update_needed": false
     }
   ],
   "now_playing": null,

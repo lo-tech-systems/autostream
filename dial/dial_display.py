@@ -45,6 +45,7 @@ from dial_display_compositor import (
     EqViewState,
     InfoValueView,
     ListState,
+    NEEDS_UPDATE_TEXT,
     NOT_AUTHORISED_TEXT,
     OutputViewState,
     OverlayState,
@@ -685,6 +686,8 @@ def _list_state_for(state, rows_per_page: int, placeholder: str, to_row, pressed
 
 
 def _selector_list_row(row: SelectorRow) -> tuple:
+    if row.needs_update:
+        return (row.label, False, NEEDS_UPDATE_TEXT)
     if not row.authorized:
         return (row.label, False, NOT_AUTHORISED_TEXT)
     return (row.label, row.current, PLAY_GLYPH) if row.playing else (row.label, row.current)
@@ -694,6 +697,12 @@ def _unauthorised_hint(label: str) -> tuple[str, str]:
     """The (title, text) the value view shows for a tap on an unauthorised
     selector row."""
     return NOT_AUTHORISED_TEXT, f"Allow this dial in {label}'s web UI (Setup, Dials)"
+
+
+def _needs_update_hint(label: str) -> tuple[str, str]:
+    """The (title, text) the value view shows for a tap on a selector row
+    whose appliance runs another protocol than this dial's."""
+    return NEEDS_UPDATE_TEXT, f"{label} and this dial need the same software version"
 
 
 # The screens a hint on the value page may open over, by what asks for it.
@@ -2682,11 +2691,14 @@ class DialDisplay:
             page_rows = self._current_page_rows(selector)
             if 0 <= index < len(page_rows):
                 row = page_rows[index]
-                if not row.authorized:
-                    # An appliance that refused this dial cannot be
-                    # controlled: no focus change, and the selector stays
-                    # open underneath a short hint whose back returns here.
-                    self._info_value_hint = _unauthorised_hint(row.label)
+                if row.needs_update or not row.authorized:
+                    # An appliance that refused this dial, or runs another
+                    # protocol, cannot be controlled: no focus change, and
+                    # the selector stays open underneath a short hint whose
+                    # back returns here.
+                    self._info_value_hint = (
+                        _needs_update_hint(row.label) if row.needs_update
+                        else _unauthorised_hint(row.label))
                     self._screen_request = "info_value"
                     self._overlay_signal.set()
                     return

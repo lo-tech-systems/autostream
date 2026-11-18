@@ -31,9 +31,6 @@ from dial_http_server import (
     NoOpDisplayStatusProvider,
     _announce_self,
 )
-from dial_appliance_fetch import start_appliance_fetch_worker
-from dial_appliance_fetch import start_appliance_fetch_worker
-from dial_eq import start_eq_worker
 from dial_info import current_ipv4, gather_dial_info
 from dial_led import DialLED
 from dial_mdns import (
@@ -61,8 +58,14 @@ try:
 except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
     import autostream_logging as log_setup  # noqa: E402
-from dial_outputs import start_outputs_worker
-from dial_repeat import start_repeat_worker
+# The peer library is deployed flat beside the dial package too.
+try:
+    from autostream_peer_client import PeerClient, PeerPool
+    from autostream_peer_registry import PeerRegistry
+except ImportError:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
+    from autostream_peer_client import PeerClient, PeerPool  # noqa: E402
+    from autostream_peer_registry import PeerRegistry  # noqa: E402
 from dial_target_status import enrich_targets
 from dial_volume import select_volume_target, start_volume_worker
 
@@ -305,15 +308,16 @@ class _HeadlessDisplay(NoOpDisplayStatusProvider):
         self.core.notify_state_changed(appliance_id, changed, wake=wake)
 
 
-def _on_appliance_fetch_result(core):
-    """The appliance fetch worker's result callback: route each kind of read
-    to the core method that folds it."""
-    def on_result(kind, appliance_id, version, status, body):
-        if kind == "capabilities":
-            core.on_capabilities_result(appliance_id, version, status, body)
-        elif kind == "warnings":
-            core.on_warnings_result(appliance_id, status, body)
-    return on_result
+def _start_peer_pool(cfg, core, shutdown_event):
+    """The appliances as the core reads them: one registry of sightings, a
+    pool holding a PeerClient for each, and the core attached to both.
+    Returns (registry, pool) for the caller to stop."""
+    registry = PeerRegistry(local_id=None)
+    registry.start(shutdown_event)
+    pool = PeerPool(registry, lambda peer_id: PeerClient(peer_id, client_id=f"dial:{cfg.uuid}"))
+    pool.start()
+    core.attach_pool(pool, registry)
+    return registry, pool
 
 
 def _build_volume_targets_fn(
@@ -885,7 +889,11 @@ def main() -> None:
                 network=network_latest(), sd_health=dial_sdhealth.info_value(), uuid=cfg.uuid,
             )
         )
-    # The core's thread starts before the view's, so the first poll is not
+    # Every sighted appliance is held by its own client in the pool, and the
+    # core reads them all from there; its request lane, the one sender of the
+    # screens' speaker, EQ and repeat requests, starts with the core.
+    peer_registry, peer_pool = _start_peer_pool(cfg, core, shutdown_event)
+    # The core's thread starts before the view's, so the first fold is not
     # held up by the panel; what the core publishes in between is folded in
     # by the view when it starts.
     core.start()
@@ -905,33 +913,6 @@ def main() -> None:
         on_readout_changed=core.readout_changed,
         on_mute_changed=core.mute_changed,
     )
-
-    # The repeat-transport sender: its own thread, queue and HTTP client,
-    # entirely separate from the volume worker above (see dial_repeat.py's
-    # module docstring for why). Its results go to the core, which queues
-    # what they mean for a screen.
-    start_repeat_worker(cfg, on_result=core.on_repeat_result)
-
-    # The outputs list/mutation sender: its own thread, queue and HTTP
-    # client, entirely separate from the volume and repeat workers above
-    # (see dial_outputs.py's module docstring). Its results go to the core;
-    # a screen showing the list follows the snapshot they change.
-    start_outputs_worker(cfg, on_result=core.on_outputs_result)
-
-    # The EQ page's bass/treble sender: its own thread, queue and HTTP
-    # client, entirely separate from every other worker above (see
-    # dial_eq.py's module docstring). Routed like the outputs worker's.
-    start_eq_worker(cfg, on_result=core.on_eq_result)
-
-    # The appliance self-description reader: its own thread, queue and HTTP
-    # client (see dial_appliance_fetch.py's module docstring). The core asks
-    # for capabilities as appliances appear and folds the replies.
-    start_appliance_fetch_worker(cfg, on_result=_on_appliance_fetch_result(core))
-
-    # The appliance self-description reader: its own thread, queue and HTTP
-    # client (see dial_appliance_fetch.py's module docstring). The core asks
-    # for capabilities and warnings as appliances appear and folds the replies.
-    start_appliance_fetch_worker(cfg, on_result=_on_appliance_fetch_result(core))
 
     # The Wi-Fi link poller: its own thread, one loopback read of the local
     # watcher every 15 s (see dial_network.py's module docstring). Feeds the
@@ -1063,6 +1044,8 @@ def main() -> None:
         if touch_source is not None:
             touch_source.stop()
         core.stop()
+        peer_pool.stop()
+        peer_registry.stop()
         display.stop()
         control_server.stop()
         http_server._server.shutdown()

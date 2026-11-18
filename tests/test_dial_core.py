@@ -2571,7 +2571,7 @@ class TestApplianceWarningsFeed:
         core, manager, _ = _lounge_core()
         many = tuple(_stylus(id=f"w{i}") for i in range(30))
         core.set_appliance_warnings(BID, many)
-        assert len(_slot(core, BID).warnings) == 8
+        assert len(_slot(core, BID).warnings) == 16
         core.set_appliance_warnings(BID, (_stylus(id="Bad Id"), "junk", None, _stylus(id="a"), _stylus(id="a")))
         assert [w.id for w in _slot(core, BID).warnings] == ["a"]
 

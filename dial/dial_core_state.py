@@ -134,6 +134,9 @@ class SelectorRow:
     # False for an appliance confirmed to have refused this dial: listed but
     # marked, never focused or controlled (see selector_pick).
     authorized: bool = True
+    # True for an appliance on another protocol than this dial's: listed but
+    # marked, never focused or controlled.
+    needs_update: bool = False
 
 
 @dataclass(frozen=True)
@@ -518,6 +521,7 @@ class CoreSnapshot:
     outputs_request: TransportRequest | None = None  # the latest output request and its outcome
     power: PowerState = POWER_IDLE      # whether a requested power-off is in hand or did not happen
     start_failure: "StartFailureNotice | None" = None   # the raised "could not start" notice, until answered or held out
+    focused_peer: object | None = None  # the focused appliance's PeerSnapshot exactly as folded into this snapshot
 
     def appliance(self, appliance_id: str | None) -> ApplianceState | None:
         if appliance_id is None:
@@ -552,7 +556,7 @@ class CoreSnapshot:
 # A reply larger than this is not parsed at all.
 APPLIANCE_WARNINGS_MAX_BODY_BYTES = 8192
 # At most this many warnings are kept per appliance; the rest are dropped.
-APPLIANCE_WARNINGS_MAX = 8
+APPLIANCE_WARNINGS_MAX = 16
 # Entries examined before giving up on a list padded with unusable ones.
 APPLIANCE_WARNINGS_MAX_SCAN = 4 * APPLIANCE_WARNINGS_MAX
 # Longest title and message kept, in characters; longer ones are truncated.
@@ -983,20 +987,26 @@ def selector_rows(roster: Iterable, manual_id: str | None, reporting_id: str | N
     """The appliance selector's rows: every roster entry with an identity
     whose auth is AUTHORIZED (an unknown appliance is controllable but not
     yet confirmed, so it stays off the list until a probe confirms it) or
-    UNAUTHORIZED (listed, marked, never current or playing). *current* marks
-    the manual focus when one is set, else the reporting-from appliance."""
+    UNAUTHORIZED (listed, marked, never current or playing). An appliance on
+    another protocol than this dial's is listed whatever its auth, marked as
+    needing an update, never current or playing. *current* marks the manual
+    focus when one is set, else the reporting-from appliance."""
     current_id = manual_id if manual_id is not None else reporting_id
-    return tuple(
-        SelectorRow(
+    rows = []
+    for r in roster:
+        needs_update = getattr(r, "status_error", None) == "protocol"
+        if not r.appliance_id or not (needs_update or r.auth in (AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)):
+            continue
+        usable = r.auth == AUTH_AUTHORIZED and not needs_update
+        rows.append(SelectorRow(
             appliance_id=r.appliance_id,
             label=appliance_display_name(r.service_name),
-            current=(r.auth == AUTH_AUTHORIZED and r.appliance_id == current_id),
-            playing=(r.auth == AUTH_AUTHORIZED and r.playing),
+            current=(usable and r.appliance_id == current_id),
+            playing=(usable and r.playing),
             authorized=(r.auth == AUTH_AUTHORIZED),
-        )
-        for r in roster
-        if r.appliance_id and r.auth in (AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)
-    )
+            needs_update=needs_update,
+        ))
+    return tuple(rows)
 
 
 def picker_rows(roster: Iterable, repeat_lookup: Callable, now: float) -> tuple:

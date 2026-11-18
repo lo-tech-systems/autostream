@@ -1713,11 +1713,14 @@ install_code_tree() {
     # import) fails at startup. dial_display imports the shared artwork fetch
     # from autostream_artwork; without it the dial cannot start. The Wi-Fi
     # recovery helper is deployed alongside the watcher so the recovery
-    # executable's import resolves on every install/update.
+    # executable's import resolves on every install/update. The dial reads
+    # and controls the appliances through the peer library (protocol, HTTP,
+    # registry and client) and maps EQ bands with autostream_eq_bands.
     for name in autostream_rpi autostream_system_stats autostream_appliance_identity \
                 autostream_licensing autostream_dial_gpio autostream_sysutils \
                 autostream_mdns autostream_artwork autostream_wifi_network \
-                autostream_logging; do
+                autostream_logging autostream_protocol autostream_peer_http \
+                autostream_peer_registry autostream_peer_client autostream_eq_bands; do
         install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/core/${name}.py" "${dest}/${name}.py"
     done
     # wifi_watcher's split sibling modules (imported beside it).

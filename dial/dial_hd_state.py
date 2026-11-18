@@ -166,9 +166,10 @@ def _appliance_block(a, now: float, wall_now: float, snoozed_until: dict) -> dic
         "auth": a.auth,
         "playing": bool(a.playing),
         "replaying": a.repeat is not None and a.repeat.state in _REPLAYING_STATES,
-        # An appliance that answered with a refusal is reachable; its auth
-        # says the rest.
-        "reachable": a.status_error is None or a.status_error == "unauthorized",
+        # An appliance that answered with a refusal, or that runs another
+        # protocol than this dial's, is reachable; its auth and update_needed
+        # say the rest.
+        "reachable": a.status_error is None or a.status_error in ("unauthorized", "protocol"),
         "volume": _int_or_none(a.master_volume),
         "muted": _bool_or_none(a.muted),
         "capabilities": {
@@ -181,6 +182,7 @@ def _appliance_block(a, now: float, wall_now: float, snoozed_until: dict) -> dic
         "repeat": _repeat_block(a.repeat, now),
         "warnings": _appliance_warnings(a, snoozed_until, wall_now),
         "webui": f"{a.webui_scheme}://{a.webui_host}:{a.webui_port}/" if a.webui_host else "",
+        "update_needed": a.status_error == "protocol",
     }
 
 

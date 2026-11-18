@@ -244,6 +244,9 @@ _DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
 # this dial. A row carrying exactly this text is drawn dimmed throughout
 # (label and secondary) so it reads as unavailable next to the live rows.
 NOT_AUTHORISED_TEXT = "Not authorised"
+# The secondary text of a selector row for an appliance on another protocol
+# than this dial's, drawn dimmed the same way.
+NEEDS_UPDATE_TEXT = "Needs an update"
 
 # The hint page's title for a speaker that has to be paired (it asks for a
 # PIN) in the appliance's web UI, which the small screen cannot do.
@@ -2666,8 +2669,9 @@ _MARKER_BOX_FRACTION = 0.75
 
 def _row_text_color(secondary) -> tuple:
     """The text colour of a list row: dimmed when its secondary text is the
-    selector's "not authorised" label, the plain glyph colour otherwise."""
-    return _DIMMED_GLYPH_RGB if secondary == NOT_AUTHORISED_TEXT else _GLYPH_RGB
+    selector's "not authorised" or "needs an update" label, the plain glyph
+    colour otherwise."""
+    return _DIMMED_GLYPH_RGB if secondary in (NOT_AUTHORISED_TEXT, NEEDS_UPDATE_TEXT) else _GLYPH_RGB
 
 
 def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:

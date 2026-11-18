@@ -339,3 +339,264 @@ class TestLane:
         thread = lane._thread
         lane.stop()
         assert not thread.is_alive()
+
+
+# ---- the core on the lane ------------------------------------------------------------
+
+from dial_pool_support import Rig, aid, peer, replay_block, unit as pool_unit  # noqa: E402
+from dial_pool_support import ok as reply_ok, refused as reply_refused  # noqa: E402
+
+K = aid("Kitchen")
+
+
+@pytest.fixture
+def rig():
+    r = Rig()
+    yield r
+    r.close()
+
+
+def kitchen(rig, **kw):
+    """Kitchen playing, focused, with one speaker and six bands."""
+    base = dict(playing=True, units=[pool_unit(volume=40)], bands=[0, 0, 0, 0, 0, 0], version=1)
+    base.update(kw)
+    client = rig.add("Kitchen", peer("Kitchen", **base))
+    rig.fold()
+    return client
+
+
+def sent(rig, client, n=1):
+    assert rig.wait(lambda: len(client.sent()) >= n), client.calls
+    return client.sent()
+
+
+class TestCoreIntents:
+    def test_a_speaker_switch(self, rig):
+        client = kitchen(rig)
+        assert rig.core.set_output(K, "u1", selected=True).accepted
+        assert sent(rig, client)[0][1:] == ("outputs.set", {"id": "u1", "selected": True}, None)
+
+    def test_a_speaker_level(self, rig):
+        client = kitchen(rig)
+        rig.core.set_output(K, "u1", selected=True, volume=30)
+        assert sent(rig, client)[0][1:3] == ("outputs.set", {"id": "u1", "selected": True, "volume": 30})
+
+    def test_pin_capable_only_with_pin_entry(self, rig):
+        client = kitchen(rig)
+        rig.core.set_output(K, "u1", selected=True, pin_entry=True)
+        assert sent(rig, client)[0][3] == {"pin_capable": True}
+
+    def test_a_pin_submission(self, rig):
+        client = kitchen(rig)
+        rig.core.set_output(K, "u1", pin="1234")
+        assert sent(rig, client)[0][1:] == ("output.pin.submit", {"id": "u1", "pin": "1234"}, {"pin_capable": True})
+        assert rig.core.snapshot().outputs_request.kind == "output_pin"
+
+    def test_an_eq_band_and_a_step(self, rig):
+        client = kitchen(rig)
+        rig.core.set_eq(K, {"peq3": 2})
+        rig.core.step_eq(K, "peq1", -1)
+        calls = sent(rig, client, 2)
+        assert calls[0][1:3] == ("output.eq.set", {"fields": [["peq3_db", 2.0]]})
+        assert calls[1][1:3] == ("output.eq.set", {"fields": [["peq1_db", -1.0]]})
+
+    def test_an_eq_reset_is_one_intent(self, rig):
+        client = kitchen(rig)
+        rig.core.reset_eq(K)
+        assert sent(rig, client)[0][1:3] == ("output.eq.reset", {})
+        pairs, _ = rig.core.eq_override()
+        assert pairs and all(gain == 0 for _, gain in pairs)
+
+    @pytest.mark.parametrize("method, expected", [
+        ("start_replay", ("repeat.seek", {"position": 0})),
+        ("restart_replay", ("repeat.seek", {"position": 0})),
+        ("stop_replay", ("repeat.transport", {"action": "stop"})),
+    ])
+    def test_the_replay_rows(self, rig, method, expected):
+        client = kitchen(rig, repeat=replay_block("replaying"))
+        assert getattr(rig.core, method)(K).accepted
+        assert sent(rig, client)[0][1:3] == expected
+
+    def test_arming(self, rig):
+        client = kitchen(rig, repeat=replay_block("recording"))
+        assert rig.core.set_repeat_armed(K, True).accepted
+        assert sent(rig, client)[0][1:3] == ("repeat.arm", {"armed": True})
+
+    def test_a_replay_start_holds_the_focus_for_three_seconds(self, rig):
+        kitchen(rig, repeat=replay_block("hold"))
+        rig.core.start_replay(K)
+        assert rig.core.snapshot().focus.pending[2] == rig.t + 3.0
+
+
+class TestLocalRefusals:
+    def test_an_unknown_appliance(self, rig):
+        client = kitchen(rig)
+        assert rig.core.set_output("f" * 20, "u1", selected=True).reason == "unknown_appliance"
+        assert client.sent() == []
+
+    def test_an_appliance_that_refused_this_dial(self, rig):
+        client = rig.add("Kitchen", peer("Kitchen", access="none", access_reason="dial_not_authorized",
+                                         units=[pool_unit()]))
+        rig.fold()
+        assert rig.core.set_output(K, "u1", selected=True).reason == "unauthorized"
+        assert client.sent() == []
+
+    def test_a_speaker_in_use_elsewhere(self, rig):
+        client = kitchen(rig, units=[pool_unit(in_use_by="Hall", in_use_id="x")])
+        assert rig.core.set_output(K, "u1", selected=True).reason == "wrong_state"
+        assert client.sent() == []
+
+    def test_a_pin_of_the_wrong_shape(self, rig):
+        client = kitchen(rig)
+        assert rig.core.set_output(K, "u1", pin="12").reason == "wrong_state"
+        assert client.sent() == []
+
+    def test_a_protocol_mismatch_has_no_capability(self, rig):
+        client = rig.add("Kitchen", peer("Kitchen", protocol_ok=False, protocol=5))
+        rig.fold()
+        assert rig.core.set_eq(K, {"bass": 1}).reason == "no_capability"
+        assert client.sent() == []
+
+    def test_a_replay_with_no_record(self, rig):
+        client = kitchen(rig)
+        assert rig.core.stop_replay(K).reason == "no_record"
+        assert client.sent() == []
+
+
+class TestCoreSettling:
+    def test_the_shown_value_is_kept_until_the_version_is_reached(self, rig):
+        client = kitchen(rig, version=1)
+        client.reply = reply_ok(version=5)
+        rig.core.set_output(K, "u1", selected=True, volume=30)
+        assert rig.wait(lambda: rig.core.snapshot().outputs_request.state == "accepted")
+        assert rig.core.snapshot().outputs_request.shown == (True, 30)
+        rig.set("Kitchen", peer("Kitchen", playing=True, units=[pool_unit(selected=True, volume=30)], version=5, seq=2))
+        rig.fold()
+        assert rig.core.snapshot().outputs_request.shown is None
+
+    def test_an_event_before_the_reply_settles_at_once(self, rig):
+        client = kitchen(rig, version=1)
+        client.reply = reply_ok(version=5)
+        client.gate = threading.Event()
+        rig.core.set_output(K, "u1", selected=True)
+        rig.set("Kitchen", peer("Kitchen", playing=True, units=[pool_unit(selected=True)], version=6, seq=2))
+        rig.fold()
+        client.gate.set()
+        assert rig.wait(lambda: rig.core.snapshot().outputs_request.state == "accepted")
+        assert rig.core.snapshot().outputs_request.shown is None
+
+    def test_a_speaker_still_starting_holds_the_value_past_the_version(self, rig):
+        client = kitchen(rig, version=1)
+        client.reply = reply_ok(version=5)
+        rig.core.set_output(K, "u1", selected=True)
+        assert rig.wait(lambda: rig.core.snapshot().outputs_request.state == "accepted")
+        rig.set("Kitchen", peer("Kitchen", playing=True, units=[pool_unit(availability="starting")], version=5, seq=2))
+        rig.fold()
+        assert rig.core.snapshot().outputs_request.shown is not None
+        rig.set("Kitchen", peer("Kitchen", playing=True, units=[pool_unit(selected=True)], version=6, seq=3))
+        rig.fold()
+        assert rig.core.snapshot().outputs_request.shown is None
+
+    def test_a_new_boot_settles(self, rig):
+        client = kitchen(rig, version=1)
+        client.reply = reply_ok(version=50)
+        rig.core.set_output(K, "u1", selected=True)
+        assert rig.wait(lambda: rig.core.snapshot().outputs_request.state == "accepted")
+        rig.set("Kitchen", peer("Kitchen", playing=True, units=[pool_unit()], version=1, boot="b2", seq=2))
+        rig.fold()
+        assert rig.core.snapshot().outputs_request.shown is None
+
+    @pytest.mark.parametrize("error", ["unreachable", "timeout", "bad_reply", "backoff", "protocol_mismatch"])
+    def test_a_transport_outcome_is_rejected_with_its_name(self, rig, error):
+        client = kitchen(rig)
+        client.reply = reply_refused(error)
+        rig.core.set_output(K, "u1", selected=True)
+        assert rig.wait(lambda: rig.core.snapshot().outputs_request.state == "rejected")
+        request = rig.core.snapshot().outputs_request
+        assert (request.error, request.shown) == (error, None)
+
+    def test_a_double_replay_tap_is_rate_limited(self, rig):
+        client = kitchen(rig, repeat=replay_block("replaying"))
+        client.reply = reply_refused("rate_limited", 0.6)
+        rig.core.restart_replay(K)
+        assert rig.wait(lambda: rig.core.snapshot().transport.state == "rejected")
+        transport = rig.core.snapshot().transport
+        assert (transport.error, transport.retry_after_s) == ("rate_limited", 1)
+
+
+class TestSubmitIntent:
+    def test_the_request_is_recorded_and_the_reply_returned(self, rig):
+        client = kitchen(rig)
+        client.reply = reply_ok(version=9)
+        reply = rig.core.submit_intent(K, "outputs.set", {"id": "u1", "selected": True, "volume": 20})
+        assert reply.ok and reply.version == 9
+        request = rig.core.snapshot().outputs_request
+        assert (request.kind, request.state, request.shown) == ("output_set", "accepted", (True, 20))
+        assert client.sent()[0][1:] == ("outputs.set", {"id": "u1", "selected": True, "volume": 20}, None)
+
+    def test_pin_capable_follows_pin_entry_and_a_pin_always_has_it(self, rig):
+        client = kitchen(rig)
+        rig.core.submit_intent(K, "outputs.set", {"id": "u1", "selected": True}, pin_entry=True)
+        rig.core.submit_intent(K, "output.pin.submit", {"id": "u1", "pin": "4321"})
+        assert [c[3] for c in client.sent()] == [{"pin_capable": True}, {"pin_capable": True}]
+
+    def test_a_repeat_intent_is_recorded_on_the_transport(self, rig):
+        kitchen(rig, repeat=replay_block("replaying"))
+        rig.core.submit_intent(K, "repeat.transport", {"action": "stop"})
+        assert rig.core.snapshot().transport.kind == "stop"
+
+    @pytest.mark.parametrize("setup, name, args, expected", [
+        ("ok", "volume.step", {}, "unknown_intent"),
+        ("ok", "outputs.set", {"id": "nope", "selected": True}, "wrong_state"),
+        ("ok", "output.pin.submit", {"id": "u1", "pin": "x"}, "wrong_state"),
+        ("ok", "repeat.seek", {"position": 0}, "no_record"),
+        ("refused", "outputs.set", {"id": "u1", "selected": True}, "dial_not_authorized"),
+        ("mismatch", "output.eq.reset", {}, "protocol_mismatch"),
+        ("gone", "outputs.set", {"id": "u1", "selected": True}, "unknown_appliance"),
+    ])
+    def test_a_local_refusal_sends_nothing(self, rig, setup, name, args, expected):
+        if setup == "refused":
+            client = rig.add("Kitchen", peer("Kitchen", access="none", access_reason="dial_not_authorized",
+                                             units=[pool_unit()]))
+        elif setup == "mismatch":
+            client = rig.add("Kitchen", peer("Kitchen", protocol_ok=False, protocol=3))
+        else:
+            client = kitchen(rig)
+        rig.fold()
+        target = "f" * 20 if setup == "gone" else K
+        reply = rig.core.submit_intent(target, name, args)
+        assert (reply.ok, reply.error, reply.version, reply.boot, dict(reply.result), reply.retry_after_s) == (
+            False, expected, None, None, {}, None)
+        assert client.sent() == []
+
+    def test_an_appliance_that_is_not_focused_is_refused(self, rig):
+        kitchen(rig)
+        client = rig.add("Lounge", peer("Lounge", units=[pool_unit()]))
+        rig.fold()
+        assert rig.core.submit_intent(aid("Lounge"), "output.eq.reset", {}).error == "wrong_state"
+        assert client.sent() == []
+
+    def test_it_sends_on_the_callers_thread_while_the_lane_is_blocked(self, rig):
+        client = kitchen(rig)
+        lounge = rig.add("Lounge", peer("Lounge"))
+        lounge.gate = threading.Event()
+        rig.fold()
+        # A slow item holds the lane.
+        rig.core._lane.enqueue(rq.LaneItem(aid("Lounge"), "arm", "repeat.arm", {"armed": True}, None, 1.0))
+        assert rig.wait(lambda: lounge.sent())
+        reply = rig.core.submit_intent(K, "output.pin.submit", {"id": "u1", "pin": "1234"})
+        assert reply.ok
+        assert client.threads == [threading.current_thread()]
+        lounge.gate.set()
+
+    def test_the_request_is_recorded_before_it_is_sent(self, rig):
+        client = kitchen(rig)
+        seen = []
+        real = client.submit
+
+        def submit(name, args, **kw):
+            seen.append(rig.core.snapshot().outputs_request)
+            return real(name, args, **kw)
+        client.submit = submit
+        rig.core.submit_intent(K, "outputs.set", {"id": "u1", "selected": True})
+        assert seen[0] is not None and seen[0].state == "pending" and seen[0].kind == "output_set"
