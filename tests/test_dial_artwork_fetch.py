@@ -101,7 +101,7 @@ def test_a_failed_fetch_is_tried_again_by_a_later_fold(rig):
     rig.io.fetch_artwork.return_value = (None, "boom")
     rig.add("Kitchen", peer("Kitchen", playing=True, track_entry=track(url=URL1)))
     rig.fold()
-    assert rig.wait(lambda: rig.core._artwork_url is None)
+    assert rig.wait(lambda: rig.core._artwork.url is None)
     rig.io.fetch_artwork.return_value = (b"jpeg", "")
     rig.fold()
     assert rig.wait(lambda: rig.core.snapshot().artwork is not None)

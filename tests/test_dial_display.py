@@ -1851,7 +1851,7 @@ class TestArtworkDoesNotStompSecondaryScreen:
     def _show_fresh(display):
         """Download the fresh artwork into the core and draw it, as the end
         of a fold does."""
-        display._core._follow_artwork("https://provider.example/fresh.jpg")
+        display._core._artwork.follow("https://provider.example/fresh.jpg")
         display._show_artwork(display._core.snapshot().artwork)
 
     def _to_artwork_on_main(self, fb):

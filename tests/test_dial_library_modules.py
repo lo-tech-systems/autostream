@@ -35,6 +35,7 @@ ALLOWED = {
     "dial_hd_static": set(),
     "dial_core_effects": set(),
     "dial_core_model": {"dial_core_state"},
+    "dial_core_artwork": {"dial_artwork", "dial_core_state"},
 }
 
 

@@ -63,6 +63,7 @@ import dial_peer_view
 from dial_config import SCOPE_ALL
 from dial_eq_model import DERIVED_EQ_IDS, EQ_BASS_TREBLE_LIMIT_DB
 from dial_appliance_warnings import DIAL_WARNING_ID, newer_appliance_names, protocol_warning
+from dial_core_artwork import ArtworkFollower
 from dial_core_effects import (
     OutputsEffect, RepeatEffect, RepeatOutcome, SourceEffects, StartFailureEffect, WarningChange,
 )
@@ -73,7 +74,7 @@ from dial_core_state import (
     FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
     pin_capable_outputs, PowerState, TickContext, TransportRequest, WarningState,
-    roster_entry, artwork_key, display_order, dots_active, eq_gain,
+    roster_entry, display_order, dots_active, eq_gain,
     reopen_for_pin, six_band, start_failure_action,
 )
 from dial_mdns import PROTOCOL
@@ -211,6 +212,9 @@ class DialCore:
         self._reboot = reboot if reboot is not None else _default_reboot
         self._shutdown = shutdown if shutdown is not None else _default_shutdown
         self._io = io if io is not None else CoreIO()
+        self._artwork = ArtworkFollower(
+            lock=lambda: self._lock, publish=lambda fn: self._publish(fn),
+            held=lambda: self._state.artwork, io=lambda: self._io, clock=lambda: self._clock())
         self._eq_veto: Callable[[], bool] = lambda: False
         self._mute_scope: Callable[[], str] = lambda: ""
         self._idle_hold: Callable[[bool], bool] = lambda focus_cleared: False
@@ -236,7 +240,6 @@ class DialCore:
         self._own_requester = f"dial:{dial_id}"
         self._sightings: dict = {}
         self._waiting: dict[str, rq.Waiting] = {}      # request lane name -> what its shown value waits for
-        self._artwork_url: str | None = None           # the URL whose artwork is held or being fetched
         self._repeat_fetch_at: dict[str, float] = {}
         self._failures_read: set[str] = set()          # appliances whose start failure has been read once
         self._sync_warnings_locked(self._state)
@@ -344,20 +347,8 @@ class DialCore:
 
     def clear_artwork(self, key: str | None = None) -> None:
         """Release the held artwork bytes: always, or only when they are the
-        copy named by *key* (so a view dropping an undecodable image cannot
-        discard a newer track's). A copy dropped by its key is fetched again
-        at the next fold, so a truncated transfer heals."""
-        if key is not None:
-            with self._lock:
-                if self._artwork_url is not None and artwork_key(self._artwork_url) == key:
-                    self._artwork_url = None
-
-        def mutate(state: CoreState) -> "bool | None":
-            held = state.artwork
-            if held is None or (key is not None and held.key != key):
-                return False
-            state.artwork = None
-        self._publish(mutate)
+        copy named by *key*."""
+        self._artwork.clear(key)
 
     # ---- focus -------------------------------------------------------------
 
@@ -1639,7 +1630,7 @@ class DialCore:
         for effect in effects:
             self._queue_effects(effect)
         if not hold:
-            self._follow_artwork(choice.selection.url if choice.visible else None)
+            self._artwork.follow(choice.selection.url if choice.visible else None)
         return snapshot
 
     def _read_start_failures(self, snaps: dict) -> dict:
@@ -1745,57 +1736,6 @@ class DialCore:
                 rekeyed = self._volume_seen is None or self._volume_seen[0] != reporting.service_name
                 self._volume_seen = seen
                 (io.observe_volume if rekeyed else io.observe_volume_tracked)(*seen)
-
-    # -- artwork --
-
-    def _follow_artwork(self, url: str | None) -> None:
-        """Hold the artwork for *url*: a short-lived thread fetches it when it
-        is new, so a slow download never holds the core or a request. With no
-        URL the held artwork is released."""
-        if not url:
-            with self._lock:
-                self._artwork_url = None
-            self.clear_artwork()
-            return
-        with self._lock:
-            if self._artwork_url == url:
-                return
-            self._artwork_url = url
-        held = self._state.artwork
-        if held is not None and held.key == artwork_key(url):
-            return
-        self.clear_artwork()
-        self._io.spawn(self._artwork_worker, url)
-
-    def _artwork_worker(self, url: str) -> None:
-        """Fetch the artwork for *url* and hold it, unless the URL is no
-        longer the one followed by then. A failed fetch is asked for again by
-        a later fold; a URL that may not be fetched is not."""
-        io = self._io
-        art = None
-        try:
-            if not io.artwork_eligible(url):
-                logging.debug("dial display: unsupported artwork url candidate")
-                return
-            art = dial_artwork.fetch_artwork_bytes(
-                url, io.log_limiter, fetch=io.fetch_artwork,
-                timeout=dial_artwork.ARTWORK_FETCH_TIMEOUT_SECONDS,
-                on_error=io.on_artwork_error, now_fn=self._clock,
-            )
-        except Exception:
-            logging.debug("dial core: artwork fetch raised", exc_info=True)
-        if art is None:
-            with self._lock:
-                if self._artwork_url == url:
-                    self._artwork_url = None
-            return
-        art = dataclasses.replace(art, url="")
-
-        def mutate(state: CoreState) -> "bool | None":
-            if self._artwork_url != url:
-                return False
-            state.artwork = art
-        self._publish(mutate)
 
     # -- replay position --
 
