@@ -319,7 +319,8 @@ def send_airplay_page(
 
     # Filter and sort outputs through the shared model helper, then annotate with occupancy.
     output_dicts = (
-        build_output_list(parsed, outputs_part.units, include_offline=True) if outputs_part.connected else []
+        build_output_list(parsed, outputs_part.units, include_offline=True, session_active=snap.session.active)
+        if outputs_part.connected else []
     )
     try:
         from autostream_state.live import annotate_outputs as _annotate_outputs
@@ -348,6 +349,9 @@ def send_airplay_page(
             is_default=out["is_default"],
             remote_in_use=bool(out.get("remote_in_use")),
             remote_owner=str(out.get("remote_owner") or ""),
+            connecting=bool(out.get("connecting")),
+            offline=bool(out.get("offline")),
+            disabled=bool(out.get("disabled")),
         )
 
     # Master volume: average of currently-selected outputs, or preset if none on.

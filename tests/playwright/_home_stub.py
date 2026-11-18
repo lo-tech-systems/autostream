@@ -97,6 +97,7 @@ def render_home(
     banners: dict[str, str] | None = None,
     levels: list[dict] | None = None,
     show_input_detail: bool = False,
+    outputs: list[dict] | None = None,
 ) -> bytes:
     """Render the Home page as the server would.
 
@@ -104,7 +105,8 @@ def render_home(
     sample_rate) to the text the server renders into it; names left out
     render empty. ``levels`` is what the input levels lookup returns; the
     sample rate banner links to the lowest-numbered level that reports a
-    mismatch.
+    mismatch. ``outputs`` is the speaker list the page is rendered with (the
+    row dicts the list poll carries); without it the player is unreachable.
     """
     banners = dict(banners or {})
     unknown = set(banners) - set(_BANNER_KEYS)
@@ -154,7 +156,10 @@ def render_home(
             fake_playback(snap),
             patch("webui.browser.home._dial_update_banner_text",
                   return_value=banners.get("dial_update", "")),
-            fake_outputs_result(MagicMock(ok=False, outputs=[])),
+            fake_outputs_result(
+                MagicMock(ok=outputs is not None, outputs=[{"id": "tv", "name": "Speaker A"}])),
+            *([patch("webui.browser.home.build_output_list", return_value=list(outputs))]
+              if outputs is not None else []),
             patch("webui.browser.home.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
             fake_track(disabled_snapshot()),

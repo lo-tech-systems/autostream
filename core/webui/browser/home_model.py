@@ -25,7 +25,9 @@ from webui.system import updates
 # Output-list builder (shared between Home page and federation)
 # ---------------------------------------------------------------------------
 
-def build_output_list(parsed, units, *, include_offline: bool = False) -> list[dict]:
+def build_output_list(
+    parsed, units, *, include_offline: bool = False, session_active: bool = True,
+) -> list[dict]:
     """Filter and sort the output authority's units into the standard dict
     representation.
 
@@ -37,7 +39,8 @@ def build_output_list(parsed, units, *, include_offline: bool = False) -> list[d
 
     The default speaker's card is listed while the player has no row for it
     only when *include_offline* is set (the Home page); the dial's list
-    leaves it out.
+    leaves it out. That card carries "disabled" (its toggle cannot be used)
+    outside a session, which is when *session_active* is false.
 
     "volume" is the INTENDED level (the unit's own volume in the snapshot):
     while the output is muted this is the level it will return to on
@@ -79,6 +82,8 @@ def build_output_list(parsed, units, *, include_offline: bool = False) -> list[d
             "connecting": bool(unit.connecting),
             "offline": bool(unit.offline),
         })
+        if unit.offline and not session_active:
+            result[-1]["disabled"] = True
 
     if default_output_name:
         result.sort(key=lambda o: (0 if o["is_default"] else 1, o["name"].casefold()))
@@ -108,7 +113,9 @@ def build_home_state(snap, parsed) -> dict:
     outputs: list[dict] = []
 
     if snap.outputs.connected:
-        outputs = build_output_list(parsed, snap.outputs.units, include_offline=True)
+        outputs = build_output_list(
+            parsed, snap.outputs.units, include_offline=True, session_active=snap.session.active,
+        )
 
     try:
         from autostream_state.live import annotate_outputs
@@ -190,7 +197,9 @@ def home_outputs_reply(snap, parsed) -> dict:
     all-speakers mute, and, only when a start has failed, that failure."""
     outputs: list[dict] = []
     if snap.outputs.connected:
-        outputs = build_output_list(parsed, snap.outputs.units, include_offline=True)
+        outputs = build_output_list(
+            parsed, snap.outputs.units, include_offline=True, session_active=snap.session.active,
+        )
     try:
         from autostream_state.live import annotate_outputs
         outputs = annotate_outputs(outputs)

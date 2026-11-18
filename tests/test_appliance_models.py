@@ -193,6 +193,18 @@ class TestBuildOutputList:
         assert (zulu["needs_auth_key"], zulu["requires_auth"], zulu["pin_pending"]) == (False, False, False)
         assert listed[1]["offline"] is False
 
+    def test_the_offline_default_is_disabled_only_outside_a_session(self):
+        from autostream_state.outputs import get_authority
+        get_authority().set_default_output("Zulu", 30)
+        units = _units([_out("1", "Alpha")])
+        outside = webui_home_model.build_output_list(
+            _parsed(output_name="Zulu"), units, include_offline=True, session_active=False)
+        inside = webui_home_model.build_output_list(
+            _parsed(output_name="Zulu"), units, include_offline=True, session_active=True)
+        assert outside[0]["name"] == "Zulu" and outside[0]["disabled"] is True
+        assert "disabled" not in inside[0]
+        assert "disabled" not in outside[1]
+
     def test_only_the_default_is_listed_offline(self):
         from autostream_state.outputs import get_authority
         get_authority().set_default_output("Zulu", 30)

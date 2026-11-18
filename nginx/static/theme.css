@@ -380,6 +380,15 @@ button[type=submit] {
   border: 2px solid var(--color-status-success);
 }
 
+.output-card-connecting .switch,
+.output-card-offline .switch {
+  opacity: .45;
+}
+
+.output-card-offline .output-card-name {
+  opacity: .7;
+}
+
 .output-card-in-use {
   border-color: var(--color-border-card);
   background: var(--color-surface-raised);

@@ -6,9 +6,12 @@ function buildOutputCardElement(o) {
   var isDefault = !!o.is_default;
   var remoteInUse = !!o.remote_in_use;
   var remoteOwner = String(o.remote_owner || '');
+  var connecting = !remoteInUse && !!o.connecting;
+  var offline = !remoteInUse && !connecting && !!o.offline;
 
   var card = document.createElement('div');
-  card.className = 'output-card ' + (remoteInUse ? 'output-card-in-use' : (selected ? 'output-card-on' : 'output-card-off'));
+  card.className = 'output-card ' + (remoteInUse ? 'output-card-in-use' : (selected ? 'output-card-on' : 'output-card-off'))
+    + (connecting ? ' output-card-connecting' : '') + (offline ? ' output-card-offline' : '');
   card.id = 'output_card_' + id;
   card.setAttribute('data-output-id', id);
   card.setAttribute('data-is-default', isDefault ? '1' : '0');
@@ -23,6 +26,12 @@ function buildOutputCardElement(o) {
   var nameDiv = document.createElement('div');
   nameDiv.className = 'output-card-name';
   nameDiv.textContent = name;
+  var stateLabel = document.createElement('span');
+  stateLabel.className = 'output-card-state-label';
+  stateLabel.id = 'output_label_' + id;
+  stateLabel.textContent = connecting ? ' (Connecting)' : (offline ? ' (offline)' : '');
+  if (!connecting && !offline) stateLabel.hidden = true;
+  nameDiv.appendChild(stateLabel);
   meta.appendChild(nameDiv);
   if (isDefault) {
     var badge = document.createElement('span');
@@ -44,7 +53,7 @@ function buildOutputCardElement(o) {
   cb.type = 'checkbox';
   cb.id = 'output_enabled_' + id;
   cb.checked = selected;
-  if (remoteInUse) cb.disabled = true;
+  if (remoteInUse || !!o.disabled) cb.disabled = true;
   cb.addEventListener('change', function() { onToggleOutput(id); });
   toggle.appendChild(cb);
   var sw = document.createElement('span');
@@ -73,6 +82,7 @@ function buildOutputCardElement(o) {
   sl.type = 'range';
   sl.id = 'vol_slider_' + id;
   sl.min = 0; sl.max = 100; sl.step = 1; sl.value = volume;
+  if (offline) sl.disabled = true;
   sl.addEventListener('input', function() { updateVolumeLabel(id, this.value); });
   sl.addEventListener('change', function() { onVolumeChange(id, this.value); });
   wrap.appendChild(sl);

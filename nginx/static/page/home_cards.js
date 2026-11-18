@@ -30,6 +30,15 @@ window.__CONTROL_OTHER_APPLIANCES = pageData.control_other_appliances;
   function isActiveControl(el) {
     return el && document.activeElement === el;
   }
+  // The name on a card, without the state label that follows it.
+  function outputCardNameText(el){
+    var t = '';
+    if (!el) return t;
+    for (var n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) t += n.data;
+    }
+    return t.trim();
+  }
   function reorderOutputCards(){
     const list = document.getElementById('outputs-list');
     if (!list) return;
@@ -40,18 +49,42 @@ window.__CONTROL_OTHER_APPLIANCES = pageData.control_other_appliances;
       if (db !== da) return db - da;
       const la = a.querySelector('.output-card-name');
       const lb = b.querySelector('.output-card-name');
-      const na = ((la && la.textContent) || '').trim().toLowerCase();
-      const nb = ((lb && lb.textContent) || '').trim().toLowerCase();
+      const na = outputCardNameText(la).toLowerCase();
+      const nb = outputCardNameText(lb).toLowerCase();
       return na.localeCompare(nb);
     });
     cards.forEach(card => list.appendChild(card));
   }
-  function updateOutputStateVisual(id, selected){
+  // Shows a card's state. `row` is the row the list sent: with it the card also
+  // takes its Connecting or offline look and its toggle's disabled state;
+  // without it (a tap) those stay as they are, except that a speaker switched
+  // off is no longer connecting.
+  function updateOutputStateVisual(id, selected, row){
     const cb = document.getElementById('output_enabled_' + id);
-    if (cb && cb.disabled) return;
     const chip = document.getElementById('output_state_' + id);
     const card = document.getElementById('output_card_' + id);
     const wrap = document.getElementById('output_slider_wrap_' + id);
+    if (card && card.getAttribute('data-remote-in-use') === '1') return;
+    if (!card && cb && cb.disabled) return;
+    const label = document.getElementById('output_label_' + id);
+    const sl = document.getElementById('vol_slider_' + id);
+    let connecting = card ? card.classList.contains('output-card-connecting') : false;
+    let offline = card ? card.classList.contains('output-card-offline') : false;
+    if (row) {
+      connecting = !!row.connecting;
+      offline = !!row.offline;
+      if (cb) cb.disabled = !!row.disabled;
+    }
+    if (!selected) connecting = false;
+    if (card) {
+      card.classList.toggle('output-card-connecting', connecting);
+      card.classList.toggle('output-card-offline', offline);
+    }
+    if (label) {
+      label.textContent = connecting ? ' (Connecting)' : (offline ? ' (offline)' : '');
+      label.hidden = !(connecting || offline);
+    }
+    if (sl) sl.disabled = offline;
     if (chip) {
       chip.textContent = selected ? 'On' : 'Off';
       chip.classList.toggle('on', !!selected);
@@ -409,7 +442,7 @@ window.__CONTROL_OTHER_APPLIANCES = pageData.control_other_appliances;
       try {
         const card = c ? c.closest('.output-card') : null;
         const label = card ? card.querySelector('.output-card-name') : null;
-        nm = label ? (label.textContent || '').trim() : '';
+        nm = outputCardNameText(label);
       } catch (e) {}
 
       if (selected && j && j.error === 'encoder_capacity') {

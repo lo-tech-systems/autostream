@@ -89,6 +89,9 @@ def output_card_html(
     is_default: bool,
     remote_in_use: bool = False,
     remote_owner: str = "",
+    connecting: bool = False,
+    offline: bool = False,
+    disabled: bool = False,
 ) -> str:
     """Render one output card, matching the local Home page's markup exactly.
 
@@ -112,6 +115,18 @@ def output_card_html(
         state_cls = "on" if selected else "off"
         card_state_cls = "output-card-on" if selected else "output-card-off"
         cb_disabled = ""
+    state_label = ""
+    if not remote_in_use:
+        if connecting:
+            state_label = " (Connecting)"
+            card_state_cls += " output-card-connecting"
+        elif offline:
+            state_label = " (offline)"
+            card_state_cls += " output-card-offline"
+        if disabled:
+            cb_disabled = " disabled"
+    label_hidden = "" if state_label else " hidden"
+    slider_disabled = " disabled" if offline and not remote_in_use else ""
     is_default_attr = "1" if is_default else "0"
     data_remote_in_use = "1" if remote_in_use else "0"
     safe_remote_owner = html.escape(remote_owner)
@@ -119,7 +134,7 @@ def output_card_html(
           <div class="output-card {card_state_cls}" id="output_card_{out_id}" data-output-id="{out_id}" data-is-default="{is_default_attr}" data-remote-in-use="{data_remote_in_use}" data-remote-owner="{safe_remote_owner}">
             <div class="output-card-head">
               <div class="output-card-meta">
-                <div class="output-card-name">{safe_name}</div>
+                <div class="output-card-name">{safe_name}<span class="output-card-state-label" id="output_label_{out_id}"{label_hidden}>{state_label}</span></div>
                 {default_badge}
                 <span class="output-state-chip {state_cls}" id="output_state_{out_id}">{state_text}</span>
               </div>
@@ -130,7 +145,7 @@ def output_card_html(
             </div>
             <div class="output-slider-wrap" id="output_slider_wrap_{out_id}" onclick="event.stopPropagation();"{' hidden' if not selected else ''}>
               <div class="slider-header"><span>Volume:</span><span id="vol_label_{out_id}" data-volume-label-for="{out_id}"></span></div>
-              <input type="range" id="vol_slider_{out_id}" min="0" max="100" step="1" value="{volume}" oninput="updateVolumeLabel('{out_id}', this.value)" onchange="onVolumeChange('{out_id}', this.value)">
+              <input type="range" id="vol_slider_{out_id}" min="0" max="100" step="1" value="{volume}"{slider_disabled} oninput="updateVolumeLabel('{out_id}', this.value)" onchange="onVolumeChange('{out_id}', this.value)">
             </div>
           </div>
         """

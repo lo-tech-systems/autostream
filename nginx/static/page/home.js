@@ -68,7 +68,7 @@
                 const cb = document.getElementById("output_enabled_" + id);
                 const sl = document.getElementById("vol_slider_" + id);
                 if (cb) cb.checked = !!o.selected;
-                updateOutputStateVisual(id, !!o.selected);
+                updateOutputStateVisual(id, !!o.selected, o);
                 if (sl && !isActiveControl(sl)) {
                   const v = normalizeVolume(o.volume);
                   const vstr = String(v);
@@ -96,7 +96,7 @@
             const cb = document.getElementById("output_enabled_" + id);
             const sl = document.getElementById("vol_slider_" + id);
             if (cb) cb.checked = !!o.selected;
-            updateOutputStateVisual(id, !!o.selected);
+            updateOutputStateVisual(id, !!o.selected, o);
             if (sl && !isActiveControl(sl)) {
               const v = normalizeVolume(o.volume);
               const vstr = String(v);
