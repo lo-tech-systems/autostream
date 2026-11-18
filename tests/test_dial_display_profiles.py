@@ -214,7 +214,7 @@ class TestNoHardwareImport:
 # every configuration resolves to.
 # ---------------------------------------------------------------------------
 
-from dial_touch_layout import metrics_for  # noqa: E402
+from dial_layout_metrics import metrics_for  # noqa: E402
 
 
 class _FakeDisplayCfg:

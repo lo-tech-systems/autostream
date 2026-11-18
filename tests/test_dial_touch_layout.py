@@ -20,7 +20,7 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
-from dial_touch_layout import (  # noqa: E402
+from dial_layout_metrics import (  # noqa: E402
     BAND_DIVISOR_RICH,
     BAND_MAX_MM,
     COMPACT_MAX_SHORT_SIDE_MM,
@@ -30,6 +30,17 @@ from dial_touch_layout import (  # noqa: E402
     CONTENT_RICH,
     FONT_BODY_MAX_PX,
     FONT_READOUT_MAX_PX,
+    HALO_MAX_PX,
+    LARGE_MIN_SHORT_SIDE_PX,
+    RICH_MIN_SHORT_SIDE_PX,
+    SUPERSAMPLE_DEFAULT,
+    SUPERSAMPLE_LARGE,
+    TOUCH_MIN_MM,
+    TOUCH_SHORT_BELOW_BAND_MM,
+    metrics_for,
+    scale_px,
+)
+from dial_touch_layout import (  # noqa: E402
     BELL_ZONES,
     GEOMETRY_ARTWORK_BELL,
     GEOMETRY_EQ,
@@ -45,13 +56,6 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
-    HALO_MAX_PX,
-    LARGE_MIN_SHORT_SIDE_PX,
-    RICH_MIN_SHORT_SIDE_PX,
-    SUPERSAMPLE_DEFAULT,
-    SUPERSAMPLE_LARGE,
-    TOUCH_MIN_MM,
-    TOUCH_SHORT_BELOW_BAND_MM,
     CARD_BUTTON_ZONES,
     COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
@@ -72,11 +76,9 @@ from dial_touch_layout import (  # noqa: E402
     info_value_layout_for,
     layout_for,
     list_layout_for,
-    metrics_for,
     output_layout_for,
     repeat_layout_for,
     warning_layout_for,
-    scale_px,
     zone_rects_for,
     _GEOMETRY_BUILDERS,
 )
@@ -1247,7 +1249,7 @@ class TestDensityHasNoEffectOnGeometry:
 
 class TestScalePxConsolidation:
     """The three duplicated (reference_px, width, height, floor) scale
-    formulas are now all dial_touch_layout.scale_px — check they still
+    formulas are now all dial_layout_metrics.scale_px — check they still
     agree everywhere, not just at the reference size."""
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
@@ -2402,6 +2404,15 @@ class TestBellRects:
 class TestPurity:
     def test_module_imports_are_unchanged(self):
         import dial_touch_layout as m
+        import types
+        module_names = {
+            name for name, val in vars(m).items()
+            if isinstance(val, types.ModuleType)
+        }
+        assert module_names == set()
+
+    def test_metrics_module_imports_are_unchanged(self):
+        import dial_layout_metrics as m
         import types
         module_names = {
             name for name, val in vars(m).items()

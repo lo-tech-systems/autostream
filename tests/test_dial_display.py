@@ -41,7 +41,8 @@ from dial_display_palette import LIST_BG_RGB
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile, mm_per_px_for_size
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
-from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for, repeat_layout_for
+from dial_layout_metrics import metrics_for
+from dial_touch_layout import TouchZone, layout_for, list_layout_for, repeat_layout_for
 from autostream_peer_client import PeerReply
 import dial_artwork
 import dial_core
@@ -7703,7 +7704,7 @@ def _make_rich_display(targets=None, **overrides):
 # touch_surface()'s "held"/"repeat"/"repeat_replay" reporting, wrap paging,
 # _display_list_locked's base passthrough, picker_pick and the time-tap-back
 # close. Uses the shipped 1.3in 240x240 profile, whose default diagonal
-# already resolves compact (see dial_touch_layout.metrics_for) — a custom
+# already resolves compact (see dial_layout_metrics.metrics_for) — a custom
 # FakeBackend matches its physical pixel size, following the same pattern
 # TestListPagingMatchesPaintedRows uses for the rich tier.
 # ---------------------------------------------------------------------------

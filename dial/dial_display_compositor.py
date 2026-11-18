@@ -85,8 +85,8 @@ from dial_display_palette import (
 )
 from dial_eq_model import EQ_BASS_TREBLE_LIMIT_DB
 from dial_values import clamp, clamp_percent
+from dial_layout_metrics import CONTENT_COMPACT, LayoutMetrics, metrics_for
 from dial_touch_layout import (
-    CONTENT_COMPACT,
     GEOMETRY_EQ,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
@@ -95,7 +95,6 @@ from dial_touch_layout import (
     GEOMETRY_REPEAT_REPLAY,
     CompactLayout,
     CompactPickerLayout,
-    LayoutMetrics,
     Rect,
     TouchZone,
     compact_layout_for,
@@ -107,7 +106,6 @@ from dial_touch_layout import (
     info_value_layout_for,
     layout_for,
     list_layout_for,
-    metrics_for,
     repeat_layout_for,
     warning_layout_for,
     zone_rects_for,

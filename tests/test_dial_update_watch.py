@@ -144,7 +144,8 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
 
     import dial_warning_text as dwt
     import dial_display_compositor as dc
-    from dial_touch_layout import metrics_for, warning_layout_for
+    from dial_layout_metrics import metrics_for
+    from dial_touch_layout import warning_layout_for
     from dial_warning_text import CLOSE_TEXT, NEXT_TEXT, RESTART_TEXT
 
     metrics = metrics_for(width, height, mm_per_px)

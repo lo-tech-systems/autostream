@@ -1800,8 +1800,8 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
 
 # ---------------------------------------------------------------------------
 # Compact-tier scenarios: the 1.3in 240x240 profile's default diagonal
-# already resolves the compact content tier (see dial_touch_layout.
-# metrics_for) — each scenario below carries its own (cfg, backend) pair for
+# already resolves the compact content tier (see
+# dial_layout_metrics.metrics_for) — each scenario below carries its own (cfg, backend) pair for
 # _run_scenario, since every scenario above shares the module's default
 # 128x160 base-tier fixture.
 # ---------------------------------------------------------------------------

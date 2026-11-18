@@ -42,7 +42,7 @@ from dial_display_profiles import (
     list_profiles,
 )
 from dial_touch_controllers import list_controllers
-from dial_touch_layout import metrics_for
+from dial_layout_metrics import metrics_for
 from dial_update_watch import UPDATE_RESULT_PATH, UpdateView, read_update_result
 from dial_values import NotAnObject, NotJson, is_int, parse_json_object, read_env_file
 

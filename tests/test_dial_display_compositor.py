@@ -129,7 +129,7 @@ from dial_display_palette import (  # noqa: E402
     LIST_BG_RGB,
     OVERLAY_DIM_FACTOR,
 )
-from dial_touch_layout import (  # noqa: E402
+from dial_layout_metrics import (  # noqa: E402
     CONTENT_BASE,
     CONTENT_COMPACT,
     CONTENT_LARGE,
@@ -137,6 +137,10 @@ from dial_touch_layout import (  # noqa: E402
     FONT_BODY_PX_AT_REFERENCE,
     FONT_READOUT_MAX_PX,
     FONT_READOUT_PX_AT_REFERENCE,
+    metrics_for,
+    scale_px,
+)
+from dial_touch_layout import (  # noqa: E402
     GEOMETRY_EQ,
     GEOMETRY_INFO,
     GEOMETRY_LIST,
@@ -157,9 +161,7 @@ from dial_touch_layout import (  # noqa: E402
     info_value_layout_for,
     layout_for,
     list_layout_for,
-    metrics_for,
     repeat_layout_for,
-    scale_px,
     warning_layout_for,
     zone_rects_for,
 )
@@ -3664,7 +3666,7 @@ class TestLargeFontCaps:
         width, height, mm = 960, 960, 0.06
         metrics = metrics_for(width, height, mm)
         assert metrics.content_tier == CONTENT_LARGE
-        with patch("dial_touch_layout.FONT_BODY_MAX_PX", 999):
+        with patch("dial_layout_metrics.FONT_BODY_MAX_PX", 999):
             uncapped_metrics = metrics_for(width, height, mm)
         assert uncapped_metrics.font_body == 72  # round(960*36/480), uncapped
         assert metrics.font_body == 36

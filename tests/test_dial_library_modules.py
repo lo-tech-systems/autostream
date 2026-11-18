@@ -25,6 +25,7 @@ ALLOWED = {
     "dial_touch_surfaces": set(),
     "dial_display_backend": {"dial_display_profiles"},
     "dial_display_palette": set(),
+    "dial_layout_metrics": set(),
     "dial_appliance_warnings": {"dial_mdns", "dial_values"},
 }
 

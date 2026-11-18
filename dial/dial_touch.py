@@ -126,6 +126,7 @@ from dial_touch_surfaces import (
     SURFACE_INFO, SURFACE_INFO_VALUE, SURFACE_OUTPUT, SURFACE_OUTPUTS, SURFACE_PICKER, SURFACE_REPEAT,
     SURFACE_REPEAT_REPLAY, SURFACE_RESTARTING, SURFACE_SELECTOR, SURFACE_UPDATE, SurfaceState,
 )
+from dial_layout_metrics import LayoutMetrics, metrics_for
 from dial_touch_layout import (
     GEOMETRY_EQ,
     GEOMETRY_IDLE,
@@ -142,10 +143,8 @@ from dial_touch_layout import (
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
     BELL_ZONES,
-    LayoutMetrics,
     TouchZone,
     hit_test,
-    metrics_for,
 )
 
 # Overlay auto-dismisses this long after the last contact sample / release /

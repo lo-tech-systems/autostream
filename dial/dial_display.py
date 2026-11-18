@@ -98,15 +98,17 @@ from dial_touch_surfaces import (
     SURFACE_INFO, SURFACE_INFO_VALUE, SURFACE_OUTPUT, SURFACE_OUTPUTS, SURFACE_PICKER, SURFACE_REPEAT,
     SURFACE_REPEAT_REPLAY, SURFACE_RESTARTING, SURFACE_SELECTOR, SurfaceState,
 )
-from dial_touch_layout import (
-    CARD_BUTTON_ZONES,
+from dial_layout_metrics import (
     CONTENT_COMPACT,
     CONTENT_LARGE,
     CONTENT_RICH,
     LayoutMetrics,
+    metrics_for,
+)
+from dial_touch_layout import (
+    CARD_BUTTON_ZONES,
     TouchZone,
     list_layout_for,
-    metrics_for,
 )
 from dial_volume import (
     shown_muted,

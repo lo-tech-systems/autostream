@@ -28,7 +28,8 @@ import dial_display_compositor as comp  # noqa: E402
 from covers import render_cover  # noqa: E402
 from dial_display_image import load_logo  # noqa: E402
 from dial_display_profiles import get_profile, layout_context_for  # noqa: E402
-from dial_touch_layout import CONTENT_COMPACT, list_layout_for, metrics_for  # noqa: E402
+from dial_layout_metrics import CONTENT_COMPACT, metrics_for  # noqa: E402
+from dial_touch_layout import list_layout_for  # noqa: E402
 from dial_warning_text import (  # noqa: E402
     CLOSE_TEXT, NEXT_TEXT, NOWIFI_MESSAGE_TEXT, RESTART_TEXT, SDHEALTH_BODY_TEXT, SDHEALTH_TITLE_TEXT,
     UPDATE_FAILED_TEXT, UPDATE_PHASE_TEXT, UPDATED_TEXT, UPDATING_TEXT)

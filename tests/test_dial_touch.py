@@ -55,6 +55,7 @@ from dial_touch_surfaces import (  # noqa: E402
     SURFACE_UPDATE,
 )
 from dial_touch_filter import FIRST_REPEAT_S, REPEAT_INTERVAL_S, TouchEvent, TouchEventType, TouchFilter  # noqa: E402
+from dial_layout_metrics import metrics_for  # noqa: E402
 from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO,
     GEOMETRY_INFO_VALUE,
@@ -72,7 +73,6 @@ from dial_touch_layout import (  # noqa: E402
     idle_layout_for,
     layout_for,
     list_layout_for,
-    metrics_for,
     output_layout_for,
     repeat_layout_for,
     band_bell_rect,

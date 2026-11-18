@@ -1797,7 +1797,7 @@ class TestBuildTouchSourceLayoutWiring:
 
     def test_none_layout_size_matches_todays_construction(self):
         from dial_display_profiles import effective_diagonal_inches, get_profile, mm_per_px_for_size
-        from dial_touch_layout import metrics_for
+        from dial_layout_metrics import metrics_for
 
         captured = self._built_with_layout("ili9341_320x240", 2.8, None)
         profile = get_profile("ili9341_320x240")

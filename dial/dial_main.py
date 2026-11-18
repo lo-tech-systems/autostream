@@ -406,7 +406,7 @@ def _build_touch_source(cfg, display, core, confirm_presence=None, step_percent=
     from dial_display_compositor import OverlayState
     from dial_display_profiles import get_profile, layout_context_for
     from dial_touch import TouchEventSource, TouchStateMachine
-    from dial_touch_layout import metrics_for
+    from dial_layout_metrics import metrics_for
     from dial_touch_controllers import get_controller
     from dial_touch_drivers import open_driver
     from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
