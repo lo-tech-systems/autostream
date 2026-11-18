@@ -32,22 +32,7 @@ export function makeIcon(pathData) {
     return svg;
 }
 
-const BELL_BODY = "M12 2.2c-.9 0-1.6.7-1.6 1.6v.7C7.3 5.2 5.2 8 5.2 11.2v4.3L3.4 17.6c-.5.6-.1 1.4.7 1.4h15.8c.8 0 1.2-.8.7-1.4l-1.8-2.1v-4.3c0-3.2-2.1-6-5.2-6.7v-.7c0-.9-.7-1.6-1.6-1.6z";
-const BELL_CLAPPER = "M9.6 20.2h4.8a2.4 2.4 0 0 1-4.8 0z";
-
-// A filled bell on a 24 unit square, in the current text colour.
-export function makeBell() {
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("aria-hidden", "true");
-    svg.setAttribute("fill", "currentColor");
-    for (const pathData of [BELL_BODY, BELL_CLAPPER]) {
-        const path = document.createElementNS(SVG_NS, "path");
-        path.setAttribute("d", pathData);
-        svg.appendChild(path);
-    }
-    return svg;
-}
+export const BELL_ICON = "M12 2.2c-.9 0-1.6.7-1.6 1.6v.7C7.3 5.2 5.2 8 5.2 11.2v4.3L3.4 17.6c-.5.6-.1 1.4.7 1.4h15.8c.8 0 1.2-.8.7-1.4l-1.8-2.1v-4.3c0-3.2-2.1-6-5.2-6.7v-.7c0-.9-.7-1.6-1.6-1.6zM9.6 20.2h4.8a2.4 2.4 0 0 1-4.8 0z";
 
 export function setLevel(slider, value, enabled) {
     slider.disabled = !enabled;

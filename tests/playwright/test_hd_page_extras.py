@@ -1579,7 +1579,7 @@ class TestApplianceWarnings:
         open_page(page, hd)
         badge = rows(page).first.locator(".warn-badge")
         expect(badge.locator("svg")).to_have_count(1)
-        expect(badge.locator("svg path")).to_have_count(2)
+        expect(badge.locator("svg path")).to_have_count(1)
         expect(badge.locator(".warn-count")).to_have_text("1")
         bell, count = badge.locator("svg").bounding_box(), badge.locator(".warn-count").bounding_box()
         assert count["x"] >= bell["x"] and count["x"] + count["width"] <= bell["x"] + bell["width"]
