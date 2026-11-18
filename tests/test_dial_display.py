@@ -145,7 +145,7 @@ def _refresh_selector(display, roster):
     """Give the core *roster* and let the view rebuild the selector's rows
     from the snapshot that carries it."""
     set_roster(display, roster)
-    display._refresh_selector_rows(display.core.snapshot())
+    display._refresh_list_rows(display.core.snapshot())
 
 
 def _refresh_picker(display, roster, now):
@@ -153,7 +153,7 @@ def _refresh_picker(display, roster, now):
     seeded for it, then let the view rebuild the picker's rows from the
     snapshot."""
     set_roster(display, roster)
-    display._refresh_picker_rows(display.core.snapshot())
+    display._refresh_list_rows(display.core.snapshot())
 
 
 # ---------------------------------------------------------------------------
@@ -4431,8 +4431,7 @@ class TestSelectorRows:
 
 class TestSelectorAndPickerRowsSignalRepaint:
     """A row rebuild that changes what would be painted must repaint even
-    with nothing else moving on screen — see _refresh_selector_rows and
-    _refresh_picker_rows."""
+    with nothing else moving on screen — see _refresh_list_rows."""
 
     def test_selector_signals_when_rows_change_and_screen_requested(self):
         display, fb, gt = make_display(targets=[])
@@ -4562,7 +4561,7 @@ class TestSelectorOpenCloseAndRepaint:
             display._repaint_current_locked()
         width, height = display._active_panel_dims()
         with display._lock:
-            list_state = display._build_list_state_locked(width, height)
+            list_state = display._build_row_list_state_locked("selector", width, height)
         assert list_state.rows == (("No devices", False),)
         assert list_state.has_prev is False
         assert list_state.has_next is False
@@ -5089,7 +5088,7 @@ class TestListStateForHelper:
         assert state.has_next is False
 
     def test_empty_state_gives_placeholder(self):
-        selector = dd.SelectorState(rows=(), page=0, opened_at=0.0)
+        selector = dd.ListScreenState(rows=(), page=0, opened_at=0.0)
         state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
         assert state.rows == (("No devices", False),)
         assert state.has_prev is False
@@ -5097,20 +5096,20 @@ class TestListStateForHelper:
 
     def test_playing_selector_row_maps_to_play_glyph_triple(self):
         rows = (dd.SelectorRow(appliance_id="a", label="A", current=False, playing=True),)
-        selector = dd.SelectorState(rows=rows, page=0, opened_at=0.0)
+        selector = dd.ListScreenState(rows=rows, page=0, opened_at=0.0)
         state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
         assert state.rows == (("A", False, dd.PLAY_GLYPH),)
 
     def test_non_playing_selector_row_maps_to_pair(self):
         rows = (dd.SelectorRow(appliance_id="a", label="A", current=True, playing=False),)
-        selector = dd.SelectorState(rows=rows, page=0, opened_at=0.0)
+        selector = dd.ListScreenState(rows=rows, page=0, opened_at=0.0)
         state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
         assert state.rows == (("A", True),)
 
     def test_picker_row_maps_to_label_and_formatted_duration(self):
         rows = (dd.PickerRow(appliance_id="a", service_name="A", ip="1.2.3.4", port=80,
                               label="A", seconds=90.0),)
-        picker = dd.PickerState(rows=rows, page=0, opened_at=0.0)
+        picker = dd.ListScreenState(rows=rows, page=0, opened_at=0.0)
         state = dd._list_state_for(picker, 3, "Nothing to replay", dd._picker_list_row)
         assert state.rows == (("A", False, "1:30"),)
 
@@ -5120,23 +5119,23 @@ class TestListStateForHelper:
             for i in range(4)
         )
         first_page = dd._list_state_for(
-            dd.SelectorState(rows=rows, page=0, opened_at=0.0), 3, "No devices", dd._selector_list_row,
+            dd.ListScreenState(rows=rows, page=0, opened_at=0.0), 3, "No devices", dd._selector_list_row,
         )
         assert first_page.has_next is True
         second_page = dd._list_state_for(
-            dd.SelectorState(rows=rows, page=1, opened_at=0.0), 3, "No devices", dd._selector_list_row,
+            dd.ListScreenState(rows=rows, page=1, opened_at=0.0), 3, "No devices", dd._selector_list_row,
         )
         assert second_page.has_next is False
 
     def test_pressed_defaults_to_none(self):
-        selector = dd.SelectorState(
+        selector = dd.ListScreenState(
             rows=(dd.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
         )
         state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
         assert state.pressed is None
 
     def test_pressed_passes_through_unchanged(self):
-        selector = dd.SelectorState(
+        selector = dd.ListScreenState(
             rows=(dd.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
         )
         state = dd._list_state_for(
@@ -5149,7 +5148,7 @@ class TestCurrentPageRows:
     def test_selector_state_page_one(self):
         display, fb, gt = make_display(targets=[])
         rows = tuple(dd.SelectorRow(appliance_id=str(i), label=str(i), current=False) for i in range(5))
-        selector = dd.SelectorState(rows=rows, page=1, opened_at=0.0)
+        selector = dd.ListScreenState(rows=rows, page=1, opened_at=0.0)
         page_rows = display._current_page_rows(selector)
         assert [r.appliance_id for r in page_rows] == ["3", "4"]
 
@@ -5160,7 +5159,7 @@ class TestCurrentPageRows:
                          label=str(i), seconds=float(i))
             for i in range(5)
         )
-        picker = dd.PickerState(rows=rows, page=1, opened_at=0.0)
+        picker = dd.ListScreenState(rows=rows, page=1, opened_at=0.0)
         page_rows = display._current_page_rows(picker)
         assert [r.appliance_id for r in page_rows] == ["3", "4"]
 
@@ -6700,7 +6699,7 @@ class TestReplayPickerRows:
             display._repaint_current_locked()
         width, height = display._active_panel_dims()
         with display._lock:
-            list_state = display._build_picker_list_state_locked(width, height)
+            list_state = display._build_row_list_state_locked("picker", width, height)
         assert list_state.rows == (("Nothing to replay", False),)
 
 

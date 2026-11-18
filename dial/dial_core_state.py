@@ -110,7 +110,7 @@ def title_fallback(now_playing: "NowPlaying | None") -> str:
 
 @dataclass(frozen=True)
 class SelectorRow:
-    """One row of the appliance-selector screen — see SelectorState."""
+    """One row of the appliance-selector screen — see ListScreenState."""
     appliance_id: str
     label: str        # appliance_display_name(service_name)
     current: bool     # this row is the focus (manual, else the reporting-from target)
@@ -125,7 +125,7 @@ class SelectorRow:
 
 @dataclass(frozen=True)
 class PickerRow:
-    """One row of the replay picker — see PickerState."""
+    """One row of the replay picker — see ListScreenState."""
     appliance_id: str
     service_name: str
     ip: str

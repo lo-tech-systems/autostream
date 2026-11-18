@@ -140,7 +140,7 @@ class OverlayState:
 class ListState:
     """Immutable snapshot of what the appliance-selector screen should show
     — the compose_list() counterpart to OverlayState. Built by the display
-    manager from its SelectorState (dial_display.py) on the repaint thread;
+    manager from its ListScreenState (dial_display.py) on the repaint thread;
     this module has no idea what an "appliance" is, only rows to draw.
 
     rows: (label, checked) pairs for the CURRENT page only — at most

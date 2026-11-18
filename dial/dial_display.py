@@ -406,25 +406,27 @@ IDLE_ARTIST_TEXT = "Idle"
 
 
 @dataclass(frozen=True)
-class SelectorState:
-    """Immutable snapshot of the appliance-selector screen's rows and
-    paging, as last built when a poll tick ended (_refresh_selector_rows).
+class ListScreenState:
+    """Immutable snapshot of a row-list screen's rows and paging: the
+    appliance selector and the replay picker, as last built when a poll tick
+    ended (_refresh_list_rows).
 
-    rows: every AUTHORIZED or confirmed-UNAUTHORIZED identified appliance
-        on the merged roster, idle or playing — see _refresh_selector_rows
-        for the exact filter. ALL
+    rows: every row on the screen's list (SelectorRow or PickerRow), ALL
         rows across every page, not just the current one; the compositor's
         ListState (built separately, at repaint time) slices out the
-        current page.
+        current page. The selector's are every AUTHORIZED or
+        confirmed-UNAUTHORIZED identified appliance on the merged roster,
+        idle or playing; the picker's are every held, authorized,
+        repeat-capable appliance.
     page: the current page index. Preserved across each rebuild (clamped to
-        the new row count) so an open selector's page does not jump back to
-        0 every ~6s poll tick; reset to 0 only when the selector is freshly
+        the new row count) so an open list's page does not jump back to 0
+        every ~6s poll tick; reset to 0 only when the screen is freshly
         opened (see open_selector()/_apply_screen_requests_locked()).
     opened_at: monotonic time of the open, or of the last touch activity
         while open (see _apply_touch_activity_locked) — what
         SELECTOR_TIMEOUT_SECONDS counts down from.
     """
-    rows: tuple[SelectorRow, ...]
+    rows: tuple
     page: int
     opened_at: float
 
@@ -445,19 +447,6 @@ class ApplianceScreenState:
 
 
 @dataclass(frozen=True)
-class PickerState:
-    """Immutable snapshot of the replay picker's rows and paging — the
-    picker's counterpart to SelectorState. rows: every held, authorized, repeat-
-    capable appliance, ALL pages (see _refresh_picker_rows); page: the
-    current page, preserved across each rebuild the same way SelectorState
-    preserves it; opened_at: what SELECTOR_TIMEOUT_SECONDS counts down
-    from."""
-    rows: tuple[PickerRow, ...]
-    page: int
-    opened_at: float
-
-
-@dataclass(frozen=True)
 class InfoRow:
     """One row of the idle screen's read-only info page — see InfoState."""
     label: str
@@ -468,7 +457,7 @@ class InfoRow:
 class InfoState:
     """Immutable snapshot of the info page's rows and paging. rows: all seven
     fields, ALL pages (the same "every row, sliced at paint time" shape
-    PickerState/SelectorState use); page: the current page; opened_at: what
+    ListScreenState uses); page: the current page; opened_at: what
     SELECTOR_TIMEOUT_SECONDS counts down from; gather_seq: which gather
     (see DialDisplay._gather_info) this snapshot's rows belong to, so a
     stale result landing after the page closed/reopened is dropped rather
@@ -682,6 +671,14 @@ _REPEAT_LAYOUTS = {
 }
 
 
+# The row-list screens built from a ListScreenState: the placeholder shown
+# with no rows, and the mapping from a core row to a list row.
+_ROW_LISTS = {
+    "selector": ("No devices", _selector_list_row),
+    "picker": ("Nothing to replay", _picker_list_row),
+}
+
+
 # ---------------------------------------------------------------------------
 # Display manager
 # ---------------------------------------------------------------------------
@@ -883,10 +880,10 @@ class DialDisplay:
         # "restarting": the reboot screen.
         self._screen = "main"
         # Last-built rows, refreshed every poll tick regardless of whether
-        # the selector is actually open (_refresh_selector_rows) so opening
+        # the selector is actually open (_refresh_list_rows) so opening
         # it never waits on a poll; published under self._lock. None until
         # the first poll runs.
-        self._selector: SelectorState | None = None
+        self._selector: ListScreenState | None = None
         # The repeat screen's own state — built once when it opens (see
         # ApplianceScreenState); None while the main/selector/picker screen is
         # showing. Written by the repeat thread under self._lock, read
@@ -915,7 +912,7 @@ class DialDisplay:
         self._repeat_painted_second: int | None = None
         # The replay picker's own rows/paging — refreshed every poll tick
         # regardless of whether it is open, mirroring self._selector.
-        self._picker: PickerState | None = None
+        self._picker: ListScreenState | None = None
         # The info page's own state — written under self._lock by its
         # opener (_open_info_locked) and by _gather_info's fold-in (its own
         # short-lived daemon thread: one assignment under the lock, no I/O
@@ -982,8 +979,8 @@ class DialDisplay:
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
         # screen's own frame builder (_effective_overlay_locked,
-        # _build_repeat_view_locked, _build_list_state_locked/
-        # _build_picker_list_state_locked), which resolves it against its
+        # _build_repeat_view_locked, _build_row_list_state_locked), which
+        # resolves it against its
         # own geometry. index is only meaningful for LIST_ROW; every other
         # zone carries None. Plain attribute, same discipline as
         # dial_touch's own pressed-zone tracking.
@@ -2448,7 +2445,7 @@ class DialDisplay:
     # notify_touch_activity() — the actual screen-state
     # change happens on the repeat thread under self._lock
     # (_apply_screen_requests_locked). Rows themselves are built ONLY on the
-    # repaint thread (_refresh_selector_rows/_refresh_picker_rows) — the touch
+    # repaint thread (_refresh_list_rows) — the touch
     # thread never builds rows, it only reads the last-published state.
 
     def open_selector(self) -> None:
@@ -2494,7 +2491,7 @@ class DialDisplay:
         """Touch-thread entry: a LIST_ROW tap while the appliance selector
         is open.
 
-        Reads the last-published SelectorState (plain reference read, no
+        Reads the last-published ListScreenState (plain reference read, no
         lock — same discipline as _overlay_snapshot). When *index* still
         falls within the CURRENT page, sets manual focus to that row's
         appliance — playing or idle; picking an idle row controls it the
@@ -2585,7 +2582,7 @@ class DialDisplay:
 
     def _current_page_rows(self, state) -> tuple:
         """The current page's slice of *state*'s rows (see _rows_of()), for
-        a SelectorState, PickerState, InfoState or ApplianceScreenState. Shared by
+        a ListScreenState, InfoState or ApplianceScreenState. Shared by
         the touch-thread pick entries (lock-free) and the repaint-thread list
         builders so the two can never disagree about which rows are on
         screen; rows_per_page comes from dial_touch_layout, the same source
@@ -2980,25 +2977,20 @@ class DialDisplay:
         self._close_secondary_locked()
         return True
 
-    def _open_selector_locked(self) -> bool:
-        """The selector row's opener: open, or re-open, at page 0 with a
-        restarted inactivity clock, carrying over whatever rows were last
-        built. Deliberately does not clear another screen's own state on a
-        direct switch (e.g. from repeat) — _close_secondary_locked is the
-        one place that does. A return from the unauthorised-row hint keeps
-        the page the row was tapped on."""
-        rows = self._selector.rows if self._selector is not None else ()
-        page = self._selector.page if (self._screen == "info_value" and self._selector is not None) else 0
-        self._selector = SelectorState(rows=rows, page=page, opened_at=time.monotonic())
-        self._screen = "selector"
-        return True
-
-    def _open_picker_locked(self) -> bool:
-        """The picker row's opener — the replay picker's counterpart to
-        _open_selector_locked."""
-        rows = self._picker.rows if self._picker is not None else ()
-        self._picker = PickerState(rows=rows, page=0, opened_at=time.monotonic())
-        self._screen = "picker"
+    def _open_list_locked(self, screen: str, keep_page_on_return: bool = False) -> bool:
+        """The opener of the row-list screen *screen* ("selector" or
+        "picker"): open, or re-open, at page 0 with a restarted inactivity
+        clock, carrying over whatever rows were last built. Deliberately
+        does not clear another screen's own state on a direct switch (e.g.
+        from repeat) — _close_secondary_locked is the one place that does.
+        With *keep_page_on_return*, a return from the unauthorised-row hint
+        keeps the page the row was tapped on."""
+        attr = _policy(screen).state_attr
+        prev = getattr(self, attr)
+        rows = prev.rows if prev is not None else ()
+        page = prev.page if (keep_page_on_return and self._screen == "info_value" and prev is not None) else 0
+        setattr(self, attr, ListScreenState(rows=rows, page=page, opened_at=time.monotonic()))
+        self._screen = screen
         return True
 
     def _open_info_locked(self) -> bool:
@@ -3498,75 +3490,52 @@ class DialDisplay:
             return 0, 0.0
         return _clamp_page(prev.page, row_count, self._rows_per_page()), prev.opened_at
 
-    def _refresh_selector_rows(self, snapshot) -> None:
-        """Rebuild the selector's row list from *snapshot* (idle and playing
-        appliances alike; see selector_rows() in dial_core_state for the
-        filter). Runs when a poll tick ends (see _apply_snapshot), in both
-        the playing-targets branch and the empty-targets branch, whether or
-        not the selector screen is actually open right now, so opening it
-        always shows fresh rows without waiting for a poll. The touch
+    def _refresh_list_rows(self, snapshot) -> None:
+        """Rebuild the selector's and the replay picker's row lists from
+        *snapshot* (see selector_rows() and picker_rows() in dial_core_state
+        for the filters). Runs when a poll tick ends (see _apply_snapshot),
+        in both the playing-targets branch and the empty-targets branch,
+        whether or not either screen is actually open right now, so opening
+        one always shows fresh rows without waiting for a poll. The touch
         thread never builds rows.
 
         The page is PRESERVED (clamped to the new row count) across each
-        rebuild — resetting it to 0 here would make an open selector jump
-        back to its first page every ~6s poll tick. It is reset to 0 only
-        by a fresh open_selector() (see _apply_screen_requests_locked).
+        rebuild — resetting it to 0 here would make an open list jump back
+        to its first page every ~6s poll tick. It is reset to 0 only by a
+        fresh open (see _apply_screen_requests_locked).
         """
-        rows = snapshot.selector_rows()
-        with self._lock:
-            prev = self._selector
-            page, opened_at = self._carried_paging_locked(prev, len(rows))
-            self._selector = SelectorState(rows=rows, page=page, opened_at=opened_at)
-            changed = prev is None or prev.rows != rows
-        if changed and (self._screen == "selector" or self._screen_request == "selector"):
-            # A rebuild that actually changed the rows must repaint even
-            # with nothing else moving on screen — otherwise the selector
-            # can sit on its opening placeholder until a touch elsewhere
-            # forces the next frame. Signalled outside the lock, like every
-            # other _overlay_signal.set() site.
-            self._overlay_signal.set()
+        for screen, rows in (("selector", snapshot.selector_rows()), ("picker", snapshot.picker_rows())):
+            attr = _policy(screen).state_attr
+            with self._lock:
+                prev = getattr(self, attr)
+                page, opened_at = self._carried_paging_locked(prev, len(rows))
+                setattr(self, attr, ListScreenState(rows=rows, page=page, opened_at=opened_at))
+                changed = prev is None or prev.rows != rows
+            if changed and (self._screen == screen or self._screen_request == screen):
+                # A rebuild that actually changed the rows must repaint even
+                # with nothing else moving on screen — otherwise the list
+                # can sit on its opening placeholder until a touch elsewhere
+                # forces the next frame. Signalled outside the lock, like
+                # every other _overlay_signal.set() site.
+                self._overlay_signal.set()
 
-    def _refresh_picker_rows(self, snapshot) -> None:
-        """Rebuild the replay picker's row list from *snapshot* — when a
-        poll tick ends (see _apply_snapshot), every tick regardless of
-        whether the picker is actually open, mirroring
-        _refresh_selector_rows(). Rows: every rostered, authorized,
-        repeat-capable appliance currently in Hold — the only daemon state
-        the picker can start a replay from. The page is preserved across
-        rebuilds the same way the selector's is."""
-        rows = snapshot.picker_rows()
-        with self._lock:
-            prev = self._picker
-            page, opened_at = self._carried_paging_locked(prev, len(rows))
-            self._picker = PickerState(rows=rows, page=page, opened_at=opened_at)
-            changed = prev is None or prev.rows != rows
-        if changed and (self._screen == "picker" or self._screen_request == "picker"):
-            self._overlay_signal.set()
-
-    def _build_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
-        """Build the compositor's ListState for the appliance selector's
-        CURRENT page. Caller holds self._lock; runs on the repeat thread
-        only. pressed comes from the unified pressed channel (self._pressed)
-        — the same one every other screen feeds from."""
+    def _build_row_list_state_locked(self, screen: str, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
+        """Build the compositor's ListState for the CURRENT page of the
+        row-list screen *screen* ("selector" or "picker"). Caller holds
+        self._lock; runs on the repeat thread only. The picker's rows carry
+        the buffer length in their secondary slot, formatted "m:ss".
+        pressed comes from the unified pressed channel (self._pressed) —
+        the same one every other screen feeds from."""
+        placeholder, to_row = _ROW_LISTS[screen]
         return _list_state_for(
-            self._selector, _rows_per_page_for(width, height, metrics=metrics), "No devices",
-            _selector_list_row, pressed=self._pressed,
-        )
-
-    def _build_picker_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
-        """Build the compositor's ListState for the replay picker's CURRENT
-        page — the PickerState counterpart to _build_list_state_locked().
-        Each row's secondary slot carries the buffer length, formatted
-        "m:ss". pressed comes from the same unified pressed channel."""
-        return _list_state_for(
-            self._picker, _rows_per_page_for(width, height, metrics=metrics), "Nothing to replay",
-            _picker_list_row, pressed=self._pressed,
+            getattr(self, _policy(screen).state_attr), _rows_per_page_for(width, height, metrics=metrics),
+            placeholder, to_row, pressed=self._pressed,
         )
 
     def _build_info_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
         """Build the compositor's ListState for the info page's CURRENT
         page — seven read-only rows, ALL pages held in self._info.rows the
-        same way SelectorState/PickerState hold theirs. title/
+        same way ListScreenState holds the selector's and the picker's. title/
         plain_background mark this as the read-only variant: the compact
         tier's own title band reads "Info" instead of "Replay", and the
         whole frame sits on the flat chassis colour rather than a dimmed
@@ -3742,14 +3711,13 @@ class DialDisplay:
         The info page ignores it too, on every tier (plain_background=True).
         """
         metrics = self._layout_metrics()
-        if self._screen == "picker":
-            list_state = self._build_picker_list_state_locked(metrics.width, metrics.height, metrics=metrics)
-        elif self._screen == "outputs":
+        if self._screen == "outputs":
             list_state = self._build_outputs_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         elif self._screen == "info":
             list_state = self._build_info_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         else:
-            list_state = self._build_list_state_locked(metrics.width, metrics.height, metrics=metrics)
+            screen = self._screen if self._screen in _ROW_LISTS else "selector"
+            list_state = self._build_row_list_state_locked(screen, metrics.width, metrics.height, metrics=metrics)
         self._push_frame_locked(lambda: self._compositor.compose_list(
             metrics.width, metrics.height, list_state, base=self._current_base_image,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
@@ -4423,10 +4391,9 @@ class DialDisplay:
             self._show_artwork(new.artwork)
         else:
             self.show_logo()
-        self._refresh_selector_rows(new)
+        self._refresh_list_rows(new)
         if new.idle_affordance != tick.previous_idle_affordance:
             self._overlay_signal.set()
-        self._refresh_picker_rows(new)
 
     def _apply_idle_tick(self, tick, new) -> None:
         """The end of a tick with nothing playing anywhere: the rows, what
@@ -4435,8 +4402,7 @@ class DialDisplay:
         is (a list's own timeout closes it)."""
         if new.idle_affordance != tick.previous_idle_affordance:
             self._overlay_signal.set()
-        self._refresh_picker_rows(new)
-        self._refresh_selector_rows(new)
+        self._refresh_list_rows(new)
 
         with self._lock:
             # Each screen's own row says what a poll finding nothing
@@ -4576,14 +4542,14 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     ),
     "selector": ScreenPolicy(
         state_attr="_selector", surface=(SURFACE_SELECTOR, False, False, False),
-        open=DialDisplay._open_selector_locked, paint=DialDisplay._display_list_locked, paged=True,
+        open=functools.partial(DialDisplay._open_list_locked, screen="selector", keep_page_on_return=True), paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "picker": ScreenPolicy(
         state_attr="_picker", surface=(SURFACE_PICKER, False, False, False),
-        open=DialDisplay._open_picker_locked, paint=DialDisplay._display_list_locked, paged=True,
+        open=functools.partial(DialDisplay._open_list_locked, screen="picker"), paint=DialDisplay._display_list_locked, paged=True,
         # touch activity extends every list screen's clock — picker now
         # matches the selector/outputs lists rather than keeping its own
         # older (never-extends) behaviour.
