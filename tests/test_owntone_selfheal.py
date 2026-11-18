@@ -2,12 +2,12 @@
 
 Self-healing tests for two OwnTone failure modes.
 
-  1. OwnTone-restart reconcile (_OwntoneReconcileTracker /
-     _reconcile_owntone_outputs_if_wiped): a still-active session that finds
-     OwnTone reporting zero selected outputs for several consecutive checks
-     re-arms the existing _maybe_retry_owntone retry machinery, UNLESS a
-     recent user-initiated output action (note_user_output_action()) makes
-     the zero state look intentional.
+  1. Output re-arm after the player restarts: a still-active session that
+     finds the output authority reporting a different player boot than the
+     one the selection was applied under re-arms the output retry machinery
+     (see tests/test_selfheal.py for the rule itself); here, the user's
+     choice of silence and a speaker waiting for a PIN are checked against
+     the default-output handler.
 
   2. OwnTone-hang watchdog (_OwntoneHangWatchdog /
      _maybe_run_owntone_hang_watchdog): a stalled FIFO write
@@ -17,8 +17,7 @@ Self-healing tests for two OwnTone failure modes.
      binary) disarms it silently.
 
   3. Composition: stall -> watchdog fires once (rate-limited thereafter) ->
-     OwnTone comes back with zero outputs -> reconcile re-enables. The
-     user-deselect edge does not spuriously trigger reconcile.
+     OwnTone comes back as a different boot -> the output retry is re-armed.
 
 The C++ daemon side (the "fifo" status block) is mocked throughout -- these
 tests exercise the Python contract against synthetic status/outputs
@@ -28,7 +27,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -36,23 +34,24 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
-from fake_store import fake_levels
+from fake_store import FakeStore, fake_levels
 import autostream_core as core
 from autostream_core import (
     AudioMonitor,
     _carry_forward_hang_watchdog,
     _maybe_run_owntone_hang_watchdog,
     _OwntoneHangWatchdog,
-    _OwntoneReconcileTracker,
-    _reconcile_owntone_outputs_if_wiped,
     _SelfHeal,
-    clear_user_silence_latch,
-    note_user_output_action,
-    set_user_silence_latch,
-    user_silence_latch_active,
 )
+import autostream_output_intents as output_intents
+import autostream_player_service as player_service
 import autostream_runtime as runtime
 import autostream_state
+from autostream_intents import Intent
+from autostream_players import ActionResult
+from autostream_state import Origin
+from autostream_state.outputs import get_authority
+from output_fakes import row
 
 
 BASE_URL = "http://localhost:3689"
@@ -82,38 +81,8 @@ def _make_monitor(**overrides) -> AudioMonitor:
     return mon
 
 
-def _outputs(*selected_flags) -> list:
-    return [
-        SimpleNamespace(
-            id=str(i), selected=bool(sel), name=f"out{i}",
-            extra_dict=lambda: {},
-        )
-        for i, sel in enumerate(selected_flags)
-    ]
-
-
-def _outputs_with_paused_flag(*selected_and_paused) -> list:
-    """Build synthetic outputs where each item is (selected, paused_by_device)
-    or (selected, paused_by_device, needs_auth_key)."""
-    outs = []
-    for i, item in enumerate(selected_and_paused):
-        selected, paused = item[0], item[1]
-        needs_auth_key = item[2] if len(item) > 2 else False
-        extra = {"paused_by_device": paused} if paused else {}
-        outs.append(SimpleNamespace(
-            id=str(i), selected=bool(selected), name=f"out{i}",
-            needs_auth_key=bool(needs_auth_key),
-            extra_dict=lambda extra=extra: extra,
-        ))
-    return outs
-
-
 @pytest.fixture(autouse=True)
-def _reset_selfheal_state_and_user_action():
-    """Isolate module-level caches between tests (same discipline as other
-    coordinator-state tests in this suite, e.g. _set_repeat_status)."""
-    note_user_output_action(0.0)
-    clear_user_silence_latch()
+def _reset_selfheal_state():
     core._set_owntone_selfheal_state(
         reconcile_fired_count=0,
         reconcile_last_fired_at=0.0,
@@ -121,575 +90,85 @@ def _reset_selfheal_state_and_user_action():
         watchdog_restart_count=0,
         watchdog_last_restart_at=0.0,
     )
-    yield
-    note_user_output_action(0.0)
-    clear_user_silence_latch()
 
 
-# ── _OwntoneReconcileTracker: pure update() diff behaviour ──────────────────
+@pytest.fixture
+def writes(monkeypatch):
+    """The player service: every output write is recorded and accepted."""
+    rec = []
 
-class TestOwntoneReconcileTrackerPure:
-    def test_no_session_never_counts(self):
-        tracker = _OwntoneReconcileTracker()
-        for _ in range(10):
-            assert tracker.update(
-                session_active=False, selected_count=0, now=100.0,
-                last_user_action_at=0.0,
-            ) is False
+    def update_output(base_url, out_id, **kwargs):
+        rec.append((out_id, kwargs))
+        return ActionResult(ok=True)
 
-    def test_unreachable_outputs_api_never_counts(self):
-        tracker = _OwntoneReconcileTracker()
-        for _ in range(10):
-            assert tracker.update(
-                session_active=True, selected_count=None, now=100.0,
-                last_user_action_at=0.0,
-            ) is False
-
-    def test_nonzero_selected_never_fires(self):
-        tracker = _OwntoneReconcileTracker()
-        for _ in range(10):
-            assert tracker.update(
-                session_active=True, selected_count=1, now=100.0,
-                last_user_action_at=0.0,
-            ) is False
-
-    def test_fires_after_threshold_consecutive_zero_polls(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        results = [
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0,
-            )
-            for i in range(tracker.ZERO_POLL_THRESHOLD)
-        ]
-        assert results[:-1] == [False] * (tracker.ZERO_POLL_THRESHOLD - 1)
-        assert results[-1] is True
-
-    def test_below_threshold_does_not_fire(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD - 1):
-            assert tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0,
-            ) is False
-
-    def test_latched_until_nonzero_seen_again(self):
-        """Once fired, does not fire again on further zero polls until a
-        nonzero observation re-arms it (avoids re-firing every cycle once
-        the retry machinery has already been re-armed)."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD):
-            fired = tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0,
-            )
-        assert fired is True
-        # More zero polls: must not fire again.
-        for i in range(10):
-            assert tracker.update(
-                session_active=True, selected_count=0, now=now + 100 + i,
-                last_user_action_at=0.0,
-            ) is False
-
-    def test_rearms_after_nonzero_then_fires_again_on_new_zero_streak(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD):
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0,
-            )
-        # Outputs come back.
-        assert tracker.update(
-            session_active=True, selected_count=1, now=now + 50,
-            last_user_action_at=0.0,
-        ) is False
-        # Goes to zero again -> should be able to fire once more.
-        results = [
-            tracker.update(
-                session_active=True, selected_count=0, now=now + 60 + i,
-                last_user_action_at=0.0,
-            )
-            for i in range(tracker.ZERO_POLL_THRESHOLD)
-        ]
-        assert results[-1] is True
-
-    def test_recent_user_action_suppresses_fire(self):
-        """User-deselect edge: a recent note_user_output_action() timestamp
-        suppresses what would otherwise be a fire."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        last_fired = None
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-            last_fired = tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=now - 1.0,  # 1s ago: well within grace
-            )
-        assert last_fired is False
-
-    def test_fires_once_user_action_ages_past_grace_window(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        user_action_at = now - 1.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD):
-            assert tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=user_action_at,
-            ) is False
-        # Time passes well beyond the grace window; streak continues.
-        later = now + tracker.USER_ACTION_GRACE_SECONDS + 10
-        assert tracker.update(
-            session_active=True, selected_count=0, now=later,
-            last_user_action_at=user_action_at,
-        ) is True
-
-    def test_reset_clears_streak(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        tracker.update(session_active=True, selected_count=0, now=now, last_user_action_at=0.0)
-        tracker.reset()
-        for i in range(tracker.ZERO_POLL_THRESHOLD - 1):
-            assert tracker.update(
-                session_active=True, selected_count=0, now=now + 1 + i,
-                last_user_action_at=0.0,
-            ) is False
+    monkeypatch.setattr(player_service, "update_output", update_output)
+    return rec
 
 
-class TestOwntoneReconcileTrackerDevicePause:
-    """device_initiated_pause veto: zero outputs because the AirPlay device
-    itself asked to pause (e.g. going to standby) must not be treated as a
-    wiped-outputs fault."""
+# ── The default-output handler: PIN veto ────────────────────────────────────
 
-    def test_device_pause_veto_never_fires_even_past_threshold(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        results = [
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, device_initiated_pause=True,
-            )
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 10)
-        ]
-        assert all(r is False for r in results)
+class TestSelectDefaultPinVeto:
+    """The default-output select must not probe an output that OwnTone has
+    already flagged as needing a PIN -- doing so would make the AirPlay device
+    re-prompt (e.g. flash a fresh PIN on screen) on every retry interval
+    instead of waiting for the user to pair it via the Web UI."""
 
-    def test_flag_clearing_allows_prompt_fire_without_resetting_streak(self):
-        """Once the streak is past threshold under veto, dropping the flag
-        (e.g. owntone restarted and lost the paused_by_device state) fires
-        on the very next poll -- the veto never reset the zero-streak."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 2):
-            assert tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, device_initiated_pause=True,
-            ) is False
-        assert tracker.update(
-            session_active=True, selected_count=0, now=now + 1000,
-            last_user_action_at=0.0, device_initiated_pause=False,
-        ) is True
-
-    def test_notice_edge_flag_fires_once_per_streak(self):
-        """last_device_pause_notice is an edge-detect flag: True only on the
-        poll where the zero-streak first crosses the threshold while vetoed,
-        not on every subsequent vetoed poll."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        notices = []
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, device_initiated_pause=True,
-            )
-            notices.append(tracker.last_device_pause_notice)
-        assert notices.count(True) == 1
-        assert notices[tracker.ZERO_POLL_THRESHOLD - 1] is True
-
-
-class TestOwntoneReconcileTrackerUserSilenced:
-    """user_silenced veto: zero outputs because the user deliberately
-    disabled the last selected output through the Web UI must not be
-    treated as a wiped-outputs fault."""
-
-    def test_user_silenced_veto_never_fires_even_past_threshold(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        results = [
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, user_silenced=True,
-            )
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 10)
-        ]
-        assert all(r is False for r in results)
-
-    def test_latch_clearing_allows_prompt_fire_without_resetting_streak(self):
-        """Once the streak is past threshold under veto, clearing the latch
-        (e.g. the session ended and a new one started) fires on the very
-        next poll -- the veto never reset the zero-streak."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 2):
-            assert tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, user_silenced=True,
-            ) is False
-        assert tracker.update(
-            session_active=True, selected_count=0, now=now + 1000,
-            last_user_action_at=0.0, user_silenced=False,
-        ) is True
-
-    def test_notice_edge_flag_fires_once_per_streak(self):
-        """last_user_silenced_notice is an edge-detect flag: True only on
-        the poll where the zero-streak first crosses the threshold while
-        vetoed, not on every subsequent vetoed poll."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        notices = []
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, user_silenced=True,
-            )
-            notices.append(tracker.last_user_silenced_notice)
-        assert notices.count(True) == 1
-        assert notices[tracker.ZERO_POLL_THRESHOLD - 1] is True
-
-    def test_user_silenced_and_device_pause_are_independent_vetoes(self):
-        """Each veto tracks its own notified/edge-detect state; silencing
-        does not consume or interfere with the device-pause notice flag."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 1):
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, device_initiated_pause=False,
-                user_silenced=True,
-            )
-        assert tracker.last_device_pause_notice is False
-        assert tracker._device_pause_notified is False
-
-
-class TestOwntoneReconcileTrackerAwaitingPin:
-    """awaiting_pin veto: zero outputs because a deselected output is
-    waiting for the user to enter a PIN must not be treated as a
-    wiped-outputs fault."""
-
-    def test_awaiting_pin_veto_never_fires_even_past_threshold(self):
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        results = [
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, awaiting_pin=True,
-            )
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 10)
-        ]
-        assert all(r is False for r in results)
-
-    def test_flag_clearing_allows_prompt_fire_without_resetting_streak(self):
-        """Once the streak is past threshold under veto, dropping the flag
-        (e.g. the output pairs successfully) fires on the very next poll --
-        the veto never reset the zero-streak."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 2):
-            assert tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, awaiting_pin=True,
-            ) is False
-        assert tracker.update(
-            session_active=True, selected_count=0, now=now + 1000,
-            last_user_action_at=0.0, awaiting_pin=False,
-        ) is True
-
-    def test_notice_edge_flag_fires_once_per_streak(self):
-        """last_awaiting_pin_notice is an edge-detect flag: True only on the
-        poll where the zero-streak first crosses the threshold while
-        vetoed, not on every subsequent vetoed poll."""
-        tracker = _OwntoneReconcileTracker()
-        now = 1000.0
-        notices = []
-        for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-            tracker.update(
-                session_active=True, selected_count=0, now=now + i,
-                last_user_action_at=0.0, awaiting_pin=True,
-            )
-            notices.append(tracker.last_awaiting_pin_notice)
-        assert notices.count(True) == 1
-        assert notices[tracker.ZERO_POLL_THRESHOLD - 1] is True
-
-
-# ── _reconcile_owntone_outputs_if_wiped: poll-loop wiring ───────────────────
-
-class TestReconcileWiring:
-    def test_fires_and_resets_monitor_retry_state(self):
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        mon._owntone_last_attempt = 12345.0
-        tracker = _OwntoneReconcileTracker()
-        note_user_output_action(0.0)
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
-            fired_any = False
-            now = 1000.0
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 1):
-                before = mon._owntone_enabled_ok
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
-                if mon._owntone_enabled_ok is False and before is True:
-                    fired_any = True
-
-        assert fired_any is True
-        assert mon._owntone_enabled_ok is False
-        assert mon._owntone_last_attempt == 0.0
-        state = _selfheal_state()
-        assert state["reconcile_fired_count"] == 1
-
-    def test_no_session_does_not_touch_monitor_state(self):
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False)):
-            for i in range(10):
-                _reconcile_owntone_outputs_if_wiped(tracker, None, False, 1000.0 + i)
-        assert mon._owntone_enabled_ok is True
-
-    def test_nonzero_selected_outputs_never_fires(self):
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(True, False)):
-            for i in range(10):
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, 1000.0 + i)
-        assert mon._owntone_enabled_ok is True
-
-    def test_user_deselect_edge_does_not_spuriously_fire(self):
-        """A user manually deselecting every output mid-session must not
-        trigger reconcile within the grace window."""
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        note_user_output_action()  # simulate the user's POST /api/output just landing
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
-            now = time.time()
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
-
-        assert mon._owntone_enabled_ok is True
-        state = _selfheal_state()
-        assert state["reconcile_fired_count"] == 0
-
-    def test_device_initiated_pause_flag_prevents_rearm(self):
-        """A deselected output carrying paused_by_device=True is sufficient
-        evidence the zero-output state is device-initiated (e.g. the AirPlay
-        receiver went to standby) -- reconcile must not fire."""
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        outputs = _outputs_with_paused_flag((False, True), (False, False))
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=outputs):
-            now = 1000.0
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
-
-        assert mon._owntone_enabled_ok is True
-        state = _selfheal_state()
-        assert state["reconcile_fired_count"] == 0
-
-    def test_awaiting_pin_flag_prevents_rearm(self):
-        """A deselected output carrying needs_auth_key=True is waiting on
-        the user to enter a PIN -- reconcile must not fire, since firing
-        would just make OwnTone re-probe the device and prompt again."""
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        outputs = _outputs_with_paused_flag((False, False, True), (False, False, False))
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=outputs):
-            now = 1000.0
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
-
-        assert mon._owntone_enabled_ok is True
-        state = _selfheal_state()
-        assert state["reconcile_fired_count"] == 0
-
-    def test_no_paused_flag_still_rearms_as_today(self):
-        """Same shape as the device-pause case but with the flag absent on
-        every output: this is the pre-existing wiped-outputs fault path and
-        must still fire."""
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        outputs = _outputs_with_paused_flag((False, False), (False, False))
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=outputs):
-            now = 1000.0
-            fired_any = False
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 1):
-                before = mon._owntone_enabled_ok
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
-                if mon._owntone_enabled_ok is False and before is True:
-                    fired_any = True
-
-        assert fired_any is True
-        state = _selfheal_state()
-        assert state["reconcile_fired_count"] == 1
-
-    def test_user_silence_latch_set_prevents_rearm(self):
-        """The user-chosen-silence latch (set_user_silence_latch()) must
-        suppress reconcile just like the device-pause flag does."""
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        set_user_silence_latch()
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
-            now = 1000.0
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 5):
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
-
-        assert mon._owntone_enabled_ok is True
-        state = _selfheal_state()
-        assert state["reconcile_fired_count"] == 0
-
-    def test_user_silence_latch_cleared_rearms_as_today(self):
-        """Same synthetic outputs as the latched case, but with the latch
-        cleared: reconcile must still fire as it does today."""
-        mon = _make_monitor()
-        mon._owntone_enabled_ok = True
-        tracker = _OwntoneReconcileTracker()
-        clear_user_silence_latch()
-        assert user_silence_latch_active() is False
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
-            now = 1000.0
-            fired_any = False
-            for i in range(tracker.ZERO_POLL_THRESHOLD + 1):
-                before = mon._owntone_enabled_ok
-                _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
-                if mon._owntone_enabled_ok is False and before is True:
-                    fired_any = True
-
-        assert fired_any is True
-        state = _selfheal_state()
-        assert state["reconcile_fired_count"] == 1
-
-
-# ── _auto_select_default_output: PIN veto ───────────────────────────────────
-
-class TestAutoSelectDefaultOutputPinVeto:
-    """The default-output auto-select/retry path must not probe an output
-    that OwnTone has already flagged as needing a PIN -- doing so would make
-    the AirPlay device re-prompt (e.g. flash a fresh PIN on screen) on every
-    retry interval instead of waiting for the user to pair it via the Web
-    UI."""
-
-    def _default_output(self, needs_auth_key: bool):
-        return SimpleNamespace(
-            id="1", name="Test Speaker", selected=False,
-            needs_auth_key=needs_auth_key,
+    def _select(self):
+        return output_intents._select_default(
+            Intent("outputs.select_default", {"name": "Test Speaker", "volume": 50},
+                   Origin.SESSION, "coordinator"),
+            2.0,
         )
 
-    def test_returns_false_without_calling_update_output(self):
-        mon = _make_monitor()
-        outputs = [self._default_output(needs_auth_key=True)]
-        with patch.object(mon, "_get_owntone_outputs", return_value=outputs), \
-             patch("autostream_core.update_output") as mock_update:
-            result = mon._auto_select_default_output(1000.0, outputs, reason="retry")
+    def test_refused_without_a_write_when_the_default_needs_a_pin(self, writes):
+        FakeStore().outputs([row("1", "Test Speaker", needs_auth_key=True)])
+        outcome = self._select()
+        assert outcome.ok is False
+        assert outcome.error == "pin_pending"
+        assert writes == []
 
-        assert result is False
-        mock_update.assert_not_called()
-
-    def test_default_output_without_pin_flag_still_enables(self):
-        """Sanity check: the veto is specific to needs_auth_key, not a
-        general regression in the auto-select path."""
-        mon = _make_monitor()
-        outputs = [self._default_output(needs_auth_key=False)]
-        mock_result = SimpleNamespace(ok=True, error_code="", message="")
-        with patch.object(mon, "_get_owntone_outputs", return_value=outputs), \
-             patch("autostream_core.update_output", return_value=mock_result) as mock_update:
-            result = mon._auto_select_default_output(1000.0, outputs, reason="retry")
-
-        assert result is True
-        mock_update.assert_called_once()
+    def test_default_output_without_pin_flag_still_enables(self, writes):
+        """Sanity check: the veto is specific to a speaker waiting for a PIN,
+        not a general regression in the default-select path."""
+        FakeStore().outputs([row("1", "Test Speaker")])
+        outcome = self._select()
+        assert outcome.ok is True
+        assert len(writes) == 1
+        assert writes[0][0] == "1"
 
 
-# ── User-chosen-silence latch: module-level set/clear/read ──────────────────
+# ── The user's choice of silence ────────────────────────────────────────────
 
-class TestUserSilenceLatch:
-    def test_initially_inactive(self):
-        assert user_silence_latch_active() is False
+class TestUserSilenceChoice:
+    def _silence_chosen(self):
+        return autostream_state.store().snapshot().outputs.silence_chosen
 
-    def test_set_makes_active(self):
-        set_user_silence_latch()
-        assert user_silence_latch_active() is True
+    def test_initially_not_chosen(self):
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+        assert self._silence_chosen() is False
 
-    def test_clear_makes_inactive(self):
-        set_user_silence_latch()
-        clear_user_silence_latch()
-        assert user_silence_latch_active() is False
+    def test_a_user_deselect_of_the_last_speaker_sets_it(self, writes):
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+        get_authority().deselect("1", Origin.USER)
+        assert self._silence_chosen() is True
 
-    def test_clear_is_idempotent_when_already_clear(self):
-        clear_user_silence_latch()
-        clear_user_silence_latch()
-        assert user_silence_latch_active() is False
+    def test_a_deselect_that_leaves_a_speaker_selected_does_not_set_it(self, writes):
+        FakeStore().outputs([row("1", "Test Speaker", selected=True),
+                             row("2", "Other", selected=True)])
+        get_authority().deselect("1", Origin.USER)
+        assert self._silence_chosen() is False
 
-    def test_set_is_idempotent_when_already_set(self):
-        set_user_silence_latch()
-        set_user_silence_latch()
-        assert user_silence_latch_active() is True
+    def test_a_session_end_clears_it(self, writes):
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+        get_authority().deselect("1", Origin.USER)
+        get_authority().note_session(False)
+        assert self._silence_chosen() is False
 
-    def test_concurrent_set_clear_read_no_exception_and_coherent_final_state(self):
-        """Basic thread-safety smoke test: many threads hammering
-        set/clear/read concurrently must never raise, and the final read
-        must reflect one of the two valid boolean states (no torn state)."""
-        import threading as _threading
-
-        stop = _threading.Event()
-        errors = []
-
-        def _setter():
-            while not stop.is_set():
-                set_user_silence_latch()
-
-        def _clearer():
-            while not stop.is_set():
-                clear_user_silence_latch()
-
-        def _reader():
-            try:
-                for _ in range(2000):
-                    val = user_silence_latch_active()
-                    assert val in (True, False)
-            except Exception as e:
-                errors.append(e)
-
-        threads = [
-            _threading.Thread(target=_setter),
-            _threading.Thread(target=_clearer),
-            _threading.Thread(target=_reader),
-            _threading.Thread(target=_reader),
-        ]
-        for t in threads:
-            t.start()
-        # Let the reader threads finish their fixed iteration count, then
-        # signal the unbounded setter/clearer threads to stop.
-        threads[2].join()
-        threads[3].join()
-        stop.set()
-        threads[0].join()
-        threads[1].join()
-
-        assert errors == []
-        # Final state is whatever the last writer left it as -- just assert
-        # it is a coherent bool, not that a torn/partial value leaked out.
-        assert user_silence_latch_active() in (True, False)
-        clear_user_silence_latch()
+    def test_a_user_select_accepted_by_the_player_clears_it(self, writes):
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+        get_authority().deselect("1", Origin.USER)
+        get_authority().select("1", Origin.USER, volume=30)
+        assert self._silence_chosen() is False
 
 
 # ── _OwntoneHangWatchdog: pure decision logic ───────────────────────────────
@@ -827,6 +306,7 @@ class TestCarryForwardHangWatchdog:
 
 class TestMaybeRunOwntoneHangWatchdogWiring:
     def test_fires_restart_command_via_run_admin_cmd(self):
+        FakeStore().outputs([])
         wd = _OwntoneHangWatchdog()
         status = {"fifo": {"stalled_seconds": wd.STALL_THRESHOLD_SECONDS + 5}}
         fake_result = MagicMock(returncode=0, stderr="")
@@ -873,17 +353,16 @@ class TestSelfHealComposition:
 
         1. Session active, FIFO stalled beyond threshold, OwnTone reachable
            -> watchdog fires exactly once (and is rate-limited thereafter).
-        2. OwnTone "comes back" (simulated: fifo stall clears) but reports
-           zero selected outputs for several consecutive checks -> reconcile
-           re-arms the monitor's retry machinery.
+        2. OwnTone "comes back" (simulated: fifo stall clears) as a
+           different boot -> the output retry is re-armed.
         3. Rate limiting: a second stall shortly after does NOT fire the
            watchdog again.
         """
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)], boot="b0")
         mon = _make_monitor()
         mon._owntone_enabled_ok = True
+        mon._outputs_boot_seen = "b0"
         watchdog = _OwntoneHangWatchdog()
-        reconcile = _OwntoneReconcileTracker()
-        note_user_output_action(0.0)
 
         base = 1000.0
         restart_calls = []
@@ -909,11 +388,9 @@ class TestSelfHealComposition:
         assert len(restart_calls) == 1
         assert restart_calls[0] == ["restart-owntone"]
 
-        # Phase 2: OwnTone is back but reports zero selected outputs for a
-        # few consecutive checks (the post-restart wipe).
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
-            for i in range(reconcile.ZERO_POLL_THRESHOLD):
-                _reconcile_owntone_outputs_if_wiped(reconcile, mon, True, base + 10 + i)
+        # Phase 2: OwnTone is back as a different boot.
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)], boot="b1")
+        _SelfHeal.note_outputs(mon, True, base + 10)
 
         assert mon._owntone_enabled_ok is False
         assert mon._owntone_last_attempt == 0.0
@@ -922,17 +399,15 @@ class TestSelfHealComposition:
         assert state["watchdog_restart_count"] == 1
         assert state["reconcile_fired_count"] == 1
 
-    def test_user_deselect_edge_does_not_trigger_reconcile_in_composition(self):
+    def test_user_deselect_does_not_trigger_a_rearm(self, writes):
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)], boot="b0")
         mon = _make_monitor()
         mon._owntone_enabled_ok = True
-        reconcile = _OwntoneReconcileTracker()
+        mon._outputs_boot_seen = "b0"
 
-        now = time.time()
-        note_user_output_action(now)  # user just deselected everything
-
-        with patch.object(mon, "_get_owntone_outputs", return_value=_outputs(False, False)):
-            for i in range(reconcile.ZERO_POLL_THRESHOLD + 3):
-                _reconcile_owntone_outputs_if_wiped(reconcile, mon, True, now + i)
+        get_authority().deselect("1", Origin.USER)  # user just switched everything off
+        for i in range(5):
+            _SelfHeal.note_outputs(mon, True, 1000.0 + i)
 
         assert mon._owntone_enabled_ok is True
         assert _selfheal_state()["reconcile_fired_count"] == 0
@@ -1009,30 +484,33 @@ class TestRecoveryLogPure:
 
 
 class TestMaybeRetryOwntoneRecoveryLog:
-    """Site A: AudioMonitor._owntone_recovery_log, wired into
-    _maybe_retry_owntone's existing WARNING sites (not the INFO-level
-    "no outputs selected" fallback site, which is not a failure worth
-    surfacing as a recovery event on its own)."""
+    """AudioMonitor._owntone_recovery_log, wired into the output retry's
+    failure sites (not the INFO-level "no outputs selected" fallback site,
+    which is not a failure worth surfacing as a recovery event on its own)."""
 
-    def test_fail_fail_success_emits_one_recovery_warning(self, caplog):
+    @pytest.fixture(autouse=True)
+    def _fifo_ok(self, monkeypatch):
+        self.fifo = MagicMock(return_value=SimpleNamespace(ok=True, message=""))
+        monkeypatch.setattr(core, "reconcile_fifo_with_backend", self.fifo)
+        monkeypatch.setattr(core, "retry_pending_format_reconcile", lambda *a, **k: None)
+
+    def _monitor(self):
         mon = _make_monitor(owntone_base_url=BASE_URL)
         mon.is_capturing = False  # replay_origin=True carries every call below
+        return mon
 
-        out = _outputs(True)
+    def test_fail_fail_success_emits_one_recovery_warning(self, caplog):
+        mon = self._monitor()
         base = 1000.0
-        with patch.object(core, "reconcile_fifo_with_backend") as rf, \
-             patch.object(mon, "_get_owntone_outputs", return_value=out), \
-             patch.object(core, "retry_pending_format_reconcile"), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=True), \
-             patch.object(mon, "_refresh_selected_outputs", side_effect=[False, False, True]):
-            rf.return_value = MagicMock(ok=True, message="")
+        step = mon.OWNTONE_RETRY_SECONDS + 1
 
-            with caplog.at_level("WARNING", logger="root"):
-                mon._maybe_retry_owntone(base, replay_origin=True)
-                mon._maybe_retry_owntone(
-                    base + mon.OWNTONE_RETRY_SECONDS + 1, replay_origin=True)
-                mon._maybe_retry_owntone(
-                    base + 2 * (mon.OWNTONE_RETRY_SECONDS + 1), replay_origin=True)
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+        FakeStore().outputs_unreachable()
+        with caplog.at_level("WARNING", logger="root"):
+            mon._maybe_retry_owntone(base, replay_origin=True)
+            mon._maybe_retry_owntone(base + step, replay_origin=True)
+            FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+            mon._maybe_retry_owntone(base + 2 * step, replay_origin=True)
 
         recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
         assert len(recovered) == 1
@@ -1040,46 +518,28 @@ class TestMaybeRetryOwntoneRecoveryLog:
         assert mon._owntone_enabled_ok is True
 
     def test_success_first_emits_no_recovery_warning(self, caplog):
-        mon = _make_monitor(owntone_base_url=BASE_URL)
-        mon.is_capturing = False
-
-        out = _outputs(True)
-        with patch.object(core, "reconcile_fifo_with_backend") as rf, \
-             patch.object(mon, "_get_owntone_outputs", return_value=out), \
-             patch.object(core, "retry_pending_format_reconcile"), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=True), \
-             patch.object(mon, "_refresh_selected_outputs", return_value=True):
-            rf.return_value = MagicMock(ok=True, message="")
-
-            with caplog.at_level("WARNING", logger="root"):
-                mon._maybe_retry_owntone(time.time(), replay_origin=True)
+        mon = self._monitor()
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+        with caplog.at_level("WARNING", logger="root"):
+            mon._maybe_retry_owntone(1000.0, replay_origin=True)
 
         recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
         assert recovered == []
         assert mon._owntone_enabled_ok is True
 
     def test_fifo_reconcile_failure_counts_as_a_failure(self, caplog):
-        """The fifo_result.ok gate is also a _maybe_retry_owntone WARNING
-        site and must feed the same recovery log as the output-refresh
-        failures below it."""
-        mon = _make_monitor(owntone_base_url=BASE_URL)
-        mon.is_capturing = False
-
+        """The fifo_result.ok gate is also a retry WARNING site and must feed
+        the same recovery log as the unreachable-outputs failure."""
+        mon = self._monitor()
+        FakeStore().outputs([row("1", "Test Speaker", selected=True)])
+        self.fifo.side_effect = [
+            SimpleNamespace(ok=False, message="backend down"),
+            SimpleNamespace(ok=True, message=""),
+        ]
         base = 2000.0
-        with patch.object(core, "reconcile_fifo_with_backend") as rf, \
-             patch.object(mon, "_get_owntone_outputs", return_value=_outputs(True)), \
-             patch.object(core, "retry_pending_format_reconcile"), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=True), \
-             patch.object(mon, "_refresh_selected_outputs", return_value=True):
-            rf.side_effect = [
-                MagicMock(ok=False, message="backend down"),
-                MagicMock(ok=True, message=""),
-            ]
-
-            with caplog.at_level("WARNING", logger="root"):
-                mon._maybe_retry_owntone(base, replay_origin=True)
-                mon._maybe_retry_owntone(
-                    base + mon.OWNTONE_RETRY_SECONDS + 1, replay_origin=True)
+        with caplog.at_level("WARNING", logger="root"):
+            mon._maybe_retry_owntone(base, replay_origin=True)
+            mon._maybe_retry_owntone(base + mon.OWNTONE_RETRY_SECONDS + 1, replay_origin=True)
 
         recovered = [r for r in caplog.records if "recovered after" in r.getMessage()]
         assert len(recovered) == 1
@@ -1190,14 +650,8 @@ class TestSelfHealGrouping:
     _SelfHeal.maybe_retry_owntone() while keeping its original bound-method
     call surface."""
 
-    def test_reconcile_tracker_class_is_the_original(self):
-        assert _SelfHeal.ReconcileTracker is _OwntoneReconcileTracker
-
     def test_hang_watchdog_class_is_the_original(self):
         assert _SelfHeal.HangWatchdog is _OwntoneHangWatchdog
-
-    def test_reconcile_outputs_if_wiped_is_the_original_function(self):
-        assert _SelfHeal.reconcile_outputs_if_wiped is _reconcile_owntone_outputs_if_wiped
 
     def test_maybe_run_hang_watchdog_is_the_original_function(self):
         assert _SelfHeal.maybe_run_hang_watchdog is _maybe_run_owntone_hang_watchdog

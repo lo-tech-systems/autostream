@@ -1225,21 +1225,15 @@ class TestSendGatewayRepeatJson:
         assert data[0]["ok"] is False
 
 # ---------------------------------------------------------------------------
-# send_gateway_output_json ("bound" branch) — per-user-action bookkeeping
+# send_gateway_output_json ("bound" branch) — the user's choice of silence
 #
-# The reconcile-grace timestamp and the user-chosen-silence latch are fed by
-# the output change itself. A locally-bound appliance reached via the gateway
-# must get exactly the same bookkeeping as the local Web UI handler.
+# A locally-bound appliance reached via the gateway sets and clears the
+# choice of silence exactly as the local Web UI handler does.
 # ---------------------------------------------------------------------------
 
-class TestSendGatewayOutputJsonBookkeeping:
+class TestSendGatewayOutputJsonSilenceChoice:
     def _run(self, body: dict, speakers, monkeypatch):
-        import autostream_output_intents as intents_mod
-        from autostream_core import clear_user_silence_latch
         from autostream_players import ActionResult
-        clear_user_silence_latch()
-        noted = []
-        monkeypatch.setitem(intents_mod._latch, "note", lambda: noted.append("note"))
         FakeStore().outputs(speakers)
 
         handler = _make_handler()
@@ -1266,32 +1260,29 @@ class TestSendGatewayOutputJsonBookkeeping:
             mock_parse.return_value.owntone.output_airplay_modes = {}
             gw.send_gateway_output_json(handler, state, "a" * 20, json.dumps(body))
 
-        return sent_codes, sent_data, noted
+        return sent_codes, sent_data
 
-    def test_disable_to_zero_outputs_sets_latch(self, monkeypatch):
-        from autostream_core import user_silence_latch_active
-        codes, data, noted = self._run(
+    def test_disable_to_zero_outputs_chooses_silence(self, monkeypatch):
+        from output_fakes import snap
+        codes, data = self._run(
             {"id": "42", "selected": False},
             [FakeStore.output_row("42", "Kitchen", selected=True, volume_percent=40)],
             monkeypatch,
         )
         assert codes == [200]
         assert data[0]["ok"] is True
-        assert user_silence_latch_active() is True
-        assert noted == ["note"]
+        assert snap().silence_chosen is True
 
-    def test_enable_clears_latch(self, monkeypatch):
-        from autostream_core import set_user_silence_latch, user_silence_latch_active
-        set_user_silence_latch()
-        codes, data, noted = self._run(
-            {"id": "42", "selected": True, "volume": 50},
-            [FakeStore.output_row("42", "Kitchen", selected=False)],
-            monkeypatch,
-        )
+    def test_enable_ends_the_choice_of_silence(self, monkeypatch):
+        from output_fakes import snap
+        speakers = [FakeStore.output_row("42", "Kitchen", selected=True, volume_percent=40)]
+        self._run({"id": "42", "selected": False}, speakers, monkeypatch)
+        assert snap().silence_chosen is True
+        codes, data = self._run({"id": "42", "selected": True, "volume": 50},
+                                speakers, monkeypatch)
         assert codes == [200]
         assert data[0]["ok"] is True
-        assert user_silence_latch_active() is False
-        assert noted == ["note"]
+        assert snap().silence_chosen is False
 
 
 # ---------------------------------------------------------------------------

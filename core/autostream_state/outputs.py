@@ -339,7 +339,6 @@ class OutputAuthority:
         self._exempt_off = False
         self._policy = None
         self._include_tv_reader: Callable[[str], Optional[bool]] = lambda unit_id: None
-        self._reconcile_enabled = False
         # Worker-side bookkeeping.
         self._items: "queue.Queue" = queue.Queue()
         with self._wq_cond:
@@ -467,6 +466,9 @@ class OutputAuthority:
         now = self._clock()
         for _ in range(_FAILED_READS_BEFORE_DOWN):
             self._on_read_failed(ListOutputsResult(ok=False, error="unreachable", error_code="request_failed"), now)
+        with self._lock:
+            pending = self._publish_locked(Origin.BACKEND, None)
+        pending.notify()
 
     # -- reading the state ---------------------------------------------------
 
@@ -1211,8 +1213,6 @@ class OutputAuthority:
                     del self._units[uid]
             elif now - u.absent_since >= ABSENT_KEEP_S:
                 del self._units[uid]
-        if not self._reconcile_enabled:
-            self._follow_reported_locked(now)
 
     def _update_unit_locked(self, u: UnitState, row: OutputInfo, now: float, fx: _Effects) -> None:
         d = u.desired
@@ -1253,26 +1253,6 @@ class OutputAuthority:
             else:
                 self._failed_treatment_locked(u, now)
 
-    def _follow_reported_locked(self, now: float) -> None:
-        """While reconcile is off the authority follows the player: a speaker's
-        selection and level become what the player reports, except for a start
-        the authority is waiting on and a level it wrote a moment ago."""
-        for u in self._units.values():
-            r = u.reported
-            if r is None:
-                continue
-            d = u.desired
-            if (r.selected != d.selected and u.start_pending_until <= now and not u.attempt
-                    and u.availability != "failed"):
-                d.selected = r.selected
-                d.cause = Origin.BACKEND
-                d.changed_at = now
-                u.desired_seq += 1
-                if not r.selected:
-                    d.muted = False
-                    d.remembered_level = None
-            self._adopt_volume_locked(u, r, now)
-
     def _adopt_volume_locked(self, u: UnitState, r: OutputInfo, now: float) -> None:
         d = u.desired
         if self._inflight > 0 or now - u.own_write_at < DEBOUNCE_S:
@@ -1306,15 +1286,14 @@ class OutputAuthority:
                 if u.absent_since is not None and now - u.absent_since >= ABSENT_KEEP_S:
                     del self._units[u.id]
                     changed = True
-            if self._reconcile_enabled and self._connected:
+            if self._connected:
                 changed = self._reconcile_locked(now, fx) or changed
             if changed:
                 pending = self._publish_locked(Origin.BACKEND, None)
         if pending is not None:
             pending.notify()
         fx.run()
-        if self._reconcile_enabled:
-            self._after_intent()
+        self._after_intent()
 
     def _queue_reapply_select_locked(self, u: UnitState) -> None:
         u.attempt = True
@@ -1337,11 +1316,18 @@ class OutputAuthority:
         queues writes."""
         changed = False
         restored = 0
+        busy = self._inflight > 0 or bool(self._wq)
         for u in self._ordered_units_locked():
             r = u.reported
             if r is None:
                 continue
             d = u.desired
+            if d.selected != r.selected and (busy or now - u.own_write_at < DEBOUNCE_S):
+                # A write of ours is queued, running or has just finished, so
+                # the row read may predate it; judge the next read.
+                u.diff_since.pop("select", None)
+                u.diff_since.pop("deselect", None)
+                continue
             if d.selected and not r.selected:
                 u.diff_since.pop("deselect", None)
                 if u.availability == "password" or r.session_state in ("startup", "connected") \
@@ -1402,7 +1388,8 @@ class OutputAuthority:
                     changed = True
                 continue
             u.diff_since.pop("mute", None)
-            if not d.muted:
+            if not d.muted and not busy:
+                # With a write queued the row read may predate it, as above.
                 before = d.volume
                 self._adopt_volume_locked(u, r, now)
                 changed = changed or d.volume != before

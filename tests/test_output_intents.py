@@ -69,15 +69,6 @@ def player(monkeypatch):
     return rec
 
 
-@pytest.fixture
-def latch(monkeypatch):
-    seen = []
-    monkeypatch.setitem(intents_mod._latch, "note", lambda: seen.append("note"))
-    monkeypatch.setitem(intents_mod._latch, "set", lambda: seen.append("set"))
-    monkeypatch.setitem(intents_mod._latch, "clear", lambda: seen.append("clear"))
-    return seen
-
-
 def arrange(*rows):
     FakeStore().outputs(list(rows) or [row(ID, "Kitchen")])
 
@@ -361,51 +352,42 @@ class TestPin:
 
 
 # ---------------------------------------------------------------------------
-# The coordinator's record of what the user did
+# The user's choice of silence
 # ---------------------------------------------------------------------------
 
-class TestLatch:
-    def test_a_user_request_is_noted_before_it_runs(self, player, latch):
-        arrange()
-        change(on())
-        assert latch[0] == "note"
-
-    def test_a_coordinator_request_is_not_noted(self, player, latch):
-        arrange()
-        change(on(), requester="coordinator", origin=Origin.SYSTEM)
-        assert latch == []
-
-    def test_a_successful_user_enable_clears_the_latch(self, player, latch):
-        arrange()
-        change(on())
-        assert latch == ["note", "clear"]
-
-    def test_a_failed_enable_leaves_the_latch(self, player, latch):
-        arrange()
-        player.answers.append(err("http_error"))
-        change(on())
-        assert latch == ["note"]
-
-    def test_switching_off_the_last_speaker_sets_the_latch_from_the_snapshot(self, player, latch):
+class TestSilenceChosen:
+    def test_switching_off_the_last_speaker_is_a_choice_of_silence(self, player):
         arrange(row(ID, "Kitchen", selected=True))
         change({"id": ID, "selected": False})
-        assert latch == ["note", "set"]
+        assert snap().silence_chosen is True
 
-    def test_switching_off_one_of_two_does_not(self, player, latch):
+    def test_switching_off_one_of_two_is_not(self, player):
         arrange(row(ID, "Kitchen", selected=True), row("7", "Den", selected=True))
         change({"id": ID, "selected": False})
-        assert latch == ["note"]
+        assert snap().silence_chosen is False
 
-    def test_a_failed_switch_off_does_not(self, player, latch):
+    def test_switching_a_speaker_on_again_ends_the_choice(self, player):
         arrange(row(ID, "Kitchen", selected=True))
-        player.answers.append(err("http_error"))
         change({"id": ID, "selected": False})
-        assert latch == ["note"]
+        change(on())
+        assert snap().silence_chosen is False
 
-    def test_a_pin_alone_notes_the_action_and_nothing_else(self, player, latch):
-        arrange()
+    def test_a_coordinator_switch_off_is_not_a_choice(self, player):
+        arrange(row(ID, "Kitchen", selected=True))
+        change({"id": ID, "selected": False}, requester="coordinator", origin=Origin.SYSTEM)
+        assert snap().silence_chosen is False
+
+    def test_the_session_end_clears_it(self, player):
+        arrange(row(ID, "Kitchen", selected=True))
+        change({"id": ID, "selected": False})
+        get_authority().note_session(False)
+        assert snap().silence_chosen is False
+
+    def test_a_pin_alone_changes_nothing_about_it(self, player):
+        arrange(row(ID, "Kitchen", selected=True))
+        change({"id": ID, "selected": False})
         change({"id": ID, "op": "pin", "pin": "1234"})
-        assert latch == ["note"]
+        assert snap().silence_chosen is True
 
 
 # ---------------------------------------------------------------------------
@@ -471,3 +453,144 @@ class TestSlowPlayer:
         time.sleep(0.1)
         levels = [c[2].get("volume_percent") for c in fb.calls]
         assert levels == [11, 29]
+
+
+# ---------------------------------------------------------------------------
+# The default speaker and the clear-all request from the session edges
+# ---------------------------------------------------------------------------
+
+def _default(name="Kitchen", volume=42, **extra):
+    args = {"name": name, "volume": volume, **extra}
+    return submit(Intent("outputs.select_default", args, Origin.SESSION, "coordinator"))
+
+
+@pytest.fixture
+def usage(monkeypatch):
+    """The usage check: records its calls in order; no speaker is occupied."""
+    rec = SimpleNamespace(order=[], owner=None, refresh_error=None)
+
+    def refresh_now(*a, **k):
+        rec.order.append("refresh")
+        if rec.refresh_error is not None:
+            raise rec.refresh_error
+
+    def usage_for_output(name):
+        rec.order.append("check")
+        return None if rec.owner is None else SimpleNamespace(owner_name=rec.owner)
+
+    monkeypatch.setattr(intents_mod.output_usage, "refresh_now", refresh_now)
+    monkeypatch.setattr(intents_mod.output_usage, "usage_for_output", usage_for_output)
+    return rec
+
+
+class TestSelectDefault:
+    def test_an_empty_name_is_no_default(self, player, usage):
+        arrange()
+        reply = _default(name="  ")
+        assert reply.ok is False and reply.error == "no_default"
+        assert player.calls == []
+
+    def test_a_name_that_matches_no_speaker_is_not_found(self, player, usage):
+        arrange()
+        reply = _default(name="Missing")
+        assert reply.ok is False and reply.error == "not_found"
+        assert player.calls == []
+
+    def test_the_speaker_is_found_by_name(self, player, usage):
+        arrange(row("1", "Hall"), row("2", "Kitchen"))
+        assert _default("Kitchen").ok is True
+        assert [c[1] for c in player.calls] == ["2"]
+
+    def test_a_speaker_waiting_for_a_pin_is_not_asked_again(self, player, usage):
+        arrange(row(ID, "Kitchen", needs_auth_key=True))
+        reply = _default()
+        assert reply.ok is False and reply.error == "pin_pending"
+        assert player.calls == []
+
+    def test_an_occupied_speaker_is_left_alone(self, player, usage):
+        arrange()
+        usage.owner = "Hall"
+        reply = _default()
+        assert reply.ok is False and reply.error == "in_use"
+        assert reply.result == {"owner": "Hall"}
+        assert player.calls == []
+
+    def test_the_usage_is_refreshed_before_it_is_checked(self, player, usage):
+        arrange()
+        _default()
+        assert usage.order == ["refresh", "check"]
+
+    def test_a_failing_usage_check_does_not_stop_the_selection(self, player, usage):
+        arrange()
+        usage.refresh_error = RuntimeError("unavailable")
+        assert _default().ok is True
+        assert len(player.calls) == 1
+
+    def test_the_write_carries_the_volume_offset_and_mode(self, player, usage):
+        arrange()
+        assert _default(volume=42, offset_ms=120, mode="airplay2").ok is True
+        assert player.calls == [(
+            "update_output", ID,
+            dict(enabled=True, volume_percent=42, offset_ms=120, mode="airplay2", timeout=3.0),
+        )]
+
+    def test_offset_and_mode_are_optional(self, player, usage):
+        arrange()
+        _default(volume=30)
+        kw = player.calls[0][2]
+        assert kw["enabled"] is True and kw["volume_percent"] == 30
+        assert kw["offset_ms"] is None and kw["mode"] is None
+
+    def test_a_pin_request_from_the_speaker_is_reported_as_such(self, player, usage):
+        arrange()
+        player.answers = [err("pin_required")]
+        reply = _default()
+        assert reply.ok is False and reply.error == "pin_required"
+
+    def test_any_other_failure_carries_the_player_s_text(self, player, usage):
+        arrange()
+        player.answers = [err("rejected", "no answer")]
+        reply = _default()
+        assert reply.ok is False and reply.error == "failed"
+        assert reply.result == {"message": "no answer"}
+
+    def test_only_the_session_may_ask(self, player, usage):
+        arrange()
+        reply = submit(Intent("outputs.select_default", {"name": "Kitchen", "volume": 5}, Origin.USER, "webui"))
+        assert reply.ok is False and reply.error == "origin_not_allowed"
+
+
+class TestDeselectAll:
+    @pytest.fixture
+    def clearing(self, monkeypatch):
+        import autostream_player_service as ps
+
+        rec = SimpleNamespace(stops=[], lists=[])
+        monkeypatch.setattr(
+            ps, "stop_and_disable_all",
+            lambda base_url, timeout=None: rec.stops.append(timeout) or ok(),
+        )
+        monkeypatch.setattr(
+            ps, "set_selected_outputs",
+            lambda base_url, ids, timeout=None: rec.lists.append(list(ids)) or ok(),
+        )
+        return rec
+
+    def test_a_session_edge_stops_the_player_and_clears_every_unit(self, clearing, player):
+        arrange(row("1", "Hall"), row("2", "Kitchen"))
+        get_authority().select("1", Origin.USER, volume=20)
+        get_authority().select("2", Origin.USER, volume=30)
+        reply = submit(Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"))
+        assert reply.ok is True
+        assert len(clearing.stops) == 1
+        assert clearing.lists == []
+        assert not any(u.selected for u in snap().units)
+
+    def test_a_user_request_clears_the_list_without_stopping_the_player(self, clearing, player):
+        arrange(row("1", "Hall"))
+        get_authority().select("1", Origin.USER, volume=20)
+        reply = submit(Intent("outputs.deselect_all", {}, Origin.USER, "webui"))
+        assert reply.ok is True
+        assert clearing.stops == []
+        assert clearing.lists == [[]]
+        assert not any(u.selected for u in snap().units)

@@ -421,11 +421,14 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_webui_page_airplay as airplay
     from autostream_dials import AUTH_AUTHORIZED
     from autostream_players import ActionResult, ListOutputsResult
+    from autostream_state.outputs import get_authority
     from fake_store import FakeStore, fake_track
 
     rec = Recorder()
     cfg = parsed_config()
     mute_state.reset_for_tests()
+    # Each case starts from an authority that has adopted nothing.
+    get_authority().reset_for_tests()
     if scenario.muted_levels:
         mute_state.begin_mute(dict(scenario.muted_levels))
 

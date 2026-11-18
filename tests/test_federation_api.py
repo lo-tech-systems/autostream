@@ -627,9 +627,8 @@ class TestFederationOutput:
         assert sent[0][1]["error"] == "invalid_endpoint"
 
     # -------------------------------------------------------------------
-    # Per-user-action bookkeeping: a switch made by a peer feeds the
-    # reconcile grace timestamp and the user-chosen-silence latch exactly
-    # as a switch made on the local web page does.
+    # A switch made by a peer sets and clears the user's choice of silence
+    # exactly as a switch made on the local web page does.
     # -------------------------------------------------------------------
 
     @staticmethod
@@ -643,33 +642,25 @@ class TestFederationOutput:
              patch("autostream_player_service.submit_output_pin", return_value=ActionResult(ok=True)):
             return _call(h, state)
 
-    def test_disable_to_zero_outputs_sets_latch(self, tmp_path, monkeypatch):
-        import autostream_output_intents as intents_mod
-        from autostream_core import clear_user_silence_latch, user_silence_latch_active
-        clear_user_silence_latch()
-        noted = []
-        monkeypatch.setitem(intents_mod._latch, "note", lambda: noted.append("note"))
+    def test_disable_to_zero_outputs_chooses_silence(self, tmp_path):
+        from output_fakes import snap
         code, data = self._post_output(
             tmp_path, {"id": "42", "selected": False},
             [FakeStore.output_row("42", "Kitchen", selected=True, volume_percent=40)])
         assert code == 200
         assert data["ok"] is True
-        assert user_silence_latch_active() is True
-        assert noted == ["note"]
+        assert snap().silence_chosen is True
 
-    def test_enable_clears_latch(self, tmp_path, monkeypatch):
-        import autostream_output_intents as intents_mod
-        from autostream_core import set_user_silence_latch, user_silence_latch_active
-        set_user_silence_latch()
-        noted = []
-        monkeypatch.setitem(intents_mod._latch, "note", lambda: noted.append("note"))
+    def test_enable_ends_the_choice_of_silence(self, tmp_path):
+        from output_fakes import snap
+        speakers = [FakeStore.output_row("42", "Kitchen", selected=True, volume_percent=40)]
+        self._post_output(tmp_path, {"id": "42", "selected": False}, speakers)
+        assert snap().silence_chosen is True
         code, data = self._post_output(
-            tmp_path, {"id": "42", "selected": True, "volume": 50},
-            [FakeStore.output_row("42", "Kitchen", selected=False)])
+            tmp_path, {"id": "42", "selected": True, "volume": 50}, speakers)
         assert code == 200
         assert data["ok"] is True
-        assert user_silence_latch_active() is False
-        assert noted == ["note"]
+        assert snap().silence_chosen is False
 
     def test_unknown_federation_get_route_returns_400_invalid_endpoint(self, tmp_path):
         state = _fake_state(tmp_path)

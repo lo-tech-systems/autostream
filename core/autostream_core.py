@@ -36,7 +36,10 @@ import autostream_repeat
 import autostream_runtime as runtime
 import autostream_session
 import autostream_state
-from autostream_state.outputs import PlayerServiceBackend, get_authority
+import autostream_intents as intents
+from autostream_intents import Intent
+from autostream_state import Origin
+from autostream_state.outputs import WRITE_TIMEOUT_S, PlayerServiceBackend, get_authority
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
     INPUT_TYPE_DEFAULT,
@@ -72,12 +75,8 @@ from autostream_player_service import (
     reconcile_fifo_with_backend,
     reconcile_monitor_format,
     reconcile_pipe_format_with_backend,
-    refresh_runtime_state,
     retry_pending_format_reconcile,
-    set_selected_outputs,
-    stop_and_disable_all,
     sync_monitor_args_for_audio_path,
-    update_output,
 )
 from autostream_rpi import is_high_performance_pi
 from autostream_playback_stats import (
@@ -114,13 +113,6 @@ from autostream_sysutils import (
 #    the Avahi "playing" announcement lock is in autostream_announce)
 #   (the now-playing republish-request lock is in autostream_runtime)
 #   (the repeat-block overlay lock is in autostream_repeat)
-#
-# "Output-arbitration state" group -- both read together by the
-# zero-output-watchdog-equivalent logic (_reconcile_owntone_outputs_if_wiped):
-#   _last_user_output_action_lock             -- last user-output-toggle
-#                                                 timestamp (selfheal input)
-#   _user_silence_latch_lock                  -- deliberate-silence flag
-#                                                 (selfheal input)
 #
 # Class-level (not module-level, listed here for completeness):
 #   MonitorClient._lock                       -- serializes daemon-socket
@@ -242,100 +234,19 @@ def _set_monitor_runtime_info(
         _publish_inputs()
 
 
-# ── User-initiated output action marker ──────────────────────────────────────
-# The Web UI's POST /api/output handler (autostream_webui_post_handlers.py)
-# calls note_user_output_action() whenever the user toggles an output,
-# independently of the coordinator thread. _OwntoneReconcileTracker consults
-# this timestamp so a user manually deselecting every output mid-session is
-# not mistaken for OwnTone restarting and forgetting everything: recent user
-# activity suppresses an auto-reconcile that would otherwise fight the
-# user's own action.
-
-_last_user_output_action_lock = threading.Lock()
-_last_user_output_action_at: float = 0.0
-
-
-def note_user_output_action(now: Optional[float] = None) -> None:
-    """Record that a user-initiated output change (POST /api/output) occurred."""
-    global _last_user_output_action_at
-    with _last_user_output_action_lock:
-        _last_user_output_action_at = float(now) if now is not None else time.time()
-
-
-def _get_last_user_output_action_at() -> float:
-    with _last_user_output_action_lock:
-        return _last_user_output_action_at
-
-
-# ── User-chosen-silence latch ────────────────────────────────────────────────
-# Set when the Web UI's POST /api/output handler observes that the user has
-# just disabled the last remaining selected output (deliberately choosing
-# zero outputs), and cleared as soon as the user enables any output again, or
-# when the current capture session ends (a new session always starts with
-# normal default-output behaviour, latch or no latch). While active, it tells
-# both the zero-output reconcile (_OwntoneReconcileTracker.update()'s
-# user_silenced veto) and the periodic output-enable retry
-# (AudioMonitor._maybe_retry_owntone()) to leave a zero-output state alone
-# rather than re-arming/re-applying the default output. Session-scoped, not
-# persisted across coordinator restarts. Guarded by its own lock, same
-# discipline as _last_user_output_action_lock above -- a plain bool needs no
-# richer synchronization, but the lock keeps set/clear/read atomic with
-# respect to each other across threads (Web UI request thread vs coordinator
-# thread).
-
-_user_silence_latch_lock = threading.Lock()
-_user_silence_latch: bool = False
-
-
-def set_user_silence_latch() -> None:
-    """Mark the current session's zero-output state as user-chosen.
-
-    Called by the Web UI's output-toggle handler after it confirms a
-    successful disable left zero outputs selected.
-    """
-    global _user_silence_latch
-    with _user_silence_latch_lock:
-        _user_silence_latch = True
-
-
-def clear_user_silence_latch() -> None:
-    """Clear the user-chosen-silence latch.
-
-    Called by the Web UI's output-toggle handler after a successful enable,
-    and by the coordinator when the capture session ends (see
-    _dispatch_session_event()'s "session_ended" branch).
-    """
-    global _user_silence_latch
-    with _user_silence_latch_lock:
-        _user_silence_latch = False
-
-
-def user_silence_latch_active() -> bool:
-    """Return True iff the user has deliberately chosen zero outputs."""
-    with _user_silence_latch_lock:
-        return _user_silence_latch
-
-
 def _bind_intent_handlers() -> None:
-    """Import the modules that handle intents (each binds its rows when
-    imported) and hand the output handler the two records above, which it
-    cannot import."""
-    import autostream_output_intents
-
-    autostream_output_intents.bind_latch(
-        note=note_user_output_action,
-        set_=set_user_silence_latch,
-        clear=clear_user_silence_latch,
-    )
+    """Import the modules that handle intents; each binds its rows when
+    imported."""
+    import autostream_output_intents  # noqa: F401
 
 
 _bind_intent_handlers()
 
 
-# ── OwnTone-restart reconcile + hang-watchdog status cache ──────────────────
+# ── Self-heal status cache ───────────────────────────────────────────────────
 # Exposed via /api/status (autostream_webui_api.py) for observability; never
-# authoritative for coordinator decisions (that state lives on the tracker
-# instances themselves, which are coordinator-thread-only).
+# authoritative for coordinator decisions (the hang watchdog's state lives on
+# its own instance, which is coordinator-thread-only).
 
 _health_writer = autostream_state.store().claim("health", "autostream_core")
 
@@ -772,21 +683,6 @@ def any_monitor_capturing() -> bool:
         return any(m.is_capturing for m in runtime.all_monitors)
 
 
-def _stop_and_disable_owntone(base_url: str, reason: str) -> None:
-    """Best-effort stop of OwnTone playback and deselection of all outputs."""
-    if not base_url:
-        return
-    result = stop_and_disable_all(base_url, timeout=3)
-    if result.ok:
-        logging.info("OwnTone player stopped and outputs cleared (%s).", reason)
-        return
-    logging.warning(
-        "OwnTone stop/disable request failed (%s): %s",
-        reason,
-        result.message or "unknown error",
-    )
-
-
 # ── Unified playback-session tracker ─────────────────────────────────────────
 #
 # A single source-vector session model drives idle-stop gating and
@@ -910,7 +806,8 @@ def _start_session_owntone(monitor: "AudioMonitor") -> None:
     monitor._owntone_enabled_ok = False
     monitor._owntone_last_attempt = 0.0
     if monitor.owntone_base_url:
-        _stop_and_disable_owntone(monitor.owntone_base_url, "session start")
+        intents.submit(Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"))
+    get_authority().note_session(True)
     # replay_origin=True unconditionally: harmless for an input-sourced start
     # (is_capturing already satisfies the guard) and required for a
     # replay-sourced start (the origin input's is_capturing is False).
@@ -978,8 +875,8 @@ def _dispatch_session_event(
 
     - session_started: OwnTone new-session output-enable path (via
       new_monitor, see _start_session_owntone) + now-playing publish_start.
-    - session_ended: OwnTone stop-and-disable (the existing
-      _stop_and_disable_owntone path) + now-playing publish_end.
+    - session_ended: all outputs switched off and the player stopped (the
+      outputs.deselect_all intent) + now-playing publish_end.
     - source_changed: now-playing publish_end(prev) + publish_start(new)
       only -- NO output/volume action whatsoever. Applies to
       live-interrupt-of-replay, capture-end -> replay handoff, and
@@ -1007,12 +904,11 @@ def _dispatch_session_event(
             _start_session_owntone(new_monitor)
     elif event == "session_ended":
         _session_nowplaying_end(prev_monitor)
-        # A new session always gets normal default-output behaviour, so the
-        # user-chosen-silence latch (see set_user_silence_latch()) must not
-        # outlive the session it was set during.
-        clear_user_silence_latch()
         if owntone_base_url:
-            _stop_and_disable_owntone(owntone_base_url, "session ended")
+            intents.submit(Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"))
+        # A new session always gets normal default-output behaviour: the
+        # user's choice of silence and the retry back-offs end with it.
+        get_authority().note_session(False)
     elif event == "source_changed":
         _session_nowplaying_end(prev_monitor)
         _session_nowplaying_start(new_monitor)
@@ -1052,279 +948,6 @@ def _teardown_identification_after_replay_end(
         and prev_monitor is not new_monitor
     ):
         prev_monitor._teardown_identification_after_replay()
-
-
-# ── OwnTone-restart reconcile (mechanism 1) ─────────────────────────────────
-#
-# OwnTone can restart mid-session (forced by the hang watchdog below, or by
-# anything else -- a manual `systemctl restart owntone@...`, an OOM kill,
-# etc.) and come back with ALL outputs deselected. session_started is
-# one-shot (it only fires on the {input, replay} source *vector*
-# transitioning from idle to active -- see _SessionTracker above), so a
-# still-active session that loses its outputs mid-flight never re-triggers
-# the new-session output-enable path and nothing else is watching for it.
-#
-# Detection: alternatives considered were (a) an OwnTone uptime/start-time
-# field -- not exposed by either backend's API surface
-# (autostream_owntone.py / autostream_owntone_mini.py have no such field) --
-# and (b) diffing the coordinator's own last-applied output set against
-# OwnTone's current one. (b) is what this implements: every poll cycle, while
-# a session is active, fetch OwnTone's currently-selected outputs and count
-# them. Zero selected outputs sustained for _OwntoneReconcileTracker.
-# ZERO_POLL_THRESHOLD consecutive checks (~3, i.e. a small multiple of
-# POLL_INTERVAL -- long enough to not fire on a single transient empty
-# response, short enough to recover quickly) re-arms the existing
-# _maybe_retry_owntone rate-limited retry machinery (by resetting
-# _owntone_enabled_ok/_owntone_last_attempt on the session's monitor), rather
-# than duplicating its enable-default/apply-selection logic.
-#
-# User-deselect edge: autostream_webui_post_handlers.py's
-# handle_output_update (POST /api/output) applies per-output toggles with no
-# guard against reaching zero selected outputs mid-playback -- i.e. the UI
-# *does* allow a user to manually deselect every output during an active
-# session, so "zero selected" alone cannot distinguish "OwnTone forgot
-# everything" from "the user turned everything off on purpose". This tracker
-# resolves the ambiguity by suppressing a would-be fire for
-# USER_ACTION_GRACE_SECONDS after the most recent note_user_output_action()
-# call (see that function's docstring): a fresh user action means the zero
-# state is presumed intentional and is left alone. This is a heuristic, not a
-# proof of intent -- if a user deselects everything and leaves a session
-# "playing" with no outputs for longer than the grace window, the next
-# reconcile will re-enable the default output, overriding them. This is a
-# deliberate tradeoff (documented rather than solved with a full
-# per-output-id provenance ledger, which would require instrumenting the Web
-# UI POST path more invasively than this single marker call).
-
-
-class _OwntoneReconcileTracker:
-    """Detects "OwnTone restarted/lost state mid-session" and re-arms retry.
-
-    Coordinator-thread only, one instance per run_autostream() invocation
-    (recreated on reload, .reset() on reconnect/resync -- same lifecycle as
-    _SessionTracker). update() is pure (no I/O, no logging) so it can be
-    exercised directly in unit tests with synthetic (selected_count, now,
-    last_user_action_at) sequences; the poll loop is responsible for the
-    actual outputs fetch and for applying the effect when update() returns
-    True (see _reconcile_owntone_outputs_if_wiped()).
-
-    A zero-output state can also be device-initiated: the backend may report
-    an output as deselected because the AirPlay device itself asked to
-    pause (e.g. an Apple TV going to standby), and it keeps playing with no
-    outputs rather than treating that as a fault. update() accepts
-    *device_initiated_pause* so callers can veto a fire in that case without
-    disturbing the zero-streak, the same way the user-action grace window
-    does.
-
-    A zero-output state can also be the user's own deliberate choice: they
-    disabled the last selected output through the Web UI and want silence,
-    not a re-armed default output. update() accepts *user_silenced* (backed
-    by the module-level user_silence_latch_active()) as an independent veto
-    with the same non-destructive semantics as device_initiated_pause -- it
-    does not disturb the zero-streak, so a genuine restart-wipe that follows
-    (latch cleared by an enable or session end) is still caught.
-
-    A zero-output state can also be waiting on the user to enter a PIN: an
-    AirPlay device that needs pairing is deselected by OwnTone rather than
-    left selected-but-erroring. update() accepts *awaiting_pin* as another
-    independent veto with the same non-destructive semantics -- re-arming
-    the retry here would just make the device flash a fresh PIN every retry
-    interval, so it is left alone until the user pairs it via the Web UI.
-    """
-
-    ZERO_POLL_THRESHOLD = 3
-    USER_ACTION_GRACE_SECONDS = 30.0
-
-    def __init__(self) -> None:
-        self._consecutive_zero = 0
-        self._armed = True  # may fire again once a fresh zero-streak starts
-        self._device_pause_notified = False
-        # Edge-detect flag: set True by update() only on the call where a
-        # device-initiated-pause veto first applies, so the poll loop can
-        # log a single line instead of spamming every poll of the veto.
-        self.last_device_pause_notice = False
-        self._user_silenced_notified = False
-        # Same edge-detect discipline as last_device_pause_notice, for the
-        # independent user_silenced veto.
-        self.last_user_silenced_notice = False
-        self._awaiting_pin_notified = False
-        # Same edge-detect discipline as last_device_pause_notice, for the
-        # independent awaiting_pin veto.
-        self.last_awaiting_pin_notice = False
-
-    def reset(self) -> None:
-        self._consecutive_zero = 0
-        self._armed = True
-        self._device_pause_notified = False
-        self.last_device_pause_notice = False
-        self._user_silenced_notified = False
-        self.last_user_silenced_notice = False
-        self._awaiting_pin_notified = False
-        self.last_awaiting_pin_notice = False
-
-    def update(
-        self,
-        *,
-        session_active: bool,
-        selected_count: Optional[int],
-        now: float,
-        last_user_action_at: float,
-        device_initiated_pause: bool = False,
-        user_silenced: bool = False,
-        awaiting_pin: bool = False,
-    ) -> bool:
-        """Advance one check. Returns True iff reconcile should fire now.
-
-        *selected_count* is None when the outputs API could not be reached
-        this cycle (owntone unreachable/erroring) -- treated the same as "no
-        session" for counting purposes: it must never itself count toward
-        the zero streak, since an unreachable API is not evidence of a
-        wiped-outputs restart (and is already handled by the existing
-        owntone-down retry machinery elsewhere).
-        """
-        if not session_active or selected_count is None:
-            self._consecutive_zero = 0
-            self._armed = True
-            self._device_pause_notified = False
-            self.last_device_pause_notice = False
-            self._user_silenced_notified = False
-            self.last_user_silenced_notice = False
-            self._awaiting_pin_notified = False
-            self.last_awaiting_pin_notice = False
-            return False
-
-        if selected_count > 0:
-            self._consecutive_zero = 0
-            self._armed = True
-            self._device_pause_notified = False
-            self.last_device_pause_notice = False
-            self._user_silenced_notified = False
-            self.last_user_silenced_notice = False
-            self._awaiting_pin_notified = False
-            self.last_awaiting_pin_notice = False
-            return False
-
-        # selected_count == 0 while a session is active.
-        self._consecutive_zero += 1
-        self.last_device_pause_notice = False
-        self.last_user_silenced_notice = False
-        self.last_awaiting_pin_notice = False
-        if self._consecutive_zero < self.ZERO_POLL_THRESHOLD:
-            return False
-        if not self._armed:
-            # Already fired for this zero-streak; wait for a nonzero
-            # observation (handled above) before it can fire again.
-            return False
-        if device_initiated_pause:
-            # The device itself asked to pause (e.g. an AirPlay receiver
-            # going to standby) and the backend is playing on into a drained
-            # pipe by design -- do not treat this as a fault. Keep counting
-            # so a genuine wipe that follows (flag cleared) is still caught.
-            self.last_device_pause_notice = not self._device_pause_notified
-            self._device_pause_notified = True
-            return False
-        self._device_pause_notified = False
-        if awaiting_pin:
-            # A deselected output is waiting for the user to enter a PIN --
-            # do not treat this as a fault. Keep counting so a genuine wipe
-            # that follows (the flag cleared, e.g. by pairing completing) is
-            # still caught.
-            self.last_awaiting_pin_notice = not self._awaiting_pin_notified
-            self._awaiting_pin_notified = True
-            return False
-        self._awaiting_pin_notified = False
-        if user_silenced:
-            # The user deliberately disabled the last selected output
-            # through the Web UI -- do not treat the resulting zero-output
-            # state as a fault. Keep counting so a genuine wipe that follows
-            # (latch cleared by an enable or session end) is still caught.
-            self.last_user_silenced_notice = not self._user_silenced_notified
-            self._user_silenced_notified = True
-            return False
-        self._user_silenced_notified = False
-        if (now - last_user_action_at) < self.USER_ACTION_GRACE_SECONDS:
-            # Recent user output action: presume the zero state is
-            # intentional and do not fire, but keep counting/re-checking so
-            # a genuine restart-wipe that happens to follow closely on a
-            # user toggle is still caught once the grace window elapses.
-            return False
-
-        self._armed = False
-        return True
-
-
-def _reconcile_owntone_outputs_if_wiped(
-    tracker: "_OwntoneReconcileTracker",
-    monitor: Optional["AudioMonitor"],
-    session_active: bool,
-    now: float,
-) -> None:
-    """Poll-loop wiring for _OwntoneReconcileTracker: fetch outputs, decide,
-    act.
-
-    Called once per poll cycle regardless of session state so the tracker's
-    internal counters reset cleanly when a session ends, matching
-    _SessionTracker.reset()'s discipline. No-ops (fetches nothing) when there
-    is no active session or no monitor/base_url to check.
-    """
-    selected_count: Optional[int] = None
-    device_paused = False
-    awaiting_pin = False
-    if session_active and monitor is not None and monitor.owntone_base_url:
-        outputs = monitor._get_owntone_outputs()
-        if outputs is not None:
-            selected_count = sum(1 for o in outputs if o.selected)
-            # A single deselected output carrying the flag is sufficient
-            # evidence the zero-output state is device-initiated: a
-            # stereo-group deselect can fan out to sibling outputs that
-            # don't themselves carry it.
-            device_paused = any(
-                (not o.selected) and bool(o.extra_dict().get("paused_by_device"))
-                for o in outputs
-            )
-            awaiting_pin = any(
-                (not o.selected) and bool(getattr(o, "needs_auth_key", False))
-                for o in outputs
-            )
-
-    should_fire = tracker.update(
-        session_active=session_active,
-        selected_count=selected_count,
-        now=now,
-        last_user_action_at=_get_last_user_output_action_at(),
-        device_initiated_pause=device_paused,
-        user_silenced=user_silence_latch_active(),
-        awaiting_pin=awaiting_pin,
-    )
-    if tracker.last_device_pause_notice:
-        logging.info(
-            "Zero-output state is device-initiated (output paused by device); "
-            "leaving outputs as they are."
-        )
-    if tracker.last_awaiting_pin_notice:
-        logging.info(
-            "Zero-output state is waiting for a PIN; leaving outputs as they are."
-        )
-    if tracker.last_user_silenced_notice:
-        logging.info(
-            "Zero-output state was chosen by the user; leaving outputs as they are."
-        )
-    if not should_fire:
-        return
-
-    logging.warning(
-        "OwnTone-restart reconcile: session active with zero selected outputs "
-        "for %d consecutive checks; re-arming output-enable retry for input %s.",
-        tracker.ZERO_POLL_THRESHOLD,
-        monitor.input_index if monitor is not None else "?",
-    )
-    health = autostream_state.store().snapshot().health
-    _set_owntone_selfheal_state(
-        reconcile_fired_count=int(health.reconcile_fired_count) + 1,
-        reconcile_last_fired_at=now,
-    )
-    if monitor is not None:
-        monitor._owntone_enabled_ok = False
-        monitor._owntone_last_attempt = 0.0
 
 
 # ── OwnTone-hang watchdog (mechanism 2) ─────────────────────────────────────
@@ -1435,9 +1058,8 @@ def _fire_owntone_hang_restart(base_url: str, stalled_seconds: float) -> None:
     autostream_admin restart-owntone" invocation the Web UI's owntone-setup
     restart button uses (autostream_webui_page_owntone.py's
     _restart_owntone_worker) -- so the coordinator poll loop (0.5 s cadence)
-    is never blocked on the up-to-20 s subprocess call. Mechanism 1
-    (_reconcile_owntone_outputs_if_wiped) picks up the resulting
-    zero-selected-outputs state on a later poll and re-enables outputs; this
+    is never blocked on the up-to-20 s subprocess call. The output authority
+    notices the restart on a later read and selects the speakers again; this
     function does not attempt to re-enable anything itself.
 
     This is a low-risk fit for the task pool:
@@ -1487,6 +1109,8 @@ def _maybe_run_owntone_hang_watchdog(
     def _reachable() -> bool:
         if not owntone_base_url:
             return False
+        if not autostream_state.store().snapshot().outputs.connected:
+            return False
         return bool(list_outputs(owntone_base_url, timeout=2).ok)
 
     should_fire = watchdog.maybe_fire(
@@ -1515,26 +1139,23 @@ def _maybe_run_owntone_hang_watchdog(
 # Self-heal grouping                                                          #
 # --------------------------------------------------------------------------- #
 #
-# _reconcile_owntone_outputs_if_wiped / _OwntoneReconcileTracker and
 # _OwntoneHangWatchdog / _maybe_run_owntone_hang_watchdog / _fire_owntone_
 # hang_restart (all defined immediately above) are free functions/classes,
-# not AudioMonitor methods. _SelfHeal gathers all three self-heal mechanisms
-# under one namespace so a reader has one place to look for "what self-heals
-# this process," rather than three independently-discovered pieces.
+# not AudioMonitor methods. _SelfHeal gathers the self-heal mechanisms that
+# the coordinator drives under one namespace so a reader has one place to look
+# for "what self-heals this process": the hang watchdog and the output retry
+# (the output authority itself re-selects speakers after a player restart).
 # AudioMonitor._maybe_retry_owntone's substantive logic lives here as
 # _SelfHeal.maybe_retry_owntone() (self -> monitor); AudioMonitor keeps a
 # thin one-line delegate under its original name so every existing call site
 # (m._maybe_retry_owntone(...), patch.object(mon, "_maybe_retry_owntone"))
 # keeps working exactly as before.
 class _SelfHeal:
-    """Namespace grouping the three self-heal mechanisms: zero-output
-    reconcile, hang watchdog, and OwnTone output-retry. See module comment
-    above."""
+    """Namespace grouping the coordinator's self-heal mechanisms: the hang
+    watchdog and the OwnTone output retry. See module comment above."""
 
-    ReconcileTracker = _OwntoneReconcileTracker
     HangWatchdog = _OwntoneHangWatchdog
 
-    reconcile_outputs_if_wiped = staticmethod(_reconcile_owntone_outputs_if_wiped)
     maybe_run_hang_watchdog = staticmethod(_maybe_run_owntone_hang_watchdog)
 
     @staticmethod
@@ -1589,8 +1210,8 @@ class _SelfHeal:
             )
             return
 
-        outputs = monitor._get_owntone_outputs()
-        if outputs is None:
+        snap = autostream_state.store().snapshot().outputs
+        if not snap.connected:
             monitor._owntone_recovery_log.fail(now)
             monitor._throttled_owntone_log(
                 now,
@@ -1599,50 +1220,81 @@ class _SelfHeal:
             )
             return
 
-        # outputs is not None: the outputs probe above just confirmed
-        # owntone-mini is reachable -- exactly the moment to retry a
-        # still-pending pipe-format reconcile, in case a
+        # The authority just confirmed owntone-mini is reachable -- exactly
+        # the moment to retry a still-pending pipe-format reconcile, in case a
         # startup/reconnect-time partial save is still waiting for the
         # backend to come back. Cheap no-op (zero HTTP traffic) whenever
         # nothing is pending, so this costs nothing in the steady state.
         retry_pending_format_reconcile(monitor.owntone_base_url, monitor_status)
 
-        if not monitor._has_any_selected_outputs(outputs):
-            if user_silence_latch_active():
-                # The user deliberately disabled the last selected output
-                # through the Web UI; do not re-apply the default output
-                # while the latch is active (cleared by the user enabling an
-                # output, or by the session ending). The FIFO/format
-                # reconcile work above still ran this cycle -- only the
-                # output-enable/default-apply step is skipped here.
+        volume = _clamped_output_volume(monitor.owntone_volume_percent)
+        if not snap.selected_units():
+            if snap.silence_chosen:
+                # The user chose silence this session (switched the last
+                # speaker off, or a device did); the default speaker is not
+                # switched back on. The FIFO/format reconcile work above
+                # still ran this cycle.
                 return
-            if not monitor._auto_select_default_output(now, outputs, reason="retry"):
+            if any(u.availability == "password" for u in snap.units):
+                monitor._throttled_owntone_log(
+                    now,
+                    logging.INFO,
+                    "An output is waiting for a PIN; not auto-enabling the default output.",
+                )
+                return
+            default_name = (monitor.owntone_output_name or "").strip()
+            default_unit = snap.unit_by_name(default_name) if default_name else None
+            args = {"name": monitor.owntone_output_name or "", "volume": volume}
+            if default_unit is not None:
+                offset_ms = monitor.owntone_output_offsets_ms.get(default_unit.id)
+                if offset_ms is not None:
+                    args["offset_ms"] = int(offset_ms)
+                mode = config_airplay_mode_to_backend(
+                    monitor.owntone_output_airplay_modes.get(default_unit.id))
+                if mode:
+                    args["mode"] = mode
+            reply = intents.submit(Intent("outputs.select_default", args, Origin.SESSION, "coordinator"))
+            if not reply.ok:
+                monitor._log_default_output_refusal(now, default_name, reply)
                 monitor._throttled_owntone_log(
                     now,
                     logging.INFO,
                     "No outputs selected during capture; default fallback not available yet.",
                 )
                 return
-            outputs = monitor._get_owntone_outputs()
-            if outputs is None or not monitor._has_any_selected_outputs(outputs):
-                return
+        if monitor._outputs_boot_seen not in (None, snap.backend_boot):
+            # owntone-mini restarted since the selection was last applied.
+            get_authority().reapply_selected(recovery_volume=volume)
+        monitor._outputs_boot_seen = snap.backend_boot
+        monitor._owntone_recovery_log.ok(now)
+        monitor._owntone_enabled_ok = True
 
-        if monitor._refresh_selected_outputs(outputs):
-            monitor._owntone_recovery_log.ok(now)
-            monitor._owntone_enabled_ok = True
-            # Outputs were just re-applied after a backend restart/state
-            # loss: the backend's queue holds only its startup defaults, so
-            # the on-screen now-playing would show those until the next
-            # natural push. Have the poll loop re-send the current bundle.
-            runtime.request_nowplaying_republish()
+    @staticmethod
+    def note_outputs(monitor: Optional["AudioMonitor"], session_active: bool, now: float) -> None:
+        """Called every coordinator cycle. When a session is active and the
+        output authority has seen the player restart since the selection was
+        last applied, re-arm the output retry and count it (the figures the
+        status reply shows)."""
+        if not session_active or monitor is None or not monitor._owntone_enabled_ok:
             return
-
-        monitor._owntone_recovery_log.fail(now)
-        monitor._throttled_owntone_log(
-            now,
-            logging.WARNING,
-            "OwnTone selected-output refresh failed during capture; will retry.",
+        seen = monitor._outputs_boot_seen
+        if seen is None or seen == autostream_state.store().snapshot().outputs.backend_boot:
+            return
+        monitor._owntone_enabled_ok = False
+        monitor._owntone_last_attempt = 0.0
+        cur = autostream_state.store().snapshot().health
+        _set_owntone_selfheal_state(
+            reconcile_fired_count=cur.reconcile_fired_count + 1,
+            reconcile_last_fired_at=now,
         )
+        logging.warning("OwnTone restarted mid-session; re-applying the selected outputs.")
+
+
+def _clamped_output_volume(value) -> int:
+    try:
+        return max(0, min(100, int(value)))
+    except Exception:
+        return 20
 
 
 def handle_signal(signum, frame):
@@ -2340,6 +1992,9 @@ class AudioMonitor:
         # --- OwnTone retry state ---
         self._owntone_last_attempt: float = 0.0
         self._owntone_enabled_ok: bool = False
+        # The output authority's player-restart marker when the selection was
+        # last applied; a different one later means the player restarted.
+        self._outputs_boot_seen: Optional[str] = None
         self._owntone_recovery_log = runtime.RecoveryLog("OwnTone output-enable")
         self._capture_start_no_output_retry_at: float = 0.0
         self._capture_start_no_output_log_at: float = 0.0
@@ -3431,201 +3086,41 @@ class AudioMonitor:
         ):
             logging.log(level, msg, *args)
 
-    def _get_owntone_outputs(self):
-        """Return OwnTone outputs list, or None if API is unavailable."""
-        if not self.owntone_base_url:
-            return None
-        result = list_outputs(self.owntone_base_url, timeout=3)
-        if not result.ok:
-            return None
-        return list(result.outputs)
-
-    @staticmethod
-    def _selected_output_ids(outputs) -> list[str]:
-        return [
-            str(output.id)
-            for output in outputs
-            if output.selected and output.id
-        ]
-
-    def _has_any_selected_outputs(self, outputs=None) -> bool:
-        """Return True if OwnTone currently has at least one selected output."""
-        if outputs is None:
-            outputs = self._get_owntone_outputs()
-            if outputs is None:
-                return False
-        return any(bool(output.selected) for output in outputs)
-
-    def _auto_select_default_output(
-        self,
-        now: float,
-        outputs=None,
-        reason: str = "auto-select",
-    ) -> bool:
-        """If nothing is selected, auto-enable the configured default output."""
-        if not self.owntone_base_url:
-            return False
-
-        if outputs is None:
-            outputs = self._get_owntone_outputs()
-        if outputs is None:
+    def _log_default_output_refusal(self, now: float, default_name: str, reply) -> None:
+        """The throttled line for a default-output select that was not made."""
+        error = reply.error
+        if error == "no_default":
             self._throttled_owntone_log(
                 now, logging.WARNING,
-                "Could not fetch OwnTone outputs for default fallback (%s).", reason,
+                "No default output configured; cannot apply zero-target fallback.",
             )
-            return False
-        if self._has_any_selected_outputs(outputs):
-            return True
-
-        default_name = (self.owntone_output_name or "").strip()
-        if not default_name:
+        elif error == "not_found":
             self._throttled_owntone_log(
                 now, logging.WARNING,
-                "No default output configured; cannot apply zero-target fallback (%s).",
-                reason,
+                "Default output '%s' not found in OwnTone; cannot apply fallback.", default_name,
             )
-            return False
-
-        default_out = next(
-            (output for output in outputs if str(output.name or "") == default_name),
-            None,
-        )
-        if not default_out or not default_out.id:
-            self._throttled_owntone_log(
-                now, logging.WARNING,
-                "Default output '%s' not found in OwnTone; cannot apply fallback (%s).",
-                default_name, reason,
-            )
-            return False
-
-        if bool(getattr(default_out, "needs_auth_key", False)):
-            # OwnTone deselected this output pending pairing; probing it
-            # again here would make the device re-prompt for a PIN
-            # (e.g. flashing a new one on screen) on every retry interval.
-            # Leave it alone until the user pairs it via the Web UI.
+        elif error == "pin_pending":
             self._throttled_owntone_log(
                 now, logging.INFO,
-                "Default output '%s' is waiting for a PIN; not auto-enabling it (%s).",
-                default_name, reason,
+                "Default output '%s' is waiting for a PIN; not auto-enabling it.", default_name,
             )
-            return False
-
-        try:
-            import autostream_output_usage as _ou
-            _ou.refresh_now("default-output-auto-select", timeout=1.5)
-            _usage = _ou.usage_for_output(default_name)
-            if _usage is not None:
-                logging.info(
-                    "Default output '%s' is in use by %s; skipping auto-select (%s).",
-                    default_name, _usage.owner_name, reason,
-                )
-                return False
-        except Exception:
-            logging.debug("_auto_select_default_output: usage check failed", exc_info=True)
-
-        out_id = str(default_out.id)
-        try:
-            out_volume = int(self.owntone_volume_percent)
-        except Exception:
-            out_volume = 20
-        out_volume = max(0, min(100, out_volume))
-        offset_ms = self.owntone_output_offsets_ms.get(out_id)
-        update_result = update_output(
-            self.owntone_base_url,
-            out_id,
-            enabled=True,
-            volume_percent=out_volume,
-            offset_ms=int(offset_ms) if offset_ms is not None else None,
-            mode=config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_id)),
-            timeout=3,
-        )
-        if not update_result.ok:
-            if update_result.error_code == "pin_required":
-                # Not a failure to escalate: the output needs pairing via
-                # the web interface, and retrying here would just make the
-                # device re-prompt for a PIN.
-                self._throttled_owntone_log(
-                    now,
-                    logging.INFO,
-                    "Default output '%s' requires a PIN; enable it via the web interface (%s).",
-                    default_name,
-                    reason,
-                )
-            else:
-                self._throttled_owntone_log(
-                    now,
-                    logging.WARNING,
-                    "Failed to apply default output settings for '%s' (%s): %s",
-                    default_name,
-                    reason,
-                    update_result.message,
-                )
-            return False
-
-        logging.info(
-            "No outputs selected; auto-enabled default output '%s' (%s).",
-            default_name, reason,
-        )
-        return True
-
-    def _refresh_selected_outputs(self, outputs=None) -> bool:
-        """Re-apply current selected output IDs to nudge OwnTone playback state."""
-        if not self.owntone_base_url:
-            return False
-        try:
-            if outputs is None:
-                outputs = self._get_owntone_outputs()
-            if outputs is None:
-                return False
-            selected_ids = self._selected_output_ids(outputs)
-            if not selected_ids:
-                return False
-            set_result = set_selected_outputs(self.owntone_base_url, selected_ids, timeout=3)
-            if not set_result.ok:
-                logging.warning(
-                    "Failed to refresh selected OwnTone outputs: %s",
-                    set_result.message,
-                )
-                return False
-            refresh_result = refresh_runtime_state(self.owntone_base_url, timeout=3)
-            if not refresh_result.ok and refresh_result.error_code != "unsupported":
-                logging.warning(
-                    "Failed to refresh OwnTone runtime state: %s",
-                    refresh_result.message,
-                )
-                return False
-            outputs_by_id = {str(output.id): output for output in outputs if output.id}
-            try:
-                recovery_volume = int(self.owntone_volume_percent)
-            except Exception:
-                recovery_volume = 20
-            recovery_volume = max(0, min(100, recovery_volume))
-            for out_id in selected_ids:
-                out_key = str(out_id)
-                output = outputs_by_id.get(out_key)
-                if output is None:
-                    continue
-                offset_ms = self.owntone_output_offsets_ms.get(out_key)
-                update_result = update_output(
-                    self.owntone_base_url,
-                    out_key,
-                    volume_percent=recovery_volume,
-                    offset_ms=int(offset_ms) if offset_ms is not None else None,
-                    mode=config_airplay_mode_to_backend(self.owntone_output_airplay_modes.get(out_key)),
-                    timeout=3,
-                )
-                if not update_result.ok:
-                    logging.warning(
-                        "Failed to refresh OwnTone output %s settings: %s",
-                        out_id,
-                        update_result.message,
-                    )
-                    return False
-            logging.info("Refreshed selected OwnTone outputs: %s", selected_ids)
-            return True
-        except Exception as e:
-            logging.warning("Error refreshing selected OwnTone outputs: %s", e)
-            return False
+        elif error == "in_use":
+            self._throttled_owntone_log(
+                now, logging.INFO,
+                "Default output '%s' is in use by %s; skipping auto-select.",
+                default_name, (reply.result or {}).get("owner", "another appliance"),
+            )
+        elif error == "pin_required":
+            self._throttled_owntone_log(
+                now, logging.INFO,
+                "Default output '%s' requires a PIN; enable it via the web interface.", default_name,
+            )
+        else:
+            self._throttled_owntone_log(
+                now, logging.WARNING,
+                "Failed to apply default output settings for '%s': %s",
+                default_name, (reply.result or {}).get("message") or error,
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -4590,11 +4085,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # failure path below, since either one leaving the loop unable to
         # reach the daemon is the same observable outage to an operator.
         monitor_daemon_recovery_log = runtime.RecoveryLog("autostream_monitor connection")
-        # OwnTone-restart reconcile: same fresh-per-(re)start /
-        # .reset()-on-reconnect lifecycle as session_tracker above -- a
-        # stale pre-reload/pre-reconnect zero-selected-outputs streak must
-        # never carry across a resync.
-        owntone_reconcile_tracker = _OwntoneReconcileTracker()
         # Hang watchdog is the deliberate exception: its restart rate limit
         # carries forward across both reload and reconnect (see
         # _carry_forward_hang_watchdog and the reconnect branch below).
@@ -4678,14 +4168,12 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     for m in monitors:
                         m._owntone_enabled_ok = False
                         m._owntone_last_attempt = 0.0
+                        m._outputs_boot_seen = None
                     session_tracker.reset()
-                    # Reconcile's zero-selected-outputs streak is meaningless
-                    # across a resync (session state itself just got reset
-                    # above); the hang watchdog's 10-minute restart rate limit
-                    # is intentionally NOT reset here -- it is a hard global
+                    # The hang watchdog's 10-minute restart rate limit is
+                    # intentionally NOT reset here -- it is a hard global
                     # safety limit that must survive a flapping daemon
                     # connection, not something a reconnect should clear.
-                    owntone_reconcile_tracker.reset()
 
                 status = client.get_status()
                 if status is None:
@@ -4809,12 +4297,11 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     session_prev_monitor, session_new_monitor,
                 )
 
-                # ── OwnTone-restart reconcile + hang watchdog ──────────────────
+                # ── Output restart check + hang watchdog ───────────────────────
                 # Both run every cycle (not gated on started/stopped/session
                 # events above) so a mid-session state loss on an otherwise
                 # steady-state "still playing" cycle is still caught.
-                _reconcile_owntone_outputs_if_wiped(
-                    owntone_reconcile_tracker,
+                _SelfHeal.note_outputs(
                     session_new_monitor,
                     session_source is not None,
                     time.time(),
@@ -4912,9 +4399,11 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 "",
             )
             if teardown_was_capturing and teardown_owntone_base_url:
-                _stop_and_disable_owntone(
-                    teardown_owntone_base_url,
-                    "coordinator teardown",
+                # stop_and_disable_all is a stop and then a deselect of
+                # everything, each bounded by its own write timeout.
+                intents.submit(
+                    Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"),
+                    wait=2 * WRITE_TIMEOUT_S,
                 )
             # Disarm repeat before stop_input below: the
             # daemon also discards the buffer on stop_input of the origin

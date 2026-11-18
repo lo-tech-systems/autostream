@@ -86,7 +86,7 @@ class TestTheDialReadsTheRoutesReplies:
             code, _body, mutation, _mode = _invoke_set(
                 {"dial_id": DIAL_ID, "id": "1", "op": "pin", "pin": pin, "selected": True})
             assert code == 200
-            assert mutation.call_args[0][2]["pin"] == pin
+            assert mutation.call_args[0][0]["pin"] == pin
         for pin in ("123", "123456789", "12a4", "1234\n"):
             assert not cs.PIN_RE.match(pin)
             code, _body, mutation, _mode = _invoke_set(

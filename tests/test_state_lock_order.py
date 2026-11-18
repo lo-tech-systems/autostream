@@ -313,7 +313,6 @@ def test_an_intent_takes_the_authority_lock_before_the_store_lock_and_notifies_a
 def test_the_apply_lock_is_never_requested_under_the_authority_lock(authority):
     a = authority
     _every_intent(a, lambda rows: a.merge_for_tests(rows, boot="b0"))
-    a._reconcile_enabled = True
     a.backend_for_test.rows = [row(1, selected=True), row(2)]
     a.on_outputs_changed()
     a.select("2", state.Origin.USER, volume=30)
@@ -365,7 +364,6 @@ def test_no_backend_call_is_made_under_the_authority_lock(authority):
     backend.rows = [row(1, selected=True, volume_percent=40), group_row(2, "stopped")]
     a._events_enabled = True
     a._source_factory = lambda info, base_url, *, poll_interval: FakeSource()
-    a._reconcile_enabled = True
     a.on_outputs_changed()
     a.step(now=100.0)                     # a probe and a read
     _every_intent(a, lambda rows: a.merge_for_tests(rows, boot="b0"))

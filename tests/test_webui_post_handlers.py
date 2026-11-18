@@ -1392,130 +1392,93 @@ class TestOutputMutationOccupancyProtection:
 
 
 # ---------------------------------------------------------------------------
-# handle_output_update: user-chosen-silence latch
+# handle_output_update: the user's choice of silence
 #
-# The latch (autostream_core.set_user_silence_latch / clear_user_silence_latch
-# / user_silence_latch_active) tells the coordinator's zero-output reconcile
-# and output-enable retry that a zero-output state is the user's own choice.
-# handle_output_update is the only Web UI path that sets/clears it: a
-# successful disable that leaves zero outputs selected sets it, a successful
-# enable clears it.
+# A successful user disable that leaves no speaker selected sets
+# snapshot.outputs.silence_chosen; a successful user enable clears it. A
+# change the coordinator makes itself does not set it, and a PIN submission
+# alone does not touch it.
 # ---------------------------------------------------------------------------
 
-from autostream_core import clear_user_silence_latch, user_silence_latch_active
-
-
-class TestOutputUpdateUserSilenceLatch:
-    def setup_method(self):
-        clear_user_silence_latch()
-
-    def teardown_method(self):
-        clear_user_silence_latch()
-
-    def test_disable_to_zero_outputs_sets_latch(self, tmp_path):
-        """Disabling the last selected output (the list then shows nothing
-        selected) must latch the zero-output state as user-chosen."""
+class TestOutputUpdateSilenceChosen:
+    def test_disable_to_zero_outputs_chooses_silence(self, tmp_path):
+        from output_fakes import snap
         r = _call_output_update(
             {"id": "42", "selected": False}, tmp_path=tmp_path,
             speakers=[_speaker("42", "Kitchen", selected=True)])
         _, data = r["calls"][0]
         assert data["ok"] is True
-        assert user_silence_latch_active() is True
+        assert snap().silence_chosen is True
 
-    def test_disable_with_another_output_still_selected_does_not_set_latch(self, tmp_path):
-        """Disabling one of several outputs, leaving another selected, must
-        not latch -- the zero-output condition never actually occurred."""
+    def test_disable_with_another_output_still_selected_is_not_a_choice(self, tmp_path):
+        from output_fakes import snap
         r = _call_output_update(
             {"id": "42", "selected": False}, tmp_path=tmp_path,
             speakers=[_speaker("42", "Kitchen", selected=True),
                       _speaker("43", "Bedroom", selected=True)])
         _, data = r["calls"][0]
         assert data["ok"] is True
-        assert user_silence_latch_active() is False
+        assert snap().silence_chosen is False
 
-    def test_enable_clears_latch(self, tmp_path):
-        """Enabling an output always clears a previously-set latch, even
-        though this handler does not itself need to check other outputs."""
-        from autostream_core import set_user_silence_latch
-        set_user_silence_latch()
-        assert user_silence_latch_active() is True
+    def test_enable_ends_the_choice(self, tmp_path):
+        from output_fakes import snap
+        speakers = [_speaker("42", "Kitchen", selected=True)]
+        _call_output_update({"id": "42", "selected": False}, tmp_path=tmp_path,
+                            speakers=speakers)
+        assert snap().silence_chosen is True
 
-        r = _call_output_update({"id": "42", "selected": True, "volume": 50}, tmp_path=tmp_path)
+        r = _call_output_update({"id": "42", "selected": True, "volume": 50},
+                                tmp_path=tmp_path, speakers=speakers)
         _, data = r["calls"][0]
         assert data["ok"] is True
-        assert user_silence_latch_active() is False
+        assert snap().silence_chosen is False
 
-    def test_disable_does_not_set_latch_when_mutation_fails(self, tmp_path):
-        """The latch must only ever be set on the success path."""
-        r = _call_output_update(
+    def test_pin_op_alone_does_not_touch_it(self, tmp_path):
+        from output_fakes import snap
+        _call_output_update(
             {"id": "42", "selected": False}, tmp_path=tmp_path,
-            speakers=[_speaker("42", "Kitchen", selected=True)],
-            disable_result=_make_result_err("error", "backend rejected"),
-        )
-        _, data = r["calls"][0]
-        assert data["ok"] is False
-        assert user_silence_latch_active() is False
-
-    def test_pin_op_does_not_touch_latch(self, tmp_path):
-        """A PIN submission never changes output selection, so it must not
-        set or clear the latch."""
-        from autostream_core import set_user_silence_latch
-        set_user_silence_latch()
+            speakers=[_speaker("42", "Kitchen", selected=True)])
+        assert snap().silence_chosen is True
         r = _call_output_update(
-            {"id": "1", "op": "pin", "pin": "1234"},
+            {"id": "42", "op": "pin", "pin": "1234"},
             tmp_path=tmp_path,
             pin_result=_make_result_ok(),
         )
         _, data = r["calls"][0]
         assert data["ok"] is True
-        assert user_silence_latch_active() is True
+        assert snap().silence_chosen is True
 
 
 # ---------------------------------------------------------------------------
-# Output changes: who is acting (origin) decides the bookkeeping
-#
-# A user's change notes the action for the coordinator and may set or clear
-# the silence latch; a change the coordinator makes itself does none of it.
-# A PIN submission counts as a user action but never touches the latch.
+# Output changes: who is acting (origin) decides whether silence is chosen
 # ---------------------------------------------------------------------------
 
 class TestOutputChangeOrigin:
-    @pytest.fixture
-    def latch(self, monkeypatch):
-        import autostream_output_intents as oi
-        seen = []
-        monkeypatch.setitem(oi._latch, "note", lambda: seen.append("note"))
-        monkeypatch.setitem(oi._latch, "set", lambda: seen.append("set"))
-        monkeypatch.setitem(oi._latch, "clear", lambda: seen.append("clear"))
-        return seen
-
-    def test_system_initiated_performs_no_bookkeeping(self, player_writes, latch):
-        """Coordinator mutations (auto-select/reconcile) must not touch the
-        reconcile timestamp or the user-silence latch."""
+    def test_coordinator_switch_off_is_not_a_choice_of_silence(self, player_writes):
         from fake_store import FakeStore
+        from output_fakes import snap
         FakeStore().outputs([_speaker("42", "Kitchen", selected=True)])
-        # Disable-to-zero would set the latch for a user.
         result = _coordinator_change({"id": "42", "selected": False})
         assert result["ok"] is True
-        assert latch == []
+        assert snap().silence_chosen is False
 
-    def test_user_initiated_pin_op_notes_action_but_not_latch(self, player_writes, latch):
-        """Pin submissions count toward the reconcile grace timestamp but
-        never touch the latch."""
+    def test_user_pin_op_leaves_the_choice_alone(self, player_writes):
         from fake_store import FakeStore
+        from output_fakes import snap
         FakeStore().outputs([_speaker("42", "Kitchen")])
         result = _am.submit_output_change(
             {"id": "42", "op": "pin", "pin": "1234"},
             requester="webui", pin_requester="webui")
         assert result["ok"] is True
-        assert latch == ["note"]
+        assert snap().silence_chosen is False
 
-    def test_user_disable_to_zero_notes_then_sets_the_latch(self, player_writes, latch):
+    def test_user_disable_to_zero_chooses_silence(self, player_writes):
         from fake_store import FakeStore
+        from output_fakes import snap
         FakeStore().outputs([_speaker("42", "Kitchen", selected=True)])
         _am.submit_output_change(
             {"id": "42", "selected": False}, requester="webui", pin_requester="webui")
-        assert latch == ["note", "set"]
+        assert snap().silence_chosen is True
 
 
 # ---------------------------------------------------------------------------

@@ -270,9 +270,10 @@ def test_a_read_that_changes_nothing_makes_no_call(outputs):
     assert outputs.calls == []
 
 
-def test_a_read_that_moves_the_list_hints_everyone(outputs):
-    outputs.rig.fake.outputs([outputs.row("1", "Speaker A", selected=True), outputs.row("2", "Speaker B")])
-    assert outputs.calls == [(("outputs",), None)]
+def test_a_speaker_appearing_in_a_read_hints_everyone_of_all_three(outputs):
+    outputs.rig.fake.outputs([outputs.row("1", "Speaker A"), outputs.row("2", "Speaker B"),
+                              outputs.row("3", "Speaker C")])
+    assert outputs.calls == [(("outputs",), None), (("volume",), None), (("mute",), None)]
 
 
 def test_a_dial_s_own_switch_on_hints_the_list_then_the_volume_and_not_that_dial(outputs):
@@ -290,8 +291,7 @@ def test_a_volume_change_alone_hints_only_the_volume(outputs):
 
 
 def test_a_mute_alone_hints_only_the_mute(outputs):
-    outputs.rig.fake.outputs([outputs.row("1", "Speaker A", selected=True, volume_percent=20),
-                              outputs.row("2", "Speaker B")])
+    outputs.authority.select("1", state.Origin.USER, volume=20)
     outputs.forget()
     outputs.authority.mute_all(state.Origin.USER, requester="dial:abc-1")
     assert outputs.calls == [(("mute",), "abc-1")]

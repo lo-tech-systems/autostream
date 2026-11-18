@@ -1096,31 +1096,215 @@ class TestPlayerServiceBackend:
 
 
 # ---------------------------------------------------------------------------
-# Reconcile is built but off
+# Reconcile: reported against desired
 # ---------------------------------------------------------------------------
 
-class TestWhileReconcileIsOff:
-    def test_a_change_made_on_the_player_is_followed(self, w):
-        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
-        w.t[0] += 10
-        merge(w, [row(1, selected=True, volume_percent=55), row(2, selected=True, volume_percent=20)])
-        p = snap()
-        assert p.unit("1").volume == 55 and p.unit("2").selected and p.unit("2").volume == 20
-        assert p.unit("2").cause is Origin.BACKEND
+def put(w, rows, **kw):
+    """A read that returns *rows* now, and keeps returning them to the safety read."""
+    w.fb.rows = list(rows)
+    merge(w, rows, **kw)
+
+
+def at(w, seconds):
+    """Run the worker's timers *seconds* after the start."""
+    w.t[0] = T0 + seconds
+    w.a.step(now=w.t[0])
+
+
+def selects(w):
+    return [(uid, f) for uid, f in w.fb.updates() if f.get("enabled") is True]
+
+
+class TestReconcile:
+    def test_after_a_player_restart_a_selected_unit_is_selected_again_after_two_seconds(self, w, caplog):
+        put(w, [group_row(1, "streaming", selected=True, volume_percent=40)], boot="b0")
+        put(w, [group_row(1, "stopped", selected=False)], boot="b1")
+        at(w, 0.1)
+        assert selects(w) == []
+        with caplog.at_level(logging.WARNING, logger="autostream.outputs"):
+            at(w, 2.5)
+        (uid, kw), = selects(w)
+        assert uid == "1" and kw["volume_percent"] == 40
+        assert "restored after the player restarted: 1 output(s)" in caplog.text
+
+    def test_a_player_that_is_unreachable_is_left_alone(self, w):
+        put(w, [group_row(1, "streaming", selected=True)], boot="b0")
+        put(w, [group_row(1, "stopped", selected=False)], boot="b1")
+        w.a.mark_unreachable_for_tests()
+        at(w, 0.1)
+        at(w, 5)
         assert w.fb.calls == []
 
-    def test_no_command_is_issued_by_a_step(self, w):
-        merge(w, [group_row(1, "stopped", selected=False)])
-        w.a.select("1", Origin.USER)
+    def test_a_user_deselect_is_never_undone(self, w):
+        put(w, [group_row(1, "streaming", selected=True)])
+        w.a.deselect("1", Origin.USER)
         w.fb.calls.clear()
-        for i in range(10):
-            w.a.step(now=T0 + 5 * i)
+        put(w, [group_row(1, "stopped", selected=False)])
+        for s in (0.1, 3, 6):
+            at(w, s)
+        assert w.fb.calls == []
+
+    def test_a_unit_waiting_for_a_pin_is_not_selected_again(self, w):
+        put(w, [group_row(1, "streaming", selected=True)], boot="b0")
+        put(w, [group_row(1, "password", selected=False)], boot="b1")
+        for s in (0.1, 3, 6):
+            at(w, s)
+        assert selects(w) == []
+        assert snap().unit("1").availability == "password"
+
+    def test_a_unit_that_is_starting_is_waited_for(self, w):
+        put(w, [group_row(1, "streaming", selected=True)], boot="b0")
+        put(w, [group_row(1, "startup", selected=False)], boot="b1")
+        for s in (0.1, 3, 6):
+            at(w, s)
+        assert selects(w) == []
+
+    def test_a_lost_select_is_sent_again_after_two_seconds(self, w):
+        put(w, [group_row(1, "stopped")])
+        w.a.select("1", Origin.USER, volume=30)
+        w.fb.calls.clear()
+        w.t[0] += 3                                   # past the debounce after the write
+        put(w, [group_row(1, "stopped", selected=False)])
+        at(w, 3.1)
+        assert selects(w) == []
+        at(w, 6)
+        assert len(selects(w)) == 1
+
+    def test_a_write_still_in_flight_is_not_second_guessed(self, w):
+        put(w, [group_row(1, "stopped")])
+        w.a.select("1", Origin.USER, volume=30)
+        w.fb.calls.clear()
+        w.a._inflight = 1                              # the apply thread is on a write
+        put(w, [group_row(1, "stopped", selected=False)])
+        for s in (0.1, 3, 6):
+            at(w, s)
+        w.a._inflight = 0
+        assert selects(w) == []
+        assert snap().unit("1").selected is True
+
+    def test_a_deselected_unit_that_the_player_still_shows_selected_is_deselected_again(self, w):
+        put(w, [group_row(1, "streaming", selected=True)])
+        w.a.deselect("1", Origin.USER)
+        w.fb.calls.clear()
+        w.t[0] += 3
+        put(w, [group_row(1, "streaming", selected=True)])
+        at(w, 3.1)
+        assert w.fb.updates() == []
+        at(w, 6)
+        assert w.fb.updates() == [("1", dict(enabled=False, timeout=3.0))]
+
+    def test_a_failed_start_is_retried_after_ten_then_twenty_then_forty_then_sixty_seconds(self, w):
+        put(w, [group_row(1, "stopped")])
+        w.a.note_session(True)
+        w.fb.default = error("http_error")
+        w.a.select("1", Origin.SESSION, volume=30)
+        put(w, [group_row(1, "failed", selected=False)])
+        u = w.a._units["1"]
+        seen = []
+        for _ in range(5):
+            seen.append(u.retry_at - T0)
+            before = len(selects(w))
+            at(w, seen[-1] - 0.5)
+            assert len(selects(w)) == before
+            at(w, seen[-1] + 0.01)
+            assert len(selects(w)) == before + 1
+        assert [round(x) for x in seen] == [10, 30, 70, 130, 190]
+        assert snap().start_failure.seq == 1                    # published once, not once per retry
+
+    def test_a_session_end_clears_the_back_off(self, w):
+        put(w, [group_row(1, "stopped")])
+        w.a.note_session(True)
+        w.fb.default = error("http_error")
+        w.a.select("1", Origin.SESSION, volume=30)
+        assert w.a._units["1"].retry_at is not None
+        w.a.note_session(False)
+        u = w.a._units["1"]
+        assert u.retry_at is None and u.retry_backoff == 10.0
+
+    def test_a_user_select_that_timed_out_and_never_started_is_retried(self, w):
+        put(w, [group_row(1, "stopped")])
+        w.a.note_session(True)
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        put(w, [group_row(1, "stopped", selected=False)])
+        at(w, 121)
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "failed"
+        assert snap().start_failure.reason == "timed_out"
+        assert w.a._units["1"].retry_at is not None
+
+    def test_a_pair_whose_member_failed_is_selected_again_on_the_failed_back_off(self, w):
+        pair = group_row(1, "streaming", selected=True, group_role="pair",
+                         speakers=SpeakersSummary(ids=("a", "b"), count=2, state="failed"))
+        put(w, [pair])
+        w.a.note_session(True)
+        at(w, 0.1)
+        assert selects(w) == []
+        at(w, 11)
+        assert len(selects(w)) == 1
+
+    def test_a_player_without_group_fields_adopts_its_own_deselect(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.t[0] += 5
+        put(w, [row(1, selected=False, volume_percent=40)])
+        at(w, 5.1)
+        u = snap().unit("1")
+        assert u.selected is False and u.cause is Origin.BACKEND
+        assert w.fb.calls == []
+
+    def test_a_player_without_group_fields_reselects_only_after_a_restart(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)], boot="b0")
+        put(w, [row(1, selected=False)], boot="b1")
+        at(w, 0.1)
+        at(w, 2.5)
+        assert len(selects(w)) == 1
+
+    def test_a_muted_unit_that_reads_louder_is_silenced_again_when_the_player_reports_device_events(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        w.a._delivers_device_events = True
+        w.fb.calls.clear()
+        w.t[0] += 5
+        put(w, [row(1, selected=True, volume_percent=40)])
+        at(w, 5.1)
+        assert w.fb.updates() == []
+        at(w, 8)
+        assert w.fb.updates() == [("1", dict(volume_percent=0, timeout=3.0))]
+        assert snap().unit("1").muted is True
+
+    def test_without_device_events_a_louder_read_on_a_muted_unit_ends_the_mute(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.t[0] += 5
+        put(w, [row(1, selected=True, volume_percent=40)])
+        at(w, 5.1)
+        u = snap().unit("1")
+        assert u.muted is False and u.volume == 40 and u.cause is Origin.BACKEND
+        assert w.fb.calls == []
+
+    def test_a_level_changed_on_the_player_is_adopted_without_a_write(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.t[0] += 5
+        put(w, [row(1, selected=True, volume_percent=55)])
+        at(w, 5.1)
+        assert snap().unit("1").volume == 55
         assert w.fb.calls == []
 
     def test_a_level_written_a_moment_ago_is_not_overwritten_by_a_stale_read(self, w):
-        merge(w, [row(1, selected=True, volume_percent=40)])
+        put(w, [row(1, selected=True, volume_percent=40)])
         w.a.set_volume("1", 70, Origin.USER)
-        merge(w, [row(1, selected=True, volume_percent=40)])      # a read begun before the write
+        put(w, [row(1, selected=True, volume_percent=40)])
+        at(w, 0.5)
+        assert snap().unit("1").volume == 70
+
+    def test_a_level_whose_write_is_still_queued_is_not_overwritten_by_a_stale_read(self, w, monkeypatch):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        # Leave the write in the queue, as when the apply thread has not got to it.
+        monkeypatch.setattr(w.a, "_after_intent", lambda: None)
+        w.a.set_volume("1", 70, Origin.USER)
+        assert w.a._wq
+        at(w, 5.0)
         assert snap().unit("1").volume == 70
 
 
@@ -1182,7 +1366,7 @@ class TestRealThreads:
 
     def test_each_unit_keeps_its_own_queued_write(self, live):
         live.fb.rows = [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=40)]
-        live.a.on_outputs_changed()
+        live.a.select("2", Origin.USER, volume=40).outcome.result(5)
         assert wait_for(lambda: snap().unit("2").selected)
         live.fb.calls.clear()
         live.fb.gate = threading.Event()
@@ -1227,7 +1411,6 @@ class TestRealThreads:
             t.name in ("outputs-authority", "outputs-apply") and t.is_alive() for t in threading.enumerate()))
 
     def test_a_change_pushed_by_the_source_is_read_and_merged(self, live):
-        live.fb.rows = [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=15)]
+        live.fb.rows = [row(1, selected=True, volume_percent=55), row(2)]
         live.a.on_outputs_changed()
-        assert wait_for(lambda: snap().unit("2").selected)
-        assert snap().unit("2").volume == 15
+        assert wait_for(lambda: snap().unit("1").volume == 55)

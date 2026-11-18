@@ -1066,151 +1066,39 @@ class TestUpdateLivePlatformLogLevel:
 
 
 # ---------------------------------------------------------------------------
-# _auto_select_default_output: default-output fallback
+# The default-output fallback asked for by the retry path. The choice itself
+# (name lookup, occupancy, the write) is the outputs.select_default handler,
+# covered in tests/test_output_intents.py.
 # ---------------------------------------------------------------------------
 
-def _make_output(name="Test Speaker", out_id="1", selected=False, needs_auth_key=False):
-    out = MagicMock()
-    out.name = name
-    out.id = out_id
-    out.selected = selected
-    out.needs_auth_key = needs_auth_key
-    out.pin_pending = False
-    return out
+class TestDefaultOutputRequest:
+    def _retry(self, mon, rows):
+        from fake_store import FakeStore
+        FakeStore().outputs(rows)
+        mon.is_capturing = True
+        mon._owntone_enabled_ok = False
+        mon._owntone_last_attempt = 0.0
+        fifo_ok = MagicMock(ok=True, message="")
+        with patch.object(core, "reconcile_fifo_with_backend", return_value=fifo_ok),              patch.object(core, "retry_pending_format_reconcile"),              patch.object(core.intents, "submit") as submit_mock:
+            core._SelfHeal.maybe_retry_owntone(mon, time.time())
+        return submit_mock
 
-
-class TestAutoSelectDefaultOutput:
-    def test_returns_false_when_no_base_url(self):
-        mon = _make_monitor(owntone_base_url="")
-        result = mon._auto_select_default_output(time.time())
-        assert result is False
-
-    def test_returns_true_when_output_already_selected(self):
-        mon = _make_monitor()
-        selected_out = _make_output(selected=True)
-        with patch.object(mon, "_get_owntone_outputs", return_value=[selected_out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=True):
-            result = mon._auto_select_default_output(time.time())
-        assert result is True
-
-    def test_returns_false_when_outputs_fetch_fails(self):
-        mon = _make_monitor()
-        with patch.object(mon, "_get_owntone_outputs", return_value=None):
-            result = mon._auto_select_default_output(time.time())
-        assert result is False
-
-    def test_returns_false_when_no_default_name_configured(self):
-        mon = _make_monitor(owntone_output_name="")
-        out = _make_output(selected=False)
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False):
-            result = mon._auto_select_default_output(time.time())
-        assert result is False
-
-    def test_returns_false_when_named_output_not_found(self):
-        mon = _make_monitor(owntone_output_name="Missing Speaker")
-        out = _make_output(name="Other Speaker", selected=False)
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False):
-            result = mon._auto_select_default_output(time.time())
-        assert result is False
-
-    def test_calls_update_output_for_default(self):
+    def test_an_unselected_default_is_asked_for_with_its_volume(self):
+        from output_fakes import row
         mon = _make_monitor(owntone_output_name="Test Speaker", owntone_volume_percent=42)
-        out = _make_output(name="Test Speaker", out_id="77", selected=False)
-        ok_result = MagicMock()
-        ok_result.ok = True
-        ok_result.message = ""
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
-             patch.object(core, "update_output", return_value=ok_result) as mock_update:
-            result = mon._auto_select_default_output(time.time())
-        assert result is True
-        mock_update.assert_called_once()
-        call_kwargs = mock_update.call_args[1]
-        assert call_kwargs["enabled"] is True
-        assert call_kwargs["volume_percent"] == 42
+        submit_mock = self._retry(mon, [row("77", "Test Speaker")])
+        submit_mock.assert_called_once()
+        intent = submit_mock.call_args.args[0]
+        assert intent.name == "outputs.select_default"
+        assert intent.args["name"] == "Test Speaker"
+        assert intent.args["volume"] == 42
 
-    def test_returns_false_when_update_output_fails(self):
+    def test_a_selected_output_is_left_alone(self):
+        from output_fakes import row
         mon = _make_monitor(owntone_output_name="Test Speaker")
-        out = _make_output(name="Test Speaker", out_id="77", selected=False)
-        fail_result = MagicMock()
-        fail_result.ok = False
-        fail_result.message = "timeout"
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
-             patch.object(core, "update_output", return_value=fail_result):
-            result = mon._auto_select_default_output(time.time())
-        assert result is False
-
-    def test_skips_auto_select_when_output_occupied(self):
-        import autostream_output_usage as _ou
-        mon = _make_monitor(owntone_output_name="Test Speaker")
-        out = _make_output(name="Test Speaker", out_id="77", selected=False)
-        ok_result = MagicMock()
-        ok_result.ok = True
-        usage = MagicMock()
-        usage.owner_name = "living-room"
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
-             patch.object(_ou, "refresh_now"), \
-             patch.object(_ou, "usage_for_output", return_value=usage), \
-             patch.object(core, "update_output", return_value=ok_result) as mock_update:
-            result = mon._auto_select_default_output(time.time())
-        assert result is False
-        mock_update.assert_not_called()
-
-    def test_auto_select_proceeds_when_output_not_occupied(self):
-        import autostream_output_usage as _ou
-        mon = _make_monitor(owntone_output_name="Test Speaker", owntone_volume_percent=30)
-        out = _make_output(name="Test Speaker", out_id="77", selected=False)
-        ok_result = MagicMock()
-        ok_result.ok = True
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
-             patch.object(_ou, "refresh_now"), \
-             patch.object(_ou, "usage_for_output", return_value=None), \
-             patch.object(core, "update_output", return_value=ok_result) as mock_update:
-            result = mon._auto_select_default_output(time.time())
-        assert result is True
-        mock_update.assert_called_once()
-
-    def test_auto_select_fails_open_when_usage_import_fails(self):
-        """If autostream_output_usage cannot be imported, auto-select continues."""
-        mon = _make_monitor(owntone_output_name="Test Speaker")
-        out = _make_output(name="Test Speaker", out_id="77", selected=False)
-        ok_result = MagicMock()
-        ok_result.ok = True
-        import builtins
-        real_import = builtins.__import__
-        def _block_ou(name, *args, **kwargs):
-            if name == "autostream_output_usage":
-                raise ImportError("not available")
-            return real_import(name, *args, **kwargs)
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
-             patch.object(core, "update_output", return_value=ok_result) as mock_update, \
-             patch("builtins.__import__", side_effect=_block_ou):
-            result = mon._auto_select_default_output(time.time())
-        assert result is True
-        mock_update.assert_called_once()
-
-    def test_refresh_now_called_before_occupancy_check(self):
-        import autostream_output_usage as _ou
-        mon = _make_monitor(owntone_output_name="Test Speaker")
-        out = _make_output(name="Test Speaker", out_id="77", selected=False)
-        call_order = []
-        ok_result = MagicMock()
-        ok_result.ok = True
-        with patch.object(mon, "_get_owntone_outputs", return_value=[out]), \
-             patch.object(mon, "_has_any_selected_outputs", return_value=False), \
-             patch.object(_ou, "refresh_now",
-                          side_effect=lambda *a, **k: call_order.append("refresh")), \
-             patch.object(_ou, "usage_for_output",
-                          side_effect=lambda *a, **k: call_order.append("check") or None), \
-             patch.object(core, "update_output", return_value=ok_result):
-            mon._auto_select_default_output(time.time())
-        assert call_order == ["refresh", "check"]
+        submit_mock = self._retry(mon, [row("77", "Test Speaker", selected=True)])
+        submit_mock.assert_not_called()
+        assert mon._owntone_enabled_ok is True
 
 
 # ---------------------------------------------------------------------------
@@ -1234,7 +1122,7 @@ class TestCaptureStartOrdering:
     def test_started_does_not_touch_owntone(self):
         """No OwnTone output action of any kind fires from this per-input callback."""
         mon = _make_monitor(owntone_base_url="http://localhost:3689")
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(mon, "_maybe_retry_owntone") as retry_mock:
             mon._on_capture_started()
         stop_mock.assert_not_called()
@@ -1250,7 +1138,7 @@ class TestCaptureStopOrdering:
     def test_stopped_does_not_touch_owntone_or_nowplaying(self):
         mon = _make_monitor(owntone_base_url="http://localhost:3689")
         mock_client = MagicMock(spec=MonitorClient)
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(core, "any_monitor_capturing", return_value=False):
             mon._on_capture_stopped(mock_client)
         stop_mock.assert_not_called()

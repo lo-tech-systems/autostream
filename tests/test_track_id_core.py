@@ -1164,7 +1164,7 @@ class TestCaptureStopReset:
             ))
         client = MagicMock(spec=MonitorClient)
         with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_snapshot.state == STATE_WAITING
 
@@ -1173,7 +1173,7 @@ class TestCaptureStopReset:
         mon = _active_monitor()
         client = MagicMock(spec=MonitorClient)
         with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_snapshot.state == STATE_DISABLED
 
@@ -1187,7 +1187,7 @@ class TestCaptureStopReset:
         mon._ti_next_attempt_reason = "match"
         client = MagicMock(spec=MonitorClient)
         with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_next_attempt == 0.0
         assert mon._ti_next_attempt_reason == ""
@@ -1201,7 +1201,7 @@ class TestCaptureStopReset:
         gen_before = mon._ti_generation
         client = MagicMock(spec=MonitorClient)
         with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_generation == gen_before + 1
 
@@ -1241,7 +1241,7 @@ class TestCaptureStopReset:
         # Call stop while worker is blocked: bumps generation.
         client = MagicMock(spec=MonitorClient)
         with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         waiting_snap = mon._ti_snapshot
@@ -1289,7 +1289,7 @@ class TestCaptureStoppedReplayOriginGuard:
         client = MagicMock(spec=MonitorClient)
 
         with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         assert mon._ti_generation == gen_before
@@ -1308,7 +1308,7 @@ class TestCaptureStoppedReplayOriginGuard:
         client = MagicMock(spec=MonitorClient)
 
         with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         assert mon._ti_generation == gen_before + 1
@@ -1330,7 +1330,7 @@ class TestCaptureStoppedReplayOriginGuard:
 
         with caplog.at_level(logging.INFO), \
              patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         assert any(
@@ -1350,7 +1350,7 @@ class TestCaptureStoppedReplayOriginGuard:
 
         with caplog.at_level(logging.DEBUG), \
              patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core, "_stop_and_disable_owntone"):
+             patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         debug_messages = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
@@ -2432,7 +2432,7 @@ class TestReplayEndTeardown:
             _teardown_identification_after_replay_end,
         )
         with patch.object(core, "_start_session_owntone"), \
-             patch.object(core, "_stop_and_disable_owntone") as stop, \
+             patch.object(core.intents, "submit") as stop, \
              patch.object(core, "_session_nowplaying_end") as np_end, \
              patch.object(core, "_session_nowplaying_start"):
             _dispatch_session_event(
@@ -2513,11 +2513,11 @@ class TestReplayEndTeardown:
 
     def test_session_ended_still_stops_owntone_and_publishes_end(self):
         mon = self._origin()
-        core.set_user_silence_latch()
         stop, np_end = self._end(mon)
-        stop.assert_called_once_with("http://owntone.invalid", "session ended")
+        stop.assert_called_once()
+        intent = stop.call_args.args[0]
+        assert intent.name == "outputs.deselect_all"
         np_end.assert_called_once_with(mon)
-        assert core.user_silence_latch_active() is False
 
     def test_live_interrupt_by_another_input_tears_down_the_old_origin(self):
         origin = self._origin(input_index=1)
@@ -2545,7 +2545,7 @@ class TestReplayEndTeardown:
         mon = self._origin()
         gen = mon._ti_generation
         snap = mon._ti_snapshot
-        with patch.object(core, "_stop_and_disable_owntone"), \
+        with patch.object(core.intents, "submit"), \
              patch.object(core, "_session_nowplaying_end"):
             _dispatch_session_event(
                 "session_ended", mon, None, "http://owntone.invalid",

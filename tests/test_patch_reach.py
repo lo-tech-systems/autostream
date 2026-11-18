@@ -465,7 +465,6 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_webui_dial_outputs.py', 2, 'autostream_player_service', 'config_airplay_mode_to_backend'),
     ('test_webui_dial_state_push.py', 1, 'autostream_dials', 'parse_dial_entries'),
     ('test_webui_dial_state_push.py', 1, 'autostream_webui_dials', 'enqueue_fanout'),
-    ('test_webui_dial_state_push.py', 2, 'autostream_player_service', 'update_output'),
     ('test_webui_dial_state_push.py', 2, 'autostream_webui_api', 'send_json'),
     ('test_webui_dial_state_push.py', 2, 'autostream_webui_dials', 'enqueue_fanout'),
     ('test_webui_dial_warnings_push.py', 2, 'autostream_webui_api', 'send_json'),

@@ -74,6 +74,7 @@ from autostream_core import (
 from autostream_repeat import publish_from_daemon as _set_repeat_status
 from autostream_session import publish as _set_session_state
 import autostream_state
+from autostream_state import Origin
 
 
 def get_session_state() -> dict:
@@ -813,6 +814,13 @@ class TestSessionTrackerVector:
         assert new is mon1
 
 
+def _assert_deselect_all(submit_mock):
+    submit_mock.assert_called_once()
+    intent = submit_mock.call_args.args[0]
+    assert intent.name == "outputs.deselect_all"
+    assert intent.origin == Origin.SESSION
+
+
 class TestDispatchSessionEvent:
     """_dispatch_session_event(): the poll loop's single event -> side-effect
     mapping. Patches the underlying primitives so each event's action set can
@@ -824,7 +832,7 @@ class TestDispatchSessionEvent:
     def test_session_started_input_sourced_invokes_output_enable_once(self):
         mon = self._mon(owntone_base_url=BASE_URL)
         with patch.object(core, "_start_session_owntone") as start_mock, \
-             patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+             patch.object(core.intents, "submit") as stop_mock, \
              patch.object(mon, "_nowplaying_publisher") as pub:
             _dispatch_session_event("session_started", None, mon, BASE_URL)
         start_mock.assert_called_once_with(mon)
@@ -846,17 +854,17 @@ class TestDispatchSessionEvent:
     def test_session_ended_stops_and_disables_once(self):
         """Disarm-during-replay (or any session end) -> stop fired exactly once."""
         mon = self._mon(owntone_base_url=BASE_URL)
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(core, "_start_session_owntone") as start_mock, \
              patch.object(mon, "_nowplaying_publisher") as pub:
             _dispatch_session_event("session_ended", mon, None, BASE_URL)
-        stop_mock.assert_called_once_with(BASE_URL, "session ended")
+        _assert_deselect_all(stop_mock)
         start_mock.assert_not_called()
         pub.publish_end.assert_called_once()
 
     def test_session_ended_without_base_url_skips_stop(self):
         mon = self._mon(owntone_base_url=BASE_URL)
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(mon, "_nowplaying_publisher"):
             _dispatch_session_event("session_ended", mon, None, "")
         stop_mock.assert_not_called()
@@ -867,7 +875,7 @@ class TestDispatchSessionEvent:
         touch OwnTone output selection or volume."""
         prev_mon = self._mon(input_index=1, owntone_base_url=BASE_URL)
         new_mon = self._mon(input_index=2, owntone_base_url=BASE_URL)
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(core, "_start_session_owntone") as start_mock, \
              patch.object(prev_mon, "_nowplaying_publisher") as prev_pub, \
              patch.object(new_mon, "_nowplaying_publisher") as new_pub:
@@ -878,7 +886,7 @@ class TestDispatchSessionEvent:
         new_pub.publish_start.assert_called_once()
 
     def test_none_event_is_a_no_op(self):
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(core, "_start_session_owntone") as start_mock:
             _dispatch_session_event(None, None, None, BASE_URL)
         stop_mock.assert_not_called()
@@ -951,7 +959,7 @@ class TestStartSessionOwntone:
         retry silently no-ops (the "replay never enables outputs" symptom)."""
         mon = _make_monitor(owntone_base_url=BASE_URL)
         mon.is_capturing = False
-        with patch.object(core, "_stop_and_disable_owntone"), \
+        with patch.object(core.intents, "submit"), \
              patch.object(mon, "_maybe_retry_owntone") as retry_mock:
             _start_session_owntone(mon)
         retry_mock.assert_called_once()
@@ -961,7 +969,7 @@ class TestStartSessionOwntone:
         mon = _make_monitor(owntone_base_url=BASE_URL)
         mon._owntone_enabled_ok = True
         mon._owntone_last_attempt = time.time()
-        with patch.object(core, "_stop_and_disable_owntone"), \
+        with patch.object(core.intents, "submit"), \
              patch.object(mon, "_maybe_retry_owntone"):
             _start_session_owntone(mon)
         assert mon._owntone_enabled_ok is False
@@ -969,14 +977,14 @@ class TestStartSessionOwntone:
 
     def test_clears_previous_output_selection(self):
         mon = _make_monitor(owntone_base_url=BASE_URL)
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(mon, "_maybe_retry_owntone"):
             _start_session_owntone(mon)
-        stop_mock.assert_called_once_with(BASE_URL, "session start")
+        _assert_deselect_all(stop_mock)
 
     def test_no_base_url_skips_stop_but_still_retries(self):
         mon = _make_monitor(owntone_base_url="")
-        with patch.object(core, "_stop_and_disable_owntone") as stop_mock, \
+        with patch.object(core.intents, "submit") as stop_mock, \
              patch.object(mon, "_maybe_retry_owntone") as retry_mock:
             _start_session_owntone(mon)
         stop_mock.assert_not_called()

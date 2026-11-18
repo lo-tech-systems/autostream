@@ -17,7 +17,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
 
 import autostream_mute_state as mute_state
 import autostream_output_usage as output_usage
@@ -28,25 +27,6 @@ from autostream_state.outputs import WriteOutcome, get_authority, wait_outcome
 
 _OWNER = "autostream_output_intents"
 _DEFAULT_VOLUME = 50
-
-# The coordinator keeps a record of what the user last did to the outputs.
-# It cannot be imported from here, so it hands in the three functions.
-_latch: dict[str, Optional[Callable[[], None]]] = {"note": None, "set": None, "clear": None}
-
-
-def bind_latch(*, note: Callable[[], None], set_: Callable[[], None], clear: Callable[[], None]) -> None:
-    """Install the coordinator's record of user output actions: *note* before
-    a user's change, *clear* after a user enables a speaker, *set_* after a
-    user switches off the last one."""
-    _latch["note"] = note
-    _latch["set"] = set_
-    _latch["clear"] = clear
-
-
-def _latch_call(which: str) -> None:
-    fn = _latch.get(which)
-    if fn is not None:
-        fn()
 
 
 def _first(outcomes: tuple) -> WriteOutcome:
@@ -126,8 +106,6 @@ def _enable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
                 "outputs.set: could not silence newly-enabled output %s under mute: %s",
                 out_id, quiet.error,
             )
-    if user:
-        _latch_call("clear")
     return {"ok": True, "id": out_id}
 
 
@@ -140,17 +118,11 @@ def _disable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
     if not outcome.ok:
         return _failure(out_id, outcome)
     mute_state.forget_output(out_id)
-    if user and not store().snapshot().outputs.selected_units():
-        # The user switched off the last speaker on purpose: the coordinator
-        # must not switch the default one back on.
-        _latch_call("set")
     return {"ok": True, "id": out_id}
 
 
 def _outputs_set(intent: Intent, wait: float) -> Outcome:
     user = intent.origin == Origin.USER
-    if user:
-        _latch_call("note")
     out_id = intent.args["id"]
     if intent.args["selected"]:
         result = _enable(intent, wait, out_id, user)
@@ -161,8 +133,6 @@ def _outputs_set(intent: Intent, wait: float) -> Outcome:
 
 def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
     user = intent.origin == Origin.USER
-    if user:
-        _latch_call("note")
     args = intent.args
     out_id = args["id"]
     allowed, retry_after = pairing.note_attempt(intent.context or pairing.REQUESTER_WEBUI, out_id)
@@ -184,5 +154,56 @@ def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
     return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
 
 
+def _deselect_all(intent: Intent, wait: float) -> Outcome:
+    """Switch every speaker off (the session edges, and the shutdown)."""
+    applied = get_authority().deselect_all(intent.origin, requester=intent.requester)
+    outcome = _first(wait_outcome(applied, wait))
+    if outcome.ok:
+        if not outcome.pending:
+            logging.info("OwnTone outputs cleared (%s).", intent.origin.value)
+        return Outcome(ok=True)
+    logging.warning("OwnTone stop/disable request failed: %s", outcome.error or "unknown error")
+    return Outcome(ok=False, error=outcome.error or "failed", result={"message": outcome.error})
+
+
+def _select_default(intent: Intent, wait: float) -> Outcome:
+    """Switch the configured default speaker on. The error names the reason
+    it was not: no_default, not_found, pin_pending, in_use, pin_required, or
+    the player's own text in the result."""
+    args = intent.args
+    name = args["name"].strip()
+    if not name:
+        return Outcome(ok=False, error="no_default")
+    unit = store().snapshot().outputs.unit_by_name(name)
+    if unit is None:
+        return Outcome(ok=False, error="not_found")
+    if unit.availability == "password" or (unit.reported is not None and unit.reported.needs_auth_key):
+        # The player deselected it pending pairing; asking again would make
+        # the speaker prompt for a PIN on every retry.
+        return Outcome(ok=False, error="pin_pending")
+    try:
+        output_usage.refresh_now("default-output-auto-select", timeout=1.5)
+        usage = output_usage.usage_for_output(name)
+        if usage is not None:
+            return Outcome(ok=False, error="in_use", result={"owner": usage.owner_name})
+    except Exception:
+        logging.debug("outputs.select_default: usage check failed", exc_info=True)
+    applied = get_authority().select(
+        unit.id, Origin.SESSION, volume=args["volume"], offset_ms=args.get("offset_ms"),
+        mode=args.get("mode"), requester=intent.requester,
+    )
+    if applied.refused is not None:
+        return Outcome(ok=False, error=applied.refused)
+    outcome = _first(wait_outcome(applied, wait))
+    if not outcome.ok:
+        if outcome.error_code == "pin_required":
+            return Outcome(ok=False, error="pin_required")
+        return Outcome(ok=False, error="failed", result={"message": outcome.error})
+    logging.info("No outputs selected; auto-enabled default output '%s'.", name)
+    return Outcome(ok=True)
+
+
 bind("outputs.set", _outputs_set, owner=_OWNER)
 bind("output.pin.submit", _output_pin_submit, owner=_OWNER)
+bind("outputs.select_default", _select_default, owner=_OWNER)
+bind("outputs.deselect_all", _deselect_all, owner=_OWNER)
