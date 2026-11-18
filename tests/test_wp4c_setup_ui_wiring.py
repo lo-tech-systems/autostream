@@ -293,6 +293,70 @@ class TestSetupPageHtmlControls:
         assert 'id="audio1_level_val"' in html
         assert 'id="audio2_level_val"' in html
 
+    @staticmethod
+    def _start_after_block(html, n):
+        return html.split(f'id="audio{n}_start_after_wrap"', 1)[1].split('class="helptext"', 1)[0]
+
+    def test_start_after_stepper_for_both_inputs(self, html):
+        for n in (1, 2):
+            block = self._start_after_block(html, n)
+            for step in (-100, -10, 10, 100):
+                assert f'onclick="startAfterStep({n}, {step})"' in block
+            assert f'onclick="startAfterReset({n})"' in block
+            assert f'<span id="audio{n}_start_after_val"' in block
+            assert 'data-ms="60">60</span><span class="unit">ms</span>' in block
+
+    def test_start_after_sits_between_the_level_and_the_sample_rate(self, html):
+        for n in (1, 2):
+            level = html.index(f'id="audio{n}_level_val"')
+            start_after = html.index(f'id="audio{n}_start_after_wrap"')
+            rate = html.index(f'id="audio{n}_sample_rate"')
+            assert level < start_after < rate
+
+    def test_start_after_shows_the_saved_value(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, audio1={"start_after_ms": 150})
+        assert 'data-ms="150">150</span>' in self._start_after_block(html, 1)
+        assert 'data-ms="60">60</span>' in self._start_after_block(html, 2)
+
+    def test_start_after_buttons_disabled_only_at_the_ends(self, tmp_path):
+        def disabled(block, step):
+            button = block.split(f'data-step="{step}"', 1)[1].split(">", 1)[0]
+            return "disabled" in button
+
+        low = self._start_after_block(
+            _SetupRenderer().render(tmp_path, audio1={"start_after_ms": 30}), 1)
+        assert disabled(low, -100) and disabled(low, -10)
+        assert not disabled(low, 10) and not disabled(low, 100)
+        high = self._start_after_block(
+            _SetupRenderer().render(tmp_path, audio1={"start_after_ms": 250}), 1)
+        assert disabled(high, 10) and disabled(high, 100)
+        assert not disabled(high, -100) and not disabled(high, -10)
+        mid = self._start_after_block(
+            _SetupRenderer().render(tmp_path, audio1={"start_after_ms": 200}), 1)
+        assert not any(disabled(mid, s) for s in (-100, -10, 10, 100))
+
+    def test_start_after_hidden_for_a_cd_input(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, audio1={"input_type": "cd"})
+        wrap = html.split('id="audio1_start_after_wrap"', 1)[1].split(">", 1)[0]
+        assert "hidden" in wrap
+        other = html.split('id="audio2_start_after_wrap"', 1)[1].split(">", 1)[0]
+        assert "hidden" not in other
+
+    def test_start_after_js_saves_and_follows_the_type(self, html):
+        assert (
+            "settingsSaveFieldDebounced('audio' + inputIndex + '.start_after_ms', ms, 300)"
+            in html
+        )
+        assert "startAfter.hidden = (type === 'cd')" in html
+
+    def test_start_after_js_limits_match_the_config(self, html):
+        from autostream_config import (
+            START_AFTER_MS_DEFAULT, START_AFTER_MS_MAX, START_AFTER_MS_MIN,
+        )
+        assert f"var START_AFTER_MIN_MS = {START_AFTER_MS_MIN};" in html
+        assert f"var START_AFTER_MAX_MS = {START_AFTER_MS_MAX};" in html
+        assert f"var START_AFTER_DEFAULT_MS = {START_AFTER_MS_DEFAULT};" in html
+
     def test_rate_matching_switch_wired_for_both_inputs(self, html):
         assert "settingsSaveField('audio1.dynamic_rate_matching', this.checked)" in html
         assert "settingsSaveField('audio2.dynamic_rate_matching', this.checked)" in html

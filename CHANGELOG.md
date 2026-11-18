@@ -49,6 +49,18 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
 - changed: a speaker's offset on the Owntone Setup page is set with -25, -5, +5
   and +25 ms buttons either side of its value, in place of a slider.
 
+### Inputs
+
+- new: each Turntable or Line input has a **Start after** setting on its card:
+  how much sound above the Sensitivity level, within one second, starts
+  playback. It runs from 30 to 250 milliseconds in steps of 10 or 100, and
+  Reset returns it to 60, the time used until now. A longer time ignores more
+  clicks and spikes; a shorter one cuts less from the start of a record. It is
+  not shown for a CD input, which starts on its first sound.
+- new: at the Debug log level the audio monitor logs what started each
+  session: the peak, the mean power and how long the sound was above the
+  Sensitivity level. A burst that was not enough is logged as "No start".
+
 ### Speakers
 
 - new: Auto-Start is now a set of speakers. Choose the speakers on Home, or on

@@ -531,20 +531,20 @@ button[type=submit]:active {
 }
 
 /* A speaker's offset: the value between two step buttons either side */
-.offset-stepper {
+.value-stepper {
   display: grid;
   grid-template-columns: 1fr 1fr minmax(5.5rem, 1.4fr) 1fr 1fr;
   align-items: center;
   gap: 0.4rem;
 }
 
-.offset-stepper .pill-btn {
+.value-stepper .pill-btn {
   padding: 0.65rem 0;
   min-width: 0;
   font-variant-numeric: tabular-nums;
 }
 
-.offset-stepper-value {
+.value-stepper-value {
   text-align: center;
   font-size: 1.25rem;
   font-weight: 700;
@@ -552,7 +552,7 @@ button[type=submit]:active {
   white-space: nowrap;
 }
 
-.offset-stepper-value .unit {
+.value-stepper-value .unit {
   margin-left: 0.15rem;
   font-size: 0.9rem;
   font-weight: 600;

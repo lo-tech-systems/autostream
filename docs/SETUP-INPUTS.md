@@ -12,7 +12,7 @@ Open the Setup page and tap **Input 1** or **Input 2**. The panel is titled **Se
 
 ### Enable
 
-A toggle labelled **Enable** turns the input on or off. The rest of the card (device selection, Input type, Sensitivity, Gain, Equaliser) is hidden until Enable is switched on.
+A toggle labelled **Enable** turns the input on or off. The rest of the card (device selection, Input type, Sensitivity, Start after, Gain, Equaliser) is hidden until Enable is switched on.
 
 Input 2 starts disabled. When either input is off, its collapsed row on the Setup page shows **Not configured** (Input 1) or **Disabled** (Input 2) instead of the usual device summary.
 
@@ -40,7 +40,7 @@ The type also decides a few things you can see:
 * When autostream has no track title for what is playing, receivers and dials show the type name (**Turntable**, **CD** or **Line**) as the title. A Bluetooth source shows the type you chose, not "Bluetooth".
 * While a track is untitled, the round dial (on its larger layouts) and the HD dial show the input's name where they used to show "Playing".
 * The [Home page](HOME-PAGE.md) shows the matching icon and label, with a separate CD icon for a CD input.
-* A CD input starts a session on the very first sound. Turntable and Line inputs need about 60 milliseconds of sound above the sensitivity level, within one second, before a session starts, so a single click, pop or knock on a cable does not start playback. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
+* A CD input starts a session on the very first sound. Turntable and Line inputs need a short amount of sound above the sensitivity level, within one second, before a session starts (60 milliseconds unless you change [Start after](#start-after)), so a single click, pop or knock on a cable does not start playback. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
 
 If a Bluetooth source lands on this input (see below), choose the input type yourself. autostream doesn't detect it for a Bluetooth-paired device.
 
@@ -56,11 +56,25 @@ Choosing Turntable moves the slider to -45 dB, and choosing CD or Line moves it 
 
 Below the slider, the **Level** readout shows the input's current peak level in dB, refreshed about once a second while the card is open. It reads **no level** when there is nothing to show, and adds **(above threshold)** when the level is at or above the slider's value, meaning it would count as sound. The level is measured before Gain and Equaliser, so those settings don't move it. Changes to the slider are applied at once and never interrupt playback.
 
-Under the Level readout, a **Sample rate** line shows the rate the input is running at, for example **Sample rate: 48 kHz**, and it updates as you watch. It reads **checking** for a moment while autostream works the rate out, and **not running** when the input is not running. If autostream has moved to a different rate than the one the device was opened at, it adds that in brackets, for example **Sample rate: 44.1 kHz (device opened at 48 kHz)**. While Dynamic Rate Matching is off and the source is sending a different rate, it reads, for example, **Sample rate: 48 kHz (source is sending 44.1 kHz)**.
+Under the Level readout and [Start after](#start-after), a **Sample rate** line shows the rate the input is running at, for example **Sample rate: 48 kHz**, and it updates as you watch. It reads **checking** for a moment while autostream works the rate out, and **not running** when the input is not running. If autostream has moved to a different rate than the one the device was opened at, it adds that in brackets, for example **Sample rate: 44.1 kHz (device opened at 48 kHz)**. While Dynamic Rate Matching is off and the source is sending a different rate, it reads, for example, **Sample rate: 48 kHz (source is sending 44.1 kHz)**.
 
 If a very quiet passage after a long silence doesn't restart playback on a Turntable or Line input, it may need to get a little louder first. Move the Sensitivity slider to the left.
 
 The **Silence detection** timeout itself (how long the input has to stay quiet before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
+
+### Start after
+
+**Start after** sets how much sound above the Sensitivity level a Turntable or Line input needs, within one second, before playback starts. It sits under the Level readout, with the time in the middle, **-100** and **-10** on the left, **+10** and **+100** on the right, and **Reset** beside its label. It runs from 30 to 250 milliseconds and starts at 60. Reset puts it back to 60.
+
+A longer time ignores more clicks, pops and knocks, for example a spike from mains interference that keeps starting your speakers. A shorter time cuts less from the start of a record. The sound doesn't have to be continuous, so a quiet opening whose peaks come and go still starts. autostream measures sound in steps of about 21 milliseconds, so the time it actually waits is rounded up to the next step.
+
+A step that would go past either end stops at the end, so **+100** at 200 gives 250. A button is greyed out only when the time is already at that end. Each input has its own value.
+
+It isn't shown for a CD input, which starts on its very first sound.
+
+Changing it takes effect straight away and never interrupts playback. If autostream cannot reach its audio service at that moment, the page shows **Saved (could not apply live)** and the change takes effect once the audio service reconnects.
+
+To see what is starting playback, set **Log Level** to Debug on the **Logs** page (from **About**), wait for it to happen, then download the log bundle (see [Getting logs](TROUBLESHOOTING.md#getting-logs)) and look in `autostream_monitor.log`. Set the level back afterwards. Each start gets a line such as `[input1] Became active: -32.0 dB peak, -41.3 dB mean power, above -30.0 dB for 64 ms in 3 blocks within 430 ms (start after 60 ms)`, and a burst of sound that wasn't enough gets a **No start** line in the same form.
 
 ### Dynamic Rate Matching
 

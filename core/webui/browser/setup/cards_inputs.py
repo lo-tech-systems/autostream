@@ -20,8 +20,12 @@ from autostream_config import (
     INPUT_TYPE_SILENCE_THRESHOLD_DBFS,
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
+    START_AFTER_MS_DEFAULT,
+    START_AFTER_MS_MAX,
+    START_AFTER_MS_MIN,
     input_type_label,
     normalize_input_type,
+    normalize_start_after_ms,
 )
 from autostream_state import store
 from webui.common import settings_card_html
@@ -136,6 +140,45 @@ def _audio_controls_card_html(
     # The recorder tap sits PRE-DSP and replay applies the origin
     # input's LIVE gain/EQ, so these controls are never locked during replay.
     return settings_card_html(inner_html)
+
+
+def _start_after_html(input_index: int, prefix: str, input_type: str, start_after_ms: int) -> str:
+    """The input card's Start after stepper. Hidden for a CD input, which
+    starts on its first sound. A step stops at the range's end, so a button
+    is disabled only when the value is already there."""
+    v = normalize_start_after_ms(start_after_ms)
+    buttons = {}
+    for step, label, aria in (
+        (-100, "&minus;100", "100 ms sooner"),
+        (-10, "&minus;10", "10 ms sooner"),
+        (10, "+10", "10 ms later"),
+        (100, "+100", "100 ms later"),
+    ):
+        at_end = v <= START_AFTER_MS_MIN if step < 0 else v >= START_AFTER_MS_MAX
+        disabled = " disabled" if at_end else ""
+        buttons[step] = (
+            f'<button type="button" class="pill-btn" data-step="{step}" aria-label="{aria}"'
+            f' onclick="startAfterStep({input_index}, {step})"{disabled}>{label}</button>'
+        )
+    hidden = " hidden" if input_type == "cd" else ""
+    return f"""
+            <div id="{prefix}_start_after_wrap"{hidden}>
+              <div class="slider-header">
+                <span>Start after:</span>
+                <button type="button" class="pill-btn small" onclick="startAfterReset({input_index})">Reset</button>
+              </div>
+              <div class="value-stepper" id="{prefix}_start_after_stepper" role="group" aria-label="Start after">
+                {buttons[-100]}
+                {buttons[-10]}
+                <div class="value-stepper-value" aria-live="polite"><span id="{prefix}_start_after_val"
+                     data-ms="{v}">{v}</span><span class="unit">ms</span></div>
+                {buttons[10]}
+                {buttons[100]}
+              </div>
+              <div class="helptext" style="text-align:left;">
+                Playback starts once the level has been above Sensitivity for this long within one second. Longer ignores more clicks and knocks; shorter cuts less from the start of a record.
+              </div>
+            </div>"""
 
 
 def _setup_input_card_html(
@@ -257,6 +300,10 @@ def _setup_input_card_html(
             for t in INPUT_TYPES
         )
         presets_json = json.dumps(INPUT_TYPE_SILENCE_THRESHOLD_DBFS)
+        start_after_html = _start_after_html(
+            input_index, prefix, input_type,
+            getattr(parsed_input, "start_after_ms", START_AFTER_MS_DEFAULT),
+        )
 
         enabled_html = ""
         wrap_style = "block" if enabled else "none"
@@ -302,6 +349,7 @@ def _setup_input_card_html(
             <div class="helptext" style="text-align:left;">
               Level: <span id="{prefix}_level_val">no level</span>
             </div>
+            {start_after_html}
             <div id="{prefix}_sample_rate" class="helptext" style="text-align:left;">
               {sample_rate_line}
             </div>

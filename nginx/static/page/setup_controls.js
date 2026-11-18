@@ -352,12 +352,46 @@
             _showSilenceThreshold(inputIndex, preset);
           }
           if (sel) sel.dataset.currentType = type;
+          // A CD input starts on its first sound, so it has no Start after.
+          const startAfter = document.getElementById('audio' + inputIndex + '_start_after_wrap');
+          if (startAfter) startAfter.hidden = (type === 'cd');
           if (liveEnabled) settingsSaveField('audio' + inputIndex + '.input_type', type);
           refreshInputCardSubs();
         }
         function syncSilenceThreshold(inputIndex, value){
           _showSilenceThreshold(inputIndex, value);
           if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.silence_threshold', Number(value), 300);
+        }
+        // Start after: a step stops at the end of the range, so a button is
+        // disabled only once the value is there.
+        var START_AFTER_MIN_MS = 30;
+        var START_AFTER_MAX_MS = 250;
+        var START_AFTER_DEFAULT_MS = 60;
+        function _startAfterSync(inputIndex, ms){
+          const valueEl = document.getElementById('audio' + inputIndex + '_start_after_val');
+          if (valueEl) {
+            valueEl.dataset.ms = String(ms);
+            valueEl.textContent = String(ms);
+          }
+          const stepper = document.getElementById('audio' + inputIndex + '_start_after_stepper');
+          if (!stepper) return;
+          stepper.querySelectorAll('button[data-step]').forEach(function(b){
+            const step = Number(b.dataset.step);
+            b.disabled = step < 0 ? ms <= START_AFTER_MIN_MS : ms >= START_AFTER_MAX_MS;
+          });
+        }
+        function _startAfterSave(inputIndex, ms){
+          _startAfterSync(inputIndex, ms);
+          if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.start_after_ms', ms, 300);
+        }
+        function startAfterStep(inputIndex, step){
+          const valueEl = document.getElementById('audio' + inputIndex + '_start_after_val');
+          const current = valueEl ? Number(valueEl.dataset.ms) : START_AFTER_DEFAULT_MS;
+          const next = Math.max(START_AFTER_MIN_MS, Math.min(START_AFTER_MAX_MS, current + step));
+          _startAfterSave(inputIndex, next);
+        }
+        function startAfterReset(inputIndex){
+          _startAfterSave(inputIndex, START_AFTER_DEFAULT_MS);
         }
         function eqPrefix(inputIndex){ return inputIndex===1 ? 'audio1' : 'audio2'; }
         function syncGain(inputIndex, value){
