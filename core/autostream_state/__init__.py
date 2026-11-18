@@ -8,6 +8,7 @@ in the submodules.
 from .freeze import FrozenDict, thaw
 from .parts import (
     MISSING_RATE_TEXTS,
+    PART_NAMES,
     RATE_MATCHING_NOTE_DEFAULT,
     SAMPLE_RATE_TEXT_NOT_RUNNING,
     DevicesPart,
@@ -41,7 +42,7 @@ from .parts import (
 from .store import Change, Origin, WriterTaken, store
 
 __all__ = [
-    "store", "Snapshot", "Change", "Origin", "FrozenDict", "thaw", "WriterTaken",
+    "store", "PART_NAMES", "Snapshot", "Change", "Origin", "FrozenDict", "thaw", "WriterTaken",
     "SessionPart", "RepeatPart", "TrackPart", "InputEntry", "InputsPart",
     "MonitorRuntimeInfo", "HealthPart", "SettingsPart",
     "OutputsPart", "OutputUnitView", "StartFailure", "EqPart", "DevicesPart", "eq_band_digest",

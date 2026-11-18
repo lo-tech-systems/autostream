@@ -628,3 +628,33 @@ def test_the_include_tv_reader_runs_without_the_authority_lock(authority, tmp_pa
     assert held_in_reader
     assert all(h <= {"apply"} for h in held_in_reader)
     assert lockcheck.ORDER_VIOLATIONS == []
+
+
+def test_the_stream_hub_takes_only_its_own_condition_and_is_called_with_no_lock_held(st):
+    from webui import stream
+
+    session = st.claim("session", "test_owner")
+    hub = stream.StreamHub(st)
+    hub._cond = threading.Condition(lockcheck.TrackedLock("stream_hub"))
+    hub.start()
+    stop = threading.Event()
+
+    def park():
+        gen = 0
+        while not stop.is_set():
+            gen = hub.wait_past(gen, 0.2) or gen
+
+    waiters = [threading.Thread(target=park, daemon=True) for _ in range(8)]
+    for t in waiters:
+        t.start()
+    time.sleep(0.05)
+    for i in range(20):
+        session.publish(SessionPart(True, f"input{i}")).notify()
+    stop.set()
+    for t in waiters:
+        t.join(3.0)
+    hub.stop()
+    assert hub.generation() == 20
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
+    assert st.lock_violations == []
+    assert lockcheck.ORDER_VIOLATIONS == []
