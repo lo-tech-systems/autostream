@@ -268,9 +268,10 @@ function paintEq(vm) {
 function paintModal(card) {
     els.modal.hidden = !card;
     if (!card) { paintPin({ kind: "none" }); return; }
-    els.card.className = "card sev-" + card.severity + " kind-" + card.kind;
+    els.card.className = "card sev-" + card.severity + " kind-" + card.kind + (card.source ? " has-source" : "");
     setText(els.cardTitle, card.title);
     setText(els.cardMessage, card.message);
+    setText(els.cardDetail, card.detail || "");
     paintNote(els.cardSource, card.source);
     els.cardProgress.hidden = card.progress === null;
     els.cardBar.style.setProperty("--fill", (card.progress || 0) + "%");

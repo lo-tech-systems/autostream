@@ -78,7 +78,7 @@ export const els = {
     sleepNow: $("sleep-now"), power: $("power"), info: $("info"), infoNote: $("info-note"),
     eqPage: $("eq"), eqClose: $("eq-close"), eqReset: $("eq-reset"), eqFor: $("eq-for"),
     eqBands: $("eq-bands"), eqGraph: $("eq-graph"), eqNote: $("eq-note"),
-    modal: $("modal"), card: $("card"), cardTitle: $("card-title"), cardMessage: $("card-message"),
+    modal: $("modal"), card: $("card"), cardTitle: $("card-title"), cardMessage: $("card-message"), cardDetail: $("card-detail"),
     cardSource: $("card-source"), cardProgress: $("card-progress"), cardBar: $("card-bar"),
     cardButtons: $("card-buttons"), sleep: $("sleep"),
     cardPinBoxes: $("card-pin-boxes"), cardPinError: $("card-pin-error"), cardPinPad: $("card-pin-pad")

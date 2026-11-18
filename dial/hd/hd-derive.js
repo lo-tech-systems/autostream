@@ -217,8 +217,9 @@ function deriveModal(dial, p, focus, local) {
     const refused = dial.appliances.find((a) => a.id === local.notice && a.auth !== "authorized");
     if (refused) {
         return {
-            key: "notice", source: refused.webui, title: "Not allowed", severity: "info", progress: null,
-            message: "Allow this dial in " + refused.name + "'s web UI (Setup, Dials)", closable: true,
+            key: "notice", source: "", title: "Not allowed", severity: "info", progress: null,
+            message: "Allow this dial in " + refused.name + "'s web UI (Setup, Dials)", detail: refused.webui,
+            closable: true,
             kind: "notice", buttons: [{ id: "ok", label: "OK", act: "close" }]
         };
     }

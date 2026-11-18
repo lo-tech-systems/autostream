@@ -397,8 +397,21 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .card-title { font-size: 1.27em; font-weight: 700; color: var(--color-text-strong); }
 .card-message { color: var(--color-text); overflow-wrap: anywhere; }
 .card-message:empty { display: none; }
-.card-source { font-size: 0.87em; color: var(--color-text-dim); overflow-wrap: anywhere; }
+.card-detail { font-size: 0.87em; color: var(--color-text-dim); overflow-wrap: anywhere; }
+.card-detail:empty { display: none; }
+/* The source is a band across the top of the card, with the severity rule under it */
+.card-source {
+    margin: -1.1em -1.3em 0; padding: 0.4em 1.3em; border-radius: 15px 15px 0 0;
+    background: var(--color-text); color: var(--color-surface-raised);
+    border-bottom: 5px solid var(--color-accent);
+    font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card.sev-warning .card-source { border-bottom-color: var(--color-status-warning); }
+.card.sev-critical .card-source { border-bottom-color: var(--color-status-danger); }
 .card-source[hidden] { display: none; }
+.card.has-source,
+.card.has-source.sev-warning,
+.card.has-source.sev-critical { border-top: 1px solid var(--color-border-card); }
 .progress { height: 10px; border-radius: 999px; background: var(--color-control-off); overflow: hidden; }
 .progress[hidden] { display: none; }
 .progress-bar { height: 100%; width: var(--fill, 0%); background: var(--color-accent); transition: width 300ms ease; }
@@ -417,7 +430,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .card.kind-pin #card-pin-error { grid-area: error; }
 .card.kind-pin .card-buttons { grid-area: buttons; justify-content: flex-start; margin-top: auto; align-self: end; }
 .card.kind-pin #card-pin-pad { grid-area: pad; align-self: start; }
-.card.kind-pin .card-source, .card.kind-pin .progress { display: none; }
+.card.kind-pin .card-source, .card.kind-pin .card-detail, .card.kind-pin .progress { display: none; }
 .pin-boxes { display: flex; gap: 10px; margin-top: 6px; }
 .pin-boxes[hidden], .pin-error[hidden], .pin-pad[hidden] { display: none; }
 .pin-box {

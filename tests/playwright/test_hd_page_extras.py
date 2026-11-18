@@ -1605,6 +1605,75 @@ def assert_card_fits(page, size):
         assert button.bounding_box()["height"] >= 44
 
 
+LONG_DETAIL = (
+    "The power supply cannot hold the voltage up when the board is busy. Use a supply rated for this board "
+    "and a good cable."
+)[:120]
+
+
+def long_detail_warning():
+    return hs._appliance_warning_scenario("long_detail", hs._stylus_warning(detail=LONG_DETAIL))
+
+
+@pytest.mark.engines
+class TestSourceBandAndDetail:
+    def open_card(self, page, hd, scenario, size=None):
+        hd.show(scenario)
+        open_page(page, hd, size or (800, 480))
+        row_bell(page).click()
+        expect(modal_card(page)).to_be_visible()
+
+    def test_the_source_is_the_first_child_and_sits_above_the_title(self, page, hd):
+        self.open_card(page, hd, hs.SCENARIOS["appliance_warning_detail"])
+        assert page.evaluate("document.getElementById('card').firstElementChild.id") == "card-source"
+        source = page.locator("#card-source").bounding_box()
+        title = page.locator("#card-title").bounding_box()
+        assert source["y"] + source["height"] <= title["y"]
+        card = page.locator("#card").bounding_box()
+        assert source["x"] <= card["x"] + 2 and source["x"] + source["width"] >= card["x"] + card["width"] - 2
+
+    def test_the_detail_sits_under_the_message(self, page, hd):
+        self.open_card(page, hd, hs.SCENARIOS["appliance_warning_detail"])
+        expect(page.locator("#card-detail")).to_have_text("Played 450 h of its 500 h life.")
+        message = page.locator("#card-message").bounding_box()
+        detail = page.locator("#card-detail").bounding_box()
+        assert message["y"] + message["height"] <= detail["y"]
+
+    def test_a_warning_without_a_detail_hides_the_detail_line(self, page, hd):
+        self.open_card(page, hd, hs.SCENARIOS["appliance_warning"])
+        expect(page.locator("#card-detail")).to_be_hidden()
+
+    def test_has_source_follows_the_source(self, page, hd):
+        self.open_card(page, hd, hs.SCENARIOS["appliance_warning"])
+        expect(page.locator("#card")).to_have_class(re.compile("has-source"))
+        page.locator("#card-buttons button").click()
+        hd.show(hs.SCENARIOS["unauthorized"])
+        rows(page).filter(has_text="Kitchen").click()
+        expect(modal_card(page)).to_be_visible()
+        expect(page.locator("#card")).not_to_have_class(re.compile("has-source"))
+
+    @pytest.mark.parametrize("theme", ["dark", "light"])
+    def test_the_band_inverts_the_card_in_both_themes(self, page, hd, theme):
+        hd.show(hs.SCENARIOS["appliance_warning"])
+        open_page(page, hd)
+        page.evaluate("(t) => document.documentElement.setAttribute('data-theme', t)", theme)
+        row_bell(page).click()
+        expect(modal_card(page)).to_be_visible()
+        band = page.evaluate(
+            "(() => { const s = getComputedStyle(document.getElementById('card-source'));"
+            " return [s.backgroundColor, s.color, s.borderBottomWidth]; })()")
+        assert band[0] == token_colour(page, "--color-text")
+        assert band[1] == token_colour(page, "--color-surface-raised")
+        assert band[2] == "5px"
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    @pytest.mark.parametrize("name", ["typical", "longest"])
+    def test_the_card_fits_the_screen_with_a_detail(self, page, hd, name, size):
+        scenario = hs.SCENARIOS["appliance_warning_detail"] if name == "typical" else long_detail_warning()
+        self.open_card(page, hd, scenario, size)
+        assert_card_fits(page, size)
+
+
 class TestStatusCards:
     def test_the_update_progress_card_cannot_be_dismissed(self, page, hd):
         hd.show(hs.SCENARIOS["warning_update"])
@@ -1836,7 +1905,8 @@ class TestNoticeAndPresence:
         expect(modal_card(page)).to_be_visible()
         expect(page.locator("#card-title")).to_have_text("Not allowed")
         expect(page.locator("#card-message")).to_have_text("Allow this dial in Kitchen's web UI (Setup, Dials)")
-        expect(page.locator("#card-source")).to_have_text("http://192.0.2.20:80/")
+        expect(page.locator("#card-detail")).to_have_text("http://192.0.2.20:80/")
+        expect(page.locator("#card-source")).to_be_hidden()
         assert page.locator("#card-buttons button").all_text_contents() == ["OK"]
         page.locator("#card-buttons button").click()
         expect(modal_card(page)).to_be_hidden()

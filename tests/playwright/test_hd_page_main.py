@@ -217,7 +217,8 @@ class TestStates:
         row.click()
         expect(page.locator("#card-title")).to_have_text("Not allowed")
         expect(page.locator("#card-message")).to_have_text("Allow this dial in Kitchen's web UI (Setup, Dials)")
-        expect(page.locator("#card-source")).to_have_text("http://192.0.2.20:80/")
+        expect(page.locator("#card-detail")).to_have_text("http://192.0.2.20:80/")
+        expect(page.locator("#card-source")).to_be_hidden()
         expect(page.locator("#toast")).not_to_have_class(re.compile("show"))
         page.wait_for_timeout(200)
         assert sent == []
