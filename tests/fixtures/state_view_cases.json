@@ -1,0 +1,3941 @@
+{
+ "version": 1,
+ "cases": [
+  {
+   "name": "playing: idle",
+   "fn": "playing",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    }
+   },
+   "expect": false
+  },
+  {
+   "name": "playing: a session",
+   "fn": "playing",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    }
+   },
+   "expect": true
+  },
+  {
+   "name": "playing: a replay session",
+   "fn": "playing",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "replay"
+    }
+   },
+   "expect": true
+  },
+  {
+   "name": "playing: no session part",
+   "fn": "playing",
+   "parts": {},
+   "expect": false
+  },
+  {
+   "name": "live: idle",
+   "fn": "live",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "replay": {
+       "active": false
+      }
+     }
+    }
+   },
+   "expect": false
+  },
+  {
+   "name": "live: playing",
+   "fn": "live",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    }
+   },
+   "expect": true
+  },
+  {
+   "name": "live: replaying with no session",
+   "fn": "live",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "replay": {
+       "active": true
+      }
+     }
+    }
+   },
+   "expect": true
+  },
+  {
+   "name": "live: fading out keeps the tail",
+   "fn": "live",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "replay": {
+       "active": false,
+       "fading_out": true
+      }
+     }
+    }
+   },
+   "expect": true
+  },
+  {
+   "name": "live: no repeat block",
+   "fn": "live",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": null
+    }
+   },
+   "expect": false
+  },
+  {
+   "name": "activeInput: the session source wins over a level",
+   "fn": "activeInput",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": false,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": false,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      },
+      {
+       "index": 2,
+       "device": "hw:2",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 2,
+        "label": "Input 2",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": 1
+  },
+  {
+   "name": "activeInput: the second input",
+   "fn": "activeInput",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input2"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      },
+      {
+       "index": 2,
+       "device": "hw:2",
+       "input_type": "line",
+       "capturing": false,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 2,
+        "label": "Input 2",
+        "dbfs": -50.0,
+        "is_above_threshold": false,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": 2
+  },
+  {
+   "name": "activeInput: replay resolves to its origin",
+   "fn": "activeInput",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "replay"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": false,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": false,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      },
+      {
+       "index": 2,
+       "device": "hw:2",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 2,
+        "label": "Input 2",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "repeat": {
+     "block": {
+      "replay": {
+       "active": true
+      },
+      "recording": {
+       "origin_input": 2
+      }
+     }
+    }
+   },
+   "expect": 2
+  },
+  {
+   "name": "activeInput: replay not active falls back to the input above threshold",
+   "fn": "activeInput",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "replay"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": false,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": false,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      },
+      {
+       "index": 2,
+       "device": "hw:2",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 2,
+        "label": "Input 2",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "repeat": {
+     "block": {
+      "replay": {
+       "active": false
+      },
+      "recording": {
+       "origin_input": 1
+      }
+     }
+    }
+   },
+   "expect": 2
+  },
+  {
+   "name": "activeInput: idle takes the first input above its threshold",
+   "fn": "activeInput",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": false,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": false,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      },
+      {
+       "index": 2,
+       "device": "hw:2",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 2,
+        "label": "Input 2",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": 2
+  },
+  {
+   "name": "activeInput: nothing above threshold takes the first input",
+   "fn": "activeInput",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": false,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": false,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      },
+      {
+       "index": 2,
+       "device": "hw:2",
+       "input_type": "line",
+       "capturing": false,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 2,
+        "label": "Input 2",
+        "dbfs": -50.0,
+        "is_above_threshold": false,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": 1
+  },
+  {
+   "name": "activeInput: no inputs",
+   "fn": "activeInput",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    }
+   },
+   "expect": null
+  },
+  {
+   "name": "nowPlaying: idle reads Ready",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": {
+    "header": "Ready",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: playing, input detail off",
+   "fn": "nowPlaying",
+   "opts": {
+    "show_input_detail": false
+   },
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: playing with the signal shown",
+   "fn": "nowPlaying",
+   "opts": {
+    "show_input_detail": true
+   },
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "Locked · 44.1 kHz",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: rate mismatch",
+   "fn": "nowPlaying",
+   "opts": {
+    "show_input_detail": true
+   },
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "mismatch",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": "48 kHz"
+       }
+      }
+     ]
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "Mismatch · 48 kHz",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: acquiring",
+   "fn": "nowPlaying",
+   "opts": {
+    "show_input_detail": true
+   },
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "acquiring",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "Acquiring",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: a replay reads Repeat Play",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "replay"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "repeat": {
+     "block": {
+      "replay": {
+       "active": true
+      },
+      "recording": {
+       "origin_input": 1
+      }
+     }
+    }
+   },
+   "expect": {
+    "header": "Repeat Play",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: muted while playing",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "outputs": {
+     "muted_all": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing (Muted)",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "",
+    "muted": true
+   }
+  },
+  {
+   "name": "nowPlaying: muted while idle is not shown",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "outputs": {
+     "muted_all": true
+    }
+   },
+   "expect": {
+    "header": "Ready",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: an identified track with artwork",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "identified",
+       "status_text": "Waiting for audio",
+       "title": "Song",
+       "artist": "Band",
+       "artwork_url": "https://art.example/a.jpg"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "https://art.example/a.jpg",
+    "title": "Song",
+    "subtitle": "Band",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: an identified track with no usable artwork",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "identified",
+       "status_text": "Waiting for audio",
+       "title": "",
+       "artist": "",
+       "artwork_url": "javascript:x"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Unknown",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: identifying uses the status text",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "analysing",
+       "status_text": "Analysing"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Line – Analysing",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: waiting for audio",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "waiting_for_audio",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Line – Waiting for audio",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: track id error",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "error",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Line – Track ID function not available",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no match",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "not_found",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Line – Unknown track",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: any other state",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "starting",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Line – Identifying Track…",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: track id off shows the input",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": false,
+       "state": "disabled",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: a turntable",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "turntable",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "playback": {
+     "inputs": {
+      "1": {
+       "is_turntable": true,
+       "is_bluetooth": false
+      }
+     }
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "turntable",
+    "artUrl": "",
+    "title": "Input 1 · Turntable",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: a turntable that is also bluetooth is a turntable",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "turntable",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "playback": {
+     "inputs": {
+      "1": {
+       "is_turntable": true,
+       "is_bluetooth": true
+      }
+     }
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "turntable",
+    "artUrl": "",
+    "title": "Input 1 · Turntable",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: bluetooth with a line type",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "line",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "playback": {
+     "inputs": {
+      "1": {
+       "is_turntable": false,
+       "is_bluetooth": true
+      }
+     }
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "bluetooth",
+    "artUrl": "",
+    "title": "Input 1 · Line",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: a CD",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "cd",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "cd",
+    "artUrl": "",
+    "title": "Input 1 · CD",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: a CD while identifying says CD",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "cd",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "waiting_for_audio",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "cd",
+    "artUrl": "",
+    "title": "CD – Waiting for audio",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no type word, turntable flag",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "playback": {
+     "inputs": {
+      "1": {
+       "is_turntable": true
+      }
+     }
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "turntable",
+    "artUrl": "",
+    "title": "Input 1 · Turntable",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no type word, turntable flag, identifying",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "playback": {
+     "inputs": {
+      "1": {
+       "is_turntable": true
+      }
+     }
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "waiting_for_audio",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "turntable",
+    "artUrl": "",
+    "title": "Vinyl – Waiting for audio",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no type word, bluetooth flag",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "playback": {
+     "inputs": {
+      "1": {
+       "is_bluetooth": true
+      }
+     }
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "bluetooth",
+    "artUrl": "",
+    "title": "Input 1 · Bluetooth",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no type word, bluetooth flag, identifying",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "playback": {
+     "inputs": {
+      "1": {
+       "is_bluetooth": true
+      }
+     }
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "waiting_for_audio",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "bluetooth",
+    "artUrl": "",
+    "title": "Bluetooth – Waiting for audio",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no type word, plain line",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line Level",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no type word, plain line, identifying",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "inputs": {
+     "entries": [
+      {
+       "index": 1,
+       "device": "hw:1",
+       "input_type": "",
+       "capturing": true,
+       "replay_origin": false,
+       "rate_note": "",
+       "sample_rate_text": "",
+       "rate_mismatch_hz": 0,
+       "level": {
+        "index": 1,
+        "label": "Input 1",
+        "dbfs": -50.0,
+        "is_above_threshold": true,
+        "rate_lock": "locked",
+        "detected_khz": "44.1 kHz",
+        "rate_mismatch_khz": ""
+       }
+      }
+     ]
+    },
+    "track": {
+     "entries": {
+      "1": {
+       "enabled": true,
+       "state": "waiting_for_audio",
+       "status_text": "Waiting for audio"
+      }
+     },
+     "service_enabled": true
+    }
+   },
+   "expect": {
+    "header": "Now Playing",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Line In – Waiting for audio",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "nowPlaying: no inputs at all",
+   "fn": "nowPlaying",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    }
+   },
+   "expect": {
+    "header": "Ready",
+    "iconKind": "line",
+    "artUrl": "",
+    "title": "Input 1 · Line Level",
+    "subtitle": "",
+    "muted": false
+   }
+  },
+  {
+   "name": "speakerRows: on, off and in use",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": true,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      },
+      {
+       "id": "b",
+       "name": "Bravo",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "b",
+        "name": "Bravo"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      },
+      {
+       "id": "c",
+       "name": "Charlie",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "c",
+        "name": "Charlie"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "hall",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": true,
+     "volume": 20,
+     "chip": "on",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "b",
+     "name": "Bravo",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "c",
+     "name": "Charlie",
+     "on": false,
+     "volume": 20,
+     "chip": "in-use",
+     "autoStart": false,
+     "inUseBy": "hall",
+     "connecting": false,
+     "offline": false,
+     "disabled": true,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: a hidden speaker that is on stays",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": true,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": true,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      },
+      {
+       "id": "b",
+       "name": "Bravo",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "b",
+        "name": "Bravo"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": true,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": true,
+     "volume": 20,
+     "chip": "on",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: a hidden Auto-Start speaker stays",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha"
+       },
+       "connecting": false,
+       "auto_start": true,
+       "hidden": true,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": true,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: Auto-Start first, then by name",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "b",
+       "name": "Bravo",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "b",
+        "name": "Bravo"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      },
+      {
+       "id": "z",
+       "name": "Zulu",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "z",
+        "name": "Zulu"
+       },
+       "connecting": false,
+       "auto_start": true,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      },
+      {
+       "id": "a",
+       "name": "alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "alpha"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "z",
+     "name": "Zulu",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": true,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "a",
+     "name": "alpha",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "b",
+     "name": "Bravo",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: connecting",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": true,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha"
+       },
+       "connecting": true,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": true,
+     "volume": 20,
+     "chip": "on",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": true,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: a speaker waiting for a PIN shows off and offers it",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": true,
+       "volume": 20,
+       "muted": false,
+       "availability": "password",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha",
+        "pin_pending": true
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "webui",
+       "in_use_by": "",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": true,
+     "pinClaim": "webui"
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: another requester holds the PIN claim",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha",
+        "pin_pending": true
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "dial:7",
+       "in_use_by": "",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": true,
+     "pinClaim": "dial:7"
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: an offline card is left out by default",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "gone",
+       "cause": "user",
+       "reported": null,
+       "connecting": false,
+       "auto_start": true,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": true
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": []
+  },
+  {
+   "name": "speakerRows: an offline Auto-Start card outside a session is disabled",
+   "fn": "speakerRows",
+   "opts": {
+    "includeOffline": true
+   },
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "gone",
+       "cause": "user",
+       "reported": null,
+       "connecting": false,
+       "auto_start": true,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": true
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": true,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": true,
+     "disabled": true,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: an offline Auto-Start card in a session can be switched on",
+   "fn": "speakerRows",
+   "opts": {
+    "includeOffline": true
+   },
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "gone",
+       "cause": "user",
+       "reported": null,
+       "connecting": false,
+       "auto_start": true,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": true
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": false,
+     "volume": 20,
+     "chip": "off",
+     "autoStart": true,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": true,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: an offline card that is not Auto-Start stays out",
+   "fn": "speakerRows",
+   "opts": {
+    "includeOffline": true
+   },
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": null,
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": true
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": []
+  },
+  {
+   "name": "speakerRows: in use wins over connecting",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 20,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha"
+       },
+       "connecting": true,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "hall",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": false,
+     "volume": 20,
+     "chip": "in-use",
+     "autoStart": false,
+     "inUseBy": "hall",
+     "connecting": false,
+     "offline": false,
+     "disabled": true,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: the level is a whole number from 0 to 100",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "a",
+       "name": "Alpha",
+       "selected": false,
+       "volume": 140,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "a",
+        "name": "Alpha"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      },
+      {
+       "id": "b",
+       "name": "Bravo",
+       "selected": false,
+       "volume": -3,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "b",
+        "name": "Bravo"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      },
+      {
+       "id": "c",
+       "name": "Charlie",
+       "selected": false,
+       "volume": 33.6,
+       "muted": false,
+       "availability": "ok",
+       "cause": "user",
+       "reported": {
+        "id": "c",
+        "name": "Charlie"
+       },
+       "connecting": false,
+       "auto_start": false,
+       "hidden": false,
+       "pin_claim": "",
+       "in_use_by": "",
+       "offline": false
+      }
+     ],
+     "connected": true
+    }
+   },
+   "expect": [
+    {
+     "id": "a",
+     "name": "Alpha",
+     "on": false,
+     "volume": 100,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "b",
+     "name": "Bravo",
+     "on": false,
+     "volume": 0,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "c",
+     "name": "Charlie",
+     "on": false,
+     "volume": 34,
+     "chip": "off",
+     "autoStart": false,
+     "inUseBy": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
+  },
+  {
+   "name": "speakerRows: no outputs",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    }
+   },
+   "expect": []
+  },
+  {
+   "name": "masterVolume: a level",
+   "fn": "masterVolume",
+   "parts": {
+    "outputs": {
+     "master_volume": 45
+    }
+   },
+   "expect": 45
+  },
+  {
+   "name": "masterVolume: zero is a level",
+   "fn": "masterVolume",
+   "parts": {
+    "outputs": {
+     "master_volume": 0
+    }
+   },
+   "expect": 0
+  },
+  {
+   "name": "masterVolume: none selected",
+   "fn": "masterVolume",
+   "parts": {
+    "outputs": {
+     "master_volume": null
+    }
+   },
+   "expect": null
+  },
+  {
+   "name": "masterVolume: no outputs part",
+   "fn": "masterVolume",
+   "parts": {},
+   "expect": null
+  },
+  {
+   "name": "startFailure: none",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1005.0,
+    "parts": {
+     "outputs": {
+      "start_failure": null
+     }
+    }
+   },
+   "seen": null,
+   "expect": {
+    "show": null,
+    "seen": {
+     "boot": "",
+     "seq": 0,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: a new failure is shown",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1005.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "refused",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "b1",
+    "seq": 2,
+    "first": false
+   },
+   "expect": {
+    "show": {
+     "seq": 3,
+     "unit_id": "a",
+     "name": "Alpha",
+     "reason": "refused",
+     "at": 1000.0,
+     "requester": "webui"
+    },
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: the same sequence is not shown twice",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1005.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "refused",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "b1",
+    "seq": 3,
+    "first": false
+   },
+   "expect": {
+    "show": null,
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: a new boot starts again at a lower sequence",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1005.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "refused",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "b0",
+    "seq": 9,
+    "first": false
+   },
+   "expect": {
+    "show": {
+     "seq": 3,
+     "unit_id": "a",
+     "name": "Alpha",
+     "reason": "refused",
+     "at": 1000.0,
+     "requester": "webui"
+    },
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: first reading, over 30 s old, is not news",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1031.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "refused",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "",
+    "seq": 0,
+    "first": true
+   },
+   "expect": {
+    "show": null,
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: first reading, exactly 30 s old, is shown",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1030.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "refused",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "",
+    "seq": 0,
+    "first": true
+   },
+   "expect": {
+    "show": {
+     "seq": 3,
+     "unit_id": "a",
+     "name": "Alpha",
+     "reason": "refused",
+     "at": 1000.0,
+     "requester": "webui"
+    },
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: first reading with nothing stored, recent, is shown",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1005.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "refused",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": null,
+   "expect": {
+    "show": {
+     "seq": 3,
+     "unit_id": "a",
+     "name": "Alpha",
+     "reason": "refused",
+     "at": 1000.0,
+     "requester": "webui"
+    },
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: a later reading shows an old failure",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 5000.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "refused",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "b1",
+    "seq": 2,
+    "first": false
+   },
+   "expect": {
+    "show": {
+     "seq": 3,
+     "unit_id": "a",
+     "name": "Alpha",
+     "reason": "refused",
+     "at": 1000.0,
+     "requester": "webui"
+    },
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: a PIN request is answered by the PIN dialog",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1005.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "pin_required",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "b1",
+    "seq": 2,
+    "first": false
+   },
+   "expect": {
+    "show": null,
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "startFailure: a wrong PIN is answered by the PIN dialog",
+   "fn": "startFailure",
+   "view": {
+    "boot": "b1",
+    "version": 5,
+    "time": 1005.0,
+    "parts": {
+     "outputs": {
+      "start_failure": {
+       "seq": 3,
+       "unit_id": "a",
+       "name": "Alpha",
+       "reason": "pin_invalid",
+       "at": 1000.0,
+       "requester": "webui"
+      }
+     }
+    }
+   },
+   "seen": {
+    "boot": "b1",
+    "seq": 2,
+    "first": false
+   },
+   "expect": {
+    "show": null,
+    "seen": {
+     "boot": "b1",
+     "seq": 3,
+     "first": false
+    }
+   }
+  },
+  {
+   "name": "repeatControls: the feature is off",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "enabled": false
+     }
+    }
+   },
+   "expect": {
+    "shown": false,
+    "state": "off",
+    "label": "↻ Repeat Play",
+    "title": "",
+    "disabled": true
+   }
+  },
+  {
+   "name": "repeatControls: no block yet",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": null
+    }
+   },
+   "expect": {
+    "shown": false,
+    "state": "off",
+    "label": "↻ Repeat Play",
+    "title": "",
+    "disabled": true
+   }
+  },
+  {
+   "name": "repeatControls: off with nothing held is disabled",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": false,
+      "recording": {
+       "active": false,
+       "bytes": 0
+      },
+      "replay": {
+       "active": false
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "off",
+    "label": "↻ Repeat Play",
+    "title": "",
+    "disabled": true
+   }
+  },
+  {
+   "name": "repeatControls: idle with a recording offers Replay Last",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": false,
+      "recording": {
+       "active": false,
+       "bytes": 5000
+      },
+      "replay": {
+       "active": false
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "off",
+    "label": "↻ Replay Last",
+    "title": "",
+    "disabled": false
+   }
+  },
+  {
+   "name": "repeatControls: playing live with a recording says Repeat Play",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": false,
+      "recording": {
+       "active": true,
+       "bytes": 5000
+      },
+      "replay": {
+       "active": false
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "off",
+    "label": "↻ Repeat Play",
+    "title": "",
+    "disabled": false
+   }
+  },
+  {
+   "name": "repeatControls: armed and buffering",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "input1"
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": true,
+      "recording": {
+       "active": true,
+       "bytes": 5000
+      },
+      "replay": {
+       "active": false
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "armed",
+    "label": "↻ Repeat Play",
+    "title": "Buffering…",
+    "disabled": false
+   }
+  },
+  {
+   "name": "repeatControls: armed and waiting",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": true,
+      "recording": {
+       "active": false,
+       "bytes": 0
+      },
+      "replay": {
+       "active": false
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "armed",
+    "label": "↻ Repeat Play",
+    "title": "Waiting for playback",
+    "disabled": false
+   }
+  },
+  {
+   "name": "repeatControls: repeating shows the position",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "replay"
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": true,
+      "recording": {
+       "active": false,
+       "bytes": 5000
+      },
+      "replay": {
+       "active": true,
+       "position_seconds": 65.2,
+       "duration_seconds": 180
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "repeating",
+    "label": "↻ Repeat Play",
+    "title": "1:05 / 3:00",
+    "disabled": false
+   }
+  },
+  {
+   "name": "repeatControls: repeating a wrapped recording",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "replay"
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": false,
+      "recording": {
+       "active": false,
+       "bytes": 5000,
+       "truncated_head": true
+      },
+      "replay": {
+       "active": true,
+       "position_seconds": 9,
+       "duration_seconds": 4800
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "repeating",
+    "label": "↻ Repeat Play",
+    "title": "0:09 / 80:00 · most recent kept",
+    "disabled": false
+   }
+  },
+  {
+   "name": "repeatControls: stopping",
+   "fn": "repeatControls",
+   "parts": {
+    "session": {
+     "active": false,
+     "source": null
+    },
+    "repeat": {
+     "block": {
+      "enabled": true,
+      "armed": false,
+      "recording": {
+       "active": false,
+       "bytes": 5000
+      },
+      "replay": {
+       "active": false,
+       "fading_out": true
+      }
+     }
+    }
+   },
+   "expect": {
+    "shown": true,
+    "state": "stopping",
+    "label": "Stopping…",
+    "title": "",
+    "disabled": true
+   }
+  },
+  {
+   "name": "warningsFor: none",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": []
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
+   "name": "warningsFor: one critical is the banner alone",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "psu",
+       "incident": "",
+       "severity": "critical",
+       "kind": "psu",
+       "subject": "",
+       "title": "Power supply",
+       "message": "Low voltage now",
+       "link": null,
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [
+     {
+      "severity": "critical",
+      "title": "Power supply",
+      "message": "Low voltage now"
+     }
+    ],
+    "strip": [],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
+   "name": "warningsFor: two criticals, none in the strip",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "psu",
+       "incident": "",
+       "severity": "critical",
+       "kind": "psu",
+       "subject": "",
+       "title": "Power supply",
+       "message": "Low voltage now",
+       "link": null,
+       "snooze": "day"
+      },
+      {
+       "id": "sd_health",
+       "incident": "",
+       "severity": "critical",
+       "kind": "sd_health",
+       "subject": "",
+       "title": "SD card",
+       "message": "4% life left, replace now",
+       "link": null,
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [
+     {
+      "severity": "critical",
+      "title": "Power supply",
+      "message": "Low voltage now"
+     },
+     {
+      "severity": "critical",
+      "title": "SD card",
+      "message": "4% life left, replace now"
+     }
+    ],
+    "strip": [],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
+   "name": "warningsFor: a card with its link",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "sample_rate_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "sample_rate",
+       "subject": "CD",
+       "title": "CD sample rate",
+       "message": "Turn on rate matching",
+       "link": "/setup#input1",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "CD sample rate",
+      "message": "Turn on rate matching",
+      "link": "/setup#input1"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
+   "name": "warningsFor: a remote page has no links",
+   "fn": "warningsFor",
+   "opts": {
+    "own": false
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "sample_rate_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "sample_rate",
+       "subject": "CD",
+       "title": "CD sample rate",
+       "message": "Turn on rate matching",
+       "link": "/setup#input1",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "CD sample rate",
+      "message": "Turn on rate matching",
+      "link": null
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
+   "name": "warningsFor: the same item on two inputs folds",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "stylus_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "stylus",
+       "subject": "Turntable",
+       "title": "Turntable stylus",
+       "message": "Change now",
+       "link": "/service",
+       "snooze": "day"
+      },
+      {
+       "id": "stylus_in2",
+       "incident": "",
+       "severity": "warning",
+       "kind": "stylus",
+       "subject": "Tape",
+       "title": "Tape stylus",
+       "message": "Change now",
+       "link": "/service",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "Stylus",
+      "message": "Change now on Turntable, Tape",
+      "link": "/service"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": "warning"
+   }
+  },
+  {
+   "name": "warningsFor: the same item at another severity does not fold",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "stylus_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "stylus",
+       "subject": "Turntable",
+       "title": "Turntable stylus",
+       "message": "Change now",
+       "link": "/service",
+       "snooze": "day"
+      },
+      {
+       "id": "stylus_in2",
+       "incident": "",
+       "severity": "info",
+       "kind": "stylus",
+       "subject": "Tape",
+       "title": "Tape stylus",
+       "message": "Change soon",
+       "link": "/service",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "Turntable stylus",
+      "message": "Change now",
+      "link": "/service"
+     },
+     {
+      "severity": "info",
+      "title": "Tape stylus",
+      "message": "Change soon",
+      "link": "/service"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": "warning"
+   }
+  },
+  {
+   "name": "warningsFor: an entry with no subject never folds",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "no_input",
+       "incident": "",
+       "severity": "info",
+       "kind": "no_input",
+       "subject": "",
+       "title": "No input",
+       "message": "No input is set up",
+       "link": "/setup",
+       "snooze": "day"
+      },
+      {
+       "id": "n2",
+       "incident": "",
+       "severity": "info",
+       "kind": "no_input",
+       "subject": "",
+       "title": "No input",
+       "message": "No input is set up",
+       "link": "/setup",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "info",
+      "title": "No input",
+      "message": "No input is set up",
+      "link": "/setup"
+     },
+     {
+      "severity": "info",
+      "title": "No input",
+      "message": "No input is set up",
+      "link": "/setup"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
+   "name": "warningsFor: the first two cards show and the rest are counted",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "sample_rate_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "sample_rate",
+       "subject": "CD",
+       "title": "CD sample rate",
+       "message": "Turn on rate matching",
+       "link": "/setup#input1",
+       "snooze": "day"
+      },
+      {
+       "id": "stylus_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "stylus",
+       "subject": "Turntable",
+       "title": "Turntable stylus",
+       "message": "Change now",
+       "link": "/service",
+       "snooze": "day"
+      },
+      {
+       "id": "belt_in1",
+       "incident": "",
+       "severity": "info",
+       "kind": "belt",
+       "subject": "Turntable",
+       "title": "Turntable drive belt",
+       "message": "Service soon",
+       "link": "/service",
+       "snooze": "day"
+      },
+      {
+       "id": "no_input",
+       "incident": "",
+       "severity": "info",
+       "kind": "no_input",
+       "subject": "",
+       "title": "No input",
+       "message": "No input is set up",
+       "link": "/setup",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "CD sample rate",
+      "message": "Turn on rate matching",
+      "link": "/setup#input1"
+     },
+     {
+      "severity": "warning",
+      "title": "Turntable stylus",
+      "message": "Change now",
+      "link": "/service"
+     },
+     {
+      "severity": "info",
+      "title": "Turntable drive belt",
+      "message": "Service soon",
+      "link": "/service"
+     },
+     {
+      "severity": "info",
+      "title": "No input",
+      "message": "No input is set up",
+      "link": "/setup"
+     }
+    ],
+    "more": 2,
+    "serviceSeverity": "warning"
+   }
+  },
+  {
+   "name": "warningsFor: a critical beside cards",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "psu",
+       "incident": "",
+       "severity": "critical",
+       "kind": "psu",
+       "subject": "",
+       "title": "Power supply",
+       "message": "Low voltage now",
+       "link": null,
+       "snooze": "day"
+      },
+      {
+       "id": "belt_in1",
+       "incident": "",
+       "severity": "info",
+       "kind": "belt",
+       "subject": "Turntable",
+       "title": "Turntable drive belt",
+       "message": "Service soon",
+       "link": "/service",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [
+     {
+      "severity": "critical",
+      "title": "Power supply",
+      "message": "Low voltage now"
+     }
+    ],
+    "strip": [
+     {
+      "severity": "info",
+      "title": "Turntable drive belt",
+      "message": "Service soon",
+      "link": "/service"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": "info"
+   }
+  },
+  {
+   "name": "warningsFor: the service marker takes the worst severity",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "stylus_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "stylus",
+       "subject": "Turntable",
+       "title": "Turntable stylus",
+       "message": "Change now",
+       "link": "/service",
+       "snooze": "day"
+      },
+      {
+       "id": "belt_in1",
+       "incident": "",
+       "severity": "info",
+       "kind": "belt",
+       "subject": "Turntable",
+       "title": "Turntable drive belt",
+       "message": "Service soon",
+       "link": "/service",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "Turntable stylus",
+      "message": "Change now",
+      "link": "/service"
+     },
+     {
+      "severity": "info",
+      "title": "Turntable drive belt",
+      "message": "Service soon",
+      "link": "/service"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": "warning"
+   }
+  },
+  {
+   "name": "warningsFor: the service marker on info alone",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "belt_in1",
+       "incident": "",
+       "severity": "info",
+       "kind": "belt",
+       "subject": "Turntable",
+       "title": "Turntable drive belt",
+       "message": "Service soon",
+       "link": "/service",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "info",
+      "title": "Turntable drive belt",
+      "message": "Service soon",
+      "link": "/service"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": "info"
+   }
+  },
+  {
+   "name": "warningsFor: the marker is still found on a remote page",
+   "fn": "warningsFor",
+   "opts": {
+    "own": false
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "belt_in1",
+       "incident": "",
+       "severity": "info",
+       "kind": "belt",
+       "subject": "Turntable",
+       "title": "Turntable drive belt",
+       "message": "Service soon",
+       "link": "/service",
+       "snooze": "day"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "info",
+      "title": "Turntable drive belt",
+      "message": "Service soon",
+      "link": null
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": "info"
+   }
+  }
+ ]
+}
