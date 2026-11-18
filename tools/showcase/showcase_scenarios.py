@@ -116,7 +116,7 @@ def _scenario(name, snapshot, *, muted=False, action="", **kwargs):
 def _stylus_scenario(track: Track):
     ident = IDS[track.appliance]
     warning = ApplianceWarning(
-        "stylus_in1", "warning", "Stylus wear", "Change now",
+        "stylus_in1", "warning", "Turntable stylus", "Change now",
         appliance_name=track.appliance, detail="Played 450.0 h of its 400 h life.",
     )
     key = appliance_warning_key(ident, warning.id)

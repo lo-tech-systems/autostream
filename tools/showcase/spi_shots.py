@@ -31,9 +31,11 @@ from dial_display_image import load_logo  # noqa: E402
 from dial_display_profiles import get_profile, layout_context_for  # noqa: E402
 from dial_layout_metrics import CONTENT_COMPACT, metrics_for  # noqa: E402
 from dial_touch_layout import list_layout_for  # noqa: E402
+from autostream_sysutils import SD_LEVEL_FAILING, sd_card_text  # noqa: E402
+from dial_warning_bell import DIAL_SOURCE  # noqa: E402
 from dial_warning_text import (  # noqa: E402
-    CLOSE_TEXT, NEXT_TEXT, NOWIFI_MESSAGE_TEXT, RESTART_TEXT, SDHEALTH_BODY_TEXT, SDHEALTH_TITLE_TEXT,
-    UPDATE_FAILED_TEXT, UPDATE_PHASE_TEXT, UPDATED_TEXT, UPDATING_TEXT)
+    CLOSE_TEXT, NEXT_TEXT, NOWIFI_MESSAGE_TEXT, RESTART_TEXT, UPDATE_FAILED_TEXT, UPDATE_PHASE_TEXT,
+    UPDATED_TEXT, UPDATING_TEXT)
 from music import BY_KEY  # noqa: E402
 
 LOGO = REPO_ROOT / "images" / "autostream-logo-centred-dark.png"
@@ -45,7 +47,7 @@ VARIANTS = {"rich": "ili9341_320x240", "compact": "st7789_240x240"}
 # What the Info page reads on a showcase dial.
 INFO_ROWS = (
     ("WiFi", "HomeNet"), ("Signal", "Strong"), ("IPv4", "192.168.1.42"),
-    ("Dial name", "Lounge dial"), ("Firmware", "0.7.0"), ("Disk free", "21.4 GB"), ("SD health", "96%"),
+    ("Dial name", "Lounge dial"), ("Firmware", "0.8.0"), ("Disk free", "21.4 GB"), ("SD health", "96%"),
 )
 
 
@@ -176,13 +178,15 @@ def warning(panel, view):
 
 def nowifi(panel):
     return warning(panel, views.WarningView(
-        title=NOWIFI_MESSAGE_TEXT, buttons=(RESTART_TEXT, CLOSE_TEXT), source="This dial"))
+        title=NOWIFI_MESSAGE_TEXT, buttons=(CLOSE_TEXT, RESTART_TEXT), source=DIAL_SOURCE,
+        severity="warning"))
 
 
 def sdhealth(panel):
+    title, message, detail = sd_card_text(SD_LEVEL_FAILING, 4)
     return warning(panel, views.WarningView(
-        title=SDHEALTH_TITLE_TEXT, message=SDHEALTH_BODY_TEXT.format(percent=4), buttons=(CLOSE_TEXT,),
-        source="This dial"))
+        title=title, message=message, detail=detail, buttons=(CLOSE_TEXT,), source=DIAL_SOURCE,
+        severity="critical"))
 
 
 def updating(panel):
@@ -192,21 +196,21 @@ def updating(panel):
 
 def updated(panel):
     return warning(panel, views.WarningView(
-        title=UPDATED_TEXT, message="Version 0.7.0", buttons=(CLOSE_TEXT,)))
+        title=UPDATED_TEXT, message="Version 0.8.0", buttons=(CLOSE_TEXT,)))
 
 
 def update_failed(panel):
     return warning(panel, views.WarningView(
-        title=UPDATE_FAILED_TEXT, message="Restored 0.6.0", buttons=(CLOSE_TEXT,)))
+        title=UPDATE_FAILED_TEXT, message="Restored 0.7.0", buttons=(CLOSE_TEXT,)))
 
 
 def appliance_warning(panel, paged=False):
     """An appliance's warning on the warnings card: Close alone, or Close | Next
     with the entry's place among the bell's entries."""
     return warning(panel, views.WarningView(
-        title="Stylus wear", message="Change now", detail="Played 450.0 h of its 400 h life.",
+        title="Turntable stylus", message="Change now", detail="Played 450.0 h of its 400 h life.",
         buttons=(CLOSE_TEXT, NEXT_TEXT) if paged else (CLOSE_TEXT,),
-        source="Turntable · 1 of 2" if paged else "Turntable"))
+        source="Turntable · 1 of 2" if paged else "Turntable", severity="warning"))
 
 
 def screens(panel):
