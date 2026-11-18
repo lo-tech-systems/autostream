@@ -22,6 +22,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fake_store import fake_outputs_result
 
+import _page_stub
+
 try:
     from playwright.sync_api import Page, expect  # type: ignore[attr-defined]
     _PLAYWRIGHT_INSTALLED = True
@@ -108,10 +110,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.startswith("/static/"):
-            rel = self.path.split("?", 1)[0][len("/static/"):]
-            f = (REPO_ROOT / "nginx" / "static" / rel).resolve()
-            body = f.read_bytes() if f.is_file() else b""
-            self._send(body, "text/css" if f.suffix == ".css" else "application/javascript")
+            _page_stub.serve_static(self, self.path)
         elif self.path.startswith("/api/setup/card/dials"):
             self._send(_CARD, "application/json")
         elif self.path.startswith("/api/dial/screen/settings/"):

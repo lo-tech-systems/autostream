@@ -1,13 +1,14 @@
 """Shared Home page renderer and stub server for the Playwright tests.
 
 The page comes from the real Home renderer; every other request is answered
-by a small stub server. ``/static/*`` is served from ``nginx/static``,
+by a small stub server. ``/static/*`` is served from ``nginx/static`` (through ``_page_stub``),
 ``/api/owntone/outputs_state`` from ``OUTPUTS``, ``/api/status`` from
 ``STATUS`` and the remote Home poll from ``REMOTE_HOME``; each is served only
 while its dict is non-empty, so a test that leaves one empty sees the plain
 ``{"ok": true}`` reply every other ``/api/*`` path gets. The module-level
 containers are shared by every importer and are mutated in place, never
-rebound.
+rebound. ``START_FAILURE``, when non-empty, is added to the outputs reply as its
+``start_failure`` field.
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from fake_store import fake_outputs_result
+
+import _page_stub
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 
@@ -33,6 +36,7 @@ STATUS: dict = {}
 STATUS_POLLS: list = []
 REMOTE_HOME: dict = {}
 REMOTE_HOME_POLLS: list = []
+START_FAILURE: dict = {}
 
 _BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update", "sample_rate")
 
@@ -162,13 +166,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
         if self.path.startswith("/static/"):
-            rel = path[len("/static/"):]
-            f = (REPO_ROOT / "nginx" / "static" / rel).resolve()
-            body = f.read_bytes() if f.is_file() else b""
-            self._send(body, "text/css" if f.suffix == ".css" else "application/javascript")
+            _page_stub.serve_static(self, self.path)
         elif self.path.startswith("/api/owntone/outputs_state"):
             POLLS.append(1)
-            self._send(json.dumps({"ok": True, "outputs": OUTPUTS}).encode(), "application/json")
+            reply = {"ok": True, "outputs": OUTPUTS}
+            if START_FAILURE:
+                reply["start_failure"] = dict(START_FAILURE)
+            self._send(json.dumps(reply).encode(), "application/json")
         elif self.path.startswith("/api/status") and STATUS:
             STATUS_POLLS.append(1)
             self._send(json.dumps(STATUS).encode(), "application/json")

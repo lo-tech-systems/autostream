@@ -31,6 +31,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fake_store import fake_outputs_result
 
+import _page_stub
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 
 # ---------------------------------------------------------------------------
@@ -218,25 +220,7 @@ class _StubHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.startswith("/static/"):
-            # Serve the real nginx/static/* files (poll.js, theme.css,
-            # render_fragments.js, ...) so scripts the real page's <script
-            # src="/static/..."> tags load (e.g. Poller, referenced by the
-            # Setup page's activeOnly pollers) actually execute instead
-            # of erroring on this server's default (non-static) HTML body.
-            rel = self.path.split("?", 1)[0][len("/static/"):]
-            static_path = (REPO_ROOT / "nginx" / "static" / rel).resolve()
-            static_root = (REPO_ROOT / "nginx" / "static").resolve()
-            if static_root in static_path.parents and static_path.is_file():
-                body = static_path.read_bytes()
-                ct = "text/css" if static_path.suffix == ".css" else "application/javascript"
-            else:
-                body = b""
-                ct = "text/plain"
-            self.send_response(200 if body else 404)
-            self.send_header("Content-Type", ct)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            _page_stub.serve_static(self, self.path)
             return
         if self.path.startswith("/api/setup/card/"):
             # Lazy per-card detail fetch: serve the pre-rendered

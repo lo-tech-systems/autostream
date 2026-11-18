@@ -29,3 +29,42 @@ def test_module_text_reads_a_package_module():
 def test_module_text_unknown_name_raises():
     with pytest.raises(KeyError):
         _source_text.module_text("autostream_no_such_module")
+
+
+_PAGE = (
+    "<html><head>"
+    '<link rel="stylesheet" href="/static/theme.css?v=0123abcd45">'
+    '<script type="application/json" id="page-data">{"a":1,"b":"x"}</script>'
+    '<script src="/static/poll.js?v=0123abcd45"></script>'
+    "<script>var inline_one = 1;</script>"
+    "</head><body>"
+    "<script src='/static/render_fragments.js'></script>"
+    "<script>var inline_two = 2;</script>"
+    "</body></html>"
+)
+
+
+def test_static_text_reads_a_served_file():
+    assert "Poller" in _source_text.static_text("poll.js")
+
+
+def test_linked_static_lists_scripts_and_styles_in_document_order():
+    assert _source_text.linked_static(_PAGE) == [
+        "theme.css", "poll.js", "render_fragments.js"]
+
+
+def test_page_scripts_joins_inline_bodies_and_linked_files_in_order():
+    text = _source_text.page_scripts(_PAGE)
+    positions = [
+        text.index("inline_one"),
+        text.index(_source_text.static_text("render_fragments.js")[:40]),
+        text.index("inline_two"),
+    ]
+    assert text.index(_source_text.static_text("poll.js")[:40]) < positions[0]
+    assert positions == sorted(positions)
+    assert '"a":1' not in text
+
+
+def test_page_data_parses_the_island_and_defaults_to_empty():
+    assert _source_text.page_data(_PAGE) == {"a": 1, "b": "x"}
+    assert _source_text.page_data("<html></html>") == {}

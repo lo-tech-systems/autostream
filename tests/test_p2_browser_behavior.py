@@ -149,6 +149,83 @@ class TestJavaScriptSyntax:
 
 
 # ---------------------------------------------------------------------------
+# Static files nginx serves (nginx/static)
+# ---------------------------------------------------------------------------
+
+_STATIC_DIR = REPO_ROOT / "nginx" / "static"
+
+
+def _static_files(*suffixes: str) -> list[Path]:
+    return sorted(p for p in _STATIC_DIR.rglob("*") if p.is_file() and p.suffix in suffixes)
+
+
+def _in_scope_pages() -> tuple[str, ...]:
+    sys.path.insert(0, str(REPO_ROOT / "tests" / "playwright"))
+    import _page_stub
+    return _page_stub.PAGES
+
+
+class TestStaticFiles:
+    """The files nginx serves under /static/ are checked in, plain and valid."""
+
+    @node_available
+    def test_every_script_is_syntactically_valid(self):
+        files = _static_files(".js")
+        assert files, "no scripts under nginx/static"
+        for path in files:
+            r = subprocess.run(["node", "--check", str(path)],
+                               capture_output=True, text=True, timeout=10)
+            assert r.returncode == 0, (
+                f"JavaScript syntax error in {path.relative_to(REPO_ROOT)}:\n{r.stderr.strip()}"
+            )
+
+    def test_scripts_and_page_styles_are_ascii(self):
+        # Served without a charset, so they must not rely on one. The shared
+        # theme.css predates the rule and carries comment dashes.
+        files = _static_files(".js") + [
+            p for p in _static_files(".css") if "page" in p.relative_to(_STATIC_DIR).parts]
+        for path in files:
+            try:
+                path.read_bytes().decode("ascii")
+            except UnicodeDecodeError as exc:
+                pytest.fail(f"{path.relative_to(REPO_ROOT)} is not ASCII: {exc}")
+
+    def test_every_file_is_tracked_and_world_readable(self):
+        try:
+            top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=REPO_ROOT,
+                                 capture_output=True, text=True, timeout=10)
+            r = subprocess.run(["git", "ls-files", "-s", "nginx/static"], cwd=REPO_ROOT,
+                               capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pytest.skip("git not available")
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != REPO_ROOT.resolve():
+            pytest.skip("not the root of a git checkout")
+        if r.returncode != 0 or not r.stdout.strip():
+            pytest.skip("not a git checkout")
+        tracked = {}
+        for line in r.stdout.splitlines():
+            meta, path = line.split("\t", 1)
+            tracked[path] = meta.split()[0]
+        on_disk = {p.relative_to(REPO_ROOT).as_posix()
+                   for p in _STATIC_DIR.rglob("*") if p.is_file()}
+        assert on_disk == set(tracked), (
+            f"untracked or missing static files: {sorted(on_disk ^ set(tracked))}")
+        bad = {path: mode for path, mode in tracked.items() if mode != "100644"}
+        assert not bad, f"static files must be mode 100644: {bad}"
+
+    @pytest.mark.parametrize("page", _in_scope_pages())
+    def test_every_island_key_a_page_script_reads_is_in_its_island(self, page):
+        sys.path.insert(0, str(REPO_ROOT / "tests" / "playwright"))
+        import _page_stub
+        html = _page_stub.render(page).decode("utf-8")
+        assert "<html" in html.lower(), f"{page} did not render a page"
+        island = _source_text.page_data(html)
+        read = set(re.findall(r"\bpageData\.(\w+)", _source_text.page_scripts(html)))
+        missing = read - set(island)
+        assert not missing, f"{page}: scripts read island keys the page does not carry: {sorted(missing)}"
+
+
+# ---------------------------------------------------------------------------
 # Structural JS checks (no Node required)
 # ---------------------------------------------------------------------------
 
