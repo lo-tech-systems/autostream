@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+import autostream_sysutils
 
 # dial_display_profiles.py is pure data (no hardware imports) — see its module
 # docstring for why that must never change. Importing it here is therefore
@@ -655,8 +655,8 @@ _save_lock = threading.Lock()
 def save_config(cfg: DialConfig) -> None:
     """Write runtime-mutable fields to dial-settings.json atomically.
 
-    Never writes hardware config or UUID.  Uses mkstemp so concurrent calls
-    each get a unique temp file; chmod 0600 before any data is written.
+    Never writes hardware config or UUID.  The shared atomic writer gives each
+    call a unique temp file and sets mode 0600 before any data is written.
     """
     data = {
         'step_percent':   cfg.step_percent,
@@ -684,17 +684,6 @@ def save_config(cfg: DialConfig) -> None:
         },
     }
     with _save_lock:
-        fd, tmp_path = tempfile.mkstemp(dir=SETTINGS_PATH.parent, suffix='.tmp')
-        try:
-            os.chmod(tmp_path, 0o600)
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            Path(tmp_path).replace(SETTINGS_PATH)
-        except:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        autostream_sysutils.atomic_write_file(
+            SETTINGS_PATH, lambda f: json.dump(data, f, indent=2), mode=0o600,
+        )

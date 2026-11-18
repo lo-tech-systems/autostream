@@ -119,7 +119,8 @@ class TestSeenMarker:
         assert read_seen_marker(path) == "2000-01-01T01:00:00+00:00"
 
     def test_unwritable_location_does_not_raise(self, tmp_path):
-        write_seen_marker("x", str(tmp_path / "missing-dir" / "seen"))
+        (tmp_path / "afile").write_text("x")
+        write_seen_marker("x", str(tmp_path / "afile" / "seen"))
 
 
 # ---------------------------------------------------------------------------

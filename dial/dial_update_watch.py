@@ -22,6 +22,7 @@ import logging
 import os
 from dataclasses import dataclass
 
+import autostream_sysutils
 from dial_values import clamp, clamp_percent, parse_env_text, parse_int, read_text_or
 
 UPDATE_RESULT_PATH = "/var/lib/autostream/update-result.env"
@@ -110,10 +111,9 @@ def read_seen_marker(path: str = UPDATE_SEEN_PATH) -> str:
 def write_seen_marker(value: str, path: str = UPDATE_SEEN_PATH) -> None:
     """Record *value* as the last result shown. Best effort: a failed write
     only means the card may show once more after a restart."""
-    tmp = f"{path}.tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write(value + "\n")
-        os.replace(tmp, path)
+        autostream_sysutils.atomic_write_file(
+            path, lambda handle: handle.write(value + "\n"), mode=0o644,
+        )
     except OSError:
         logging.debug("dial update watch: could not write the seen marker", exc_info=True)

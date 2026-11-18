@@ -1507,7 +1507,7 @@ class TestSaveConfigAtomic:
         orig = dc.SETTINGS_PATH
         dc.SETTINGS_PATH = s
         try:
-            with patch.object(Path, "replace", side_effect=OSError("disk full")):
+            with patch("os.replace", side_effect=OSError("disk full")):
                 with pytest.raises(OSError, match="disk full"):
                     save_config(DialConfig(uuid="x"))
         finally:
