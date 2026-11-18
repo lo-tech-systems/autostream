@@ -48,6 +48,21 @@ REMOVED = (
     "render_fragments.js",
     "start_failure.js",
     "appliance_selector.js",
+    # The dial's old protocol: its routes, the playing record and the hint
+    # routes the appliance used to call on the dial.
+    "/api/dial/status",
+    "/api/dial/volume",
+    "/api/dial/mute",
+    "/api/dial/outputs",
+    "/api/dial/eq",
+    "/api/dial/repeat",
+    "/api/dial/warnings",
+    "/api/dial/capabilities",
+    "_autostream-playing._tcp",
+    "dial_proto",
+    "/auth-changed",
+    "/warnings-changed",
+    "/state-changed",
 )
 
 # Modules that have been removed, with what replaced them. Neither the shipped
@@ -57,6 +72,8 @@ REMOVED_MODULES = {
     "autostream_federation": "the peer client library and the relay",
     "webui.peer.gateway": "webui.peer.relay",
     "webui.peer.federation": "webui.peer.relay",
+    "webui.dial.api": "the client protocol",
+    "autostream_announce": "autostream_session_flag",
 }
 
 # (path, method) route rows that must not exist.
@@ -74,6 +91,17 @@ REMOVED_ROUTES = (
     ("/api/input_gain", "POST"),
     ("/setup", "POST"),
     ("/owntone-setup", "POST"),
+    ("/api/dial/status", "POST"),
+    ("/api/dial/volume", "POST"),
+    ("/api/dial/mute", "POST"),
+    ("/api/dial/outputs", "POST"),
+    ("/api/dial/outputs/set", "POST"),
+    ("/api/dial/eq", "POST"),
+    ("/api/dial/eq/set", "POST"),
+    ("/api/dial/repeat", "POST"),
+    ("/api/dial/repeat/arm", "POST"),
+    ("/api/dial/warnings", "POST"),
+    ("/api/dial/capabilities", "GET"),
 )
 
 SCAN = ("core", "dial", "nginx/static", "supervisor", "system")

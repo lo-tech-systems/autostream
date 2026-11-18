@@ -1257,29 +1257,29 @@ sudo autostream-dial-control ping
 
 ### `targets` returns an empty list
 
-An empty target list is normal when no compatible autostream appliance is
-currently playing. The dial discovers appliances via mDNS
-(`_autostream-playing._tcp`); an appliance only appears while it has an active
-audio capture.
+An empty target list means the dial has seen no autostream appliance. The dial
+finds appliances via mDNS (`_autostream._tcp`) whether or not they are playing,
+and keeps one connection open to each.
 
 Check:
-1. At least one autostream appliance is running and capturing audio.
+1. At least one autostream appliance is running.
 2. Both the dial and the appliance are on the same network segment.
-3. `avahi-browse -t _autostream-playing._tcp` on the dial shows the appliance.
+3. `avahi-browse -t _autostream._tcp` on the dial shows the appliance.
 
-### Target shows `status_error: unsupported`
+### Target shows `status_error: protocol`
 
-The appliance does not advertise `dial_status=v1` in its mDNS TXT record.
-Update the appliance to a version that supports `POST /api/dial/status`.
+The appliance and the dial speak different protocol numbers (the `proto` key
+in their mDNS records). Update whichever is older.
 
 ### Target shows `status_error: unauthorized`
 
 The dial's UUID is not authorized on that appliance. Authorize it from the
 appliance's Setup page (Settings → Dials).
 
-### Target shows `status_error: timeout` or `unreachable`
+### Target shows `status_error: unreachable`
 
-The appliance did not respond within 1 second. Check:
+The dial has no working connection to the appliance. It keeps trying, and the
+target recovers by itself once the appliance answers. Check:
 - Network connectivity from the dial to the appliance.
 - The appliance's autostream service is running.
 

@@ -16,8 +16,8 @@ you to confirm ("Start firmware update? The dial will restart."), then
 starts the update. Every update ends with the dial restarting once, so
 expect it to be unavailable for a minute or two at the end.
 
-A dial that is running an older protocol version (see
-[Protocol](DIAL_PROTOCOL.md#protocol-dialect-dial_proto)) is flagged
+A dial that is running an older protocol number (see
+[mDNS service types](DIAL_PROTOCOL.md#2-mdns-service-types)) is flagged
 **Needs update** on its card, and the Home page shows a **Dial updates
 required** banner that links to Setup, Dials. The dial keeps working in the
 meantime; updating it brings it up to date.
