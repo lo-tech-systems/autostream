@@ -48,10 +48,7 @@ from autostream_config import (
     unconfigured,
 )
 from autostream_artwork import ArtworkMemoryCache
-from autostream_dial_push import (
-    ChangeWatch,
-    hint_dials_after_cycle,
-)
+import autostream_dial_push
 from autostream_bluetooth_client import (
     BluetoothClient,
     bluetooth_capture_label,
@@ -4300,6 +4297,8 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
         log_setup.get_live_platform_log_level(),
     )
 
+    autostream_dial_push.install_state_hints(autostream_state.store())
+
     # Optionally start the web UI.  Let any startup failure propagate so the
     # process exits nonzero and systemd can restart it.
     webui_thread = None
@@ -4518,18 +4517,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     # reconnects and reloads -- see _carry_forward_hang_watchdog.
     owntone_hang_watchdog = _OwntoneHangWatchdog()
 
-    # What a dial shows that only this loop sees change: the daemon's repeat
-    # state and the identified track. Each is hinted when its digest moves
-    # between cycles. Like the hint's coalescer these are process memory, so
-    # a reload or a daemon reconnect compares the state before with the
-    # state after.
-    dial_hint_watches = (
-        ChangeWatch("repeat", lambda: autostream_state.repeat_digest(
-            autostream_state.store().snapshot().repeat.block)),
-        ChangeWatch("track", lambda: autostream_state.track_digest(
-            autostream_state.active_track(autostream_state.store().snapshot()))),
-    )
-
     # Outer loop: runs once normally; repeats after a config reload.
     while not runtime.stop_flag.is_set():
         client = monitor_client.MonitorClient(socket_path)
@@ -4597,6 +4584,10 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         interval_table = _IntervalTable()
         interval_table.register("stats_flush", DEFAULT_FLUSH_INTERVAL_SECONDS, _flush_stats)
 
+        # One change per poll cycle: opened after the daemon answers, closed
+        # once the cycle's state is published, and closed first thing in the
+        # finally below if the cycle raises before that.
+        tick_batch = None
         try:
             while not runtime.stop_flag.is_set():
 
@@ -4677,6 +4668,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     continue
 
                 monitor_daemon_recovery_log.ok(time.time())
+                tick_batch = autostream_state.store().batch()
                 _set_monitor_runtime_info(
                     monitor_build=str(status.get("monitor_build") or "").strip() or "unknown",
                     log_level=str(status.get("log_level") or "").strip() or "unknown",
@@ -4778,7 +4770,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # sync is idempotent and only touches avahi on a transition.
                 announce.sync_playing_announcement(session_source is not None, version)
 
-                hint_dials_after_cycle(session_event, dial_hint_watches)
+                tick_batch.close()
 
                 # Reset the replay origin's identification only now that the
                 # session is marked inactive and the announcement withdrawn:
@@ -4883,6 +4875,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             raise
 
         finally:
+            if tick_batch is not None:
+                tick_batch.close()
             tracker = runtime._playback_tracker
             teardown_was_capturing = any(m.is_capturing for m in monitors)
             teardown_owntone_base_url = next(

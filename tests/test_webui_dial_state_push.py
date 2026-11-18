@@ -14,7 +14,7 @@ Covers:
     the emit callback runs outside the lock. Time and the timer are injected.
 6.  notify_state_changed: input checks, no raise, no I/O on the caller's
     thread, and what the emit function hands the push worker.
-7.  The digests and the change watch the coordinator loop uses.
+7.  The digests and the state-hints subscriber the coordinator loop feeds.
 8.  The protocol document describes the route.
 """
 from __future__ import annotations
@@ -540,10 +540,31 @@ def _waiting():
     return _snap(state="waiting", title="", artist="", album="", artwork_url="")
 
 
-def _track_watch(snaps):
-    """A track watch that reads the given snapshots in turn."""
+def _track_hints(snaps):
+    """A StateHints fed one track reading per coordinator cycle: step()
+    publishes the next reading, delivers the cycle's batch Change and returns
+    the kinds hinted."""
+    from fake_store import FakeStore
+    fake = FakeStore()
+    fake.inputs([fake.input_entry(1, capturing=True)])
     feed = iter(snaps)
-    return dp.ChangeWatch("track", lambda: state.track_digest(next(feed)))
+    calls = []
+    hints = dp.StateHints(notify=lambda *k, **kw: calls.append(k))
+
+    class Rig:
+        def step(self):
+            fake.track({1: _real(next(feed))})
+            before = len(calls)
+            hints(_close_change())
+            return calls[before:]
+
+    return Rig(), calls
+
+
+def _close_change(tags=(), requester=None, batch=True):
+    from autostream_state.store import Change
+    return Change(version=1, parts=frozenset(), origin=None, requester=requester,
+                  tags=frozenset(tags), batch=batch)
 
 
 class TestDigests:
@@ -620,94 +641,130 @@ class TestDigests:
             assert state.repeat_digest(value) is not None
 
 
-class TestChangeWatch:
-    def test_the_first_reading_is_silent(self):
-        with patch.object(dp, "notify_state_changed") as notify:
-            watch = dp.ChangeWatch("repeat", lambda: (1,))
-            assert watch.step() is False
-        notify.assert_not_called()
+class TestStateHints:
+    def test_the_first_close_is_a_baseline_and_hints_nothing(self, fake_store):
+        fake_store.repeat({"enabled": True})
+        calls = []
+        dp.StateHints(notify=lambda *k, **kw: calls.append(k))(_close_change())
+        assert calls == []
 
-    def test_a_change_notifies_once_with_its_kind(self):
-        values = iter([(1,), (2,), (2,)])
-        with patch.object(dp, "notify_state_changed") as notify:
-            watch = dp.ChangeWatch("track", lambda: next(values))
-            assert watch.step() is False
-            assert watch.step() is True
-            assert watch.step() is False
-        notify.assert_called_once_with("track")
+    def test_a_change_hints_once_with_its_kind(self):
+        rig, calls = _track_hints([_identified("A"), _identified("B"), _identified("B")])
+        assert rig.step() == []
+        assert rig.step() == [("track",)]
+        assert rig.step() == []
+        assert calls == [("track",)]
 
-    def test_a_raising_digest_is_silent_and_keeps_the_last_value(self):
-        script = [(1,), RuntimeError("boom"), (1,), (2,)]
+    def test_a_repeat_block_change_hints_repeat_on_the_next_close(self, fake_store):
+        calls = []
+        hints = dp.StateHints(notify=lambda *k, **kw: calls.append(k))
+        fake_store.repeat({"enabled": True, "armed": True})
+        hints(_close_change())
+        fake_store.repeat({"enabled": True, "armed": False})
+        hints(_close_change())
+        hints(_close_change())
+        assert calls == [("repeat",)]
 
-        def digest():
-            item = script.pop(0)
-            if isinstance(item, Exception):
-                raise item
-            return item
-
-        with patch.object(dp, "notify_state_changed") as notify:
-            watch = dp.ChangeWatch("repeat", digest)
-            assert watch.step() is False
-            assert watch.step() is False
-            assert watch.step() is False
-            notify.assert_not_called()
-            assert watch.step() is True
-        notify.assert_called_once_with("repeat")
+    def test_a_raising_digest_hints_nothing_and_keeps_the_last_value(self, fake_store):
+        calls = []
+        hints = dp.StateHints(notify=lambda *k, **kw: calls.append(k))
+        fake_store.repeat({"enabled": True})
+        hints(_close_change())
+        with patch.object(dp, "repeat_digest", side_effect=RuntimeError("boom")):
+            hints(_close_change())
+        hints(_close_change())
+        assert calls == []
 
     def test_a_recheck_of_the_same_track_notifies_nothing(self):
-        watch = _track_watch([_identified("A"), _analysing(), _identified("A")])
-        with patch.object(dp, "notify_state_changed") as notify:
-            for _ in range(3):
-                watch.step()
-        notify.assert_not_called()
+        rig, calls = _track_hints([_identified("A"), _analysing(), _identified("A")])
+        for _ in range(3):
+            rig.step()
+        assert calls == []
 
     def test_retrying_an_unidentified_track_notifies_nothing(self):
-        watch = _track_watch([_not_found(), _analysing(), _not_found(),
-                              _analysing(), _not_found()])
-        with patch.object(dp, "notify_state_changed") as notify:
-            for _ in range(5):
-                watch.step()
-        notify.assert_not_called()
+        rig, calls = _track_hints([_not_found(), _analysing(), _not_found(),
+                                   _analysing(), _not_found()])
+        for _ in range(5):
+            rig.step()
+        assert calls == []
 
     def test_a_title_change_across_a_recheck_notifies_once(self):
-        watch = _track_watch([_identified("A"), _analysing(), _identified("B")])
-        with patch.object(dp, "notify_state_changed") as notify:
-            for _ in range(3):
-                watch.step()
-        notify.assert_called_once_with("track")
+        rig, calls = _track_hints([_identified("A"), _analysing(), _identified("B")])
+        for _ in range(3):
+            rig.step()
+        assert calls == [("track",)]
 
     def test_a_track_change_through_waiting_notifies_twice(self):
-        watch = _track_watch([_identified("A"), _waiting(), _analysing(),
-                              _identified("B")])
-        with patch.object(dp, "notify_state_changed") as notify:
-            for _ in range(4):
-                watch.step()
-        assert notify.call_count == 2
+        rig, calls = _track_hints([_identified("A"), _waiting(), _analysing(),
+                                   _identified("B")])
+        for _ in range(4):
+            rig.step()
+        assert len(calls) == 2
 
-    def test_a_first_reading_in_flight_leaves_the_watch_unprimed(self):
-        watch = _track_watch([_analysing(), _identified("A"), _identified("B")])
-        with patch.object(dp, "notify_state_changed") as notify:
-            assert watch.step() is False
-            assert watch.step() is False
-            notify.assert_not_called()
-            assert watch.step() is True
-        notify.assert_called_once_with("track")
+    def test_a_first_reading_in_flight_leaves_the_baseline_unset(self):
+        rig, calls = _track_hints([_analysing(), _identified("A"), _identified("B")])
+        assert rig.step() == []
+        assert rig.step() == []
+        assert rig.step() == [("track",)]
 
-    def test_a_session_event_notifies_session_and_steps_every_watch(self):
-        stepped = []
-        watches = [SimpleNamespace(step=(lambda i=i: stepped.append(i))) for i in range(2)]
-        with patch.object(dp, "notify_state_changed") as notify:
-            dp.hint_dials_after_cycle("session_started", watches)
-        notify.assert_called_once_with("session")
-        assert stepped == [0, 1]
+    def test_the_session_tag_hints_session_first_then_repeat_then_track(self):
+        from fake_store import FakeStore
+        fake = FakeStore()
+        fake.inputs([fake.input_entry(1, capturing=True)])
+        calls = []
+        hints = dp.StateHints(notify=lambda *k, **kw: calls.append(k))
+        fake.repeat({"enabled": True, "armed": True})
+        fake.track({1: _real(_identified("A"))})
+        hints(_close_change())
+        fake.repeat({"enabled": True, "armed": False})
+        fake.track({1: _real(_identified("B"))})
+        hints(_close_change(tags=("session",)))
+        assert calls == [("session",), ("repeat",), ("track",)]
 
-    def test_no_session_event_notifies_nothing_but_still_steps(self):
-        stepped = []
-        watch = SimpleNamespace(step=lambda: stepped.append(1))
+    def test_a_session_edge_hints_session_whatever_the_digests_do(self):
+        calls = []
+        dp.StateHints(notify=lambda *k, **kw: calls.append(k))(_close_change(tags=("session",)))
+        assert calls == [("session",)]
+
+    def test_an_immediate_session_change_hints_session_and_compares_nothing(self, fake_store):
+        calls = []
+        hints = dp.StateHints(notify=lambda *k, **kw: calls.append(k))
+        fake_store.repeat({"enabled": True, "armed": True})
+        hints(_close_change(batch=False))
+        fake_store.repeat({"enabled": True, "armed": False})
+        hints(_close_change(tags=("session",), batch=False))
+        assert calls == [("session",)]
+
+    def test_a_non_batch_repeat_or_track_change_hints_nothing(self, fake_store):
+        calls = []
+        hints = dp.StateHints(notify=lambda *k, **kw: calls.append(k))
+        fake_store.repeat({"enabled": True, "armed": True})
+        hints(_close_change())
+        fake_store.repeat({"enabled": True, "armed": False})
+        hints(_close_change(batch=False))
+        assert calls == []
+
+    def test_a_dial_requester_becomes_the_excluded_dial(self):
+        seen = []
+        hints = dp.StateHints(notify=lambda *k, **kw: seen.append((k, kw)))
+        hints(_close_change(tags=("session",), requester="dial:abc-123"))
+        hints(_close_change(tags=("session",), requester="webui"))
+        assert seen == [(("session",), {"except_dial": "abc-123"}),
+                        (("session",), {"except_dial": None})]
+
+    def test_a_tag_that_is_not_a_hint_kind_is_ignored(self):
+        calls = []
+        dp.StateHints(notify=lambda *k, **kw: calls.append(k))(_close_change(tags=("bogus",)))
+        assert calls == []
+
+    def test_install_subscribes_one_hint_subscriber(self, fake_store):
         with patch.object(dp, "notify_state_changed") as notify:
-            dp.hint_dials_after_cycle(None, (watch,))
-        notify.assert_not_called()
-        assert stepped == [1]
+            handle = dp.install_state_hints(state.store())
+            assert isinstance(handle, int)
+            with state.store().batch():
+                session.publish(True, "input1", edge=True)
+        assert notify.call_count == 1
+        assert notify.call_args.args == ("session",)
 
 
 class TestDoc:
@@ -923,48 +980,38 @@ class TestRepeatAndLoopCallSites:
             _, notify, _ = self._apply(ack)
             notify.assert_not_called()
 
-    def test_the_loop_hints_once_after_the_announcement_sync(self):
+    def test_the_loop_closes_one_batch_per_cycle_after_the_announcement_sync(self):
         import inspect
         import autostream_core as core
         src = inspect.getsource(core.run_autostream)
-        assert src.count("hint_dials_after_cycle(") == 1
-        hook = src.index("hint_dials_after_cycle(session_event, dial_hint_watches)")
+        assert src.count("tick_batch.close()") == 2
+        loop_close = src.index("tick_batch.close()")
+        assert src.index("monitor_daemon_recovery_log.ok(") < src.index(
+            "tick_batch = autostream_state.store().batch()") < loop_close
         assert src.index(
-            "announce.sync_playing_announcement(session_source is not None, version)") < hook
-        assert hook < src.index("_teardown_identification_after_replay_end(")
-        flat = " ".join(src.split())
-        assert ('ChangeWatch("repeat", lambda: autostream_state.repeat_digest( '
-                'autostream_state.store().snapshot().repeat.block))' in flat)
-        assert ('ChangeWatch("track", lambda: autostream_state.track_digest( '
-                'autostream_state.active_track(autostream_state.store().snapshot())))' in flat)
-        assert (src.index("dial_hint_watches = (")
-                < src.index("\n    while not runtime.stop_flag.is_set():"))
+            "announce.sync_playing_announcement(session_source is not None, version)") < loop_close
+        assert loop_close < src.index("_teardown_identification_after_replay_end(")
+        assert (src.index("tick_batch = None")
+                < src.index("\n        try:\n            while not runtime.stop_flag.is_set():"))
+        lines = src[src.index("\n        finally:\n"):].split("\n")
+        assert lines[2].strip() == "if tick_batch is not None:"
+        assert lines[3].strip() == "tick_batch.close()"
+        assert "ChangeWatch" not in src and "dial_hint_watches" not in src
 
-    def test_the_loops_digests_read_the_cached_state(self):
+    def test_the_subscriber_reads_the_snapshot_at_close(self):
         from fake_store import FakeStore
         fake = FakeStore()
-        rs = {"v": self._block()}
-        snap = {"v": _snap()}
-        fake.repeat(rs["v"])
+        fake.repeat(self._block())
         fake.inputs([fake.input_entry(1, capturing=True)])
-        fake.track({1: _real(snap["v"])})
-        with patch.object(dp, "notify_state_changed") as notify:
-            watches = (
-                dp.ChangeWatch("repeat", lambda: state.repeat_digest(
-                    state.store().snapshot().repeat.block)),
-                dp.ChangeWatch("track", lambda: state.track_digest(
-                    state.active_track(state.store().snapshot()))),
-            )
-            for w in watches:
-                assert w.step() is False
-            rs["v"] = dict(self._block(), armed=False)
-            fake.repeat(rs["v"])
-            assert watches[0].step() is True
-            assert watches[1].step() is False
-            snap["v"] = _snap(title="Other")
-            fake.track({1: _real(snap["v"])})
-            assert watches[1].step() is True
-        assert [c.args for c in notify.call_args_list] == [("repeat",), ("track",)]
+        fake.track({1: _real(_snap())})
+        calls = []
+        hints = dp.StateHints(notify=lambda *k, **kw: calls.append(k))
+        hints(_close_change())
+        fake.repeat(dict(self._block(), armed=False))
+        hints(_close_change())
+        fake.track({1: _real(_snap(title="Other"))})
+        hints(_close_change())
+        assert calls == [("repeat",), ("track",)]
 
 
 class TestEqualiserCallSites:

@@ -38,6 +38,7 @@ import autostream_dial_push as dp
 import autostream_state
 from track_id.models import TrackIdentificationSnapshot, state_status_text
 import autostream_repeat as repeat
+import autostream_session
 from fake_store import FakeStore
 
 GOLDEN = Path(__file__).parent / "golden" / "dial_hint_sequences.json"
@@ -202,17 +203,14 @@ class Driver:
             emit, clock=lambda: self.now, schedule=schedule))
         # The ack path reads and rewrites the repeat and session parts; the
         # track under test is the entry of one capturing input.
+        # Each run starts from a fresh store with exactly one subscriber.
+        autostream_state.store().reset_for_tests()
         fake = FakeStore()
         fake.repeat(None)
         fake.session(False, None)
         fake.inputs([fake.input_entry(1, capturing=True)])
         self._put_track(_snapshot(spec()))
-        self.watches = (
-            dp.ChangeWatch("repeat", lambda: autostream_state.repeat_digest(
-                autostream_state.store().snapshot().repeat.block)),
-            dp.ChangeWatch("track", lambda: autostream_state.track_digest(
-                autostream_state.active_track(autostream_state.store().snapshot()))),
-        )
+        dp.install_state_hints(autostream_state.store())
 
     @staticmethod
     def _put_track(snapshot) -> None:
@@ -221,9 +219,19 @@ class Driver:
     def run(self, steps) -> list:
         for kind, arg in steps:
             if kind == "tick":
-                self._put_track(_snapshot(arg["track"]))
-                repeat.publish_from_daemon(arg["repeat"])
-                dp.hint_dials_after_cycle(arg["session_event"], self.watches)
+                # A cycle publishes through the owners inside one batch and
+                # closes it, as the coordinator does.
+                batch = autostream_state.store().batch()
+                try:
+                    self._put_track(_snapshot(arg["track"]))
+                    repeat.publish_from_daemon(arg["repeat"])
+                    event = arg["session_event"]
+                    if event is not None:
+                        autostream_session.publish(
+                            event == "session_started",
+                            "input1" if event == "session_started" else None, edge=True)
+                finally:
+                    batch.close()
             elif kind == "ack":
                 repeat.apply_repeat_ack(dict(arg))
             elif kind == "advance":

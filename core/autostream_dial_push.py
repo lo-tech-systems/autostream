@@ -15,14 +15,16 @@ a hint is emitted so that the modules that report changes can import this one
 without an import cycle.
 
 Some state is changed only by the coordinator (the daemon's repeat block, the
-identified track, a session starting or ending). ChangeWatch and
-hint_dials_after_cycle let its loop notice those once per cycle.
+identified track, a session starting or ending). StateHints, a subscriber to
+the state store, notices those once per coordinator cycle.
 """
 from __future__ import annotations
 
 import logging
 import threading
 import time
+
+from autostream_state import active_track, repeat_digest, store as _state_store, track_digest
 
 
 STATE_PUSH_PATH = "/state-changed"
@@ -151,41 +153,75 @@ def notify_state_changed(*kinds: str, except_dial: str | None = None) -> None:
         logging.debug("dial push: notify failed", exc_info=True)
 
 
-class ChangeWatch:
-    """Notices when *digest* moves between readings and says so as *kind*.
-    The first reading is the baseline: a dial fetches the state itself when
-    it first meets the appliance."""
+class StateHints:
+    """Turns state changes into dial hints. Session edges come as the
+    "session" tag. Repeat and track are compared only on a Change with
+    batch=True (the close of a coordinator cycle): the repeat block and the
+    active track are compared with their values at the previous close, the
+    first close being the baseline and an analysing track keeping the previous
+    value. Immediate (non-batch) repeat and track Changes, from the ack path
+    and the identification workers, are ignored here: the ack path hints
+    repeat directly, and comparing them too would hint a seek twice. Kinds are
+    sent one call each, session first, then repeat, then track, as the
+    coordinator did."""
 
-    def __init__(self, kind: str, digest) -> None:
-        self._kind = kind
-        self._digest = digest
-        self._last = None
-        self._primed = False
+    def __init__(self, notify=None) -> None:
+        # None means notify_state_changed, looked up when a hint is sent.
+        self._notify = notify
+        self._last: dict[str, object] = {}
 
-    def step(self) -> bool:
+    def __call__(self, change) -> None:
         try:
-            value = self._digest()
+            self._hint(change)
         except Exception:
-            logging.debug("dial push: %s digest failed", self._kind, exc_info=True)
+            logging.debug("dial push: state hints failed", exc_info=True)
+
+    def _hint(self, change) -> None:
+        except_dial = _dial_of(change.requester)
+        if "session" in change.tags:
+            self._send("session", except_dial)
+        for tag in sorted(change.tags - {"session"}):
+            if tag in CHANGE_KINDS:
+                self._send(tag, except_dial)
+        if not change.batch:
+            return
+        snap = _state_store().snapshot()
+        if self._moved("repeat", lambda: repeat_digest(snap.repeat.block)):
+            self._send("repeat", except_dial)
+        if self._moved("track", lambda: track_digest(active_track(snap))):
+            self._send("track", except_dial)
+
+    def _send(self, kind: str, except_dial) -> None:
+        (self._notify or notify_state_changed)(kind, except_dial=except_dial)
+
+    def _moved(self, kind: str, digest) -> bool:
+        """True when *kind*'s digest differs from the previous reading. The
+        first reading is the baseline: a dial fetches the state itself when it
+        first meets the appliance. No reading (an attempt is in flight) keeps
+        what was there."""
+        try:
+            value = digest()
+        except Exception:
+            logging.debug("dial push: %s digest failed", kind, exc_info=True)
             return False
         if value is None:
-            # No reading (an attempt is in flight): keep what we had.
             return False
-        if not self._primed:
-            self._primed = True
-            self._last = value
+        if kind not in self._last:
+            self._last[kind] = value
             return False
-        if value == self._last:
+        if value == self._last[kind]:
             return False
-        self._last = value
-        notify_state_changed(self._kind)
+        self._last[kind] = value
         return True
 
 
-def hint_dials_after_cycle(session_event, watches) -> None:
-    """What one coordinator poll cycle changed that only the coordinator
-    sees: a session edge, and whatever the watches notice."""
-    if session_event is not None:
-        notify_state_changed("session")
-    for watch in watches:
-        watch.step()
+def _dial_of(requester) -> str | None:
+    """The uuid in a requester of the form "dial:<uuid>", else None."""
+    if isinstance(requester, str) and requester.startswith("dial:") and len(requester) > 5:
+        return requester[5:]
+    return None
+
+
+def install_state_hints(store) -> int:
+    """Subscribe a StateHints to *store*; returns the subscription handle."""
+    return store.subscribe(StateHints())
