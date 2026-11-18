@@ -519,6 +519,11 @@ def _snap(**over):
     return SimpleNamespace(**fields)
 
 
+def _real(snap):
+    from track_id.models import TrackIdentificationSnapshot
+    return TrackIdentificationSnapshot(status_text="", **vars(snap))
+
+
 def _identified(title):
     return _snap(title=title, artwork_url=f"http://x/{title}")
 
@@ -931,25 +936,24 @@ class TestRepeatAndLoopCallSites:
         assert ('ChangeWatch("repeat", lambda: autostream_state.repeat_digest( '
                 'autostream_state.store().snapshot().repeat.block))' in flat)
         assert ('ChangeWatch("track", lambda: autostream_state.track_digest( '
-                'get_active_track_identification_snapshot()))' in flat)
+                'autostream_state.active_track(autostream_state.store().snapshot())))' in flat)
         assert (src.index("dial_hint_watches = (")
                 < src.index("\n    while not runtime.stop_flag.is_set():"))
 
     def test_the_loops_digests_read_the_cached_state(self):
-        import autostream_core as core
         from fake_store import FakeStore
         fake = FakeStore()
         rs = {"v": self._block()}
         snap = {"v": _snap()}
         fake.repeat(rs["v"])
-        with patch("autostream_core.get_active_track_identification_snapshot",
-                   side_effect=lambda: snap["v"]), \
-             patch.object(dp, "notify_state_changed") as notify:
+        fake.inputs([fake.input_entry(1, capturing=True)])
+        fake.track({1: _real(snap["v"])})
+        with patch.object(dp, "notify_state_changed") as notify:
             watches = (
                 dp.ChangeWatch("repeat", lambda: state.repeat_digest(
                     state.store().snapshot().repeat.block)),
                 dp.ChangeWatch("track", lambda: state.track_digest(
-                    core.get_active_track_identification_snapshot())),
+                    state.active_track(state.store().snapshot()))),
             )
             for w in watches:
                 assert w.step() is False
@@ -958,6 +962,7 @@ class TestRepeatAndLoopCallSites:
             assert watches[0].step() is True
             assert watches[1].step() is False
             snap["v"] = _snap(title="Other")
+            fake.track({1: _real(snap["v"])})
             assert watches[1].step() is True
         assert [c.args for c in notify.call_args_list] == [("repeat",), ("track",)]
 

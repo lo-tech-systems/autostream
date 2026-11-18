@@ -24,7 +24,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import FakeStore, fake_levels, fake_playback, fake_playback_mock
+from fake_store import FakeStore, fake_levels, fake_playback, fake_playback_mock, fake_track
 import autostream_appliance_models as models
 from autostream_core import SAMPLE_RATE_MISMATCH_BANNER_TEXT
 from autostream_webui_api import send_status_json
@@ -193,8 +193,7 @@ def _render_home(levels=None, show_input_detail=False) -> str:
                   return_value=MagicMock(ok=False, outputs=[])),
             patch("autostream_webui_page_airplay.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
-            patch("autostream_core.get_active_track_identification_snapshot",
-                  return_value=disabled_snapshot()),
+            fake_track(disabled_snapshot()),
             patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
         ):
             stack.enter_context(p)

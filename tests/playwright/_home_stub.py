@@ -104,7 +104,7 @@ def render_home(
     snap.to_public_dict.return_value = {}
 
     sys.path.insert(0, str(REPO_ROOT / "tests"))
-    from fake_store import FakeStore, fake_playback  # noqa: PLC0415
+    from fake_store import FakeStore, fake_playback, fake_track  # noqa: PLC0415
 
     fake = FakeStore()
     fake.inputs(
@@ -126,8 +126,7 @@ def render_home(
                   return_value=MagicMock(ok=False, outputs=[])),
             patch("autostream_webui_page_airplay.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
-            patch("autostream_core.get_active_track_identification_snapshot",
-                  return_value=disabled_snapshot()),
+            fake_track(disabled_snapshot()),
             patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
         ):
             stack.enter_context(p)

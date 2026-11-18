@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fake_store import fake_levels, fake_playback
+from fake_store import fake_levels, fake_playback, fake_track
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -140,8 +140,7 @@ class TestMainPageBanner:
             patch("autostream_webui_page_airplay.list_outputs",
                   return_value=ListOutputsResult(ok=False, error="unreachable")),
             patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
-            patch("autostream_core.get_active_track_identification_snapshot",
-                  return_value=disabled_snapshot()),
+            fake_track(disabled_snapshot()),
         ]
 
         with ExitStack() as stack:

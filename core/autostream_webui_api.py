@@ -105,7 +105,7 @@ from autostream_dials import (
 )
 from autostream_dial_push import notify_state_changed
 from autostream_runtime import request_config_reload
-from autostream_state import session_source_input_index, store
+from autostream_state import active_track, session_source_input_index, store
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
     apply_track_id_config_live_from_parsed,
@@ -424,11 +424,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
             "dial_update": _dial_update_banner_text(),
             "sample_rate": snap.inputs.sample_rate_warning_text,
         }
-        try:
-            from autostream_core import get_active_track_identification_snapshot
-            ti_dict = get_active_track_identification_snapshot().to_public_dict()
-        except Exception:
-            ti_dict = {}
+        ti_dict = active_track(snap).to_public_dict()
     # Unified playback-session state: the authoritative
     # "playing" signal is session.active, not a raw is_capturing check,
     # so replay (daemon-side, no input is "capturing") correctly reports as
@@ -1020,28 +1016,27 @@ def calculate_master_volume(outputs) -> tuple:
     return (math.ceil(sum(volumes) / len(volumes)), len(volumes))
 
 
-def _dial_track_id_dict() -> dict:
+def _dial_track_id_dict(snap=None) -> dict:
     """Return the grouped track_id object for POST /api/dial/status.
 
     artwork_url is exposed only for identified results with a validated
     http(s) provider URL -- every other state reports an empty string.
     """
-    from autostream_core import get_active_track_identification_snapshot
     from track_id.models import STATE_IDENTIFIED
 
-    snap = get_active_track_identification_snapshot()
-    artwork_url = snap.artwork_url or ""
-    if snap.state != STATE_IDENTIFIED or not artwork_url.startswith(("http://", "https://")):
+    track = active_track(snap if snap is not None else store().snapshot())
+    artwork_url = track.artwork_url or ""
+    if track.state != STATE_IDENTIFIED or not artwork_url.startswith(("http://", "https://")):
         artwork_url = ""
     return {
-        "enabled": snap.enabled,
-        "state": snap.state,
-        "title": snap.title,
-        "artist": snap.artist,
-        "album": snap.album,
+        "enabled": track.enabled,
+        "state": track.state,
+        "title": track.title,
+        "artist": track.artist,
+        "album": track.album,
         "artwork_url": artwork_url,
-        "updated_at": snap.updated_at,
-        "last_attempt_at": snap.last_attempt_at,
+        "updated_at": track.updated_at,
+        "last_attempt_at": track.last_attempt_at,
     }
 
 
@@ -1190,7 +1185,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "playing": playing,
         "master_volume": master_volume,
         "selected_output_count": selected_output_count,
-        "track_id": _dial_track_id_dict(),
+        "track_id": _dial_track_id_dict(snap),
         "appliance_id": get_appliance_id(),
         "muted": muted,
         "input": _dial_input_dict(parsed, snap),

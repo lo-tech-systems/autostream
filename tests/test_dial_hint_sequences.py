@@ -190,7 +190,6 @@ class Driver:
         self.now = 1000.0
         self.scheduled: list = []
         self.emissions: list = []
-        self._track = _snapshot(spec())
 
         def emit(kinds, except_dials):
             self.emissions.append(
@@ -201,22 +200,28 @@ class Driver:
 
         monkeypatch.setattr(dp, "_coalescer", dp.StateChangeCoalescer(
             emit, clock=lambda: self.now, schedule=schedule))
-        monkeypatch.setattr(
-            core, "get_active_track_identification_snapshot", lambda: self._track)
-        # The ack path reads and rewrites the repeat and session parts.
-        FakeStore().repeat(None)
-        FakeStore().session(False, None)
+        # The ack path reads and rewrites the repeat and session parts; the
+        # track under test is the entry of one capturing input.
+        fake = FakeStore()
+        fake.repeat(None)
+        fake.session(False, None)
+        fake.inputs([fake.input_entry(1, capturing=True)])
+        self._put_track(_snapshot(spec()))
         self.watches = (
             dp.ChangeWatch("repeat", lambda: autostream_state.repeat_digest(
                 autostream_state.store().snapshot().repeat.block)),
             dp.ChangeWatch("track", lambda: autostream_state.track_digest(
-                core.get_active_track_identification_snapshot())),
+                autostream_state.active_track(autostream_state.store().snapshot()))),
         )
+
+    @staticmethod
+    def _put_track(snapshot) -> None:
+        FakeStore().track({1: snapshot}, service_enabled=True)
 
     def run(self, steps) -> list:
         for kind, arg in steps:
             if kind == "tick":
-                self._track = _snapshot(arg["track"])
+                self._put_track(_snapshot(arg["track"]))
                 repeat.publish_from_daemon(arg["repeat"])
                 dp.hint_dials_after_cycle(arg["session_event"], self.watches)
             elif kind == "ack":

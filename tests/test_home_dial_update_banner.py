@@ -21,7 +21,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels, fake_playback, fake_playback_mock
+from fake_store import fake_levels, fake_playback, fake_playback_mock, fake_track
 import autostream_appliance_models as models
 import autostream_dials as dials
 import autostream_webui_page_setup as setup
@@ -196,8 +196,7 @@ def _render_home() -> str:
                   return_value=MagicMock(ok=False, outputs=[])),
             patch("autostream_webui_page_airplay.get_setting",
                   return_value=MagicMock(ok=True, value="2250")),
-            patch("autostream_core.get_active_track_identification_snapshot",
-                  return_value=disabled_snapshot()),
+            fake_track(disabled_snapshot()),
             patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
         ):
             stack.enter_context(p)

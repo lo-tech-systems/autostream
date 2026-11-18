@@ -25,7 +25,6 @@ from autostream_config import (
 )
 from autostream_core import (
     clear_user_silence_latch,
-    get_active_track_identification_snapshot,
     get_live_output_eq_status,
     note_user_output_action,
     set_live_output_auto_trim,
@@ -36,7 +35,7 @@ from autostream_core import (
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_dial_push import notify_state_changed
 from autostream_session import request_nowplaying_republish
-from autostream_state import store
+from autostream_state import active_track, store
 from autostream_player_service import (
     config_airplay_mode_to_backend,
     get_setting,
@@ -321,12 +320,7 @@ def build_home_state(
     except Exception:
         pass
 
-    try:
-        ti_snapshot = get_active_track_identification_snapshot()
-        ti_dict = ti_snapshot.to_public_dict()
-    except Exception:
-        from track_id.models import disabled_snapshot
-        ti_dict = disabled_snapshot().to_public_dict()
+    ti_dict = active_track(snap).to_public_dict()
 
     hostname = _format_hostname(get_system_hostname())
     return {

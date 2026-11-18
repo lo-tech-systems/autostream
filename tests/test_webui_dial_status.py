@@ -63,7 +63,7 @@ from track_id.models import (
 )
 import autostream_session as session
 import autostream_state
-from fake_store import fake_repeat, fake_session
+from fake_store import fake_repeat, fake_session, fake_track
 import autostream_repeat as repeat
 
 DIAL_ID = "test-dial-uuid-1234"
@@ -170,8 +170,7 @@ def _invoke(
               else {"active": playing,
                     "source": f"input{source_input or 1}" if playing else None}),
         fake_repeat(repeat_status),
-        patch("autostream_core.get_active_track_identification_snapshot",
-              return_value=track_id_snapshot),
+        fake_track(track_id_snapshot),
     ):
         send_dial_status_post_json(handler, state, json_obj)
 
@@ -307,8 +306,7 @@ class TestPlayingField:
             patch("autostream_webui_api.list_outputs", return_value=_ok_list()),
             fake_session({"active": True, "source": "replay"}),
             fake_repeat(None),
-            patch("autostream_core.get_active_track_identification_snapshot",
-                  return_value=disabled_snapshot()),
+            fake_track(disabled_snapshot()),
         ):
             send_dial_status_post_json(handler, state, {"dial_id": DIAL_ID})
         code, body = _response(handler)

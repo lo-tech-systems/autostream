@@ -332,7 +332,6 @@ def l2_cycle(edges) -> list[str] | None:
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_appliance_gateway', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'clear_user_silence_latch'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'get_active_track_identification_snapshot'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'note_user_output_action'),
     ('C', 'autostream_appliance_models', 'autostream_session', 'request_nowplaying_republish'),
@@ -345,7 +344,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
     ('A', 'autostream_webui_api', 'autostream_core', 'apply_track_id_config_live_from_parsed'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'get_active_track_identification_snapshot'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_bearing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_belt'),
@@ -366,7 +364,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_api', 'autostream_core', 'update_live_silence_threshold_dbfs'),
     ('A', 'autostream_webui_api', 'autostream_core', 'update_playback_input_config'),
     ('A', 'autostream_webui_page_airplay', 'autostream_core', 'format_khz'),
-    ('A', 'autostream_webui_page_airplay', 'autostream_core', 'get_active_track_identification_snapshot'),
     ('A', 'autostream_webui_page_equaliser', 'autostream_core', 'get_live_monitor_output_rate'),
     ('A', 'autostream_webui_page_first_boot', 'autostream_core', 'update_playback_input_config'),
     ('A', 'autostream_webui_page_setup', 'autostream_core', 'update_live_owntone_runtime'),

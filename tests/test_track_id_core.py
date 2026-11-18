@@ -39,6 +39,15 @@ from track_id.models import (
     waiting_snapshot,
 )
 import autostream_runtime as runtime
+import autostream_state
+
+
+def _active_track():
+    """Publish the inputs and the identification service flag from the
+    running monitors, then read the active track from the snapshot."""
+    core._publish_inputs()
+    core._publish_track_service(runtime._track_id_service is not None)
+    return autostream_state.active_track(autostream_state.store().snapshot())
 import autostream_session as session
 import autostream_repeat as repeat
 
@@ -1144,14 +1153,15 @@ class TestCaptureStopReset:
         runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         from track_id.models import TrackIdentificationSnapshot
-        mon._ti_snapshot = TrackIdentificationSnapshot(
-            enabled=True,
-            state=STATE_IDENTIFIED,
-            status_text="Identified",
-            title="Old Track",
-            artist="Old Artist",
-            updated_at=time.time(),
-        )
+        with mon._ti_locked():
+            mon._set_ti_snapshot(TrackIdentificationSnapshot(
+                enabled=True,
+                state=STATE_IDENTIFIED,
+                status_text="Identified",
+                title="Old Track",
+                artist="Old Artist",
+                updated_at=time.time(),
+            ))
         client = MagicMock(spec=MonitorClient)
         with patch.object(core, "any_monitor_capturing", return_value=False), \
              patch.object(core, "_stop_and_disable_owntone"):
@@ -1391,20 +1401,19 @@ class TestCaptureStartedReplayOriginGuard:
 
 
 # ---------------------------------------------------------------------------
-# get_track_identification_snapshot
+# track_for_input
 # ---------------------------------------------------------------------------
 
 class TestGetSnapshot:
 
     def test_returns_snapshot_for_known_index(self):
         mon = _make_monitor(input_index=7)
-        from autostream_core import get_track_identification_snapshot
-        snap = get_track_identification_snapshot(7)
+        snap = autostream_state.track_for_input(autostream_state.store().snapshot(), 7)
         assert snap is not None
+        assert snap is mon._ti_snapshot
 
     def test_returns_disabled_for_unknown_index(self):
-        from autostream_core import get_track_identification_snapshot
-        snap = get_track_identification_snapshot(9999)
+        snap = autostream_state.track_for_input(autostream_state.store().snapshot(), 9999)
         assert snap.state == STATE_DISABLED
 
 
@@ -1573,10 +1582,11 @@ class TestTrackChangeScheduling:
         svc = _make_service()
         mon = _make_capturing_monitor_with_service(svc)
         from track_id.models import TrackIdentificationSnapshot
-        mon._ti_snapshot = TrackIdentificationSnapshot(
-            enabled=True, state=STATE_IDENTIFIED,
-            status_text="", updated_at=time.time(),
-        )
+        with mon._ti_locked():
+            mon._set_ti_snapshot(TrackIdentificationSnapshot(
+                enabled=True, state=STATE_IDENTIFIED,
+                status_text="", updated_at=time.time(),
+            ))
         mon._on_possible_track_change(1)
         assert mon._ti_snapshot.state == STATE_WAITING
 
@@ -2166,7 +2176,8 @@ class TestReplaySeekRearm:
         mon.is_capturing = False
         runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
-        mon._ti_snapshot = _identified_snapshot()
+        with mon._ti_locked():
+            mon._set_ti_snapshot(_identified_snapshot())
         return mon, svc
 
     def test_seek_resets_identified_snapshot_to_waiting(self):
@@ -2216,7 +2227,8 @@ class TestReplaySeekRearm:
         mon = _make_monitor()
         mon.is_capturing = False
         runtime._track_id_service = None
-        mon._ti_snapshot = _identified_snapshot()
+        with mon._ti_locked():
+            mon._set_ti_snapshot(_identified_snapshot())
         mon.on_replay_seek_accepted(in_session=True)
         assert mon._ti_snapshot.state == STATE_DISABLED
         assert mon._ti_next_attempt == 0.0
@@ -2297,7 +2309,8 @@ class TestReplaySeekRearm:
     def test_apply_repeat_ack_rearms_the_cached_origin_only(self):
         origin, _ = self._armed_origin(input_index=2)
         other = _make_monitor(input_index=1)
-        other._ti_snapshot = _identified_snapshot()
+        with other._ti_locked():
+            other._set_ti_snapshot(_identified_snapshot())
         other_gen = other._ti_generation
         repeat.publish_from_daemon(_repeat_block(replaying=True, origin_input=2))
         with patch.object(runtime, "all_monitors", [other, origin]):
@@ -2352,7 +2365,8 @@ class TestReplaySeekRearm:
         # Started from Hold: the session start publishes, not the ack.
         origin._nowplaying_publisher.publish_refresh.assert_not_called()
 
-        origin._ti_snapshot = _identified_snapshot()
+        with origin._ti_locked():
+            origin._set_ti_snapshot(_identified_snapshot())
         repeat.publish_from_daemon(_repeat_block(replaying=True))
         with patch.object(runtime, "all_monitors", [origin]):
             repeat.apply_repeat_ack(ack)
@@ -2371,7 +2385,7 @@ class TestReplaySeekRearm:
         repeat.publish_from_daemon(_repeat_block(replaying=False))
         with patch.object(runtime, "all_monitors", [origin]):
             repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
-            assert core.get_active_track_identification_snapshot().state == STATE_WAITING
+            assert _active_track().state == STATE_WAITING
 
             status = {
                 "capturing": False, "silent": True,
@@ -2380,7 +2394,7 @@ class TestReplaySeekRearm:
             }
             origin._ingest_status(status, replay_origin=True)
             assert origin._replay_origin is True
-            snap = core.get_active_track_identification_snapshot()
+            snap = _active_track()
             assert snap.state == STATE_WAITING
             assert snap.artwork_url == ""
 
@@ -2403,7 +2417,8 @@ class TestReplayEndTeardown:
         mon.is_capturing = False
         runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
-        mon._ti_snapshot = _identified_snapshot()
+        with mon._ti_locked():
+            mon._set_ti_snapshot(_identified_snapshot())
         mon._ti_next_attempt = time.time() + 100
         mon._ti_next_attempt_reason = "refresh"
         mon._track_change_seq_baseline = 7

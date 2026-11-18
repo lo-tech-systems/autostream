@@ -410,7 +410,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
     import autostream_appliance_models as models
     import autostream_monitor_client as monitor_client
-    import autostream_core as core
     import autostream_federation as federation
     import autostream_mute_state as mute_state
     import autostream_player_service as player_service
@@ -422,7 +421,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_webui_page_airplay as airplay
     from autostream_dials import AUTH_AUTHORIZED
     from autostream_players import ActionResult, ListOutputsResult
-    from fake_store import FakeStore
+    from fake_store import FakeStore, fake_track
 
     rec = Recorder()
     cfg = parsed_config()
@@ -464,6 +463,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
             **{k: v for k, v in lv.items() if k != "index"})
         for lv in levels
     ])
+    fake_track(scenario.track)
 
     @contextlib.contextmanager
     def connected_monitor(socket_path=None):
@@ -489,7 +489,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     setattrs(models, **{k: v for k, v in shared.items() if k != "get_app_version"},
              get_app_version=lambda: FIXED_APP_VERSION,
              get_setting=get_setting,
-             get_active_track_identification_snapshot=lambda: scenario.track,
              get_system_hostname=lambda: "golden.local",
              get_live_output_eq_status=lambda: scenario.eq_status,
              locked_load_config=lambda path: {
@@ -508,8 +507,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_all_appliances=lambda: [],
              get_system_hostname=lambda: "golden.local",
              build_top_banner_html=lambda **kwargs: ("", ""))
-    setattrs(core,
-             get_active_track_identification_snapshot=lambda: scenario.track)
     setattrs(autostream_repeat, apply_repeat_ack=lambda ack: ack)
     setattrs(monitor_client, _connected_monitor=connected_monitor)
     setattrs(start_buffer_cache, current_ms=lambda base_url=None: START_BUFFER_MS)

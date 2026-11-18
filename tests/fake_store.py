@@ -152,3 +152,25 @@ def fake_playback_mock():
     mock = MagicMock()
     FakeStore().playback(mock)
     return contextlib.nullcontext(SimpleNamespace(return_value=mock))
+
+
+def fake_track(snapshot):
+    """Make *snapshot* the active track: a disabled snapshot is a store with
+    no identification service; any other is the track entry of an input that
+    is capturing. Returns a context manager that does nothing, so it can
+    stand in a ``with`` statement where a test used to patch the active-track
+    getter."""
+    fake = FakeStore()
+    if snapshot.state == "disabled":
+        fake.track({}, service_enabled=False)
+        return contextlib.nullcontext()
+    index = int(snapshot.input_index or 1)
+    fake.track({index: snapshot}, service_enabled=True)
+    inputs = state.store().snapshot().inputs
+    entries = [dataclasses.replace(e, capturing=True) if e.index == index else e
+               for e in inputs.entries]
+    if all(e.index != index for e in entries):
+        entries.append(fake.input_entry(index, capturing=True))
+    fake.inputs(entries, mismatch=inputs.sample_rate_mismatch_input,
+                banner=inputs.sample_rate_warning_text)
+    return contextlib.nullcontext()

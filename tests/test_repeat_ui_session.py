@@ -99,8 +99,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
         fake_playback(playback),
         patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
-        patch("autostream_core.get_active_track_identification_snapshot",
-              return_value=disabled_snapshot()),
+        fake_track(disabled_snapshot()),
         patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
     ]
 
@@ -397,7 +396,7 @@ class TestStoppingState:
 #
 # Two independent gates must not hide the (already-correct, daemon-side)
 # track-identification match during replay:
-#   1. Server: get_active_track_identification_snapshot() only checked
+#   1. Server: the active track lookup only checked
 #      m.is_capturing, which is False for the replay-origin input for the
 #      whole duration of playback.
 #   2. Client: the track-ID render block picked an arbitrary levels[0] input
@@ -405,7 +404,7 @@ class TestStoppingState:
 #      of the actual replay-origin input.
 # ---------------------------------------------------------------------------
 
-from fake_store import fake_levels, fake_playback
+from fake_store import fake_levels, fake_playback, fake_track
 import autostream_core as _core_mod
 from autostream_core import AudioMonitor as _AudioMonitor
 from track_id.models import disabled_snapshot as _disabled_snapshot
@@ -413,6 +412,15 @@ from track_id.models import waiting_snapshot as _waiting_snapshot
 from track_id.models import TrackIdentificationSnapshot as _TISnapshot
 from track_id.models import STATE_IDENTIFIED as _STATE_IDENTIFIED
 import autostream_runtime as runtime
+import autostream_state
+
+
+def _active_track():
+    """Publish the inputs and the identification service flag from the
+    running monitors, then read the active track from the snapshot."""
+    _core_mod._publish_inputs()
+    _core_mod._publish_track_service(runtime._track_id_service is not None)
+    return autostream_state.active_track(autostream_state.store().snapshot())
 import autostream_session as session
 
 
@@ -444,7 +452,7 @@ def _mk_monitor(**overrides) -> _AudioMonitor:
 
 
 class TestGetActiveTrackIdentificationSnapshotDuringReplay:
-    """Server-side fix 1 (autostream_core.get_active_track_identification_snapshot)."""
+    """Server-side fix 1 (autostream_state.active_track)."""
 
     def test_returns_origin_monitor_snapshot_when_replay_origin_and_not_capturing(self):
         origin_snap = _TISnapshot(
@@ -454,10 +462,11 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon = _mk_monitor(input_index=1)
         mon.is_capturing = False
         mon._replay_origin = True
-        mon._ti_snapshot = origin_snap
+        with mon._ti_locked():
+            mon._set_ti_snapshot(origin_snap)
         runtime._track_id_service = MagicMock()
 
-        result = _core_mod.get_active_track_identification_snapshot()
+        result = _active_track()
         assert result is origin_snap
 
     def test_capturing_monitor_takes_priority_over_a_replaying_one_when_source_unknown(self):
@@ -481,24 +490,26 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         replaying_mon = _mk_monitor(input_index=2, fifo_path="/tmp/test_wpr9_b.fifo")
         replaying_mon.is_capturing = False
         replaying_mon._replay_origin = True
-        replaying_mon._ti_snapshot = replay_snap
+        with replaying_mon._ti_locked():
+            replaying_mon._set_ti_snapshot(replay_snap)
 
         capturing_mon = _mk_monitor(input_index=1, fifo_path="/tmp/test_wpr9_c.fifo")
         capturing_mon.is_capturing = True
         capturing_mon._replay_origin = False
-        capturing_mon._ti_snapshot = capturing_snap
+        with capturing_mon._ti_locked():
+            capturing_mon._set_ti_snapshot(capturing_snap)
         runtime._track_id_service = MagicMock()
 
         session.publish(False, None)  # source unknown/absent -- fallback path
         try:
-            result = _core_mod.get_active_track_identification_snapshot()
+            result = _active_track()
         finally:
             session.publish(False, None)
         assert result is capturing_snap
 
     def test_session_source_replay_wins_over_a_capturing_monitor(self):
         """Precedence fix: once the session tracker names "replay" as the
-        source, get_active_track_identification_snapshot() must return the
+        source, the active track lookup must return the
         replay-origin monitor's snapshot even though a different input is
         (per this belt-and-braces scenario) also capturing -- the session
         state is authoritative, not the fallback scan's capturing-first
@@ -516,17 +527,19 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         replaying_mon = _mk_monitor(input_index=2, fifo_path="/tmp/test_wpr9_h.fifo")
         replaying_mon.is_capturing = False
         replaying_mon._replay_origin = True
-        replaying_mon._ti_snapshot = replay_snap
+        with replaying_mon._ti_locked():
+            replaying_mon._set_ti_snapshot(replay_snap)
 
         capturing_mon = _mk_monitor(input_index=1, fifo_path="/tmp/test_wpr9_i.fifo")
         capturing_mon.is_capturing = True
         capturing_mon._replay_origin = False
-        capturing_mon._ti_snapshot = capturing_snap
+        with capturing_mon._ti_locked():
+            capturing_mon._set_ti_snapshot(capturing_snap)
         runtime._track_id_service = MagicMock()
 
         session.publish(True, "replay")
         try:
-            result = _core_mod.get_active_track_identification_snapshot()
+            result = _active_track()
         finally:
             session.publish(False, None)
         assert result is replay_snap
@@ -546,17 +559,19 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon1 = _mk_monitor(input_index=1, fifo_path="/tmp/test_wpr9_j.fifo")
         mon1.is_capturing = True
         mon1._replay_origin = False
-        mon1._ti_snapshot = input1_snap
+        with mon1._ti_locked():
+            mon1._set_ti_snapshot(input1_snap)
 
         mon2 = _mk_monitor(input_index=2, fifo_path="/tmp/test_wpr9_k.fifo")
         mon2.is_capturing = False
         mon2._replay_origin = False
-        mon2._ti_snapshot = input2_snap
+        with mon2._ti_locked():
+            mon2._set_ti_snapshot(input2_snap)
         runtime._track_id_service = MagicMock()
 
         session.publish(True, "input2")
         try:
-            result = _core_mod.get_active_track_identification_snapshot()
+            result = _active_track()
         finally:
             session.publish(False, None)
         assert result is input2_snap
@@ -567,7 +582,7 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon._replay_origin = False
         runtime._track_id_service = MagicMock()
 
-        result = _core_mod.get_active_track_identification_snapshot()
+        result = _active_track()
         assert result.state == _waiting_snapshot().state
         assert result.enabled == _waiting_snapshot().enabled
 
@@ -577,13 +592,13 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon._replay_origin = False
         runtime._track_id_service = None
 
-        result = _core_mod.get_active_track_identification_snapshot()
+        result = _active_track()
         assert result == _disabled_snapshot()
 
     def test_no_monitors_falls_back_to_disabled_snapshot(self):
         runtime._track_id_service = None
         assert runtime.all_monitors == []
-        result = _core_mod.get_active_track_identification_snapshot()
+        result = _active_track()
         assert result == _disabled_snapshot()
 
 

@@ -20,7 +20,7 @@ from autostream_core import (
     format_khz,
 )
 from autostream_player_service import get_setting, list_outputs
-from autostream_state import store
+from autostream_state import active_track, store
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_config import input_type_label, normalize_input_type
 from autostream_mute_state import is_muted as _appliance_is_muted
@@ -345,12 +345,7 @@ def send_airplay_page(
     }[_np_icon_kind]
 
     # Track identification initial state for server-rendered card.
-    try:
-        from autostream_core import get_active_track_identification_snapshot as _gati
-        _ti_snap = _gati()
-    except Exception:
-        from track_id.models import disabled_snapshot as _ds
-        _ti_snap = _ds()
+    _ti_snap = active_track(snap)
     _ti_dict = _ti_snap.to_public_dict()
     _ti_enabled = bool(_ti_dict.get("enabled"))
     _ti_state = str(_ti_dict.get("state") or "")

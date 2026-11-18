@@ -178,3 +178,31 @@ def _playback_with_flag():
 
     snap = state.empty_playback_snapshot()
     return dataclasses.replace(snap, stylus_banner_text="Stylus due")
+
+
+def test_a_monitors_identification_lock_is_released_before_subscribers_run(tracked_singleton):
+    from unittest.mock import MagicMock, patch
+
+    import autostream_core as core
+
+    with patch("autostream_core.PersistentNowPlayingCache") as cache, \
+         patch("autostream_core.get_shared_metadata_publisher") as pub:
+        cache.return_value.get_manual_hint.return_value = None
+        pub.side_effect = lambda path: MagicMock()
+        mon = core.AudioMonitor(
+            input_index=1, input_device="hw:0,0", silence_threshold_dbfs=-50.0,
+            silence_seconds=5, fifo_path="/tmp/test.fifo",
+            owntone_base_url="http://localhost:3689", owntone_output_name="Speaker A",
+            owntone_volume_percent=50)
+    mon._ti_state_lock = lockcheck.TrackedLock("identification")
+    seen = []
+    tracked_singleton.subscribe(
+        lambda change: seen.append((lockcheck.held(), mon._ti_state_lock.locked())))
+    svc = MagicMock()
+    svc.analysis_lead_in_seconds = 1
+    svc.snapshot_seconds = 1
+    mon._apply_track_id_service(svc)
+    mon._apply_track_id_service(None)
+    assert seen and all(held == frozenset() and not locked for held, locked in seen)
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
+    assert tracked_singleton.lock_violations == []

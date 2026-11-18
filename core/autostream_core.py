@@ -14,6 +14,7 @@ and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
 variable.
 """
 
+import contextlib
 import os
 import json
 import logging
@@ -167,6 +168,7 @@ def apply_track_id_config_live(config_path: str) -> None:
         logging.warning("track_id: live reload: cannot read config", exc_info=True)
         return
     runtime._track_id_service = _build_track_id_service(cfg)
+    _publish_track_service(runtime._track_id_service is not None)
     with runtime._monitors_lock:
         monitors = list(runtime.all_monitors)
     for m in monitors:
@@ -185,6 +187,7 @@ def apply_track_id_config_live_from_parsed(cfg) -> None:
     the latest accepted settings.
     """
     runtime._track_id_service = _build_track_id_service(cfg)
+    _publish_track_service(runtime._track_id_service is not None)
     with runtime._monitors_lock:
         monitors = list(runtime.all_monitors)
     for m in monitors:
@@ -195,76 +198,13 @@ def apply_track_id_config_live_from_parsed(cfg) -> None:
     )
 
 
-def get_track_identification_snapshot(input_index: int):
-    """Return the latest TrackIdentificationSnapshot for an input channel."""
-    with runtime._monitors_lock:
-        monitors = list(runtime.all_monitors)
-    for m in monitors:
-        if m.input_index == input_index:
-            return m._ti_snapshot  # atomic under GIL
-    from track_id.models import disabled_snapshot
-    return disabled_snapshot()
+_track_writer = autostream_state.store().claim("track", "autostream_core")
 
 
-def get_active_track_identification_snapshot():
-    """Return track identification state for the monitor actively sourcing audio.
-
-    Prefers the coordinator's own session tracker over "any capturing
-    monitor": the session part's source (published each poll cycle by
-    autostream_session.publish(), from the same _SessionTracker.update() call
-    that drives _dispatch_session_event()) names the input that is genuinely the
-    session's audible source -- "input1"/"input2" for a live source or
-    "replay" for the replay-origin input. Without this, a probation
-    transient's brief capturing flicker on a second input could hijack the
-    displayed snapshot away from an input-1 replay purely by winning the
-    first is_capturing scan below, even though the session tracker (and the
-    receiver) still regard input 1 as the active source.
-
-    "Actively sourcing" (for the fallback scan below) means capturing, OR
-    being the replay-origin input of a currently replaying recording -- the
-    same actively-sourcing definition used by
-    _ingest_status()/maybe_trigger_track_identification() (see
-    monitor._replay_origin, refreshed each poll cycle from the
-    coordinator's replay_origin_input()). Without the replay-origin check,
-    /api/status.track_identification would fall back to waiting_snapshot()
-    during replay even though the origin monitor's _ti_snapshot already holds
-    a live match -- the daemon confirms vibra keeps matching tracks during
-    replay, only the surfaced snapshot was wrong. That fallback scan checks
-    capturing first so a live capture on another input takes priority over a
-    concurrently-replaying recording when the session source is not yet
-    known (e.g. very first poll cycle before the session is published).
-    Returns a waiting snapshot when the service is configured but nothing is
-    actively sourcing, or a disabled snapshot when the service itself is
-    off. Never blocks.
-    """
-    with runtime._monitors_lock:
-        monitors = list(runtime.all_monitors)
-
-    source = autostream_state.store().snapshot().session.source
-    if source == "replay":
-        for m in monitors:
-            if m._replay_origin:
-                return m._ti_snapshot  # atomic under GIL
-    elif source is not None:
-        try:
-            idx = int(source[len("input"):])
-        except (ValueError, IndexError):
-            idx = None
-        if idx is not None:
-            for m in monitors:
-                if m.input_index == idx:
-                    return m._ti_snapshot  # atomic under GIL
-
-    for m in monitors:
-        if m.is_capturing:
-            return m._ti_snapshot  # atomic under GIL
-    for m in monitors:
-        if m._replay_origin:
-            return m._ti_snapshot  # atomic under GIL
-    from track_id.models import disabled_snapshot, waiting_snapshot
-    if runtime._track_id_service is not None:
-        return waiting_snapshot()
-    return disabled_snapshot()
+def _publish_track_service(enabled: bool) -> None:
+    """Record whether a track identification service exists: with none, an
+    input with nothing playing reads as disabled rather than waiting."""
+    _track_writer.update(lambda cur: replace(cur, service_enabled=bool(enabled))).notify()
 
 
 _monitor_writer = autostream_state.store().claim("monitor", "autostream_core")
@@ -2325,6 +2265,10 @@ class AudioMonitor:
         # --- Track identification scheduling ---
         from track_id.models import disabled_snapshot as _ds
         self._ti_state_lock = threading.Lock()  # guards dispatch setup and _apply_track_id_service
+        # Held through _ti_locked(): the thread that holds the lock, and the
+        # track-part changes made under it, delivered once it is released.
+        self._ti_lock_owner: Optional[int] = None
+        self._ti_pending: list = []
         self._ti_generation: int = 0           # incremented on service swap or capture start
         self._ti_inflight: bool = False
         self._ti_inflight_token: Optional[object] = None  # unique per worker
@@ -2332,7 +2276,8 @@ class AudioMonitor:
         self._ti_next_attempt_reason: str = ""
         self._ti_last_attempt: float = 0.0
         self._ti_last_identified_at: float = 0.0
-        self._ti_snapshot = _ds()              # replaced atomically under GIL
+        with self._ti_locked():
+            self._set_ti_snapshot(_ds())
 
         # --- Status (updated by coordinator via _ingest_status) ---
         self.level_dbfs: float = -90.0
@@ -2527,9 +2472,9 @@ class AudioMonitor:
         # Under the state lock so a worker keeping a held track after a failed
         # re-check (which re-checks the generation under the same lock) cannot
         # publish it over this reset.
-        with self._ti_state_lock:
+        with self._ti_locked():
             self._ti_generation += 1  # invalidate stale in-flight worker results
-            self._ti_snapshot = waiting_snapshot(input_index=self.input_index)
+            self._set_ti_snapshot(waiting_snapshot(input_index=self.input_index))
             self._schedule_track_id_after(now, delay, "track_change")
         logging.info(
             "track_id[%d]: possible track change seq=%d; analysis scheduled in %ds"
@@ -2692,7 +2637,7 @@ class AudioMonitor:
             )
             return
 
-        with self._ti_state_lock:
+        with self._ti_locked():
             self._ti_generation += 1  # invalidate any worker queued before capture started
             self._ti_inflight = False
             self._ti_inflight_token = None
@@ -2708,13 +2653,13 @@ class AudioMonitor:
                     self.input_index, delay, svc.analysis_lead_in_seconds, svc.snapshot_seconds,
                 )
                 from track_id.models import waiting_snapshot
-                self._ti_snapshot = waiting_snapshot(
+                self._set_ti_snapshot(waiting_snapshot(
                     next_attempt_at=self._ti_next_attempt,
                     next_attempt_reason=self._ti_next_attempt_reason,
-                )
+                ))
             else:
                 from track_id.models import disabled_snapshot
-                self._ti_snapshot = disabled_snapshot()
+                self._set_ti_snapshot(disabled_snapshot())
 
         logging.info(
             "Input %d (%s): capture started.",
@@ -2760,13 +2705,43 @@ class AudioMonitor:
         (on_replay_seek_accepted) and must not interleave with the
         coordinator's dispatch section.
         """
-        with self._ti_state_lock:
+        with self._ti_locked():
             self._arm_identification_cycle_locked("initial")
 
         logging.info(
             "Input %d (%s): identification armed for session source.",
             self.input_index, self.input_device,
         )
+
+    @contextlib.contextmanager
+    def _ti_locked(self):
+        """Hold _ti_state_lock. Changes made to the identification snapshot
+        meanwhile are published to the track part under the lock, in order,
+        and delivered to subscribers after it is released."""
+        pending: list = []
+        self._ti_state_lock.acquire()
+        try:
+            self._ti_lock_owner = threading.get_ident()
+            try:
+                yield
+            finally:
+                pending, self._ti_pending = self._ti_pending, []
+                self._ti_lock_owner = None
+        finally:
+            self._ti_state_lock.release()
+            for change in pending:
+                change.notify()
+
+    def _set_ti_snapshot(self, value) -> None:
+        """Replace this input's identification snapshot and publish it as its
+        entry in the track part. The caller holds _ti_state_lock through
+        _ti_locked()."""
+        assert self._ti_lock_owner == threading.get_ident(), (
+            "_set_ti_snapshot outside _ti_locked()")
+        self._ti_snapshot = value
+        index = self.input_index
+        self._ti_pending.append(_track_writer.update(lambda cur: replace(
+            cur, entries=autostream_state.FrozenDict({**cur.entries, index: value}))))
 
     def _arm_identification_cycle_locked(self, reason: str) -> None:
         """Restart this monitor's identification cycle; caller holds _ti_state_lock.
@@ -2799,15 +2774,15 @@ class AudioMonitor:
                 svc.analysis_lead_in_seconds, svc.snapshot_seconds,
             )
             from track_id.models import waiting_snapshot
-            self._ti_snapshot = waiting_snapshot(
+            self._set_ti_snapshot(waiting_snapshot(
                 next_attempt_at=self._ti_next_attempt,
                 next_attempt_reason=self._ti_next_attempt_reason,
-            )
+            ))
         else:
             from track_id.models import disabled_snapshot
             self._ti_next_attempt = 0.0
             self._ti_next_attempt_reason = ""
-            self._ti_snapshot = disabled_snapshot()
+            self._set_ti_snapshot(disabled_snapshot())
 
     def on_replay_seek_accepted(self, in_session: bool) -> None:
         """Re-arm identification after an accepted replay start or seek.
@@ -2823,7 +2798,7 @@ class AudioMonitor:
         out of order. The later session_started arm repeats this one
         harmlessly (nothing can be in flight yet).
         """
-        with self._ti_state_lock:
+        with self._ti_locked():
             self._arm_identification_cycle_locked("seek")
         if in_session:
             self._publish_interstitial_nowplaying()
@@ -2891,7 +2866,7 @@ class AudioMonitor:
         # waiting/disabled snapshot below or leave a stale _ti_next_attempt.
         # Under the state lock so a worker keeping a held track after a failed
         # re-check cannot publish it over this reset.
-        with self._ti_state_lock:
+        with self._ti_locked():
             self._ti_generation += 1
             self._ti_next_attempt = 0.0
             self._ti_next_attempt_reason = ""
@@ -2899,10 +2874,10 @@ class AudioMonitor:
 
             if runtime._track_id_service is not None:
                 from track_id.models import waiting_snapshot
-                self._ti_snapshot = waiting_snapshot()
+                self._set_ti_snapshot(waiting_snapshot())
             else:
                 from track_id.models import disabled_snapshot
-                self._ti_snapshot = disabled_snapshot()
+                self._set_ti_snapshot(disabled_snapshot())
 
     def _teardown_identification_after_replay(self) -> None:
         """Drop this monitor's identification state once its replay has ended.
@@ -2925,7 +2900,7 @@ class AudioMonitor:
         either way. Takes _ti_state_lock. Idempotent: a second call only
         bumps the generation again.
         """
-        with self._ti_state_lock:
+        with self._ti_locked():
             self._ti_generation += 1
             self._ti_inflight = False
             self._ti_inflight_token = None
@@ -2935,10 +2910,10 @@ class AudioMonitor:
             self._track_change_seq_baseline = 0
             if runtime._track_id_service is not None:
                 from track_id.models import waiting_snapshot
-                self._ti_snapshot = waiting_snapshot()
+                self._set_ti_snapshot(waiting_snapshot())
             else:
                 from track_id.models import disabled_snapshot
-                self._ti_snapshot = disabled_snapshot()
+                self._set_ti_snapshot(disabled_snapshot())
 
         logging.debug(
             "Input %d (%s): identification torn down after replay.",
@@ -2949,7 +2924,7 @@ class AudioMonitor:
 
     def _apply_track_id_service(self, service) -> None:
         """Set the initial snapshot based on whether the service is available."""
-        with self._ti_state_lock:
+        with self._ti_locked():
             self._ti_generation += 1  # invalidate any in-flight worker for the old service
             if service is not None:
                 from track_id.models import waiting_snapshot
@@ -2965,13 +2940,13 @@ class AudioMonitor:
                 else:
                     self._ti_next_attempt = 0.0
                     self._ti_next_attempt_reason = ""
-                self._ti_snapshot = waiting_snapshot(
+                self._set_ti_snapshot(waiting_snapshot(
                     next_attempt_at=(self._ti_next_attempt or None),
                     next_attempt_reason=self._ti_next_attempt_reason,
-                )
+                ))
             else:
                 from track_id.models import disabled_snapshot
-                self._ti_snapshot = disabled_snapshot()
+                self._set_ti_snapshot(disabled_snapshot())
                 self._ti_next_attempt = 0.0
                 self._ti_next_attempt_reason = ""
             self._ti_inflight = False
@@ -3062,7 +3037,7 @@ class AudioMonitor:
         # lock.  Without it a concurrent live reconfiguration could publish a
         # disabled snapshot between our validation and our STATE_ANALYSING write,
         # leaving the UI stuck in analysing with no future attempt to clear it.
-        with self._ti_state_lock:
+        with self._ti_locked():
             # Recheck generation and service immediately after the blocking
             # snapshot call, before interpreting its result.
             if self._ti_generation != dispatch_gen or runtime._track_id_service is not svc:
@@ -3118,11 +3093,11 @@ class AudioMonitor:
             held = self._ti_snapshot if self._ti_snapshot.state == STATE_IDENTIFIED else None
             if held is not None:
                 # No attempt is scheduled while one is in flight.
-                self._ti_snapshot = replace(
+                self._set_ti_snapshot(replace(
                     held, next_attempt_at=None, next_attempt_reason="",
-                )
+                ))
             else:
-                self._ti_snapshot = TrackIdentificationSnapshot(
+                self._set_ti_snapshot(TrackIdentificationSnapshot(
                     enabled=True,
                     state=STATE_ANALYSING,
                     status_text=state_status_text(STATE_ANALYSING),
@@ -3130,7 +3105,7 @@ class AudioMonitor:
                     provider=svc.provider_id,
                     updated_at=now,
                     last_attempt_at=now,
-                )
+                ))
             worker_token = object()
             self._ti_inflight = True
             self._ti_inflight_token = worker_token
@@ -3180,15 +3155,15 @@ class AudioMonitor:
         lock, which a track change, a new session and a reconfiguration also
         take, so a superseded attempt never puts the old track back over the
         newer snapshot."""
-        with self._ti_state_lock:
+        with self._ti_locked():
             if self._ti_generation != my_gen or self._ti_inflight_token is not worker_token:
                 return
-            self._ti_snapshot = replace(
+            self._set_ti_snapshot(replace(
                 held,
                 last_attempt_at=now,
                 next_attempt_at=self._ti_next_attempt,
                 next_attempt_reason=self._ti_next_attempt_reason,
-            )
+            ))
 
     def _ti_worker(
         self, pcm16_mono: bytes, sample_rate: int, worker_token: object, dispatch_gen: int,
@@ -3269,22 +3244,23 @@ class AudioMonitor:
                         # session's pbeg already went out), so it must not
                         # emit a second pbeg.
                         self._nowplaying_publisher.publish_refresh(new_meta)
-                self._ti_snapshot = TrackIdentificationSnapshot(
-                    enabled=True,
-                    state=STATE_IDENTIFIED,
-                    status_text=state_status_text(STATE_IDENTIFIED),
-                    input_index=self.input_index,
-                    provider=result.provider or svc.provider_id,
-                    title=result.title,
-                    artist=result.artist,
-                    album=result.album,
-                    artwork_url=(result.artwork.url if result.artwork else ""),
-                    confidence=result.confidence,
-                    updated_at=now,
-                    last_attempt_at=now,
-                    next_attempt_at=self._ti_next_attempt,
-                    next_attempt_reason=self._ti_next_attempt_reason,
-                )
+                with self._ti_locked():
+                    self._set_ti_snapshot(TrackIdentificationSnapshot(
+                        enabled=True,
+                        state=STATE_IDENTIFIED,
+                        status_text=state_status_text(STATE_IDENTIFIED),
+                        input_index=self.input_index,
+                        provider=result.provider or svc.provider_id,
+                        title=result.title,
+                        artist=result.artist,
+                        album=result.album,
+                        artwork_url=(result.artwork.url if result.artwork else ""),
+                        confidence=result.confidence,
+                        updated_at=now,
+                        last_attempt_at=now,
+                        next_attempt_at=self._ti_next_attempt,
+                        next_attempt_reason=self._ti_next_attempt_reason,
+                    ))
             elif result.is_configuration_error:
                 self._schedule_track_id_after(now, TRACK_ID_ERROR_RETRY_SECONDS, "error")
                 logging.debug(
@@ -3294,17 +3270,18 @@ class AudioMonitor:
                 if held is not None:
                     self._keep_held_track(held, my_gen, worker_token, now)
                 else:
-                    self._ti_snapshot = TrackIdentificationSnapshot(
-                        enabled=True,
-                        state=STATE_ERROR,
-                        status_text=state_status_text(STATE_ERROR),
-                        input_index=self.input_index,
-                        provider=svc.provider_id,
-                        updated_at=now,
-                        last_attempt_at=now,
-                        next_attempt_at=self._ti_next_attempt,
-                        next_attempt_reason=self._ti_next_attempt_reason,
-                    )
+                    with self._ti_locked():
+                        self._set_ti_snapshot(TrackIdentificationSnapshot(
+                            enabled=True,
+                            state=STATE_ERROR,
+                            status_text=state_status_text(STATE_ERROR),
+                            input_index=self.input_index,
+                            provider=svc.provider_id,
+                            updated_at=now,
+                            last_attempt_at=now,
+                            next_attempt_at=self._ti_next_attempt,
+                            next_attempt_reason=self._ti_next_attempt_reason,
+                        ))
             else:
                 self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
                 logging.debug(
@@ -3314,17 +3291,18 @@ class AudioMonitor:
                 if held is not None:
                     self._keep_held_track(held, my_gen, worker_token, now)
                 else:
-                    self._ti_snapshot = TrackIdentificationSnapshot(
-                        enabled=True,
-                        state=STATE_NOT_FOUND,
-                        status_text=state_status_text(STATE_NOT_FOUND),
-                        input_index=self.input_index,
-                        provider=svc.provider_id,
-                        updated_at=now,
-                        last_attempt_at=now,
-                        next_attempt_at=self._ti_next_attempt,
-                        next_attempt_reason=self._ti_next_attempt_reason,
-                    )
+                    with self._ti_locked():
+                        self._set_ti_snapshot(TrackIdentificationSnapshot(
+                            enabled=True,
+                            state=STATE_NOT_FOUND,
+                            status_text=state_status_text(STATE_NOT_FOUND),
+                            input_index=self.input_index,
+                            provider=svc.provider_id,
+                            updated_at=now,
+                            last_attempt_at=now,
+                            next_attempt_at=self._ti_next_attempt,
+                            next_attempt_reason=self._ti_next_attempt_reason,
+                        ))
 
         except Exception as exc:
             now = time.time()
@@ -3377,18 +3355,19 @@ class AudioMonitor:
             if held is not None:
                 self._keep_held_track(held, my_gen, worker_token, now)
             else:
-                self._ti_snapshot = TrackIdentificationSnapshot(
-                    enabled=True,
-                    state=STATE_ERROR,
-                    status_text=state_status_text(STATE_ERROR),
-                    input_index=self.input_index,
-                    provider=(runtime._track_id_service.provider_id if runtime._track_id_service else ""),
-                    updated_at=now,
-                    last_attempt_at=now,
-                    error=type(exc).__name__,
-                    next_attempt_at=self._ti_next_attempt,
-                    next_attempt_reason=self._ti_next_attempt_reason,
-                )
+                with self._ti_locked():
+                    self._set_ti_snapshot(TrackIdentificationSnapshot(
+                        enabled=True,
+                        state=STATE_ERROR,
+                        status_text=state_status_text(STATE_ERROR),
+                        input_index=self.input_index,
+                        provider=(runtime._track_id_service.provider_id if runtime._track_id_service else ""),
+                        updated_at=now,
+                        last_attempt_at=now,
+                        error=type(exc).__name__,
+                        next_attempt_at=self._ti_next_attempt,
+                        next_attempt_reason=self._ti_next_attempt_reason,
+                    ))
 
         finally:
             runtime._track_id_request_gate.release()
@@ -4536,7 +4515,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         ChangeWatch("repeat", lambda: autostream_state.repeat_digest(
             autostream_state.store().snapshot().repeat.block)),
         ChangeWatch("track", lambda: autostream_state.track_digest(
-            get_active_track_identification_snapshot())),
+            autostream_state.active_track(autostream_state.store().snapshot()))),
     )
 
     # Outer loop: runs once normally; repeats after a config reload.
@@ -4556,6 +4535,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             break
 
         runtime._track_id_service = _build_track_id_service(cfg)
+        _publish_track_service(runtime._track_id_service is not None)
         for m in monitors:
             m._apply_track_id_service(runtime._track_id_service)
 
