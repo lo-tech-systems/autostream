@@ -53,6 +53,7 @@ from dial_display_draw import (
 )
 from dial_display_palette import (
     GLYPH_RGB,
+    LOGO_BACKGROUND_RGB,
     DIVIDER_RGB,
     LIST_SEPARATOR_RGB,
     DIMMED_GLYPH_RGB,
@@ -814,6 +815,19 @@ WARNING_SMALL_FONT_FLOOR_PX = 9
 # The rule under a warning's source band is this many times the divider width.
 WARNING_RULE_WIDTH_FACTOR = 2
 
+# The source band's bell is this share of the band height, but never shorter
+# than this multiple of the band text's font size (on compact the band is
+# only as tall as its text, and the bell should stand as tall as the text).
+WARNING_BAND_BELL_FRACTION = 0.72
+WARNING_BAND_BELL_FONT_FACTOR = 1.15
+
+
+def _warning_band_text_span(rect: "tuple[int, int, int, int]", band_h: int) -> "tuple[int, int]":
+    """The band's text span (left, right): the row between a square slot of
+    band_h at each end. The bell sits in the right-hand slot and the left is
+    left empty, so the source stays centred on the panel."""
+    return rect[0] + band_h, rect[2] - band_h
+
 
 def _plan_warning_band(
     draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", body: Body, metrics: LayoutMetrics,
@@ -824,24 +838,30 @@ def _plan_warning_band(
     has no source, no font loads or the band and rule would not leave the
     row any room. The source is one line at body size, or at the largest
     smaller size (down to the floor) that holds it whole, and is
-    ellipsized at the floor when even that is too wide. *fixed_band_h* is
+    ellipsized at the floor when even that is too wide; it is fitted to
+    the span between the band's two end slots (see
+    _warning_band_text_span), less the usual pad. *fixed_band_h* is
     the layout's source_band_h: off compact the band is the playing
     screen's top bar height, with the text centred in it; None (compact)
     sizes the band from the text. Pure: measuring calls only."""
     if not body.source:
         return None
-    max_w = rect[2] - rect[0] - 2 * metrics.pad
     floor_px = min(metrics.font_body, WARNING_SMALL_FONT_FLOOR_PX)
     font = None
+    max_w = 0
+    band_h = fixed_band_h
     for px in range(metrics.font_body, floor_px - 1, -1):
         font = _load_font(px)
         if font is None:
             return None
+        if fixed_band_h is None:
+            band_h = round(px * 1.2)
+        left, right = _warning_band_text_span(rect, band_h)
+        max_w = right - left - 2 * metrics.pad
         measured = _text_size(draw, body.source, font)
         if measured is not None and measured[0] <= max_w:
             break
     text = _truncate_to_width(draw, body.source, font, max_w)
-    band_h = fixed_band_h if fixed_band_h is not None else round(px * 1.2)
     rule_h = WARNING_RULE_WIDTH_FACTOR * metrics.divider_w
     if not text or band_h + rule_h >= rect[3] - rect[1]:
         return None
@@ -938,17 +958,28 @@ def _draw_fitted_warning_text(
 
 
 def _draw_warning_band(
-    draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", band: "tuple[str, object, int, int]",
+    img: Image.Image, rect: "tuple[int, int, int, int]", band: "tuple[str, object, int, int]",
     severity: str, metrics: LayoutMetrics,
 ) -> "tuple[int, int, int, int]":
-    """Draw the source band at the top of *rect* (white, with the source in
-    black) and the rule under it in the severity's colour, across the full
-    width. Returns what is left of *rect* underneath for the title and
-    message."""
+    """Draw the source band at the top of *rect* (the logo's blue, with the
+    source in white between two square end slots) and the dial's warning
+    bell, without a number, in the severity's colour centred in the
+    right-hand slot. The rule under the band is in the severity's colour,
+    across the full width. Returns what is left of *rect* underneath for the
+    title and message."""
     text, font, band_h, rule_h = band
     x0, y0, x1, y1 = rect
-    draw.rectangle([x0, y0, x1 - 1, y0 + band_h - 1], fill=GLYPH_RGB)
-    _draw_label_centered(draw, (x0, y0, x1, y0 + band_h), text, font, INVERTED_GLYPH_RGB)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([x0, y0, x1 - 1, y0 + band_h - 1], fill=LOGO_BACKGROUND_RGB)
+    side = min(band_h, max(round(band_h * WARNING_BAND_BELL_FRACTION), round(font.size * WARNING_BAND_BELL_FONT_FACTOR)))
+    bell_x = x1 - band_h + (band_h - side) // 2
+    bell_y = y0 + (band_h - side) // 2
+    _draw_glyph(
+        img, (bell_x, bell_y, bell_x + side, bell_y + side), GLYPH_BELL, severity, None,
+        supersample=metrics.supersample,
+    )
+    left, right = _warning_band_text_span(rect, band_h)
+    _draw_label_centered(draw, (left, y0, right, y0 + band_h), text, font, GLYPH_RGB)
     draw.rectangle(
         [x0, y0 + band_h, x1 - 1, y0 + band_h + rule_h - 1], fill=_BELL_RGB.get(severity, BELL_INFO_RGB),
     )
@@ -985,9 +1016,10 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     quarter of the message row (a dimmed track from the card's inner left
     to right edge, a white fill to the percent) and the text is laid out
     in the rest of the row. With body.source set, the row opens with the
-    source in a white band across its full width (off compact the playing
-    screen's top bar height, on compact sized from the text), a rule in the severity's
-    colour under it, and the title over the message below that, wrapped
+    source in white on a band in the logo's blue across its full width
+    (off compact the playing screen's top bar height, on compact sized from
+    the text) with a number-less bell at its right-hand end, a rule in the
+    severity's colour under it, and the title over the message below that, wrapped
     and shrunk to fit (see _plan_warning_band and _plan_warning_text)."""
     layout = warning_layout_for(metrics.width, metrics.height, buttons=len(body.buttons), metrics=metrics)
     draw = ImageDraw.Draw(img)
@@ -1009,7 +1041,7 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
         rect = (mx0, my0, mx1, my1)
         band = _plan_warning_band(draw, rect, body, metrics, layout.source_band_h)
         if band is not None:
-            rect = _draw_warning_band(draw, rect, band, body.severity, metrics)
+            rect = _draw_warning_band(img, rect, band, body.severity, metrics)
         _draw_fitted_warning_text(draw, rect, body, metrics)
     elif body.line:
         split = my0 + (my1 - my0) * 3 // 5

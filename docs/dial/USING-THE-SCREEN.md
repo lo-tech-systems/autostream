@@ -409,8 +409,10 @@ Tap the bell to open a card:
 
 ![A warnings card reading Stylus wear and Change now, with Close and Next](images/showcase/spi-dial/appliance-warning-paged.png)
 
-*One warning at a time. Small text at the top says where it comes from and
-which of the bell's warnings this is ("Turntable · 1 of 2").*
+*One warning at a time. A blue band at the top says in white where it comes
+from and which of the bell's warnings this is ("Turntable · 1 of 2"), with a
+bell at its right-hand end in the warning's colour. The rule under the band
+shows how urgent it is.*
 
 - **Close** puts the card away. It does nothing else: nothing is hidden or
   postponed, and the bell keeps counting for as long as the cause is there. The
@@ -480,8 +482,9 @@ An autostream appliance can ask the dial to show a warning of its own. The
 appliance sends these for maintenance and power: a stylus near or past the end
 of its life, a drive belt or main bearing due for service, or a power supply
 that has dipped below its voltage. They are counted in the dial's bell and shown
-on the same card as the others: the appliance's name in small text on top
-(with the warning's place, "1 of 2", when there is more than one), then a title
+on the same card as the others: the appliance's name in white on a blue band
+on top, with a bell in the warning's colour at its right-hand end (and the
+warning's place, "1 of 2", when there is more than one), then a title
 (for example "Stylus wear"), a short message saying what to do (for example
 "Change now") and **Close**, with **Next** when the bell holds more than one.
 Where there is room, a smaller line under the message says why (for example

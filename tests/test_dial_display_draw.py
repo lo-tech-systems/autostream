@@ -245,6 +245,11 @@ class TestBellGlyph:
         tile = _glyph_tile(GLYPH_BELL, ("warning", 8), 60, 60, 4)
         assert any(px[:3] == (255, 255, 255) and px[3] == 255 for px in tile.getdata())
 
+    def test_no_count_draws_the_bell_with_no_number(self):
+        tile = _glyph_tile(GLYPH_BELL, ("warning", None), 60, 60, 4)
+        assert not any(px[:3] == (255, 255, 255) and px[3] == 255 for px in tile.getdata())
+        assert tile.tobytes() != _glyph_tile(GLYPH_BELL, ("warning", 8), 60, 60, 4).tobytes()
+
     def test_a_count_above_nine_is_drawn_as_nine_plus(self):
         assert _glyph_tile(GLYPH_BELL, ("warning", 10), 60, 60, 4).tobytes() == \
             _glyph_tile(GLYPH_BELL, ("warning", 99), 60, 60, 4).tobytes()

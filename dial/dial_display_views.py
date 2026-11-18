@@ -337,7 +337,8 @@ class WarningView:
     the pressed cell, if any, the optional progress percent (None draws no
     bar; no buttons draws a notice with no cells) and the optional source
     (who the warning is about: a non-empty one is drawn as a band across
-    the top of the message row, over a rule coloured by the severity, and the
+    the top of the message row, in white on the logo's blue with a bell in
+    the severity's colour at its right end, over a rule in that colour, and the
     page's text is then fitted to the rest of the row
     rather than drawn as one line each)."""
 

@@ -71,8 +71,8 @@ from dial_display_palette import (  # noqa: E402
     BELL_WARNING_RGB,
     DIMMED_GLYPH_RGB,
     GLYPH_RGB,
-    INVERTED_GLYPH_RGB,
     LIST_BG_RGB,
+    LOGO_BACKGROUND_RGB,
     OVERLAY_DIM_FACTOR,
 )
 from dial_layout_metrics import (  # noqa: E402
@@ -3352,27 +3352,82 @@ class TestApplianceWarningText:
             top = layout_for(width, height, metrics=metrics).top_band
             assert band[2] == top[3] - top[1]
 
+    @staticmethod
+    def _band_frame(compositor, width, height, metrics, source, severity):
+        """(frame, message row, band) for a one-button card with *source*."""
+        rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
+        view = WarningView(title="Power supply", buttons=("Close",), source=source, severity=severity)
+        frame = compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
+        return frame, rect
+
+    @staticmethod
+    def _pixels(frame, x0, y0, x1, y1):
+        return {frame.getpixel((x, y)) for x in range(x0, x1) for y in range(y0, y1)}
+
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     @pytest.mark.parametrize("severity,rule_rgb", [
         ("info", BELL_INFO_RGB), ("warning", BELL_WARNING_RGB), ("critical", BELL_CRITICAL_RGB),
     ])
-    def test_the_source_band_is_white_with_black_text_over_a_rule_in_the_severity_colour(
+    def test_the_source_band_is_blue_with_white_text_and_a_bell_over_a_severity_rule(
             self, compositor, tier, severity, rule_rgb):
         width, height, mm = _APPLIANCE_TIERS[tier]
         metrics = metrics_for(width, height, mm)
-        rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
-        view = WarningView(title="Power supply", buttons=("Close",), source="Lounge", severity=severity)
-        frame = compositor.compose_warning(width, height, view, rotate=False, bgr=False, metrics=metrics)
+        frame, rect = self._band_frame(compositor, width, height, metrics, "Lounge", severity)
         _, _, _, _, band = _fit_plan(tier, "Lounge", "Power supply", "", severity)
         _, _, band_h, rule_h = band
         assert rule_h == 2 * metrics.divider_w
         x0, y0, x1, _ = rect
-        # The band's fill reaches both ends of the row, and the text on it is black.
-        assert frame.getpixel((x0, y0)) == frame.getpixel((x1 - 1, y0)) == GLYPH_RGB
-        band_pixels = {frame.getpixel((x, y)) for x in range(x0, x1) for y in range(y0, y0 + band_h)}
-        assert INVERTED_GLYPH_RGB in band_pixels
+        # The band's fill reaches both ends of the row, and the text on it is white.
+        assert frame.getpixel((x0, y0)) == frame.getpixel((x1 - 1, y0)) == LOGO_BACKGROUND_RGB
+        middle = self._pixels(frame, x0 + band_h, y0, x1 - band_h, y0 + band_h)
+        assert GLYPH_RGB in middle and rule_rgb not in middle
+        # The left slot is plain band; the right slot holds the bell in the severity's colour.
+        assert self._pixels(frame, x0, y0, x0 + band_h, y0 + band_h) == {LOGO_BACKGROUND_RGB}
+        slot = self._pixels(frame, x1 - band_h, y0, x1, y0 + band_h)
+        assert rule_rgb in slot and GLYPH_RGB not in slot
         for y in range(y0 + band_h, y0 + band_h + rule_h):
             assert frame.getpixel((x0, y)) == frame.getpixel((x1 - 1, y)) == rule_rgb
+
+    @pytest.mark.parametrize("alpha,metrics_args", [
+        ("rich", (320, 240, 0.1778)), ("compact", (320, 240, 0.0889)),
+    ])
+    def test_the_band_bell_is_in_the_right_slot_and_as_tall_as_the_text_on_compact(
+            self, compositor, alpha, metrics_args):
+        width, height, _ = metrics_args
+        metrics = metrics_for(*metrics_args)
+        frame, rect = self._band_frame(compositor, width, height, metrics, "Lounge", "warning")
+        body = Body(BODY_WARNING, title="Power supply", buttons=("Close",), source="Lounge", severity="warning")
+        layout = warning_layout_for(width, height, buttons=1, metrics=metrics)
+        _, font, band_h, _ = dial_display_render._plan_warning_band(
+            ImageDraw.Draw(frame), rect, body, metrics, layout.source_band_h)
+        x0, y0, x1, _ = rect
+        rows = [
+            y for y in range(y0, y0 + band_h)
+            if any(frame.getpixel((x, y)) != LOGO_BACKGROUND_RGB for x in range(x1 - band_h, x1))
+        ]
+        cols = [
+            x for x in range(x1 - band_h, x1)
+            if any(frame.getpixel((x, y)) != LOGO_BACKGROUND_RGB for y in range(y0, y0 + band_h))
+        ]
+        assert rows and cols
+        # The bell is centred in its square slot, and (compact) as tall as the text.
+        assert abs((rows[0] + rows[-1]) / 2 - (y0 + (band_h - 1) / 2)) <= 1.5
+        assert abs((cols[0] + cols[-1]) / 2 - (x1 - (band_h + 1) / 2)) <= 1.5
+        if alpha == "compact":
+            assert rows[-1] - rows[0] + 1 >= font.size
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_a_long_source_is_ellipsized_between_the_slots_and_never_over_the_bell(self, compositor, tier):
+        width, height, mm = _APPLIANCE_TIERS[tier]
+        metrics = metrics_for(width, height, mm)
+        frame, rect = self._band_frame(compositor, width, height, metrics, _UNBROKEN[1], "critical")
+        _, _, _, _, band = _fit_plan(tier, _UNBROKEN[1], "Power supply", "", "critical")
+        text, _, band_h, _ = band
+        x0, y0, x1, _ = rect
+        assert text.endswith("...")
+        for slot in ((x0, x0 + band_h), (x1 - band_h, x1)):
+            assert GLYPH_RGB not in self._pixels(frame, slot[0], y0, slot[1], y0 + band_h)
+        assert GLYPH_RGB in self._pixels(frame, x0 + band_h, y0, x1 - band_h, y0 + band_h)
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_the_source_changes_the_frame_and_no_source_leaves_it_as_before(self, compositor, tier):

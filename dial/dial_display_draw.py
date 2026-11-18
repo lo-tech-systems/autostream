@@ -457,7 +457,7 @@ GLYPH_MUTE = "mute"                    # params: () or (color,) — the main scr
 GLYPH_SPEAKER = "speaker"              # no params — the top band's volume readout icon
 GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
 GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
-GLYPH_BELL = "bell"                    # params: (severity, count) — the warning bell
+GLYPH_BELL = "bell"                    # params: (severity, count or None) — the warning bell
 GLYPH_WIFI = "wifi"                    # params: (lit, color) — the idle screen's Wi-Fi status glyph
 
 # The bell's fill by the worst severity it holds (an informational entry
@@ -699,10 +699,11 @@ def _draw_stop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=GLYPH_RGB)
     draw.rectangle([cx - half, cy - half, cx + half, cy + half], fill=color)
 
 
-def _draw_bell_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, severity: str, count: int) -> None:
+def _draw_bell_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, severity: str, count: "int | None") -> None:
     """The warning bell: a filled bell (a dome over a flared rim, a knob on
     top, a clapper below) in the severity's colour with the number of
-    entries in white across its body (9+ above nine). Drawn from shapes on a
+    entries in white across its body (9+ above nine), or no number when
+    *count* is None. Drawn from shapes on a
     24-unit grid fitted to the canvas short side, so it reads identically
     across every font fallback. Rendered into a (w, h) canvas — see
     _draw_glyph."""
@@ -718,6 +719,8 @@ def _draw_bell_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, severity: str, c
     draw.polygon([pt(5.2, 10.6), pt(18.8, 10.6), pt(18.8, 15.0), pt(21.0, 17.2), pt(21.0, 18.6),
                   pt(3.0, 18.6), pt(3.0, 17.2), pt(5.2, 15.0)], fill=colour)
     draw.pieslice([*pt(9.4, 17.2), *pt(14.6, 22.8)], 0, 180, fill=colour)
+    if count is None:
+        return
     label = str(count) if count < 10 else "9+"
     box = (*pt(6.0, 6.4), *pt(18.0, 17.0))
     _draw_label_centered(draw, tuple(round(v) for v in box), label, _load_font(max(6, round(u * 9.5))))
