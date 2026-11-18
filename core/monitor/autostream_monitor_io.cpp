@@ -1754,8 +1754,8 @@ void InputChannel::resample_block(int frames_in, float peak_sample, float silenc
         int src_err = src_process(_src_state, &src_data);
         if (src_err != 0)
         {
-            LOG_WARN("[input%d] libsamplerate error: %s",
-                     _index, src_strerror(src_err));
+            LOG_WARN_EVERY(log_key(LogKey::SrcError, _index), 5.0,
+                           "[input%d] libsamplerate error: %s", _index, src_strerror(src_err));
             break;
         }
 

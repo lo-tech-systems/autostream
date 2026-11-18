@@ -614,6 +614,42 @@ static void test_repeated_overflows_write_one_line_per_window()
           "T15 the other two are counted");
 }
 
+static void test_unusable_path_writes_one_line_per_window()
+{
+    logger_init(MonitorLogLevel::Warn);
+    logger_test_set_clock(fixed_clock_ns);
+    LogFileCapture capture;
+
+    char dir_template[] = "/tmp/test_fifo_writer_XXXXXX";
+    char* dir = ::mkdtemp(dir_template);
+    CHECK(dir != nullptr, "T16 mkdtemp succeeded");
+    if (!dir)
+        return;
+    std::string path = std::string(dir) + "/regular";
+    int fd = ::open(path.c_str(), O_CREAT | O_WRONLY, 0600);
+    ::close(fd);
+
+    FifoWriter writer;
+    writer.set_path(path);
+    std::vector<uint8_t> block = make_pattern(64, /*base=*/0);
+    for (int i = 0; i < 50; ++i)
+        writer.write(block.data(), block.size());
+
+    g_fixed_clock_ns = 62000000000;
+    logger_test_rate_sweep();
+    std::vector<std::string> lines = capture.finish();
+    logger_test_set_clock(nullptr);
+    logger_init(MonitorLogLevel::Warn);
+    ::unlink(path.c_str());
+    ::rmdir(dir);
+
+    CHECK(count_lines_containing(lines, "is not a named pipe") == 1,
+          "T16 one rejection line for fifty writes");
+    CHECK(count_lines_containing(lines, "fifo path not a pipe: 49 more suppressed") == 1,
+          "T16 the sweep after the window reports the other 49");
+    g_fixed_clock_ns = 1000000000;
+}
+
 int main()
 {
     // The broken-pipe test writes to a FIFO whose reader has gone. The
@@ -631,6 +667,7 @@ int main()
     test_broken_pipe_counts_backlog_and_block();
     test_backlog_capacity_is_reserved_up_front();
     test_repeated_overflows_write_one_line_per_window();
+    test_unusable_path_writes_one_line_per_window();
 
     logger_shutdown();
 

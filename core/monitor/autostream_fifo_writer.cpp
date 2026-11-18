@@ -67,8 +67,8 @@ bool FifoWriter::try_open()
     {
         if (errno != ENXIO && errno != ENOENT)
         {
-            LOG_WARN("[fifo] Cannot open '%s': %s",
-                     _path.c_str(), strerror(errno));
+            LOG_WARN_EVERY(log_key(LogKey::FifoOpenFailed), 60.0,
+                           "[fifo] Cannot open '%s': %s", _path.c_str(), strerror(errno));
         }
         return false;
     }
@@ -79,7 +79,8 @@ bool FifoWriter::try_open()
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode))
     {
-        LOG_WARN("[fifo] '%s' is not a named pipe; rejecting", _path.c_str());
+        LOG_WARN_EVERY(log_key(LogKey::FifoNotPipe), 60.0,
+                       "[fifo] '%s' is not a named pipe; rejecting", _path.c_str());
         ::close(fd);
         return false;
     }
@@ -96,7 +97,8 @@ bool FifoWriter::try_open()
     _pipe_bytes.store(pipe_bytes, std::memory_order_relaxed);
     if (pipe_bytes >= 0)
     {
-        LOG_INFO("[fifo] Opened '%s' for writing (pipe size %d bytes)", _path.c_str(), pipe_bytes);
+        LOG_INFO_EVERY(log_key(LogKey::FifoOpened), 5.0,
+                       "[fifo] Opened '%s' for writing (pipe size %d bytes)", _path.c_str(), pipe_bytes);
     }
     else
     {
@@ -106,7 +108,8 @@ bool FifoWriter::try_open()
                      kFifoPipeBytes, _path.c_str(), strerror(errno));
             _pipe_resize_warned = true;
         }
-        LOG_INFO("[fifo] Opened '%s' for writing", _path.c_str());
+        LOG_INFO_EVERY(log_key(LogKey::FifoOpened), 5.0,
+                       "[fifo] Opened '%s' for writing", _path.c_str());
     }
     return true;
 }
@@ -332,9 +335,11 @@ void FifoWriter::close()
 void FifoWriter::fail_and_close(int hard_errno, size_t lost_bytes)
 {
     if (hard_errno == EPIPE || hard_errno == EBADF)
-        LOG_WARN("[fifo] Broken pipe on '%s'; will reopen on next write", _path.c_str());
+        LOG_WARN_EVERY(log_key(LogKey::FifoBrokenPipe), 5.0,
+                       "[fifo] Broken pipe on '%s'; will reopen on next write", _path.c_str());
     else
-        LOG_WARN("[fifo] Write error on '%s': %s", _path.c_str(), strerror(hard_errno));
+        LOG_WARN_EVERY(log_key(LogKey::FifoWriteError), 5.0,
+                       "[fifo] Write error on '%s': %s", _path.c_str(), strerror(hard_errno));
     _error_bytes.fetch_add(static_cast<uint64_t>(lost_bytes), std::memory_order_relaxed);
     _write_errors.fetch_add(1, std::memory_order_relaxed);
     close();   // also drops the (now stale) backlog
