@@ -470,6 +470,71 @@ class TestSetup:
         finally:
             server.shutdown()
 
+    def _unlock_first_authorized_dial(self, page: "Page") -> None:
+        page.wait_for_selector(".dial-card")
+        page.evaluate("""() => {
+            const card = document.querySelector('.dial-card[data-authorized="true"]');
+            card.dataset.pinSet = 'true';
+            _dialUnlockSection(card, '1234');
+        }""")
+        expect(page.locator(".dial-card[data-authorized='true'] .dial-locked-section")).not_to_have_class(
+            re.compile("dial-section-locked"))
+
+    def test_an_unlocked_dial_stays_unlocked_when_focus_moves_elsewhere(self, page: "Page"):
+        server, base = _serve_setup(**_dial_fakes())
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "dials")
+            self._unlock_first_authorized_dial(page)
+            section = page.locator(".dial-card[data-authorized='true'] .dial-locked-section")
+            page.evaluate("""() => {
+                const outside = document.createElement('button');
+                outside.id = 'outside-control';
+                outside.textContent = 'outside';
+                outside.style.cssText = 'position:fixed;top:0;left:0;z-index:9999';
+                document.body.appendChild(outside);
+                const inside = document.querySelector('.dial-card[data-authorized="true"] .dial-locked-section input:not([disabled]), '
+                    + '.dial-card[data-authorized="true"] .dial-locked-section select:not([disabled])');
+                if (inside) inside.focus();
+            }""")
+            page.click("#outside-control")
+            page.wait_for_timeout(100)
+            expect(section).not_to_have_class(re.compile("dial-section-locked"))
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_leaving_the_dials_panel_relocks_the_dial_and_reopening_shows_it_locked(self, page: "Page"):
+        server, base = _serve_setup(**_dial_fakes())
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "dials")
+            self._unlock_first_authorized_dial(page)
+            section = page.locator(".dial-card[data-authorized='true'] .dial-locked-section")
+            page.click("#panel-dials .setup-detail-back button:has-text('Back')")
+            expect(section).to_have_class(re.compile("dial-section-locked"))
+            page.evaluate("openPanel('dials')")
+            expect(section).to_have_class(re.compile("dial-section-locked"))
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_hiding_the_page_relocks_an_unlocked_dial(self, page: "Page"):
+        server, base = _serve_setup(**_dial_fakes())
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            _open_setup_panel(page, "dials")
+            self._unlock_first_authorized_dial(page)
+            page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+            expect(page.locator(".dial-card[data-authorized='true'] .dial-locked-section")).to_have_class(
+                re.compile("dial-section-locked"))
+            assert errors == []
+        finally:
+            server.shutdown()
+
     def test_bluetooth_installed_links_the_pairing_script_and_reads_its_island(self, page: "Page"):
         status = {"adapter_present": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Test Turntable"},
                   "link": "connected", "streaming": False, "scanning": False}

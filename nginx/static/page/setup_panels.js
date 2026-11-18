@@ -321,6 +321,7 @@ var pageData = (function () {
           if (activeId === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.stop();
           if ((activeId === 'input1' || activeId === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.stop();
           if (activeId === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.stop();
+          if (activeId === 'dials' && typeof _dialLockAll === 'function') _dialLockAll();
           var track = document.getElementById('setupSlideTrack');
           if (track) track.classList.remove('panel-open');
           window.scrollTo(0, 0);

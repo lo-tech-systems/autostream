@@ -1760,6 +1760,14 @@ var pageData = (function () {
             if (ev.key === 'Escape' && pm && pm.classList.contains('show')) _dialClosePanelOff(false);
           });
         });
+        // Lock every PIN-protected dial card: on leaving the Dials panel, and
+        // when the page is hidden so a restored page never comes back unlocked.
+        function _dialLockAll() {
+          document.querySelectorAll('.dial-card').forEach(function(card) {
+            if (card.dataset.pinSet === 'true') _dialLockSection(card);
+          });
+        }
+        window.addEventListener('pagehide', _dialLockAll);
         // Dials card (lazy-loaded): the .dial-card bindings below used
         // to live in the DOMContentLoaded listener above, but `.dial-card`
         // elements don't exist until the Dials panel's body has been
@@ -1832,16 +1840,8 @@ var pageData = (function () {
                 dialSaveConfig(card);
               }
             });
-            var lockedSection = card.querySelector('.dial-locked-section');
-            if (lockedSection) {
-              lockedSection.addEventListener('focusout', function(ev) {
-                setTimeout(function() {
-                  if (!lockedSection.contains(document.activeElement)) {
-                    if (card.dataset.pinSet === 'true') _dialLockSection(card);
-                  }
-                }, 0);
-              });
-            }
+            // Unlocked settings stay unlocked until the panel is left (see
+            // _dialLockAll()) or the padlock is pressed.
             card.addEventListener('click', function(ev) {
               var target = ev.target.closest('[data-dial-action]');
               if (!target || target.tagName === 'INPUT') return;

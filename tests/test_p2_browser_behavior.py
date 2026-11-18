@@ -924,8 +924,9 @@ class TestDialCardHtmlStructure:
         assert unlock_idx < post_idx, (
             "_dialUnlockedPins check must appear before _dialPost in dialSaveConfig"
         )
-        # The focusout handler for auto-lock must still exist
-        assert "focusout" in src, "focusout handler not found"
+        # Unlocked settings relock on leaving the panel, not on focus loss
+        assert "_dialLockAll" in src, "_dialLockAll not found"
+        assert "lockedSection.addEventListener" not in src, "focusout relock must be gone"
 
     # ── No Revoke button in .dial-config ────────────────────────────────────
 
