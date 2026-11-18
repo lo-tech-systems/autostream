@@ -66,7 +66,8 @@ def _worst_first(entries: Iterable[BellEntry]) -> tuple:
     return tuple(sorted(entries, key=lambda e: -_RANK[e.severity]))
 
 
-def _by_id(descriptors: "Mapping | Iterable | None") -> dict:
+def descriptor_map(descriptors: "Mapping | Iterable | None") -> dict:
+    """The descriptors by id, from a mapping, an iterable or None."""
     if descriptors is None:
         return {}
     if isinstance(descriptors, Mapping):
@@ -83,7 +84,7 @@ def _text(fn, reading: Any) -> str:
 def dial_bell(snapshot, descriptors) -> Bell:
     """The dial's own active warnings: every active KIND_WARNING descriptor
     that is not an appliance's, in registry order."""
-    by_id = _by_id(descriptors)
+    by_id = descriptor_map(descriptors)
     entries = []
     for state in snapshot.warnings:
         desc = by_id.get(state.id)

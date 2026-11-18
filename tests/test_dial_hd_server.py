@@ -520,7 +520,7 @@ class TestState:
             core.publish(scenario.snapshot)
             response, data = request(server, "GET", "/api/v1/state")
             assert response.status == 200, name
-            assert json.loads(data)["parts"]["dial"]["v"] == 2
+            assert json.loads(data)["parts"]["dial"]["v"] == 3
 
 
 # ---- artwork ---------------------------------------------------------------

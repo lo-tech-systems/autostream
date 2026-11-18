@@ -1,5 +1,5 @@
 {
-  "v": 2,
+  "v": 3,
   "started": true,
   "polling": true,
   "dial": {
@@ -38,28 +38,20 @@
   "transport": null,
   "outputs_request": null,
   "start_failure": null,
-  "warnings": {
-    "due": null,
-    "cards": [
+  "bell": {
+    "severity": "warning",
+    "entries": [
       {
-        "id": "sdhealth",
-        "kind": "warning",
-        "since": 1699999970.0,
+        "key": "sdhealth",
+        "source": "This dial",
         "severity": "warning",
         "title": "microSD Health",
         "message": "6%: Replace Soon",
-        "progress": null,
-        "source": "",
-        "buttons": [
-          {
-            "label": "Close",
-            "action": "close"
-          }
-        ],
-        "interrupting": false
+        "actions": []
       }
     ]
   },
+  "status": null,
   "network": {
     "link": "connected",
     "ssid": "HomeNet",

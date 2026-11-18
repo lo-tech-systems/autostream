@@ -61,14 +61,24 @@ body.hd {
 .region .list.more-above { --fade-top: var(--fade); }
 .region .list.more-below { --fade-bottom: var(--fade); }
 #speakers-region .list { bottom: 0; }
-/* The Auto-Start pin, at the right of the speakers label; filled when the
-   speakers on are the saved set. */
-#speakers-region .section-label { padding-right: 52px; }
-.pin-btn {
+/* The Auto-Start pin at the right of the speakers label, filled when the
+   speakers on are the saved set, and the dial bell at the right of the
+   appliances label. */
+.region .section-label { padding-right: 52px; }
+.pin-btn, .dial-bell {
     position: absolute; top: 0; right: 2px; z-index: 2; width: 44px; height: var(--label-h);
     display: grid; place-items: center; padding: 0; border-radius: 999px; cursor: pointer; pointer-events: auto;
     border: 1px solid var(--color-border-card); background: var(--color-surface-raised); color: var(--color-text);
 }
+.dial-bell svg { width: 20px; height: 20px; display: block; }
+.dial-bell:not(.filled) svg path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
+.dial-bell .warn-count {
+    position: absolute; inset: 0; display: grid; place-items: center; padding-top: 1px;
+    color: #fff; font-size: 0.6em; font-weight: 800;
+}
+.dial-bell.sev-info { color: var(--color-accent); }
+.dial-bell.sev-warning { color: var(--color-warning-highlight); }
+.dial-bell.sev-critical { color: var(--color-status-danger); }
 .pin-btn[hidden] { display: none; }
 .pin-btn.is-set { border-color: var(--color-accent); background: var(--color-surface-selected); color: var(--color-accent); }
 .pin-btn.is-set svg { fill: currentColor; }

@@ -42,7 +42,7 @@ function render() {
     if (ui.eqOpen && !ui.vm.eq.open) { ui.eqOpen = false; }
     if (!ui.vm.modal) {
         ui.notice = null;
-        ui.viewing = null;
+        ui.bell = null;
     }
     // The digits go with the card; what was turned away stays turned away.
     const pinNow = !!ui.vm.modal && ui.vm.modal.kind === "pin";

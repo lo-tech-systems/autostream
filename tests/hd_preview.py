@@ -39,8 +39,8 @@ class FakePanel:
     flip, and every call it makes recorded."""
 
     INFO_ROWS = (
-        ("Dial name", "Lounge dial"), ("Firmware", "0.8.0"), ("IPv4", "192.0.2.10"), ("WiFi", "HomeNet"),
-        ("Signal", "Strong"), ("Disk free", "5.2 GB"), ("SD health", "84%"),
+        ("WiFi", "HomeNet"), ("Signal", "Strong"), ("IPv4", "192.0.2.10"), ("Dial name", "Lounge dial"),
+        ("Firmware", "0.8.0"), ("Disk free", "5.2 GB"), ("SD health", "84%"),
     )
 
     def __init__(self, publish) -> None:

@@ -1,5 +1,5 @@
 {
-  "v": 2,
+  "v": 3,
   "started": true,
   "polling": true,
   "dial": {
@@ -38,25 +38,20 @@
   "transport": null,
   "outputs_request": null,
   "start_failure": null,
-  "warnings": {
-    "due": "update_result",
-    "cards": [
+  "bell": {
+    "severity": null,
+    "entries": []
+  },
+  "status": {
+    "id": "update_result",
+    "severity": "info",
+    "title": "Updated",
+    "message": "Version 0.8.0",
+    "progress": null,
+    "buttons": [
       {
-        "id": "update_result",
-        "kind": "status",
-        "since": 1699999970.0,
-        "severity": "info",
-        "title": "Updated",
-        "message": "Version 0.8.0",
-        "progress": null,
-        "source": "",
-        "buttons": [
-          {
-            "label": "Close",
-            "action": "status_close"
-          }
-        ],
-        "interrupting": true
+        "label": "Close",
+        "action": "status_close"
       }
     ]
   },

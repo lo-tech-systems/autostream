@@ -1,5 +1,5 @@
 {
-  "v": 2,
+  "v": 3,
   "started": true,
   "polling": true,
   "dial": {
@@ -42,10 +42,11 @@
   "transport": null,
   "outputs_request": null,
   "start_failure": null,
-  "warnings": {
-    "due": null,
-    "cards": []
+  "bell": {
+    "severity": null,
+    "entries": []
   },
+  "status": null,
   "network": {
     "link": "connected",
     "ssid": "HomeNet",

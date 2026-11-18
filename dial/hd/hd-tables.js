@@ -87,7 +87,8 @@ export const PIN_KEY_OFF_DIGIT = (p) => p.busy || p.waiting || p.digits.length >
 // The dial part before the first state arrives.
 export const EMPTY_STATE = {
     started: false, dial: { uuid: "" }, focus: { appliance_id: null, reporting_id: null }, appliances: [],
-    artwork: null, transport: null, outputs_request: null, start_failure: null, warnings: { due: null, cards: [] },
+    artwork: null, transport: null, outputs_request: null, start_failure: null,
+    bell: { severity: null, entries: [] }, status: null,
     panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", kiosk: false },
     recovery: { active: false, confirmed: false }, power: { state: "idle", changed_at: 0 }
 };

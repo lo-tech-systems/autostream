@@ -5,9 +5,10 @@
 
 import {
     CONFIG, STATUS_RULES, PIN_TEXT, PIN_LINE_RULES, ARTWORK_PREFIX, REPLAY_ROWS, NO_TIME, POWER_CARDS,
-    POWER_RULES, AUTO_START_CARD, DIM_FLOOR, BRIGHTNESS_MAX, SEVERITY_ORDER, EQ_FILTERS, EQ_GRAPH, formatLength
+    POWER_RULES, AUTO_START_CARD, DIM_FLOOR, BRIGHTNESS_MAX, EQ_FILTERS, EQ_GRAPH, formatLength
 } from "./hd-tables.js";
 import { responseFilters, eqLabel } from "./hd-eq.js";
+import { bellBadge, bellCard } from "./hd-bell.js";
 import { pending, clockRate, clockPosition, reportedPosition } from "./hd-state.js";
 import { speakerRows, masterVolume, nowPlaying, playing, activeInput } from "/static/shared/state_view.js";
 import { CHIP, INPUT_TYPE_LABELS, START_FAILURE, AUTO_START_PILL, AUTO_START_CONFIRM } from "/static/shared/texts.js";
@@ -56,16 +57,6 @@ function deriveSpeakers(dial, p, usable) {
 function speakerNote(focus, focused, rows) {
     if (!focus || rows.length) { return ""; }
     return focused && focused.reachable ? "No speakers on this appliance." : "Loading speakers...";
-}
-
-// The badge for the appliance's warnings that have a card.
-function warnBadge(a, cardsById) {
-    const list = a.warnings.filter((w) => cardsById.has(w.key));
-    if (!list.length) { return null; }
-    const worst = list.reduce((top, w) => (
-        SEVERITY_ORDER.indexOf(w.severity) > SEVERITY_ORDER.indexOf(top) ? w.severity : top
-    ), "info");
-    return { count: list.length, severity: worst, key: list[0].key };
 }
 
 // What the timer reads for each kind of time in REPLAY_ROWS: [elapsed,
@@ -143,12 +134,14 @@ function deriveEq(p, focus, usable, local) {
     };
 }
 
-function cardFrom(card, owner) {
+// The status card (an update running or finished), which the dial puts up
+// itself and, when it has a button, ends by asking the core.
+function statusCard(s) {
     return {
-        key: card.id, source: card.source || "", title: card.title, message: card.message,
-        severity: card.severity, progress: typeof card.progress === "number" ? card.progress : null,
-        buttons: card.buttons.map((b, i) => ({ id: i + ":" + b.action, label: b.label, act: b.action })),
-        closable: false, owner: owner, kind: "notice", warning: card.kind === "warning", since: card.since
+        key: s.id, source: "", title: s.title, message: s.message, severity: s.severity,
+        progress: typeof s.progress === "number" ? s.progress : null,
+        buttons: s.buttons.map((b, i) => ({ id: i + ":" + b.action, label: b.label, act: b.action })),
+        closable: false, kind: "notice"
     };
 }
 
@@ -202,14 +195,9 @@ function derivePower(dial, local) {
 // The one modal card to show, if any: the shut-down card first (the person
 // has just asked for it), then the Auto-Start question (asked for too),
 // then the PIN recovery confirmation, a speaker's PIN, a speaker that could
-// not start, the not-allowed notice, an appliance warning opened from its
-// badge, then the status the dial says is due, then the first open warning.
+// not start, the not-allowed notice, then the status the dial is in, then the
+// card of a bell the person has opened.
 function deriveModal(dial, p, focus, local) {
-    const cardsById = new Map(dial.warnings.cards.map((c) => [c.id, c]));
-    const owners = new Map();
-    dial.appliances.forEach((a) => a.warnings.forEach((w) => owners.set(w.key, a.id)));
-    const status = cardsById.get(dial.warnings.due);
-
     const power = derivePower(dial, local);
     if (power) {
         return Object.assign({ key: "power", source: "", severity: "warning", progress: null, kind: "notice" }, POWER_CARDS[power]);
@@ -234,18 +222,9 @@ function deriveModal(dial, p, focus, local) {
             kind: "notice", buttons: [{ id: "ok", label: "OK", act: "close" }]
         };
     }
-    // A warning is shown when it belongs to the dial or to the focused
-    // appliance and this incident of it has not been closed; a card opened
-    // from a badge is the same card, and then it is as much owed an answer.
-    const owed = (c) => (!owners.has(c.id) || owners.get(c.id) === (focus && focus.id)) && local.closed[c.id] !== c.since;
-    const auto = status || dial.warnings.cards.find((c) => c.kind === "warning" && owed(c));
-    const viewed = cardsById.get(local.viewing);
-    if (viewed) {
-        const card = cardFrom(viewed, owners.get(viewed.id));
-        card.closable = !(auto && auto.id === viewed.id);
-        return card;
-    }
-    return auto ? cardFrom(auto, owners.get(auto.id)) : null;
+    // No warning opens by itself: only the status the dial says it is in, and
+    // a bell the person has tapped.
+    return dial.status ? statusCard(dial.status) : bellCard(dial, local.bell);
 }
 
 // The dial's own screen is a loopback page, a laptop is not.
@@ -254,7 +233,6 @@ export function isLoopbackHost(host) {
 }
 
 export function derive(dial, focused, local) {
-    const cardsById = new Map(dial.warnings.cards.map((c) => [c.id, c]));
     const focusId = dial.focus.appliance_id;
     const focus = dial.appliances.find((a) => a.id === focusId) || null;
     const p = focused ? focused.parts : null;
@@ -266,7 +244,7 @@ export function derive(dial, focused, local) {
         return {
             id: a.id, name: a.name, label: status.label, bad: status.bad,
             lit: !status.bad && (a.playing || a.replaying), badge: replayBadge(a),
-            current: a.id === shownFocus, warn: warnBadge(a, cardsById)
+            current: a.id === shownFocus, warn: bellBadge(a.warnings, a.id)
         };
     });
 
@@ -299,6 +277,7 @@ export function derive(dial, focused, local) {
         asleep: !!panel.asleep,
         appliances: appliances,
         focusId: shownFocus,
+        dialBell: bellBadge(dial.bell.entries),
         appliancesNote: dial.started && !appliances.length ? "No appliances found." : "",
         speakersLabel: focus ? "Speakers on " + focus.name : "Speakers",
         speakers: speakers,

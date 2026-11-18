@@ -121,6 +121,7 @@ def write_static(root: Path) -> Path:
     (root / "hd-requests.js").write_bytes(b"export const z = 1;")
     (root / "hd-actions.js").write_bytes(b"export const z = 1;")
     (root / "hd-paint.js").write_bytes(b"export const z = 1;")
+    (root / "hd-bell.js").write_bytes(b"export const z = 1;")
     (root / "theme.css").write_bytes(b":root{}")
     for name in ("login.html", "login.js"):
         (root / name).write_bytes((REPO_ROOT / "dial" / "hd" / name).read_bytes())

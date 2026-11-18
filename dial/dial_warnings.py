@@ -50,7 +50,6 @@ class WarningDescriptor:
 
     id: the key sources and the runtime state use.
     kind: KIND_WARNING or KIND_STATUS.
-    priority: higher wins when more than one status is due at once.
     title: the readout-size line. message_for(reading) -> the body-size
       line under it, or None for a single centred line. The reading is
       what the source reported when it set the warning active.
@@ -70,11 +69,12 @@ class WarningDescriptor:
       carries its appliance's name); "" for the dial's own.
     screen: the screen-policy row name of a status, which is also its touch
       surface; "" for a warning (a warning shows on the warnings page).
+    priority: higher wins when more than one status is due at once; a
+      warning has none (a bell orders by severity, then registry order).
     A descriptor with no buttons has a touch-inert page.
     """
     id: str
     kind: str
-    priority: int
     title: str
     message_for: "object | None"
     severity_for: "object"
@@ -85,6 +85,7 @@ class WarningDescriptor:
     auto_clear_after_s: "float | None" = None
     source_name: str = ""
     screen: str = ""
+    priority: int = 0
 
 
 @dataclass

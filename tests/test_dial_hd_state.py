@@ -352,93 +352,87 @@ class TestArtwork:
 
 
 class TestWarnings:
-    def test_a_dial_warning_is_one_card(self):
-        warnings = _state("warning_sdhealth")["warnings"]
-        assert warnings["due"] is None
-        assert warnings["cards"] == [{
-            "id": "sdhealth", "kind": "warning", "since": hs.WALL_NOW - 30, "severity": "warning",
-            "title": "microSD Health", "message": "6%: Replace Soon", "progress": None, "source": "",
-            "buttons": [{"label": "Close", "action": "close"}],
-            "interrupting": False}]
+    def test_a_dial_warning_is_one_bell_entry(self):
+        bell = _state("warning_sdhealth")["bell"]
+        assert bell == {"severity": "warning", "entries": [{
+            "key": "sdhealth", "source": "This dial", "severity": "warning",
+            "title": "microSD Health", "message": "6%: Replace Soon", "actions": []}]}
+        assert _state("warning_sdhealth")["status"] is None
 
     def test_the_sd_card_is_critical_below_three_percent(self):
         scenario = hs.SCENARIOS["warning_sdhealth"]
         snapshot = dataclasses.replace(scenario.snapshot, warnings=hs.warning_states({"sdhealth": 2}))
-        card = dataclasses.replace(scenario, snapshot=snapshot).state()["warnings"]["cards"][0]
-        assert card["severity"] == "critical"
+        bell = dataclasses.replace(scenario, snapshot=snapshot).state()["bell"]
+        assert bell["severity"] == "critical" and bell["entries"][0]["severity"] == "critical"
 
-    def test_the_update_card_has_progress_and_no_buttons(self):
-        state = _state("warning_update")["warnings"]
-        card = state["cards"][0]
-        assert state["due"] == "update" and card["kind"] == "status"
-        assert card["title"] == "Updating..." and card["progress"] == 40
-        assert card["buttons"] == [] and card["interrupting"] is True and card["severity"] == "info"
+    def test_the_update_status_has_progress_and_no_buttons(self):
+        state = _state("warning_update")
+        status = state["status"]
+        assert status["id"] == "update" and status["title"] == "Updating..." and status["progress"] == 40
+        assert status["buttons"] == [] and status["severity"] == "info"
+        assert state["bell"] == {"severity": None, "entries": []}
 
-    def test_the_update_result_names_the_version(self):
-        card = _state("warning_update_result")["warnings"]["cards"][0]
-        assert card["title"] == "Updated" and card["message"] == "Version 0.8.0"
-        assert card["buttons"] == [{"label": "Close", "action": "status_close"}]
+    def test_the_update_result_names_the_version_and_closes_through_the_core(self):
+        status = _state("warning_update_result")["status"]
+        assert status["title"] == "Updated" and status["message"] == "Version 0.8.0"
+        assert status["buttons"] == [{"label": "Close", "action": "status_close"}]
 
-    def test_no_wifi_offers_close_and_restart(self):
-        card = _state("warning_nowifi")["warnings"]["cards"][0]
-        assert [b["action"] for b in card["buttons"]] == ["close", "restart"]
+    def test_no_wifi_is_a_bell_entry_with_restart(self):
+        state = _state("warning_nowifi")
+        assert state["bell"]["entries"][0]["actions"] == ["restart"]
+        assert state["status"] is None
 
-    def test_an_appliance_warning_is_a_card_and_a_badge(self):
+    def test_an_appliance_warning_is_on_its_row_and_not_in_the_dial_bell(self):
         state = _state("appliance_warning")
         key = f"appliance:{hs.LOUNGE}:stylus_in1"
-        card = state["warnings"]["cards"][0]
-        assert card["id"] == key and card["source"] == "Lounge" and card["severity"] == "warning"
-        assert card["title"] == "Technics stylus" and card["message"] == "Needs changing soon."
         assert state["appliances"][0]["warnings"] == [{
-            "key": key, "id": "stylus_in1", "severity": "warning", "title": "Technics stylus",
-            "message": "Needs changing soon."}]
+            "key": key, "source": "Lounge", "severity": "warning", "title": "Technics stylus",
+            "message": "Needs changing soon.", "actions": []}]
+        assert state["bell"] == {"severity": None, "entries": []}
 
-    def test_an_info_warning_is_an_info_card(self):
-        card = _state("appliance_warning_info")["warnings"]["cards"][0]
-        assert card["buttons"] == [{"label": "Close", "action": "close"}]
-        assert card["severity"] == "info"
+    def test_an_info_warning_is_an_info_entry(self):
+        entry = _state("appliance_warning_info")["appliances"][0]["warnings"][0]
+        assert entry["severity"] == "info"
 
-    def test_an_appliance_on_an_older_protocol_lists_the_update_warning(self):
+    def test_an_appliance_on_an_older_protocol_lists_the_update_warning_on_its_row(self):
         state = _state("appliance_needs_update")
-        key = f"appliance:{hs.LOUNGE}:update_appliance"
         block = state["appliances"][0]
         assert block["update_needed"] is True
         assert block["warnings"] == [{
-            "key": key, "id": "update_appliance", "severity": "warning", "title": "Update Lounge",
-            "message": "Its software is older than this dial's. Update it from its web UI."}]
-        assert state["warnings"]["cards"][0]["id"] == key
+            "key": f"appliance:{hs.LOUNGE}:update_appliance", "source": "Lounge", "severity": "warning",
+            "title": "Update Lounge",
+            "message": "Its software is older than this dial's. Update it from its web UI.", "actions": []}]
 
-    def test_the_cards_come_highest_priority_first(self):
-        scenario = hs.SCENARIOS["appliance_warning"]
+    def test_the_bell_lists_the_worst_severity_first(self):
+        scenario = hs.SCENARIOS["nothing_playing"]
         snapshot = dataclasses.replace(
-            scenario.snapshot,
-            warnings=hs.warning_states(
-                {"sdhealth": 6, "nowifi": None, f"appliance:{hs.LOUNGE}:stylus_in1": "warning"},
-                extra=(f"appliance:{hs.LOUNGE}:stylus_in1",)))
-        cards = dataclasses.replace(scenario, snapshot=snapshot).state()["warnings"]["cards"]
-        assert [c["id"] for c in cards] == ["nowifi", "sdhealth", f"appliance:{hs.LOUNGE}:stylus_in1"]
+            scenario.snapshot, warnings=hs.warning_states({"sdhealth": 2, "nowifi": None}))
+        bell = dataclasses.replace(scenario, snapshot=snapshot).state()["bell"]
+        assert [e["key"] for e in bell["entries"]] == ["sdhealth", "nowifi"]
+        assert bell["severity"] == "critical"
 
-    def test_the_dial_update_warning_is_a_dial_card_naming_the_appliances(self):
+    def test_the_dial_update_warning_is_a_dial_entry_naming_the_appliances(self):
         scenario = hs.SCENARIOS["nothing_playing"]
         snapshot = dataclasses.replace(
             scenario.snapshot, warnings=hs.warning_states({"update_dial": ("Lounge", "Kitchen")}))
-        card = dataclasses.replace(scenario, snapshot=snapshot).state()["warnings"]["cards"][0]
-        assert (card["id"], card["kind"], card["source"]) == ("update_dial", "warning", "")
-        assert card["title"] == "Update this dial" and card["message"] == "Lounge, Kitchen need a newer dial"
+        (entry,) = dataclasses.replace(scenario, snapshot=snapshot).state()["bell"]["entries"]
+        assert (entry["key"], entry["source"]) == ("update_dial", "This dial")
+        assert entry["title"] == "Update this dial" and entry["message"] == "Lounge, Kitchen need a newer dial"
 
-    def test_an_inactive_or_unknown_warning_makes_no_card(self):
+    def test_an_inactive_or_unknown_warning_makes_no_entry(self):
         scenario = hs.SCENARIOS["warning_sdhealth"]
         state = dataclasses.replace(scenario, descriptors=()).state()
-        assert state["warnings"]["cards"] == []
-        assert _state("nothing_playing")["warnings"] == {"due": None, "cards": []}
+        assert state["bell"] == {"severity": None, "entries": []}
+        assert _state("nothing_playing")["bell"] == {"severity": None, "entries": []}
+        assert _state("nothing_playing")["status"] is None
 
-    def test_a_card_text_function_that_raises_gives_the_plain_title(self):
-        scenario = hs.SCENARIOS["warning_sdhealth"]
+    def test_a_status_text_function_that_raises_gives_the_plain_title(self):
+        scenario = hs.SCENARIOS["warning_update"]
+        (update,) = [d for d in scenario.descriptors if d.id == "update"]
         boom = dataclasses.replace(
-            scenario.descriptors[1], title_for=lambda _s: 1 / 0, message_for=lambda _s: 1 / 0)
-        state = dataclasses.replace(scenario, descriptors=(boom,)).state()
-        card = state["warnings"]["cards"][0]
-        assert card["title"] == "microSD Health" and card["message"] == ""
+            update, title_for=lambda _s: 1 / 0, message_for=lambda _s: 1 / 0, progress_for=lambda _s: 1 / 0)
+        status = dataclasses.replace(scenario, descriptors=(boom,)).state()["status"]
+        assert status["title"] == "Updating..." and status["message"] == "" and status["progress"] is None
 
     def test_descriptors_may_be_a_mapping(self):
         scenario = hs.SCENARIOS["warning_sdhealth"]

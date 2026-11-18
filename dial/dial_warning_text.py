@@ -154,7 +154,7 @@ def _update_dial_message_for(names) -> str:
 
 WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     WarningDescriptor(
-        id=NOWIFI_WARNING_ID, kind=KIND_WARNING, priority=100,
+        id=NOWIFI_WARNING_ID, kind=KIND_WARNING,
         title=NOWIFI_MESSAGE_TEXT, message_for=None, severity_for=_warning_severity,
         buttons=(
             WarningButton(CLOSE_TEXT, ACTION_CLOSE),
@@ -162,7 +162,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
         ),
     ),
     WarningDescriptor(
-        id="sdhealth", kind=KIND_WARNING, priority=50,
+        id="sdhealth", kind=KIND_WARNING,
         title=SDHEALTH_TITLE_TEXT, message_for=_sdhealth_message_for,
         severity_for=_sdhealth_severity_for,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
@@ -171,7 +171,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     # for all of them, its reading the names of the appliances that are
     # ahead of it.
     WarningDescriptor(
-        id=DIAL_WARNING_ID, kind=KIND_WARNING, priority=40, title=UPDATE_DIAL_TITLE_TEXT,
+        id=DIAL_WARNING_ID, kind=KIND_WARNING, title=UPDATE_DIAL_TITLE_TEXT,
         message_for=_update_dial_message_for, severity_for=_warning_severity,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
     ),
@@ -203,20 +203,12 @@ _WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIP
 # Appliance-supplied warnings
 #
 # The dial, never the appliance, decides how an appliance warning behaves:
-# it ranks below every warning of the dial's own (the band below), never
-# interrupts and never wakes the panel; the appliance chooses only the text,
-# a severity within the band, all from the validator's closed sets. A card
+# it never interrupts and never wakes the panel; the appliance chooses only
+# the text and a severity, all from the validator's closed sets. A card
 # is put away in the view that shows it; the cause is acknowledged on the
 # appliance.
 # ---------------------------------------------------------------------------
 
-# The priority band for appliance warnings, all below the lowest of the
-# dial's own (update_dial, 40). A more severe warning ranks higher inside it.
-APPLIANCE_WARNING_PRIORITY = {
-    SEVERITY_INFO: 10,
-    SEVERITY_WARNING: 11,
-    SEVERITY_CRITICAL: 12,
-}
 
 # Who the page is attributed to when the roster has no name for the appliance.
 APPLIANCE_WARNING_SOURCE_FALLBACK = "Appliance"
@@ -234,7 +226,6 @@ def appliance_warning_descriptor(appliance_id: str, warning: ApplianceWarning) -
     message = warning.message
     return WarningDescriptor(
         id=appliance_warning_key(appliance_id, warning.id), kind=KIND_WARNING,
-        priority=APPLIANCE_WARNING_PRIORITY.get(warning.severity, APPLIANCE_WARNING_PRIORITY[SEVERITY_INFO]),
         title=warning.title, message_for=lambda _reading: message,
         severity_for=lambda _reading: warning.severity,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),

@@ -20,15 +20,16 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, awaiting_pin, pin_window_end
-from dial_warning_text import appliance_warning_key
-from dial_warnings import ACTION_CLOSE, KIND_STATUS
+from dial_warning_bell import appliance_bell, descriptor_map, dial_bell
+from dial_warnings import ACTION_CLOSE
 
 # What the page posts to end a status card (a warning card is put away in the
 # page and posts nothing).
 STATUS_CLOSE_ACTION = "status_close"
 
-# The version of the `dial` part, bumped only for a change the page could not read.
-DIAL_PART_VERSION = 2
+# The version of the `dial` part, bumped for a change in its shape. The page does
+# not check it: it is there for whoever reads the stream.
+DIAL_PART_VERSION = 3
 
 # The appliance's own parts the `focused` part passes through; the page reads
 # nothing else of the appliance's state.
@@ -72,14 +73,6 @@ def _round(value: Any, places: int = 1) -> float:
         return round(float(value), places)
     except (TypeError, ValueError, OverflowError):
         return 0.0
-
-
-def _descriptor_map(descriptors: "Mapping | Iterable | None") -> dict:
-    if descriptors is None:
-        return {}
-    if isinstance(descriptors, Mapping):
-        return dict(descriptors)
-    return {d.id: d for d in descriptors}
 
 
 def _call(fn, argument):
@@ -135,17 +128,17 @@ def _repeat_block(record) -> dict | None:
     }
 
 
-def _appliance_warnings(appliance) -> list:
-    return [
-        {
-            "key": appliance_warning_key(appliance.appliance_id, warning.id),
-            "id": warning.id,
-            "severity": warning.severity,
-            "title": warning.title,
-            "message": warning.message,
-        }
-        for warning in appliance.warnings
-    ]
+def _entry_block(entry) -> dict:
+    return {
+        "key": entry.key, "source": entry.source, "severity": entry.severity,
+        "title": entry.title, "message": entry.message, "actions": list(entry.actions),
+    }
+
+
+def _bell_block(bell) -> dict:
+    """A bell as the page lists it: its worst severity (None when empty) and
+    its entries in order."""
+    return {"severity": bell.severity, "entries": [_entry_block(e) for e in bell.entries]}
 
 
 def _appliance_block(a) -> dict:
@@ -160,7 +153,7 @@ def _appliance_block(a) -> dict:
         # say the rest.
         "reachable": a.status_error is None or a.status_error in ("unauthorized", "protocol"),
         "repeat": _repeat_block(a.repeat),
-        "warnings": _appliance_warnings(a),
+        "warnings": [_entry_block(e) for e in appliance_bell(a).entries],
         "webui": f"{a.webui_scheme}://{a.webui_host}:{a.webui_port}/" if a.webui_host else "",
         "update_needed": a.status_error == "protocol",
     }
@@ -213,37 +206,26 @@ def _card_progress(value) -> int | None:
     return None if value is None else max(0, min(100, value))
 
 
-def _warnings_block(snapshot, descriptors: dict) -> dict:
-    """The active cards, the highest priority first. `due` is the status the
-    page shows by itself; a status card closes by asking the core, a warning
-    card in the page."""
-    ranked = []
-    for state in snapshot.warnings:
-        if not state.active:
-            continue
-        descriptor = descriptors.get(state.id)
-        if descriptor is None:
-            continue
-        status = descriptor.kind == KIND_STATUS
-        title = _call(descriptor.title_for, state.reading) or descriptor.title
-        message = _call(descriptor.message_for, state.reading)
-        ranked.append((descriptor.priority, {
-            "id": state.id,
-            "kind": descriptor.kind,
-            "since": state.active_since,
-            "severity": descriptor.severity_for(state.reading),
-            "title": title,
-            "message": message if isinstance(message, str) else "",
-            "progress": _card_progress(_call(descriptor.progress_for, state.reading)),
-            "source": descriptor.source_name,
-            "buttons": [
-                {"label": b.label, "action": STATUS_CLOSE_ACTION if status and b.action == ACTION_CLOSE else b.action}
-                for b in descriptor.buttons
-            ],
-            "interrupting": bool(descriptor.interrupting),
-        }))
-    ranked.sort(key=lambda r: -r[0])
-    return {"due": snapshot.due_status_id, "cards": [card for _, card in ranked]}
+def _status_block(snapshot, descriptors: dict) -> dict | None:
+    """The status the page shows by itself (an update running or finished),
+    or None. It closes by asking the core; a warning is put away in the page
+    and has no card here."""
+    state = next((s for s in snapshot.warnings if s.active and s.id == snapshot.due_status_id), None)
+    descriptor = descriptors.get(state.id) if state is not None else None
+    if descriptor is None:
+        return None
+    message = _call(descriptor.message_for, state.reading)
+    return {
+        "id": state.id,
+        "severity": descriptor.severity_for(state.reading),
+        "title": _call(descriptor.title_for, state.reading) or descriptor.title,
+        "message": message if isinstance(message, str) else "",
+        "progress": _card_progress(_call(descriptor.progress_for, state.reading)),
+        "buttons": [
+            {"label": b.label, "action": STATUS_CLOSE_ACTION if b.action == ACTION_CLOSE else b.action}
+            for b in descriptor.buttons
+        ],
+    }
 
 
 def _network_block(view) -> dict | None:
@@ -343,7 +325,7 @@ def _dial_part(
     dial's screen settings, which fill in what the panel does not say.
     *recovery* is (active, confirmed) or a mapping with those keys. *now* is
     the monotonic time (the request deadlines are readings on it)."""
-    descriptors = _descriptor_map(descriptors)
+    descriptors = descriptor_map(descriptors)
     appliances = [
         _appliance_block(a)
         for a in snapshot.appliances
@@ -362,7 +344,8 @@ def _dial_part(
         "transport": _request_block(snapshot.transport, now),
         "outputs_request": _request_block(snapshot.outputs_request, now),
         "start_failure": _start_failure_block(snapshot),
-        "warnings": _warnings_block(snapshot, descriptors),
+        "bell": _bell_block(dial_bell(snapshot, descriptors)),
+        "status": _status_block(snapshot, descriptors),
         "network": _network_block(snapshot.network),
         "sd_health": _sd_health_block(snapshot.sd_health),
         "update": _update_block(snapshot.update),

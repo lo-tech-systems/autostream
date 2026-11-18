@@ -16,10 +16,10 @@ import {
 import { make, setText, makeIcon, BELL_ICON, setLevel, syncList, els } from "./hd-dom.js";
 import { ui, dragging } from "./hd-state.js";
 import { graph, scheduleGraph } from "./hd-eq.js";
+import { openBell, paintDialBell } from "./hd-bell.js";
 import { trackDrag } from "./hd-requests.js";
 import {
     onAppliance,
-    onWarnBadge,
     onOutputToggle,
     onOutputLevel,
     onPress,
@@ -46,7 +46,7 @@ function createApplianceRow() {
     node.addEventListener("click", () => onAppliance(node.dataset.key));
     parts.warn.addEventListener("click", (event) => {
         event.stopPropagation();
-        onWarnBadge(parts.warn.dataset.key);
+        openBell(parts.warn.dataset.owner);
     });
     node._update = (item) => {
         node.classList.toggle("lit", item.lit);
@@ -57,7 +57,7 @@ function createApplianceRow() {
         setText(parts.state, item.label);
         parts.warn.hidden = !item.warn;
         if (item.warn) {
-            parts.warn.dataset.key = item.warn.key;
+            parts.warn.dataset.owner = item.warn.owner;
             parts.warn.className = "warn-badge sev-" + item.warn.severity;
             parts.warn.setAttribute("aria-label", item.warn.count + " warning" + (item.warn.count > 1 ? "s" : ""));
             setText(parts.warn.lastChild, String(item.warn.count));
@@ -427,6 +427,7 @@ export function paint(vm) {
     els.sleep.classList.toggle("on", vm.asleep);
     syncList(els.appliances, vm.appliances, createApplianceRow);
     paintNote(els.appliancesNote, vm.appliancesNote);
+    paintDialBell(vm.dialBell);
     setText(els.speakersLabel, vm.speakersLabel);
     els.autostart.hidden = !vm.autoStart.shown;
     els.autostart.classList.toggle("is-set", vm.autoStart.set);

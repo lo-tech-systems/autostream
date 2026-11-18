@@ -44,12 +44,12 @@ class TestDialPart:
         for key in ("seq", "now", "core_seq", "now_playing", "volume", "outputs", "outputs_available",
                     "eq", "eq_available"):
             assert key not in part
-        assert part["v"] == 2
+        assert part["v"] == 3
 
     def test_it_keeps_what_the_page_draws_from_the_dial(self):
         part = parts_of(hs.SCENARIOS["playing_artwork"])["dial"]
         for key in ("started", "polling", "dial", "focus", "appliances", "artwork", "transport",
-                    "outputs_request", "start_failure", "warnings", "network", "sd_health", "update",
+                    "outputs_request", "start_failure", "bell", "status", "network", "sd_health", "update",
                     "panel", "recovery", "power"):
             assert key in part
         assert part["artwork"]["url"].startswith("/api/v1/artwork/")

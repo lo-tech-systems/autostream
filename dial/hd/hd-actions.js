@@ -6,6 +6,7 @@ import { CONFIG, INFO_URL, REPLAY_BUTTONS } from "./hd-tables.js";
 import { els } from "./hd-dom.js";
 import { ui, PIN_IDLE, pending, press, hold, clockPosition, reportedPosition, hooks } from "./hd-state.js";
 import { post, submit, sendDrag, get, followPointer, forgetLane, trackDrag } from "./hd-requests.js";
+import { nextEntry } from "./hd-bell.js";
 
 // ---- Actions from the page ------------------------------------------
 
@@ -27,11 +28,6 @@ export function onAppliance(id) {
     hold("focus", id);
     hooks.render();
     post("focus", { appliance_id: id }, ["focus"]);
-}
-
-export function onWarnBadge(key) {
-    ui.viewing = key;
-    hooks.render();
 }
 
 export function onOutputToggle(id, selected) {
@@ -60,7 +56,6 @@ function onMute() {
     hooks.render();
     post("mute_toggle", { appliance_id: focusId() }, ["mute"]);
 }
-
 export function onArm(armed) {
     holdForReply("arm", armed);
     hooks.render();
@@ -143,10 +138,10 @@ function loadInfo() {
 // What each button on a modal card does.
 export const CARD_ACTIONS = {
     status_close: (card) => {
-        ui.viewing = null;
         post("status_close", { status_id: card.key });
         hooks.render();
     },
+    next: nextEntry,
     restart: () => post("dial_restart", {}),
     shutdown: () => {
         ui.power = Object.assign({}, ui.power, { asked: false, sent: true });
@@ -168,10 +163,9 @@ export const CARD_ACTIONS = {
         submit("outputs.save_default", {});
         hooks.render();
     },
-    close: (card) => {
-        if (card && card.warning) { ui.closed[card.key] = card.since; }
+    close: () => {
         ui.notice = null;
-        ui.viewing = null;
+        ui.bell = null;
         ui.autoStartAsked = false;
         ui.power = Object.assign({}, ui.power, { asked: false });
         hooks.render();

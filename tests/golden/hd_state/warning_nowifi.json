@@ -1,5 +1,5 @@
 {
-  "v": 2,
+  "v": 3,
   "started": true,
   "polling": true,
   "dial": {
@@ -38,32 +38,22 @@
   "transport": null,
   "outputs_request": null,
   "start_failure": null,
-  "warnings": {
-    "due": null,
-    "cards": [
+  "bell": {
+    "severity": "warning",
+    "entries": [
       {
-        "id": "nowifi",
-        "kind": "warning",
-        "since": 1699999970.0,
+        "key": "nowifi",
+        "source": "This dial",
         "severity": "warning",
         "title": "No WiFi",
         "message": "",
-        "progress": null,
-        "source": "",
-        "buttons": [
-          {
-            "label": "Close",
-            "action": "close"
-          },
-          {
-            "label": "Restart",
-            "action": "restart"
-          }
-        ],
-        "interrupting": false
+        "actions": [
+          "restart"
+        ]
       }
     ]
   },
+  "status": null,
   "network": {
     "link": "down",
     "ssid": "",

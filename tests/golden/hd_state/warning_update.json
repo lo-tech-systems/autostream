@@ -1,5 +1,5 @@
 {
-  "v": 2,
+  "v": 3,
   "started": true,
   "polling": true,
   "dial": {
@@ -38,22 +38,17 @@
   "transport": null,
   "outputs_request": null,
   "start_failure": null,
-  "warnings": {
-    "due": "update",
-    "cards": [
-      {
-        "id": "update",
-        "kind": "status",
-        "since": 1699999970.0,
-        "severity": "info",
-        "title": "Updating...",
-        "message": "Installing",
-        "progress": 40,
-        "source": "",
-        "buttons": [],
-        "interrupting": true
-      }
-    ]
+  "bell": {
+    "severity": null,
+    "entries": []
+  },
+  "status": {
+    "id": "update",
+    "severity": "info",
+    "title": "Updating...",
+    "message": "Installing",
+    "progress": 40,
+    "buttons": []
   },
   "network": {
     "link": "connected",

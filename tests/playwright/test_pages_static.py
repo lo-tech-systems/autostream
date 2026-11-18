@@ -576,7 +576,11 @@ HD_CEILINGS = {
     "hd-derive.js": 300,
     "hd-requests.js": 130,
     "hd-actions.js": 315,
-    "hd-paint.js": 425,
+    # The dial bell button's paint call and its import.
+    "hd-paint.js": 426,
+    # The warning bells: the dial bell's button, each row bell's count and the
+    # card that pages through a bell's warnings; one feature, so one module.
+    "hd-bell.js": 70,
 }
 
 

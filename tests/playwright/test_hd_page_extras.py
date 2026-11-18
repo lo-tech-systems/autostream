@@ -997,10 +997,10 @@ class TestPullDown:
         open_sheet(page)
         expect(page.locator("#info .info-row")).to_have_count(7)
         first = page.locator("#info .info-row").first
-        expect(first.locator("dt")).to_have_text("Dial name")
-        expect(first.locator("dd")).to_have_text("Lounge dial")
+        expect(first.locator("dt")).to_have_text("WiFi")
+        expect(first.locator("dd")).to_have_text("HomeNet")
         assert page.locator("#info .info-row dt").all_text_contents() == [
-            "Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free", "SD health"]
+            "WiFi", "Signal", "IPv4", "Dial name", "Firmware", "Disk free", "SD health"]
 
     def test_details_that_cannot_be_fetched_say_so(self, page, hd):
         page.route("**/api/v1/info", lambda route: route.fulfill(status=500, body="{}"))
@@ -1414,14 +1414,84 @@ def lounge_warning_while_on_kitchen():
     return base.with_snapshot(**changes)
 
 
-class TestDialWarnings:
+def two_dial_warnings(base=None):
+    """No Wi-Fi and a failing SD card at once: two entries in the dial bell."""
+    base = base or hs.SCENARIOS["nothing_playing"]
+    return base.with_snapshot(warnings=hs.warning_states({"nowifi": None, "sdhealth": 6}))
+
+
+def with_update_result(base):
+    """*base* with the finished-update status the dial puts up by itself."""
+    done = hs.SCENARIOS["warning_update_result"].snapshot
+    return base.with_snapshot(warnings=done.warnings, due_status_id="update_result", update=done.update)
+
+
+def dial_bell(page):
+    return page.locator("#dial-bell")
+
+
+def card_buttons(page):
+    return page.locator("#card-buttons button").all_text_contents()
+
+
+def lounge_with_two_warnings():
+    base = hs.SCENARIOS["appliance_warning"]
+    first = base.snapshot.appliances[0].warnings[0]
+    second = dataclasses.replace(first, id="stylus_in2", title="Second stylus", message="Also worn.")
+    appliance = dataclasses.replace(base.snapshot.appliances[0], warnings=(first, second))
+    return base.with_snapshot(appliances=(appliance,))
+
+
+@pytest.mark.engines
+class TestDialBell:
+    def test_it_is_an_outline_with_no_warnings(self, page, hd):
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        open_page(page, hd)
+        expect(dial_bell(page)).to_be_visible()
+        expect(dial_bell(page)).not_to_have_class(re.compile("filled"))
+        expect(dial_bell(page).locator(".warn-count")).to_have_text("")
+        assert page.evaluate("getComputedStyle(document.querySelector('#dial-bell svg path')).fill") == "none"
+
+    def test_it_is_filled_with_the_count_and_the_worst_colour(self, page, hd):
+        hd.show(hs.SCENARIOS["warning_nowifi"])
+        open_page(page, hd)
+        expect(dial_bell(page)).to_have_class(re.compile(r"filled sev-warning"))
+        expect(dial_bell(page).locator(".warn-count")).to_have_text("1")
+        assert page.evaluate("getComputedStyle(document.getElementById('dial-bell')).color") == "rgb(233, 113, 50)"
+        hd.show(hs.SCENARIOS["nothing_playing"].with_snapshot(
+            warnings=hs.warning_states({"nowifi": None, "sdhealth": 2})))
+        expect(dial_bell(page)).to_have_class(re.compile("sev-critical"))
+        expect(dial_bell(page).locator(".warn-count")).to_have_text("2")
+        assert page.evaluate("getComputedStyle(document.getElementById('dial-bell')).color") \
+            == token_colour(page, "--color-status-danger")
+
+    @pytest.mark.parametrize("name", ["warning_nowifi", "warning_sdhealth", "appliance_warning", "appliance_needs_update"])
+    def test_no_warning_opens_by_itself(self, page, hd, name):
+        hd.show(hs.SCENARIOS[name])
+        open_page(page, hd)
+        page.wait_for_timeout(300)
+        expect(modal_card(page)).to_be_hidden()
+
+    def test_an_empty_bell_opens_the_healthy_card(self, page, hd):
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        sent = watch_actions(page)
+        open_page(page, hd)
+        dial_bell(page).click()
+        expect(page.locator("#card-title")).to_have_text("Dial is healthy")
+        expect(page.locator("#card-source")).to_have_text("Lounge dial · version 0.8.0")
+        assert card_buttons(page) == ["Close"]
+        page.locator("#card-buttons button").click()
+        expect(modal_card(page)).to_be_hidden()
+        assert sent == []
+
     def test_no_wifi_has_close_and_restart(self, page, hd):
         hd.show(hs.SCENARIOS["warning_nowifi"])
         sent = watch_actions(page)
         open_page(page, hd)
-        expect(modal_card(page)).to_be_visible()
+        dial_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Close", "Restart"]
+        expect(page.locator("#card-source")).to_have_text("This dial")
+        assert card_buttons(page) == ["Restart", "Close"]
         expect(page.locator("#card-progress")).to_be_hidden()
         page.locator("#card-buttons button", has_text="Restart").click()
         page.wait_for_timeout(150)
@@ -1430,49 +1500,91 @@ class TestDialWarnings:
         page.wait_for_timeout(150)
         assert sent == [("dial_restart", {})]               # closing a warning asks nothing of the dial
         expect(modal_card(page)).to_be_hidden()
+        expect(dial_bell(page).locator(".warn-count")).to_have_text("1")    # and it is still counted
 
-    def test_a_card_with_buttons_is_not_closed_by_the_dimmed_area(self, page, hd):
+    def test_the_dimmed_area_closes_a_warning_card_with_buttons(self, page, hd):
         hd.show(hs.SCENARIOS["warning_nowifi"])
         sent = watch_actions(page)
         open_page(page, hd)
-        page.mouse.click(20, 460)
-        page.wait_for_timeout(200)
+        dial_bell(page).click()
         expect(modal_card(page)).to_be_visible()
+        page.mouse.click(20, 460)
+        expect(modal_card(page)).to_be_hidden()
         assert sent == []
 
     def test_sd_health(self, page, hd):
         hd.show(hs.SCENARIOS["warning_sdhealth"])
         sent = watch_actions(page)
         open_page(page, hd)
+        dial_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("microSD Health")
         expect(page.locator("#card-message")).to_have_text("6%: Replace Soon")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Close"]
+        assert card_buttons(page) == ["Close"]
         page.locator("#card-buttons button").click()
         page.wait_for_timeout(150)
         assert sent == []
         expect(modal_card(page)).to_be_hidden()
 
-    def test_a_closed_warning_stays_closed_until_its_incident_ends(self, page, hd):
+    def test_next_pages_through_the_entries_and_wraps(self, page, hd):
+        hd.show(two_dial_warnings())
+        open_page(page, hd)
+        dial_bell(page).click()
+        expect(page.locator("#card-title")).to_have_text("No WiFi")
+        expect(page.locator("#card-source")).to_have_text("This dial · 1 of 2")
+        assert card_buttons(page) == ["Next", "Restart", "Close"]
+        page.locator("#card-buttons button", has_text="Next").click()
+        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        expect(page.locator("#card-source")).to_have_text("This dial · 2 of 2")
+        assert card_buttons(page) == ["Next", "Close"]
+        page.locator("#card-buttons button", has_text="Next").click()
+        expect(page.locator("#card-title")).to_have_text("No WiFi")
+
+    def test_a_card_the_state_empties_becomes_the_healthy_card(self, page, hd):
         hd.show(hs.SCENARIOS["warning_sdhealth"])
         open_page(page, hd)
-        page.locator("#card-buttons button").click()
-        expect(modal_card(page)).to_be_hidden()
-        hd.show(hs.SCENARIOS["warning_sdhealth"].with_snapshot(
-            warnings=hs.warning_states({"sdhealth": 5})))
-        page.wait_for_timeout(200)
-        expect(modal_card(page)).to_be_hidden()
-        base = hs.SCENARIOS["warning_sdhealth"]
-        later = tuple(dataclasses.replace(w, active_since=w.active_since + 60) if w.active else w
-                      for w in base.snapshot.warnings)
-        hd.show(base.with_snapshot(warnings=later))
-        expect(modal_card(page)).to_be_visible()
+        dial_bell(page).click()
+        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        expect(page.locator("#card-title")).to_have_text("Dial is healthy")
 
-    def test_a_dial_warning_does_not_hide_the_status_card(self, page, hd):
-        hd.show(hs.SCENARIOS["warning_update"].with_snapshot(
-            warnings=hs.warning_states({"sdhealth": 6, "update": hs.SCENARIOS["warning_update"].snapshot.update})))
+    def test_the_dial_update_warning_is_in_the_dial_bell(self, page, hd):
+        hd.show(hs.SCENARIOS["nothing_playing"].with_snapshot(
+            warnings=hs.warning_states({"update_dial": ("Lounge", "Kitchen")})))
         open_page(page, hd)
-        expect(page.locator("#card-title")).to_have_text("Updating...")
+        dial_bell(page).click()
+        expect(page.locator("#card-title")).to_have_text("Update this dial")
+        expect(page.locator("#card-message")).to_have_text("Lounge, Kitchen need a newer dial")
 
+    def test_a_tap_outside_the_card_only_closes_it(self, page, hd):
+        hd.show(hs.SCENARIOS["warning_sdhealth"])
+        sent = watch_actions(page)
+        open_page(page, hd)
+        dial_bell(page).click()
+        tap(page, "#mute")
+        expect(modal_card(page)).to_be_hidden()
+        page.wait_for_timeout(200)
+        assert sent == []
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    @pytest.mark.parametrize("name", ["warning_nowifi", "two_warnings", "healthy"])
+    def test_the_card_fits_the_screen(self, page, hd, name, size):
+        hd.show({"two_warnings": two_dial_warnings(), "healthy": hs.SCENARIOS["nothing_playing"]}.get(
+            name) or hs.SCENARIOS[name])
+        open_page(page, hd, size)
+        dial_bell(page).click()
+        assert_card_fits(page, size)
+
+
+def assert_card_fits(page, size):
+    expect(modal_card(page)).to_be_visible()
+    box = page.locator("#card").bounding_box()
+    assert box["x"] >= 0 and box["y"] >= 0
+    assert box["x"] + box["width"] <= size[0] and box["y"] + box["height"] <= size[1]
+    for button in page.locator("#card-buttons button").all():
+        assert button.bounding_box()["height"] >= 44
+
+
+class TestStatusCards:
     def test_the_update_progress_card_cannot_be_dismissed(self, page, hd):
         hd.show(hs.SCENARIOS["warning_update"])
         sent = watch_actions(page)
@@ -1487,6 +1599,30 @@ class TestDialWarnings:
         page.wait_for_timeout(200)
         expect(modal_card(page)).to_be_visible()
         assert sent == []
+
+    def test_the_status_card_covers_the_controls(self, page, hd):
+        hd.show(hs.SCENARIOS["warning_update"])
+        sent = watch_actions(page)
+        open_page(page, hd)
+        tap(page, "#mute")
+        tap(page, "#appliances .appliance")
+        page.wait_for_timeout(200)
+        assert sent == []
+        expect(modal_card(page)).to_be_visible()
+
+    def test_a_dial_warning_does_not_hide_the_status_card(self, page, hd):
+        hd.show(hs.SCENARIOS["warning_update"].with_snapshot(
+            warnings=hs.warning_states({"sdhealth": 6, "update": hs.SCENARIOS["warning_update"].snapshot.update})))
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("Updating...")
+
+    def test_a_status_shows_over_a_bell_card(self, page, hd):
+        hd.show(hs.SCENARIOS["warning_sdhealth"])
+        open_page(page, hd)
+        dial_bell(page).click()
+        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        hd.show(with_update_result(hs.SCENARIOS["warning_sdhealth"]))
+        expect(page.locator("#card-title")).to_have_text("Updated")
 
     def test_progress_moves_with_the_state(self, page, hd):
         hd.show(hs.SCENARIOS["warning_update"])
@@ -1510,61 +1646,42 @@ class TestDialWarnings:
         assert sent == [("status_close", {"status_id": "update_result"})]
 
     def test_the_card_goes_when_the_state_says_so(self, page, hd):
-        hd.show(hs.SCENARIOS["warning_sdhealth"])
+        hd.show(hs.SCENARIOS["warning_update_result"])
         open_page(page, hd)
         expect(modal_card(page)).to_be_visible()
         hd.show(hs.SCENARIOS["nothing_playing"])
         expect(modal_card(page)).to_be_hidden()
 
-    def test_the_card_covers_the_controls(self, page, hd):
-        hd.show(hs.SCENARIOS["warning_sdhealth"])
-        sent = watch_actions(page)
-        open_page(page, hd)
-        tap(page, "#mute")
-        tap(page, "#appliances .appliance")
-        page.wait_for_timeout(200)
-        assert sent == []
-
-    def test_markup_in_a_warning_stays_text(self, page, hd):
-        evil = "<img src=x onerror=alert(1)>"
-        base = hs.SCENARIOS["appliance_warning"]
-        warning = dataclasses.replace(base.snapshot.appliances[0].warnings[0], title=evil, message=evil)
-        appliance = dataclasses.replace(base.snapshot.appliances[0], warnings=(warning,))
-        hd.show(dataclasses.replace(
-            base, snapshot=dataclasses.replace(base.snapshot, appliances=(appliance,)),
-            descriptors=hs.WARNING_DESCRIPTORS + (hs.appliance_warning_descriptor(LOUNGE, warning),)))
-        open_page(page, hd)
-        expect(page.locator("#card-title")).to_have_text(evil)
-        assert page.locator("#modal img").count() == 0
-
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-    @pytest.mark.parametrize("name", ["warning_nowifi", "warning_update", "appliance_warning", "recovery_pending"])
+    @pytest.mark.parametrize("name", ["warning_update", "recovery_pending"])
     def test_the_card_fits_the_screen(self, page, hd, name, size):
         hd.show(hs.SCENARIOS[name])
         open_page(page, hd, size)
-        expect(modal_card(page)).to_be_visible()
-        box = page.locator("#card").bounding_box()
-        assert box["x"] >= 0 and box["y"] >= 0
-        assert box["x"] + box["width"] <= size[0] and box["y"] + box["height"] <= size[1]
-        for button in page.locator("#card-buttons button").all():
-            assert button.bounding_box()["height"] >= 44
+        assert_card_fits(page, size)
+
+
+def row_bell(page, name="Lounge"):
+    return rows(page).filter(has_text=name).locator(".warn-badge")
 
 
 @pytest.mark.engines
 class TestApplianceWarnings:
-    def test_the_focused_appliance_shows_its_card(self, page, hd):
+    def test_a_row_bell_opens_the_appliances_card(self, page, hd):
         hd.show(hs.SCENARIOS["appliance_warning"])
         sent = watch_actions(page)
         open_page(page, hd)
+        expect(modal_card(page)).to_be_hidden()             # the focused appliance's warning waits for a tap
+        row_bell(page).click()
         expect(modal_card(page)).to_be_visible()
         expect(page.locator("#card-title")).to_have_text("Technics stylus")
         expect(page.locator("#card-message")).to_have_text("Needs changing soon.")
         expect(page.locator("#card-source")).to_have_text("Lounge")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Close"]
+        assert card_buttons(page) == ["Close"]
         page.locator("#card-buttons button").click()
         page.wait_for_timeout(150)
-        assert sent == []
+        assert sent == []                                   # no focus change, no dismissal
         expect(modal_card(page)).to_be_hidden()
+        expect(row_bell(page)).to_have_text("1")
 
     def test_the_row_carries_a_badge_with_the_count(self, page, hd):
         hd.show(hs.SCENARIOS["appliance_warning"])
@@ -1578,9 +1695,7 @@ class TestApplianceWarnings:
         base = hs.SCENARIOS["appliance_warning"]
         warning = dataclasses.replace(base.snapshot.appliances[0].warnings[0], severity="critical")
         appliance = dataclasses.replace(base.snapshot.appliances[0], warnings=(warning,))
-        hd.show(dataclasses.replace(
-            base, snapshot=dataclasses.replace(base.snapshot, appliances=(appliance,)),
-            descriptors=hs.WARNING_DESCRIPTORS + (hs.appliance_warning_descriptor(LOUNGE, warning),)))
+        hd.show(base.with_snapshot(appliances=(appliance,)))
         open_page(page, hd)
         expect(rows(page).first.locator(".warn-badge")).to_have_class(re.compile("sev-critical"))
         assert bell_colour(page) == token_colour(page, "--color-status-danger")
@@ -1620,7 +1735,7 @@ class TestApplianceWarnings:
         assert 0 < text_width < bell["width"] * 0.7
         assert count["x"] >= bell["x"] and count["x"] + count["width"] <= bell["x"] + bell["width"]
 
-    def test_another_appliances_warning_is_a_badge_until_tapped(self, page, hd):
+    def test_another_appliances_warning_is_tapped_without_focusing_it(self, page, hd):
         hd.show(lounge_warning_while_on_kitchen())
         sent = watch_actions(page)
         open_page(page, hd)
@@ -1632,37 +1747,62 @@ class TestApplianceWarnings:
         expect(modal_card(page)).to_be_visible()
         expect(page.locator("#card-title")).to_have_text("Technics stylus")
         assert sent == []                                   # the badge does not focus the row
-        page.mouse.click(20, 460)                           # the dimmed area closes a card nobody is owed
+        page.mouse.click(20, 460)                           # the dimmed area closes the card
         expect(modal_card(page)).to_be_hidden()
         lounge.click()
         assert sent == [("focus", {"appliance_id": LOUNGE})]
 
-    def test_a_card_opened_from_its_badge_can_be_closed(self, page, hd):
-        hd.show(lounge_warning_while_on_kitchen())
-        sent = watch_actions(page)
+    def test_a_row_bell_pages_through_its_own_warnings(self, page, hd):
+        hd.show(lounge_with_two_warnings())
         open_page(page, hd)
-        rows(page).filter(has_text="Lounge").locator(".warn-badge").click()
-        page.locator("#card-buttons button", has_text="Close").click()
-        page.wait_for_timeout(150)
-        assert sent == []
-        expect(modal_card(page)).to_be_hidden()
+        expect(row_bell(page)).to_have_text("2")
+        row_bell(page).click()
+        expect(page.locator("#card-title")).to_have_text("Technics stylus")
+        expect(page.locator("#card-source")).to_have_text("Lounge · 1 of 2")
+        assert card_buttons(page) == ["Next", "Close"]
+        page.locator("#card-buttons button", has_text="Next").click()
+        expect(page.locator("#card-title")).to_have_text("Second stylus")
+        expect(page.locator("#card-source")).to_have_text("Lounge · 2 of 2")
+        page.locator("#card-buttons button", has_text="Next").click()
+        expect(page.locator("#card-title")).to_have_text("Technics stylus")
+        expect(dial_bell(page).locator(".warn-count")).to_have_text("")
 
     def test_an_appliance_on_an_older_protocol_has_a_badge_and_an_update_card(self, page, hd):
         hd.show(hs.SCENARIOS["appliance_needs_update"])
         open_page(page, hd)
+        expect(modal_card(page)).to_be_hidden()
         expect(rows(page).first.locator(".warn-badge")).to_have_text("1")
-        expect(modal_card(page)).to_be_visible()
+        rows(page).first.locator(".warn-badge").click()
         expect(page.locator("#card-title")).to_have_text("Update Lounge")
         expect(page.locator("#card-message")).to_have_text(
             "Its software is older than this dial's. Update it from its web UI.")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Close"]
+        assert card_buttons(page) == ["Close"]
 
-    def test_the_card_shows_when_the_warning_appliance_becomes_the_focus(self, page, hd):
-        hd.show(lounge_warning_while_on_kitchen())
-        open_page(page, hd)
-        expect(modal_card(page)).to_be_hidden()
+    def test_the_card_goes_with_its_warnings(self, page, hd):
         hd.show(hs.SCENARIOS["appliance_warning"])
+        open_page(page, hd)
+        row_bell(page).click()
         expect(modal_card(page)).to_be_visible()
+        hd.show(hs.SCENARIOS["nothing_playing"])
+        expect(modal_card(page)).to_be_hidden()
+
+    def test_markup_in_a_warning_stays_text(self, page, hd):
+        evil = "<img src=x onerror=alert(1)>"
+        base = hs.SCENARIOS["appliance_warning"]
+        warning = dataclasses.replace(base.snapshot.appliances[0].warnings[0], title=evil, message=evil)
+        appliance = dataclasses.replace(base.snapshot.appliances[0], warnings=(warning,))
+        hd.show(base.with_snapshot(appliances=(appliance,)))
+        open_page(page, hd)
+        row_bell(page).click()
+        expect(page.locator("#card-title")).to_have_text(evil)
+        assert page.locator("#modal img").count() == 0
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    def test_the_card_fits_the_screen(self, page, hd, size):
+        hd.show(lounge_with_two_warnings())
+        open_page(page, hd, size)
+        row_bell(page).click()
+        assert_card_fits(page, size)
 
 
 class TestNoticeAndPresence:
@@ -1719,12 +1859,12 @@ class TestNoticeAndPresence:
         hd.show(with_recovery(hs.SCENARIOS["recovery_pending"], True, True))
         expect(modal_card(page)).to_be_hidden()
 
-    def test_presence_outranks_a_warning_and_the_warning_follows(self, page, hd):
-        hd.show(with_recovery(hs.SCENARIOS["warning_sdhealth"]))
+    def test_presence_outranks_a_status_and_the_status_follows(self, page, hd):
+        hd.show(with_recovery(with_update_result(hs.SCENARIOS["nothing_playing"])))
         open_page(page, hd)
         expect(page.locator("#card-title")).to_have_text("Confirm you are at the dial")
-        hd.show(hs.SCENARIOS["warning_sdhealth"])
-        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        hd.show(with_update_result(hs.SCENARIOS["nothing_playing"]))
+        expect(page.locator("#card-title")).to_have_text("Updated")
 
     def test_presence_outranks_the_allow_card(self, page, hd):
         hd.show(hs.SCENARIOS["unauthorized"])
@@ -1822,7 +1962,7 @@ class TestSleepShield:
         assert only(sent, "panel_activity") == []
 
     def test_a_card_does_not_hide_the_shield(self, page, hd):
-        base = hs.SCENARIOS["warning_sdhealth"]
+        base = hs.SCENARIOS["warning_update_result"]
         hd.show(dataclasses.replace(base, panel={**base.panel, "asleep": True}))
         sent = watch_actions(page)
         open_page(page, hd)
@@ -2252,17 +2392,16 @@ class TestSpeakerPin:
             focus=FocusState(None, KITCHEN, None, KITCHEN, "Kitchen", None, False)))
         expect(modal_card(page)).to_be_hidden()
 
-    def test_the_presence_card_outranks_the_keypad_and_the_keypad_outranks_a_warning(self, page, hd):
+    def test_the_presence_card_outranks_the_keypad_and_the_keypad_outranks_a_status(self, page, hd):
         hd.show(with_recovery(hs.SCENARIOS["pin_required"]))
         open_page(page, hd)
         expect(page.locator("#card-title")).to_have_text("Confirm you are at the dial")
         expect(page.locator("#card-pin-pad")).to_be_hidden()
-        hd.show(hs.SCENARIOS["pin_required"].with_snapshot(
-            warnings=hs.warning_states({"sdhealth": 6})))
+        hd.show(with_update_result(hs.SCENARIOS["pin_required"]))
         expect(page.locator(PIN_CARD)).to_be_visible()
         expect(page.locator("#card-title")).to_have_text("Enter PIN for Patio")
         page.locator("#card-buttons button", has_text="Cancel").click()
-        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        expect(page.locator("#card-title")).to_have_text("Updated")
         expect(page.locator("#card-pin-pad")).to_be_hidden()
 
     def test_the_speaker_card_is_unchanged_for_a_speaker_that_needs_pairing(self, page, hd):

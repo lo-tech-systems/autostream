@@ -1,5 +1,5 @@
 {
-  "v": 2,
+  "v": 3,
   "started": true,
   "polling": true,
   "dial": {
@@ -49,10 +49,11 @@
     "reason": "refused",
     "raised_at": 999.0
   },
-  "warnings": {
-    "due": null,
-    "cards": []
+  "bell": {
+    "severity": null,
+    "entries": []
   },
+  "status": null,
   "network": {
     "link": "connected",
     "ssid": "HomeNet",

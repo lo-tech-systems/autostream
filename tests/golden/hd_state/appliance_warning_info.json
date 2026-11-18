@@ -1,5 +1,5 @@
 {
-  "v": 2,
+  "v": 3,
   "started": true,
   "polling": true,
   "dial": {
@@ -32,10 +32,11 @@
       "warnings": [
         {
           "key": "appliance:aaaaaaaaaaaaaaaaaaaa:stylus_in1",
-          "id": "stylus_in1",
+          "source": "Lounge",
           "severity": "info",
           "title": "Technics stylus",
-          "message": "Needs changing soon."
+          "message": "Needs changing soon.",
+          "actions": []
         }
       ],
       "webui": "http://192.0.2.20:80/",
@@ -50,28 +51,11 @@
   "transport": null,
   "outputs_request": null,
   "start_failure": null,
-  "warnings": {
-    "due": null,
-    "cards": [
-      {
-        "id": "appliance:aaaaaaaaaaaaaaaaaaaa:stylus_in1",
-        "kind": "warning",
-        "since": 1699999970.0,
-        "severity": "info",
-        "title": "Technics stylus",
-        "message": "Needs changing soon.",
-        "progress": null,
-        "source": "Lounge",
-        "buttons": [
-          {
-            "label": "Close",
-            "action": "close"
-          }
-        ],
-        "interrupting": false
-      }
-    ]
+  "bell": {
+    "severity": null,
+    "entries": []
   },
+  "status": null,
   "network": {
     "link": "connected",
     "ssid": "HomeNet",
