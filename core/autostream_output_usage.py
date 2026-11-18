@@ -1,4 +1,4 @@
-"""autostream_output_usage.py — Cross-appliance output occupancy service.
+"""autostream_output_usage.py -- Cross-appliance output occupancy service.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -309,7 +309,7 @@ def _get_poll_interval() -> int:
 def _fallback_owner_name(service_name: str) -> str:
     """Decode an Avahi service instance name into a readable label.
 
-    Replaces Avahi octal escapes (\032 → space) and strips the
+    Replaces Avahi octal escapes (\032 -> space) and strips the
     'autostream on ' prefix written by avahi-publish-service.
     """
     name = service_name.replace("\\032", " ").strip()

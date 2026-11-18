@@ -342,7 +342,7 @@ class TestSetupBufferTargetSelect:
         monitor build that never reports requested_minutes can't leave
         'Calculating…' stuck forever."""
         html = _render_setup_page(tmp_path)
-        assert "noteEl.textContent = 'Calculating…'" in html
+        assert "noteEl.textContent = 'Calculating\\u2026'" in html
         assert "Number(repeat.requested_minutes) !== expectedRequestedMins" in html
         assert "repeat.requested_minutes !== undefined" in html
         poll_start = html.find("function pollRepeatNote(expectedRequestedMins)")
@@ -513,13 +513,13 @@ class TestHomeRefreshButtonRemoved:
     def test_refresh_button_absent_when_repeat_enabled(self):
         html = _render_airplay_page(repeat_enabled=True)
         assert "Reload page to refresh speakers" not in html
-        assert "↻ Refresh" not in html
+        assert "&#8635; Refresh" not in html
         assert "onclick='location.reload();'" not in html
 
     def test_refresh_button_absent_when_repeat_disabled(self):
         html = _render_airplay_page(repeat_enabled=False)
         assert "Reload page to refresh speakers" not in html
-        assert "↻ Refresh" not in html
+        assert "&#8635; Refresh" not in html
 
 
 class TestHomeRepeatPillRemoved:
@@ -555,7 +555,7 @@ class TestHomeRepeatButton:
 
     def test_button_default_label_and_disabled_with_no_buffer(self):
         html = _render_airplay_page(repeat_enabled=True)
-        assert "↻ Repeat Play" in html
+        assert "&#8635; Repeat Play" in html
         # Server-rendered default (before the first poll lands): no buffer
         # known yet, so the button starts disabled.
         assert '<button type="button" class="pill-btn small repeat-btn" id="repeat-btn"' in html
@@ -590,8 +590,8 @@ class TestHomeRepeatButton:
 
     def test_update_repeat_button_uses_replay_last_label_when_idle_with_buffer(self):
         html = _render_airplay_page(repeat_enabled=True)
-        assert "↻ Replay Last" in html
-        assert "btn.textContent = stopping ? 'Stopping…' : (showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');" in html
+        assert "\\u21bb Replay Last" in html
+        assert "btn.textContent = stopping ? 'Stopping\\u2026' : (showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in html
 
     def test_update_repeat_button_applies_active_outline_when_armed_or_replaying(self):
         html = _render_airplay_page(repeat_enabled=True)

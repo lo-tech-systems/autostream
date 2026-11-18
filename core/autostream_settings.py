@@ -12,7 +12,7 @@ operation.  The background save thread writes dirty changes to disk every five
 seconds.  Synchronous save_now() is available for durability-sensitive
 operations such as first-boot Finish and reboot.
 
-Lock order — never hold the SettingsStore._lock while:
+Lock order -- never hold the SettingsStore._lock while:
   - performing disk I/O (use CONFIG_IO_LOCK through save_config instead)
   - calling run_admin_cmd()
   - calling OwnTone APIs
@@ -70,10 +70,10 @@ class SettingsStore:
     """Canonical in-memory raw configuration and parsed snapshots.
 
     Provides:
-    - snapshot() → AutostreamConfig: immutable parsed view of current settings
-    - raw_snapshot() → dict: deep copy of raw JSON (for code needing unknown keys)
-    - update(mutator) → AutostreamConfig: atomic field-level mutation
-    - save_now() → bool: synchronous durability barrier
+    - snapshot() -> AutostreamConfig: immutable parsed view of current settings
+    - raw_snapshot() -> dict: deep copy of raw JSON (for code needing unknown keys)
+    - update(mutator) -> AutostreamConfig: atomic field-level mutation
+    - save_now() -> bool: synchronous durability barrier
     - close(*, save=True): orderly shutdown
     - reload_from_disk(*, discard=False): explicit external-change handling
 
@@ -105,7 +105,7 @@ class SettingsStore:
             Interval between periodic save attempts.  Defaults to 5 s.
             Tests may pass a short value (e.g. 0.05) for fast operation.
         _writer:
-            Persistence callable (path, data) → None.  Defaults to
+            Persistence callable (path, data) -> None.  Defaults to
             save_config from autostream_config.  Inject a stub in tests.
         _stop_event:
             External threading.Event to stop the background thread.
@@ -213,7 +213,7 @@ class SettingsStore:
 
         Raises whatever the row's ``validate``/``cross_validate`` callable
         raises (typically ``ValueError`` or
-        ``autostream_settings_schema.CrossFieldValidationError``) — callers
+        ``autostream_settings_schema.CrossFieldValidationError``) -- callers
         translate that into their own response shape, exactly as they did
         before this method existed.
         """

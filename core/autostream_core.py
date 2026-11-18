@@ -289,7 +289,7 @@ def apply_track_id_config_live(config_path: str) -> None:
     """Rebuild the track identification service and push it to all monitors.
 
     Called by the web UI when track identification settings change.  Avoids
-    tearing down the audio coordinator or stopping OwnTone — only the service
+    tearing down the audio coordinator or stopping OwnTone -- only the service
     singleton and each monitor's per-instance reference are replaced.
     """
     global _track_id_service
@@ -5066,7 +5066,7 @@ def _wait_for_bluetooth_loopback(capture_device: str) -> None:
 
     The shared snd-aloop cable takes its rate/format from whichever end
     opens first. The pump's end carries the source's real parameters, so the
-    monitor's capture open must come second — it then auto-negotiates to
+    monitor's capture open must come second -- it then auto-negotiates to
     match, exactly as it would against a hardware device with those native
     parameters. Opening first would instead pin the cable at the monitor's
     own negotiation ceiling and force the pump into its paused/retrying

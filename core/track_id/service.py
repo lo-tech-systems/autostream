@@ -98,7 +98,7 @@ class TrackIdentificationService:
 
     This is the object held by AudioMonitor.  One instance per process is
     acceptable because the cache is shared across monitor instances which is
-    desirable — same track heard on two inputs shares cached results.
+    desirable -- same track heard on two inputs shares cached results.
     """
 
     def __init__(
@@ -136,7 +136,7 @@ class TrackIdentificationService:
         """Identify a track, using the cache when the provider supports fingerprinting.
 
         Logs attempt stages at DEBUG and result at INFO.  Logs and re-raises
-        provider exceptions — callers must map them to state="error".  Only
+        provider exceptions -- callers must map them to state="error".  Only
         the exception type name is logged; API keys are never logged.
         """
         from track_id.models import TrackIdentificationResult as R

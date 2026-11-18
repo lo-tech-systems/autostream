@@ -188,8 +188,8 @@ class TestReplayLastNeverWhileSessionActive:
 
     def test_button_text_driven_by_show_replay_last_flag(self, home_html):
         assert (
-            "btn.textContent = stopping ? 'Stopping…' : "
-            "(showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');" in home_html
+            "btn.textContent = stopping ? 'Stopping\\u2026' : "
+            "(showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in home_html
         )
 
 
@@ -210,8 +210,8 @@ class TestOptimisticClickState:
         assert opt_idx < fetch_idx
         between = click_src[opt_idx:fetch_idx]
         assert "btn.classList.add('active');" in between
-        assert "btn.title = 'Starting…';" in between
-        assert "btn.title = 'Stopping…';" in between
+        assert "btn.title = 'Starting\\u2026';" in between
+        assert "btn.title = 'Stopping\\u2026';" in between
 
     def test_hold_until_agree_or_timeout(self, home_html):
         assert (
@@ -297,7 +297,7 @@ class TestDisarmIsNotAStop:
         click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
         stop_branch = click_src.split("if (kind === 'stop') {", 1)[1]
         stop_branch = stop_branch.split("} else if (kind === 'disarm') {", 1)[0]
-        assert "btn.textContent = 'Stopping…';" in stop_branch
+        assert "btn.textContent = 'Stopping\\u2026';" in stop_branch
         assert "btn.setAttribute('data-state', 'stopping');" in stop_branch
         assert "btn.disabled = true;" in stop_branch
 
@@ -309,7 +309,7 @@ class TestDisarmIsNotAStop:
         assert "btn.setAttribute('data-state', 'off');" in disarm_branch
         assert "btn.disabled = false;" in disarm_branch
         # No stop wording and no label rewrite on this path.
-        assert "Stopping…" not in disarm_branch
+        assert "Stopping\\u2026" not in disarm_branch
         assert "btn.textContent" not in disarm_branch
 
     def test_page_quiesce_only_for_a_real_fade(self, home_html):
@@ -354,8 +354,8 @@ class TestStoppingState:
         assert "var stopping = optimisticStopPending || fadingOut;" in home_html
 
     def test_stopping_label_text(self, home_html):
-        assert "btn.textContent = stopping ? 'Stopping…' : (showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');" in home_html
-        assert "btn.textContent = 'Stopping…';" in home_html
+        assert "btn.textContent = stopping ? 'Stopping\\u2026' : (showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in home_html
+        assert "btn.textContent = 'Stopping\\u2026';" in home_html
 
     def test_button_disabled_while_stopping(self, home_html):
         assert "btn.disabled = stopping || (!hasBuffer && !replaying && !on);" in home_html

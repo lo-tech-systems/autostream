@@ -1,4 +1,4 @@
-"""autostream_align_tone.py — one-shot calibration tone writer for automatic
+"""autostream_align_tone.py -- one-shot calibration tone writer for automatic
 output alignment.
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.

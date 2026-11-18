@@ -668,7 +668,7 @@ def send_airplay_page(
     _repeat_btn_html = (
         '<button type="button" class="pill-btn small repeat-btn" id="repeat-btn"'
         ' data-state="off" disabled'
-        ' onclick="onRepeatButtonClick()">\u21bb Repeat Play</button>'
+        ' onclick="onRepeatButtonClick()">&#8635; Repeat Play</button>'
     ) if parsed.repeat.enabled else ""
 
     # Top controls row: repeat button + optional hostname/selector.
@@ -922,7 +922,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     _repeat_btn_html = (
         '<button type="button" class="pill-btn small repeat-btn" id="repeat-btn"'
         ' data-state="off" disabled hidden'
-        ' onclick="onRepeatButtonClick()">↻ Repeat Play</button>'
+        ' onclick="onRepeatButtonClick()">&#8635; Repeat Play</button>'
     )
 
     _top_controls_html = (
@@ -940,7 +940,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f'{_np_icon_svg}'
         f'</div>'
         f'<div class="now-playing-meta">'
-        f'<div class="now-playing-name" id="np-name">Connecting…</div>'
+        f'<div class="now-playing-name" id="np-name">Connecting&hellip;</div>'
         f'<div class="now-playing-signal" id="np-signal"></div>'
         f'</div>'
         f'<div class="np-level" id="np-level"></div>'
@@ -974,7 +974,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f" style='display:none;margin:0.35rem 0 0.35rem;{_warn_style_base}'></a>"
         + f"<p id='outputs-placeholder' style='text-align:center;"
         f"color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>"
-        f"Connecting…</p>"
+        f"Connecting&hellip;</p>"
         + f"<div id='outputs-list'></div>"
     )
 

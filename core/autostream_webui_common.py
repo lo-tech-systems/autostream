@@ -368,7 +368,7 @@ def build_nav_bar_html(
 
     active:       one of 'home', 'equaliser', 'setup', 'service', 'about'
     service_warn: when True the Service tab is styled red (e.g. stylus overdue)
-    remote_id:    when set, renders remote mode — Home/Equaliser link to the remote
+    remote_id:    when set, renders remote mode -- Home/Equaliser link to the remote
                   appliance; Service, Setup and Info are disabled (non-navigable).
     """
     if remote_id:
@@ -422,7 +422,7 @@ def build_appliance_selector_html(
     appliances:   ordered list of appliance dicts (bound-first, then remote by name).
                   Each dict has: id, hostname, is_bound, home_path, equaliser_path.
     current_id:   the currently selected appliance ID
-    current_page: 'home' or 'equaliser' — determines the navigation target for each option.
+    current_page: 'home' or 'equaliser' -- determines the navigation target for each option.
     display_only: when True, render a non-interactive hostname display instead of a
                   dropdown selector (used when control_other_appliances is disabled).
     """
@@ -550,8 +550,8 @@ def build_page_html(
                   (e.g. modal dialogs, overlay divs)
     body_suffix : raw HTML injected after the closing </div> of .container and
                   before the nav bar (e.g. scripts, A2HS_SCRIPT)
-    lic_html    : from build_top_banner_html() — the fixed flash/PSU banner
-    lic_spacer  : from build_top_banner_html() — the spacer div
+    lic_html    : from build_top_banner_html() -- the fixed flash/PSU banner
+    lic_spacer  : from build_top_banner_html() -- the spacer div
     active_tab   : one of 'home', 'equaliser', 'setup', 'service', 'about'
     show_nav     : when False the nav bar is omitted (e.g. initial-setup wizard)
     service_warn : when True the Service tab is highlighted red

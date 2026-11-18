@@ -1042,7 +1042,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         storage guard's _api_get). Conditions 2 and 3 are sufficient because NGINX
         always sets both headers when proxying browser requests over loopback.
 
-        Do NOT use _get_client_ip() here — it trusts proxy headers intentionally
+        Do NOT use _get_client_ip() here -- it trusts proxy headers intentionally
         for logging, which would defeat this security check.
         """
         peer = self.client_address[0]
@@ -1130,7 +1130,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         logs outcomes rather than persisting them there.
 
         A second POST while an apply is already in flight does not start a
-        concurrent run — it returns already_in_progress=True instead. The
+        concurrent run -- it returns already_in_progress=True instead. The
         installer itself is flock-protected once scheduled; this guard only
         needs to cover the staging window that now runs here.
         """

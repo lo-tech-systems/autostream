@@ -10,12 +10,12 @@ used as browser transport status because NGINX intercepts them; they are tunnele
 through HTTP 200 with error_status carrying the semantic code.
 
 Host error contract:
-  - dial UUID absent from live registry → transport 200, error: dial_offline, error_status: 404
-  - connection refused / network failure / socket timeout → transport 200, error: dial_unreachable, error_status: 502
-  - target body not valid JSON / non-object JSON / oversized body → transport 200, error: dial_bad_response, error_status: 502
-  - target 3xx → rejected before JSON pass-through as dial_bad_response (error_status: 502)
-  - target 404/502/503/504 → tunneled through transport 200 with error_status
-  - target 400/403/429/500 → passed through natively (not intercepted by NGINX)
+  - dial UUID absent from live registry -> transport 200, error: dial_offline, error_status: 404
+  - connection refused / network failure / socket timeout -> transport 200, error: dial_unreachable, error_status: 502
+  - target body not valid JSON / non-object JSON / oversized body -> transport 200, error: dial_bad_response, error_status: 502
+  - target 3xx -> rejected before JSON pass-through as dial_bad_response (error_status: 502)
+  - target 404/502/503/504 -> tunneled through transport 200 with error_status
+  - target 400/403/429/500 -> passed through natively (not intercepted by NGINX)
 """
 from __future__ import annotations
 

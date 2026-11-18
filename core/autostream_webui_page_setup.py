@@ -232,7 +232,7 @@ def _setup_list_row_html(card: Card, summary_html: str) -> str:
           <span class="setup-list-card-title">{html.escape(card.title)}</span>
           <span class="setup-list-card-sub" id="{card.key}-card-sub">{summary_html}</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>"""
 
 
@@ -241,7 +241,7 @@ def _setup_panel_shell_html(card: Card) -> str:
     return f"""
       <div class="setup-detail-panel" id="panel-{card.key}">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         {header}
         <div class="setup-detail-panel-body" id="panel-body-{card.key}"></div>
@@ -565,7 +565,7 @@ def _dial_card_html(
     with no live sighting (offline dials cannot be advertising a recovery
     window). Because this snapshot can go stale within the 10-minute
     recovery window, the PIN-recovery modal's own status poller keeps the
-    badge in sync (add/remove) for a card while that modal is open — see
+    badge in sync (add/remove) for a card while that modal is open -- see
     openDialPinRecoveryModal()/_dialSetRecoveryBadge() below.
 
     ip is the live mDNS-resolved address, shown under "Current name" only
@@ -1260,7 +1260,7 @@ def _setup_playback_defaults_card_html(parsed) -> str:
               {owntone_outputs_html}
             </select>
             <div id="owntone_output_hint" class="helptext" style="display:none;">
-              Looking for speakers…
+              Looking for speakers&hellip;
             </div>
           </label>
           <label><div class="slider-header"><span>Default Volume:</span><span id="vol_val">{parsed.owntone.volume_percent}%</span></div>
@@ -1321,7 +1321,7 @@ def _setup_repeat_playback_card_html(parsed) -> str:
               </select>
             </label>
           </div>
-          <div class="helptext" id="repeat-max-time-note">Buffer: —</div>
+          <div class="helptext" id="repeat-max-time-note">Buffer: &mdash;</div>
           <div class="helptext" id="repeat-unavailable-note" style="display:none;color:var(--color-status-danger);"></div>
         """
     return settings_card_html(repeat_playback_inner_html)
@@ -1350,7 +1350,7 @@ def _setup_audio_processing_card_html(parsed) -> str:
               {audio_path_options_html}
             </select>
           </label>
-          <div class="helptext">Applies immediately — playback stops and resumes automatically after a few seconds.</div>
+          <div class="helptext">Applies immediately &mdash; playback stops and resumes automatically after a few seconds.</div>
         """
     return settings_card_html(audio_processing_inner_html)
 
@@ -1616,7 +1616,7 @@ def _setup_bluetooth_card_html(
               <button type="button" id="btnBtForget" class="pill-btn small" style="width:100%;{_bt_forget_style}"
                 onclick="btForgetFromCard()">Forget</button>
               <button type="button" id="btnBtPairNew" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
-                onclick="openBtPairingModal(null, null)">Pair new device…</button>
+                onclick="openBtPairingModal(null, null)">Pair new device&hellip;</button>
               <label style="display:block;margin-top:0.75rem;">
                 <div class="slider-header"><span>Bluetooth Audio Buffer:</span><span id="btBufferVal">{bt_buffer_ms} ms</span></div>
                 <input type="range" id="btBufferRange" min="{BLUETOOTH_BUFFER_MS_MIN}" max="{BLUETOOTH_BUFFER_MS_MAX}"
@@ -2139,7 +2139,7 @@ def send_setup_page(
    spaces its cards the same way the rest of the setup page does. */
 .dial-card-wrap{margin-bottom:0.62rem;}
 /* Screen controls follow the "Has Screen Fitted" toggle: the inputs are
-   disabled from JS, and this dims the whole row — including its label text,
+   disabled from JS, and this dims the whole row &mdash; including its label text,
    which a disabled attribute alone leaves at full contrast. */
 .dial-screen-ctl-row{transition:opacity 0.15s ease;}
 .dial-screen-ctl-row.is-disabled{opacity:0.45;}
@@ -2310,7 +2310,7 @@ def send_setup_page(
     </div>
     <div class="ft modal-ft">
       <button type="button" class="btn modal-btn modal-btn-secondary" id="dialPinRecoveryCancel">Cancel</button>
-      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinRecoveryOk" disabled>Waiting for Dial…</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinRecoveryOk" disabled>Waiting for Dial&hellip;</button>
     </div>
   </div>
 </div>"""
@@ -2339,7 +2339,7 @@ def send_setup_page(
       <div id="btScanPanel">
         <p>Put your turntable in pairing mode. Available devices:</p>
         <div id="btScanDeviceList" class="bt-device-list">
-          <p class="bt-scan-empty">Scanning…</p>
+          <p class="bt-scan-empty">Scanning&hellip;</p>
         </div>
       </div>
       <div id="btConfirmPanel" style="display:none;">
@@ -2347,7 +2347,7 @@ def send_setup_page(
         <p id="btConfirmWarning" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
       </div>
       <div id="btPairingPanel" style="display:none;">
-        <p id="btPairingStatusMsg">Pairing…</p>
+        <p id="btPairingStatusMsg">Pairing&hellip;</p>
       </div>
       <div id="btResultPanel" style="display:none;">
         <p id="btResultMsg"></p>
@@ -2379,7 +2379,7 @@ def send_setup_page(
         _bt_paired_js = "true" if bt_paired else "false"
         _bt_pairing_js = f"""
       <script>
-        // ── Bluetooth input pairing ──────────────────────────────────────
+        // -- Bluetooth input pairing --------------------------------------
         var BT_LOOPBACK_HW = {BLUETOOTH_LOOPBACK_HW!r};
         var btPaired = {_bt_paired_js};
         var _btLinkState = {_bt_link_state_initial!r};
@@ -2437,7 +2437,7 @@ def send_setup_page(
           var list = document.getElementById('btScanDeviceList');
           if (!list) return;
           if (!devices || !devices.length) {{
-            list.innerHTML = '<p class="bt-scan-empty">Scanning…</p>';
+            list.innerHTML = '<p class="bt-scan-empty">Scanning\\u2026</p>';
             return;
           }}
           list.innerHTML = '';
@@ -2461,7 +2461,7 @@ def send_setup_page(
         async function _btStartScan() {{
           _btShowPanel('Scan');
           var list = document.getElementById('btScanDeviceList');
-          if (list) list.innerHTML = '<p class="bt-scan-empty">Scanning…</p>';
+          if (list) list.innerHTML = '<p class="bt-scan-empty">Scanning\\u2026</p>';
           await _btPost('/api/bluetooth/scan', {{action: 'start'}});
           _btPollScan();
           if (_btScanTimer) {{ clearInterval(_btScanTimer); _btScanTimer = null; }}
@@ -2495,7 +2495,7 @@ def send_setup_page(
         async function _btConfirmPair() {{
           _btShowPanel('Pairing');
           var titleEl = document.getElementById('btPairingModalTitle');
-          if (titleEl) titleEl.textContent = 'Pairing…';
+          if (titleEl) titleEl.textContent = 'Pairing\\u2026';
           var okBtn = document.getElementById('btPairingOk');
           if (okBtn) okBtn.style.display = 'none';
           var res = await _btPost('/api/bluetooth/pair', {{address: _btSelectedMac}});
@@ -2646,7 +2646,7 @@ def send_setup_page(
           // Cancel/dismiss without a successful pairing in this session: undo
           // the onchange event's already-committed selection change.  A no-op
           // when the select's value/data-prev already match (e.g. opening the
-          // modal from the card's "Pair new device…" button, which has no
+          // modal from the card's "Pair new device..." button, which has no
           // associated select, or after a failed pairing already reverted it
           // below in _btShowResult).
           if (_btSelectEl && !_btPairSucceeded && _btPriorSelectValue !== null) {{
@@ -2716,7 +2716,7 @@ def send_setup_page(
 
         function btEnableServices() {{
           var btn = document.getElementById('btnBtEnableServices');
-          var restore = _btSetBusy(btn, 'Enabling…');
+          var restore = _btSetBusy(btn, 'Enabling\\u2026');
           settingsTransact('/api/bluetooth/services', {{action: 'enable'}}, {{
             onSuccess: function() {{ window.location.reload(); }},
             onError: function() {{ if (restore) restore(); }}
@@ -2726,7 +2726,7 @@ def send_setup_page(
         function btDisableServices() {{
           if (!window.confirm('Disable Bluetooth services? Any active Bluetooth stream will stop immediately.')) return;
           var btn = document.getElementById('btnBtDisableServices');
-          var restore = _btSetBusy(btn, 'Disabling…');
+          var restore = _btSetBusy(btn, 'Disabling\\u2026');
           settingsTransact('/api/bluetooth/services', {{action: 'disable'}}, {{
             onSuccess: function() {{ window.location.reload(); }},
             onError: function() {{ if (restore) restore(); }}
@@ -2760,7 +2760,7 @@ def send_setup_page(
           }}, 500);
         }}
 
-        // ── SD card health monitoring row (shares this card) ──────────────
+        // -- SD card health monitoring row (shares this card) --------------
         var sdHealthState = {json.dumps(sd_health)};
 
         function showSdHealthModal() {{
@@ -2785,7 +2785,7 @@ def send_setup_page(
           var method = sel ? sel.value : 'auto';
           var btn = document.getElementById('sdHealthActionBtn');
           var prevLabel = btn ? btn.textContent : '';
-          if (btn) {{ btn.disabled = true; btn.textContent = 'Checking card…'; }}
+          if (btn) {{ btn.disabled = true; btn.textContent = 'Checking card\\u2026'; }}
           settingsTransact('/api/sdcard-health/enable', {{method: method}}, {{
             onSuccess: function() {{ window.location.reload(); }},
             onError: function(d) {{
@@ -2803,7 +2803,7 @@ def send_setup_page(
           if (!window.confirm('Stop monitoring this card\\'s health?')) return;
           var btn = document.getElementById('sdHealthActionBtn');
           var prevLabel = btn ? btn.textContent : '';
-          if (btn) {{ btn.disabled = true; btn.textContent = 'Disabling…'; }}
+          if (btn) {{ btn.disabled = true; btn.textContent = 'Disabling\\u2026'; }}
           settingsTransact('/api/sdcard-health/disable', {{}}, {{
             onSuccess: function() {{ window.location.reload(); }},
             onError: function() {{ if (btn) {{ btn.disabled = false; btn.textContent = prevLabel; }} }}
@@ -2831,7 +2831,7 @@ def send_setup_page(
           if (adapterRow) {{
             var kind = daemon && daemon.adapter_kind;
             var text = !adapterPresent
-              ? 'No Bluetooth adapter found — plug in a USB adapter, or enable the onboard device below.'
+              ? 'No Bluetooth adapter found \\u2014 plug in a USB adapter, or enable the onboard device below.'
               : (kind === 'usb' ? 'USB adapter' : (kind === 'onboard' ? 'Onboard' : 'Detected'));
             adapterRow.textContent = 'Adapter: ' + text;
           }}
@@ -3059,7 +3059,7 @@ def send_setup_page(
           els.modal.classList.add('show');
         }}
         // Parse a fetch Response into a discriminated result object.
-        // Does NOT catch a rejected fetch() promise — network failures propagate.
+        // Does NOT catch a rejected fetch() promise -- network failures propagate.
         // Returns: {{ok, transportStatus, body, error}}
         async function _parseDialResponse(response) {{
           var transportStatus = response.status;
@@ -3131,7 +3131,7 @@ def send_setup_page(
               if (els.newInput) {{ els.newInput.value = ''; els.newInput.style.display = 'none'; }}
               if (els.repeatInput) {{ els.repeatInput.value = ''; els.repeatInput.style.display = 'none'; }}
               showPinModalError(null);
-              els.message.textContent = 'PIN changed successfully. Returning to the home screen\u2026';
+              els.message.textContent = 'PIN changed successfully. Returning to the home screen\\u2026';
               els.ok.style.display = 'none';
               els.cancel.textContent = 'Continue';
               setPinModalBusy(false);
@@ -3394,7 +3394,7 @@ def send_setup_page(
                 return;
               }}
             }} catch(e) {{
-              // Network error — fall through; reboot will reload config from disk
+              // Network error -- fall through; reboot will reload config from disk
             }}
           }}
           showRebootModal();
@@ -3433,12 +3433,12 @@ def send_setup_page(
               if(j.ok && j.status === "in_progress"){{
                 if(j.stale){{
                   if(j.hung){{
-                    msg("An update is still running but has been unresponsive for 30+ minutes. Power-cycle the device to recover — do not retry until after rebooting.");
+                    msg("An update is still running but has been unresponsive for 30+ minutes. Power-cycle the device to recover \\u2014 do not retry until after rebooting.");
                   }} else {{
                     msg("A previous update appears to have stalled. Power-cycle the device to trigger automatic recovery, or use Check for Updates to retry.");
                   }}
                 }} else {{
-                  // An update is already running — send the user to the progress page.
+                  // An update is already running -- send the user to the progress page.
                   window.location.replace("/offline/updating");
                 }}
                 return;
@@ -3447,7 +3447,7 @@ def send_setup_page(
               else if(j.ok && (j.status === "failure" || j.status === "error")){{
                 msg("Last update failed: " + (j.message || "unknown error"));
               }}
-            }} catch(e) {{ /* ignore — no persisted status yet */ }}
+            }} catch(e) {{ /* ignore -- no persisted status yet */ }}
           }}
           bCheck.onclick = async () => {{
             if (infoMode) {{
@@ -3758,20 +3758,20 @@ def send_setup_page(
         // After a target/enable change the daemon tears the arena down and
         // rebuilds it (typically well under a second), but the status cache
         // backing /api/status refreshes on its own ~1-2s poll -- so the note
-        // switches to "Calculating…" immediately and polls until a FRESH
+        // switches to "Calculating..." immediately and polls until a FRESH
         // figure (requested_minutes matching the new target, capacity
         // recomputed) is back, rather than either freezing on the stale
         // pre-change text or flashing the old figure as if it were the
         // answer. If nothing fresh arrives within the window (e.g. an old
         // monitor build that never reports requested_minutes alongside a
         // rejected match), a final unconditional refresh shows whatever the
-        // daemon does report instead of leaving "Calculating…" stuck.
+        // daemon does report instead of leaving "Calculating..." stuck.
         function pollRepeatNote(expectedRequestedMins) {{
           var myToken = ++_repeatToggleToken;
           var attempts = 0;
           var maxAttempts = 12;
           var noteEl = document.getElementById('repeat-max-time-note');
-          if (noteEl) noteEl.textContent = 'Calculating…';
+          if (noteEl) noteEl.textContent = 'Calculating\\u2026';
           (function poll() {{
             if (myToken !== _repeatToggleToken) return;  // superseded by a later change
             attempts++;
@@ -3893,7 +3893,7 @@ def send_setup_page(
         }}
       </script>
       <script>
-        // ── Dial management ────────────────────────────────────────────────
+        // -- Dial management ------------------------------------------------
         var _dialPinRecoveryTimer = null;
         var _dialPinRecoverySeenActive = false;
         var _dialPinModalCard = null;
@@ -3901,7 +3901,7 @@ def send_setup_page(
         var _dialPinRecoveryModalCard = null;
         var _dialPinRecoveryStep = null; // 'confirm' | 'wait' | 'set'
         var _dialNameModalCard = null;
-        var _dialUnlockedPins = new WeakMap(); // card → '' (no PIN) | 'XXXX' (PIN stored) | absent (locked)
+        var _dialUnlockedPins = new WeakMap(); // card -> '' (no PIN) | 'XXXX' (PIN stored) | absent (locked)
         var _ICON_PADLOCK_LOCKED = `{ICON_PADLOCK_LOCKED}`;
         var _ICON_PADLOCK_UNLOCKED = `{ICON_PADLOCK_UNLOCKED}`;
 
@@ -3995,13 +3995,13 @@ def send_setup_page(
           if (sizeEl) sizeEl.disabled = off;
           if (layoutEl) layoutEl.disabled = off;
           if (touchEl) touchEl.disabled = off;
-          // Dim the rows too — a disabled input still renders its label text
+          // Dim the rows too -- a disabled input still renders its label text
           // at full contrast, which reads as available when it is not.
           card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {{
             row.classList.toggle('is-disabled', off);
           }});
           // "Always show controls" additionally requires a real touch
-          // controller — a persistent overlay with dead minus/plus buttons
+          // controller -- a persistent overlay with dead minus/plus buttons
           // on a screen-only dial is misleading. The dial itself does not
           // check touch at runtime; this is purely a UI courtesy.
           var ctlEl = card.querySelector('.dial-screen-always-controls');
@@ -4109,7 +4109,7 @@ def send_setup_page(
           // so it must not be offered a lock it has no key for: block setting a
           // PIN in the first place. If a PIN was already set before this became
           // true (an already-impossible situation), don't strand the user by
-          // hiding everything — keep the reset button visible and explain.
+          // hiding everything -- keep the reset button visible and explain.
           if (!canConfirm && !hasPin) {{
             if (pinBtn) pinBtn.style.display = 'none';
             if (recoverBtn) recoverBtn.style.display = 'none';
@@ -4227,14 +4227,14 @@ def send_setup_page(
           }};
         }}
 
-        // ── Dial self-restart after a touch-controller change ──────────────
+        // -- Dial self-restart after a touch-controller change --------------
         // The dial persists the new touch_type and THEN restarts, so
         // screen.touch_type (built from persisted config) reports the new
         // value instantly from the old, not-yet-restarted process -- polling
         // it would report success immediately and verify nothing.
         // runtime.touch_type is the one field that reflects what is
         // actually running, so that -- and only that -- is what gets polled.
-        var _dialTouchPollCancel = new WeakMap(); // card → cancel() of an in-flight restart poll
+        var _dialTouchPollCancel = new WeakMap(); // card -> cancel() of an in-flight restart poll
 
         function _dialCancelTouchRestartPoll(card) {{
           var cancel = _dialTouchPollCancel.get(card);
@@ -4303,7 +4303,7 @@ def send_setup_page(
 
         async function _dialScreenFetch() {{
           if (!_dialScreenModalUuid) return;
-          _dialScreenSetState('Loading…', null);
+          _dialScreenSetState('Loading\\u2026', null);
           try {{
             var r = await fetch('/api/dial/screen/image/' + encodeURIComponent(_dialScreenModalUuid),
                                 {{cache: 'no-store', headers: {{'X-CSRF-Token': window.__CSRF || ''}}}});
@@ -4573,7 +4573,7 @@ def send_setup_page(
               if (typeRow) typeRow.style.display = 'none';
             }}
             // `supported_touch` is a SEPARATE capability array from
-            // `supported` — a dial can publish screen profiles but no touch
+            // `supported` -- a dial can publish screen profiles but no touch
             // capability at all, and must never receive touch_type in the
             // save body or its strict whitelist rejects the whole save.
             var supportedTouch = Array.isArray(j.supported_touch) ? j.supported_touch : [];
@@ -4841,12 +4841,12 @@ def send_setup_page(
           // GET resolves would post {{fitted, rotate}} alone and silently
           // reset a configured screen_type/BGR back to defaults.
           if (card.dataset.screenLoaded !== '1') {{
-            dialMsg(card, 'Still loading screen settings — try again', false);
+            dialMsg(card, 'Still loading screen settings \\u2014 try again', false);
             return;
           }}
           var screen = {{fitted: fittedEl.checked, rotate: rotateEl.checked}};
           // Capability gate: only include the new fields once the dial has
-          // published `supported` — an older dial 400s the whole save on an
+          // published `supported` -- an older dial 400s the whole save on an
           // unknown field, which would break the existing toggles too.
           if (card.dataset.screenCaps === '1') {{
             screen.bgr = bgrEl ? bgrEl.checked : false;
@@ -4918,7 +4918,7 @@ def send_setup_page(
             if (!unlockedPin) {{ dialMsg(card, 'Unlock settings first', false); return; }}
             body.current_pin = unlockedPin;
           }}
-          // Snapshot the changed control's previous value before posting —
+          // Snapshot the changed control's previous value before posting --
           // a <select> can't be reverted with a simple !checked flip like
           // the checkboxes, so remember what to restore it to on failure.
           // The change has already happened, so a checkbox's previous value
@@ -4956,7 +4956,7 @@ def send_setup_page(
             }}
             else {{
               dialMsg(card, _dialErrorMessage(result.error), false);
-              // Revert only the control the user changed — the others
+              // Revert only the control the user changed -- the others
               // still hold their pre-save values.
               if (changedEl) {{
                 if (changedEl.tagName === 'SELECT' || changedEl.type === 'number' || changedEl.type === 'range') changedEl.value = prevValue;
@@ -4995,7 +4995,7 @@ def send_setup_page(
           }} catch(e) {{ dialMsg(card, 'Network error', false); }}
         }}
 
-        // ── Dial firmware update: live progress and outcome ────────────────
+        // -- Dial firmware update: live progress and outcome ----------------
         // An update can take about 40 minutes, so the poll budget is an
         // hour. The dial drops off the network while it reboots; an
         // unanswered poll is expected and simply keeps the poll going.
@@ -5105,7 +5105,7 @@ def send_setup_page(
           }} catch(e) {{}}
         }}
 
-        // ── Dial SD card health monitoring row ─────────────────────────────
+        // -- Dial SD card health monitoring row -----------------------------
         // Present only for a dial advertising dial_sdmon=v1 (rendered
         // server-side). The dial runs its probe on its own thread, so an
         // enable is: POST, then poll GET until probe.running is false.
@@ -5402,7 +5402,7 @@ def send_setup_page(
             'To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.';
           var okBtn = document.getElementById('dialPinRecoveryOk');
           var cancelBtn = document.getElementById('dialPinRecoveryCancel');
-          if (okBtn) {{ okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial…'; }}
+          if (okBtn) {{ okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial\\u2026'; }}
           if (cancelBtn) {{ cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }}
           _dialPinRecoverySeenActive = false;
           if (_dialPinRecoveryTimer) {{ clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }}
@@ -5411,7 +5411,7 @@ def send_setup_page(
               var pollResult = await _dialGet('/api/dial/pin_recovery/status/' + encodeURIComponent(uuid));
               var body = pollResult.body || {{}};
               // A boolean `active` is only ever present when the dial itself
-              // answered — on both the in-recovery 200 and the not-in-recovery
+              // answered -- on both the in-recovery 200 and the not-in-recovery
               // 404 that the proxy tunnels through HTTP 200. Transport
               // failures carry no `active`, so an unreachable dial leaves the
               // badge as-is rather than falsely clearing it.
@@ -5420,7 +5420,7 @@ def send_setup_page(
                 _dialSetRecoveryBadge(card, body.active === true &&
                   !(typeof pollRemainingMs === 'number' && pollRemainingMs <= 0));
               }}
-              if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery — wait silently
+              if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery -- wait silently
               if (body.can_confirm_presence === false) {{
                 _dialPinRecoveryCannotConfirm();
                 return;
@@ -5443,11 +5443,11 @@ def send_setup_page(
                 // Leaving the button on "Waiting for Dial" reads as though
                 // nothing has happened yet, when in fact the only remaining
                 // step is theirs.
-                if (okBtn) okBtn.textContent = 'Waiting for user…';
+                if (okBtn) okBtn.textContent = 'Waiting for user\\u2026';
               }} else if (_dialPinRecoverySeenActive) {{
-                // Window was active and is no longer — it expired rather than
+                // Window was active and is no longer -- it expired rather than
                 // never having started, so tell the user instead of leaving
-                // them on "Waiting for Dial…" forever.
+                // them on "Waiting for Dial..." forever.
                 _dialPinRecoveryExpired();
               }}
             }} catch(e) {{}}
@@ -5495,7 +5495,7 @@ def send_setup_page(
           var newPin = (newInp ? newInp.value : '').trim();
           var confPin = (confInp ? confInp.value : '').trim();
           if (!/^\\d{{4,8}}$/.test(newPin)) {{
-            if (errEl) {{ errEl.textContent = 'Enter 4–8 digits.'; errEl.style.display = ''; }}
+            if (errEl) {{ errEl.textContent = 'Enter 4\\u20138 digits.'; errEl.style.display = ''; }}
             if (newInp) newInp.focus();
             return;
           }}
@@ -5542,7 +5542,7 @@ def send_setup_page(
           try {{
             var pinResult;
             if (mode === 'unlock') {{
-              // Verify PIN by saving the current config values — same payload as dialSaveConfig.
+              // Verify PIN by saving the current config values -- same payload as dialSaveConfig.
               // The dial validates the PIN against a real request; values are unchanged.
               var verifyBody = {{uuid: uuid, current_pin: currentPin}};
               var nameEl2 = card.querySelector('.dial-name');
@@ -5758,7 +5758,7 @@ def send_setup_page(
         }}
       </script>
       <script>
-        // ── Network adapter status and Change Wi-Fi ─────────────────
+        // -- Network adapter status and Change Wi-Fi -----------------
         function _networkStatusFailed() {{
           var titleEl = document.getElementById('networkCardTitle');
           var adapterEl = document.getElementById('networkAdapterInfo');
@@ -5905,7 +5905,7 @@ def send_setup_page(
           var btn = document.querySelector('#networkCard .pill-btn');
           var msg = document.getElementById('networkSetupMsg');
           if (btn) btn.disabled = true;
-          if (msg) {{ msg.textContent = 'Starting setup hotspot…'; msg.style.color = ''; }}
+          if (msg) {{ msg.textContent = 'Starting setup hotspot\\u2026'; msg.style.color = ''; }}
           try {{
             var r = await fetch('/api/network/setup', {{
               method: 'POST',
@@ -5918,7 +5918,7 @@ def send_setup_page(
             }});
             var j = await r.json().catch(function() {{ return {{}}; }});
             if (r.ok && j && j.ok) {{
-              if (msg) {{ msg.textContent = 'Hotspot starting. Connect to the “autostream-setup” network to complete setup.'; msg.style.color = ''; }}
+              if (msg) {{ msg.textContent = 'Hotspot starting. Connect to the \\u201cautostream-setup\\u201d network to complete setup.'; msg.style.color = ''; }}
             }} else if (r.status === 409) {{
               if (msg) {{ msg.textContent = 'A network change is already in progress.'; msg.style.color = 'var(--color-error,#c00)'; }}
               if (btn) btn.disabled = false;

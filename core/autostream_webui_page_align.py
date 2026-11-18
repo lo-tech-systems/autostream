@@ -267,7 +267,7 @@ def _render_review_section(state: WebUIState) -> str:
         "<th>Current offset</th><th>Proposed offset</th><th></th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
-        "<p class='helptext'>Nothing has been saved yet — Apply writes the"
+        "<p class='helptext'>Nothing has been saved yet &mdash; Apply writes the"
         " proposed offsets to the outputs.</p>"
         "<div style='margin-top:1rem;'>"
         "<button type='button' class='pill-btn' onclick='alignApply()'>Apply</button>"
@@ -334,7 +334,7 @@ function alignPoll(){
     if(abortBtn)abortBtn.style.display=running?'':'none';
     if(statusEl){
       if(running){
-        var out=d.current_output_name?(' — playing on '+d.current_output_name):'';
+        var out=d.current_output_name?(' \\u2014 playing on '+d.current_output_name):'';
         statusEl.textContent='Calibrating'+out+' (cycle '+(d.cycle_count||0)+')';
       } else if(d.last_error){
         statusEl.textContent='Stopped: '+d.last_error;
@@ -361,7 +361,7 @@ window.alignStart=function(){
   var volumeEl=document.getElementById('alignVolume');
   var volume=volumeEl?parseInt(volumeEl.value,10):50;
   var originalLabel=startBtn?startBtn.textContent:'Start';
-  if(startBtn){startBtn.disabled=true;startBtn.textContent='Starting…';}
+  if(startBtn){startBtn.disabled=true;startBtn.textContent='Starting\\u2026';}
   if(statusEl)statusEl.textContent='';
   fetch('/api/align/start',{
     method:'POST',credentials:'same-origin',
@@ -434,12 +434,12 @@ window.alignApply=function(){
 window.alignShowPrivacy=function(){
   var msg='<p>This measurement page is downloaded from lo-tech.co.uk because '
     +'browsers only allow microphone access on a secure (HTTPS) website. '
-    +'Fetching it is a normal page load, like visiting any website — so '
+    +'Fetching it is a normal page load, like visiting any website \\u2014 so '
     +"lo-tech.co.uk's server does see that request happen.</p>"
     +'<p>The settings for this run (which outputs, which tones) travel in '
     +'part of the link that browsers never send to a web server, so '
     +'lo-tech.co.uk does not see them.</p>'
-    +'<p>All listening and analysis happens on your phone itself — no audio '
+    +'<p>All listening and analysis happens on your phone itself \\u2014 no audio '
     +'is ever recorded or transmitted.</p>'
     +'<p>Once the measurement finishes, the timing results are sent '
     +'directly to this device over your own network, not to lo-tech.co.uk.</p>';

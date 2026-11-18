@@ -1,4 +1,4 @@
-"""autostream_mdns.py — Shared Avahi mDNS browsing and registry scaffolding.
+"""autostream_mdns.py -- Shared Avahi mDNS browsing and registry scaffolding.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 

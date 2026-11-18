@@ -174,8 +174,8 @@ class ArtworkImage:
 def _mime_for(data: bytes) -> Optional[str]:
     """Best-effort image mime type from magic bytes; None if unrecognised.
 
-    The URL is no guide — provider artwork URLs carry size templates and
-    query strings — so the format has to come from what the bytes actually
+    The URL is no guide -- provider artwork URLs carry size templates and
+    query strings -- so the format has to come from what the bytes actually
     are.
     """
     if data.startswith(b"\x89PNG\r\n\x1a\n"):

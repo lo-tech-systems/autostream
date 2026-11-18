@@ -528,7 +528,7 @@ def handle_live_input_gain_update(handler, state: WebUIState, body: str) -> None
 # -----------------------------------------------------------------------------
 
 def handle_factory_reset_post(handler, state: WebUIState, auth) -> None:
-    """POST /api/factory-reset — schedule factory reset via privileged helper.
+    """POST /api/factory-reset -- schedule factory reset via privileged helper.
 
     The privileged helper schedules the actual reset as a transient systemd
     unit (escaping the autostream.service cgroup) and returns immediately, so

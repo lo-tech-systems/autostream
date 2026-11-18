@@ -195,9 +195,9 @@ def send_owntone_restarting_page(handler, state) -> None:
       </head>
       <body>
         <div class="box">
-          <h1>Restarting Owntone…</h1>
+          <h1>Restarting Owntone&hellip;</h1>
           <p class="muted">This can take a few seconds on a Pi Zero. We'll continue automatically when it's ready.</p>
-          <p id="status" class="muted">Checking…</p>
+          <p id="status" class="muted">Checking&hellip;</p>
           <p class="muted">If this doesn't move on, you can <a href="{next_path_html}">try continuing</a>.</p>
         </div>
         <script>
@@ -209,7 +209,7 @@ def send_owntone_restarting_page(handler, state) -> None:
               const msg = (j.restart && j.restart.message) ? j.restart.message : "";
               const probe = j.probe ? j.probe : "";
               document.getElementById("status").textContent =
-                (j.ok ? "Ready. Redirecting…" : ("Not ready yet. " + (msg || probe || "")));
+                (j.ok ? "Ready. Redirecting\\u2026" : ("Not ready yet. " + (msg || probe || "")));
               if (j.ok) {{
                 window.location.replace(nextPath);
                 return;

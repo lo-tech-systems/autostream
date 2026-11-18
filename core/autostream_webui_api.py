@@ -532,7 +532,7 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
 
 
 def send_service_config_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/service/config — auto-save one maintenance tracking field.
+    """POST /api/service/config -- auto-save one maintenance tracking field.
 
     Request body (JSON):
         { "field": "<field_name>", "value": "<raw_value>" }
@@ -640,7 +640,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
 
 
 def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/service/reset — reset one maintenance item counter.
+    """POST /api/service/reset -- reset one maintenance item counter.
 
     Request body (JSON):
         { "item": "stylus"|"belt"|"bearing", "input": 1|2 }
@@ -778,13 +778,13 @@ def send_update_status_json(handler) -> None:
 # -----------------------------------------------------------------------------
 
 def send_output_eq_config_json(handler, state, body: str) -> None:
-    """POST /api/output_eq/config — auto-save one output EQ field.
+    """POST /api/output_eq/config -- auto-save one output EQ field.
 
     Request body (JSON):
         { "field": "<field_name>", "value": "<raw_value>" }
 
     Accepted fields:
-        gain_db, auto_trim_enabled, peq1_db … peq6_db
+        gain_db, auto_trim_enabled, peq1_db ... peq6_db
     """
     try:
         payload = json.loads(body or "{}")
@@ -820,7 +820,7 @@ def send_output_eq_reset_json(handler, state) -> None:
 
 
 def send_output_eq_status_json(handler) -> None:
-    """GET /api/output_eq/status — return live output trim state from the monitor.
+    """GET /api/output_eq/status -- return live output trim state from the monitor.
 
     Response (JSON):
         { "ok": true,
@@ -859,7 +859,7 @@ def _session_playing() -> bool:
 
 
 def send_audio_status_json(handler, state: WebUIState) -> None:
-    """GET /api/audio/status — unauthenticated, read-only.
+    """GET /api/audio/status -- unauthenticated, read-only.
 
     Returns a fresh snapshot of currently selected OwnTone output names and
     playing state.  Both exceptions and result.ok == False increment the
@@ -926,7 +926,7 @@ def _with_volume(output, volume_percent: int) -> SimpleNamespace:
 
 
 def send_dial_volume_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/volume — UUID-auth only (no session/CSRF required).
+    """POST /api/dial/volume -- UUID-auth only (no session/CSRF required).
 
     Applies a volume delta to all selected OwnTone outputs proportionally.
     Returns {"ok": true, "volume": <new_master>, "muted": false} on success.
@@ -1050,7 +1050,7 @@ def _dial_track_id_dict() -> dict:
     """Return the grouped track_id object for POST /api/dial/status.
 
     artwork_url is exposed only for identified results with a validated
-    http(s) provider URL — every other state reports an empty string.
+    http(s) provider URL -- every other state reports an empty string.
     """
     from autostream_core import get_active_track_identification_snapshot
     from track_id.models import STATE_IDENTIFIED
@@ -1169,7 +1169,7 @@ def _dial_auth_gate(handler, json_obj: dict) -> str | None:
 
 
 def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/status — UUID-auth only (no session/CSRF required).
+    """POST /api/dial/status -- UUID-auth only (no session/CSRF required).
 
     Returns fresh, side-effect-free playing state, master volume, and grouped
     track_id now-playing state. Never fetches remote artwork on the request path.
@@ -1271,7 +1271,7 @@ def _send_dial_repeat_ack(handler, ack: Optional[dict]) -> None:
 
 
 def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/repeat — repeat-replay transport (stop|seek).
+    """POST /api/dial/repeat -- repeat-replay transport (stop|seek).
 
     UUID-in-body auth via _dial_auth_gate, same as POST /api/dial/status.
     Start is expressed as seek 0 -- the dial never sends a nonzero position.
@@ -1308,7 +1308,7 @@ def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> No
 
 
 def send_dial_repeat_arm_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/repeat/arm — arm/disarm repeat-replay from the dial.
+    """POST /api/dial/repeat/arm -- arm/disarm repeat-replay from the dial.
 
     UUID-in-body auth via _dial_auth_gate, same as POST /api/dial/status.
     Calls set_live_repeat_armed_ack() directly, never apply_repeat_arm_request
@@ -1354,7 +1354,7 @@ def _dial_outputs_list(parsed) -> Optional[list]:
 
 
 def send_dial_outputs_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/outputs — UUID-auth; the focused appliance's outputs
+    """POST /api/dial/outputs -- UUID-auth; the focused appliance's outputs
     for the dial, with outputs in use by another autostream instance hidden.
     """
     if _dial_auth_gate(handler, json_obj) is None:
@@ -1373,7 +1373,7 @@ def send_dial_outputs_post_json(handler, state: WebUIState, json_obj: dict) -> N
 
 
 def send_dial_capabilities_json(handler, state: WebUIState) -> None:
-    """GET /api/dial/capabilities — unauthenticated, read-only.
+    """GET /api/dial/capabilities -- unauthenticated, read-only.
 
     The capability list a dial reads before it is authorised, so it carries
     only what the mDNS records already broadcast: identity, version, protocol
@@ -1389,7 +1389,7 @@ def send_dial_capabilities_json(handler, state: WebUIState) -> None:
 
 
 def send_dial_warnings_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/warnings — UUID-auth; the warnings this appliance
+    """POST /api/dial/warnings -- UUID-auth; the warnings this appliance
     wants a dial to show (maintenance wear, power supply). An empty list is a
     successful "nothing to report"; config_error means the list could not be
     built, which a dial treats as "keep what you have"."""
@@ -1409,7 +1409,7 @@ def send_dial_warnings_post_json(handler, state: WebUIState, json_obj: dict) -> 
 
 
 def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/outputs/set — UUID-auth; enable, disable or set the
+    """POST /api/dial/outputs/set -- UUID-auth; enable, disable or set the
     volume of one output through the same mutation the browser uses.
 
     Enabling without an explicit volume applies the configured default
@@ -1455,7 +1455,7 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
 
 
 def send_dial_eq_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/eq — UUID-auth; the bass/treble the dial shows,
+    """POST /api/dial/eq -- UUID-auth; the bass/treble the dial shows,
     read back from the stored output_eq bands (peq1/peq6, rounded and
     clamped to +/-6 dB -- see bass_treble_from_eq), plus every band."""
     if _dial_auth_gate(handler, json_obj) is None:
@@ -1502,7 +1502,7 @@ _EQ_SET_FIELDS = (
 
 
 def send_dial_eq_set_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/eq/set — UUID-auth; an absolute bass and/or treble
+    """POST /api/dial/eq/set -- UUID-auth; an absolute bass and/or treble
     value (the dial computes its own clamped absolute, same shape as the
     per-output volume steppers) and/or a "bands" object of absolute
     per-band gains, mapped onto the output_eq bands and applied in one write
@@ -1644,7 +1644,7 @@ def apply_mute_action(state: WebUIState, action: str) -> tuple[int, dict]:
 
 
 def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None:
-    """POST /api/dial/mute — UUID-auth only (no session/CSRF required).
+    """POST /api/dial/mute -- UUID-auth only (no session/CSRF required).
 
     Validates authorization and the requested action, then runs the shared
     mute/restore core (apply_mute_action) -- see its docstring for the
@@ -1673,7 +1673,7 @@ def send_dial_mute_post_json(handler, state: WebUIState, json_obj: dict) -> None
 # ---------------------------------------------------------------------------
 
 def send_federation_session_json(handler, source_ip: str) -> None:
-    """POST /api/federation/v1/session — issue a short-lived bearer token.
+    """POST /api/federation/v1/session -- issue a short-lived bearer token.
 
     Rate-limited to 5 successful issuances per source IP per 60-second window.
     A rejected request does not consume an issuance slot.
@@ -2462,7 +2462,7 @@ def send_settings_get_json(handler, state) -> None:
 
 
 def send_settings_post_json(handler, state, json_obj: dict) -> None:
-    """POST /api/settings — update one named setting via the SettingsStore.
+    """POST /api/settings -- update one named setting via the SettingsStore.
 
     Request: {"field": "<dotted.name>", "value": <json_value>}
 
@@ -2633,7 +2633,7 @@ def apply_repeat_arm_request(body: str) -> tuple[int, dict]:
 
 
 def send_repeat_post_json(handler, state, body: str) -> None:
-    """POST /api/repeat — arm/disarm repeat-recording replay.
+    """POST /api/repeat -- arm/disarm repeat-recording replay.
 
     Request: {"armed": bool}
 
@@ -2644,7 +2644,7 @@ def send_repeat_post_json(handler, state, body: str) -> None:
 
 
 def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> None:  # noqa: ARG001
-    """POST /api/federation/v1/repeat — arm/disarm repeat replay on the local
+    """POST /api/federation/v1/repeat -- arm/disarm repeat replay on the local
     appliance.  Same request/response contract as POST /api/repeat -- see
     apply_repeat_arm_request().
     """
@@ -2662,7 +2662,7 @@ _ADVERTISE_LOCK = threading.Lock()
 
 
 def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/settings/hostname — change the system hostname.
+    """POST /api/settings/hostname -- change the system hostname.
 
     Calls set_system_hostname(); on success, returns a redirect URL so the
     browser can follow the appliance to its new mDNS address.
@@ -2700,7 +2700,7 @@ def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
 
 
 def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/settings/advertisement — toggle peer advertisement.
+    """POST /api/settings/advertisement -- toggle peer advertisement.
 
     Calls reconcile_appliance_announcement(); persists to store only on
     success. Uses _ADVERTISE_LOCK to serialize concurrent calls.
@@ -2746,7 +2746,7 @@ def send_advertisement_post_json(handler, state: WebUIState, body: str) -> None:
 
 
 def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/settings/auto-update — toggle the automatic update timer.
+    """POST /api/settings/auto-update -- toggle the automatic update timer.
 
     Calls the toggle-update-timer admin command; persists to store only on
     success so a failed privileged call cannot commit an incorrect value.
@@ -2787,7 +2787,7 @@ def send_auto_update_post_json(handler, state: WebUIState, body: str) -> None:
 
 
 def send_save_now_json(handler, state: WebUIState) -> None:
-    """POST /api/settings/save — flush in-memory settings to disk synchronously.
+    """POST /api/settings/save -- flush in-memory settings to disk synchronously.
 
     Called before durability-sensitive actions (reboot, update install) so
     that in-flight autosave changes are not lost when the process restarts.
@@ -2840,7 +2840,7 @@ def _owntone_state_update_known_outputs(state: WebUIState, updates: dict[str, st
 
 
 def send_owntone_output_visibility_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/owntone/output-visibility — show or hide a named output.
+    """POST /api/owntone/output-visibility -- show or hide a named output.
 
     Body: {"output_name": "<name>", "visible": true|false}
     Optional "output_id" populates known_outputs when provided.
@@ -2894,7 +2894,7 @@ def send_owntone_output_visibility_json(handler, state: WebUIState, body: str) -
 
 
 def send_owntone_output_mode_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/owntone/output-mode — set AirPlay mode for a specific output.
+    """POST /api/owntone/output-mode -- set AirPlay mode for a specific output.
 
     Body: {"output_id": "<id>", "mode": "default"|"raop"|"airplay2"}
     """
@@ -3074,7 +3074,7 @@ def apply_output_offset(state: WebUIState, output_id: str, raw_offset) -> dict:
 
 
 def send_owntone_output_offset_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/owntone/output-offset — set playback offset for a specific output.
+    """POST /api/owntone/output-offset -- set playback offset for a specific output.
 
     Body: {"output_id": "<id>", "offset_ms": <int>}
     """
@@ -3372,7 +3372,7 @@ def send_owntone_start_buffer_json(handler, state: WebUIState, body: str) -> Non
 
 
 def send_owntone_user_agent_json(handler, state: WebUIState, body: str) -> None:
-    """POST /api/owntone/user-agent — set the AirPlay User-Agent header override.
+    """POST /api/owntone/user-agent -- set the AirPlay User-Agent header override.
 
     Body: {"value": <string>}. An empty string (after trimming) resets the
     backend to its derived default.
@@ -3483,7 +3483,7 @@ def send_log_level_put_json(
     json_obj: dict,
     changed_by: str,
 ) -> None:
-    """PUT /api/log-level — validate, persist, and apply log level.
+    """PUT /api/log-level -- validate, persist, and apply log level.
 
     `changed_by` must be "user" or "system"; the caller determines which
     based on the request classification (direct-local vs. browser-proxied).
@@ -4046,7 +4046,7 @@ _BLUETOOTH_BUFFER_MS_MAX = 500
 
 
 def send_bluetooth_status_json(handler, state) -> None:
-    """GET /api/bluetooth/status — install/enable/onboard flags + daemon status.
+    """GET /api/bluetooth/status -- install/enable/onboard flags + daemon status.
 
     Always returns HTTP 200 with ``ok: true`` -- the daemon being down
     (expected whenever services are disabled) is reported as ``daemon:
@@ -4109,7 +4109,7 @@ def send_bluetooth_scan_results_json(handler) -> None:
 
 
 def send_bluetooth_pair_status_json(handler, state=None) -> None:
-    """GET /api/bluetooth/pair_status — live pairing-attempt state from the daemon.
+    """GET /api/bluetooth/pair_status -- live pairing-attempt state from the daemon.
 
     A ``pair`` POST reply only means pairing *started*; the daemon's own
     reported outcome ("done" vs "failed") is only known here, via the
@@ -4146,7 +4146,7 @@ def send_bluetooth_pair_status_json(handler, state=None) -> None:
 
 
 def send_bluetooth_scan_post_json(handler, json_obj) -> None:
-    """POST /api/bluetooth/scan {"action": "start"|"stop"} — closed action set.
+    """POST /api/bluetooth/scan {"action": "start"|"stop"} -- closed action set.
 
     Mirrors ``send_network_setup_json``'s ``_NETWORK_SETUP_ALLOWED_ACTIONS``
     rejection style: unknown actions or extra keys are rejected before ever
@@ -4358,7 +4358,7 @@ def _bt_pair_auto_configure(state) -> Optional[dict]:
 
 
 def send_bluetooth_pair_post_json(handler, json_obj) -> None:
-    """POST /api/bluetooth/pair {"address": <mac>} — server-side MAC validation.
+    """POST /api/bluetooth/pair {"address": <mac>} -- server-side MAC validation.
 
     A daemon reply of ``{"ok": false, "error": "pair_in_progress"}`` (a
     pairing attempt already active) is surfaced as a 409, mirroring
@@ -4468,7 +4468,7 @@ def send_bluetooth_onboard_post_json(handler, json_obj) -> None:
 
 
 def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
-    """POST /api/bluetooth/buffer {"buffer_ms": int} — daemon configure passthrough.
+    """POST /api/bluetooth/buffer {"buffer_ms": int} -- daemon configure passthrough.
 
     Server-side range validation (100-500 ms, matching the card's slider)
     happens before ever touching the daemon; the daemon's own
@@ -4571,7 +4571,7 @@ def send_sdcard_health_disable_post_json(handler, json_obj) -> None:
 
 
 def send_playing_status_json(handler) -> None:
-    """GET /api/playing-status — return whether the appliance is streaming.
+    """GET /api/playing-status -- return whether the appliance is streaming.
 
     Returns ``{"ok": true, "playing": <bool>}`` when monitor state can be
     determined.  When it cannot (internal error), returns HTTP 200 with an

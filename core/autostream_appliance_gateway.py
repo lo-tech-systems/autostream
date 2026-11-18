@@ -1,4 +1,4 @@
-"""autostream_appliance_gateway.py — bound-appliance gateway for remote appliances.
+"""autostream_appliance_gateway.py -- bound-appliance gateway for remote appliances.
 
 Provides:
   - /api/appliances (appliance list with bound-first ordering)
@@ -25,7 +25,7 @@ Stale fallback: _coalesced_remote_get retains successful GET data for
 _STALE_READ_CACHE_TTL seconds. If a subsequent request hits backoff or a
 transport failure, the cached data is returned with stale=True metadata
 rather than an error, so the browser can render the last-known state while
-retrying in the background. Stale fallback never clears backoff state — only
+retrying in the background. Stale fallback never clears backoff state -- only
 a real successful remote response does that.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -122,11 +122,11 @@ def resolve_appliance(appliance_id: str) -> tuple[str, Optional[ApplianceSightin
     """Resolve *appliance_id* using one thread-safe registry snapshot.
 
     Returns (resolution, sighting) where resolution is one of:
-      'invalid'   — not exactly 20 lowercase hex characters
-      'bound'     — equals the local appliance ID
-      'conflict'  — in the registry conflict set
-      'remote'    — has a live, eligible registry entry
-      'offline'   — syntactically valid but not in the live registry
+      'invalid'   -- not exactly 20 lowercase hex characters
+      'bound'     -- equals the local appliance ID
+      'conflict'  -- in the registry conflict set
+      'remote'    -- has a live, eligible registry entry
+      'offline'   -- syntactically valid but not in the live registry
     """
     if not _APPLIANCE_ID_RE.match(appliance_id):
         return "invalid", None
@@ -404,7 +404,7 @@ def _remote_request(
 ) -> tuple[int, dict]:
     """Full remote request cycle: token acquisition and retry-once on 401.
 
-    Pure transport helper — does NOT update backoff state.  Callers must
+    Pure transport helper -- does NOT update backoff state.  Callers must
     call _update_backoff() after every completed request.
     Returns (http_status, data_dict). Status 0 means transport failure.
     """
@@ -454,7 +454,7 @@ def _update_backoff(key: tuple[str, str], status: int, data: dict, current_ip: s
 def _stale_response(entry: dict, reason: str, retry_after: int = 0) -> dict:
     """Return a copy of cached data with stale metadata merged in.
 
-    Never mutates the cached entry — always produces a new dict.
+    Never mutates the cached entry -- always produces a new dict.
     """
     age_ms = int((time.monotonic() - entry["cached_at"]) * 1000)
     result = dict(entry["data"])

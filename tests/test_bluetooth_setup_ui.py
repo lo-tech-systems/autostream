@@ -795,10 +795,10 @@ class TestBluetoothServicesButtonFeedback:
         assert "btn.disabled = true;" in html
 
     def test_enabling_busy_label_present(self, html):
-        assert "Enabling…" in html
+        assert "Enabling\\u2026" in html
 
     def test_disabling_busy_label_present(self, html):
-        assert "Disabling…" in html
+        assert "Disabling\\u2026" in html
 
     def test_enable_restores_on_error(self, html):
         idx_fn = html.index("function btEnableServices()")

@@ -86,12 +86,12 @@ def is_commissioning_required(config_path: str, state_path: str) -> bool:
     """Return True iff the system needs first-boot commissioning.
 
     Policy:
-      - Missing or technically incomplete config → True always.
-      - Technically complete + no first_boot marker in state → False (legacy).
-      - Technically complete + malformed marker → False (fail safe, legacy).
-      - Technically complete + required=True, completed=False → True.
-      - Technically complete + required=True, completed=True → False.
-      - Technically complete + required=False → False.
+      - Missing or technically incomplete config -> True always.
+      - Technically complete + no first_boot marker in state -> False (legacy).
+      - Technically complete + malformed marker -> False (fail safe, legacy).
+      - Technically complete + required=True, completed=False -> True.
+      - Technically complete + required=True, completed=True -> False.
+      - Technically complete + required=False -> False.
     """
     if not is_technically_complete(config_path):
         return True
@@ -108,9 +108,9 @@ def required_first_boot_step(config_path: str, state_path: str) -> str | None:
     """Return the first-boot page step required, or None if configured.
 
     Returns:
-      "owntone"   — OwnTone output selection step
-      "appliance" — ALSA device and FIFO setup step
-      None        — commissioning complete / device configured
+      "owntone"   -- OwnTone output selection step
+      "appliance" -- ALSA device and FIFO setup step
+      None        -- commissioning complete / device configured
     """
     if not is_commissioning_required(config_path, state_path):
         return None

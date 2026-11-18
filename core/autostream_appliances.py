@@ -1,4 +1,4 @@
-"""autostream_appliances.py — appliance announcement and peer discovery.
+"""autostream_appliances.py -- appliance announcement and peer discovery.
 
 Maintains the in-memory registry of compatible appliances discovered via
 _autostream._tcp mDNS, and manages the local _autostream._tcp Avahi service
@@ -165,7 +165,7 @@ def register_peer_removal_callback(fn) -> None:
     """Register fn(appliance_id: str) to call on final peer removal.
 
     Used by the gateway to hook evict_gateway_token without creating a
-    circular import (gateway → appliances, never appliances → gateway).
+    circular import (gateway -> appliances, never appliances -> gateway).
     """
     _peer_removal_callbacks.append(fn)
 

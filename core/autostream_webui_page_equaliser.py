@@ -281,7 +281,7 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
 def _equaliser_curve_js(fs: int) -> str:
     """Return the EQ curve JS, with _EQ_FS bound to *fs* (Hz)."""
     return f"""
-// ── EQ frequency-response curve ─────────────────────────────────────────────
+// &#9472;&#9472; EQ frequency-response curve &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;
 // Constants mirror the Python _CURVE_* values in this module.
 var _EQ_FS        = {fs};
 var _SVG_W        = {_CURVE_W};
@@ -370,7 +370,7 @@ function _drawEqCurve() {{
   }}
   pathEl.setAttribute('d', d);
 
-  // Update glow fill — same path closed down to the bottom of the SVG.
+  // Update glow fill &mdash; same path closed down to the bottom of the SVG.
   var fillEl = document.getElementById('eq-curve-fill');
   if (fillEl) {{
     fillEl.setAttribute('d', d + ' L' + _SVG_W + ' ' + _SVG_H + ' L0 ' + _SVG_H + ' Z');
@@ -758,7 +758,7 @@ function setOutputAutoTrim(enabled){
   var el=document.getElementById('output_trim_status');
   if(!el)return;
   if(!enabled){el.style.display='none';el.textContent='';}
-  else{el.style.display='';el.textContent='Calculating…';_pollTrimStatus();}
+  else{el.style.display='';el.textContent='Calculating\\u2026';_pollTrimStatus();}
 }
 
 function resetEq(){
@@ -870,7 +870,7 @@ function renderEqFromState(data){
       '<div class="eq-auto-trim-title">Automatically trim gain</div>'+
       '<div class="eq-auto-trim-subtitle">Prevent clipping by adjusting output level automatically</div>'+
       '<div class="eq-auto-trim-subtitle" id="output_trim_status"'+(autoTrim?'':' style="display:none;"')+'>'+
-      (autoTrim?'Calculating…':'')+
+      (autoTrim?'Calculating\\u2026':'')+
       '</div></div>'+
       '<label class="output-toggle" style="flex-shrink:0;margin-top:2px;">'+
       '<input type="checkbox" id="output_auto_trim"'+(autoTrim?' checked':'')+
@@ -1080,7 +1080,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         + "</div></div>"
         + "<div class='eq-section' id='eq-gain-section'></div>"
         + "<p id='eq-loading-msg' style='text-align:center;"
-        "color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>Connecting…</p>"
+        "color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>Connecting&hellip;</p>"
         + f"<script>{_eq_band_config_js()}{_equaliser_curve_js(_curve_fs())}</script>"
     )
 

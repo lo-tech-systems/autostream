@@ -973,7 +973,7 @@ class AuthManager:
             <head>
             <meta charset=\"utf-8\" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-            <title>{self.title} • Authentication</title>
+            <title>{self.title} &bull; Authentication</title>
             {self.style_link}
             </head>
             <body{body_cls}>

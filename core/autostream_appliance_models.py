@@ -1,4 +1,4 @@
-"""autostream_appliance_models.py — shared Home and Equaliser state models.
+"""autostream_appliance_models.py -- shared Home and Equaliser state models.
 
 Provides build_home_state() and build_equaliser_state() plus shared
 output and EQ mutation helpers used by both local API endpoints and
@@ -438,7 +438,7 @@ def build_equaliser_state(config_path: str) -> dict:
 
     Returns a dict with all EQ config fields plus the live auto-trim status
     from the monitor (if available).  Keys: ok, gain_db, auto_trim_enabled,
-    peq1_db … peq6_db, output_auto_trim_enabled, output_auto_trim_db,
+    peq1_db ... peq6_db, output_auto_trim_enabled, output_auto_trim_db,
     effective_output_gain_db.
     """
     try:
@@ -479,7 +479,7 @@ def apply_eq_field(config_path: str, field: str, value_raw: str, *, settings=Non
     Raises ValueError for unknown fields or non-numeric dB values.
 
     When *settings* is a SettingsStore instance, it is used as the sole
-    persistence mechanism (store → background disk write). The config_path
+    persistence mechanism (store -> background disk write). The config_path
     is only used as a fallback when no store is available.
 
     Dials are told when a band changes: they show the bands, not the output
@@ -678,7 +678,7 @@ def apply_eq_fields(config_path: str, values: dict, *, settings=None) -> tuple:
 
 
 def apply_eq_reset(config_path: str, *, settings=None) -> tuple[bool, str]:
-    """Zero all EQ band fields (peq1–peq6). Does not change output gain or auto-trim.
+    """Zero all EQ band fields (peq1-peq6). Does not change output gain or auto-trim.
 
     When *settings* is a SettingsStore instance, uses it for atomic persistence.
     """

@@ -259,7 +259,7 @@ def save_network_state(
     """Atomically persist *state* to network.json and (optionally) mirror it.
 
     The legacy mirror receives only ``connection_name`` plus a trailing newline
-    — never JSON — so an older watcher can still read it after an upgrade.
+    -- never JSON -- so an older watcher can still read it after an upgrade.
     """
     sp = state_path or NETWORK_STATE_PATH
     lp = legacy_path or LEGACY_SSID_PATH
@@ -1461,7 +1461,7 @@ def list_interface_addresses(ifname: Optional[str] = None) -> dict:
     """Return per-interface IP addresses via ``ip -j addr show``.
 
     Maps ``{ifname: [{family, address, prefixlen, scope}, ...]}`` where family
-    is "ipv4"/"ipv6".  Returns {} on failure.  Facts only — no policy about
+    is "ipv4"/"ipv6".  Returns {} on failure.  Facts only -- no policy about
     which address is "primary" or whether the interface is "online".
     """
     args = ["addr", "show"]

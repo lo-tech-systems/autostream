@@ -69,7 +69,7 @@
    spaces its cards the same way the rest of the setup page does. */
 .dial-card-wrap{margin-bottom:0.62rem;}
 /* Screen controls follow the "Has Screen Fitted" toggle: the inputs are
-   disabled from JS, and this dims the whole row — including its label text,
+   disabled from JS, and this dims the whole row &mdash; including its label text,
    which a disabled attribute alone leaves at full contrast. */
 .dial-screen-ctl-row{transition:opacity 0.15s ease;}
 .dial-screen-ctl-row.is-disabled{opacity:0.45;}
@@ -231,7 +231,7 @@
     </div>
     <div class="ft modal-ft">
       <button type="button" class="btn modal-btn modal-btn-secondary" id="dialPinRecoveryCancel">Cancel</button>
-      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinRecoveryOk" disabled>Waiting for Dial…</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="dialPinRecoveryOk" disabled>Waiting for Dial&hellip;</button>
     </div>
   </div>
 </div>
@@ -324,126 +324,126 @@
           <span class="setup-list-card-title">Input 1</span>
           <span class="setup-list-card-sub" id="input1-card-sub">USB Turntable · Turntable · +2 dB</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('input2')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Input 2</span>
           <span class="setup-list-card-sub" id="input2-card-sub">USB Line In · Line · -3 dB</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('bluetooth')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Bluetooth</span>
           <span class="setup-list-card-sub" id="bluetooth-card-sub">Disabled</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('playback')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Playback</span>
           <span class="setup-list-card-sub" id="playback-card-sub">Living Room Speaker · 65%</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('track-id')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Track Identification</span>
           <span class="setup-list-card-sub" id="track-id-card-sub">On</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('dials')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Dials</span>
           <span class="setup-list-card-sub" id="dials-card-sub">1 authorized · 1 online</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('customise')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Personalisation</span>
           <span class="setup-list-card-sub" id="customise-card-sub">Master volume: On · Input detail: On · Dark mode: Off · Hostname: On · Control others: On · Peer control: On</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('system')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">System</span>
           <span class="setup-list-card-sub" id="system-card-sub">autostream-golden · v{APP_VERSION} · Auto-update: On</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
       <div class="setup-list-card" onclick="openPanel('factory-reset')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Factory Reset</span>
           <span class="setup-list-card-sub" id="factory-reset-card-sub">Erase all settings and return to Wi-Fi setup</span>
         </div>
-        <span class="setup-list-chevron">›</span>
+        <span class="setup-list-chevron">&rsaquo;</span>
       </div>
     </div>
     <div class="setup-slide-panels">
       
       <div class="setup-detail-panel" id="panel-input1">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup Input 1</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-input1"></div>
       </div>
       <div class="setup-detail-panel" id="panel-input2">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup Input 2</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-input2"></div>
       </div>
       <div class="setup-detail-panel" id="panel-bluetooth">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Bluetooth</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-bluetooth"></div>
       </div>
       <div class="setup-detail-panel" id="panel-playback">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup Playback Defaults</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-playback"></div>
       </div>
       <div class="setup-detail-panel" id="panel-track-id">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Track Identification</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-track-id"></div>
       </div>
       <div class="setup-detail-panel" id="panel-dials">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Dials</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-dials"></div>
       </div>
       <div class="setup-detail-panel" id="panel-customise">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Personalisation</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-customise"></div>
       </div>
       <div class="setup-detail-panel" id="panel-system">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>System &amp; Updates</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-system"></div>
       </div>
       <div class="setup-detail-panel" id="panel-factory-reset">
         <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">← Back</button>
+          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
         </div>
         
         <div class="setup-detail-panel-body" id="panel-body-factory-reset"></div>
@@ -522,8 +522,8 @@
 (function() {
   var _csrf = window.__CSRF || '';
   var _statusEl = null;
-  var _pendingTimers = {};    // field → {timer, value}
-  var _pendingRequests = {};  // field → {ctrl, promise}
+  var _pendingTimers = {};    // field -> {timer, value}
+  var _pendingRequests = {};  // field -> {ctrl, promise}
 
   function _getStatus() {
     if (!_statusEl) _statusEl = document.getElementById('autosave-status');
@@ -543,7 +543,7 @@
     var prev = _pendingRequests[field];
     if (prev) { try { prev.ctrl.abort(); } catch(_) {} }
     var ctrl = new AbortController();
-    _setStatus('Saving…');
+    _setStatus('Saving\u2026');
     var p = fetch('/api/settings', {
       method: 'POST',
       credentials: 'same-origin',
@@ -562,7 +562,7 @@
           if (el && (el.textContent === 'Saved' || el.textContent === 'Saved (could not apply live)')) el.textContent = '';
         }, 2000);
       } else {
-        _setStatus('Could not save — ' + (d.error || 'error'));
+        _setStatus('Could not save \u2014 ' + (d.error || 'error'));
       }
     }).catch(function(e) {
       if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
@@ -608,10 +608,10 @@
     return Promise.all(promises);
   };
 
-  // Buttonless "Applying setting…" modal for restart-required autosaves. The
+  // Buttonless "Applying setting..." modal for restart-required autosaves. The
   // restart itself is coalesced 0.75s after the save response, so an
   // immediate ready-poll can see the daemon still up with no restart in
-  // progress — dismissal therefore waits for either an observed in_progress
+  // progress -- dismissal therefore waits for either an observed in_progress
   // state or a minimum elapsed window before trusting "not in progress" as
   // "finished". A hard timeout gives up and reports failure via the status
   // line instead of polling forever.
@@ -641,7 +641,7 @@
       var elapsed = Date.now() - _restartStartedAt;
       if (j.ok && !restart.in_progress && (_restartSawInProgress || elapsed >= 3000)) {
         // A restart that ran and failed leaves the daemon up but the change
-        // unapplied — surface its message rather than dismissing silently.
+        // unapplied -- surface its message rather than dismissing silently.
         if (_restartSawInProgress && restart.ok === false) {
           _restartDismiss(_restartLastMessage || 'OwnTone restart failed');
         } else {
@@ -657,7 +657,7 @@
 
   function _restartBegin() {
     var m = _restartModalEl();
-    if (!m) return;  // page has no restart modal — degrade to no-op
+    if (!m) return;  // page has no restart modal -- degrade to no-op
     m.classList.add('show');
     _restartSawInProgress = false;
     _restartStartedAt = Date.now();
@@ -672,7 +672,7 @@
 
   window.settingsTransact = function(url, payload, opts) {
     opts = opts || {};
-    _setStatus('Applying…');
+    _setStatus('Applying\u2026');
     fetch(url, {
       method: 'POST',
       credentials: 'same-origin',
@@ -680,7 +680,7 @@
       body: JSON.stringify(payload)
     }).then(function(r) { return r.json(); }).then(function(d) {
       if (!d.ok) {
-        _setStatus('Could not apply — ' + (d.error || 'error'));
+        _setStatus('Could not apply \u2014 ' + (d.error || 'error'));
         if (opts.onError) opts.onError(d);
         return;
       }
@@ -863,7 +863,7 @@
           els.modal.classList.add('show');
         }
         // Parse a fetch Response into a discriminated result object.
-        // Does NOT catch a rejected fetch() promise — network failures propagate.
+        // Does NOT catch a rejected fetch() promise -- network failures propagate.
         // Returns: {ok, transportStatus, body, error}
         async function _parseDialResponse(response) {
           var transportStatus = response.status;
@@ -935,7 +935,7 @@
               if (els.newInput) { els.newInput.value = ''; els.newInput.style.display = 'none'; }
               if (els.repeatInput) { els.repeatInput.value = ''; els.repeatInput.style.display = 'none'; }
               showPinModalError(null);
-              els.message.textContent = 'PIN changed successfully. Returning to the home screen…';
+              els.message.textContent = 'PIN changed successfully. Returning to the home screen\u2026';
               els.ok.style.display = 'none';
               els.cancel.textContent = 'Continue';
               setPinModalBusy(false);
@@ -1198,7 +1198,7 @@
                 return;
               }
             } catch(e) {
-              // Network error — fall through; reboot will reload config from disk
+              // Network error -- fall through; reboot will reload config from disk
             }
           }
           showRebootModal();
@@ -1237,12 +1237,12 @@
               if(j.ok && j.status === "in_progress"){
                 if(j.stale){
                   if(j.hung){
-                    msg("An update is still running but has been unresponsive for 30+ minutes. Power-cycle the device to recover — do not retry until after rebooting.");
+                    msg("An update is still running but has been unresponsive for 30+ minutes. Power-cycle the device to recover \u2014 do not retry until after rebooting.");
                   } else {
                     msg("A previous update appears to have stalled. Power-cycle the device to trigger automatic recovery, or use Check for Updates to retry.");
                   }
                 } else {
-                  // An update is already running — send the user to the progress page.
+                  // An update is already running -- send the user to the progress page.
                   window.location.replace("/offline/updating");
                 }
                 return;
@@ -1251,7 +1251,7 @@
               else if(j.ok && (j.status === "failure" || j.status === "error")){
                 msg("Last update failed: " + (j.message || "unknown error"));
               }
-            } catch(e) { /* ignore — no persisted status yet */ }
+            } catch(e) { /* ignore -- no persisted status yet */ }
           }
           bCheck.onclick = async () => {
             if (infoMode) {
@@ -1562,20 +1562,20 @@
         // After a target/enable change the daemon tears the arena down and
         // rebuilds it (typically well under a second), but the status cache
         // backing /api/status refreshes on its own ~1-2s poll -- so the note
-        // switches to "Calculating…" immediately and polls until a FRESH
+        // switches to "Calculating..." immediately and polls until a FRESH
         // figure (requested_minutes matching the new target, capacity
         // recomputed) is back, rather than either freezing on the stale
         // pre-change text or flashing the old figure as if it were the
         // answer. If nothing fresh arrives within the window (e.g. an old
         // monitor build that never reports requested_minutes alongside a
         // rejected match), a final unconditional refresh shows whatever the
-        // daemon does report instead of leaving "Calculating…" stuck.
+        // daemon does report instead of leaving "Calculating..." stuck.
         function pollRepeatNote(expectedRequestedMins) {
           var myToken = ++_repeatToggleToken;
           var attempts = 0;
           var maxAttempts = 12;
           var noteEl = document.getElementById('repeat-max-time-note');
-          if (noteEl) noteEl.textContent = 'Calculating…';
+          if (noteEl) noteEl.textContent = 'Calculating\u2026';
           (function poll() {
             if (myToken !== _repeatToggleToken) return;  // superseded by a later change
             attempts++;
@@ -1697,7 +1697,7 @@
         }
       </script>
       <script>
-        // ── Dial management ────────────────────────────────────────────────
+        // -- Dial management ------------------------------------------------
         var _dialPinRecoveryTimer = null;
         var _dialPinRecoverySeenActive = false;
         var _dialPinModalCard = null;
@@ -1705,7 +1705,7 @@
         var _dialPinRecoveryModalCard = null;
         var _dialPinRecoveryStep = null; // 'confirm' | 'wait' | 'set'
         var _dialNameModalCard = null;
-        var _dialUnlockedPins = new WeakMap(); // card → '' (no PIN) | 'XXXX' (PIN stored) | absent (locked)
+        var _dialUnlockedPins = new WeakMap(); // card -> '' (no PIN) | 'XXXX' (PIN stored) | absent (locked)
         var _ICON_PADLOCK_LOCKED = `<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
         var _ICON_PADLOCK_UNLOCKED = `<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`;
 
@@ -1799,13 +1799,13 @@
           if (sizeEl) sizeEl.disabled = off;
           if (layoutEl) layoutEl.disabled = off;
           if (touchEl) touchEl.disabled = off;
-          // Dim the rows too — a disabled input still renders its label text
+          // Dim the rows too -- a disabled input still renders its label text
           // at full contrast, which reads as available when it is not.
           card.querySelectorAll('.dial-screen-ctl-row').forEach(function(row) {
             row.classList.toggle('is-disabled', off);
           });
           // "Always show controls" additionally requires a real touch
-          // controller — a persistent overlay with dead minus/plus buttons
+          // controller -- a persistent overlay with dead minus/plus buttons
           // on a screen-only dial is misleading. The dial itself does not
           // check touch at runtime; this is purely a UI courtesy.
           var ctlEl = card.querySelector('.dial-screen-always-controls');
@@ -1913,7 +1913,7 @@
           // so it must not be offered a lock it has no key for: block setting a
           // PIN in the first place. If a PIN was already set before this became
           // true (an already-impossible situation), don't strand the user by
-          // hiding everything — keep the reset button visible and explain.
+          // hiding everything -- keep the reset button visible and explain.
           if (!canConfirm && !hasPin) {
             if (pinBtn) pinBtn.style.display = 'none';
             if (recoverBtn) recoverBtn.style.display = 'none';
@@ -2031,14 +2031,14 @@
           };
         }
 
-        // ── Dial self-restart after a touch-controller change ──────────────
+        // -- Dial self-restart after a touch-controller change --------------
         // The dial persists the new touch_type and THEN restarts, so
         // screen.touch_type (built from persisted config) reports the new
         // value instantly from the old, not-yet-restarted process -- polling
         // it would report success immediately and verify nothing.
         // runtime.touch_type is the one field that reflects what is
         // actually running, so that -- and only that -- is what gets polled.
-        var _dialTouchPollCancel = new WeakMap(); // card → cancel() of an in-flight restart poll
+        var _dialTouchPollCancel = new WeakMap(); // card -> cancel() of an in-flight restart poll
 
         function _dialCancelTouchRestartPoll(card) {
           var cancel = _dialTouchPollCancel.get(card);
@@ -2107,7 +2107,7 @@
 
         async function _dialScreenFetch() {
           if (!_dialScreenModalUuid) return;
-          _dialScreenSetState('Loading…', null);
+          _dialScreenSetState('Loading\u2026', null);
           try {
             var r = await fetch('/api/dial/screen/image/' + encodeURIComponent(_dialScreenModalUuid),
                                 {cache: 'no-store', headers: {'X-CSRF-Token': window.__CSRF || ''}});
@@ -2377,7 +2377,7 @@
               if (typeRow) typeRow.style.display = 'none';
             }
             // `supported_touch` is a SEPARATE capability array from
-            // `supported` — a dial can publish screen profiles but no touch
+            // `supported` -- a dial can publish screen profiles but no touch
             // capability at all, and must never receive touch_type in the
             // save body or its strict whitelist rejects the whole save.
             var supportedTouch = Array.isArray(j.supported_touch) ? j.supported_touch : [];
@@ -2645,12 +2645,12 @@
           // GET resolves would post {fitted, rotate} alone and silently
           // reset a configured screen_type/BGR back to defaults.
           if (card.dataset.screenLoaded !== '1') {
-            dialMsg(card, 'Still loading screen settings — try again', false);
+            dialMsg(card, 'Still loading screen settings \u2014 try again', false);
             return;
           }
           var screen = {fitted: fittedEl.checked, rotate: rotateEl.checked};
           // Capability gate: only include the new fields once the dial has
-          // published `supported` — an older dial 400s the whole save on an
+          // published `supported` -- an older dial 400s the whole save on an
           // unknown field, which would break the existing toggles too.
           if (card.dataset.screenCaps === '1') {
             screen.bgr = bgrEl ? bgrEl.checked : false;
@@ -2722,7 +2722,7 @@
             if (!unlockedPin) { dialMsg(card, 'Unlock settings first', false); return; }
             body.current_pin = unlockedPin;
           }
-          // Snapshot the changed control's previous value before posting —
+          // Snapshot the changed control's previous value before posting --
           // a <select> can't be reverted with a simple !checked flip like
           // the checkboxes, so remember what to restore it to on failure.
           // The change has already happened, so a checkbox's previous value
@@ -2760,7 +2760,7 @@
             }
             else {
               dialMsg(card, _dialErrorMessage(result.error), false);
-              // Revert only the control the user changed — the others
+              // Revert only the control the user changed -- the others
               // still hold their pre-save values.
               if (changedEl) {
                 if (changedEl.tagName === 'SELECT' || changedEl.type === 'number' || changedEl.type === 'range') changedEl.value = prevValue;
@@ -2799,7 +2799,7 @@
           } catch(e) { dialMsg(card, 'Network error', false); }
         }
 
-        // ── Dial firmware update: live progress and outcome ────────────────
+        // -- Dial firmware update: live progress and outcome ----------------
         // An update can take about 40 minutes, so the poll budget is an
         // hour. The dial drops off the network while it reboots; an
         // unanswered poll is expected and simply keeps the poll going.
@@ -2909,7 +2909,7 @@
           } catch(e) {}
         }
 
-        // ── Dial SD card health monitoring row ─────────────────────────────
+        // -- Dial SD card health monitoring row -----------------------------
         // Present only for a dial advertising dial_sdmon=v1 (rendered
         // server-side). The dial runs its probe on its own thread, so an
         // enable is: POST, then poll GET until probe.running is false.
@@ -3206,7 +3206,7 @@
             'To reset the Dial PIN, start by power-cycling the Dial now. Once it restarts, you have 10 minutes to confirm you are at the device.';
           var okBtn = document.getElementById('dialPinRecoveryOk');
           var cancelBtn = document.getElementById('dialPinRecoveryCancel');
-          if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial…'; }
+          if (okBtn) { okBtn.disabled = true; okBtn.textContent = 'Waiting for Dial\u2026'; }
           if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = 'Cancel'; }
           _dialPinRecoverySeenActive = false;
           if (_dialPinRecoveryTimer) { clearInterval(_dialPinRecoveryTimer); _dialPinRecoveryTimer = null; }
@@ -3215,7 +3215,7 @@
               var pollResult = await _dialGet('/api/dial/pin_recovery/status/' + encodeURIComponent(uuid));
               var body = pollResult.body || {};
               // A boolean `active` is only ever present when the dial itself
-              // answered — on both the in-recovery 200 and the not-in-recovery
+              // answered -- on both the in-recovery 200 and the not-in-recovery
               // 404 that the proxy tunnels through HTTP 200. Transport
               // failures carry no `active`, so an unreachable dial leaves the
               // badge as-is rather than falsely clearing it.
@@ -3224,7 +3224,7 @@
                 _dialSetRecoveryBadge(card, body.active === true &&
                   !(typeof pollRemainingMs === 'number' && pollRemainingMs <= 0));
               }
-              if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery — wait silently
+              if (!pollResult.ok) return; // offline, unreachable, or not yet in recovery -- wait silently
               if (body.can_confirm_presence === false) {
                 _dialPinRecoveryCannotConfirm();
                 return;
@@ -3247,11 +3247,11 @@
                 // Leaving the button on "Waiting for Dial" reads as though
                 // nothing has happened yet, when in fact the only remaining
                 // step is theirs.
-                if (okBtn) okBtn.textContent = 'Waiting for user…';
+                if (okBtn) okBtn.textContent = 'Waiting for user\u2026';
               } else if (_dialPinRecoverySeenActive) {
-                // Window was active and is no longer — it expired rather than
+                // Window was active and is no longer -- it expired rather than
                 // never having started, so tell the user instead of leaving
-                // them on "Waiting for Dial…" forever.
+                // them on "Waiting for Dial..." forever.
                 _dialPinRecoveryExpired();
               }
             } catch(e) {}
@@ -3299,7 +3299,7 @@
           var newPin = (newInp ? newInp.value : '').trim();
           var confPin = (confInp ? confInp.value : '').trim();
           if (!/^\d{4,8}$/.test(newPin)) {
-            if (errEl) { errEl.textContent = 'Enter 4–8 digits.'; errEl.style.display = ''; }
+            if (errEl) { errEl.textContent = 'Enter 4\u20138 digits.'; errEl.style.display = ''; }
             if (newInp) newInp.focus();
             return;
           }
@@ -3346,7 +3346,7 @@
           try {
             var pinResult;
             if (mode === 'unlock') {
-              // Verify PIN by saving the current config values — same payload as dialSaveConfig.
+              // Verify PIN by saving the current config values -- same payload as dialSaveConfig.
               // The dial validates the PIN against a real request; values are unchanged.
               var verifyBody = {uuid: uuid, current_pin: currentPin};
               var nameEl2 = card.querySelector('.dial-name');
@@ -3562,7 +3562,7 @@
         }
       </script>
       <script>
-        // ── Network adapter status and Change Wi-Fi ─────────────────
+        // -- Network adapter status and Change Wi-Fi -----------------
         function _networkStatusFailed() {
           var titleEl = document.getElementById('networkCardTitle');
           var adapterEl = document.getElementById('networkAdapterInfo');
@@ -3709,7 +3709,7 @@
           var btn = document.querySelector('#networkCard .pill-btn');
           var msg = document.getElementById('networkSetupMsg');
           if (btn) btn.disabled = true;
-          if (msg) { msg.textContent = 'Starting setup hotspot…'; msg.style.color = ''; }
+          if (msg) { msg.textContent = 'Starting setup hotspot\u2026'; msg.style.color = ''; }
           try {
             var r = await fetch('/api/network/setup', {
               method: 'POST',
@@ -3722,7 +3722,7 @@
             });
             var j = await r.json().catch(function() { return {}; });
             if (r.ok && j && j.ok) {
-              if (msg) { msg.textContent = 'Hotspot starting. Connect to the “autostream-setup” network to complete setup.'; msg.style.color = ''; }
+              if (msg) { msg.textContent = 'Hotspot starting. Connect to the \u201cautostream-setup\u201d network to complete setup.'; msg.style.color = ''; }
             } else if (r.status === 409) {
               if (msg) { msg.textContent = 'A network change is already in progress.'; msg.style.color = 'var(--color-error,#c00)'; }
               if (btn) btn.disabled = false;
@@ -3840,7 +3840,7 @@
 
         function btEnableServices() {
           var btn = document.getElementById('btnBtEnableServices');
-          var restore = _btSetBusy(btn, 'Enabling…');
+          var restore = _btSetBusy(btn, 'Enabling\u2026');
           settingsTransact('/api/bluetooth/services', {action: 'enable'}, {
             onSuccess: function() { window.location.reload(); },
             onError: function() { if (restore) restore(); }
@@ -3850,7 +3850,7 @@
         function btDisableServices() {
           if (!window.confirm('Disable Bluetooth services? Any active Bluetooth stream will stop immediately.')) return;
           var btn = document.getElementById('btnBtDisableServices');
-          var restore = _btSetBusy(btn, 'Disabling…');
+          var restore = _btSetBusy(btn, 'Disabling\u2026');
           settingsTransact('/api/bluetooth/services', {action: 'disable'}, {
             onSuccess: function() { window.location.reload(); },
             onError: function() { if (restore) restore(); }
@@ -3884,7 +3884,7 @@
           }, 500);
         }
 
-        // ── SD card health monitoring row (shares this card) ──────────────
+        // -- SD card health monitoring row (shares this card) --------------
         var sdHealthState = {"tool_present": false, "timer_enabled": false, "method": "auto", "check": "none", "serial": "", "at": "", "reason": "", "card": {"manfid": null, "oemid": null, "name": "", "serial": "", "likely_supported": false}, "health_percent": null, "last_sampled_at": null};
 
         function showSdHealthModal() {
@@ -3909,7 +3909,7 @@
           var method = sel ? sel.value : 'auto';
           var btn = document.getElementById('sdHealthActionBtn');
           var prevLabel = btn ? btn.textContent : '';
-          if (btn) { btn.disabled = true; btn.textContent = 'Checking card…'; }
+          if (btn) { btn.disabled = true; btn.textContent = 'Checking card\u2026'; }
           settingsTransact('/api/sdcard-health/enable', {method: method}, {
             onSuccess: function() { window.location.reload(); },
             onError: function(d) {
@@ -3927,7 +3927,7 @@
           if (!window.confirm('Stop monitoring this card\'s health?')) return;
           var btn = document.getElementById('sdHealthActionBtn');
           var prevLabel = btn ? btn.textContent : '';
-          if (btn) { btn.disabled = true; btn.textContent = 'Disabling…'; }
+          if (btn) { btn.disabled = true; btn.textContent = 'Disabling\u2026'; }
           settingsTransact('/api/sdcard-health/disable', {}, {
             onSuccess: function() { window.location.reload(); },
             onError: function() { if (btn) { btn.disabled = false; btn.textContent = prevLabel; } }
@@ -3955,7 +3955,7 @@
           if (adapterRow) {
             var kind = daemon && daemon.adapter_kind;
             var text = !adapterPresent
-              ? 'No Bluetooth adapter found — plug in a USB adapter, or enable the onboard device below.'
+              ? 'No Bluetooth adapter found \u2014 plug in a USB adapter, or enable the onboard device below.'
               : (kind === 'usb' ? 'USB adapter' : (kind === 'onboard' ? 'Onboard' : 'Detected'));
             adapterRow.textContent = 'Adapter: ' + text;
           }

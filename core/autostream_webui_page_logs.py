@@ -133,8 +133,8 @@ def send_logs_page(
     )
     _body_html = (
         f"<div class='setup-detail-back'>"
-        f"<a href='/about' class='pill-btn small'>\u2190 Back</a>"
-        f"<a href='/logs' class='pill-btn small' style='margin-left:auto;'>\u21bb Refresh</a>"
+        f"<a href='/about' class='pill-btn small'>&larr; Back</a>"
+        f"<a href='/logs' class='pill-btn small' style='margin-left:auto;'>&#8635; Refresh</a>"
         f"</div>"
         f"{_logs_detail_header('Logs')}"
         f"<div class='logs-level-card'>"

@@ -1,4 +1,4 @@
-"""autostream_federation.py — in-memory federation session management.
+"""autostream_federation.py -- in-memory federation session management.
 
 Provides short-lived source-IP-bound bearer tokens for the target-side
 federation API (/api/federation/v1/*).  All sessions are in-memory and

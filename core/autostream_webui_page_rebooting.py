@@ -48,7 +48,7 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
       <html lang="en">
       <head>
         <meta charset="utf-8">{VIEWPORT_META}
-        <title>Rebooting\u2026</title>
+        <title>Rebooting&hellip;</title>
         {style_link}
         <style>
           body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }}
@@ -60,9 +60,9 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
       </head>
       <body>{lic_html}{lic_spacer}
         <div class="box">
-          <h1>Rebooting\u2026</h1>
-          <p class="muted">Your device is restarting. This page will return you to the app automatically when it\u2019s ready.</p>
-          <p id="status" class="muted">Requesting reboot\u2026</p>
+          <h1>Rebooting&hellip;</h1>
+          <p class="muted">Your device is restarting. This page will return you to the app automatically when it&rsquo;s ready.</p>
+          <p id="status" class="muted">Requesting reboot&hellip;</p>
           <p class="muted">If you are not redirected, try <a href="/">opening the app</a> again in a moment.</p>
         </div>
 
@@ -86,13 +86,13 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
               try {{
                 const j = await r.json();
                 if (j && j.ok) {{
-                  setStatus("Reboot scheduled. Waiting for restart\u2026");
+                  setStatus("Reboot scheduled. Waiting for restart\\u2026");
                   return;
                 }}
               }} catch (e) {{}}
-              setStatus("Reboot requested. Waiting for restart\u2026");
+              setStatus("Reboot requested. Waiting for restart\\u2026");
             }} catch (e) {{
-              setStatus("Waiting for restart\u2026");
+              setStatus("Waiting for restart\\u2026");
             }}
           }}
 
@@ -100,12 +100,12 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
             const elapsed = Date.now() - startedAt;
             if (elapsed < minWaitMs) {{
               const s = Math.ceil((minWaitMs - elapsed) / 1000);
-              setStatus("Reboot scheduled. Restarting in ~" + s + "s\u2026");
+              setStatus("Reboot scheduled. Restarting in ~" + s + "s\\u2026");
               setTimeout(pollRoot, 700);
               return;
             }}
 
-            setStatus("Checking if the app is back\u2026");
+            setStatus("Checking if the app is back\\u2026");
             try {{
               const r = await fetch("/", {{ cache: "no-store" }});
               if (r && r.ok) {{

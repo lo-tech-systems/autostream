@@ -279,8 +279,8 @@ def _maintenance_item_panel_html(
 ) -> str:
     """Render one maintenance fieldset (belt or bearing) for an input.
 
-    Display values are derived from _hours_display / _time_display — the same
-    functions used by the live JSON API — so the initial render and any
+    Display values are derived from _hours_display / _time_display -- the same
+    functions used by the live JSON API -- so the initial render and any
     subsequent auto-save or reset updates are always calculated identically.
     """
     if not is_turntable:
@@ -418,8 +418,8 @@ def _stylus_panel_html(
 ) -> str:
     """Render the stylus wear tracking fieldset for one input.
 
-    Display values are derived from _hours_display — the same function used by
-    the live JSON API — so the initial render and any subsequent updates are
+    Display values are derived from _hours_display -- the same function used by
+    the live JSON API -- so the initial render and any subsequent updates are
     always calculated identically.
     """
     life_name   = f"service_stylus_life_hours_input{input_index}"
@@ -524,7 +524,7 @@ def _back_bar() -> str:
     return (
         "<div class='setup-detail-back'>"
         "<button type='button' class='pill-btn small' style='width:auto;'"
-        " onclick='closeServiceDetail()'>← Back</button>"
+        " onclick='closeServiceDetail()'>&larr; Back</button>"
         "</div>"
     )
 

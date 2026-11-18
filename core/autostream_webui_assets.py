@@ -1217,12 +1217,12 @@ HOME_CARDS_SCRIPT = """
       else if (tiState === 'not_found') { suffix = 'Unknown track'; }
       else if (tiState === 'waiting_for_audio' || tiState === 'analysing') {
         // Use the API's own status_text ("Waiting for audio" / "Analysing")
-        // instead of collapsing both into the "Identifying Track…" catch-all,
+        // instead of collapsing both into the "Identifying Track..." catch-all,
         // so a stalled schedule is visibly different from one that is working.
-        suffix = String((ti && ti.status_text) || 'Identifying Track…');
+        suffix = String((ti && ti.status_text) || 'Identifying Track\\u2026');
       }
-      else { suffix = 'Identifying Track…'; }
-      if (nameEl) nameEl.textContent = inputPrefix + ' – ' + suffix;
+      else { suffix = 'Identifying Track\\u2026'; }
+      if (nameEl) nameEl.textContent = inputPrefix + ' \\u2013 ' + suffix;
       if (signalEl) signalEl.textContent = '';
       var svgKey = 'svg:' + iconKind;
       if (iconEl && iconEl.getAttribute('data-np-icon-key') !== svgKey) {
@@ -1337,7 +1337,7 @@ HOME_CARDS_SCRIPT = """
     var showReplayLast = (sessionActive === null)
       ? (!on && hasBuffer)
       : (!sessionActive && !on && hasBuffer && !armed && !replaying);
-    btn.textContent = stopping ? 'Stopping…' : (showReplayLast ? '↻ Replay Last' : '↻ Repeat Play');
+    btn.textContent = stopping ? 'Stopping\\u2026' : (showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');
 
     if (!__repeatOptimistic) {
       var title = '';
@@ -1349,7 +1349,7 @@ HOME_CARDS_SCRIPT = """
         // held, not what was lost.
         if (recording.truncated_head) title += ' · most recent kept';
       } else if (armed) {
-        title = recording.active ? 'Buffering…' : 'Waiting for playback';
+        title = recording.active ? 'Buffering\\u2026' : 'Waiting for playback';
       }
       btn.title = title;
     }
@@ -1413,7 +1413,7 @@ HOME_CARDS_SCRIPT = """
     // anything: 'repeating' interrupts a replay that now has to fade out,
     // while 'armed' merely cancels a pending action -- the true source is
     // still playing and nothing fades. Giving the 'armed' case the stop
-    // treatment would flash "Stopping…" and quiesce the page for a
+    // treatment would flash "Stopping..." and quiesce the page for a
     // teardown that never happens, so it gets its own kind.
     var kind = newArmed ? 'start' : (state === 'repeating' ? 'stop' : 'disarm');
     // Apply the optimistic visual state immediately: don't wait for the
@@ -1432,13 +1432,13 @@ HOME_CARDS_SCRIPT = """
       // 'off' clears the outline.
       btn.classList.add('active');
       btn.setAttribute('data-state', 'stopping');
-      btn.textContent = 'Stopping…';
-      btn.title = 'Stopping…';
+      btn.textContent = 'Stopping\\u2026';
+      btn.title = 'Stopping\\u2026';
       btn.disabled = true;
     } else if (kind === 'disarm') {
       // Straight to the off look, button still live. The label is left
-      // alone: it already reads '↻ Repeat Play' while armed, and the next
-      // poll settles it (e.g. to '↻ Replay Last' if the source has since
+      // alone: it already reads '(reload) Repeat Play' while armed, and the next
+      // poll settles it (e.g. to '(reload) Replay Last' if the source has since
       // gone idle with a buffer).
       btn.classList.remove('active');
       btn.setAttribute('data-state', 'off');
@@ -1447,8 +1447,8 @@ HOME_CARDS_SCRIPT = """
     } else {
       btn.classList.add('active');
       btn.setAttribute('data-state', 'armed');
-      btn.textContent = '↻ Repeat Play';
-      btn.title = 'Starting…';
+      btn.textContent = '\\u21bb Repeat Play';
+      btn.title = 'Starting\\u2026';
       btn.disabled = false;
     }
     // Only a genuine fade quiesces the page. A stale 'armed' reading (a
@@ -2139,8 +2139,8 @@ AUTOSAVE_JS = """
 (function() {
   var _csrf = window.__CSRF || '';
   var _statusEl = null;
-  var _pendingTimers = {};    // field → {timer, value}
-  var _pendingRequests = {};  // field → {ctrl, promise}
+  var _pendingTimers = {};    // field -> {timer, value}
+  var _pendingRequests = {};  // field -> {ctrl, promise}
 
   function _getStatus() {
     if (!_statusEl) _statusEl = document.getElementById('autosave-status');
@@ -2160,7 +2160,7 @@ AUTOSAVE_JS = """
     var prev = _pendingRequests[field];
     if (prev) { try { prev.ctrl.abort(); } catch(_) {} }
     var ctrl = new AbortController();
-    _setStatus('Saving…');
+    _setStatus('Saving\\u2026');
     var p = fetch('/api/settings', {
       method: 'POST',
       credentials: 'same-origin',
@@ -2179,7 +2179,7 @@ AUTOSAVE_JS = """
           if (el && (el.textContent === 'Saved' || el.textContent === 'Saved (could not apply live)')) el.textContent = '';
         }, 2000);
       } else {
-        _setStatus('Could not save — ' + (d.error || 'error'));
+        _setStatus('Could not save \\u2014 ' + (d.error || 'error'));
       }
     }).catch(function(e) {
       if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
@@ -2225,10 +2225,10 @@ AUTOSAVE_JS = """
     return Promise.all(promises);
   };
 
-  // Buttonless "Applying setting…" modal for restart-required autosaves. The
+  // Buttonless "Applying setting..." modal for restart-required autosaves. The
   // restart itself is coalesced 0.75s after the save response, so an
   // immediate ready-poll can see the daemon still up with no restart in
-  // progress — dismissal therefore waits for either an observed in_progress
+  // progress -- dismissal therefore waits for either an observed in_progress
   // state or a minimum elapsed window before trusting "not in progress" as
   // "finished". A hard timeout gives up and reports failure via the status
   // line instead of polling forever.
@@ -2258,7 +2258,7 @@ AUTOSAVE_JS = """
       var elapsed = Date.now() - _restartStartedAt;
       if (j.ok && !restart.in_progress && (_restartSawInProgress || elapsed >= 3000)) {
         // A restart that ran and failed leaves the daemon up but the change
-        // unapplied — surface its message rather than dismissing silently.
+        // unapplied -- surface its message rather than dismissing silently.
         if (_restartSawInProgress && restart.ok === false) {
           _restartDismiss(_restartLastMessage || 'OwnTone restart failed');
         } else {
@@ -2274,7 +2274,7 @@ AUTOSAVE_JS = """
 
   function _restartBegin() {
     var m = _restartModalEl();
-    if (!m) return;  // page has no restart modal — degrade to no-op
+    if (!m) return;  // page has no restart modal -- degrade to no-op
     m.classList.add('show');
     _restartSawInProgress = false;
     _restartStartedAt = Date.now();
@@ -2289,7 +2289,7 @@ AUTOSAVE_JS = """
 
   window.settingsTransact = function(url, payload, opts) {
     opts = opts || {};
-    _setStatus('Applying…');
+    _setStatus('Applying\\u2026');
     fetch(url, {
       method: 'POST',
       credentials: 'same-origin',
@@ -2297,7 +2297,7 @@ AUTOSAVE_JS = """
       body: JSON.stringify(payload)
     }).then(function(r) { return r.json(); }).then(function(d) {
       if (!d.ok) {
-        _setStatus('Could not apply — ' + (d.error || 'error'));
+        _setStatus('Could not apply \\u2014 ' + (d.error || 'error'));
         if (opts.onError) opts.onError(d);
         return;
       }

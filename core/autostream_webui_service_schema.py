@@ -145,10 +145,10 @@ def _format_elapsed_days(days: Optional[int]) -> str:
     Used for the Remaining label in the time-dimension live section.
 
     Bands:
-      0          → "Today"
-      1–29 days  → "<N> day(s)"
-      30–730 days → "<N> month(s)"
-      > 730 days  → "<N> year(s)"
+      0          -> "Today"
+      1-29 days  -> "<N> day(s)"
+      30-730 days -> "<N> month(s)"
+      > 730 days  -> "<N> year(s)"
     """
     if days is None:
         return "Unknown"
@@ -312,7 +312,7 @@ def _card_display(
     """Compute list-card subtitle and warning flag from pre-computed display dicts.
 
     Takes the already-computed _hours_display and _time_display results so card
-    state is always derived from the same values as the detail panel — no
+    state is always derived from the same values as the detail panel -- no
     separate calculation path.
 
     Keys: card_sub (str), card_warn (bool).

@@ -32,7 +32,7 @@ def atomic_write_file(
     *,
     preserve_mode: bool = True,
 ) -> None:
-    """Write to *path* atomically: temp file → writer() → fsync → os.replace.
+    """Write to *path* atomically: temp file -> writer() -> fsync -> os.replace.
 
     *writer* receives an open text-mode file object and is responsible for
     writing all content.  The destination file is only replaced once the
@@ -810,7 +810,7 @@ def get_install_state(path) -> dict:
     """Parse a KEY=VALUE env file without sourcing it.
 
     Strips surrounding single/double quotes from values; skips blank lines
-    and lines beginning with '#'.  Returns a plain str→str dict.
+    and lines beginning with '#'.  Returns a plain str->str dict.
     Silent on FileNotFoundError.
     """
     result: dict[str, str] = {}
