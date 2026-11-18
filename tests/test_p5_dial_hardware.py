@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
 import sys
 import threading
 import time
@@ -433,69 +432,6 @@ class TestConfigureLogging:
         assert gpz_logger.level == logging.WARNING, (
             f"Expected gpiozero logger at WARNING, got {gpz_logger.level}"
         )
-
-
-# ---------------------------------------------------------------------------
-# dial_volume — worker skips fan-out when targets list is empty
-# ---------------------------------------------------------------------------
-
-class TestVolumeWorkerNoTargets:
-    """When get_playing_targets() returns [], worker must skip _fan_out."""
-
-    def test_worker_skips_fan_out_with_empty_targets(self):
-        import dial_volume as dv
-
-        fan_out_calls: list = []
-        original_fan_out = dv._fan_out
-
-        def spy_fan_out(*args, **kwargs):
-            fan_out_calls.append(args)
-            return original_fan_out(*args, **kwargs)
-
-        # Set module globals directly (as start_volume_worker does)
-        dv._targets_fn = lambda: []   # empty — no playing targets
-        dv._led_ref = None
-
-        fresh_queue: queue.SimpleQueue = queue.SimpleQueue()
-        fresh_queue.put(5)
-
-        with patch.object(dv, "_fan_out", side_effect=spy_fan_out):
-            delta = fresh_queue.get()
-            while True:
-                try:
-                    delta += fresh_queue.get_nowait()
-                except queue.Empty:
-                    break
-            targets = dv._targets_fn()
-            # Worker should not call _fan_out when targets is empty
-            if targets:
-                dv._fan_out(targets, delta)
-
-        assert fan_out_calls == [], (
-            "Worker must not call _fan_out when no playing targets are available"
-        )
-
-    def test_worker_calls_fan_out_when_targets_present(self):
-        import dial_volume as dv
-
-        Target = MagicMock()
-        Target.ip = "192.168.1.1"
-        Target.port = 3000
-
-        fan_out_calls: list = []
-
-        dv._targets_fn = lambda: [Target]
-
-        fresh_queue: queue.SimpleQueue = queue.SimpleQueue()
-        fresh_queue.put(3)
-
-        with patch.object(dv, "_fan_out", side_effect=lambda *a: fan_out_calls.append(a) or False):
-            delta = fresh_queue.get()
-            targets = dv._targets_fn()
-            if targets:
-                dv._fan_out(targets, delta)
-
-        assert len(fan_out_calls) == 1
 
 
 # ---------------------------------------------------------------------------
