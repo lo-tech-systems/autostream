@@ -236,3 +236,57 @@ def test_bad_map_exit_status(tmp_path):
     m = tmp_path / "bad.map"
     m.write_text("nonsense\n", encoding="utf-8")
     assert rp.main(["--map", str(m), "--root", str(tmp_path / "t")]) == 2
+
+
+SRC_OLD = "import old_mod\nold_mod.thing\n"
+
+
+def _two_files(tmp_path: Path) -> tuple[Path, Path, Path]:
+    f, m = _tree(tmp_path, SRC_OLD)
+    other = tmp_path / "t" / "test_y.py"
+    other.write_text(SRC_OLD, encoding="utf-8")
+    return f, other, m
+
+
+def test_only_rewrites_the_named_file_and_leaves_the_other(tmp_path):
+    f, other, m = _two_files(tmp_path)
+    root = str(tmp_path / "t")
+    assert rp.main(["--map", str(m), "--root", root, "--only", str(f)]) == 0
+    assert "nm.thing" in f.read_text()
+    assert other.read_text() == SRC_OLD
+
+
+def test_only_accepts_a_path_relative_to_the_root_and_repeats(tmp_path):
+    f, other, m = _two_files(tmp_path)
+    root = str(tmp_path / "t")
+    assert rp.main(["--map", str(m), "--root", root,
+                    "--only", "test_x.py", "--only", "test_y.py"]) == 0
+    assert "nm.thing" in f.read_text()
+    assert "nm.thing" in other.read_text()
+
+
+def test_only_with_a_missing_file_exits_2_and_changes_nothing(tmp_path, capsys):
+    f, other, m = _two_files(tmp_path)
+    root = str(tmp_path / "t")
+    assert rp.main(["--map", str(m), "--root", root, "--only", str(f),
+                    "--only", str(tmp_path / "t" / "missing.py")]) == 2
+    assert "missing.py" in capsys.readouterr().out
+    assert f.read_text() == SRC_OLD
+
+
+def test_only_with_a_file_outside_the_root_exits_2(tmp_path):
+    f, other, m = _two_files(tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text(SRC_OLD, encoding="utf-8")
+    assert rp.main(["--map", str(m), "--root", str(tmp_path / "t"),
+                    "--only", str(outside)]) == 2
+
+
+def test_check_with_only_counts_only_the_named_files(tmp_path):
+    f, other, m = _two_files(tmp_path)
+    root = str(tmp_path / "t")
+    assert rp.main(["--map", str(m), "--check", "--root", root, "--only", str(f)]) == 1
+    f.write_text("import other\n", encoding="utf-8")
+    # the unnamed file still holds the old target, but it is not looked at
+    assert rp.main(["--map", str(m), "--check", "--root", root, "--only", str(f)]) == 0
+    assert rp.main(["--map", str(m), "--check", "--root", root]) == 1

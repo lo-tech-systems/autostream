@@ -13,10 +13,16 @@ Mapping file (UTF-8, ``#`` starts a comment), one entry per line:
 Usage:
 
     python tools/retarget_patches.py --map FILE [--check] [--root tests]
+                                     [--only PATH ...]
 
 ``--check`` only reports.  The exit status is 1 when any reference to an old
 target remains (after the rewrite, or at all with ``--check``), 2 on a
 mapping or alias error, and 0 otherwise.
+
+``--only PATH`` (repeatable) limits the scan, the rewrite and the report to the
+named files, each of which must exist under ``--root`` (exit status 2 if not).
+It is for a name that more than one module takes over: the tests that use one
+destination follow it now and the others later.
 
 Forms rewritten, per mapping entry:
 
@@ -484,16 +490,30 @@ def retarget_source(data: bytes, entries: list[Entry], check_only: bool = False)
     return FileResult(data, counts, sorted(set(unhandled)), references)
 
 
-def run(map_file: Path, root: Path, check_only: bool, out=print) -> int:
+def _only_files(root: Path, only: list[Path]) -> list[Path]:
+    root_resolved = root.resolve()
+    files: list[Path] = []
+    for item in only:
+        path = item if item.is_absolute() or item.exists() else root / item
+        resolved = path.resolve()
+        if not path.is_file() or root_resolved not in resolved.parents:
+            raise ToolError(f"--only file not found under {root}: {item}")
+        files.append(path)
+    return sorted(set(files))
+
+
+def run(map_file: Path, root: Path, check_only: bool, out=print,
+        only: list[Path] | None = None) -> int:
     try:
         entries = parse_map(map_file.read_text(encoding="utf-8"))
+        paths = _only_files(root, only) if only else sorted(root.rglob("*.py"))
     except ToolError as exc:
         out(f"error: {exc}")
         return 2
     per_entry_edits = {e: 0 for e in entries}
     per_entry_files = {e: 0 for e in entries}
     leftovers: list[str] = []
-    for path in sorted(root.rglob("*.py")):
+    for path in paths:
         if "__pycache__" in path.parts:
             continue
         data = path.read_bytes()
@@ -528,8 +548,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--map", required=True, type=Path, help="mapping file")
     parser.add_argument("--check", action="store_true", help="report only; change nothing")
     parser.add_argument("--root", default="tests", type=Path, help="directory of test files (default: tests)")
+    parser.add_argument("--only", action="append", type=Path, metavar="PATH",
+                        help="rewrite and report only this file under --root (repeatable)")
     args = parser.parse_args(argv)
-    return run(args.map, args.root, args.check)
+    return run(args.map, args.root, args.check, only=args.only)
 
 
 if __name__ == "__main__":
