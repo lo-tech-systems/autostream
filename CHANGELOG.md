@@ -54,15 +54,25 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   card; each starts at the level it was saved with. First boot still chooses
   one. A member that is missing or refuses is retried after 10, 20 and 30
   seconds and then every 30 seconds for the rest of the session.
+- new: Pause and Play on a HomePod or an Apple TV remote. An Apple TV or HomePod
+  stops by itself when its own Pause is pressed and its own Play did not start it
+  again, so it stayed silent until its session failed. The appliance now holds a
+  speaker that paused itself, shows it as Paused, and starts it again at the
+  point the music has reached when Play is pressed on it (or when it is switched
+  off and on). This works from the Apple TV's full-screen now-playing view too.
 - new: a Pause setting on the Personalisation card, "When Pause is pressed on a
-  speaker", for Pause and Play sent by a HomePod or an Apple TV remote. The
-  choices are Keep playing, Mute that speaker, Mute all playing speakers and
-  Turn off all speakers. The shipped choice is Keep playing, so nothing changes
-  unless you choose otherwise. A Play undoes only what its own Pause muted, and
-  speakers a Pause muted are turned off if it lasts longer than five minutes. A
-  stereo pair, or an Apple TV with its HomePods, counts as one speaker. The
-  setting needs owntone-mini 1.6 and is greyed out with the reason when the
-  player cannot report these events.
+  speaker", that says what happens to the other speakers: only that speaker
+  pauses (the default), the others are muted too, or the others are turned off
+  too. Play on the paused speaker unmutes the speakers its Pause muted. A paused
+  speaker, and any its Pause muted, are turned off if the Pause lasts longer than
+  five minutes. A stereo pair, or an Apple TV with its HomePods, counts as one
+  speaker. A speaker that cannot be held is muted instead. Some speakers do not
+  report their own Pause at all (the Edifier MS50A, for example), so the setting
+  does nothing for them. The setting needs owntone-mini 1.6 and is greyed out
+  with the reason when the player cannot report these events.
+- fixed: a speaker that dropped out while it was playing showed Connecting for
+  the rest of the session and was never tried again. It is now tried 10 and 30
+  seconds later, and switched off with a notice if it does not come back.
 - new: HomePods behind an Apple TV can play without it. The OwnTone page has
   "Play on the Apple TV as well as its HomePods" for each Apple TV that has
   HomePods. With it off they play as a stereo pair and the Apple TV shows

@@ -60,7 +60,9 @@ showing:
   [Auto-Start speakers](#auto-start-speakers) below). Auto-Start speakers are listed first, then
   the rest by name. A speaker you have hidden in [Setup-OwnTone](SETUP-OWNTONE.md) is listed
   only while it is on or in the Auto-Start set.
-- A state chip reading **On** or **Off**.
+- A state chip reading **On** or **Off**, or **Paused** for a speaker that was paused on the
+  speaker itself (see [Personalisation](SETUP-PERSONALISATION.md)). Pressing Play on that
+  speaker starts it again, as does switching it off and on here.
 - An on/off toggle.
 - When the output is on, a **Volume:** slider (0-100%) underneath.
 
@@ -68,7 +70,9 @@ While autostream is starting a speaker that should be playing, its name is follo
 **(Connecting)**. An Auto-Start speaker that is not currently on the network stays in the list
 with **(offline)** after its name, its volume slider is disabled, and its toggle is disabled
 until a listening session is running. If an Auto-Start speaker fails to start, autostream keeps
-retrying it while the music plays.
+retrying it while the music plays. A speaker that drops out while it is playing is tried
+again 10 and 30 seconds later; if it is still not back it is switched off and the page says
+it could not be started.
 
 Turning an output on sends its current volume to the appliance immediately; toggling it off
 does the same. If the output requires a device PIN (a fresh Apple TV pairing, for example), a

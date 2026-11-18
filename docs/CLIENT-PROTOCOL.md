@@ -111,6 +111,10 @@ severe first, at most 16. Each entry:
 
 ### `outputs`
 
+Each speaker in `units` carries `held`: `true` while the speaker paused itself (its own
+Pause, or an Apple TV remote's) and the appliance holds it until its own Play. It is still
+`selected`. Clients show it as paused; switching it off and on clears it.
+
 Besides the speakers, `outputs` carries `master_volume` (the mean level of
 the selected speakers the appliance can reach, or `null` when there are
 none) and `selected_count`, so a client does not work these out for itself.
