@@ -2122,8 +2122,9 @@ class TestRailPressedWash:
 # The large content tier's now-playing body: the album line above the title,
 # and the fonts/icon/halo caps that keep a large panel legible rather than
 # merely bigger. Base and rich unaffected by construction — proved above
-# (TestMetricsByteEquivalence's album-ignored pins and TestHaloLayerCache-
-# Accounting's unchanged two-miss count at 160x128).
+# (test_dial_display_compositor.TestMetricsByteEquivalence's album-ignored
+# pins and test_dial_display_draw.TestHaloLayerCacheAccounting's unchanged
+# two-miss count at 160x128).
 # ---------------------------------------------------------------------------
 
 _LARGE_PREVIEW_METRICS = metrics_for(640, 480, 0.0889, size_chosen=True)

@@ -1,4 +1,4 @@
-"""Tests for the HD dial's state body (dial_hd_state.build_state), the
+"""Tests for the HD dial's state body (dial_hd_state.build_parts), the
 scenario corpus it is built from and the FakeCore the later layers drive.
 
 Each scenario has a golden JSON file in tests/golden/hd_state/: the `dial`

@@ -99,8 +99,8 @@ from dial_compositor_support import compositor  # noqa: F401
 _CONFIRMED_MM_PER_PX = [0.2231, 0.2021, 0.0973, 0.1778]
 # Densities chosen to resolve to base at every panel size — proves the
 # metrics-threading seam changed no base pixel. A (size, mm) pair that
-# resolves to a richer content tier is a deliberate geometry change instead
-# (see TestRichTierRendering) rather than a byte-equivalence case.
+# resolves to a richer content tier is a deliberate geometry change instead,
+# not a byte-equivalence case.
 _OUT_OF_TIER_MM_PER_PX = [0.05, 0.5]
 _METRICS_EQUIVALENCE_CASES = [
     (size, mm)

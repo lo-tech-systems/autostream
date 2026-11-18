@@ -1280,7 +1280,7 @@ class TestInfoPage:
     def _opened(self, display) -> int:
         """open_info() with the gather thread never actually started (it is
         exercised directly, synchronously, by the tests that need it — the
-        same discipline TestOnOutputsResult uses for its own worker-thread
+        same discipline test_dial_display_outputs.TestOnOutputsResult uses for its own worker-thread
         callback), then fold the pending screen request in. Returns the
         gather sequence this open captured."""
         with patch("dial_display.threading.Thread"):

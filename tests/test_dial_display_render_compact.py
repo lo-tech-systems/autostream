@@ -455,7 +455,7 @@ class TestCompactListRowCentering:
 class TestInfoListVariant:
     """The read-only info page reuses compose_list()'s compact picker
     format under ListState.title/plain_background, and the rich/large
-    chassis unchanged (see TestComposeList's rich five-row test)."""
+    chassis unchanged (see test_dial_display_render.TestComposeList's rich five-row test)."""
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_title_replaced_by_info(self, compositor, metrics):

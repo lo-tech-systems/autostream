@@ -1285,7 +1285,7 @@ def _make_rich_display(targets=None, **overrides):
 # close. Uses the shipped 1.3in 240x240 profile, whose default diagonal
 # already resolves compact (see dial_layout_metrics.metrics_for) — a custom
 # FakeBackend matches its physical pixel size, following the same pattern
-# TestListPagingMatchesPaintedRows uses for the rich tier.
+# test_dial_display_lists.TestListPagingMatchesPaintedRows uses for the rich tier.
 # ---------------------------------------------------------------------------
 
 class TestCompactPersistentOverlayAndSurface:

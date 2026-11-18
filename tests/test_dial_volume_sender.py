@@ -293,7 +293,7 @@ class TestEnqueueMuteAbsoluteAction:
     def test_enqueue_mute_echoes_into_the_observation_store(self):
         """The dial persists nothing, but a press must still repaint the
         glyph on the same frame -- the echo lives in the mute observation
-        store (dial_volume._readout_muted), not any belief."""
+        store (dial_volume.shown_muted reads it), not any belief."""
         dv.observe_mute_state("svc", False)
         dv.enqueue_mute(False)
         assert dv.shown_muted("svc") is True

@@ -1720,8 +1720,8 @@ class TestRepeatAndIdleZoneTaps:
 
 
 class TestTouchSurfacePollingTupleContracts:
-    """_poll_surface() unpacks the display's 5-tuple — see dial_touch.py's
-    TouchEventSource._poll_surface docstring."""
+    """_poll_surface() unpacks the display's five-field surface state — see
+    dial_touch_source.py's TouchEventSource._poll_surface docstring."""
 
     def test_three_tuple_carries_dots_active_through(self):
         driver = FakeDriver()

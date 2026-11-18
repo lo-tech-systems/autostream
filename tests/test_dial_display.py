@@ -1797,7 +1797,7 @@ class TestIdlePlainLogo:
     """The idle screen's own compose path is reached whenever
     nothing is playing, not only while a replay is available — a dial with
     no repeat-capable appliance still gets the "i" badge (see
-    TestComposeIdle in the compositor suite), just over the plain logo
+    TestComposeIdle in test_dial_display_render.py), just over the plain logo
     rather than the replay-available one."""
 
     def test_plain_base_used_and_replay_logo_never_loaded_without_affordance(self):

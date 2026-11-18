@@ -548,9 +548,8 @@ class TestCyclePages:
         assert display._screen_request == "eq"
 
     def test_compact_always_two_way(self):
-        """On the compact tier _eq_available is always False (see
-        TestEqAvailable), so cycling never reaches "eq" -- a two-way
-        main<->repeat toggle."""
+        """On the compact tier the snapshot's eq_available is always False,
+        so cycling never reaches "eq" -- a two-way main<->repeat toggle."""
         t = _target(appliance_id="a" * 20)
         roster = [_roster_entry(appliance_id="a" * 20, playing=True, dial_eq=True)]
         display, fb, gt = make_display(targets=[t], roster=roster, screen_size_inches=1.3)

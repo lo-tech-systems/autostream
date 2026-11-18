@@ -121,7 +121,7 @@ class TestListStateForHelper:
 
 
 # ---------------------------------------------------------------------------
-# _offerable: the outputs the outputs screen can offer.
+# offerable: the outputs the outputs screen can offer.
 # ---------------------------------------------------------------------------
 
 class TestOfferableOutputs:

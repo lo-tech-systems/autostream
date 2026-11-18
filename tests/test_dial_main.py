@@ -2188,8 +2188,8 @@ class TestPresenceConfirmationWiring:
         import dial_main as dm
 
         # Recovery is now armed only when the running marker survived AND a
-        # request file is present (see dial_main._recovery_request_within_
-        # window) — these tests are about confirm-presence wiring into an
+        # request file is present (see dial_recovery.
+        # _recovery_request_within_window) — these tests are about confirm-presence wiring into an
         # already-armed window, not about the arming decision itself, so
         # simulate an armed window directly: a survived marker, a fresh
         # request, and a synchronised clock.

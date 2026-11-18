@@ -1097,7 +1097,7 @@ class TestMetricsForReferenceEquivalence:
 # shared by both 320x240 profiles) is confirmed but resolves to the rich
 # content tier (the panel's short side clears RICH_MIN_SHORT_SIDE_PX and its
 # quarter-height band is physically tall enough to escape the touch_short
-# veto) — see TestRichAndLargeGeometry for its pins. Indices 1 and 2 (128x128,
+# veto) — see TestRailListLayout for its pins. Indices 1 and 2 (128x128,
 # 240x240) are physically small enough to resolve to the compact tier at
 # this density instead — see _COMPACT_RESOLVING_CASES below. Only the first
 # entry stays base.
@@ -1122,7 +1122,7 @@ class TestDensityHasNoEffectOnGeometry:
     tier — only metrics_for()'s own reported fields (band_mm, content_tier,
     touch_min_px, ...) are density-dependent there. A panel whose pixel size
     and density resolve to a richer tier is a deliberate, pinned geometry
-    change instead — see TestRichAndLargeGeometry."""
+    change instead — see TestRailListLayout."""
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_layout_for_unaffected(self, size, mm):
@@ -1187,7 +1187,7 @@ class TestDensityHasNoEffectOnGeometry:
     # band_h, which the compact tier keeps at the base formula) so they stay
     # byte-identical; list_layout_for()'s rows_per_page and every compact
     # zone table are a deliberate, pinned difference instead — see
-    # TestCompactTier below for their pins. GEOMETRY_OUTPUT is unreachable
+    # TestCompactZoneTables and TestCompactLayoutFor below for their pins. GEOMETRY_OUTPUT is unreachable
     # on compact, so it is the one geometry left wholly untouched.
 
     @pytest.mark.parametrize("size,mm", _COMPACT_RESOLVING_CASES)
@@ -2163,7 +2163,7 @@ class TestInfoValueGeometry:
 # ---------------------------------------------------------------------------
 # EQ page geometry (GEOMETRY_EQ / eq_layout_for): the shared top band over
 # two bar rows, each with a band-high square stepper at each end. Rich/large
-# only in practice (see DialDisplay._eq_available), but the function itself
+# only in practice (see the snapshot's eq_available), but the function itself
 # is a pure geometry computation reachable at any size.
 # ---------------------------------------------------------------------------
 
@@ -2234,7 +2234,7 @@ class TestEqLayout:
     def test_stays_pure_off_the_tier_it_is_actually_used_on(self):
         """eq_layout_for has no idea what tier it is being used on — it is
         never called off rich/large in the running dial (see
-        DialDisplay._eq_available), but the function itself does not raise
+        the snapshot's eq_available), but the function itself does not raise
         or vary at a smaller size."""
         a = eq_layout_for(240, 240)
         b = eq_layout_for(240, 240)

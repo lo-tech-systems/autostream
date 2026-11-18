@@ -45,7 +45,7 @@ def _marked_image(size: tuple[int, int] = (4, 4)) -> "Image.Image":
 
 def _poll_with_artwork(display, fb):
     """Drive one poll iteration that lands on identified artwork, faking out
-    the network/decode/transform steps exactly like TestRotation does."""
+    the network/decode/transform steps exactly like test_dial_display_panel.TestRotation does."""
     fake_image = _marked_image(size=(fb.width, fb.height))
     with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
          patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
