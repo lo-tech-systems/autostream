@@ -54,6 +54,54 @@ class TestMonitorPart:
         assert [c.parts for c in seen] == [frozenset({"monitor"})]
 
 
+class TestOutputHealth:
+    HEALTH = {"fifo": {"stalled_seconds": 0.0, "stranded_bytes": 0}, "underruns": {"live1": 0}}
+
+    def test_it_is_published_frozen(self):
+        core._set_monitor_runtime_info(connected=True, output_health=self.HEALTH)
+        health = snap().monitor.output_health
+        assert isinstance(health, state.FrozenDict)
+        assert isinstance(health["fifo"], state.FrozenDict)
+        assert health["fifo"]["stranded_bytes"] == 0
+
+    def test_moving_counters_do_not_wake_subscribers(self):
+        core._set_monitor_runtime_info(connected=True, output_health=self.HEALTH)
+        seen = []
+        state.store().subscribe(seen.append)
+        core._set_monitor_runtime_info(
+            connected=True, output_health={"fifo": {"stalled_seconds": 0.0, "stranded_bytes": 960}})
+        assert seen == []
+        assert snap().monitor.output_health["fifo"]["stranded_bytes"] == 960
+
+    def test_none_keeps_the_value_and_an_empty_dict_clears_it(self):
+        core._set_monitor_runtime_info(connected=True, output_health=self.HEALTH)
+        core._set_monitor_runtime_info(last_seen_at=3.0)
+        assert snap().monitor.output_health["underruns"]["live1"] == 0
+        core._set_monitor_runtime_info(output_health={})
+        assert snap().monitor.output_health is None
+
+    def test_a_failed_poll_leaves_no_health_beside_not_connected(self):
+        core._set_monitor_runtime_info(connected=True, output_health=self.HEALTH)
+        core._set_monitor_runtime_info(connected=False, output_health={})
+        m = snap().monitor
+        assert (m.connected, m.output_health) == (False, None)
+
+    def test_the_helper_picks_the_four_blocks_only(self):
+        status = {
+            "fifo": {"a": 1}, "underruns": {"b": 2}, "ring_drops": {"c": 3},
+            "output_thread": {"d": 4}, "repeat": {"e": 5}, "inputs": [],
+        }
+        assert core._output_health_from_status(status) == {
+            "fifo": {"a": 1}, "underruns": {"b": 2}, "ring_drops": {"c": 3},
+            "output_thread": {"d": 4}}
+
+    def test_the_helper_ignores_values_that_are_not_dicts(self):
+        assert core._output_health_from_status({"fifo": 3, "underruns": None, "ring_drops": []}) == {}
+
+    def test_the_helper_gives_an_empty_dict_for_a_status_without_them(self):
+        assert core._output_health_from_status({"inputs": []}) == {}
+
+
 class TestHealthPart:
     def test_a_set_merges_fields(self):
         selfheal._set_owntone_selfheal_state(reconcile_fired_count=2, reconcile_last_fired_at=42.0)

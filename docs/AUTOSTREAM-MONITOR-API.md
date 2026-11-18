@@ -1070,7 +1070,9 @@ Typical errors:
 
 ### `get_status`
 
-Returns a full snapshot of the monitor state.
+Returns a full snapshot of the monitor state. The coordinator mirrors the
+`fifo`, `underruns`, `ring_drops` and `output_thread` blocks into the
+`output_health` field of the `monitor` state part.
 
 Request:
 

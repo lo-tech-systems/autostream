@@ -106,6 +106,22 @@ class TestDigests:
         assert t == a and state.MonitorRuntimeInfo().output_trim_db is None
         assert a == b and a != c
 
+    def test_monitor_digest_ignores_output_health(self):
+        a = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "info", True))
+        b = DIGESTS["monitor"](state.MonitorRuntimeInfo(
+            "b", "info", True, output_health=FrozenDict({"fifo": FrozenDict({"stranded_bytes": 7})})))
+        assert state.MonitorRuntimeInfo().output_health is None
+        assert a == b
+
+    def test_output_health_renders_as_plain_json(self):
+        from types import SimpleNamespace
+
+        from webui.protocol import state as protocol_state
+        health = FrozenDict({"fifo": FrozenDict({"stalled_seconds": 0.0, "pipe_bytes": -1})})
+        snap = SimpleNamespace(monitor=state.MonitorRuntimeInfo("b", "info", True, output_health=health))
+        body = json.loads(protocol_state.part_json(snap, "monitor"))
+        assert body["output_health"] == {"fifo": {"stalled_seconds": 0.0, "pipe_bytes": -1}}
+
     def test_inputs_digest_ignores_the_level_but_not_the_texts(self):
         a = state.InputsPart((entry(1),))
         b = state.InputsPart((entry(1, level=FrozenDict({"index": 1, "dbfs": -10.0})),))

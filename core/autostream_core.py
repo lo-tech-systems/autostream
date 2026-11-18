@@ -88,6 +88,20 @@ from autostream_sysutils import (
 _monitor_writer = autostream_state.store().claim("monitor", "autostream_core")
 
 
+_OUTPUT_HEALTH_BLOCKS = ("fifo", "underruns", "ring_drops", "output_thread")
+
+
+def _output_health_from_status(status: dict) -> dict:
+    """The daemon's loss and timing counter blocks from one get_status reply,
+    keyed by block name. A block that is absent or not a dict is left out, so
+    a status without any of them gives {}."""
+    return {
+        name: status[name]
+        for name in _OUTPUT_HEALTH_BLOCKS
+        if isinstance(status.get(name), dict)
+    }
+
+
 def _set_monitor_runtime_info(
     *,
     monitor_build: Optional[str] = None,
@@ -95,9 +109,11 @@ def _set_monitor_runtime_info(
     connected: Optional[bool] = None,
     last_seen_at: Optional[float] = None,
     output_trim_db: Optional[float] = None,
+    output_health: Optional[dict] = None,
 ) -> None:
     """Update the published autostream_monitor runtime metadata. Called from
-    the coordinator thread only."""
+    the coordinator thread only. A field left as None keeps its value; an
+    empty output_health clears it."""
     cur = autostream_state.store().snapshot().monitor
     pending = _monitor_writer.publish(autostream_state.MonitorRuntimeInfo(
         monitor_build=(
@@ -117,6 +133,11 @@ def _set_monitor_runtime_info(
             else float(last_seen_at)
         ),
         output_trim_db=cur.output_trim_db if output_trim_db is None else float(output_trim_db),
+        output_health=(
+            cur.output_health
+            if output_health is None
+            else (output_health or None)
+        ),
     ))
     pending.notify()
     if autostream_state.store().snapshot().monitor.connected != cur.connected:
@@ -509,7 +530,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
 
                 status = client.get_status()
                 if status is None:
-                    _set_monitor_runtime_info(connected=False)
+                    _set_monitor_runtime_info(connected=False, output_health={})
                     monitor_daemon_recovery_log.fail(time.time())
                     logging.warning("get_status() failed; will reconnect.")
                     reconnect_at = time.time() + 2.0
@@ -523,14 +544,15 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     connected=True,
                     last_seen_at=time.time(),
                     output_trim_db=status.get("output_auto_trim_db"),
+                    output_health=_output_health_from_status(status),
                 )
 
                 status_by_index = {
                     e["index"]: e for e in status.get("inputs", [])
                 }
 
-                # Cache the top-level "repeat" block from this same snapshot
-                # for /api/status passthrough and take a local copy
+                # Publish the top-level "repeat" block from this same snapshot
+                # to the repeat state part and take a local copy
                 # so the transition/gating/tracker logic below all reason
                 # about the one poll cycle's view, not a value that could be
                 # overwritten by a later poll before this cycle finishes.

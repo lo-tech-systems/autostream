@@ -129,6 +129,7 @@ class MonitorRuntimeInfo:
     connected: bool = False
     last_seen_at: float = 0.0               # moves every cycle, so not in the digest
     output_trim_db: Optional[float] = None  # the auto-trim the monitor has accumulated; moves with the audio, so not in the digest
+    output_health: Optional[FrozenDict] = None  # the daemon's loss and timing counters by block name; moves every poll, so not in the digest
 
 
 @dataclass(frozen=True)
