@@ -100,6 +100,7 @@ from dial_display_draw import (  # noqa: E402
     _text_size,
     _truncate_to_width,
 )
+from dial_display_reveal import _apply_layer  # noqa: E402
 from dial_display_compositor import (  # noqa: E402
     DialDisplayCompositor,
     _BODY_RENDERERS,
@@ -113,7 +114,6 @@ from dial_display_compositor import (  # noqa: E402
     _compact_list_frame,
     _compact_repeat_frame,
     _compact_small_glyph_box,
-    _apply_layer,
     _compose_frame,
     _draw_compact_list_row,
     _eq_frame,
@@ -6114,16 +6114,16 @@ class TestRevealAtPanelSize:
         before = base.tobytes()
         kw = dict(rotate=False, bgr=False, is_artwork=False, overlay=_reveal_overlay(),
                   metrics=metrics, output_size=self.PANEL)
-        import dial_display_compositor as ddc
+        import dial_display_reveal
 
         compositor.compose(base, 640, 480, reveal_progress=0.3, **kw)
-        memo = ddc._shrunk_base_memo
+        memo = dial_display_reveal._shrunk_base_memo
         assert memo[0] is base and memo[2].size == self.PANEL
         compositor.compose(base, 640, 480, reveal_progress=0.6, **kw)
-        assert ddc._shrunk_base_memo is memo
+        assert dial_display_reveal._shrunk_base_memo is memo
         assert base.tobytes() == before
         _reset_render_caches()
-        assert ddc._shrunk_base_memo is None
+        assert dial_display_reveal._shrunk_base_memo is None
 
     def test_repeat_slide_frame_is_panel_sized(self, compositor):
         metrics = _LARGE_METRICS
@@ -6143,13 +6143,9 @@ class TestRevealAtPanelSize:
 
 import numpy as np
 
-import dial_display_compositor as _dc  # noqa: E402
+import dial_display_reveal as _dr  # noqa: E402
 import dial_eq_model  # noqa: E402
-from dial_display_compositor import (  # noqa: E402
-    _apply_layer_np,
-    _reveal_frame,
-    _reveal_frame_pillow,
-)
+from dial_display_reveal import _apply_layer_np, _reveal_frame, _reveal_frame_pillow  # noqa: E402
 
 
 def _random_base(metrics, seed=7):
@@ -6323,7 +6319,7 @@ class TestRevealNumpyPath:
         def boom(*args, **kwargs):
             raise RuntimeError("simulated numpy failure")
 
-        monkeypatch.setattr(_dc, "_apply_layer_np", boom)
+        monkeypatch.setattr(_dr, "_apply_layer_np", boom)
         got = _reveal_frame(base, layers, 0.5)
         assert got.tobytes() == _reveal_frame_pillow(base, layers, 0.5).tobytes()
         assert base.tobytes() == before
@@ -6332,7 +6328,7 @@ class TestRevealNumpyPath:
         metrics = _RICH_METRICS
         layers = _now_layers(metrics)
         base = _random_base(metrics)
-        real = _dc._apply_layer_np
+        real = _dr._apply_layer_np
         calls = []
 
         def flaky(*args, **kwargs):
@@ -6341,7 +6337,7 @@ class TestRevealNumpyPath:
                 raise MemoryError("simulated")
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(_dc, "_apply_layer_np", flaky)
+        monkeypatch.setattr(_dr, "_apply_layer_np", flaky)
         got = _reveal_frame(base, layers, 0.5)
         assert len(calls) > 1
         assert got.tobytes() == _reveal_frame_pillow(base, layers, 0.5).tobytes()
