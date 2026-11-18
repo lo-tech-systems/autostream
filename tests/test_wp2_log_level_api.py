@@ -98,7 +98,7 @@ def _make_put_handler(
     xri: str | None = "10.0.0.5",
     csrf_token: str = "csrf-token",
 ) -> object:
-    from autostream_webui import ConfigWebHandler
+    from webui.server import ConfigWebHandler
 
     h = ConfigWebHandler.__new__(ConfigWebHandler)
     h.path = "/api/log-level"

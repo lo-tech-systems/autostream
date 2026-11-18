@@ -15,7 +15,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import webui.browser.logs as webui_logs
@@ -25,52 +25,6 @@ REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
-
-# Modules that have heavy runtime dependencies (requests, owntone stack, …).
-# Mocked via a scoped fixture so sys.modules is fully restored after this
-# test module's session ends and unrelated future tests are not affected.
-_HEAVY_DEPS = [
-    "requests",
-    "autostream_config",
-    "autostream_core",
-    "autostream_player_service",
-    "autostream_players",
-    "webui.common",
-    "webui.session_state",
-]
-
-_ABSENT = object()  # sentinel for "key was not in sys.modules before setup"
-
-
-@pytest.fixture(autouse=True, scope="module")
-def _mock_heavy_deps():
-    """Inject mocks for heavy deps, then restore exactly those keys on teardown.
-
-    patch.dict is intentionally avoided: it snapshots the entire sys.modules
-    dict and restores the snapshot on exit, which removes any module imported
-    during the fixture's lifetime that was not present at setup time.  Manual
-    teardown touches only the keys this fixture owns, leaving every other
-    entry in sys.modules undisturbed.
-    """
-    _owned = _HEAVY_DEPS + ["webui.browser.logs"]
-
-    # Save pre-fixture state of each key we are about to touch.
-    _saved = {k: sys.modules.get(k, _ABSENT) for k in _owned}
-
-    # Install mocks and evict any cached real import of the module under test.
-    for m in _HEAVY_DEPS:
-        sys.modules[m] = MagicMock()
-    sys.modules.pop("webui.browser.logs", None)
-
-    yield
-
-    # Restore only the keys this fixture touched.
-    for k, original in _saved.items():
-        if original is _ABSENT:
-            sys.modules.pop(k, None)
-        else:
-            sys.modules[k] = original
-
 
 # ---------------------------------------------------------------------------
 # Mock handler

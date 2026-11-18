@@ -27,8 +27,8 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 try:
-    from autostream_webui import ConfigWebHandler
-    import autostream_webui as _webui
+    from webui.server import ConfigWebHandler
+    import webui.server as _webui
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
@@ -37,7 +37,7 @@ from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME, PIN_STATU
 from settings_fixtures import CONTROLS_OTHER_APPLIANCES, viewed_state
 
 _skip_no_webui = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
+    not _HAS_WEBUI, reason="web server import chain unavailable"
 )
 
 

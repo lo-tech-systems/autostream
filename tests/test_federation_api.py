@@ -23,8 +23,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 try:
-    from autostream_webui import ConfigWebHandler
-    import autostream_webui as _webui
+    from webui.server import ConfigWebHandler
+    import webui.server as _webui
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
@@ -36,7 +36,7 @@ from autostream_players import ActionResult
 from autostream_settings import as_view
 from settings_fixtures import fixed_view
 
-_skip = pytest.mark.skipif(not _HAS_WEBUI, reason="autostream_webui import chain unavailable")
+_skip = pytest.mark.skipif(not _HAS_WEBUI, reason="web server import chain unavailable")
 
 
 def _reset_federation():

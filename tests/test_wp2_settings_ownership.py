@@ -2,7 +2,7 @@
 
 Verifies:
 - WebUIState stores a settings attribute
-- start_webui_background accepts and stores a SettingsStore; doesn't create a second one
+- start_server takes a settings view, shares it with the pages and refuses the store
 - _config_snapshot(state) reads from store when available
 - _config_snapshot(state) refuses a state whose settings are not a view
 - run_autostream calls settings.save_now() before exiting (final flush)
@@ -127,17 +127,12 @@ class TestConfigSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# start_webui_background: store injection and no duplicate creation
+# start_server: the view is shared, the store is refused
 # ---------------------------------------------------------------------------
 
-class TestStartWebuiBackground:
-    def test_uses_provided_store(self, tmp_path):
-        """When settings= is supplied, STATE.settings is that exact object."""
-        cfg = _minimal_cfg(tmp_path)
-
-        from autostream_settings import SettingsStore
-        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
-
+class TestStartServer:
+    @staticmethod
+    def _httpd():
         httpd_mock = MagicMock()
         # Returns immediately (no side effect) so the background thread's
         # target function runs to completion and exits cleanly; raising here
@@ -145,60 +140,58 @@ class TestStartWebuiBackground:
         # (BaseException is not caught) and surface as an unhandled
         # thread exception.
         httpd_mock.serve_forever = MagicMock()
+        return httpd_mock
+
+    def test_uses_provided_view(self, tmp_path):
+        """The view handed in is the STATE.settings of the running server."""
+        cfg = _minimal_cfg(tmp_path)
+
+        from autostream_settings import SettingsStore, as_view, writable_store
+        from webui.server import WebUIDeps, start_server
+        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
+        view = as_view(store)
 
         with (
-            patch("autostream_webui.AuthManager"),
-            patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
+            patch("webui.server.AuthManager"),
+            patch("webui.server.ThreadingHTTPServer", return_value=self._httpd()),
         ):
-
-            from autostream_webui import start_webui_background
-            from webui.session_state import STATE as _initial
-            import autostream_webui as _wm
-
             session_state.STATE = None
-            t = start_webui_background(str(cfg), settings=store)
+            t = start_server(WebUIDeps(str(cfg), str(tmp_path / "state.json"), settings=view))
             # Give the thread a brief moment to set globals
             t.join(timeout=2.0)
 
-            from autostream_settings import writable_store
             assert session_state.STATE is not None
+            assert session_state.STATE.settings is view
             assert writable_store(session_state.STATE.settings) is store
 
         store.close(save=False)
 
-    def test_creates_store_when_none_provided(self, tmp_path):
-        """When settings=None, start_webui_background creates its own store."""
-        from autostream_settings import SettingsStore
-        from autostream_webui import start_webui_background
-        import autostream_webui as _wm
-
+    def test_refuses_the_store(self, tmp_path):
+        """start_server takes a read-only view; handing it the store is a TypeError
+        and creates no server state."""
         cfg = _minimal_cfg(tmp_path)
-        httpd_mock = MagicMock()
-        # Returns immediately (no side effect) so the background thread's
-        # target function runs to completion and exits cleanly; raising here
-        # would propagate past the production try/except Exception guard
-        # (BaseException is not caught) and surface as an unhandled
-        # thread exception.
-        httpd_mock.serve_forever = MagicMock()
+
+        from autostream_settings import SettingsStore
+        from webui.server import WebUIDeps, start_server
+        store = SettingsStore(str(cfg), _save_interval_seconds=9999)
 
         with (
-            patch("autostream_webui.AuthManager"),
-            patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
+            patch("webui.server.AuthManager"),
+            patch("webui.server.ThreadingHTTPServer", return_value=self._httpd()),
         ):
             session_state.STATE = None
-            t = start_webui_background(str(cfg))
-            t.join(timeout=2.0)
+            with pytest.raises(TypeError):
+                start_server(WebUIDeps(str(cfg), str(tmp_path / "state.json"), settings=store))
+            assert session_state.STATE is None
 
-            assert session_state.STATE is not None
-            assert session_state.STATE.settings is not None
-            from autostream_settings import SettingsView, writable_store
-            assert isinstance(session_state.STATE.settings, SettingsView)
-            writable_store(session_state.STATE.settings).close(save=False)
+        store.close(save=False)
 
-    def test_startup_pushes_mdns_grace_period(self, tmp_path):
-        from autostream_settings import SettingsStore
-        from autostream_webui import start_webui_background
-        import autostream_webui as _wm
+    def test_startup_hook_receives_the_state(self, tmp_path):
+        """The start-up hook is given the web state and can push the persisted
+        mDNS grace period."""
+        from autostream_settings import SettingsStore, as_view
+        import autostream_live_config
+        from webui.server import WebUIDeps, start_server
 
         cfg = _minimal_cfg(tmp_path)
         raw = json.loads(cfg.read_text(encoding="utf-8"))
@@ -206,17 +199,9 @@ class TestStartWebuiBackground:
         cfg.write_text(json.dumps(raw), encoding="utf-8")
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
 
-        httpd_mock = MagicMock()
-        # Returns immediately (no side effect) so the background thread's
-        # target function runs to completion and exits cleanly; raising here
-        # would propagate past the production try/except Exception guard
-        # (BaseException is not caught) and surface as an unhandled
-        # thread exception.
-        httpd_mock.serve_forever = MagicMock()
-
         with (
-            patch("autostream_webui.AuthManager"),
-            patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
+            patch("webui.server.AuthManager"),
+            patch("webui.server.ThreadingHTTPServer", return_value=self._httpd()),
             # The OwnTone push happens on a background daemon thread; stub it so
             # the test asserts only the synchronous browser configuration.
             patch("autostream_live_config._push_owntone_native_setting",
@@ -224,7 +209,10 @@ class TestStartWebuiBackground:
             patch("autostream_appliances.set_grace_period") as m_set,
         ):
             session_state.STATE = None
-            t = start_webui_background(str(cfg), settings=store)
+            t = start_server(WebUIDeps(
+                str(cfg), str(tmp_path / "state.json"), settings=as_view(store),
+                startup=autostream_live_config.apply_mdns_grace_period_startup,
+            ))
             t.join(timeout=2.0)
 
         # Startup configures the in-process browser synchronously with the
@@ -253,7 +241,6 @@ class TestRunAutostreamFinalSave:
 
         store = TrackingSave(str(cfg), _save_interval_seconds=9999)
 
-        import autostream_webui
         _call_count = [0]
 
         def _is_set():

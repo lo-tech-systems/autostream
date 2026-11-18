@@ -29,8 +29,8 @@ import autostream_config as c
 from webui.common import build_appliance_selector_html
 
 try:
-    from autostream_webui import ConfigWebHandler
-    import autostream_webui as _webui
+    from webui.server import ConfigWebHandler
+    import webui.server as _webui
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
@@ -38,7 +38,7 @@ except ImportError:
 from autostream_auth import AuthManager, PIN_STATUS_MISSING
 
 _skip_webui = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
+    not _HAS_WEBUI, reason="web server import chain unavailable"
 )
 
 _REMOTE_ID = "aabbccdd1122334455aa"

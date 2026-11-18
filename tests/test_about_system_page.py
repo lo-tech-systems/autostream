@@ -1074,13 +1074,10 @@ class TestStartupPrimesAppVersion:
 
     def test_get_app_version_called_before_http_server_in_serve(self):
         """_serve() calls get_app_version() before constructing ThreadingHTTPServer."""
-        try:
-            import autostream_webui as _webui
-        except ImportError:
-            pytest.skip("autostream_webui import chain unavailable")
+        import webui.server as _webui
 
         import inspect
-        src = inspect.getsource(_webui.start_webui_background)
+        src = inspect.getsource(_webui.start_server)
         # get_app_version() must appear before ThreadingHTTPServer
         idx_version = src.find("get_app_version()")
         idx_server = src.find("ThreadingHTTPServer")
@@ -1099,9 +1096,9 @@ class TestRouteDispatch:
 
     def test_get_api_about_system_dispatches(self):
         try:
-            import autostream_webui as _webui
+            import webui.server as _webui
         except ImportError:
-            pytest.skip("autostream_webui import chain unavailable")
+            pytest.skip("web server import chain unavailable")
 
         # Dispatched through the route table: /api/about/system no
         # longer appears in do_GET's elif chain -- it's dispatched via

@@ -30,11 +30,10 @@ from settings_fixtures import fixed_view
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 try:
-    import autostream_webui
-    from autostream_webui import ConfigWebHandler
+    from webui.server import ConfigWebHandler
     _skip = pytest.mark.skipif(False, reason="")
 except Exception:
-    _skip = pytest.mark.skip(reason="autostream_webui not importable")
+    _skip = pytest.mark.skip(reason="web server not importable")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -71,13 +70,13 @@ def _fake_state(tmp_path):
 @_skip
 class TestNoInitialSetupGlobal:
     def test_initial_setup_attr_removed(self):
-        import autostream_webui as wui
+        import webui.server as wui
         assert not hasattr(wui, "initial_setup"), (
             "initial_setup global must be removed; first-boot uses is_commissioning_required"
         )
 
     def test_setup_lock_attr_removed(self):
-        import autostream_webui as wui
+        import webui.server as wui
         assert not hasattr(wui, "_setup_lock"), (
             "_setup_lock must be removed with the initial_setup global"
         )

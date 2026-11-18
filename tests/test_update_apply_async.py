@@ -32,14 +32,14 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 try:
-    import autostream_webui as webui
-    from autostream_webui import ConfigWebHandler
+    import webui.server as webui
+    from webui.server import ConfigWebHandler
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
 
 _skip_no_webui = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
+    not _HAS_WEBUI, reason="web server import chain unavailable"
 )
 
 

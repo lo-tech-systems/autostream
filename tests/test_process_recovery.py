@@ -6,7 +6,7 @@ Verifies that:
 - Config reload still performs teardown and re-enters startup without being fatal.
 - A set stop_flag still returns normally (no exception).
 - The service unit retains Restart=on-failure.
-- start_webui_background() returns the thread it starts.
+- start_server() returns the thread it starts.
 """
 from __future__ import annotations
 
@@ -139,34 +139,34 @@ class TestCoordinatorExceptionHandler:
 
 
 # ---------------------------------------------------------------------------
-# start_webui_background returns a Thread
+# start_server returns a Thread
 # ---------------------------------------------------------------------------
 
 class TestWebuiBackgroundReturnsThread:
-    def test_start_webui_background_returns_thread(self, tmp_path):
-        """start_webui_background() must return the Thread it starts."""
+    def test_start_server_returns_thread(self, tmp_path):
+        """start_server() must return the Thread it starts."""
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text('{"general":{}}')
 
-        try:
-            from autostream_webui import start_webui_background
-        except ImportError:
-            pytest.skip("autostream_webui not importable")
+        from settings_fixtures import fixed_view
+        from webui.server import WebUIDeps, start_server
 
         with patch("webui.session_state.WebUIState"), \
-             patch("autostream_webui.AuthManager"), \
+             patch("webui.server.AuthManager"), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("webui.session_state.AUTH", MagicMock()), \
-             patch("autostream_webui.ThreadingHTTPServer") as mock_server, \
-             patch("autostream_live_config.apply_mdns_grace_period_startup"):
+             patch("webui.server.ThreadingHTTPServer") as mock_server:
             # make the HTTP server block briefly then return
             instance = MagicMock()
             mock_server.return_value = instance
             instance.serve_forever.side_effect = lambda: time.sleep(0.05)
 
-            result = start_webui_background(str(cfg_path))
+            result = start_server(WebUIDeps(
+                config_path=str(cfg_path), state_path=str(tmp_path / "state.json"),
+                settings=fixed_view(),
+            ))
             assert isinstance(result, threading.Thread), (
-                "start_webui_background must return a threading.Thread"
+                "start_server must return a threading.Thread"
             )
             # Join while ThreadingHTTPServer is still patched: the background
             # thread constructs the server, and letting it outlive the patch

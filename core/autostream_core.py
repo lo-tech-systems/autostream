@@ -49,7 +49,9 @@ from autostream_intents import Intent
 from autostream_state import Origin
 from autostream_state.outputs import WRITE_TIMEOUT_S, PlayerServiceBackend, get_authority
 import autostream_dial_push
+from autostream_config import STATE_PATH
 from autostream_playback_stats import DEFAULT_FLUSH_INTERVAL_SECONDS
+from autostream_settings import as_view
 from autostream_sysutils import (
     audit_static_system_facts,
     get_install_state,
@@ -313,13 +315,22 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     # process exits nonzero and systemd can restart it.
     webui_thread = None
     if start_webui is not None:
+        import autostream_live_config
+        import webui.browser.owntone as webui_owntone
         import webui.peer.gateway as webui_gateway
+        import webui.server as webui_server
         import webui.system.updates as webui_updates
         services.start(runtime.lifecycle(), settings,
                        app_version=webui_updates.get_app_version,
                        sweeps=(webui_gateway.sweep_token_cache,),
                        on_peer_removed=(webui_gateway.evict_gateway_token,))
-        webui_thread = start_webui(config_path, settings=settings)
+        webui_thread = start_webui(webui_server.WebUIDeps(
+            config_path=config_path,
+            state_path=STATE_PATH,
+            settings=as_view(settings),
+            startup=lambda state: autostream_live_config.apply_mdns_grace_period_startup(
+                state, on_restart=lambda s: webui_owntone.start_owntone_restart_async(s, delay_s=0.75)),
+        ))
 
     socket_path = monitor_client.get_monitor_socket_path()
     poll_interval = 0.5          # seconds between get_status() polls
@@ -349,8 +360,9 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     Connects to the autostream_monitor daemon, configures inputs, and runs
     the coordinator loop until a stop signal is received.
 
-    If start_webui is provided it is called with (config_path, settings=settings)
-    to start the optional web UI in a background thread.
+    If start_webui is provided it is called with one webui.server.WebUIDeps
+    (the paths, a read-only view of the settings and the start-up hook) to
+    start the optional web UI in a background thread.
 
     If settings is None a SettingsStore is created internally and closed when
     the coordinator exits.  Pass an externally-owned store to share the same

@@ -1,16 +1,13 @@
-"""Regression: running autostream_webui.py as a script must alias itself
-into sys.modules as "autostream_webui".
+"""Regression: running autostream_webui.py as a script starts the coordinator
+with the web server of the package, and registers no module of its own name.
 
-On the appliance the webui file is the process entrypoint, so it executes
-as __main__. Any later `import autostream_webui` would, without the
-alias, load a SECOND copy of the module, and its handlers would be a
-different set of objects from the ones the running process holds. Tests import the module by name, so only this
-script-execution test can catch it.
-
-The test executes the real file with run_name="__main__" (exactly the
-appliance's execution mode) in a subprocess, with autostream_core stubbed
-so run_autostream() never actually starts anything; the stub then checks
-the alias identity from inside the running "process".
+On the appliance the entry file is the process entrypoint, so it executes as
+__main__. The web code lives in the webui package and keeps its shared state
+(STATE, AUTH) in webui.session_state, always imported by that name, so there
+is no second copy of anything to alias. This test executes the real file with
+run_name="__main__" (exactly the appliance's execution mode) in a subprocess,
+with run_autostream replaced so that nothing is started, and checks what the
+entry hands it.
 """
 
 import subprocess
@@ -29,13 +26,11 @@ import sys, runpy
 import autostream_core
 
 def run_autostream(config_path, start_webui=None, **kwargs):
-    alias = sys.modules.get("autostream_webui")
-    main_mod = sys.modules.get("__main__")
-    print("ALIAS_PRESENT:", alias is not None)
-    print("ALIAS_IS_MAIN:", alias is main_mod)
-    # The route table resolves handler names off the loaded web modules.
-    home = sys.modules.get("webui.browser.home")
-    print("HAS_HANDLER_ATTR:", hasattr(home, "_route_get_home"))
+    server = sys.modules.get("webui.server")
+    print("SERVER_LOADED:", server is not None)
+    print("STARTS_SERVER:", start_webui is getattr(server, "start_server", None))
+    print("CONFIG_PATH:", config_path)
+    print("NO_ENTRY_ALIAS:", "autostream_webui" not in sys.modules)
 
 autostream_core.run_autostream = run_autostream
 
@@ -44,7 +39,7 @@ runpy.run_path(sys.argv[0], run_name="__main__")
 """
 
 
-def test_script_execution_aliases_module_name():
+def test_script_execution_starts_the_package_server():
     result = subprocess.run(
         [sys.executable, "-c", DRIVER],
         cwd=str(REPO_ROOT / "core"),
@@ -54,6 +49,18 @@ def test_script_execution_aliases_module_name():
     )
     assert result.returncode == 0, result.stderr[-2000:]
     out = result.stdout
-    assert "ALIAS_PRESENT: True" in out, out + result.stderr[-500:]
-    assert "ALIAS_IS_MAIN: True" in out, out
-    assert "HAS_HANDLER_ATTR: True" in out, out
+    assert "SERVER_LOADED: True" in out, out + result.stderr[-500:]
+    assert "STARTS_SERVER: True" in out, out
+    assert "CONFIG_PATH: /tmp/nonexistent-config.json" in out, out
+    assert "NO_ENTRY_ALIAS: True" in out, out
+
+
+def test_wrong_argument_count_prints_usage():
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "core" / "autostream_webui.py")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 1
+    assert "Usage:" in result.stdout

@@ -32,8 +32,8 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 try:
-    from autostream_webui import ConfigWebHandler
-    import autostream_webui as _webui
+    from webui.server import ConfigWebHandler
+    import webui.server as _webui
     from webui.routes import dispatch
     from webui.routes import register
     from webui.routes import Route
@@ -45,9 +45,10 @@ except ImportError:
 
 from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME, PIN_STATUS_MISSING
 import webui.routes as webui_routes
+import webui.server as webui_server
 
 _skip_no_webui = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
+    not _HAS_WEBUI, reason="web server import chain unavailable"
 )
 
 
@@ -135,6 +136,25 @@ class TestTableIntegrity:
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             }
             assert name in defined, f"{r.handler}: {name} is not a function defined in {module}"
+
+    def test_the_server_imports_every_module_the_table_names(self):
+        core = Path(__file__).resolve().parent.parent / "core"
+        tree = ast.parse((core / "webui" / "server.py").read_text(encoding="utf-8"))
+        imported = {
+            alias.name
+            for node in tree.body if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        named = {
+            r.handler.rpartition(".")[0]
+            for r in webui_routes.ROUTES if isinstance(r.handler, str)
+        }
+        assert named <= imported, f"not imported by the server: {sorted(named - imported)}"
+        # The modules that register schema rows or cards when they are imported.
+        registering = {
+            "webui.browser.api_service", "webui.browser.api_settings", "webui.browser.setup.page",
+        }
+        assert registering <= imported
 
     def test_all_handlers_resolvable_and_callable(self):
         for r in webui_routes.ROUTES:
@@ -245,7 +265,7 @@ class TestBrowserGetRouteParity:
             "/api/owntone/outputs", "/api/network/status",
         }
         for p in migrated_pollers:
-            assert p not in _webui._POLLING_LOG_PATHS, (
+            assert p not in webui_server._POLLING_LOG_PATHS, (
                 f"{p} routed with poll_log=True but is still in _POLLING_LOG_PATHS"
             )
 

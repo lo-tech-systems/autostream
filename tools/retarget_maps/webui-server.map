@@ -1,0 +1,5 @@
+# The request handler and the server start moved from the entry script into the web package.
+autostream_webui.ConfigWebHandler -> webui.server.ConfigWebHandler  alias=webui_server
+autostream_webui.ThreadingHTTPServer -> webui.server.ThreadingHTTPServer  alias=webui_server
+autostream_webui.AuthManager -> webui.server.AuthManager  alias=webui_server
+autostream_webui._POLLING_LOG_PATHS -> webui.server._POLLING_LOG_PATHS  alias=webui_server

@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import webui.server as webui_server
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -206,9 +207,9 @@ class TestRouteDistinction:
     def test_unknown_get_route_calls_native_404(self):
         import io
         sys.path.insert(0, _core)
-        import autostream_webui as wui
+        import webui.server as wui
 
-        h = wui.ConfigWebHandler.__new__(wui.ConfigWebHandler)
+        h = webui_server.ConfigWebHandler.__new__(webui_server.ConfigWebHandler)
         h.path = "/api/nonexistent_route_xyz"
         h.command = "GET"
         h.request_version = "HTTP/1.1"
@@ -234,9 +235,9 @@ class TestRouteDistinction:
     def test_unknown_post_route_calls_native_404(self):
         import io
         sys.path.insert(0, _core)
-        import autostream_webui as wui
+        import webui.server as wui
 
-        h = wui.ConfigWebHandler.__new__(wui.ConfigWebHandler)
+        h = webui_server.ConfigWebHandler.__new__(webui_server.ConfigWebHandler)
         h.path = "/api/nonexistent_route_xyz"
         h.command = "POST"
         h.request_version = "HTTP/1.1"

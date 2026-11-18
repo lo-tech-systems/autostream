@@ -8,8 +8,8 @@ modules and the interpreter are the ones that serve the pages:
 
     cd /opt/autostream && /opt/autostream/venv/bin/python /path/to/measure_page_import_heap.py
 
-Imports the coordinator module first (outside the measurement, since the
-pages import from it), then starts tracemalloc and imports the page modules,
+Imports the shared page helpers first (outside the measurement, since every
+page imports them), then starts tracemalloc and imports the page modules,
 and prints:
 
     label,traced_kB,peak_kB,modules
@@ -47,7 +47,7 @@ PAGE_MODULES = (
 
 def measure(modules=PAGE_MODULES) -> tuple[float, float]:
     """Return (traced_kB, peak_kB) for importing *modules*."""
-    importlib.import_module("autostream_core")
+    importlib.import_module("webui.common")
     tracemalloc.start()
     try:
         for name in modules:

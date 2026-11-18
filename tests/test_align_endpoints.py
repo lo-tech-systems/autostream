@@ -614,7 +614,7 @@ class TestAlignPagePrivacyAndTitle:
 # ── Router-level CSRF enforcement ────────────────────────────────────────────
 
 try:
-    from autostream_webui import ConfigWebHandler
+    from webui.server import ConfigWebHandler
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
@@ -623,7 +623,7 @@ from autostream_auth import AuthManager, PIN_STATUS_MISSING
 import webui.browser.align as webui_align
 
 _skip_no_webui = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
+    not _HAS_WEBUI, reason="web server import chain unavailable"
 )
 
 

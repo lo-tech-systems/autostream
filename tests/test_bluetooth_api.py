@@ -1038,10 +1038,10 @@ class TestRouteRegistration:
 
     def _webui(self):
         try:
-            import autostream_webui as _webui
+            import webui.server as _webui
             import webui.routes as _routes
         except ImportError:
-            pytest.skip("autostream_webui import chain unavailable")
+            pytest.skip("web server import chain unavailable")
         return _webui, _routes
 
     def _route(self, routes_mod, path, method):

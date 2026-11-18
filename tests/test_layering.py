@@ -33,7 +33,6 @@ runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
 _L2 = "align announce appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup".split()
-_L3: list[str] = []
 
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
@@ -41,7 +40,6 @@ LAYERS: dict[str, str] = {
     "autostream_state": "L1a",
     "autostream_intents": "L1b",
     **{f"autostream_{n}": "L2" for n in _L2},
-    **{f"autostream_{n}": "L3" for n in _L3},
     "webui": "L3",
     "autostream_core": "L4",
     "autostream_webui": "L4",

@@ -4,7 +4,7 @@ Covers:
   - build_network_card_presentation() display/detail/warning fields
   - send_network_status_json(): proxy to watcher, adds display field, handles errors
   - send_network_setup_json(): action whitelist, CSRF stripping, 409 surfacing
-  - Route wiring in autostream_webui: GET /api/network/status, POST /api/network/setup
+  - Route wiring in the route table: GET /api/network/status, POST /api/network/setup
   - network_card_html present in setup page render
   - changeWifiNetwork / refreshNetworkAdapterInfo JS present in page
 """
@@ -817,7 +817,7 @@ class TestWifiWatcherVersion:
 class TestRouteWiring:
     """Smoke-test that GET /api/network/status and POST /api/network/setup
     reach their respective handlers.  We patch at the module level in
-    autostream_webui so we don't need a running server."""
+    the web package so we don't need a running server."""
 
     # These tests just confirm the functions exist and are callable — full
     # behaviour is covered by TestSendNetworkStatusJson / TestSendNetworkSetupJson.

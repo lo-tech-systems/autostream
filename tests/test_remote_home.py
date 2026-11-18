@@ -24,8 +24,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 try:
-    from autostream_webui import ConfigWebHandler
-    import autostream_webui as _webui
+    from webui.server import ConfigWebHandler
+    import webui.server as _webui
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
@@ -36,7 +36,7 @@ from settings_fixtures import CONTROLS_OTHER_APPLIANCES, viewed_state
 THEME_CSS = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
 
 _skip = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
+    not _HAS_WEBUI, reason="web server import chain unavailable"
 )
 
 _REMOTE_ID = "aabbccdd1122334455aa"
