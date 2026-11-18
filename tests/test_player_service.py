@@ -856,7 +856,7 @@ class TestRetryPendingFormatReconcile(_FormatReconcileTestHelpers):
 # status reports it is currently running as (reported), and on a definite
 # mismatch rewrites MONITOR_ARGS_ENV_PATH and requests a monitor restart via
 # the "restart-monitor" admin verb. Deliberately sequenced BEFORE
-# reconcile_pipe_format_with_backend() at both autostream_core.py call sites
+# reconcile_pipe_format_with_backend() at both autostream_startup.py call sites
 # (see tests/test_wp2_settings_ownership.py and tests/test_repeat_api.py
 # for the ordering proof).
 

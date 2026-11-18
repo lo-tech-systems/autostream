@@ -40,7 +40,7 @@ def _mock_client() -> MagicMock:
 
 class TestInput1DisabledStartup:
     def test_skips_configure_and_start_for_input_1(self):
-        from autostream_core import _configure_startup_monitors
+        from autostream_startup import configure_startup_monitors as _configure_startup_monitors
         cfg = _cfg({
             "audio1": {"enabled": False},
             "owntone": {"output_name": "Kitchen"},
@@ -55,7 +55,7 @@ class TestInput1DisabledStartup:
             assert call.args[0] != 1
 
     def test_input_2_still_starts_when_enabled_and_input_1_disabled(self):
-        from autostream_core import _configure_startup_monitors
+        from autostream_startup import configure_startup_monitors as _configure_startup_monitors
         cfg = _cfg({
             "audio1": {"enabled": False},
             "audio2": {"enabled": True, "capture_device": "hw:1,0"},
@@ -78,7 +78,7 @@ class TestInput1DisabledStartup:
         )
 
     def test_zero_inputs_returns_empty_list_not_none(self):
-        from autostream_core import _configure_startup_monitors
+        from autostream_startup import configure_startup_monitors as _configure_startup_monitors
         cfg = _cfg({
             "audio1": {"enabled": False},
             "owntone": {"output_name": "Kitchen"},
@@ -91,7 +91,7 @@ class TestInput1DisabledStartup:
     def test_input_1_enabled_by_default_still_configures(self):
         """Absent audio1.enabled defaults True -- existing single-input
         deployments behave identically to before this flag existed."""
-        from autostream_core import _configure_startup_monitors
+        from autostream_startup import configure_startup_monitors as _configure_startup_monitors
         cfg = _cfg({
             "audio1": {"capture_device": "hw:0,0"},
             "owntone": {"output_name": "Kitchen"},
@@ -114,7 +114,7 @@ class TestInput1DisabledStartup:
 
 class TestStartupCarriesRateMatching:
     def test_each_input_is_configured_with_its_own_setting(self):
-        from autostream_core import _configure_startup_monitors
+        from autostream_startup import configure_startup_monitors as _configure_startup_monitors
         cfg = _cfg({
             "audio1": {"capture_device": "hw:0,0"},
             "audio2": {"enabled": True, "capture_device": "hw:1,0", "dynamic_rate_matching": False},

@@ -58,9 +58,7 @@ from autostream_webui_api import (
 from autostream_live_config import _validate_repeat_target_minutes
 from autostream_live_config import _validate_repeat_codec
 import autostream_core as core
-from autostream_core import (
-    _resync_monitor_daemon,
-)
+from autostream_startup import resync_monitor_daemon as _resync_monitor_daemon
 from autostream_audio_monitor import AudioMonitor
 from autostream_session import _session_nowplaying_end
 from autostream_session import _session_nowplaying_start
@@ -1026,7 +1024,7 @@ class TestP6ResyncRepush:
 
     def test_resync_pushes_set_repeat_enabled_with_current_config(self):
         client = self._mock_client_for_resync()
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1042,7 +1040,7 @@ class TestP6ResyncRepush:
         """repeat_target_minutes flows through _resync_monitor_daemon to
         MonitorClient.set_repeat_enabled's target_minutes argument."""
         client = self._mock_client_for_resync()
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1061,7 +1059,7 @@ class TestP6ResyncRepush:
             _make_monitor(input_index=1, input_type="cd"),
             _make_monitor(input_index=2, input_type="turntable"),
         ]
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1081,7 +1079,7 @@ class TestP6ResyncRepush:
         """set_repeat_enabled failing (old binary) must not fail the whole resync."""
         client = self._mock_client_for_resync()
         client.set_repeat_enabled.return_value = False
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1106,9 +1104,9 @@ class TestP6ResyncRepush:
         client = self._mock_client_for_resync()
         status_dict = {"output_rate": 48000, "output_bits": 32}
         client.get_status.return_value = status_dict
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_monitor_format") as monfmt, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1128,8 +1126,8 @@ class TestP6ResyncRepush:
         """A failed FIFO-path reconcile must abort resync before the format
         reconcile is ever attempted (mirrors the existing early-return)."""
         client = self._mock_client_for_resync()
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt:
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt:
             rf.return_value = MagicMock(ok=False, message="fifo down")
             ok = _resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
@@ -1145,8 +1143,8 @@ class TestP6ResyncRepush:
         skipped -- it owns the "no format info" no-op behaviour itself."""
         client = self._mock_client_for_resync()
         client.get_status.return_value = None
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1166,7 +1164,7 @@ class TestP6ResyncRepush:
         still reports ok."""
         client = self._mock_client_for_resync()
         client.get_status.return_value = None
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \
@@ -1207,11 +1205,11 @@ class TestMonitorFormatReconcileWiring:
         client = self._mock_client_for_resync()
         status_dict = {"output_format": "native"}
         client.get_status.return_value = status_dict
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_monitor_format") as monfmt, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-             patch("autostream_core.push_resample_quality"), \
-             patch("autostream_core.sync_monitor_args_for_audio_path"), \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_startup.push_resample_quality"), \
+             patch("autostream_startup.sync_monitor_args_for_audio_path"), \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1236,11 +1234,11 @@ class TestMonitorFormatReconcileWiring:
         client = self._mock_client_for_resync()
         status_dict = {"output_format": "native"}
         client.get_status.return_value = status_dict
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_monitor_format") as monfmt, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-             patch("autostream_core.push_resample_quality"), \
-             patch("autostream_core.sync_monitor_args_for_audio_path"), \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_startup.push_resample_quality"), \
+             patch("autostream_startup.sync_monitor_args_for_audio_path"), \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1262,11 +1260,11 @@ class TestMonitorFormatReconcileWiring:
         client = self._mock_client_for_resync()
         client.get_status.return_value = {"output_format": "compatible"}
         manager = MagicMock()
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_monitor_format") as monfmt, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-             patch("autostream_core.push_resample_quality"), \
-             patch("autostream_core.sync_monitor_args_for_audio_path"), \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_startup.push_resample_quality"), \
+             patch("autostream_startup.sync_monitor_args_for_audio_path"), \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
@@ -1287,9 +1285,9 @@ class TestMonitorFormatReconcileWiring:
 
     def test_resync_monitor_format_reconcile_skipped_when_fifo_reconcile_fails(self):
         client = self._mock_client_for_resync()
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_monitor_format") as monfmt, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt:
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt:
             rf.return_value = MagicMock(ok=False, message="fifo down")
             ok = _resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
@@ -1306,7 +1304,7 @@ class TestMonitorFormatReconcileWiring:
         -- it owns the "no status" no-op behaviour itself."""
         client = self._mock_client_for_resync()
         client.get_status.return_value = None
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \

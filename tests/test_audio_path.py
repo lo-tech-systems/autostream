@@ -6,7 +6,7 @@ Covers the Python/webui half:
   - autostream_player_service: --src / resample_quality composition,
     sync_monitor_args_for_audio_path() restart-skip-when-unchanged, and
     push_resample_quality() capability/tolerance behaviour
-  - autostream_core: startup fill-missing / demote-only / never-promote /
+  - autostream_startup: startup fill-missing / demote-only / never-promote /
     second-boot-no-write write-back
   - autostream_webui_api: server-side "max" rejection on small hardware and
     the live change-flow wiring
@@ -30,6 +30,7 @@ import autostream_config as cfgmod
 import autostream_player_service as svc
 import autostream_players as ap
 import autostream_live_config as live_config
+import autostream_startup as startup
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +249,7 @@ class TestPushResampleQuality:
 
 
 # ---------------------------------------------------------------------------
-# autostream_core: startup audio_path write-back
+# autostream_startup: startup audio_path write-back
 # ---------------------------------------------------------------------------
 
 def _make_settings_store(tmp_path, initial: dict):
@@ -264,12 +265,11 @@ def _make_settings_store(tmp_path, initial: dict):
 
 class TestReconcileAudioPathStartup:
     def test_fill_missing_writes_hardware_default_high_perf(self, tmp_path, caplog):
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {})
         try:
-            with patch("autostream_core.is_high_performance_pi", return_value=True), \
+            with patch("autostream_startup.is_high_performance_pi", return_value=True), \
                  caplog.at_level("INFO"):
-                core._reconcile_audio_path_startup(store)
+                startup.reconcile_audio_path_startup(store)
             assert store.raw_snapshot()["general"]["audio_path"] == "max"
             assert writer.call_count == 1
             assert any("hardware default" in r.message for r in caplog.records)
@@ -277,23 +277,21 @@ class TestReconcileAudioPathStartup:
             store.close(save=False)
 
     def test_fill_missing_writes_hardware_default_low_perf(self, tmp_path):
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {})
         try:
-            with patch("autostream_core.is_high_performance_pi", return_value=False):
-                core._reconcile_audio_path_startup(store)
+            with patch("autostream_startup.is_high_performance_pi", return_value=False):
+                startup.reconcile_audio_path_startup(store)
             assert store.raw_snapshot()["general"]["audio_path"] == "balanced"
             assert writer.call_count == 1
         finally:
             store.close(save=False)
 
     def test_demote_only_writes_once_and_warns(self, tmp_path, caplog):
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "max"}})
         try:
-            with patch("autostream_core.is_high_performance_pi", return_value=False), \
+            with patch("autostream_startup.is_high_performance_pi", return_value=False), \
                  caplog.at_level("WARNING"):
-                core._reconcile_audio_path_startup(store)
+                startup.reconcile_audio_path_startup(store)
             assert store.raw_snapshot()["general"]["audio_path"] == "balanced"
             assert writer.call_count == 1
             assert any("demoted" in r.message for r in caplog.records)
@@ -301,65 +299,60 @@ class TestReconcileAudioPathStartup:
             store.close(save=False)
 
     def test_present_balanced_on_high_perf_never_modified(self, tmp_path):
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "balanced"}})
         try:
-            with patch("autostream_core.is_high_performance_pi", return_value=True):
-                core._reconcile_audio_path_startup(store)
+            with patch("autostream_startup.is_high_performance_pi", return_value=True):
+                startup.reconcile_audio_path_startup(store)
             assert store.raw_snapshot()["general"]["audio_path"] == "balanced"
             assert writer.call_count == 0
         finally:
             store.close(save=False)
 
     def test_present_max_on_high_perf_never_modified(self, tmp_path):
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "max"}})
         try:
-            with patch("autostream_core.is_high_performance_pi", return_value=True):
-                core._reconcile_audio_path_startup(store)
+            with patch("autostream_startup.is_high_performance_pi", return_value=True):
+                startup.reconcile_audio_path_startup(store)
             assert store.raw_snapshot()["general"]["audio_path"] == "max"
             assert writer.call_count == 0
         finally:
             store.close(save=False)
 
     def test_second_boot_after_demotion_writes_nothing(self, tmp_path):
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "max"}})
         try:
-            with patch("autostream_core.is_high_performance_pi", return_value=False):
-                core._reconcile_audio_path_startup(store)
+            with patch("autostream_startup.is_high_performance_pi", return_value=False):
+                startup.reconcile_audio_path_startup(store)
                 assert writer.call_count == 1
                 # Second pass (e.g. a retry lap of the startup loop, or a
                 # subsequent boot re-reading the now-demoted persisted value).
-                core._reconcile_audio_path_startup(store)
+                startup.reconcile_audio_path_startup(store)
                 assert writer.call_count == 1
         finally:
             store.close(save=False)
 
     def test_second_boot_after_fill_missing_writes_nothing(self, tmp_path):
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {})
         try:
-            with patch("autostream_core.is_high_performance_pi", return_value=True):
-                core._reconcile_audio_path_startup(store)
+            with patch("autostream_startup.is_high_performance_pi", return_value=True):
+                startup.reconcile_audio_path_startup(store)
                 assert writer.call_count == 1
-                core._reconcile_audio_path_startup(store)
+                startup.reconcile_audio_path_startup(store)
                 assert writer.call_count == 1
         finally:
             store.close(save=False)
 
 
 # ---------------------------------------------------------------------------
-# autostream_core: _fresh_audio_path() -- fresh settings-store read for the
+# autostream_startup: fresh_audio_path() -- fresh settings-store read for the
 # reconnect resync (never a disk read, never a cached snapshot fallback)
 # ---------------------------------------------------------------------------
 
 class TestFreshAudioPath:
     def test_returns_current_store_snapshot_value(self, tmp_path):
-        import autostream_core as core
         store, _writer = _make_settings_store(tmp_path, {"general": {"audio_path": "fast"}})
         try:
-            assert core._fresh_audio_path(store) == "fast"
+            assert startup.fresh_audio_path(store) == "fast"
         finally:
             store.close(save=False)
 
@@ -367,30 +360,27 @@ class TestFreshAudioPath:
         """A store mutation is visible to _fresh_audio_path() immediately,
         before the background save cycle (here disabled via a very long
         interval) has written anything to disk."""
-        import autostream_core as core
         store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "balanced"}})
         try:
             store.update(
                 lambda r: r.setdefault("general", {}).update({"audio_path": "fast"})
             )
             assert writer.call_count == 0
-            assert core._fresh_audio_path(store) == "fast"
+            assert startup.fresh_audio_path(store) == "fast"
         finally:
             store.close(save=False)
 
     def test_settings_none_returns_none(self):
-        import autostream_core as core
-        assert core._fresh_audio_path(None) is None
+        assert startup.fresh_audio_path(None) is None
 
     def test_snapshot_raising_returns_none_not_raise(self):
-        import autostream_core as core
         store = MagicMock()
         store.snapshot.side_effect = RuntimeError("store unavailable")
-        assert core._fresh_audio_path(store) is None
+        assert startup.fresh_audio_path(store) is None
 
 
 # ---------------------------------------------------------------------------
-# autostream_core: _resync_monitor_daemon() audio_path freshness + skip-on-
+# autostream_startup: resync_monitor_daemon() audio_path freshness + skip-on-
 # unknown semantics
 # ---------------------------------------------------------------------------
 
@@ -408,15 +398,14 @@ class TestResyncAudioPathFreshness:
         skipped) but _sync_audio_path_backend() is not -- pushing a derived
         resample_quality/tier from an unknown source value would be a
         guess."""
-        import autostream_core as core
 
         client = self._mock_client()
         status_dict = {"output_format": "native"}
         client.get_status.return_value = status_dict
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_monitor_format") as monfmt, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-             patch("autostream_core._sync_audio_path_backend") as sync_backend, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_startup.sync_audio_path_backend") as sync_backend, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \
@@ -424,7 +413,7 @@ class TestResyncAudioPathFreshness:
             rf.return_value = MagicMock(ok=True, message="")
             monfmt.return_value = MagicMock(ok=True, error="", error_code="")
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
-            ok = core._resync_monitor_daemon(
+            ok = startup.resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
                 MagicMock(), audio_path=None,
             )
@@ -445,7 +434,6 @@ class TestResyncAudioPathFreshness:
         what is already persisted in the env file), so the tier owner's own
         idempotence check finds a match and neither rewrites the env file
         nor requests a restart."""
-        import autostream_core as core
 
         store, _writer = _make_settings_store(tmp_path, {"general": {"audio_path": "fast"}})
         stale_cfg_audio_path = "balanced"  # what a pre-change loop snapshot would hold; unused
@@ -466,19 +454,19 @@ class TestResyncAudioPathFreshness:
             with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(env_path)), \
                  patch.object(svc, "resolve_backend", return_value=resolved), \
                  patch.object(svc, "_restart_monitor_async") as restart_mock, \
-                 patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-                 patch("autostream_core.reconcile_monitor_format") as monfmt, \
-                 patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-                 patch("autostream_core.push_resample_quality"), \
+                 patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+                 patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+                 patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
+                 patch("autostream_startup.push_resample_quality"), \
                  patch("autostream_monitor_control.apply_input_gain", return_value=True), \
                  patch("autostream_monitor_control.apply_input_eq", return_value=True), \
                  patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
                 rf.return_value = MagicMock(ok=True, message="")
                 monfmt.return_value = MagicMock(ok=True, error="", error_code="")
                 fmt.return_value = MagicMock(ok=True, error="", error_code="")
-                ok = core._resync_monitor_daemon(
+                ok = startup.resync_monitor_daemon(
                     client, [], "/tmp/test.fifo", "http://localhost:3689",
-                    MagicMock(), audio_path=core._fresh_audio_path(store),
+                    MagicMock(), audio_path=startup.fresh_audio_path(store),
                 )
             assert ok is True
             assert env_path.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src fast\n"
@@ -495,7 +483,6 @@ class TestResyncAudioPathFreshness:
         disk: a disk-read implementation would return "balanced" here (the
         read succeeds; the bytes are merely stale) and clobber the env
         file, reproducing the exact failure this fixes."""
-        import autostream_core as core
 
         store, writer = _make_settings_store(tmp_path, {"general": {"audio_path": "balanced"}})
         store.update(
@@ -518,19 +505,19 @@ class TestResyncAudioPathFreshness:
             with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(env_path)), \
                  patch.object(svc, "resolve_backend", return_value=resolved), \
                  patch.object(svc, "_restart_monitor_async") as restart_mock, \
-                 patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-                 patch("autostream_core.reconcile_monitor_format") as monfmt, \
-                 patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-                 patch("autostream_core.push_resample_quality"), \
+                 patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+                 patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+                 patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
+                 patch("autostream_startup.push_resample_quality"), \
                  patch("autostream_monitor_control.apply_input_gain", return_value=True), \
                  patch("autostream_monitor_control.apply_input_eq", return_value=True), \
                  patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
                 rf.return_value = MagicMock(ok=True, message="")
                 monfmt.return_value = MagicMock(ok=True, error="", error_code="")
                 fmt.return_value = MagicMock(ok=True, error="", error_code="")
-                ok = core._resync_monitor_daemon(
+                ok = startup.resync_monitor_daemon(
                     client, [], "/tmp/test.fifo", "http://localhost:3689",
-                    MagicMock(), audio_path=core._fresh_audio_path(store),
+                    MagicMock(), audio_path=startup.fresh_audio_path(store),
                 )
             assert ok is True
             assert env_path.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src fast\n"
@@ -542,7 +529,6 @@ class TestResyncAudioPathFreshness:
         """Store unavailable on one pass: env untouched, skip logged at
         WARNING. A later pass with the store available behaves normally
         (tier owner rewrites/no-ops correctly against fresh data)."""
-        import autostream_core as core
 
         env_path = tmp_path / "monitor_args.env"
         env_path.write_text("AUTOSTREAM_MONITOR_ARGS=--src fast\n", encoding="utf-8")
@@ -558,10 +544,10 @@ class TestResyncAudioPathFreshness:
         with patch.object(svc, "MONITOR_ARGS_ENV_PATH", str(env_path)), \
              patch.object(svc, "resolve_backend", return_value=resolved), \
              patch.object(svc, "_restart_monitor_async") as restart_mock, \
-             patch("autostream_core.reconcile_fifo_with_backend") as rf, \
-             patch("autostream_core.reconcile_monitor_format") as monfmt, \
-             patch("autostream_core.reconcile_pipe_format_with_backend") as fmt, \
-             patch("autostream_core.push_resample_quality"), \
+             patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
+             patch("autostream_startup.reconcile_monitor_format") as monfmt, \
+             patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt, \
+             patch("autostream_startup.push_resample_quality"), \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True), \
@@ -571,9 +557,9 @@ class TestResyncAudioPathFreshness:
             fmt.return_value = MagicMock(ok=True, error="", error_code="")
 
             # Pass 1: store unavailable.
-            ok = core._resync_monitor_daemon(
+            ok = startup.resync_monitor_daemon(
                 client, [], "/tmp/test.fifo", "http://localhost:3689",
-                MagicMock(), audio_path=core._fresh_audio_path(None),
+                MagicMock(), audio_path=startup.fresh_audio_path(None),
             )
             assert ok is True
             assert env_path.read_text(encoding="utf-8") == "AUTOSTREAM_MONITOR_ARGS=--src fast\n"
@@ -587,9 +573,9 @@ class TestResyncAudioPathFreshness:
             # tier owner's idempotence check still finds a match.
             store, _writer = _make_settings_store(tmp_path, {"general": {"audio_path": "fast"}})
             try:
-                ok = core._resync_monitor_daemon(
+                ok = startup.resync_monitor_daemon(
                     client, [], "/tmp/test.fifo", "http://localhost:3689",
-                    MagicMock(), audio_path=core._fresh_audio_path(store),
+                    MagicMock(), audio_path=startup.fresh_audio_path(store),
                 )
             finally:
                 store.close(save=False)

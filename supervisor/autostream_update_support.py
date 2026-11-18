@@ -574,7 +574,7 @@ def free_repeat_buffer(
     is available.  This intentionally does NOT touch the persisted
     repeat.enabled value in /etc/autostream/autostream.json -- the coordinator
     re-pushes that persisted value to the monitor on every startup and on every
-    post-disconnect reconnect (see autostream_core._push_repeat_policy callers),
+    post-disconnect reconnect (see autostream_startup._push_repeat_policy callers),
     so the live daemon's repeat policy is restored automatically once services
     resume after the update, without this script needing to read or write JSON
     config.

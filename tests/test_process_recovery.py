@@ -24,12 +24,13 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_core as _core_mod
-from autostream_core import _check_webui_thread
+from autostream_startup import check_webui_thread as _check_webui_thread
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_logging as log_setup
 import autostream_announce as announce
 import autostream_playback_tracking as playback_tracking
+import autostream_startup as startup
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +270,6 @@ class TestScannerWrappers:
             webui_thread.join(timeout=2.0)
             assert not webui_thread.is_alive()
 
-        import autostream_core as _core
         assert "dial_event" in captured, "start_dial_scanner was not called"
         assert captured["dial_event"] is runtime.stop_flag, (
             "start_dial_scanner must receive stop_flag as shutdown_event"
@@ -334,7 +334,7 @@ class TestOutputUsageStartup:
 
         calls = []
         with patch.object(runtime, "stop_flag") as mock_flag, \
-             patch.object(_core_mod, "_install_signal_handlers"), \
+             patch.object(startup, "install_signal_handlers"), \
              patch.object(log_setup, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level"), \
              patch.object(_core_mod, "audit_static_system_facts"), \
@@ -374,7 +374,7 @@ class TestStartupWifiWatcherForwarding:
         settings.save_now.return_value = True
 
         with patch.object(runtime, "stop_flag") as mock_flag, \
-             patch.object(_core_mod, "_install_signal_handlers"), \
+             patch.object(startup, "install_signal_handlers"), \
              patch.object(log_setup, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level") as m_apply, \
              patch("autostream_watcher_client.forward_log_level_to_watcher",
@@ -408,7 +408,7 @@ class TestStartupWifiWatcherForwarding:
         settings.save_now.return_value = True
 
         with patch.object(runtime, "stop_flag") as mock_flag, \
-             patch.object(_core_mod, "_install_signal_handlers"), \
+             patch.object(startup, "install_signal_handlers"), \
              patch.object(log_setup, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level",
                    side_effect=RuntimeError("policy down")), \

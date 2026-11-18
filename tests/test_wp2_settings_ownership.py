@@ -272,9 +272,9 @@ class TestRunAutostreamFinalSave:
 
         with (
             patch("autostream_runtime.stop_flag") as sf,
-            patch("autostream_core.unconfigured", return_value=False),
+            patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient") as mc,
-            patch("autostream_core._install_signal_handlers"),
+            patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
@@ -312,9 +312,9 @@ class TestRunAutostreamFinalSave:
 
         with (
             patch("autostream_runtime.stop_flag") as sf,
-            patch("autostream_core.unconfigured", return_value=False),
+            patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient") as mc,
-            patch("autostream_core._install_signal_handlers"),
+            patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
@@ -341,7 +341,7 @@ class TestRunAutostreamFinalSave:
 # reconcile_pipe_format_with_backend() is sequenced right after
 # reconcile_fifo_with_backend() in the startup phase, using the client's live
 # get_status() as the monitor's format source of truth -- mirrors the FIFO
-# path reconcile call immediately above it in autostream_core.py.
+# path reconcile call immediately above it in autostream_startup.py.
 
 class TestRunAutostreamStartupFormatReconcile:
     def _run_to_first_startup_iteration(self, tmp_path, *, get_status_return):
@@ -370,23 +370,23 @@ class TestRunAutostreamStartupFormatReconcile:
 
         with (
             patch("autostream_runtime.stop_flag") as sf,
-            patch("autostream_core.unconfigured", return_value=False),
+            patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient", return_value=mock_client),
-            patch("autostream_core._install_signal_handlers"),
+            patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_logging.setup_logging"),
-            patch("autostream_core.reconcile_fifo_with_backend") as rf,
+            patch("autostream_startup.reconcile_fifo_with_backend") as rf,
             # Not under test here, but must still be patched: real
             # reconcile_monitor_format() would otherwise make a live HTTP
             # probe to base_url (see TestRunAutostreamStartupMonitorFormatReconcile
             # below for its own dedicated coverage).
-            patch("autostream_core.reconcile_monitor_format") as monfmt,
-            patch("autostream_core.reconcile_pipe_format_with_backend") as fmt,
-            patch("autostream_core.ensure_pipe_source_ready") as pipe_ready,
-            patch("autostream_core._configure_startup_monitors", return_value=[]),
+            patch("autostream_startup.reconcile_monitor_format") as monfmt,
+            patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt,
+            patch("autostream_startup.ensure_pipe_source_ready") as pipe_ready,
+            patch("autostream_startup.configure_startup_monitors", return_value=[]),
         ):
             sf.is_set.side_effect = _is_set
             sf.wait.return_value = True
@@ -454,22 +454,22 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
 
         with (
             patch("autostream_runtime.stop_flag") as sf,
-            patch("autostream_core.unconfigured", return_value=False),
+            patch("autostream_startup.unconfigured", return_value=False),
             patch("autostream_monitor_client.MonitorClient", return_value=mock_client),
-            patch("autostream_core._install_signal_handlers"),
+            patch("autostream_startup.install_signal_handlers"),
             patch("autostream_core.get_install_state", return_value={}),
             patch("autostream_playback_tracking.ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
             patch("autostream_logging.setup_logging"),
-            patch("autostream_core.is_high_performance_pi", return_value=False),
-            patch("autostream_core.push_resample_quality"),
-            patch("autostream_core.sync_monitor_args_for_audio_path"),
-            patch("autostream_core.reconcile_fifo_with_backend") as rf,
-            patch("autostream_core.reconcile_monitor_format") as monfmt,
-            patch("autostream_core.reconcile_pipe_format_with_backend") as fmt,
-            patch("autostream_core.ensure_pipe_source_ready") as pipe_ready,
-            patch("autostream_core._configure_startup_monitors", return_value=[]),
+            patch("autostream_startup.is_high_performance_pi", return_value=False),
+            patch("autostream_startup.push_resample_quality"),
+            patch("autostream_startup.sync_monitor_args_for_audio_path"),
+            patch("autostream_startup.reconcile_fifo_with_backend") as rf,
+            patch("autostream_startup.reconcile_monitor_format") as monfmt,
+            patch("autostream_startup.reconcile_pipe_format_with_backend") as fmt,
+            patch("autostream_startup.ensure_pipe_source_ready") as pipe_ready,
+            patch("autostream_startup.configure_startup_monitors", return_value=[]),
         ):
             sf.is_set.side_effect = _is_set
             sf.wait.return_value = True

@@ -36,6 +36,7 @@ import autostream_announce as announce
 import autostream_playback_tracking as playback_tracking
 import autostream_session
 import autostream_identification as identification
+import autostream_startup as startup
 
 
 def _minimal_cfg(tmp_path: Path) -> Path:
@@ -89,29 +90,29 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         # sequence. Replace it so this harness is order-independent.
         rf = stack.enter_context(patch.object(runtime, "reload_flag"))
         rf.is_set.return_value = False
-        stack.enter_context(patch.object(core, "unconfigured", return_value=False))
+        stack.enter_context(patch.object(startup, "unconfigured", return_value=False))
         stack.enter_context(patch.object(monitor_client, "MonitorClient", return_value=mock_client))
-        stack.enter_context(patch.object(core, "_install_signal_handlers"))
+        stack.enter_context(patch.object(startup, "install_signal_handlers"))
         stack.enter_context(patch.object(core, "get_install_state", return_value={}))
         stack.enter_context(patch.object(playback_tracking, "ensure_playback_tracker"))
         stack.enter_context(patch.object(core, "_start_output_usage_poller"))
         stack.enter_context(patch("autostream_log_policy.apply_startup_log_level"))
         stack.enter_context(patch.object(log_setup, "setup_logging"))
-        stack.enter_context(patch.object(core, "_reconcile_audio_path_startup"))
+        stack.enter_context(patch.object(startup, "reconcile_audio_path_startup"))
         stack.enter_context(patch.object(
-            core, "reconcile_fifo_with_backend",
+            startup, "reconcile_fifo_with_backend",
             return_value=MagicMock(ok=True, message="")))
         stack.enter_context(patch.object(
-            core, "reconcile_monitor_format",
+            startup, "reconcile_monitor_format",
             return_value=MagicMock(ok=True, error="", error_code="")))
         stack.enter_context(patch.object(
-            core, "reconcile_pipe_format_with_backend",
+            startup, "reconcile_pipe_format_with_backend",
             return_value=MagicMock(ok=True, error="", error_code="")))
         stack.enter_context(patch.object(
-            core, "ensure_pipe_source_ready",
+            startup, "ensure_pipe_source_ready",
             return_value=MagicMock(ok=True, message="")))
-        stack.enter_context(patch.object(core, "_sync_audio_path_backend"))
-        stack.enter_context(patch.object(core, "_configure_startup_monitors", return_value=[]))
+        stack.enter_context(patch.object(startup, "sync_audio_path_backend"))
+        stack.enter_context(patch.object(startup, "configure_startup_monitors", return_value=[]))
         stack.enter_context(patch.object(identification, "build_track_id_service", return_value=None))
         stack.enter_context(patch.object(announce, "_start_playing_reconciliation"))
         stack.enter_context(patch.object(autostream_session, "SessionTracker", mock_session_tracker_cls))

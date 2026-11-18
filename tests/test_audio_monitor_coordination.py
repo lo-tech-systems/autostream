@@ -551,6 +551,7 @@ import autostream_live_config as live_config
 import autostream_state as state
 import autostream_input_status as input_status
 import autostream_selfheal as selfheal
+import autostream_startup as startup
 
 
 def _inputs():
@@ -1388,12 +1389,12 @@ class TestRateMatchingFlagOnEveryPush:
             _make_monitor(input_index=1, dynamic_rate_matching=True),
             _make_monitor(input_index=2, dynamic_rate_matching=False),
         ]
-        with patch("autostream_core.reconcile_fifo_with_backend") as rf, \
+        with patch("autostream_startup.reconcile_fifo_with_backend") as rf, \
              patch("autostream_monitor_control.apply_input_gain", return_value=True), \
              patch("autostream_monitor_control.apply_input_eq", return_value=True), \
              patch("autostream_monitor_control._apply_output_eq_config", return_value=True):
             rf.return_value = MagicMock(ok=True, message="")
-            ok = core._resync_monitor_daemon(
+            ok = startup.resync_monitor_daemon(
                 client, monitors, "/tmp/test.fifo", "http://localhost:3689",
                 MagicMock(), repeat_enabled=False, repeat_codec="auto",
             )
