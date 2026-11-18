@@ -36,7 +36,7 @@ _requires_browser = pytest.mark.skipif(
 def _render() -> tuple[bytes, bytes]:
     sighting = SimpleNamespace(
         uuid=UUID, name="Hall Dial", version="2.0.0", pin_recovery=False,
-        ip="10.0.0.42", dial_proto="v3", sdmon=False,
+        ip="10.0.0.42", proto=4, sdmon=False,
     )
     entry = SimpleNamespace(uuid=UUID, name="Hall Dial", current_name="Hall Dial", last_seen="")
     fakes = {"dial_sightings": [sighting], "dial_entries": [entry]}

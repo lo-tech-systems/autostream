@@ -67,8 +67,7 @@ class TestServiceIntents:
         from autostream_intents import Intent, Origin
         result = MagicMock(applied=True)
         with patch.object(tracking, "reset_input_stylus", return_value=result), \
-             patch.object(tracking.live, "state_refresh") as poke, \
-             patch.object(tracking.dial_warnings, "poke"):
+             patch.object(tracking.live, "state_refresh") as poke:
             tracking._counters_reset(
                 Intent("input.counters.reset", {"item": "stylus", "input": 1}, Origin.USER, "webui"),
                 0.0)
@@ -78,8 +77,7 @@ class TestServiceIntents:
         import autostream_playback_tracking as tracking
         from autostream_intents import Intent, Origin
         with patch.object(tracking, "reset_input_stylus", return_value=MagicMock(applied=False)), \
-             patch.object(tracking.live, "state_refresh") as poke, \
-             patch.object(tracking.dial_warnings, "poke"):
+             patch.object(tracking.live, "state_refresh") as poke:
             tracking._counters_reset(
                 Intent("input.counters.reset", {"item": "stylus", "input": 1}, Origin.USER, "webui"),
                 0.0)
@@ -89,8 +87,7 @@ class TestServiceIntents:
         import autostream_playback_tracking as tracking
         from autostream_intents import Intent, Origin
         with patch.object(tracking, "update_playback_input_config", return_value=True), \
-             patch.object(tracking.live, "state_refresh") as poke, \
-             patch.object(tracking.dial_warnings, "poke"):
+             patch.object(tracking.live, "state_refresh") as poke:
             tracking._playback_config_set(
                 Intent("input.playback_config.set", {"input": 1, "enabled": False},
                        Origin.USER, "webui"), 0.0)

@@ -49,7 +49,6 @@ import autostream_intents as intents
 from autostream_intents import Intent
 from autostream_state import Origin
 from autostream_state.outputs import WRITE_TIMEOUT_S, PlayerServiceBackend, get_authority
-import autostream_dial_push
 from autostream_config import STATE_PATH
 from autostream_playback_stats import DEFAULT_FLUSH_INTERVAL_SECONDS
 from autostream_settings import as_view
@@ -311,7 +310,6 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
         log_setup.get_live_platform_log_level(),
     )
 
-    autostream_dial_push.install_state_hints(autostream_state.store())
     _bind_intent_handlers()
     _start_output_authority(cfg, settings)
 

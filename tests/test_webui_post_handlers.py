@@ -454,16 +454,6 @@ class TestOutputChangeOrigin:
         assert snap().silence_chosen is True
 
 
-class TestOutputRequesterPassed:
-    def test_the_local_handler_names_the_webui_as_requester(self, tmp_path):
-        state = _make_state(tmp_path)
-        with patch("webui.common.send_json"), \
-             patch("webui.browser.home_model.submit_output_change",
-                   return_value={"ok": True}) as mut:
-            handle_output_update(MagicMock(), state, json.dumps({"id": "1", "selected": True}))
-        assert mut.call_args.kwargs["requester"] == "webui"
-        assert mut.call_args.kwargs["pin_requester"] == "webui"
-
 # ---------------------------------------------------------------------------
 # Home page PIN dialog (page script text)
 # ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ from typing import Callable, Optional
 
 import autostream_appliance_state as appliance_state
 import autostream_appliances as appliances
-import autostream_dial_warnings as dial_warnings
 import autostream_dials as dials
 import autostream_monitor_client as monitor_client
 import autostream_runtime as runtime
@@ -317,12 +316,11 @@ def start(
     state_path: str,
     app_version: Callable[[], str],
 ) -> None:
-    """Start the dial scanner, the dial warnings watcher, the appliance state
+    """Start the dial scanner, the appliance state
     worker and the device-scan, announcement and identification-provider
     threads. Called once, before the web server starts."""
     try:
         dials.start_dial_scanner(shutdown_event=life.stop)
-        dial_warnings.start_watcher(shutdown_event=life.stop)
         appliance_state.start(
             life.stop, config_path=config_path, state_path=state_path,
             settings=settings, app_version=app_version)

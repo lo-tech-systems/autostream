@@ -1,44 +1,4 @@
 {
- "POST /api/dial/status idle": {
-  "status": 200,
-  "body": "{\"ok\": true, \"playing\": false, \"master_volume\": null, \"selected_output_count\": 0, \"track_id\": {\"enabled\": false, \"state\": \"disabled\", \"title\": \"\", \"artist\": \"\", \"album\": \"\", \"artwork_url\": \"\", \"updated_at\": \"<n>\", \"last_attempt_at\": \"<n>\"}, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"muted\": false, \"input\": null, \"repeat\": {\"available\": true, \"state\": \"idle\", \"armed\": false, \"held\": false, \"recording_seconds\": 0.0, \"replay\": {\"active\": false, \"position_seconds\": 0.0, \"duration_seconds\": 0.0}, \"latency_ms\": 2250}}",
-  "calls": []
- },
- "POST /api/dial/status one_output_start_refused": {
-  "status": 200,
-  "body": "{\"ok\": true, \"playing\": false, \"master_volume\": null, \"selected_output_count\": 0, \"track_id\": {\"enabled\": false, \"state\": \"disabled\", \"title\": \"\", \"artist\": \"\", \"album\": \"\", \"artwork_url\": \"\", \"updated_at\": \"<n>\", \"last_attempt_at\": \"<n>\"}, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"muted\": false, \"input\": null, \"start_failure\": {\"seq\": 1, \"boot\": \"golden-boot\", \"unit_id\": \"1002\", \"name\": \"Speaker B\", \"reason\": \"refused\", \"age_s\": 4, \"mine\": false}, \"repeat\": {\"available\": true, \"state\": \"idle\", \"armed\": false, \"held\": false, \"recording_seconds\": 0.0, \"replay\": {\"active\": false, \"position_seconds\": 0.0, \"duration_seconds\": 0.0}, \"latency_ms\": 2250}}",
-  "calls": []
- },
- "POST /api/dial/status one_output_playing_input1": {
-  "status": 200,
-  "body": "{\"ok\": true, \"playing\": true, \"master_volume\": 40, \"selected_output_count\": 1, \"track_id\": {\"enabled\": true, \"state\": \"identified\", \"title\": \"Example Title\", \"artist\": \"Example Artist\", \"album\": \"Example Album\", \"artwork_url\": \"https://example.invalid/art/cover.jpg\", \"updated_at\": \"<n>\", \"last_attempt_at\": \"<n>\"}, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"muted\": false, \"input\": {\"index\": 1, \"type\": \"turntable\", \"label\": \"Turntable\"}, \"repeat\": {\"available\": true, \"state\": \"idle\", \"armed\": true, \"held\": false, \"recording_seconds\": 0.0, \"replay\": {\"active\": false, \"position_seconds\": 0.0, \"duration_seconds\": 0.0}, \"latency_ms\": 2250}}",
-  "calls": []
- },
- "POST /api/dial/status two_outputs_one_muted": {
-  "status": 200,
-  "body": "{\"ok\": true, \"playing\": true, \"master_volume\": 50, \"selected_output_count\": 2, \"track_id\": {\"enabled\": true, \"state\": \"analysing\", \"title\": \"\", \"artist\": \"\", \"album\": \"\", \"artwork_url\": \"\", \"updated_at\": \"<n>\", \"last_attempt_at\": \"<n>\"}, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"muted\": true, \"input\": {\"index\": 1, \"type\": \"turntable\", \"label\": \"Turntable\"}, \"repeat\": {\"available\": true, \"state\": \"idle\", \"armed\": true, \"held\": false, \"recording_seconds\": 0.0, \"replay\": {\"active\": false, \"position_seconds\": 0.0, \"duration_seconds\": 0.0}, \"latency_ms\": 2250}}",
-  "calls": []
- },
- "POST /api/dial/status replay_holding": {
-  "status": 200,
-  "body": "{\"ok\": true, \"playing\": false, \"master_volume\": null, \"selected_output_count\": 0, \"track_id\": {\"enabled\": false, \"state\": \"disabled\", \"title\": \"\", \"artist\": \"\", \"album\": \"\", \"artwork_url\": \"\", \"updated_at\": \"<n>\", \"last_attempt_at\": \"<n>\"}, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"muted\": false, \"input\": null, \"repeat\": {\"available\": true, \"state\": \"hold\", \"armed\": true, \"held\": true, \"recording_seconds\": 1260.0, \"replay\": {\"active\": false, \"position_seconds\": 0.0, \"duration_seconds\": 0.0}, \"latency_ms\": 2250}}",
-  "calls": []
- },
- "POST /api/dial/status replaying": {
-  "status": 200,
-  "body": "{\"ok\": true, \"playing\": true, \"master_volume\": 40, \"selected_output_count\": 1, \"track_id\": {\"enabled\": true, \"state\": \"identified\", \"title\": \"Example Title\", \"artist\": \"Example Artist\", \"album\": \"Example Album\", \"artwork_url\": \"https://example.invalid/art/cover.jpg\", \"updated_at\": \"<n>\", \"last_attempt_at\": \"<n>\"}, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"muted\": false, \"input\": {\"index\": 1, \"type\": \"turntable\", \"label\": \"Turntable\"}, \"repeat\": {\"available\": true, \"state\": \"replaying\", \"armed\": true, \"held\": false, \"recording_seconds\": 1260.0, \"replay\": {\"active\": true, \"position_seconds\": 312.5, \"duration_seconds\": 1260.0}, \"latency_ms\": 2250}}",
-  "calls": []
- },
- "POST /api/dial/status monitor_down": {
-  "status": 200,
-  "body": "{\"ok\": true, \"playing\": false, \"master_volume\": null, \"selected_output_count\": 0, \"track_id\": {\"enabled\": false, \"state\": \"disabled\", \"title\": \"\", \"artist\": \"\", \"album\": \"\", \"artwork_url\": \"\", \"updated_at\": \"<n>\", \"last_attempt_at\": \"<n>\"}, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"muted\": false, \"input\": null}",
-  "calls": []
- },
- "POST /api/dial/status backend_unreachable": {
-  "status": 200,
-  "body": "{\"ok\": false, \"error\": \"backend_unavailable\"}",
-  "calls": []
- },
  "GET /api/playing-status idle": {
   "status": 200,
   "body": "{\"ok\": true, \"playing\": false}",

@@ -87,8 +87,7 @@ class Route:
     # The others opt a route OUT of every one of those stages --
     # dispatch() just resolves and calls the handler, exactly mirroring the
     # early-dispatch branches these routes used to be in do_GET/do_POST
-    # (before route-table dispatch even ran): "dial" is the dial-device
-    # protocol endpoints (UUID/allow-list auth inside the sender), "protocol"
+    # (before route-table dispatch even ran): "protocol"
     # is the client protocol's
     # intents route, which identifies its caller from the request body
     # itself, "loopback_aware" is a route whose
@@ -99,7 +98,7 @@ class Route:
     # fn(handler, STATE) -- two args, GET's calling convention -- even for
     # POST/PUT, since dispatch() does no body pre-parsing for them either
     # (that parsing is itself part of the "own logic" these routes keep;
-    # see e.g. the dial adapters' own body reads in the dial and peer modules, which reproduce -- not share -- the
+    # the peer modules' own body reads reproduce -- not share -- the
     # generic POST/PUT parse below since their legacy call sites ran ahead
     # of, or bypassed, one or more of its checks).
     scheme: str = "browser"
@@ -141,9 +140,9 @@ class Route:
             raise ValueError("Route requires at least one HTTP method")
         if self.kind not in ("page", "api"):
             raise ValueError(f"Route.kind must be 'page' or 'api', got {self.kind!r}")
-        if self.scheme not in ("browser", "dial", "loopback_aware", "protocol"):
+        if self.scheme not in ("browser", "loopback_aware", "protocol"):
             raise ValueError(
-                f"Route.scheme must be one of browser/dial/loopback_aware/protocol, got {self.scheme!r}"
+                f"Route.scheme must be one of browser/loopback_aware/protocol, got {self.scheme!r}"
             )
 
 
@@ -1276,10 +1275,9 @@ register(
 #
 # This section uses Route.scheme (see its docstring above) for the
 # routes that were never gated by the browser session/CSRF/commissioning/
-# FULL-auth pipeline in the first place: the
-# dial-device protocol endpoints ("dial"), and the two loopback-vs-proxied
-# fast paths ("loopback_aware"). It also uses Route.unconfigured_only
-# (see its docstring above) for the first-boot pages/posts, which need the
+# FULL-auth pipeline in the first place: the two loopback-vs-proxied
+# fast paths ("loopback_aware") and the client protocol routes. It also
+# uses Route.unconfigured_only (see its docstring above) for the first-boot pages/posts, which need the
 # opposite of allow_unconfigured's gate. Every other route below is a plain
 # browser-scheme route, auth/kind/allow_unconfigured derived from its
 # now-deleted legacy arm exactly as elsewhere in this table.
@@ -1291,117 +1289,6 @@ register(
 # cleanly onto the existing Route/AuthRequirement vocabulary plus this
 # batch's two small extensions.
 # ---------------------------------------------------------------------------
-
-# --- Dial-device protocol (dial) -------------------------------------------
-
-register(
-    Route(
-        path="/api/dial/capabilities",
-        methods=("GET",),
-        handler="webui.dial.api.send_dial_capabilities_json",
-        scheme="dial",
-        comment="Unauthenticated: discloses only what the mDNS records already broadcast.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/volume",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_volume",
-        scheme="dial",
-        comment="Non-object JSON body -> 400, matching the legacy UUID-auth dial guard.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/mute",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_mute",
-        scheme="dial",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/status",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_status",
-        scheme="dial",
-        comment="Non-object JSON body is passed through as {} -- sender 400s on missing dial_id.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/repeat",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_repeat",
-        scheme="dial",
-        comment="Non-object JSON body -> 400.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/repeat/arm",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_repeat_arm",
-        scheme="dial",
-        comment="Non-object JSON body -> 400.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/outputs",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_outputs",
-        scheme="dial",
-        comment="Non-object JSON body -> 400.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/outputs/set",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_outputs_set",
-        scheme="dial",
-        comment="Non-object JSON body -> 400.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/eq",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_eq",
-        scheme="dial",
-        comment="Non-object JSON body -> 400.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/eq/set",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_eq_set",
-        scheme="dial",
-        comment="Non-object JSON body -> 400.",
-    )
-)
-
-register(
-    Route(
-        path="/api/dial/warnings",
-        methods=("POST",),
-        handler="webui.dial.api._route_post_dial_warnings",
-        scheme="dial",
-        comment="Non-object JSON body -> 400.",
-    )
-)
 
 # --- Loopback-aware fast paths ----------------------------------------------
 

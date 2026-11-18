@@ -83,8 +83,7 @@ class LiveNotBound(RuntimeError):
 
 
 # Names that a Level 2 module implements and binds when it is imported.
-BINDABLE = ("annotate_outputs", "get_log_level_state", "get_align_status", "get_align_review",
-            "current_warnings", "warnings_payload", "state_refresh")
+BINDABLE = ("get_log_level_state", "get_align_status", "get_align_review", "state_refresh")
 
 _bound_lock = threading.Lock()
 _bound: dict[str, tuple[Callable, str]] = {}
@@ -176,11 +175,6 @@ def pin_claim_lapse_in() -> Optional[float]:
     return pairing.next_lapse_in()
 
 
-def annotate_outputs(outputs: list[dict]) -> list[dict]:
-    """The output dicts with remote-occupancy fields added (bound by autostream_appliances)."""
-    return _call_bound("annotate_outputs", outputs)
-
-
 def get_log_level_state(*args, **kwargs):
     """The log-level policy state (bound by autostream_log_policy)."""
     return _call_bound("get_log_level_state", *args, **kwargs)
@@ -204,13 +198,3 @@ def state_refresh() -> None:
         _call_bound("state_refresh")
     except LiveNotBound:
         pass
-
-
-def current_warnings() -> list:
-    """The warnings this appliance wants a dial to show (bound by autostream_dial_warnings)."""
-    return _call_bound("current_warnings")
-
-
-def warnings_payload(warnings) -> list:
-    """*warnings* as the dial warnings route's list of objects (bound by autostream_dial_warnings)."""
-    return _call_bound("warnings_payload", warnings)

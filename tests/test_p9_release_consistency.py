@@ -15,7 +15,7 @@ DIAL_PROTOCOL.md schema validation:
 Route existence (protocol → code):
   - Every route documented in DIAL_PROTOCOL.md exists in the corresponding
     Python handler file.
-  - The /api/dial/volume route is NOT in ALLOWLIST_PATHS (UUID-in-body auth).
+  - No /api/dial/ route is in ALLOWLIST_PATHS.
 
 Not covered here:
   - requirements.lock full reproducibility: requires `pip-compile` and a live
@@ -255,26 +255,6 @@ class TestDialProtocolSchemaFields:
                 results.append(obj)
         return results
 
-    def test_dial_volume_request_has_dial_id_and_delta(self, doc_text):
-        matches = self._find_json_with_field(doc_text, "dial_id")
-        assert matches, (
-            "DIAL_PROTOCOL.md must have a JSON example with a 'dial_id' field "
-            "for the /api/dial/volume request"
-        )
-        assert "delta" in matches[0], (
-            "'delta' must appear in the same example as 'dial_id'"
-        )
-
-    def test_dial_volume_success_response_has_ok_and_volume(self, doc_text):
-        matches = self._find_json_with_field(doc_text, "volume")
-        assert matches, (
-            "DIAL_PROTOCOL.md must have a JSON example with a 'volume' field "
-            "for the /api/dial/volume success response"
-        )
-        assert "ok" in matches[0], (
-            "'ok' must appear in the same example as 'volume'"
-        )
-
     def test_configure_get_response_has_required_fields(self, doc_text):
         matches = self._find_json_with_field(doc_text, "step_percent")
         assert matches, (
@@ -341,19 +321,6 @@ class TestDialRouteExistence:
         )
 
 
-class TestApplianceRouteExistence:
-    """Appliance API routes documented in DIAL_PROTOCOL.md must exist in the codebase."""
-
-    @pytest.fixture(scope="class")
-    def api_src(self):
-        return _source_text.web_source()
-
-    def test_dial_volume_route_exists(self, api_src):
-        assert "/api/dial/volume" in api_src, (
-            "POST /api/dial/volume is missing from autostream_webui_api.py"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Security policy: allowlist matches DIAL_PROTOCOL.md authentication rules
 # ---------------------------------------------------------------------------
@@ -366,12 +333,9 @@ class TestApiSecurityPolicy:
         import autostream_auth
         return autostream_auth
 
-    def test_dial_volume_is_not_allowlisted(self, auth_module):
-        """DIAL_PROTOCOL.md says POST /api/dial/volume requires UUID-in-body auth."""
-        assert "/api/dial/volume" not in auth_module.ALLOWLIST_PATHS, (
-            "/api/dial/volume must NOT be in ALLOWLIST_PATHS — "
-            "it requires UUID-in-body authentication per DIAL_PROTOCOL.md"
-        )
+    def test_no_dial_route_is_allowlisted(self, auth_module):
+        """The dial management routes need a session; none is exempt."""
+        assert not [p for p in auth_module.ALLOWLIST_PATHS if p.startswith("/api/dial/")]
 
     def test_allowlist_paths_supports_membership(self, auth_module):
         """ALLOWLIST_PATHS membership implies no session/CSRF check."""

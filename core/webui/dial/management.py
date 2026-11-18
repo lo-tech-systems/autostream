@@ -3,7 +3,7 @@
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 HTTP handler functions for all dial management endpoints. Dial authorisation is
-written and pushed by autostream_dial_push; the routes here submit it as intents.
+written by the appliance state module; the routes here submit it as intents.
 
 All host-side proxy handlers normalize responses for the main autostream NGINX
 boundary (see docs/API-ERROR-CONTRACT.md). Statuses 404/502/503/504 cannot be

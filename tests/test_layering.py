@@ -31,7 +31,7 @@ owntone owntone_mini peer_client peer_http peer_registry pin_pairing playback_st
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliance_state appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy playback_tracking repeat selfheal services session startup warnings".split()
+_L2 = "align announce appliance_state appliances audio_monitor identification input_status live_config log_policy monitor_control output_intents output_policy playback_tracking repeat selfheal services session startup warnings".split()
 
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
@@ -73,11 +73,7 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_startup", "autostream_input_status"),
     ("autostream_services", "autostream_appliances"),
     ("autostream_services", "autostream_appliance_state"),
-    ("autostream_appliance_state", "autostream_dial_push"),
     ("autostream_appliance_state", "autostream_warnings"),
-    ("autostream_services", "autostream_dial_warnings"),
-    ("autostream_dial_warnings", "autostream_dial_push"),
-    ("autostream_playback_tracking", "autostream_dial_warnings"),
 })
 
 # What an L3 module may import, besides the standard library, other L3 modules
@@ -96,7 +92,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_rpi": frozenset({"*"}),
     "autostream_bluetooth_client": frozenset({"*"}),
     "autostream_logging": frozenset({"*"}),
-    "autostream_eq_bands": frozenset({"OUTPUT_EQ_DB_MIN", "OUTPUT_EQ_DB_MAX", "OUTPUT_PEQ_BANDS"}),
+    "autostream_eq_bands": frozenset({"OUTPUT_PEQ_BANDS"}),
     # Setting keys and their bounds, and two pure mappings: constants and
     # functions with no coordinator state.
     "autostream_players": frozenset({
@@ -119,7 +115,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
         "make_fallback_input_snapshot", "format_hours",
     }),
     "autostream_appliances": frozenset({"resolve"}),
-    "autostream_pin_pairing": frozenset({"PIN_RE", "REQUESTER_WEBUI", "dial_requester"}),
+    "autostream_pin_pairing": frozenset({"REQUESTER_WEBUI"}),
     "autostream_align": frozenset({
         "parse_result_entries", "AlignArrival",
     }),
@@ -132,9 +128,9 @@ LIVE_PINNED: frozenset[str] = frozenset({
     "get_live_output_eq_status", "get_live_monitor_output_rate",
     "get_setting", "get_capabilities", "list_outputs",
     "get_owntone_runtime_info", "get_vibra_runtime_info",
-    "annotate_outputs", "get_log_level_state",
+    "get_log_level_state",
     "get_align_status", "get_align_review",
-    "start_buffer_ms", "pin_claim", "current_warnings", "warnings_payload", "state_refresh",
+    "start_buffer_ms", "pin_claim", "state_refresh",
 })
 
 # Packages whose public names (from __all__) an L3 module may import.

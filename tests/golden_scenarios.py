@@ -29,7 +29,6 @@ from unittest.mock import MagicMock
 from settings_fixtures import fixed_view
 import webui.browser.home as webui_home
 import webui.browser.home_api as webui_home_api
-import webui.dial.api as webui_dial_api
 
 _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
@@ -40,7 +39,6 @@ FIXED_CSRF_TOKEN = "golden-csrf-token"
 FIXED_BOOT = "golden-boot"
 # The wall clock the age of a start failure is measured against.
 FIXED_WALL_CLOCK = 2_000_000.0
-DIAL_ID = "dial-a"
 APPLIANCE_ID = "a" * 20
 PEER_IP = "192.0.2.10"
 START_BUFFER_MS = 2250
@@ -429,8 +427,6 @@ def _unpatched(recorder: Recorder, name: str) -> Callable:
 
 def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
-    import webui.browser.home_model as models
-    import autostream_dial_warnings  # noqa: F401  binds the live warnings reads
     import autostream_monitor_client as monitor_client
     import autostream_player_service as player_service
     import autostream_repeat
@@ -438,7 +434,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_start_buffer_cache as start_buffer_cache
     import autostream_system_stats as system_stats
     import webui.browser.home as airplay
-    from autostream_dials import AUTH_AUTHORIZED
     from autostream_players import ActionResult
     from autostream_state.outputs import get_authority
     from fake_store import FakeStore, fake_track
@@ -507,10 +502,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import webui.system.updates as updates
     setattrs(web_common, _config_snapshot=lambda state: cfg)
     setattrs(updates, get_app_version=lambda: FIXED_APP_VERSION)
-    setattrs(webui_dial_api,
-             dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
-             dial_speaks_v2=lambda dial_id: True)
-    setattrs(models, _wall=lambda: FIXED_WALL_CLOCK)
     setattrs(airplay,
              get_setting=get_setting,
              get_system_hostname=lambda: "golden.local",
@@ -575,41 +566,14 @@ class Route:
     prepare: Optional[Callable[[Any], None]] = None
 
 
-def _dial(extra: Optional[dict] = None) -> dict:
-    return {"dial_id": DIAL_ID, **(extra or {})}
-
-
 def routes() -> list[Route]:
     state = make_state()
 
     table = [
-        Route("status", "POST /api/dial/status",
-              lambda h: webui_dial_api.send_dial_status_post_json(h, state, _dial())),
         Route("status", "GET /api/playing-status",
               lambda h: webui_home_api.send_playing_status_json(h)),
         Route("status", "GET /",
               lambda h: webui_home.send_airplay_page(h, state, make_auth()), html=True),
-        Route("outputs", "POST /api/dial/outputs",
-              lambda h: webui_dial_api.send_dial_outputs_post_json(h, state, _dial())),
-        Route("volume_mute", "POST /api/dial/volume +5",
-              lambda h: webui_dial_api.send_dial_volume_post_json(h, state, _dial({"delta": 5}))),
-        Route("volume_mute", "POST /api/dial/volume -5",
-              lambda h: webui_dial_api.send_dial_volume_post_json(h, state, _dial({"delta": -5}))),
-        Route("volume_mute", "POST /api/dial/mute mute",
-              lambda h: webui_dial_api.send_dial_mute_post_json(h, state, _dial({"action": "mute"}))),
-        Route("volume_mute", "POST /api/dial/mute restore",
-              lambda h: webui_dial_api.send_dial_mute_post_json(h, state, _dial({"action": "restore"}))),
-        Route("eq", "POST /api/dial/eq",
-              lambda h: webui_dial_api.send_dial_eq_post_json(h, state, _dial())),
-        Route("repeat", "POST /api/dial/repeat seek",
-              lambda h: webui_dial_api.send_dial_repeat_post_json(
-                  h, state, _dial({"action": "seek", "position_seconds": 0}))),
-        Route("repeat", "POST /api/dial/repeat/arm",
-              lambda h: webui_dial_api.send_dial_repeat_arm_post_json(h, state, _dial({"armed": True}))),
-        Route("warnings", "POST /api/dial/warnings",
-              lambda h: webui_dial_api.send_dial_warnings_post_json(h, state, _dial())),
-        Route("warnings", "POST /api/dial/capabilities",
-              lambda h: webui_dial_api.send_dial_capabilities_json(h, state)),
     ]
     return table
 

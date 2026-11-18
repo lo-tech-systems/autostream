@@ -124,7 +124,7 @@ def _repeat_obj(**overrides) -> dict:
 def _outputs_body(rows) -> dict:
     """rows: an iterable of (id, name, selected, volume, remote_in_use
     [, is_default [, needs_auth_key]]) tuples -- the shape POST
-    /api/dial/outputs returns, fed straight to on_outputs_result() via the
+    appliance outputs list has, fed straight to on_outputs_result() via the
     "outputs_result" step. The "is_default" key is sent only for a row that
     gives a sixth element, "needs_auth_key" only for one that gives a
     seventh."""

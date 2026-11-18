@@ -33,42 +33,6 @@ DIALS_PATH = Path("/var/lib/autostream/dials.json")
 _DIALS_LOCK = threading.Lock()
 _SIGHTING_THROTTLE_SECS = 60
 
-# Protocol dialect the appliance advertises as dial_proto in its TXT records.
-# Kept in step with the value autostream_admin writes. A sighted dial whose
-# own dial_proto generation is below this is flagged for updating.
-DIAL_PROTO_VERSION = "v3"
-
-# Capabilities this appliance supports, name -> version, served by
-# GET /api/dial/capabilities. Only capabilities whose endpoints exist are
-# listed. The TXT records keep their original v1 values for older dials; this
-# table is where a newer version of a capability is announced. Every
-# capability key in the TXT records appears here.
-DIAL_CAPABILITIES: dict[str, int] = {
-    "dial_status": 1,
-    "dial_outputs": 2,
-    "dial_eq": 2,
-    "repeat": 1,
-    "audio_status": 1,
-    "dial_warnings": 1,
-}
-
-# Oldest protocol generation that gets the typed refusal and the other
-# current-dialect behaviour. Later generations include everything earlier ones
-# mean, so every check is "at least this generation".
-_MIN_DIAL_GENERATION = 2
-
-
-def dial_proto_generation(value) -> int:
-    """Parse a dial_proto value of the form v<N> into its generation number.
-
-    Anything absent or malformed (no leading v, no digits, signs, spaces,
-    non-ASCII digits) is generation 0, the earliest dialect.
-    """
-    if not isinstance(value, str):
-        return 0
-    m = re.fullmatch(r"v([0-9]{1,6})", value)
-    return int(m.group(1)) if m else 0
-
 # Printable ASCII only (0x20–0x7e); reject ; | which break TXT parsing.
 # Intentional policy duplication of the identical function in autostream_admin
 # (an extensionless privileged executable that cannot be imported).
@@ -250,7 +214,6 @@ class DialSighting:
     port: int
     pin_recovery: bool
     sdmon: bool = False   # dial_sdmon=v1 in the TXT record: the dial has the SD health endpoint
-    dial_proto: str = ""  # dial_proto value from the TXT record, verbatim; "" when absent
     proto: Optional[int] = None  # the TXT proto key as an integer; None when absent or not one
 
 
@@ -284,7 +247,6 @@ def _parse_dial_event(parts: list, txt: dict) -> tuple | None:
         port=port,
         pin_recovery=(txt.get("pin_recovery") == "1"),
         sdmon=(txt.get("dial_sdmon") == "v1"),
-        dial_proto=txt.get("dial_proto", ""),
         proto=_proto_number(txt.get("proto")),
     )
     # Update last_seen / current_name in dials.json (throttled write, outside lock).
@@ -304,13 +266,6 @@ def get_dial_sighting(uuid: str) -> DialSighting | None:
 
 def get_all_sightings() -> list[DialSighting]:
     return list(_browser.get_snapshot().values())
-
-
-def dial_speaks_v2(uuid: str) -> bool:
-    """True when the dial is currently sighted and advertises at least the
-    current protocol dialect.  An unsighted dial is treated as legacy."""
-    s = get_dial_sighting(uuid)
-    return s is not None and dial_proto_generation(s.dial_proto) >= _MIN_DIAL_GENERATION
 
 
 def sighting_needs_update(s: DialSighting) -> bool:

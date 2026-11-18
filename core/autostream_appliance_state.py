@@ -31,7 +31,6 @@ import autostream_rpi as rpi
 import autostream_state
 from autostream_auth import pin_is_set
 from autostream_commissioning import is_commissioning_required
-from autostream_dial_push import notify_dial_auth_changed
 from autostream_dials import (
     get_all_sightings,
     parse_dial_entries,
@@ -78,20 +77,12 @@ def _bump_generation(intent: Intent) -> int:
     return pending.version
 
 
-def _push_after_write(uuid: str, verb: str) -> None:
-    try:
-        notify_dial_auth_changed(uuid)
-    except Exception as e:
-        logging.debug("dial auth push: enqueue failed after %s: %s", verb, e)
-
-
 def _authorize(intent: Intent, wait: float) -> Outcome:
     uuid, name = intent.args["uuid"], intent.args["name"]
     if not validate_dial_name(name):
         return Outcome(ok=False, error="invalid_name")
     write_dial_entry(uuid, name)
     version = _bump_generation(intent)
-    _push_after_write(uuid, "authorize")
     return Outcome(ok=True, version=version)
 
 
@@ -99,7 +90,6 @@ def _revoke(intent: Intent, wait: float) -> Outcome:
     uuid = intent.args["uuid"]
     remove_dial_entry(uuid)
     version = _bump_generation(intent)
-    _push_after_write(uuid, "revoke")
     return Outcome(ok=True, version=version)
 
 

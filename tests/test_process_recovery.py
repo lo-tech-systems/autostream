@@ -232,7 +232,6 @@ class TestScannerWrappers:
         with patch.object(services.threading, "Thread"), \
              patch.object(services.dials, "start_dial_scanner",
                    side_effect=capture_dial_scanner), \
-             patch.object(services.dial_warnings, "start_watcher"), \
              patch.object(services.appliance_state, "start"):
             services.start(runtime.lifecycle(), MagicMock(),
                            config_path="c.ini", state_path="s.json",

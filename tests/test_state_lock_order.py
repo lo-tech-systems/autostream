@@ -246,21 +246,6 @@ def test_the_settings_lock_is_released_before_the_generation_reaches_subscribers
         s.close(save=False)
 
 
-def test_the_dial_hints_subscriber_runs_with_no_lock_held_at_a_batch_close(tracked_singleton):
-    import autostream_dial_push as dp
-    import autostream_session
-
-    seen = []
-    tracked_singleton.subscribe(dp.StateHints(
-        notify=lambda *kinds, **kw: seen.append(lockcheck.held())))
-    batch = tracked_singleton.batch()
-    autostream_session.publish(True, "input1", edge=True)
-    batch.close()
-    assert seen == [frozenset()]
-    assert lockcheck.ACQUIRED_UNDER_STORE == []
-    assert tracked_singleton.lock_violations == []
-
-
 # ---------------------------------------------------------------------------
 # The output authority
 # ---------------------------------------------------------------------------

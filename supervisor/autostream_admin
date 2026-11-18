@@ -1784,10 +1784,6 @@ _BAD_CHARS = _re.compile(r'[;|]')
 # Appliance ID validation: exactly 20 lowercase hex characters.
 _APPLIANCE_ID_RE = _re.compile(r'^[0-9a-f]{20}$')
 
-# Dial protocol dialect advertised in the appliance TXT records (dial_proto).
-# Independent of dial_api, which stays v1 so older dials keep working.
-DIAL_PROTO_VERSION = "v3"
-
 # Client protocol number advertised as proto in the appliance TXT records. The
 # script cannot import autostream_protocol, so a test keeps the two equal.
 PROTOCOL = 4
@@ -1851,13 +1847,7 @@ def _write_playing_service(args) -> int:
   <service>
     <type>_autostream-playing._tcp</type>
     <port>80</port>
-    <txt-record>version={_html.escape(args.version)}</txt-record>
-    <txt-record>dial_api=v1</txt-record>
-    <txt-record>dial_proto={DIAL_PROTO_VERSION}</txt-record>
-    <txt-record>audio_status=v1</txt-record>
-    <txt-record>dial_status=v1</txt-record>
-    <txt-record>dial_outputs=v1</txt-record>
-    <txt-record>dial_eq=v1</txt-record>{id_record}
+    <txt-record>version={_html.escape(args.version)}</txt-record>{id_record}
   </service>
 </service-group>
 """
@@ -1898,12 +1888,6 @@ def _write_appliance_service(args) -> int:
     <txt-record>version={_html.escape(args.version)}</txt-record>
     <txt-record>control={control}</txt-record>
     <txt-record>proto={PROTOCOL}</txt-record>
-    <txt-record>dial_api=v1</txt-record>
-    <txt-record>dial_proto={DIAL_PROTO_VERSION}</txt-record>
-    <txt-record>dial_status=v1</txt-record>
-    <txt-record>dial_outputs=v1</txt-record>
-    <txt-record>dial_eq=v1</txt-record>
-    <txt-record>repeat=v1</txt-record>
   </service>
 </service-group>
 """

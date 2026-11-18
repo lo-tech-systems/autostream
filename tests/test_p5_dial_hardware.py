@@ -12,7 +12,6 @@ Covered by existing tests (not duplicated here):
   - _reconcile_update_timer (test_dial_http_server.py lines 699–734)
   - _send_one, _fan_out, _log_volume_failure, queue coalescing,
     LED flash on clamp (test_dial_volume_sender.py)
-  - /api/dial/volume HTTP auth + delta validation (test_dial_volume.py)
 
 Environment-dependent (not run here, real Pi only):
   - Actual GPIO encoder direction: physical CW/CCW rotation — must be

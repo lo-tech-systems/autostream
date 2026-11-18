@@ -184,9 +184,10 @@ class TestImportClosure:
 
 @bash_capable
 class TestAvahiTemplate:
-    def test_template_advertises_protocol_v3(self):
+    def test_template_advertises_the_client_protocol_only(self):
         text = AVAHI_TEMPLATE.read_text(encoding="utf-8")
-        assert "<txt-record>dial_proto=v3</txt-record>" in text
+        assert "<txt-record>proto=4</txt-record>" in text
+        assert "dial_proto" not in text
 
     def test_template_has_the_placeholders_the_admin_verb_fills(self):
         text = AVAHI_TEMPLATE.read_text(encoding="utf-8")

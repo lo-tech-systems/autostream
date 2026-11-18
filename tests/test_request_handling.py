@@ -263,46 +263,6 @@ class TestNonObjectJson:
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
 
-    def test_dial_volume_array_json_returns_400(self):
-        """dial/volume with a JSON array must return 400, not 403."""
-        auth = _make_auth()
-        raw = json.dumps([1, 2]).encode()
-        h = _make_handler("/api/dial/volume", raw)
-        with patch("webui.session_state.AUTH", auth), \
-             patch("webui.session_state.STATE", MagicMock()), \
-             patch("webui.dial.api.send_dial_volume_post_json") as mock_handler:
-            h.do_POST()
-        h.send_error.assert_called_once()
-        assert h.send_error.call_args[0][0] == 400
-        mock_handler.assert_not_called()
-
-    def test_dial_mute_array_json_returns_400(self):
-        """dial/mute with a JSON array must return 400, not 403."""
-        auth = _make_auth()
-        raw = json.dumps([1, 2]).encode()
-        h = _make_handler("/api/dial/mute", raw)
-        with patch("webui.session_state.AUTH", auth), \
-             patch("webui.session_state.STATE", MagicMock()), \
-             patch("webui.dial.api.send_dial_mute_post_json") as mock_handler:
-            h.do_POST()
-        h.send_error.assert_called_once()
-        assert h.send_error.call_args[0][0] == 400
-        mock_handler.assert_not_called()
-
-    def test_dial_volume_object_json_passes_to_handler(self):
-        """dial/volume with a valid JSON object must reach the handler (not be rejected)."""
-        auth = _make_auth()
-        raw = json.dumps({"dial_id": "uid", "delta": 5}).encode()
-        h = _make_handler("/api/dial/volume", raw)
-        sent_codes = []
-        def fake_send_json(hnd, code, data):
-            sent_codes.append(code)
-        with patch("webui.session_state.AUTH", auth), \
-             patch("webui.session_state.STATE", MagicMock()), \
-             patch("webui.dial.api.send_dial_volume_post_json", side_effect=fake_send_json):
-            h.do_POST()
-        h.send_error.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # A stale CSRF token on a page route

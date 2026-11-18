@@ -1,7 +1,6 @@
 """Priority 7 — appliance_models unit tests.
 
-Covers build_output_list (filtering, ordering, normalization) and
-apply_eq_field / apply_eq_reset (validation, clamping, persistence,
+Covers apply_eq_field / apply_eq_reset (validation, clamping, persistence,
 live-apply routing).
 """
 from __future__ import annotations
@@ -158,135 +157,6 @@ def _deep_update(d: dict, u: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# build_output_list — filtering and ordering
-# ---------------------------------------------------------------------------
-
-class TestBuildOutputList:
-    def test_empty_owntone_outputs_returns_empty(self):
-        assert webui_home_model.build_output_list(_parsed(), _units([])) == []
-
-    def test_output_without_id_or_name_excluded(self):
-        raw = [_out("", ""), _out("1", ""), _out("", "AirPlay")]
-        result = webui_home_model.build_output_list(_parsed(), _units(raw))
-        assert result == []
-
-    def test_all_valid_outputs_included(self):
-        raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = webui_home_model.build_output_list(_parsed(), _units(raw))
-        assert len(result) == 2
-
-    def test_hidden_unselected_non_default_excluded(self):
-        raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = webui_home_model.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
-        assert len(result) == 1
-        assert result[0]["name"] == "Kitchen"
-
-    def test_hidden_but_selected_still_included(self):
-        raw = [_out("1", "Bedroom", selected=True), _out("2", "Kitchen")]
-        result = webui_home_model.build_output_list(_parsed(hidden_outputs=["Bedroom"]), _units(raw))
-        assert any(o["name"] == "Bedroom" for o in result)
-
-    def test_hidden_case_insensitive(self):
-        raw = [_out("1", "Bedroom"), _out("2", "Kitchen")]
-        result = webui_home_model.build_output_list(_parsed(hidden_outputs=["BEDROOM"]), _units(raw))
-        assert all(o["name"] != "Bedroom" for o in result)
-
-    def test_the_default_with_no_row_is_listed_only_when_asked(self):
-        from autostream_state.outputs import get_authority
-        get_authority().set_default_members([("", "Zulu", 30)], 30)
-        units = _units([_out("1", "Alpha")])
-        assert [o["name"] for o in webui_home_model.build_output_list(_parsed(output_name="Zulu"), units)] == ["Alpha"]
-        listed = webui_home_model.build_output_list(_parsed(output_name="Zulu"), units, include_offline=True)
-        assert [o["name"] for o in listed] == ["Zulu", "Alpha"]
-        zulu = listed[0]
-        assert zulu["offline"] is True and zulu["connecting"] is False and zulu["is_default"] is True
-        assert (zulu["needs_auth_key"], zulu["requires_auth"], zulu["pin_pending"]) == (False, False, False)
-        assert listed[1]["offline"] is False
-
-    def test_the_offline_default_is_disabled_only_outside_a_session(self):
-        from autostream_state.outputs import get_authority
-        get_authority().set_default_members([("", "Zulu", 30)], 30)
-        units = _units([_out("1", "Alpha")])
-        outside = webui_home_model.build_output_list(
-            _parsed(output_name="Zulu"), units, include_offline=True, session_active=False)
-        inside = webui_home_model.build_output_list(
-            _parsed(output_name="Zulu"), units, include_offline=True, session_active=True)
-        assert outside[0]["name"] == "Zulu" and outside[0]["disabled"] is True
-        assert "disabled" not in inside[0]
-        assert "disabled" not in outside[1]
-
-    def test_every_member_of_a_two_member_set_is_marked_and_listed_offline(self):
-        members = (DefaultOutput("", "Zulu", 30), DefaultOutput("", "Yankee", 40))
-        parsed = _parsed(members=members)
-        units = _units([_out("1", "Alpha"), _out("2", "Bravo")])
-        listed = webui_home_model.build_output_list(parsed, units, include_offline=True)
-        assert [(o["name"], o["is_default"], o["offline"]) for o in listed] == [
-            ("Yankee", True, True), ("Zulu", True, True), ("Alpha", False, False), ("Bravo", False, False),
-        ]
-
-    def test_hidden_members_are_still_shown(self):
-        members = (DefaultOutput("", "Alpha", 30), DefaultOutput("", "Bravo", 40))
-        parsed = _parsed(members=members, hidden_outputs=["Alpha", "Bravo", "Charlie"])
-        units = _units([_out("1", "Alpha"), _out("2", "Bravo"), _out("3", "Charlie")])
-        listed = webui_home_model.build_output_list(parsed, units)
-        assert [(o["name"], o["is_default"]) for o in listed] == [("Alpha", True), ("Bravo", True)]
-
-    def test_only_the_default_is_listed_offline(self):
-        from autostream_state.outputs import get_authority
-        get_authority().set_default_members([("", "Zulu", 30)], 30)
-        FakeStore().outputs([_out("1", "Alpha", selected=True), _out("2", "Beta")])
-        units = FakeStore().outputs([_out("2", "Beta")]).outputs.units
-        assert sorted(u.name for u in units if u.offline) == ["Alpha", "Zulu"]
-        listed = webui_home_model.build_output_list(_parsed(output_name="Zulu"), units, include_offline=True)
-        assert [o["name"] for o in listed] == ["Zulu", "Beta"]
-
-    def test_default_output_sorted_first(self):
-        raw = [_out("2", "Zulu"), _out("1", "Alpha"), _out("3", "Garden")]
-        result = webui_home_model.build_output_list(_parsed(output_name="Zulu"), _units(raw))
-        assert result[0]["name"] == "Zulu"
-        assert result[0]["is_default"] is True
-
-    def test_non_default_alphabetical_after_default(self):
-        raw = [_out("3", "Zulu"), _out("1", "Charlie"), _out("2", "Alpha")]
-        result = webui_home_model.build_output_list(_parsed(output_name="Zulu"), _units(raw))
-        assert result[0]["name"] == "Zulu"
-        assert [o["name"] for o in result[1:]] == ["Alpha", "Charlie"]
-
-    def test_volume_clamped_to_0_100(self):
-        raw = [_out("1", "A", volume=200), _out("2", "B", volume=-5)]
-        result = webui_home_model.build_output_list(_parsed(), _units(raw))
-        assert result[0]["volume"] == 100
-        assert result[1]["volume"] == 0
-
-    def test_result_dict_has_required_keys(self):
-        raw = [_out("1", "Room")]
-        result = webui_home_model.build_output_list(_parsed(), _units(raw))
-        assert set(result[0].keys()) == {
-            "id", "name", "selected", "volume", "is_default",
-            "needs_auth_key", "requires_auth", "pin_pending", "pin_claim", "connecting", "offline",
-        }
-
-    def test_selected_flag_preserved(self):
-        raw = [_out("1", "Room", selected=True)]
-        result = webui_home_model.build_output_list(_parsed(), _units(raw))
-        assert result[0]["selected"] is True
-
-    def test_needs_auth_key_true_passed_through(self):
-        raw = [_out("1", "Apple TV", needs_auth_key=True, requires_auth=True, pin_pending=True)]
-        result = webui_home_model.build_output_list(_parsed(), _units(raw))
-        assert result[0]["needs_auth_key"] is True
-        assert result[0]["requires_auth"] is True
-        assert result[0]["pin_pending"] is True
-
-    def test_needs_auth_key_false_passed_through(self):
-        raw = [_out("1", "Room")]
-        result = webui_home_model.build_output_list(_parsed(), _units(raw))
-        assert result[0]["needs_auth_key"] is False
-        assert result[0]["requires_auth"] is False
-        assert result[0]["pin_pending"] is False
-
-
-# ---------------------------------------------------------------------------
 # apply_eq_field — validation, clamping, persistence, routing
 # ---------------------------------------------------------------------------
 
@@ -423,7 +293,7 @@ class TestApplyEqReset:
 
 
 # ---------------------------------------------------------------------------
-# PIN pairing: sanitiser rule, claim in the list, combined pin-and-enable
+# PIN pairing: combined pin-and-enable
 # ---------------------------------------------------------------------------
 
 import logging as _logging
@@ -441,67 +311,6 @@ _BAD_PINS = [
     "123", "123456789", "12a4", "１２３４", " 1234", "1234\n",
     "", "1234 ", "-123", None, 1234, 12.5, ["1", "2", "3", "4"], {"a": 1}, True,
 ]
-
-
-class TestSanitizePin:
-    def test_sanitize_pin_accepts_digits_and_rejects_everything_else(self):
-        for pin in ("1234", "0000", "12345678"):
-            assert webui_home_model.sanitize_output_body({"id": "1", "op": "pin", "pin": pin}) == (
-                {"id": "1", "op": "pin", "pin": pin}, None)
-        for pin in _BAD_PINS:
-            assert webui_home_model.sanitize_output_body(
-                {"id": "1", "op": "pin", "pin": pin}) == (None, "invalid_request_body"), repr(pin)
-        assert webui_home_model.sanitize_output_body({"id": "1", "op": "pin"}) == (
-            None, "invalid_request_body")
-
-    def test_sanitize_pin_keeps_selected_and_volume_when_given(self):
-        assert webui_home_model.sanitize_output_body(
-            {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 30, "x": 1},
-        ) == ({"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 30}, None)
-        s, err = webui_home_model.sanitize_output_body(
-            {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": 500})
-        assert err is None and s["volume"] == 100
-        s, _ = webui_home_model.sanitize_output_body(
-            {"id": "1", "op": "pin", "pin": "1234", "selected": True, "volume": "x"})
-        assert s["volume"] == 50
-        s, _ = webui_home_model.sanitize_output_body(
-            {"id": "1", "op": "pin", "pin": "1234", "selected": True})
-        assert s["volume"] == 50
-        s, _ = webui_home_model.sanitize_output_body({"id": "1", "op": "pin", "pin": "1234"})
-        assert "selected" not in s and "volume" not in s
-
-    def test_sanitize_pin_rejects_a_non_bool_selected(self):
-        for sel in ("true", 1, 0, None, []):
-            assert webui_home_model.sanitize_output_body(
-                {"id": "1", "op": "pin", "pin": "1234", "selected": sel},
-            ) == (None, "invalid_request_body"), repr(sel)
-
-    def test_sanitize_plain_shape_is_unchanged(self):
-        assert webui_home_model.sanitize_output_body({"id": " 7 ", "selected": True, "volume": 20}) == (
-            {"id": "7", "selected": True, "volume": 20}, None)
-        assert webui_home_model.sanitize_output_body({"id": "7", "selected": False}) == (
-            {"id": "7", "selected": False, "volume": 50}, None)
-        assert webui_home_model.sanitize_output_body({"id": "7", "selected": True, "volume": 999}) == (
-            {"id": "7", "selected": True, "volume": 100}, None)
-        assert webui_home_model.sanitize_output_body({"id": "7", "selected": "yes"}) == (
-            None, "invalid_request_body")
-        assert webui_home_model.sanitize_output_body({"id": "", "selected": True}) == (
-            None, "missing_output_id")
-        assert webui_home_model.sanitize_output_body({"id": "7", "op": "weird"}) == (
-            None, "invalid_request_body")
-
-
-class TestPinClaimInList:
-    def test_output_list_rows_carry_the_pairing_claim(self):
-        clock = SimpleNamespace(t=100.0)
-        fresh = _pairing.PairingState(clock=lambda: clock.t)
-        fresh.claim("1", "dial:abc")
-        with patch.object(_pairing, "STATE", fresh):
-            rows = webui_home_model.build_output_list(
-                _parsed(), _units([_out("1", "Bedroom"), _out("2", "Kitchen")]))
-        by_id = {r["id"]: r for r in rows}
-        assert by_id["1"]["pin_claim"] == "dial:abc"
-        assert by_id["2"]["pin_claim"] == ""
 
 
 class TestPinMutation:

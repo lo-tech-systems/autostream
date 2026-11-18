@@ -250,8 +250,7 @@ class TestWarningsPass:
         try:
             assert WARNINGS_PART().entries == ()
             sources["dials"] = 1
-            with patch.object(appliance_state, "remove_dial_entry"), \
-                 patch.object(appliance_state, "notify_dial_auth_changed"):
+            with patch.object(appliance_state, "remove_dial_entry"):
                 submit(Intent("dials.revoke", {"uuid": UUID}, Origin.USER, "webui"))
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline and not WARNINGS_PART().entries:
@@ -300,29 +299,24 @@ class TestDials:
     def ask(self, name, args):
         return submit(Intent(name, args, Origin.USER, "webui"))
 
-    def test_authorize_writes_bumps_the_generation_and_pushes(self):
-        with patch.object(appliance_state, "write_dial_entry") as write, \
-             patch.object(appliance_state, "notify_dial_auth_changed") as push:
+    def test_authorize_writes_and_bumps_the_generation(self):
+        with patch.object(appliance_state, "write_dial_entry") as write:
             reply = self.ask("dials.authorize", {"uuid": UUID, "name": "Kitchen"})
         assert reply.ok
         write.assert_called_once_with(UUID, "Kitchen")
-        push.assert_called_once_with(UUID)
         snap = state.store().snapshot()
         assert snap.dials.generation == 1
         assert reply.version == snap.version == snap.part_versions["dials"]
 
-    def test_revoke_removes_bumps_and_pushes(self):
-        with patch.object(appliance_state, "remove_dial_entry") as remove, \
-             patch.object(appliance_state, "notify_dial_auth_changed") as push:
+    def test_revoke_removes_and_bumps_the_generation(self):
+        with patch.object(appliance_state, "remove_dial_entry") as remove:
             reply = self.ask("dials.revoke", {"uuid": UUID})
         assert reply.ok
         remove.assert_called_once_with(UUID)
-        push.assert_called_once_with(UUID)
         assert state.store().snapshot().dials.generation == 1
 
     def test_two_changes_are_two_generations(self):
-        with patch.object(appliance_state, "remove_dial_entry"), \
-             patch.object(appliance_state, "notify_dial_auth_changed"):
+        with patch.object(appliance_state, "remove_dial_entry"):
             self.ask("dials.revoke", {"uuid": UUID})
             self.ask("dials.revoke", {"uuid": UUID})
         assert state.store().snapshot().dials.generation == 2
@@ -330,34 +324,23 @@ class TestDials:
     def test_the_requester_is_on_the_change(self):
         changes = []
         state.store().subscribe(changes.append)
-        with patch.object(appliance_state, "remove_dial_entry"), \
-             patch.object(appliance_state, "notify_dial_auth_changed"):
+        with patch.object(appliance_state, "remove_dial_entry"):
             self.ask("dials.revoke", {"uuid": UUID})
         mine = [c for c in changes if "dials" in c.parts]
         assert mine and mine[0].requester == "webui"
 
     def test_an_invalid_name_writes_nothing_and_bumps_nothing(self):
-        with patch.object(appliance_state, "write_dial_entry") as write, \
-             patch.object(appliance_state, "notify_dial_auth_changed") as push:
+        with patch.object(appliance_state, "write_dial_entry") as write:
             reply = self.ask("dials.authorize", {"uuid": UUID, "name": "bad;name"})
         assert (reply.ok, reply.error) == (False, "invalid_name")
         write.assert_not_called()
-        push.assert_not_called()
         assert state.store().snapshot().dials.generation == 0
 
     def test_a_failing_write_is_internal_error_and_bumps_nothing(self):
-        with patch.object(appliance_state, "write_dial_entry", side_effect=OSError("ro")), \
-             patch.object(appliance_state, "notify_dial_auth_changed") as push:
+        with patch.object(appliance_state, "write_dial_entry", side_effect=OSError("ro")):
             reply = self.ask("dials.authorize", {"uuid": UUID, "name": "Kitchen"})
         assert (reply.ok, reply.error) == (False, "internal_error")
-        push.assert_not_called()
         assert state.store().snapshot().dials.generation == 0
-
-    def test_a_push_that_raises_does_not_fail_the_reply(self):
-        with patch.object(appliance_state, "remove_dial_entry"), \
-             patch.object(appliance_state, "notify_dial_auth_changed", side_effect=RuntimeError("x")):
-            reply = self.ask("dials.revoke", {"uuid": UUID})
-        assert reply.ok
 
     @pytest.mark.parametrize("args", [{"uuid": 7}, {"uuid": ["a"]}, {"uuid": ""}, {"uuid": "x" * 65}])
     def test_a_uuid_that_is_not_bounded_text_is_invalid_args(self, args):

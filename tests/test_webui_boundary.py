@@ -260,5 +260,5 @@ def test_importing_the_server_runs_every_registration_before_the_first_request()
         "customise", "system", "factory-reset",
     ]
     # The table is filled and every module it names is already loaded.
-    assert out["routes"] > 90
+    assert out["routes"] > 80
     assert out["unloaded"] == []

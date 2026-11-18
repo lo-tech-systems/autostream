@@ -355,76 +355,19 @@ class TestHandleLineDialScanner:
 
 
 # ---------------------------------------------------------------------------
-# dial_proto capability: parsing, v2 predicate, needs-update helpers
+# proto: parsing and the needs-update helpers
 # ---------------------------------------------------------------------------
 
-def _sighting(uuid="u", dial_proto="", proto=None) -> "dials.DialSighting":
+def _sighting(uuid="u", proto=None) -> "dials.DialSighting":
     return dials.DialSighting(
         uuid=uuid, name="D", version="x", ip="10.0.0.9", port=7842,
-        pin_recovery=False, dial_proto=dial_proto, proto=proto,
+        pin_recovery=False, proto=proto,
     )
 
 
 class TestDialProto:
     def setup_method(self):
         _clear_scanner()
-
-    def test_parse_dial_event_reads_dial_proto(self):
-        with patch("autostream_dials.update_dial_sighting"):
-            dials._browser._handle_line(_av_add_dial(txt="id=uuid-v2 name=X dial_proto=v2"))
-        s = dials._browser.get_snapshot().get("uuid-v2")
-        assert s is not None and s.dial_proto == "v2"
-
-    def test_parse_dial_event_without_dial_proto_is_blank(self):
-        with patch("autostream_dials.update_dial_sighting"):
-            dials._browser._handle_line(_av_add_dial(txt="id=uuid-old name=X"))
-        s = dials._browser.get_snapshot().get("uuid-old")
-        assert s is not None and s.dial_proto == ""
-
-    def test_parse_dial_event_stores_unknown_value_verbatim(self):
-        with patch("autostream_dials.update_dial_sighting"):
-            dials._browser._handle_line(_av_add_dial(txt="id=uuid-v3 name=X dial_proto=v3"))
-        s = dials._browser.get_snapshot().get("uuid-v3")
-        assert s is not None and s.dial_proto == "v3"
-
-    def test_constant_is_v3(self):
-        assert dials.DIAL_PROTO_VERSION == "v3"
-
-    def test_dial_speaks_v2_true_for_sighted_v2(self):
-        with patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto="v2")):
-            assert dials.dial_speaks_v2("u") is True
-
-    def test_dial_speaks_v2_false_for_legacy_sighting(self):
-        with patch("autostream_dials.get_dial_sighting", return_value=_sighting()):
-            assert dials.dial_speaks_v2("u") is False
-
-    def test_dial_speaks_v2_true_for_later_generation(self):
-        for value in ("v3", "v10"):
-            with patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto=value)):
-                assert dials.dial_speaks_v2("u") is True
-
-    def test_dial_speaks_v2_false_for_malformed_value(self):
-        for value in ("2", "V2", "v", "vx", "v2.1", "v-3", "v 3", "garbage"):
-            with patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto=value)):
-                assert dials.dial_speaks_v2("u") is False
-
-    def test_dial_speaks_v2_false_for_v1_generation(self):
-        with patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto="v1")):
-            assert dials.dial_speaks_v2("u") is False
-
-    def test_dial_proto_generation_parses_numerically(self):
-        assert dials.dial_proto_generation("v2") == 2
-        assert dials.dial_proto_generation("v3") == 3
-        assert dials.dial_proto_generation("v10") == 10
-
-    def test_dial_proto_generation_malformed_or_missing_is_zero(self):
-        for value in ("", None, "v", "2", "V2", "vx", "v2x", "v-1", "v+2", "v 2", " v2",
-                      "v2 ", "v2" + chr(10), "v" + chr(0x662), "v9999999", 2):
-            assert dials.dial_proto_generation(value) == 0, value
-
-    def test_dial_speaks_v2_false_when_unsighted(self):
-        with patch("autostream_dials.get_dial_sighting", return_value=None):
-            assert dials.dial_speaks_v2("u") is False
 
     def test_sighting_needs_update(self):
         assert dials.sighting_needs_update(_sighting()) is True

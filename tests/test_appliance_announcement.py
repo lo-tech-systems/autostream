@@ -17,21 +17,6 @@ if _CORE not in sys.path:
 # Helpers
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
-def _restore_appliances_module():
-    """Put the real module and its live binding back after each test.
-
-    _make_module re-imports autostream_appliances, and the import binds the
-    live annotate_outputs to the fresh copy, which holds no occupancy. Later
-    tests in the same process would read that copy.
-    """
-    import autostream_appliances as original
-    yield
-    from autostream_state import live
-    sys.modules["autostream_appliances"] = original
-    live.bind("annotate_outputs", original._live_annotate_outputs, owner=original._OWNER)
-
-
 def _make_module():
     """Import autostream_appliances with external dependencies stubbed out.
 

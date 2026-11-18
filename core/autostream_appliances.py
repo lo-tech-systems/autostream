@@ -20,7 +20,7 @@ from typing import Mapping, Optional
 import autostream_rpi as rpi
 from autostream_peer_client import PeerClient, PeerPool, PeerSnapshot, roster_view
 from autostream_peer_registry import PeerRegistry, Sighting
-from autostream_state import Origin, PeersPart, live, store
+from autostream_state import Origin, PeersPart, store
 
 _OWNER = "autostream_appliances"
 _20HEX_RE = re.compile(r'^[0-9a-f]{20}$')
@@ -165,30 +165,6 @@ def occupancy(entries, snapshots: Mapping[str, PeerSnapshot]) -> dict[str, tuple
                     and unit.get("availability") != "password"):
                 usage.setdefault(name.strip().casefold(), (entry.id, entry.hostname))
     return usage
-
-
-def annotate_outputs(outputs: list[dict]) -> list[dict]:
-    """The output dicts with remote_in_use and remote_owner added: a speaker is
-    in use elsewhere unless it is selected here. Reads the held occupancy and
-    makes no request."""
-    usage = _usage
-    result = []
-    for out in outputs:
-        out = dict(out)
-        owner = usage.get(str(out.get("name") or "").strip().casefold())
-        in_use = owner is not None and not out.get("selected")
-        out["remote_in_use"] = in_use
-        out["remote_owner"] = owner[1] if in_use else ""
-        result.append(out)
-    return result
-
-
-def _live_annotate_outputs(outputs: list[dict]) -> list[dict]:
-    # Looked up at call time, so a replaced annotate_outputs is the one used.
-    return annotate_outputs(outputs)
-
-
-live.bind("annotate_outputs", _live_annotate_outputs, owner=_OWNER)
 
 
 # ---------------------------------------------------------------------------

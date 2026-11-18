@@ -1,7 +1,6 @@
 """tests/test_golden_replies.py
 
-Golden replies for the status, output, volume, mute, EQ, repeat, warning and
-level routes.
+Golden replies for the status routes.
 
 Every route is called under every scenario in ``golden_scenarios``; the
 status, the body (run-varying values blanked) and the backend calls it made
@@ -56,8 +55,7 @@ def test_every_scenario_is_exercised_by_every_route():
         "idle", "one_output_start_refused", "one_output_playing_input1", "two_outputs_one_muted", "replay_holding",
         "replaying", "monitor_down", "backend_unreachable",
     }
-    assert gs.families() == [
-        "status", "outputs", "volume_mute", "eq", "repeat", "warnings"]
+    assert gs.families() == ["status"]
 
 
 def test_a_backend_call_the_scenario_did_not_provide_fails(monkeypatch):
@@ -81,9 +79,9 @@ class TestNormalise:
         }
 
     def test_version_and_protocol_keys_stay_pinned(self):
-        body = json.dumps({"version": "1.2.3", "dial_proto": 5, "boot": "x"})
+        body = json.dumps({"version": "1.2.3", "proto": 5, "boot": "x"})
         assert json.loads(gs.normalise(body)) == {
-            "version": "1.2.3", "dial_proto": 5, "boot": "x"}
+            "version": "1.2.3", "proto": 5, "boot": "x"}
 
     def test_a_store_field_is_blanked_by_exact_path_only(self, monkeypatch):
         monkeypatch.setitem(gs.STORE_FIELDS, "GET /x", (("repeat", "armed"),))

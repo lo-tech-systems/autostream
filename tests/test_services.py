@@ -62,13 +62,12 @@ class TestStart:
             order.append("appliance_state")
 
         with patch.object(services.dials, "start_dial_scanner", side_effect=record("dials")), \
-             patch.object(services.dial_warnings, "start_watcher", side_effect=record("warnings")), \
              patch.object(services.appliance_state, "start", side_effect=record_state), \
              patch.object(services.threading, "Thread", FakeThread):
             services.start(life, "settings", config_path="c.ini", state_path="s.json",
                            app_version=lambda: "v")
 
-        assert order == ["dials", "warnings", "appliance_state", "thread:device-scan",
+        assert order == ["dials", "appliance_state", "thread:device-scan",
                          "thread:announce-reconcile", "thread:vibra-runtime-refresh"]
         scan, announce, _vibra = threads
         assert scan[0] is services._device_scan_loop and scan[1] == (life, "settings")
@@ -79,7 +78,6 @@ class TestStart:
     def test_start_does_not_start_the_appliance_scanner_or_a_usage_poller(self):
         life = _life()
         with patch.object(services.dials, "start_dial_scanner"), \
-             patch.object(services.dial_warnings, "start_watcher"), \
              patch.object(services.appliance_state, "start"), \
              patch.object(services.appliances, "start") as appliances_start, \
              patch.object(services.threading, "Thread"):

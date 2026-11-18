@@ -335,7 +335,7 @@ def _dial_fakes() -> dict:
     """One authorized dial that is online and one new dial, for the Dials card."""
     def sighting(uuid, name):
         return SimpleNamespace(uuid=uuid, name=name, version="2.0.0", pin_recovery=False,
-                               ip="10.0.0.42", dial_proto="v3", sdmon=False)
+                               ip="10.0.0.42", proto=4, sdmon=False)
 
     entry = SimpleNamespace(uuid="dial-aaaa-1111", name="Hall Dial", current_name="Hall Dial", last_seen="")
     return {"dial_sightings": [sighting("dial-aaaa-1111", "Hall Dial"), sighting("dial-bbbb-2222", "New Dial")],

@@ -315,21 +315,6 @@ class TestIntentChecks:
         assert [c[0] for c in player.calls] == ["2"]
 
 
-class TestAnnotate:
-    def test_a_speaker_in_use_elsewhere_carries_the_owner_unless_selected_here(self, rig):
-        rig.start()
-        rig.peer(2, "Hall", parts=playing_parts("Kitchen", "Lounge"))
-        assert wait_for(lambda: "kitchen" in rig.usage())
-        # The module under test, not the live read bound to whichever copy of it
-        # was imported last (another test imports a fresh copy).
-        rows = appliances.annotate_outputs([{"name": "Kitchen", "selected": False},
-                                 {"name": "lounge", "selected": True},
-                                 {"name": "Study", "selected": False}])
-        assert [(r["remote_in_use"], r["remote_owner"]) for r in rows] == [
-            (True, "Hall"), (False, ""), (False, "")]
-        assert all("remote_owner_service" not in r for r in rows)
-
-
 class TestResolve:
     def test_each_kind(self, rig, monkeypatch):
         assert appliances.resolve("nope").kind == "invalid"

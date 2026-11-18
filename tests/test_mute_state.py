@@ -1,31 +1,22 @@
 """Tests for the per-speaker mute: how the output authority holds it, the
-dial's mute and volume routes that drive it, the status fields that report it,
-the output-change rules, the end of a session, and the WebUI's now-playing header/level slot (the volume slider
-is the WebUI's only unmute path).
+output-change rules, the end of a session, and the WebUI's now-playing
+header/level slot (the volume slider is the WebUI's only unmute path).
 
 Covers:
 1.  The authority's mute model: a mute remembers each speaker's level, a
     muted selection reads as muted, a speaker joining it comes on silent, a
     user level change ends one speaker's mute, a deselect forgets it.
-2.  POST /api/dial/mute: mute, restore, partial failures, idempotence.
-3.  POST /api/dial/volume: a non-positive delta while muted is a no-op that
-    reports the intended level and muted:true; a positive delta while muted
-    restores with no step added and reports muted:false; the unmuted path
-    is unchanged apart from carrying muted:false.
-4.  POST /api/dial/status: master_volume/muted while muted and unmuted.
-5.  submit_output_change(): enable-while-muted stays silent and remembers
+2.  submit_output_change(): enable-while-muted stays silent and remembers
     the requested level; a non-user volume-only write on a muted output
     remembers instead of writing; an explicit user volume write on a muted
     output ends its mute and writes normally; disable forgets the mute.
-6.  build_output_list()/build_home_state(): intended levels and the muted
-    flag.
-7.  The end of a session clears every mute.
-8.  The WebUI now-playing header text (not a separate control) is the only
+3.  The end of a session clears every mute.
+4.  The WebUI now-playing header text (not a separate control) is the only
     mute indication; the old mute button/icon and the browser POST /api/mute
     route are both gone.
-9.  The now-playing level slot markup: VU meter only, no mute button, in
+5.  The now-playing level slot markup: VU meter only, no mute button, in
     both the local and remote-shell renders.
-10. The now-playing header gains " (Muted)" while playing and muted, never
+6.  The now-playing header gains " (Muted)" while playing and muted, never
     on "Ready", and never when unmuted.
 """
 from __future__ import annotations
@@ -46,14 +37,13 @@ if _core not in sys.path:
 
 import autostream_player_service as player_service
 from fake_store import (
-    FakeStore, fake_levels, fake_outputs, fake_playback, fake_repeat,
+    FakeStore, fake_levels, fake_outputs, fake_playback,
     fake_track,
 )
 from autostream_players import ActionResult, OutputInfo
 from autostream_state import Origin, store
-from autostream_state.outputs import PlayerServiceBackend, get_authority
+from autostream_state.outputs import get_authority
 import webui.browser.home_model as webui_home_model
-import webui.dial.api as webui_dial_api
 import webui.routes as webui_routes
 
 
@@ -111,24 +101,6 @@ def _muted(writes, *outputs):
     _arrange(*outputs)
     get_authority().mute_all(Origin.USER)
     writes.calls.clear()
-
-
-def _dial(fn, body, parsed=None):
-    """Drive a dial route and return what it sent."""
-    import webui.dial.api as api
-    captured = {}
-
-    def fake_send_json(h, code, payload):
-        captured["code"] = code
-        captured["body"] = payload
-
-    with patch("webui.common.send_json", side_effect=fake_send_json), \
-         patch("webui.dial.api.dial_authorization",
-               return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
-         patch("webui.common._config_snapshot", return_value=parsed or _parsed_config()), \
-         patch("autostream_rpi.get_appliance_id", return_value=None):
-        getattr(api, fn)(_handler(), MagicMock(), {"dial_id": "uid", **body})
-    return captured
 
 
 def snap():
@@ -217,183 +189,7 @@ class TestMuteModel:
 
 
 # ---------------------------------------------------------------------------
-# 2. POST /api/dial/mute
-# ---------------------------------------------------------------------------
-
-class TestDialMute:
-    def _mute(self, action, default_vol=20):
-        return _dial("send_dial_mute_post_json", {"action": action}, _parsed_config(default_vol))["body"]
-
-    def test_mute_zeroes_audible_outputs_and_remembers(self, writes):
-        _arrange(_output("o1", 40))
-        assert self._mute("mute") == {"ok": True, "muted": True}
-        assert writes.levels() == [("o1", 0)]
-        assert snap().unit("o1").volume == 40
-
-    def test_mute_on_a_silent_selection_is_a_no_op_reporting_true(self, writes):
-        _arrange(_output("o1", 0))
-        assert self._mute("mute") == {"ok": True, "muted": True}
-        assert writes.calls == []
-
-    def test_restore_uses_the_remembered_level(self, writes):
-        _muted(writes, _output("o1", 70))
-        assert self._mute("restore") == {"ok": True, "muted": False}
-        assert writes.levels() == [("o1", 70)]
-        assert snap().muted_all is False
-
-    def test_restore_falls_back_to_the_default_for_a_silent_unremembered_output(self, writes):
-        _arrange(_output("o1", 0))
-        assert self._mute("restore", default_vol=35) == {"ok": True, "muted": False}
-        assert writes.levels() == [("o1", 35)]
-
-    def test_restore_leaves_an_audible_unremembered_output_alone(self, writes):
-        _arrange(_output("o1", 55))
-        assert self._mute("restore") == {"ok": True, "muted": False}
-        assert writes.calls == []
-
-    def test_mute_all_fail_reports_all_outputs_failed(self, writes):
-        _arrange(_output("o1", 40))
-        writes.results.append(_update_result(False))
-        assert self._mute("mute") == {"ok": False, "error": "all_outputs_failed"}
-
-    def test_restore_all_fail_reports_all_outputs_failed(self, writes):
-        _muted(writes, _output("o1", 40))
-        writes.results.append(_update_result(False))
-        assert self._mute("restore") == {"ok": False, "error": "all_outputs_failed"}
-
-    def test_no_active_outputs(self, writes):
-        _arrange(_output("o1", 40, selected=False))
-        assert self._mute("mute") == {"ok": False, "error": "no_active_outputs"}
-
-    def test_backend_unavailable(self, writes):
-        FakeStore().outputs_unreachable()
-        assert self._mute("mute") == {"ok": False, "error": "backend_unavailable"}
-
-    def test_config_error(self, writes):
-        captured = {}
-        with patch("webui.common.send_json", side_effect=lambda h, c, b: captured.update(body=b)), \
-             patch("webui.dial.api.dial_authorization",
-                   return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
-             patch("webui.common._config_snapshot", side_effect=RuntimeError("boom")):
-            webui_dial_api.send_dial_mute_post_json(_handler(), MagicMock(), {"dial_id": "uid", "action": "mute"})
-        assert captured["body"] == {"ok": False, "error": "config_error"}
-
-    def test_a_partly_failed_mute_keeps_the_mute_and_says_partial(self, writes):
-        _arrange(_output("o1", 40), _output("o2", 60))
-        writes.results.extend([_update_result(True), _update_result(False)])
-        assert self._mute("mute") == {"ok": True, "muted": True, "partial": True}
-        assert snap().muted_all is True
-
-    def test_an_invalid_action_is_refused_before_anything_is_written(self, writes):
-        _arrange(_output("o1", 40))
-        result = _dial("send_dial_mute_post_json", {"action": "toggle"})
-        assert result["code"] == 400 and result["body"] == {"ok": False, "error": "invalid_action"}
-        assert writes.calls == []
-
-
-# ---------------------------------------------------------------------------
-# 3. POST /api/dial/volume, mute-aware
-# ---------------------------------------------------------------------------
-
-class TestVolumeDeltaWhileMuted:
-    def _step(self, delta, default_vol=20):
-        return _dial("send_dial_volume_post_json", {"delta": delta}, _parsed_config(default_vol))["body"]
-
-    def test_a_negative_delta_while_muted_is_ignored(self, writes):
-        _muted(writes, _output("o1", 40))
-        assert self._step(-5) == {"ok": True, "volume": 40, "muted": True}
-        assert writes.calls == []
-        assert snap().muted_all is True
-
-    def test_a_zero_delta_while_muted_is_ignored(self, writes):
-        _muted(writes, _output("o1", 40))
-        body = self._step(0)
-        assert body["muted"] is True and body["volume"] == 40
-
-    def test_a_positive_delta_while_muted_restores_with_no_step(self, writes):
-        _muted(writes, _output("o1", 40))
-        body = self._step(7)
-        assert body == {"ok": True, "muted": False, "volume": 40}
-        assert writes.levels() == [("o1", 40)]
-        assert snap().muted_all is False
-
-    def test_the_unmuted_delta_carries_muted_false(self, writes):
-        _arrange(_output("o1", 40))
-        assert self._step(5) == {"ok": True, "volume": 45, "muted": False}
-        assert writes.levels() == [("o1", 45)]
-
-    def test_the_unmuted_step_scales_up_from_zero(self, writes):
-        _arrange(_output("o1", 0))
-        assert self._step(4) == {"ok": True, "volume": 4, "muted": False}
-
-    def test_a_partial_failure_carries_muted_false(self, writes):
-        _arrange(_output("o1", 40), _output("o2", 60))
-        writes.results.extend([_update_result(True), _update_result(False)])
-        assert self._step(5) == {"ok": True, "volume": 55, "partial": True, "muted": False}
-
-    def test_every_write_failing_is_reported(self, writes):
-        _arrange(_output("o1", 40))
-        writes.results.append(_update_result(False))
-        assert self._step(5) == {"ok": False, "error": "all_outputs_failed"}
-
-    def test_no_selected_output(self, writes):
-        _arrange(_output("o1", 40, selected=False))
-        assert self._step(5) == {"ok": False, "error": "no_active_outputs"}
-
-    def test_backend_unavailable(self, writes):
-        FakeStore().outputs_unreachable()
-        assert self._step(5) == {"ok": False, "error": "backend_unavailable"}
-
-    def test_a_non_integer_delta_is_refused(self, writes):
-        _arrange(_output("o1", 40))
-        assert _dial("send_dial_volume_post_json", {"delta": "5"})["body"] == {
-            "ok": False, "error": "invalid_delta"}
-
-    def test_the_route_holds_no_volume_lock_of_its_own(self):
-        import webui.dial.api as api
-        assert not hasattr(api, "_volume_lock")
-        assert not hasattr(api, "apply_mute_action")
-
-
-# ---------------------------------------------------------------------------
-# 4. POST /api/dial/status, mute-aware
-# ---------------------------------------------------------------------------
-
-class TestStatusMuteAware:
-    def _call(self, outputs, muted_before=False):
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("webui.dial.api.dial_authorization",
-                   return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
-             patch("webui.common._config_snapshot", return_value=_parsed_config()), \
-             fake_outputs(outputs), \
-             patch("autostream_rpi.get_appliance_id", return_value=None), \
-             patch("webui.common._session_playing", return_value=False), \
-             fake_repeat(None), \
-             fake_track(_disabled_track_id_snapshot()):
-            if muted_before:
-                get_authority().mute_all(Origin.USER)
-            webui_dial_api.send_dial_status_post_json(_handler(), MagicMock(), {"dial_id": "uid"})
-        return captured
-
-    def test_unmuted_reports_actual_and_false(self, writes):
-        result = self._call([_output("o1", 40), _output("o2", 60)])
-        assert result["body"]["master_volume"] == 50
-        assert result["body"]["muted"] is False
-
-    def test_muted_reports_intended_level_and_true(self, writes):
-        result = self._call([_output("o1", 20), _output("o2", 60)], muted_before=True)
-        assert result["body"]["master_volume"] == 40
-        assert result["body"]["muted"] is True
-
-
-# ---------------------------------------------------------------------------
-# 5. Output changes and the mute
+# 2. Output changes and the mute
 # ---------------------------------------------------------------------------
 
 class TestOutputChangeMuteHooks:
@@ -466,42 +262,7 @@ class TestOutputChangeMuteHooks:
 
 
 # ---------------------------------------------------------------------------
-# 6. build_output_list()
-# ---------------------------------------------------------------------------
-
-class TestBuildOutputListMuteAware:
-    def test_build_output_list_reports_the_intended_level_while_muted(self, writes):
-        import webui.browser.home_model as models
-        FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
-        get_authority().mute_all(Origin.USER)
-        parsed = SimpleNamespace(
-            owntone=SimpleNamespace(default_outputs=()),
-            webui=SimpleNamespace(hidden_outputs=()),
-        )
-        rows = webui_home_model.build_output_list(parsed, snap().units)
-        assert rows[0]["volume"] == 40
-
-    def test_build_output_list_reports_the_actual_level_while_unmuted(self, writes):
-        import webui.browser.home_model as models
-        parsed = SimpleNamespace(
-            owntone=SimpleNamespace(default_outputs=()),
-            webui=SimpleNamespace(hidden_outputs=()),
-        )
-        out = OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=33)
-        rows = webui_home_model.build_output_list(parsed, FakeStore().outputs([out]).outputs.units)
-        assert rows[0]["volume"] == 33
-
-    def test_the_outputs_part_carries_muted_all(self, writes):
-        import json
-        from webui.protocol import state as protocol_state
-        _muted(writes, _output("o1", 40))
-        body = json.loads(protocol_state.part_json(store().snapshot(), "outputs"))
-        assert body["muted_all"] is True
-        assert [u["id"] for u in body["units"]] == ["o1"]
-
-
-# ---------------------------------------------------------------------------
-# 7. The end of a session
+# 3. The end of a session
 # ---------------------------------------------------------------------------
 
 class TestSessionEndClearsMute:
@@ -516,7 +277,7 @@ class TestSessionEndClearsMute:
 
 
 # ---------------------------------------------------------------------------
-# 8. The WebUI mute button/route are gone; the header text is the only
+# 4. The WebUI mute button/route are gone; the header text is the only
 # mute indication and the volume slider is the only unmute path.
 # ---------------------------------------------------------------------------
 
@@ -524,15 +285,6 @@ class TestWebUIMuteControlRemoved:
     def test_browser_mute_route_is_gone(self):
         matches = [r for r in webui_routes.ROUTES if r.path == "/api/mute"]
         assert matches == []
-
-    def test_send_mute_post_json_handler_is_gone(self):
-        import webui.dial.api as api
-        assert not hasattr(api, "send_mute_post_json")
-
-    def test_dial_mute_route_still_present(self):
-        """The dial's own mute button keeps its route."""
-        matches = [r for r in webui_routes.ROUTES if r.path == "/api/dial/mute" and "POST" in r.methods]
-        assert len(matches) == 1
 
     def test_mute_icon_markup_and_slash_path(self):
         """ICON_SPEAKER_MUTED itself is kept (matches the dial's own glyph)
@@ -566,7 +318,7 @@ def inspect_source(module) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 9. WebUI now-playing level slot: the VU meter and the mute indicator share
+# 5. WebUI now-playing level slot: the VU meter and the mute indicator share
 # one fixed-width slot (see _VU_STEREO_CSS's .np-level rule) so muting never
 # shifts the name/signal text beside it.
 # ---------------------------------------------------------------------------
@@ -666,7 +418,7 @@ class TestNowPlayingLevelSlotMarkup:
         assert 'id="np_mute_btn"' not in html
 
 # ---------------------------------------------------------------------------
-# 10. The now-playing header text is the mute indication.
+# 6. The now-playing header text is the mute indication.
 # ---------------------------------------------------------------------------
 
 class TestNowPlayingHeaderMutedSuffix:

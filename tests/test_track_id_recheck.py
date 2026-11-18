@@ -26,7 +26,6 @@ import autostream_core as core
 from autostream_artwork import ArtworkImage
 from autostream_nowplaying import NowPlayingMetadata
 from autostream_state import active_track, store, track_digest
-from webui.dial.api import _dial_track_id_dict
 from track_id.models import (
     STATE_ANALYSING,
     STATE_ERROR,
@@ -267,15 +266,6 @@ class TestTrackChangeStillClearsAtOnce:
 
 class TestReadersDuringARecheck:
 
-    def test_the_dial_status_reply_keeps_the_track(self, rig):
-        rig.dispatch()
-        rig.publish()
-        reply = _dial_track_id_dict()
-        assert reply["state"] == STATE_IDENTIFIED
-        assert (reply["title"], reply["artist"], reply["album"], reply["artwork_url"]) == (
-            "Blue in Green", "Miles Davis", "Kind of Blue", ART_URL,
-        )
-
     def test_the_status_api_snapshot_keeps_the_track(self, rig):
         rig.dispatch()
         public = rig.snapshot().to_public_dict()
@@ -375,16 +365,12 @@ class TestFailedRecheckKeepsTheTrack:
         assert snap.next_attempt_at == rig.mon._ti_next_attempt
         assert snap.next_attempt_reason == tag
 
-    def test_the_dial_reply_and_digest_keep_the_track(self, rig, kind):
+    def test_the_digest_keeps_the_track(self, rig, kind):
         _, outcome, _, _ = kind
         before = track_digest(rig.snapshot())
         rig.dispatch()
         _make_fail(rig, outcome)
         rig.finish()
-        reply = _dial_track_id_dict()
-        assert (reply["state"], reply["title"], reply["artwork_url"]) == (
-            STATE_IDENTIFIED, "Blue in Green", ART_URL,
-        )
         assert track_digest(rig.snapshot()) == before
 
     def test_the_receiver_is_sent_nothing(self, rig, kind):

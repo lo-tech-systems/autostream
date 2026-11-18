@@ -532,7 +532,6 @@ class TestRealRows:
     def test_a_dials_authorize_through_the_route(self, env, monkeypatch):
         written = []
         monkeypatch.setattr(autostream_appliance_state, "write_dial_entry", lambda u, n: written.append((u, n)))
-        monkeypatch.setattr(autostream_appliance_state, "notify_dial_auth_changed", lambda u: None)
         _, body = env.post("dials.authorize", {"args": {"uuid": "d1", "name": "Kitchen"}}, headers=env.browser())
         assert body["ok"] is True and written == [("d1", "Kitchen")]
 

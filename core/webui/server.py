@@ -44,7 +44,6 @@ import webui.browser.owntone
 import webui.browser.rebooting
 import webui.browser.service
 import webui.browser.setup.page
-import webui.dial.api
 import webui.dial.management
 import webui.peer.relay
 import webui.protocol.hub
@@ -80,7 +79,6 @@ _ROUTE_MODULES = (
     webui.browser.rebooting,
     webui.browser.service,
     webui.browser.setup.page,
-    webui.dial.api,
     webui.dial.management,
     webui.peer.relay,
     webui.protocol.state,

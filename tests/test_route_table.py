@@ -346,8 +346,7 @@ class TestBrowserPostApiParity:
 
 
 # ---------------------------------------------------------------------------
-# 1d. Special-scheme routes: dial (device-authenticated smart-dial API),
-#     the protocol routes, and loopback-aware
+# 1d. Special-scheme routes: the protocol routes, and loopback-aware
 #     (relaxed auth when called from the appliance's own loopback address).
 # ---------------------------------------------------------------------------
 
@@ -357,9 +356,6 @@ _SPECIAL_SCHEME_EXPECTED = [
     ("/api/v1/intents/", True, "POST", "protocol"),
     ("/api/v1/peers/", True, "POST", "protocol"),
     ("/api/v1/peers/", True, "GET", "browser"),
-    ("/api/dial/volume", False, "POST", "dial"),
-    ("/api/dial/mute", False, "POST", "dial"),
-    ("/api/dial/status", False, "POST", "dial"),
     ("/api/playing-status", False, "GET", "loopback_aware"),
     ("/api/log-level", False, "GET", "loopback_aware"),
     ("/api/log-level", False, "PUT", "loopback_aware"),
@@ -368,7 +364,7 @@ _SPECIAL_SCHEME_EXPECTED = [
 
 @_skip_no_webui
 class TestSpecialSchemeRouteParity:
-    """Dial, protocol, and loopback-aware routes carry a non-default
+    """Protocol and loopback-aware routes carry a non-default
     `scheme`, which selects an alternate authentication path from the
     plain browser-session one every other route uses."""
 

@@ -18,7 +18,6 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_dial_push as dp
 import autostream_monitor_control as control
 import autostream_state as state
 from autostream_state import eq_band_digest
@@ -136,34 +135,6 @@ def test_the_publish_happens_after_the_connection_is_closed():
         control.set_live_output_gain(-1.0)
         control.set_live_input_eq(1, 1.0, 1.0, 1.0)
     assert during == [False, False]
-
-
-class Hints:
-    """The state-hints subscriber with a recorder in place of the coalescer."""
-
-    def __init__(self):
-        self.calls = []
-        state.store().subscribe(dp.StateHints(notify=lambda *k, **kw: self.calls.append((k, kw))))
-
-
-def test_a_change_of_the_output_bands_hints_eq_once():
-    h = Hints()
-    c = client()
-    control.apply_output_eq(c, 0, 0, 0, 0, 0, 0)       # the baseline
-    assert h.calls == []
-    control.apply_output_eq(c, 1, 0, 0, 0, 0, 0)
-    assert h.calls == [(("eq",), {"except_dial": None})]
-
-
-def test_gain_auto_trim_and_input_values_do_not_hint():
-    h = Hints()
-    c = client()
-    control.apply_output_eq(c, 0, 0, 0, 0, 0, 0)
-    control.apply_output_gain(c, -1.0)
-    control.apply_output_auto_trim(c, True)
-    control.apply_input_eq(c, 1, 3, 3, 3)
-    control.apply_input_gain(c, 1, 2.0)
-    assert h.calls == []
 
 
 def test_the_band_digest_covers_the_output_bands_only():
