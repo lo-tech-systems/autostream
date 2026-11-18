@@ -285,273 +285,6 @@ def any_monitor_capturing() -> bool:
         return any(m.is_capturing for m in runtime.all_monitors)
 
 
-# ── Unified playback-session tracker ─────────────────────────────────────────
-#
-# A single source-vector session model drives idle-stop gating and
-# replay-end/OwnTone-stop handling uniformly: each poll cycle,
-# the coordinator derives which of {input1, input2, replay} is the audible
-# source from the SAME status snapshot already ingested, and diffs it
-# against the previous cycle's source. Exactly one of three events results:
-#
-#   session_started  (no source -> a source)       -- new-session output path
-#   session_ended     (a source -> no source)       -- stop-and-disable path
-#   source_changed    (a source -> a *different*     -- no output/volume
-#                      source)                          action whatsoever
-#
-# source_changed covers live-interrupt-of-replay, capture-end -> replay
-# handoff, and input1 <-> input2 handoff: in each case OwnTone's selected
-# outputs/volume are already correct for the still-active session and must
-# be left alone.
-#
-# Coordinator-thread only: one _SessionTracker instance per run_autostream()
-# invocation (recreated on each reload), one update() call per poll cycle.
-# No new threads or locks are introduced by the tracker itself.
-
-def _current_source_monitor(monitors, source: Optional[str], origin_input: Optional[int]):
-    """Resolve a vector key ("input1"/"input2"/"replay") to its AudioMonitor.
-
-    *origin_input* is the already-computed replay_origin_input() for the
-    SAME snapshot the vector was built from -- resolving "replay" any other
-    way would risk reading a later, possibly-stale repeat_status.
-    """
-    if source is None:
-        return None
-    if source == "replay":
-        idx = origin_input
-    else:
-        try:
-            idx = int(source[len("input"):])
-        except (ValueError, IndexError):
-            return None
-    return next((m for m in monitors if m.input_index == idx), None)
-
-
-class _SessionTracker:
-    """Diffs the {input1, input2, replay} source vector between poll cycles.
-
-    See module comment above for the event semantics. Resolves the AudioMonitor
-    for both the previous and new source at update() time (while the snapshot
-    driving them is fresh) rather than re-deriving it later from status that
-    may have moved on by the time the caller acts on the event.
-    """
-
-    def __init__(self) -> None:
-        self._source: Optional[str] = None
-        self._source_monitor = None  # AudioMonitor or None
-
-    def reset(self) -> None:
-        """Clear tracked state so the next update() cannot manufacture a
-        spurious event by diffing against stale pre-reset state.
-
-        Called on coordinator reconnect/resync:
-        if a session is genuinely still active across the resync, the next
-        cycle reports it as a fresh session_started, which is intentional --
-        reconnect already forces a full OwnTone output re-validation for
-        every monitor (existing _owntone_enabled_ok reset), so re-running the
-        new-session output path is consistent with that, not spurious. If
-        nothing was active, both sides of the next diff are None and no
-        event fires.
-        """
-        self._source = None
-        self._source_monitor = None
-
-    @property
-    def active_source(self) -> Optional[str]:
-        return self._source
-
-    def update(self, monitors, repeat_status: Optional[dict]):
-        """Advance one poll cycle.
-
-        Returns (event, prev_monitor, new_monitor, new_source) where event is
-        one of "session_started" / "session_ended" / "source_changed" / None.
-        """
-        origin_input = autostream_state.replay_origin_input(repeat_status)
-        vector = {f"input{m.input_index}": bool(m.is_capturing) for m in monitors}
-        vector["replay"] = origin_input is not None
-
-        # Mutual exclusion between a capturing input and replay for the same
-        # recording is a daemon invariant (see replay_origin_input); prefer
-        # "replay" if it's ever violated since it is the rarer, more specific
-        # state to surface.
-        active = [k for k, v in vector.items() if v]
-        new_source = "replay" if vector["replay"] else (active[0] if active else None)
-        new_monitor = _current_source_monitor(monitors, new_source, origin_input)
-
-        prev_source = self._source
-        prev_monitor = self._source_monitor
-
-        if prev_source is None and new_source is not None:
-            event = "session_started"
-        elif prev_source is not None and new_source is None:
-            event = "session_ended"
-        elif prev_source is not None and new_source is not None and prev_source != new_source:
-            event = "source_changed"
-        else:
-            event = None
-
-        self._source = new_source
-        self._source_monitor = new_monitor
-        return event, prev_monitor, new_monitor, new_source
-
-
-def _start_session_owntone(monitor: "AudioMonitor") -> None:
-    """New-session OwnTone output-enable path (session_started event).
-
-    Equivalent to a capture-start-from-idle output-enable, but
-    driven through whichever AudioMonitor is the session's source -- for a
-    replay-sourced start that is the origin input's AudioMonitor, not the one
-    (if any) that happens to be capturing, so replay start-from-idle reuses
-    the existing _owntone_enabled_ok / _maybe_retry_owntone machinery instead
-    of duplicating it (this is the fix for the "replay start never enables
-    outputs" symptom).
-    """
-    monitor._owntone_enabled_ok = False
-    monitor._owntone_last_attempt = 0.0
-    if monitor.owntone_base_url:
-        intents.submit(Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"))
-    get_authority().note_session(True)
-    # replay_origin=True unconditionally: harmless for an input-sourced start
-    # (is_capturing already satisfies the guard) and required for a
-    # replay-sourced start (the origin input's is_capturing is False).
-    monitor._maybe_retry_owntone(time.time(), replay_origin=True)
-
-
-def _session_nowplaying_start(monitor: Optional["AudioMonitor"]) -> None:
-    if monitor is None:
-        return
-    # Fresh session: drop any title/artist/artwork left over from whatever
-    # last played (own previous session, or -- for source_changed -- the
-    # other input) before publishing, so a stale cover doesn't flash before
-    # this session's own identification (if any) lands.
-    monitor._reset_nowplaying_for_new_session()
-    monitor._nowplaying_publisher.publish_start(monitor._current_nowplaying)
-
-
-def _republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_active: bool) -> None:
-    """Re-send the active session's current now-playing bundle mid-session.
-
-    Consumed-flag counterpart of runtime.request_nowplaying_republish():
-    fired when a newly enabled output (or a freshly restarted backend) knows
-    only the queue defaults. artwork is deliberately None -- publish_refresh()'s
-    "no news" value -- so the publisher re-sends whatever artwork it
-    currently holds (placeholder or identified cover) rather than treating
-    the republish as an artwork change. Dropped silently when no session is
-    active: a future session opens with its own publish_start()."""
-    if not session_active or monitor is None:
-        return
-    cur = monitor._current_nowplaying
-    if cur is None:
-        return
-    monitor._nowplaying_publisher.publish_refresh(
-        NowPlayingMetadata(
-            title=cur.title,
-            artist=cur.artist,
-            album=cur.album,
-            artwork=None,
-        )
-    )
-
-
-def _session_nowplaying_end(monitor: Optional["AudioMonitor"]) -> None:
-    if monitor is None:
-        return
-    try:
-        monitor._nowplaying_publisher.publish_end()
-    except Exception as e:
-        # Must be logged, not swallowed silently -- same as the publisher's own
-        # start/refresh/end write-failure path (_run()'s except).
-        logging.debug(
-            "now-playing publish_end failed for input %d: %s",
-            monitor.input_index, e,
-        )
-
-
-def _dispatch_session_event(
-    event: Optional[str],
-    prev_monitor: Optional["AudioMonitor"],
-    new_monitor: Optional["AudioMonitor"],
-    owntone_base_url: str,
-    new_source: Optional[str] = None,
-) -> None:
-    """Apply the session-level side effects for one _SessionTracker event.
-
-    - session_started: OwnTone new-session output-enable path (via
-      new_monitor, see _start_session_owntone) + now-playing publish_start.
-    - session_ended: all outputs switched off and the player stopped (the
-      outputs.deselect_all intent) + now-playing publish_end.
-    - source_changed: now-playing publish_end(prev) + publish_start(new)
-      only -- NO output/volume action whatsoever. Applies to
-      live-interrupt-of-replay, capture-end -> replay handoff, and
-      input1 <-> input2 handoff: OwnTone's selected outputs/volume are
-      already correct for the still-active session.
-    - None: no event this cycle, nothing to do.
-
-    *new_source* is the same _SessionTracker.update() call's vector key
-    ("input1"/"input2"/"replay"/None) for new_monitor. When a
-    session_started or source_changed event lands on any source (replay or
-    live), this also arms new_monitor's identification cycle: a
-    replay-sourced input never gets a fresh is_capturing 0->1 edge to arm
-    from, and a live input taking over from a replay can also reach this
-    event with no fresh edge left (see _arm_track_identification_for_
-    session()'s docstring for both cases), so this is the one place that
-    is guaranteed to run for either.
-
-    The replay-end identification teardown is deliberately not done here; see
-    _teardown_identification_after_replay_end(), which the poll loop calls
-    once the session state and playing announcement have been updated.
-    """
-    if event == "session_started":
-        _session_nowplaying_start(new_monitor)
-        if new_monitor is not None:
-            _start_session_owntone(new_monitor)
-    elif event == "session_ended":
-        _session_nowplaying_end(prev_monitor)
-        if owntone_base_url:
-            intents.submit(Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"))
-        # A new session always gets normal default-output behaviour: the
-        # user's choice of silence and the retry back-offs end with it.
-        get_authority().note_session(False)
-    elif event == "source_changed":
-        _session_nowplaying_end(prev_monitor)
-        _session_nowplaying_start(new_monitor)
-
-    if (
-        event in ("session_started", "source_changed")
-        and new_source is not None
-        and new_monitor is not None
-    ):
-        new_monitor._arm_track_identification_for_session()
-
-
-def _teardown_identification_after_replay_end(
-    event: Optional[str],
-    prev_source: Optional[str],
-    prev_monitor: Optional["AudioMonitor"],
-    new_monitor: Optional["AudioMonitor"],
-) -> None:
-    """Tear down the replay origin monitor's identification when a replay ends.
-
-    *prev_source* is the tracker's source before the update() call that
-    produced *event*. When it was "replay" and the replay has ended
-    (session_ended) or handed over to a different monitor (source_changed),
-    the origin monitor's identification is torn down: the replay end raises
-    no capture-stop edge, and _replay_origin is already false on that tick,
-    so this is the only place that can tell. A live source ending is torn
-    down by _on_capture_stopped() and is left alone here.
-
-    The poll loop calls this after the session has been marked inactive and
-    the playing announcement withdrawn, so a client never sees the appliance
-    advertised as playing together with an already-reset identification.
-    """
-    if (
-        event in ("session_ended", "source_changed")
-        and prev_source == "replay"
-        and prev_monitor is not None
-        and prev_monitor is not new_monitor
-    ):
-        prev_monitor._teardown_identification_after_replay()
-
-
 # ── OwnTone-hang watchdog (mechanism 2) ─────────────────────────────────────
 #
 # When the monitor daemon is deadlocked, the coordinator never enables
@@ -1281,7 +1014,7 @@ class AudioMonitor:
         replay-sourcing itself is NOT handled here -- since is_capturing does
         not change when replay starts/stops, there is no "started"/"stopped"
         edge to return; the seq baseline + identification-cycle arming for
-        that transition is handled by _dispatch_session_event() ->
+        that transition is handled by autostream_session.dispatch_session_event() ->
         _arm_track_identification_for_session(), which runs after this method
         for the whole monitor set (mirrors _on_capture_started, which arms
         the same cycle for a real capturing transition).
@@ -1316,7 +1049,7 @@ class AudioMonitor:
 
         # No capturing transition this cycle: check for track-change events
         # whenever actively-sourcing on both sides of this ingest (a fresh
-        # transition into replay-sourcing is armed by _dispatch_session_event
+        # transition into replay-sourcing is armed by autostream_session.dispatch_session_event
         # instead, after this same poll cycle's baseline would otherwise be
         # stale/unset).
         if was_actively_sourcing and is_actively_sourcing:
@@ -1360,7 +1093,7 @@ class AudioMonitor:
         the receiver drops the just-finished track's title/cover and shows
         "<input label> / autostream" + the autostream logo while
         re-identification runs -- the same look a session start gets from
-        _reset_nowplaying_for_new_session() / _session_nowplaying_start().
+        _reset_nowplaying_for_new_session() / autostream_session._session_nowplaying_start().
         When the pending identification lands, _ti_worker() compares its
         result against this now-reset _current_nowplaying: for a *different*
         track the comparison obviously differs; for the *same* track it
@@ -1396,7 +1129,7 @@ class AudioMonitor:
 
     def _reset_nowplaying_for_new_session(self) -> None:
         """Called at the start of each new play session (session_started /
-        source_changed dispatch, via _session_nowplaying_start()) to drop
+        source_changed dispatch, via autostream_session._session_nowplaying_start()) to drop
         any title/artist/artwork carried over from a previous session --
         otherwise a stale cover from whatever was last playing could flash
         up before this session's own track ID (if any) lands. Within a
@@ -1481,8 +1214,8 @@ class AudioMonitor:
         now-playing publish_start -- are not fired unconditionally on
         every capture-start transition, since a replay-sourced session start
         never transitions any input to capturing at all. They run from the
-        coordinator's _SessionTracker session_started event via
-        _start_session_owntone() / _session_nowplaying_start(), see the poll
+        coordinator's autostream_session.SessionTracker session_started event via
+        autostream_session._start_session_owntone() / autostream_session._session_nowplaying_start(), see the poll
         loop in run_autostream().
 
         A settling-noise transient on the replay-origin input can flip
@@ -1536,7 +1269,7 @@ class AudioMonitor:
 
         Mirrors _on_capture_started()'s track-ID setup (reset generation,
         invalidate in-flight state, schedule the initial attempt), but is
-        invoked directly by _dispatch_session_event() for a session_started
+        invoked directly by autostream_session.dispatch_session_event() for a session_started
         or source_changed event landing on this monitor -- for a
         replay-sourced source ("replay") as well as a live one
         ("input1"/"input2"). Generalized from a replay-only arm (see history)
@@ -1681,7 +1414,7 @@ class AudioMonitor:
         Per-input duties only: track-ID state invalidation and
         logging. Session-level duties -- the OwnTone idle-stop and
         now-playing publish_end -- are not fired here: the coordinator's
-        _SessionTracker source vector treats a capture-stop immediately
+        autostream_session.SessionTracker source vector treats a capture-stop immediately
         followed by a replay-start as a source_changed event with no
         OwnTone-level capture-stop in between, so per-input teardown must
         stay silent on the session-level effects. The session-level stop
@@ -1704,7 +1437,7 @@ class AudioMonitor:
           input that is about to become the replay origin also lands here
           with self._replay_origin already true. The session arm
           (_arm_track_identification_for_session(), via
-          _dispatch_session_event()) re-arms this input's identification
+          autostream_session.dispatch_session_event()) re-arms this input's identification
           cycle for the new replay source later in this same tick, so
           tearing it down here would just be redone -- and would race the
           re-arm if worker teardown timing ever shifted.
@@ -1748,7 +1481,7 @@ class AudioMonitor:
         """Drop this monitor's identification state once its replay has ended.
 
         Called on the coordinator thread from
-        _teardown_identification_after_replay_end() when the session's
+        autostream_session.teardown_identification_after_replay_end() when the session's
         previous source was "replay" and that source has gone
         (session_ended) or moved to a different monitor (source_changed).
         A replay end produces no capturing edge, so _on_capture_stopped()
@@ -3270,7 +3003,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # and explicitly .reset() on reconnect/resync below, so a stale
         # pre-reload/pre-reconnect source can never manufacture a spurious
         # event once polling resumes.
-        session_tracker = _SessionTracker()
+        session_tracker = autostream_session.SessionTracker()
         # Same "log the recovery, not just the failure" rationale as
         # _owntone_recovery_log above, applied to the monitor daemon socket
         # connection: covers both the connect() retry and the get_status()
@@ -3456,16 +3189,16 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # Single call site: derives the {input1, input2, replay}
                 # source vector from this SAME snapshot and fires exactly one
                 # of session_started / session_ended / source_changed / None,
-                # dispatched by _dispatch_session_event(). This is the sole
+                # dispatched by autostream_session.dispatch_session_event(). This is the sole
                 # place session-level OwnTone output-enable/stop and
                 # now-playing publish_start/publish_end run -- see
-                # _SessionTracker's module comment for the full event
+                # autostream_session.SessionTracker's module comment for the full event
                 # semantics.
                 session_prev_source = session_tracker.active_source
                 session_event, session_prev_monitor, session_new_monitor, session_source = (
                     session_tracker.update(monitors, repeat_status)
                 )
-                _dispatch_session_event(
+                autostream_session.dispatch_session_event(
                     session_event, session_prev_monitor, session_new_monitor,
                     cfg.owntone.base_url, new_source=session_source,
                 )
@@ -3484,7 +3217,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # session is marked inactive and the announcement withdrawn:
                 # a client polling status must never see "advertised as
                 # playing" together with an already-reset identification.
-                _teardown_identification_after_replay_end(
+                autostream_session.teardown_identification_after_replay_end(
                     session_event, session_prev_source,
                     session_prev_monitor, session_new_monitor,
                 )
@@ -3503,7 +3236,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # runtime.request_nowplaying_republish()); consume
                 # at most one request per cycle.
                 if runtime.consume_nowplaying_republish():
-                    _republish_current_nowplaying(
+                    autostream_session.republish_current_nowplaying(
                         session_new_monitor, session_source is not None,
                     )
                 _maybe_run_owntone_hang_watchdog(

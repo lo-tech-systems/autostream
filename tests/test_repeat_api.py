@@ -60,13 +60,13 @@ from autostream_live_config import _validate_repeat_codec
 import autostream_core as core
 from autostream_core import (
     AudioMonitor,
-    _dispatch_session_event,
     _resync_monitor_daemon,
-    _session_nowplaying_end,
-    _session_nowplaying_start,
-    _SessionTracker,
-    _start_session_owntone,
 )
+from autostream_session import _session_nowplaying_end
+from autostream_session import _session_nowplaying_start
+from autostream_session import _start_session_owntone
+from autostream_session import dispatch_session_event as _dispatch_session_event
+from autostream_session import SessionTracker as _SessionTracker
 from autostream_monitor_control import send_live_repeat_transport
 from autostream_monitor_control import set_live_repeat_armed
 from autostream_monitor_control import set_live_repeat_armed_ack
@@ -90,6 +90,7 @@ from fake_store import fake_playback_mock, fake_repeat
 from autostream_monitor_client import MonitorClient
 import autostream_runtime as runtime
 import autostream_repeat as repeat
+import autostream_session
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
@@ -831,7 +832,7 @@ class TestDispatchSessionEvent:
 
     def test_session_started_input_sourced_invokes_output_enable_once(self):
         mon = self._mon(owntone_base_url=BASE_URL)
-        with patch.object(core, "_start_session_owntone") as start_mock, \
+        with patch.object(autostream_session, "_start_session_owntone") as start_mock, \
              patch.object(core.intents, "submit") as stop_mock, \
              patch.object(mon, "_nowplaying_publisher") as pub:
             _dispatch_session_event("session_started", None, mon, BASE_URL)
@@ -845,7 +846,7 @@ class TestDispatchSessionEvent:
         once -- same call as the input-sourced case, no duplicated logic."""
         origin_mon = self._mon(input_index=1, owntone_base_url=BASE_URL)
         origin_mon.is_capturing = False  # replay, not a live capture
-        with patch.object(core, "_start_session_owntone") as start_mock, \
+        with patch.object(autostream_session, "_start_session_owntone") as start_mock, \
              patch.object(origin_mon, "_nowplaying_publisher") as pub:
             _dispatch_session_event("session_started", None, origin_mon, BASE_URL)
         start_mock.assert_called_once_with(origin_mon)
@@ -855,7 +856,7 @@ class TestDispatchSessionEvent:
         """Disarm-during-replay (or any session end) -> stop fired exactly once."""
         mon = self._mon(owntone_base_url=BASE_URL)
         with patch.object(core.intents, "submit") as stop_mock, \
-             patch.object(core, "_start_session_owntone") as start_mock, \
+             patch.object(autostream_session, "_start_session_owntone") as start_mock, \
              patch.object(mon, "_nowplaying_publisher") as pub:
             _dispatch_session_event("session_ended", mon, None, BASE_URL)
         _assert_deselect_all(stop_mock)
@@ -876,7 +877,7 @@ class TestDispatchSessionEvent:
         prev_mon = self._mon(input_index=1, owntone_base_url=BASE_URL)
         new_mon = self._mon(input_index=2, owntone_base_url=BASE_URL)
         with patch.object(core.intents, "submit") as stop_mock, \
-             patch.object(core, "_start_session_owntone") as start_mock, \
+             patch.object(autostream_session, "_start_session_owntone") as start_mock, \
              patch.object(prev_mon, "_nowplaying_publisher") as prev_pub, \
              patch.object(new_mon, "_nowplaying_publisher") as new_pub:
             _dispatch_session_event("source_changed", prev_mon, new_mon, BASE_URL)
@@ -887,7 +888,7 @@ class TestDispatchSessionEvent:
 
     def test_none_event_is_a_no_op(self):
         with patch.object(core.intents, "submit") as stop_mock, \
-             patch.object(core, "_start_session_owntone") as start_mock:
+             patch.object(autostream_session, "_start_session_owntone") as start_mock:
             _dispatch_session_event(None, None, None, BASE_URL)
         stop_mock.assert_not_called()
         start_mock.assert_not_called()
@@ -913,7 +914,7 @@ class TestDispatchSessionEvent:
         other arming site, _on_capture_started, would otherwise never fire)."""
         origin_mon = self._mon(input_index=1, owntone_base_url=BASE_URL)
         origin_mon.is_capturing = False
-        with patch.object(core, "_start_session_owntone"), \
+        with patch.object(autostream_session, "_start_session_owntone"), \
              patch.object(origin_mon, "_nowplaying_publisher"), \
              patch.object(origin_mon, "_arm_track_identification_for_session") as arm_mock:
             _dispatch_session_event(
@@ -941,7 +942,7 @@ class TestDispatchSessionEvent:
         (see _arm_track_identification_for_session()'s docstring), so the
         session-arm call must not be restricted to the "replay" source."""
         mon = self._mon(input_index=1, owntone_base_url=BASE_URL)
-        with patch.object(core, "_start_session_owntone"), \
+        with patch.object(autostream_session, "_start_session_owntone"), \
              patch.object(mon, "_nowplaying_publisher"), \
              patch.object(mon, "_arm_track_identification_for_session") as arm_mock:
             _dispatch_session_event(

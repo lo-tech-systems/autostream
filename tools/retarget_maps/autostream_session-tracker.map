@@ -1,0 +1,9 @@
+# The session tracker and its edges moved out of the coordinator.
+autostream_core._SessionTracker -> autostream_session.SessionTracker  alias=autostream_session
+autostream_core._dispatch_session_event -> autostream_session.dispatch_session_event  alias=autostream_session
+autostream_core._start_session_owntone -> autostream_session._start_session_owntone  alias=autostream_session
+autostream_core._session_nowplaying_start -> autostream_session._session_nowplaying_start  alias=autostream_session
+autostream_core._session_nowplaying_end -> autostream_session._session_nowplaying_end  alias=autostream_session
+autostream_core._republish_current_nowplaying -> autostream_session.republish_current_nowplaying  alias=autostream_session
+autostream_core._current_source_monitor -> autostream_session._current_source_monitor  alias=autostream_session
+autostream_core._teardown_identification_after_replay_end -> autostream_session.teardown_identification_after_replay_end  alias=autostream_session

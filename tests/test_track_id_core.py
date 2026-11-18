@@ -51,6 +51,7 @@ def _active_track():
 import autostream_session as session
 import autostream_repeat as repeat
 import autostream_input_status as input_status
+import autostream_session
 
 
 # ---------------------------------------------------------------------------
@@ -2100,7 +2101,7 @@ class TestTrackIdentificationDuringReplay:
         """End-to-end through _dispatch_session_event(): a session_started
         event landing on the replay source arms the origin monitor's
         identification cycle."""
-        from autostream_core import _dispatch_session_event
+        from autostream_session import dispatch_session_event as _dispatch_session_event
         svc = _make_service(analysis_lead_in=5, snapshot=15)
         origin_mon = _make_monitor(input_index=1)
         origin_mon.is_capturing = False  # replay, not live capture
@@ -2109,7 +2110,7 @@ class TestTrackIdentificationDuringReplay:
         runtime._track_id_service = svc
         origin_mon._apply_track_id_service(svc)
 
-        with patch.object(core, "_start_session_owntone"), \
+        with patch.object(autostream_session, "_start_session_owntone"), \
              patch.object(origin_mon, "_nowplaying_publisher"):
             _dispatch_session_event(
                 "session_started", None, origin_mon, "", new_source="replay",
@@ -2262,11 +2263,11 @@ class TestReplaySeekRearm:
         assert mon._ti_snapshot.state == STATE_WAITING
 
     def test_session_started_after_a_seek_ack_arms_again_without_harm(self):
-        from autostream_core import _dispatch_session_event
+        from autostream_session import dispatch_session_event as _dispatch_session_event
         mon, _ = self._armed_origin(lead_in=10, snapshot=15)
         mon.on_replay_seek_accepted(in_session=False)
         before = time.time()
-        with patch.object(core, "_start_session_owntone"), \
+        with patch.object(autostream_session, "_start_session_owntone"), \
              patch.object(mon, "_nowplaying_publisher"):
             _dispatch_session_event(
                 "session_started", None, mon, "", new_source="replay",
@@ -2428,14 +2429,12 @@ class TestReplayEndTeardown:
     @staticmethod
     def _end(mon, prev_source="replay", event="session_ended", new_mon=None,
              new_source=None):
-        from autostream_core import (
-            _dispatch_session_event,
-            _teardown_identification_after_replay_end,
-        )
-        with patch.object(core, "_start_session_owntone"), \
+        from autostream_session import teardown_identification_after_replay_end as _teardown_identification_after_replay_end
+        from autostream_session import dispatch_session_event as _dispatch_session_event
+        with patch.object(autostream_session, "_start_session_owntone"), \
              patch.object(core.intents, "submit") as stop, \
-             patch.object(core, "_session_nowplaying_end") as np_end, \
-             patch.object(core, "_session_nowplaying_start"):
+             patch.object(autostream_session, "_session_nowplaying_end") as np_end, \
+             patch.object(autostream_session, "_session_nowplaying_start"):
             _dispatch_session_event(
                 event, mon, new_mon, "http://owntone.invalid",
                 new_source=new_source,
@@ -2542,12 +2541,12 @@ class TestReplayEndTeardown:
         assert origin._ti_next_attempt > time.time() + 20
 
     def test_dispatch_alone_does_not_tear_down_the_origin(self):
-        from autostream_core import _dispatch_session_event
+        from autostream_session import dispatch_session_event as _dispatch_session_event
         mon = self._origin()
         gen = mon._ti_generation
         snap = mon._ti_snapshot
         with patch.object(core.intents, "submit"), \
-             patch.object(core, "_session_nowplaying_end"):
+             patch.object(autostream_session, "_session_nowplaying_end"):
             _dispatch_session_event(
                 "session_ended", mon, None, "http://owntone.invalid",
             )
@@ -2555,7 +2554,7 @@ class TestReplayEndTeardown:
         assert mon._ti_snapshot is snap
 
     def test_teardown_function_gate(self):
-        from autostream_core import _teardown_identification_after_replay_end
+        from autostream_session import teardown_identification_after_replay_end as _teardown_identification_after_replay_end
         mon = self._origin()
         other = _make_monitor(input_index=2)
         gen = mon._ti_generation
@@ -2579,8 +2578,8 @@ class TestReplayEndTeardown:
     def test_poll_loop_tears_down_after_session_state_and_announcement(self):
         import inspect
         src = inspect.getsource(core.run_autostream)
-        teardown = src.index("_teardown_identification_after_replay_end(")
-        assert teardown > src.index("_dispatch_session_event(")
+        teardown = src.index("autostream_session.teardown_identification_after_replay_end(")
+        assert teardown > src.index("autostream_session.dispatch_session_event(")
         assert teardown > src.index("autostream_session.publish(")
         assert teardown > src.index("announce.sync_playing_announcement(")
 

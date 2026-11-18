@@ -998,7 +998,7 @@ class TestRepeatAndLoopCallSites:
             "tick_batch = autostream_state.store().batch()") < loop_close
         assert src.index(
             "announce.sync_playing_announcement(session_source is not None, version)") < loop_close
-        assert loop_close < src.index("_teardown_identification_after_replay_end(")
+        assert loop_close < src.index("autostream_session.teardown_identification_after_replay_end(")
         assert (src.index("tick_batch = None")
                 < src.index("\n        try:\n            while not runtime.stop_flag.is_set():"))
         lines = src[src.index("\n        finally:\n"):].split("\n")
