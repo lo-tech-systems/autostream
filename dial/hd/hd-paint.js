@@ -265,6 +265,10 @@ function paintEq(vm) {
     els.eqPage.inert = !eq.open;
 }
 
+// The bar above a card's title shows its source with a bell at its right,
+// coloured by the card's severity; the bell is put in once, here.
+els.cardSource.append(makeIcon(BELL_ICON));
+
 function paintModal(card) {
     els.modal.hidden = !card;
     if (!card) { paintPin({ kind: "none" }); return; }
@@ -272,7 +276,8 @@ function paintModal(card) {
     setText(els.cardTitle, card.title);
     setText(els.cardMessage, card.message);
     setText(els.cardDetail, card.detail || "");
-    paintNote(els.cardSource, card.source);
+    els.cardSource.hidden = !card.source;
+    setText(els.cardSourceText, card.source);
     els.cardProgress.hidden = card.progress === null;
     els.cardBar.style.setProperty("--fill", (card.progress || 0) + "%");
     syncList(els.cardButtons, card.buttons, createCardButton);

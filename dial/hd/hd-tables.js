@@ -27,6 +27,9 @@ export const CONFIG = {
     pinMax: 8                   // the most digits the keypad takes
 };
 
+// What a warning entry's severity is called in the first line of its card.
+export const LEVEL_NAMES = { info: "Notice", warning: "Warning", critical: "Critical" };
+
 // The first rule that matches gives an appliance row its label.
 export const STATUS_RULES = [
     [(a) => a.auth !== "authorized", "Not allowed", true],

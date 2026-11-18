@@ -403,13 +403,18 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 .card-detail:empty { display: none; }
 /* The source is a band across the top of the card, with the severity rule under it */
 .card-source {
-    margin: -1.1em -1.3em 0; padding: 0.4em 1.3em; border-radius: 15px 15px 0 0;
-    background: var(--color-text); color: var(--color-surface-raised);
+    margin: -1.1em -1.3em 0; padding: 0.55em 1.3em; border-radius: 15px 15px 0 0;
+    background: var(--color-surface-raised); color: var(--color-text-strong);
     border-bottom: 5px solid var(--color-accent);
-    font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-weight: 700; white-space: nowrap; overflow: hidden;
+    display: flex; align-items: center; gap: 0.6em;
 }
+.card-source-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.card-source svg { flex: none; width: 1.6em; height: 1.6em; color: var(--color-accent); }
 .card.sev-warning .card-source { border-bottom-color: var(--color-status-warning); }
 .card.sev-critical .card-source { border-bottom-color: var(--color-status-danger); }
+.card.sev-warning .card-source svg { color: var(--color-status-warning); }
+.card.sev-critical .card-source svg { color: var(--color-status-danger); }
 .card-source[hidden] { display: none; }
 .card.has-source,
 .card.has-source.sev-warning,

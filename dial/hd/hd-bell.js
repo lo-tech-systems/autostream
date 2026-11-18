@@ -3,7 +3,7 @@
 // pages through that bell's warnings. Nothing here opens a card by itself, and
 // putting a card away asks nothing of the dial.
 
-import { SEVERITY_ORDER } from "./hd-tables.js";
+import { SEVERITY_ORDER, LEVEL_NAMES } from "./hd-tables.js";
 import { els, make, makeIcon, setText, BELL_ICON } from "./hd-dom.js";
 import { ui, hooks } from "./hd-state.js";
 
@@ -60,8 +60,9 @@ export function bellCard(dial, bell) {
     const e = entries[at];
     const acts = [["close", "Close"]].concat(e.actions.map((act) => [act, ACTION_LABELS[act] || act]),
         entries.length > 1 ? [["next", "Next"]] : []);
+    const level = LEVEL_NAMES[e.severity];
     return Object.assign(card, {
-        title: e.title, message: e.message, detail: e.detail, severity: e.severity,
+        title: (level ? level + ": " : "") + e.title, message: e.message, detail: e.detail, severity: e.severity,
         source: e.source + (entries.length > 1 ? " · " + (at + 1) + " of " + entries.length : ""),
         buttons: acts.map((a, i) => button(a[0], a[1], i))
     });
