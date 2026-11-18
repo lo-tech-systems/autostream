@@ -367,6 +367,56 @@ class DialHTTPServer:
         with self._cfg_lock:
             return self._cfg.pin
 
+    def config_snapshot(self):
+        """The live config object. It is replaced on every update, never
+        mutated, so the snapshot is stable for as long as the caller holds it."""
+        with self._cfg_lock:
+            return self._cfg
+
+    @property
+    def can_confirm_presence(self) -> bool:
+        """Whether a confirmable input is running (see set_can_confirm_presence)."""
+        return self._can_confirm_presence
+
+    def recovery_snapshot(self) -> dict:
+        """A thread-safe copy of the PIN recovery window's state."""
+        return self._recovery_window.snapshot()
+
+    def complete_recovery(self) -> None:
+        """Close the PIN recovery window after the PIN was replaced."""
+        self._recovery_window.complete()
+
+    def announce(self, pin_recovery: bool = False) -> None:
+        """Rewrite the dial's service announcement."""
+        self._on_announce(pin_recovery)
+
+    def screen_settings_reply(self) -> dict:
+        """The body of GET /screen/settings."""
+        cfg = self.config_snapshot()
+        runtime = self._display_status.get_status()
+        runtime['touch_type'] = self._touch_runtime
+        return {
+            'ok':             True,
+            'screen':         self.screen_report(cfg.display),
+            'supported':      list_profiles(),
+            'supported_touch': list_controllers(),
+            'layout_sizes':   layout_size_options(_profile_for(cfg.display)),
+            'layout':         _layout_report_for(cfg.display),
+            'scope':          _scope_report_for(cfg.display),
+            'runtime':        runtime,
+        }
+
+    def latest_frame_png(self) -> bytes | None:
+        """The display's latest frame as a PNG, or None when there is none."""
+        getter = getattr(self._display_status, 'latest_frame_png', None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception as e:
+            logging.debug("screen image: frame accessor raised: %s", e)
+            return None
+
     def add_cfg_listener(self, callback) -> None:
         """Register *callback*(new_cfg), run after every update_cfg swap."""
         self._cfg_listeners = (*self._cfg_listeners, callback)
@@ -402,8 +452,7 @@ class DialHTTPServer:
             return self._apply_screen_settings_locked(screen)
 
     def _apply_screen_settings_locked(self, screen) -> tuple[int, dict]:
-        with self._cfg_lock:
-            cfg = self._cfg
+        cfg = self.config_snapshot()
         if isinstance(screen, dict):
             # The appliance's screen form never sends these keys, so a
             # save from it keeps the configured values rather than
@@ -663,8 +712,7 @@ class DialHTTPServer:
 
     def _persist_sd_health_intent(self, enabled: bool) -> None:
         from dial_config import save_config
-        with self._cfg_lock:
-            cfg = self._cfg
+        cfg = self.config_snapshot()
         if cfg.sd_health_monitoring == enabled:
             return
         new_cfg = copy.copy(cfg)
@@ -682,8 +730,7 @@ class DialHTTPServer:
         Returns a dict with keys: uuid, name, step_percent, recovery_active,
         volume_confirmed.  Safe to call from any thread.
         """
-        with self._cfg_lock:
-            cfg = self._cfg
+        cfg = self.config_snapshot()
         snap = self._recovery_window.snapshot()
         return {
             "uuid": cfg.uuid,
@@ -694,8 +741,7 @@ class DialHTTPServer:
         }
 
     def _on_announce(self, add: bool) -> None:
-        with self._cfg_lock:
-            cfg = self._cfg
+        cfg = self.config_snapshot()
         dial_admin.announce(cfg, VERSION, pin_recovery=add)
 
     def _make_handler(self) -> type:
@@ -769,8 +815,7 @@ class DialHTTPServer:
 
             def do_GET(self) -> None:
                 if self.path == '/configure':
-                    with dial_server._cfg_lock:
-                        cfg = dial_server._cfg
+                    cfg = dial_server.config_snapshot()
                     self._send_json(200, {
                         'step_percent':         cfg.step_percent,
                         'pin_set':              bool(cfg.pin),
@@ -778,23 +823,23 @@ class DialHTTPServer:
                         'version':              VERSION,
                         'auto_update':          cfg.auto_update,
                         'update_channel':       cfg.update_channel,
-                        'can_confirm_presence': dial_server._can_confirm_presence,
+                        'can_confirm_presence': dial_server.can_confirm_presence,
                         'hd_dev_access':        cfg.hd_dev_access,
                     })
 
                 elif self.path == '/recovery_status':
-                    snap = dial_server._recovery_window.snapshot()
+                    snap = dial_server.recovery_snapshot()
                     if not snap['active']:
                         self._send_json(404, {
                             'active':               False,
-                            'can_confirm_presence': dial_server._can_confirm_presence,
+                            'can_confirm_presence': dial_server.can_confirm_presence,
                         })
                     else:
                         self._send_json(200, {
                             'active':                 True,
                             'volume_confirmed':       snap['volume_confirmed'],
                             'recovery_remaining_ms':  snap['recovery_remaining_ms'],
-                            'can_confirm_presence':   dial_server._can_confirm_presence,
+                            'can_confirm_presence':   dial_server.can_confirm_presence,
                         })
 
                 elif self.path == '/update/status':
@@ -809,37 +854,17 @@ class DialHTTPServer:
                     self._handle_update_check()
 
                 elif self.path == '/screen/settings':
-                    with dial_server._cfg_lock:
-                        cfg = dial_server._cfg
-                    runtime = dial_server._display_status.get_status()
-                    runtime['touch_type'] = dial_server._touch_runtime
-                    self._send_json(200, {
-                        'ok':             True,
-                        'screen':         dial_server.screen_report(cfg.display),
-                        'supported':      list_profiles(),
-                        'supported_touch': list_controllers(),
-                        'layout_sizes':   layout_size_options(_profile_for(cfg.display)),
-                        'layout':         _layout_report_for(cfg.display),
-                        'scope':          _scope_report_for(cfg.display),
-                        'runtime':        runtime,
-                    })
+                    self._send_json(200, dial_server.screen_settings_reply())
 
                 elif self.path == '/screen/image':
-                    frame_png = None
-                    getter = getattr(dial_server._display_status, 'latest_frame_png', None)
-                    if getter is not None:
-                        try:
-                            frame_png = getter()
-                        except Exception as e:
-                            logging.debug("screen image: frame accessor raised: %s", e)
+                    frame_png = dial_server.latest_frame_png()
                     if frame_png is None:
                         self._send_json(404, {'ok': False, 'error': 'no_frame'})
                     else:
                         self._send_bytes(200, 'image/png', frame_png)
 
                 elif self.path == '/sdcard-health':
-                    with dial_server._cfg_lock:
-                        cfg = dial_server._cfg
+                    cfg = dial_server.config_snapshot()
                     try:
                         state = sdcard_health_state()
                     except Exception as e:
@@ -906,8 +931,7 @@ class DialHTTPServer:
                     return
 
                 # ---- Field validation ----
-                with dial_server._cfg_lock:
-                    cfg = dial_server._cfg
+                cfg = dial_server.config_snapshot()
                 new_cfg = copy.copy(cfg)
 
                 changing_protected = any(k in obj for k in ('name', 'step_percent', 'new_pin', 'auto_update', 'update_channel', 'hd_dev_access'))
@@ -920,7 +944,7 @@ class DialHTTPServer:
                         if not isinstance(p, str) or not re.fullmatch(r'\d{4,8}', p):
                             self._send_json(400, {'ok': False, 'error': 'new_pin_required_for_recovery'})
                             return
-                        snap = dial_server._recovery_window.snapshot()
+                        snap = dial_server.recovery_snapshot()
                         if not snap['active'] or not snap['volume_confirmed']:
                             self._send_json(403, {'ok': False, 'error': 'recovery_not_confirmed'})
                             return
@@ -1007,10 +1031,10 @@ class DialHTTPServer:
                 pin_recovery = obj.get('pin_recovery') is True
 
                 if name_changed:
-                    dial_server._on_announce(False)
+                    dial_server.announce()
 
                 if pin_recovery and cfg.pin:
-                    dial_server._recovery_window.complete()
+                    dial_server.complete_recovery()
 
                 if 'auto_update' in obj and new_cfg.auto_update != cfg.auto_update:
                     verb = "enable" if new_cfg.auto_update else "disable"
@@ -1038,8 +1062,7 @@ class DialHTTPServer:
                 obj = self._read_json_object()
                 if obj is None:
                     return
-                with dial_server._cfg_lock:
-                    cfg = dial_server._cfg
+                cfg = dial_server.config_snapshot()
 
                 # PIN auth — screen settings follow POST /configure semantics.
                 if cfg.pin and not self._pin_ok(obj, cfg):
@@ -1054,8 +1077,7 @@ class DialHTTPServer:
                 obj = self._read_json_object()
                 if obj is None:
                     return
-                with dial_server._cfg_lock:
-                    cfg = dial_server._cfg
+                cfg = dial_server.config_snapshot()
 
                 # PIN auth: same rule as POST /screen/settings.
                 if cfg.pin and not self._pin_ok(obj, cfg):

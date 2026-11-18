@@ -471,7 +471,7 @@ class TestDialHttpConfigureApi:
 
         cfg = DialConfig(**(cfg_overrides or {}))
 
-        class FakeDialServer:
+        class FakeDialServer(dhs.DialHTTPServer):
             _cfg_lock = __import__('threading').Lock()
             _recovery_window = MagicMock(_active=False, _volume_confirmed=False)
             # Set once at startup by dial_main from the inputs it actually
@@ -480,9 +480,6 @@ class TestDialHttpConfigureApi:
             _touch_source = None
             _touch_runtime = ''
             _last_touch_restart_monotonic = None
-            _make_handler = dhs.DialHTTPServer._make_handler
-            _touch_restart_allowed = dhs.DialHTTPServer._touch_restart_allowed
-            fire_touch_restart = dhs.DialHTTPServer.fire_touch_restart
 
             def __init__(self, initial):
                 self._cfg = initial

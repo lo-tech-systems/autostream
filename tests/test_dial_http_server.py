@@ -35,8 +35,9 @@ from dial_http_server import DialHTTPServer, NoOpDisplayStatusProvider, Recovery
 # Handler factory
 # ---------------------------------------------------------------------------
 
-class FakeDialServer:
-    """Minimal stand-in for DialHTTPServer used to build and exercise the handler."""
+class FakeDialServer(dhs.DialHTTPServer):
+    """A DialHTTPServer built without its HTTP socket, so the handler's logic
+    runs against the real methods with the announcement recorded."""
 
     def __init__(self, cfg: DialConfig) -> None:
         self._cfg           = cfg
@@ -62,66 +63,11 @@ class FakeDialServer:
         self._sdmon_lock = threading.Lock()
         self._sdmon_probe: dict = {"running": False, "outcome": None, "reason": "", "finished_at": None}
 
-    def sdmon_probe_snapshot(self) -> dict:
-        return dhs.DialHTTPServer.sdmon_probe_snapshot(self)
-
-    def start_sdmon_change(self, enabled: bool, method: str) -> bool:
-        return dhs.DialHTTPServer.start_sdmon_change(self, enabled, method)
-
-    def _sdmon_change_thread(self, enabled: bool, method: str) -> None:
-        dhs.DialHTTPServer._sdmon_change_thread(self, enabled, method)
-
-    def _persist_sd_health_intent(self, enabled: bool) -> None:
-        dhs.DialHTTPServer._persist_sd_health_intent(self, enabled)
-
-    def _rostered_ips(self) -> dict:
-        return dhs.DialHTTPServer._rostered_ips(self)
-
     def update_cfg(self, new_cfg: DialConfig) -> None:
         self._cfg = new_cfg
 
-    @property
-    def display_config(self):
-        return self._cfg.display
-
-    def screen_report(self, display=None) -> dict:
-        return dhs.DialHTTPServer.screen_report(self, display)
-
-    def apply_screen_settings(self, screen) -> tuple[int, dict]:
-        return dhs.DialHTTPServer.apply_screen_settings(self, screen)
-
-    def _apply_screen_settings_locked(self, screen) -> tuple[int, dict]:
-        return dhs.DialHTTPServer._apply_screen_settings_locked(self, screen)
-
-    _apply_lock = threading.Lock()
-
     def _on_announce(self, add: bool) -> None:
         self._announce_calls.append(add)
-
-    @property
-    def step_percent(self) -> int:
-        return self._cfg.step_percent
-
-    @property
-    def effective_volume_scope(self) -> str:
-        return dhs.effective_scope(self._cfg.display, self._cfg.display.volume_scope)
-
-    @property
-    def effective_mute_scope(self) -> str:
-        return dhs.effective_scope(self._cfg.display, self._cfg.display.mute_scope)
-
-    def _make_handler(self):
-        return dhs.DialHTTPServer._make_handler(self)
-
-    # The cooldown gate and the actual restart trigger reuse the real
-    # DialHTTPServer implementation rather than reinventing it here — this
-    # fake exists to exercise dial_http_server.py's handler logic, not to
-    # duplicate it.
-    def _touch_restart_allowed(self) -> bool:
-        return dhs.DialHTTPServer._touch_restart_allowed(self)
-
-    def fire_touch_restart(self) -> None:
-        dhs.DialHTTPServer.fire_touch_restart(self)
 
 
 def _make_handler_cls(cfg: DialConfig | None = None) -> tuple:
@@ -3181,3 +3127,24 @@ class TestCurrentPin:
         assert server.current_pin == "1234"
         server._cfg = DialConfig(uuid="x")
         assert server.current_pin == ""
+
+
+class TestHandlerUsesServerMethods:
+    def test_the_handler_reads_no_private_server_field(self):
+        import inspect
+        source = inspect.getsource(dhs.DialHTTPServer._make_handler)
+        assert "dial_server._" not in source
+
+    def test_config_snapshot_is_the_live_config(self):
+        cfg = DialConfig(uuid="x", pin="1234")
+        server = FakeDialServer(cfg)
+        assert server.config_snapshot() is cfg
+        newer = DialConfig(uuid="y")
+        server.update_cfg(newer)
+        assert server.config_snapshot() is newer
+
+    def test_announce_passes_the_recovery_flag(self):
+        server = FakeDialServer(DialConfig(uuid="x"))
+        server.announce()
+        server.announce(pin_recovery=True)
+        assert server._announce_calls == [False, True]
