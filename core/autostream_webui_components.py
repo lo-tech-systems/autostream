@@ -95,9 +95,8 @@ def output_card_html(
     DELIBERATE DUAL-RENDER EXCEPTION (remote-shell JS mirroring): this is
     mirrored by the JS function
     ``renderOutputList()``/``buildOutputCardElement()`` in
-    ``nginx/static/render_fragments.js`` (source of truth:
-    ``RENDER_FRAGMENTS_JS``, core/autostream_webui_assets.py -- served
-    statically like poll.js/theme.css, not inlined). Any change to the
+    ``nginx/static/render_fragments.js`` (served statically like
+    poll.js/theme.css, not inlined). Any change to the
     output-card markup/classes/data-* attributes here must be reflected
     there too, or the local and remote Home pages will visibly drift apart.
     """

@@ -428,9 +428,8 @@ def send_airplay_page(
     # server-render this markup (it doesn't run this Python code -- it
     # renders client-side from polled JSON), so this block is intentionally
     # mirrored by the JS function `renderOutputList()`/`buildOutputCardElement()`
-    # in `nginx/static/render_fragments.js` (source of truth:
-    # RENDER_FRAGMENTS_JS, core/autostream_webui_assets.py -- served
-    # statically like poll.js/theme.css, not inlined). Any change to the
+    # in `nginx/static/render_fragments.js` (served statically like
+    # poll.js/theme.css, not inlined). Any change to the
     # output-card markup/classes/data-* attributes here must be reflected
     # there too, or the local and remote Home pages will visibly drift apart.
     outputs_html = ""
