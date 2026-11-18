@@ -304,7 +304,11 @@ from:
 on; nothing shows for ones that are off. A speaker in the appliance's Auto-Start set has
 a bullet after its name.*
 
-Tap a row to open that output's own detail page:
+A speaker that was paused on the speaker itself (an Apple TV remote's Pause,
+for example) shows **Paused** in place of its level. Tap it to start it again,
+as its own Play would; the list stays open.
+
+Tap any other row to open that output's own detail page:
 
 ![Output detail page: the output's name and an enable dot, with minus / plus below](images/outputs-detail-rich.png)
 

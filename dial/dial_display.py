@@ -1237,14 +1237,20 @@ class DialDisplay:
 
     def outputs_row_tap(self, index: int) -> None:
         """Touch-thread entry (a LIST_ROW tap while the outputs list is
-        open): remember the tapped row's output id and request the detail
-        page. A stale index (the row vanished between paint and tap) is
+        open): a row showing Paused is played again and the list stays
+        open; any other row's output id is remembered and the detail page
+        requested. A stale index (the row vanished between paint and tap) is
         treated as back, same as selector_pick()/picker_pick()."""
         state = self._outputs
         if state is not None and self._rows_of(state):
             page_rows = self._current_page_rows(state)
             if 0 <= index < len(page_rows):
-                self._output_open_id = page_rows[index].id
+                row = page_rows[index]
+                if row.paused:
+                    if self._core.resume_output(state.appliance_id, row.id).accepted:
+                        self._overlay_signal.set()
+                    return
+                self._output_open_id = row.id
                 self._screen_request = "output"
                 self._overlay_signal.set()
                 return

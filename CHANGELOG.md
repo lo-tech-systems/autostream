@@ -60,6 +60,9 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   speaker that paused itself, shows it as Paused, and starts it again at the
   point the music has reached when Play is pressed on it (or when it is switched
   off and on). This works from the Apple TV's full-screen now-playing view too.
+- new: on a small-screen dial, a tap on a Paused speaker in the speaker list
+  starts it again, as its own Play would. Clients can do the same with the new
+  `outputs.resume` intent.
 - new: a Pause setting on the Personalisation card, "When Pause is pressed on a
   speaker", that says what happens to the other speakers: only that speaker
   pauses (the default), the others are muted too, or the others are turned off

@@ -78,6 +78,11 @@ def output_set(output_id: str, *, selected: bool, volume: int | None = None) -> 
     return Intent("output_set", "outputs.set", args)
 
 
+def output_resume(output_id: str) -> Intent:
+    """Play again a speaker that paused itself."""
+    return Intent("output_resume", "outputs.resume", {"id": output_id})
+
+
 def eq_set(gains: Mapping[str, float]) -> Intent:
     return Intent("eq_set", "output.eq.set", {"fields": [[name, value] for name, value in eq_fields(gains)]})
 

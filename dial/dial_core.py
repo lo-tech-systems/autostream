@@ -445,6 +445,24 @@ class DialCore:
         self._send(appliance_id, rq.output_set(output_id, selected=shown[0], volume=volume), token)
         return ActionResult(True, token=token)
 
+    def resume_output(self, appliance_id: str, output_id: str) -> ActionResult:
+        """Play again an output that paused itself, as its own Play would.
+        Nothing is shown meanwhile: the appliance ends the hold at once, so
+        its next state has the output playing. Refused as set_output is, and
+        when the output is not shown paused."""
+        refusal = rq.appliance_refusal(self._state.roster, appliance_id, "dial_outputs")
+        if refusal is not None:
+            return refusal
+        row = rq.output_row(self._snapshot.outputs, appliance_id, output_id)
+        refusal = rq.row_refusal(row)
+        if refusal is not None:
+            return refusal
+        if not row.paused:
+            return ActionResult(False, "wrong_state")
+        token = self._clock()
+        self._send(appliance_id, rq.output_resume(output_id), token)
+        return ActionResult(True, token=token)
+
     def step_output_volume(self, appliance_id: str, output_id: str, delta: int) -> ActionResult:
         """Set an output's level to the level shown plus *delta*, clamped to
         0..100. A disabled output has no level to step from."""
@@ -627,7 +645,7 @@ class DialCore:
         refusal makes it rejected with that name. What it meant is queued as
         an `OutputsEffect` or a `RepeatEffect`. An accepted replay start opens
         the accepted-replay window; a refused one drops a pending focus on
-        that appliance. An EQ reply has no request record."""
+        that appliance. An EQ or resume reply has no request record."""
         if kind in OUTPUT_KINDS:
             lane = "outputs_request"
         elif kind in ("seek", "stop", "arm"):

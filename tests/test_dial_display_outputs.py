@@ -247,6 +247,30 @@ class TestOutputsTouchEntries:
         assert display._output_open_id == "1"
         assert display._screen_request == "output"
 
+    def test_a_tap_on_a_paused_row_plays_it_again_and_keeps_the_list(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        seed_outputs(display, (OutputRow(id="1", name="Lounge", selected=True, volume=40, paused=True),),
+                     loaded=False)
+        display._screen_request = None
+        with patch("dial_core.DialCore._send") as send:
+            display.outputs_row_tap(0)
+        target, intent, _token = sent(send)
+        assert (intent.name, dict(intent.args)) == ("outputs.resume", {"id": "1"})
+        assert target.appliance_id == display._outputs.appliance_id
+        assert display._output_open_id is None
+        assert display._screen_request is None
+        assert display.core.outputs_override() is None
+
+    def test_a_paused_row_another_appliance_has_taken_sends_nothing(self):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        seed_outputs(display, (OutputRow(id="1", name="Lounge", selected=True, volume=40, paused=True,
+                                         remote_in_use=True, remote_owner="Kitchen"),), loaded=False)
+        with patch("dial_core.DialCore._send") as send:
+            display.outputs_row_tap(0)
+        send.assert_not_called()
+
     def test_outputs_row_tap_stale_index_closes_list(self):
         display = _make_outputs_display()
         display._open_outputs_locked()

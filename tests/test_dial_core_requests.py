@@ -51,6 +51,10 @@ class TestIntents:
     def test_output_set_without_a_level_sends_none(self):
         assert dict(rq.output_set("u1", selected=False).args) == {"id": "u1", "selected": False}
 
+    def test_output_resume(self):
+        i = rq.output_resume("u1")
+        assert (i.kind, i.name, dict(i.args), i.extra_body) == ("output_resume", "outputs.resume", {"id": "u1"}, None)
+
     def test_band_ids_write_their_own_fields(self):
         i = rq.eq_set({"peq3": 2, "peq6": -20})
         assert (i.kind, i.name) == ("eq_set", "output.eq.set")
@@ -549,6 +553,12 @@ class TestCoreIntents:
         rig.core.set_output(K, "u1", selected=True, volume=30)
         assert sent(rig, client)[0][1:3] == ("outputs.set", {"id": "u1", "selected": True, "volume": 30})
 
+    def test_a_paused_speaker_resumed_with_nothing_shown_meanwhile(self, rig):
+        client = kitchen(rig, units=[pool_unit(selected=True, held=True)])
+        assert rig.core.resume_output(K, "u1").accepted
+        assert sent(rig, client)[0][1:] == ("outputs.resume", {"id": "u1"}, None)
+        assert rig.core.snapshot().outputs_request is None
+
     def test_an_eq_band_and_a_step(self, rig):
         client = kitchen(rig)
         rig.core.step_eq(K, "peq3", 2)
@@ -594,6 +604,17 @@ class TestLocalRefusals:
     def test_a_speaker_in_use_elsewhere(self, rig):
         client = kitchen(rig, units=[pool_unit(in_use_by="Hall", in_use_id="x")])
         assert rig.core.set_output(K, "u1", selected=True).reason == "wrong_state"
+        assert client.sent() == []
+
+    @pytest.mark.parametrize("speaker", [
+        pool_unit(selected=True),
+        pool_unit(selected=False, held=True),
+        pool_unit(selected=True, held=True, in_use_by="Hall", in_use_id="x"),
+    ], ids=["playing", "off", "in_use_elsewhere"])
+    def test_a_resume_of_a_speaker_not_shown_paused(self, rig, speaker):
+        client = kitchen(rig, units=[speaker])
+        assert rig.core.resume_output(K, "u1").reason == "wrong_state"
+        assert rig.core.resume_output(K, "u9").reason == "wrong_state"
         assert client.sent() == []
 
     def test_a_protocol_mismatch_has_no_capability(self, rig):

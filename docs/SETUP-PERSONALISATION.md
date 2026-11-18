@@ -44,7 +44,8 @@ Open **Setup** and expand the **Personalisation** card.
   - **Turn the other speakers off too** - the other speakers are switched off and stay off
     until you turn them on again.
 
-  Switching a paused speaker off and on again also starts it. A stereo pair, or an Apple TV
+  Switching a paused speaker off and on again also starts it, and on a small-screen dial a
+  tap on the speaker in its speaker list does the same as Play. A stereo pair, or an Apple TV
   with its HomePods, counts as one speaker. A paused speaker, and any speakers its Pause
   muted, are turned off if the Pause lasts longer than a set time (five minutes unless
   changed in the configuration file); the page states the current time under the setting. A
