@@ -31,7 +31,7 @@ for _p in (_DIAL, _CORE):
         sys.path.insert(0, _p)
 
 import dial_eq_model  # noqa: E402
-from dial_display_compositor import (  # noqa: E402
+from dial_display_views import (  # noqa: E402
     BG_BASE,
     BG_CHASSIS,
     BODY_COMPACT_CONTROLS,
@@ -50,7 +50,6 @@ from dial_display_compositor import (  # noqa: E402
     BODY_WARNING,
     DEFAULT_MARK,
     Body,
-    DialDisplayCompositor,
     EqViewState,
     FOOTER_LABELS,
     FOOTER_LIST_BAR,
@@ -59,17 +58,6 @@ from dial_display_compositor import (  # noqa: E402
     FOOTER_VOLUME,
     FOOTER_VOLUME_MUTE,
     Frame,
-    GLYPH_CHEVRON,
-    GLYPH_CROSS,
-    GLYPH_BELL,
-    GLYPH_MUTE,
-    GLYPH_SPEAKER,
-    GLYPH_PAGE_DOTS,
-    GLYPH_PLAY,
-    GLYPH_RESTART,
-    GLYPH_STOP,
-    GLYPH_TWO_DOTS,
-    GLYPH_WIFI,
     Header,
     InfoValueView,
     ListState,
@@ -86,6 +74,21 @@ from dial_display_compositor import (  # noqa: E402
     WIFI_OFF,
     WIFI_RED,
     WIFI_SIGNAL,
+    format_mmss,
+)
+from dial_display_compositor import (  # noqa: E402
+    DialDisplayCompositor,
+    GLYPH_CHEVRON,
+    GLYPH_CROSS,
+    GLYPH_BELL,
+    GLYPH_MUTE,
+    GLYPH_SPEAKER,
+    GLYPH_PAGE_DOTS,
+    GLYPH_PLAY,
+    GLYPH_RESTART,
+    GLYPH_STOP,
+    GLYPH_TWO_DOTS,
+    GLYPH_WIFI,
     _BODY_RENDERERS,
     _FOOTER_RENDERERS,
     _GLYPH_PAINTERS,
@@ -118,7 +121,6 @@ from dial_display_compositor import (  # noqa: E402
     _text_size,
     _truncate_to_width,
     _zone_rect,
-    format_mmss,
 )
 from dial_display_palette import (  # noqa: E402
     ALARM_RGB,
@@ -6394,6 +6396,7 @@ class TestWarningGenericBody:
     @pytest.mark.parametrize("pressed", [False, True])
     def test_existing_warning_frames_match_the_reference_renderer(self, compositor, width, height, pressed):
         import dial_display_compositor as dcm
+        import dial_display_views
         from dial_display import WARNING_DESCRIPTORS
         mm = _WARNING_MM_PER_PX[(width, height)]
         metrics = metrics_for(width, height, mm) if mm is not None else None
@@ -6408,7 +6411,7 @@ class TestWarningGenericBody:
                 buttons=tuple(b.label for b in desc.buttons), pressed=len(desc.buttons) - 1 if pressed else None,
             )
             current = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
-            with patch.dict(dcm._BODY_RENDERERS, {dcm.BODY_WARNING: _reference_body_warning}):
+            with patch.dict(dcm._BODY_RENDERERS, {dial_display_views.BODY_WARNING: _reference_body_warning}):
                 reference = compositor.compose_warning(
                     base, width, height, view, rotate=False, bgr=False, metrics=metrics,
                 )

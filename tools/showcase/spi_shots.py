@@ -25,6 +25,7 @@ for _p in (str(HERE), str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 from PIL import Image  # noqa: E402
 
 import dial_display_compositor as comp  # noqa: E402
+import dial_display_views as views  # noqa: E402
 from covers import render_cover  # noqa: E402
 from dial_display_image import load_logo  # noqa: E402
 from dial_display_profiles import get_profile, layout_context_for  # noqa: E402
@@ -81,7 +82,7 @@ class Panel:
 
 
 def now_playing(panel, track, volume, muted=False, controls=True, timer=None, bell=None):
-    overlay = comp.OverlayState(
+    overlay = views.OverlayState(
         visible=controls, muted=muted, artist=track.artist, volume=volume, name=track.appliance,
         title=track.title, dots=True, album=track.album, eq_pages=not panel.compact, bell=bell)
     extra = {"timer_text": timer} if timer else {}
@@ -90,24 +91,24 @@ def now_playing(panel, track, volume, muted=False, controls=True, timer=None, be
         **panel.kw(), **extra)
 
 
-def idle(panel, replay=False, wifi_bars=3, wifi_style=comp.WIFI_SIGNAL, bell=None):
+def idle(panel, replay=False, wifi_bars=3, wifi_style=views.WIFI_SIGNAL, bell=None):
     return panel.compositor.compose_idle(
         panel.logo_base(replay), panel.width, panel.height, wifi_bars=wifi_bars,
         wifi_style=wifi_style, bell=bell, **panel.kw())
 
 
 def selector(panel, unauthorised=False):
-    rows = [("Turntable", True, comp.PLAY_GLYPH), ("CD Player", False), ("Tape Deck", False)]
+    rows = [("Turntable", True, views.PLAY_GLYPH), ("CD Player", False), ("Tape Deck", False)]
     if unauthorised:
-        rows[2] = ("Tape Deck", False, comp.NOT_AUTHORISED_TEXT)
+        rows[2] = ("Tape Deck", False, views.NOT_AUTHORISED_TEXT)
     return panel.compositor.compose_list(
-        panel.width, panel.height, comp.ListState(rows=tuple(rows)),
+        panel.width, panel.height, views.ListState(rows=tuple(rows)),
         base=panel.artwork_base(BY_KEY["folk"]), **panel.kw())
 
 
 def hint(panel, title, text):
     return panel.compositor.compose_info_value(
-        panel.width, panel.height, comp.InfoValueView(label=title, value=text), **panel.kw())
+        panel.width, panel.height, views.InfoValueView(label=title, value=text), **panel.kw())
 
 
 def outputs(panel, page=0):
@@ -115,27 +116,27 @@ def outputs(panel, page=0):
              ("Bedroom", False, 20, False), ("Study", True, 38, False), ("Patio", False, 30, False))
     per = panel.rows_per_page
     chosen = rooms[page * per:page * per + per]
-    rows = tuple((n, False, str(v) if on else "", comp.DEFAULT_MARK if default else "")
+    rows = tuple((n, False, str(v) if on else "", views.DEFAULT_MARK if default else "")
                  for n, on, v, default in chosen)
-    state = comp.ListState(rows=rows, has_prev=page > 0, has_next=(page + 1) * per < len(rooms))
+    state = views.ListState(rows=rows, has_prev=page > 0, has_next=(page + 1) * per < len(rooms))
     return panel.compositor.compose_list(
         panel.width, panel.height, state, base=panel.artwork_base(BY_KEY["folk"]), **panel.kw())
 
 
 def output_detail(panel, selected=True):
-    view = comp.OutputViewState(
+    view = views.OutputViewState(
         name="Turntable", output_name="Lounge" if selected else "Bedroom", selected=selected,
         level=45 if selected else None)
     return panel.compositor.compose_output(panel.width, panel.height, view, **panel.kw())
 
 
 def equaliser(panel):
-    view = comp.EqViewState(name="Turntable", bass_db=2, treble_db=3, loaded=True, volume=36)
+    view = views.EqViewState(name="Turntable", bass_db=2, treble_db=3, loaded=True, volume=36)
     return panel.compositor.compose_eq(panel.width, panel.height, view, **panel.kw())
 
 
 def repeat_enable(panel, armed=True):
-    view = comp.RepeatViewState(
+    view = views.RepeatViewState(
         name="Turntable", layout="enable", armed=armed, line="", start_enabled=False,
         stop_enabled=False, stop_pressed=False, volume=36, eq_pages=not panel.compact)
     return panel.compositor.compose_repeat(
@@ -143,7 +144,7 @@ def repeat_enable(panel, armed=True):
 
 
 def repeat_replaying(panel):
-    view = comp.RepeatViewState(
+    view = views.RepeatViewState(
         name="Turntable", layout="replaying", armed=True, line="2:00 / 18:20", start_enabled=True,
         stop_enabled=True, stop_pressed=False, volume=36, eq_pages=not panel.compact,
         counter_second=120)
@@ -154,7 +155,7 @@ def repeat_replaying(panel):
 def replay_picker(panel):
     rows = (("Turntable", False, "18:42"), ("CD Player", False, "42:10"))
     return panel.compositor.compose_list(
-        panel.width, panel.height, comp.ListState(rows=rows),
+        panel.width, panel.height, views.ListState(rows=rows),
         base=panel.artwork_base(BY_KEY["classical"]), **panel.kw())
 
 
@@ -162,7 +163,7 @@ def info_list(panel, page=0):
     per = panel.rows_per_page
     rows = INFO_ROWS[page * per:page * per + per]
     to_row = (lambda r: (r[0], False)) if panel.compact else (lambda r: (r[0], False, r[1]))
-    state = comp.ListState(
+    state = views.ListState(
         rows=tuple(to_row(r) for r in rows), has_prev=page > 0,
         has_next=(page + 1) * per < len(INFO_ROWS), title="Info", plain_background=True)
     return panel.compositor.compose_list(panel.width, panel.height, state, **panel.kw())
@@ -174,35 +175,35 @@ def warning(panel, view):
 
 
 def nowifi(panel):
-    return warning(panel, comp.WarningView(
+    return warning(panel, views.WarningView(
         title=NOWIFI_MESSAGE_TEXT, buttons=(RESTART_TEXT, CLOSE_TEXT), source="This dial"))
 
 
 def sdhealth(panel):
-    return warning(panel, comp.WarningView(
+    return warning(panel, views.WarningView(
         title=SDHEALTH_TITLE_TEXT, message=SDHEALTH_BODY_TEXT.format(percent=4), buttons=(CLOSE_TEXT,),
         source="This dial"))
 
 
 def updating(panel):
-    return warning(panel, comp.WarningView(
+    return warning(panel, views.WarningView(
         title=UPDATING_TEXT, message=UPDATE_PHASE_TEXT["packages"], percent=45))
 
 
 def updated(panel):
-    return warning(panel, comp.WarningView(
+    return warning(panel, views.WarningView(
         title=UPDATED_TEXT, message="Version 0.7.0", buttons=(CLOSE_TEXT,)))
 
 
 def update_failed(panel):
-    return warning(panel, comp.WarningView(
+    return warning(panel, views.WarningView(
         title=UPDATE_FAILED_TEXT, message="Restored 0.6.0", buttons=(CLOSE_TEXT,)))
 
 
 def appliance_warning(panel, paged=False):
     """An appliance's warning on the warnings card: Close alone, or Next | Close
     with the entry's place among the bell's entries."""
-    return warning(panel, comp.WarningView(
+    return warning(panel, views.WarningView(
         title="Stylus wear", message="Over 450 hours played",
         buttons=(NEXT_TEXT, CLOSE_TEXT) if paged else (CLOSE_TEXT,),
         source="Turntable · 1 of 2" if paged else "Turntable"))
@@ -226,18 +227,18 @@ def screens(panel):
         ("appliance-warning", appliance_warning(panel)),
         ("appliance-warning-paged", appliance_warning(panel, paged=True)),
         ("idle", idle(panel)),
-        ("idle-warnings", idle(panel, bell=comp.BellBadge("warning", 2))),
-        ("idle-critical", idle(panel, bell=comp.BellBadge("critical", 1))),
+        ("idle-warnings", idle(panel, bell=views.BellBadge("warning", 2))),
+        ("idle-critical", idle(panel, bell=views.BellBadge("critical", 1))),
         ("idle-replay-available", idle(panel, replay=True)),
-        ("idle-wifi-connecting", idle(panel, wifi_bars=0, wifi_style=comp.WIFI_GREY)),
-        ("idle-wifi-lost", idle(panel, wifi_bars=0, wifi_style=comp.WIFI_RED)),
+        ("idle-wifi-connecting", idle(panel, wifi_bars=0, wifi_style=views.WIFI_GREY)),
+        ("idle-wifi-lost", idle(panel, wifi_bars=0, wifi_style=views.WIFI_RED)),
         ("now-playing", now_playing(panel, jazz, 42)),
         ("now-playing-muted", now_playing(panel, jazz, 42, muted=True)),
         ("now-playing-artwork-only", now_playing(panel, jazz, 42, controls=False)),
-        ("now-playing-warnings", now_playing(panel, jazz, 42, bell=comp.BellBadge("warning", 2))),
-        ("now-playing-critical", now_playing(panel, jazz, 42, bell=comp.BellBadge("critical", 1))),
+        ("now-playing-warnings", now_playing(panel, jazz, 42, bell=views.BellBadge("warning", 2))),
+        ("now-playing-critical", now_playing(panel, jazz, 42, bell=views.BellBadge("critical", 1))),
         ("now-playing-artwork-only-warnings", now_playing(
-            panel, jazz, 42, controls=False, bell=comp.BellBadge("warning", 2))),
+            panel, jazz, 42, controls=False, bell=views.BellBadge("warning", 2))),
     ]
     if rich:
         out.append(("now-playing-replay-timer", now_playing(panel, jazz, 42, timer="2:00 / 18:20")))
@@ -246,8 +247,8 @@ def screens(panel):
             ("appliances", selector(panel)),
             ("appliances-unauthorised", selector(panel, unauthorised=True)),
             ("not-authorised-hint", hint(
-                panel, comp.NOT_AUTHORISED_TEXT, "Allow this dial in Tape Deck's web UI (Setup, Dials)")),
-            ("pair-hint", hint(panel, comp.PAIR_IN_AUTOSTREAM_TEXT, "Enter the PIN in Turntable's web UI")),
+                panel, views.NOT_AUTHORISED_TEXT, "Allow this dial in Tape Deck's web UI (Setup, Dials)")),
+            ("pair-hint", hint(panel, views.PAIR_IN_AUTOSTREAM_TEXT, "Enter the PIN in Turntable's web UI")),
             ("speakers", outputs(panel)),
             ("speaker-detail", output_detail(panel)),
             ("speaker-detail-off", output_detail(panel, selected=False)),

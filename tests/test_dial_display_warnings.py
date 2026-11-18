@@ -23,7 +23,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 
 import dial_display as dd  # noqa: E402
 from dial_appliance_warnings import ApplianceWarning  # noqa: E402
-from dial_display_compositor import BellBadge  # noqa: E402
+from dial_display_views import BellBadge  # noqa: E402
 from dial_info import INFO_LABELS  # noqa: E402
 from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView  # noqa: E402
 from dial_sdhealth import STATUS_VALID, SdHealthView  # noqa: E402

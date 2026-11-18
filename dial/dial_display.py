@@ -38,10 +38,12 @@ from dataclasses import dataclass
 from PIL import Image, ImageChops
 
 from dial_display_compositor import (
+    DialDisplayCompositor,
+)
+from dial_display_views import (
     BellBadge,
     DEFAULT_MARK,
     PLAY_GLYPH,
-    DialDisplayCompositor,
     EqViewState,
     InfoValueView,
     ListState,

@@ -36,7 +36,14 @@ for _p in (_DIAL, _CORE):
 import logging
 
 from dial_config import DialDisplayConfig
-from dial_display_compositor import DEFAULT_MARK, OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL
+from dial_display_views import (
+    DEFAULT_MARK,
+    OverlayState,
+    WIFI_GREY,
+    WIFI_OFF,
+    WIFI_RED,
+    WIFI_SIGNAL,
+)
 from dial_display_palette import LIST_BG_RGB
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile, mm_per_px_for_size
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
@@ -52,6 +59,7 @@ from dial_core import DialCore
 import dial_display as dd
 import dial_warning_text as dwt
 import dial_display_compositor as dd_compositor
+import dial_display_views as dd_views
 from dial_core_state import NOWIFI_PROMPT_STREAK, NowPlaying, OutputRow, artwork_key
 from dial_display import (
     SCREEN_POLICIES,
@@ -4617,7 +4625,7 @@ class TestSelectorUnauthorizedRows:
             lounge,
         ])
         rows = display._selector.rows
-        assert dd._selector_list_row(rows[1]) == ("Lounge", False, dd_compositor.NOT_AUTHORISED_TEXT)
+        assert dd._selector_list_row(rows[1]) == ("Lounge", False, dd_views.NOT_AUTHORISED_TEXT)
         assert dd._selector_list_row(rows[0])[2] is dd.PLAY_GLYPH
 
     def test_selector_pick_on_unauthorized_opens_hint(self):
@@ -4631,7 +4639,7 @@ class TestSelectorUnauthorizedRows:
         assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "info_value"
         assert display._info_value.hint == (
-            dd_compositor.NOT_AUTHORISED_TEXT, "Allow this dial in Lounge's web UI (Setup, Dials)",
+            dd_views.NOT_AUTHORISED_TEXT, "Allow this dial in Lounge's web UI (Setup, Dials)",
         )
 
     def test_hint_back_returns_to_selector_on_same_page(self):
@@ -9962,7 +9970,7 @@ class TestPairInAutostreamPage:
 
     def test_pairing_hint_text(self):
         label, text = dd._pairing_hint("Lounge")
-        assert label == dd_compositor.PAIR_IN_AUTOSTREAM_TEXT == "Pair in Autostream"
+        assert label == dd_views.PAIR_IN_AUTOSTREAM_TEXT == "Pair in Autostream"
         assert text == "Enter the PIN in Lounge's web UI"
 
     @pytest.mark.parametrize("width,height,mm_per_px", _HINT_TIERS)

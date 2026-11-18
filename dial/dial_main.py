@@ -383,10 +383,9 @@ def _build_touch_source(cfg, display, core, confirm_presence=None, step_percent=
 
     Every import here is deferred to inside this function, exactly like
     dial_display.create_dial_display() is deferred inside main() — in
-    particular, dial_display_compositor (needed here for OverlayState) pulls
-    in Pillow at module import time, so hoisting any of these imports to
-    module level would defeat the same ImportError isolation the display
-    stack already gets. The caller wraps this whole call in its own
+    particular, the display modules are imported here, not at module level, so
+    a missing display stack degrades to no touch, the same ImportError
+    isolation the display stack already gets. The caller wraps this whole call in its own
     try/except so a missing gpiozero/SPI/I2C library, or any other
     construction failure, degrades to no-touch without taking the display
     or volume control down with it.
@@ -403,7 +402,7 @@ def _build_touch_source(cfg, display, core, confirm_presence=None, step_percent=
     button makes, so a touch tap and a button press make identical scope
     decisions.
     """
-    from dial_display_compositor import OverlayState
+    from dial_display_views import OverlayState
     from dial_display_profiles import get_profile, layout_context_for
     from dial_touch import TouchStateMachine
     from dial_touch_source import TouchEventSource
