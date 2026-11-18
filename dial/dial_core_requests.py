@@ -1,6 +1,6 @@
 """dial_core_requests.py -- what the dial asks of an appliance, and how it hears back.
 
-Three parts, none of which touches the core's state:
+Four parts, none of which touches the core's state:
 
   * the intents the dial's controls send (a name, its arguments and the extra
     request body), one builder per kind of request;
@@ -8,10 +8,33 @@ Three parts, none of which touches the core's state:
     (TransportRequest), and the rule that says when an accepted request has
     been overtaken by the appliance's own state, so its shown value can go;
   * RequestLane, one thread that sends the screens' requests, and the reads
-    that refresh a replay position, one at a time.
+    that refresh a replay position, one at a time;
+  * the checks a request must pass, as pure functions over the values the
+    caller passes, shared by the controls and the HD page's intents. Each
+    path passes the source it reads (the controls the roster outside the lock
+    and the published outputs; the intents the state's, under the lock).
 
 The lane carries no HD page intent and no artwork: those never wait behind
 a slow request.
+
+A refusal is returned as `ActionResult(False, "<reason>")`, so that the
+refusal-sentence scan finds every reason.
+
+The two paths keep these differences on purpose:
+  * the controls refuse with the dial's own reasons; the page is sent the
+    appliance's or the library's name where one says the same;
+  * the controls address the focused appliance without checking it (outputs
+    and EQ are held only for that one); every page intent must name it;
+  * the controls refuse a speaker set that changes nothing, and a PIN the
+    appliance's outputs version cannot take; the page's intents forward
+    both and the appliance answers;
+  * the controls normalise what they send (`bool`, `int`, a zero position);
+    the page's arguments are forwarded as given;
+  * a page `repeat.transport` records a stop whatever its action says;
+  * the controls' EQ step checks its band and the held EQ, clamps, and shows
+    the value at once; the page's EQ intents record nothing;
+  * the controls return an `ActionResult` with a token, the page's intents
+    the appliance's reply.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -27,8 +50,8 @@ from typing import Callable, Mapping
 
 from autostream_peer_client import PeerReply
 
-from dial_core_state import TransportRequest
-from dial_eq_model import eq_fields
+from dial_core_state import AUTH_UNAUTHORIZED, PIN_RE, ActionResult, TransportRequest, roster_entry, six_band
+from dial_eq_model import DERIVED_EQ_IDS, eq_fields
 from dial_values import is_int
 
 # The longest wait a rate-limited reply may ask for, in seconds.
@@ -75,6 +98,86 @@ def replay_stop() -> Intent:
 
 def repeat_arm(armed: bool) -> Intent:
     return Intent("arm", "repeat.arm", {"armed": bool(armed)})
+
+
+# ---- checks -------------------------------------------------------------------
+
+# The repeat states each kind of request acts from.
+REPEAT_STATES = {
+    "seek": ("replaying", "hold"),
+    "stop": ("replaying",),
+    "arm": ("recording", "pending", "idle"),
+}
+
+
+def appliance_refusal(roster, appliance_id: str, capability: str) -> ActionResult | None:
+    """Why a request needing *capability* cannot go to *appliance_id*, or
+    None. The capability is the appliance's own state, which has every
+    capability or none (one protocol)."""
+    entry = roster_entry(roster, appliance_id)
+    if entry is None:
+        return ActionResult(False, "unknown_appliance")
+    if not getattr(entry, capability, False):
+        return ActionResult(False, "no_capability")
+    if entry.auth == AUTH_UNAUTHORIZED:
+        return ActionResult(False, "unauthorized")
+    return None
+
+
+def repeat_refusal(roster, appliance_id: str, kind: str) -> ActionResult | None:
+    """Why a replay or repeat request of *kind* ("seek", "stop" or "arm")
+    cannot go to *appliance_id*, or None when it can: the appliance must be
+    known, repeat-capable and not have refused this dial, hold a usable
+    record, and have that record in a state the kind acts from."""
+    refusal = appliance_refusal(roster, appliance_id, "repeat_capable")
+    if refusal is not None:
+        return refusal
+    record = getattr(roster_entry(roster, appliance_id), "repeat", None)
+    if record is None or not record.available:
+        return ActionResult(False, "no_record")
+    if record.state not in REPEAT_STATES[kind]:
+        return ActionResult(False, "wrong_state")
+    return None
+
+
+def output_row(outputs, appliance_id: str, output_id):
+    """The row for *output_id* among *outputs*, or None unless the outputs
+    held are this appliance's."""
+    if outputs is None or outputs.appliance_id != appliance_id:
+        return None
+    return next((r for r in outputs.rows if r.id == output_id), None)
+
+
+def row_refusal(row) -> ActionResult | None:
+    """A speaker row that is not held, or that another appliance has taken,
+    cannot be set."""
+    if row is None or row.remote_in_use:
+        return ActionResult(False, "wrong_state")
+    return None
+
+
+def pin_refusal(pin) -> ActionResult | None:
+    """A PIN is four to eight digits."""
+    if not (isinstance(pin, str) and PIN_RE.match(pin)):
+        return ActionResult(False, "wrong_state")
+    return None
+
+
+def output_shown(row, selected, volume, *, pin: bool) -> tuple[bool, int | None]:
+    """What a speaker request shows until the appliance's state catches up:
+    on for a PIN, else the *selected* given (a bool) or the row's; and the
+    *volume* given (an int, not a bool) or the row's."""
+    shown_selected = True if pin else (selected if isinstance(selected, bool) else row.selected)
+    return shown_selected, (volume if is_int(volume) else row.volume)
+
+
+def eq_band_ids(held) -> tuple:
+    """The band ids a set may name given the EQ state held: bass and treble
+    always, and the appliance's own bands once a six-band reading has
+    landed."""
+    if held is None or not six_band(held.capability_version):
+        return DERIVED_EQ_IDS
+    return DERIVED_EQ_IDS + tuple(b.id for b in held.bands if b.id not in DERIVED_EQ_IDS)
 
 
 # ---- replies ------------------------------------------------------------------

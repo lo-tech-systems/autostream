@@ -61,7 +61,7 @@ import dial_core_focus
 import dial_core_requests as rq
 import dial_peer_view
 from dial_config import SCOPE_ALL
-from dial_eq_model import DERIVED_EQ_IDS, EQ_BASS_TREBLE_LIMIT_DB
+from dial_eq_model import EQ_BASS_TREBLE_LIMIT_DB
 from dial_appliance_warnings import DIAL_WARNING_ID, newer_appliance_names, protocol_warning
 from dial_core_artwork import ArtworkFollower
 from dial_core_effects import (
@@ -75,7 +75,7 @@ from dial_core_state import (
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
     pin_capable_outputs, PowerState, TickContext, TransportRequest, WarningState,
     roster_entry, display_order, dots_active, eq_gain,
-    reopen_for_pin, six_band, start_failure_action,
+    reopen_for_pin, start_failure_action,
 )
 from dial_mdns import PROTOCOL
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
@@ -148,15 +148,6 @@ _FOCUS_FIELDS = frozenset((
 _PLAIN_FIELDS = frozenset((
     "now_playing", "idle_affordance", "dots_active", "outputs_available", "eq_available",
 ))
-
-
-def _eq_band_ids(held) -> tuple:
-    """The band ids a set may name given the EQ state held: bass and treble
-    always, and the appliance's own bands once a six-band reading has
-    landed."""
-    if held is None or not six_band(held.capability_version):
-        return DERIVED_EQ_IDS
-    return DERIVED_EQ_IDS + tuple(b.id for b in held.bands if b.id not in DERIVED_EQ_IDS)
 
 
 @dataclass
@@ -449,27 +440,8 @@ class DialCore:
 
     # -- requests --
 
-    def _refusal(self, appliance_id: str, capability: str) -> ActionResult | None:
-        return self._refusal_in(self._state, appliance_id, capability)
-
     def _refusal_in(self, state: CoreState, appliance_id: str, capability: str) -> ActionResult | None:
-        """Why a request needing *capability* cannot go to *appliance_id*, or
-        None. The capability is the appliance's own state, which has every
-        capability or none (one protocol)."""
-        entry = roster_entry(state.roster, appliance_id)
-        if entry is None:
-            return ActionResult(False, "unknown_appliance")
-        if not getattr(entry, capability, False):
-            return ActionResult(False, "no_capability")
-        if entry.auth == AUTH_UNAUTHORIZED:
-            return ActionResult(False, "unauthorized")
-        return None
-
-    def _output_row(self, appliance_id: str, output_id: str):
-        held = self._snapshot.outputs
-        if held is None or held.appliance_id != appliance_id:
-            return None
-        return next((r for r in held.rows if r.id == output_id), None)
+        return rq.appliance_refusal(state.roster, appliance_id, capability)
 
     def set_output(
         self, appliance_id: str, output_id: str, *,
@@ -493,37 +465,49 @@ class DialCore:
         The request is recorded on `outputs_request`, carrying the value
         it shows meanwhile. Its outcome is published there when the reply
         lands, and queued as an `OutputsEffect`."""
-        refusal = self._refusal(appliance_id, "dial_outputs")
+        roster = self._state.roster
+        refusal = rq.appliance_refusal(roster, appliance_id, "dial_outputs")
         if refusal is not None:
             return refusal
-        if pin is not None and not (isinstance(pin, str) and PIN_RE.match(pin)):
+        if pin is not None:
+            refusal = rq.pin_refusal(pin)
+            if refusal is not None:
+                return refusal
+        row = rq.output_row(self._snapshot.outputs, appliance_id, output_id)
+        refusal = rq.row_refusal(row)
+        if refusal is not None:
+            return refusal
+        # Only the controls refuse a set that changes nothing; the page's
+        # intents forward it and the appliance answers.
+        if selected is None and volume is None and pin is None:
             return ActionResult(False, "wrong_state")
-        row = self._output_row(appliance_id, output_id)
-        if row is None or row.remote_in_use or (selected is None and volume is None and pin is None):
-            return ActionResult(False, "wrong_state")
-        entry = roster_entry(self._state.roster, appliance_id)
-        if pin is not None and not pin_capable_outputs(entry.dial_outputs_version):
+        # Only the controls check the PIN capability's version. An appliance
+        # state reports version 2 whenever it has the outputs capability, so
+        # the capability check above refuses first and this is not reached
+        # in practice.
+        if pin is not None and not pin_capable_outputs(roster_entry(roster, appliance_id).dial_outputs_version):
             return ActionResult(False, "no_capability")
-        shown_selected = True if pin is not None else (row.selected if selected is None else selected)
+        shown = rq.output_shown(row, selected, volume, pin=pin is not None)
         begin, token = self._begin_request(
             "outputs_request", appliance_id, "output_set" if pin is None else "output_pin",
-            output_id=output_id, shown=(shown_selected, row.volume if volume is None else volume),
+            output_id=output_id, shown=shown,
         )
         self._publish(begin)
         intent = (rq.output_pin(output_id, pin) if pin is not None else rq.output_set(
-            output_id, selected=shown_selected, volume=volume, pin_entry=pin_entry))
+            output_id, selected=shown[0], volume=volume, pin_entry=pin_entry))
         self._send(appliance_id, intent, token)
         return ActionResult(True, token=token)
 
     def step_output_volume(self, appliance_id: str, output_id: str, delta: int) -> ActionResult:
         """Set an output's level to the level shown plus *delta*, clamped to
         0..100. A disabled output has no level to step from."""
-        refusal = self._refusal(appliance_id, "dial_outputs")
+        refusal = rq.appliance_refusal(self._state.roster, appliance_id, "dial_outputs")
         if refusal is not None:
             return refusal
-        row = self._output_row(appliance_id, output_id)
-        if row is None or row.remote_in_use:
-            return ActionResult(False, "wrong_state")
+        row = rq.output_row(self._snapshot.outputs, appliance_id, output_id)
+        refusal = rq.row_refusal(row)
+        if refusal is not None:
+            return refusal
         override = self.outputs_override()
         if override is not None and override[0] == row.id and override[1]:
             shown = override[2]
@@ -543,13 +527,13 @@ class DialCore:
         Refused for an unknown appliance, one without the capability or that
         has refused this dial, when no EQ state is held for it, and for a
         band id the capability does not have."""
-        refusal = self._refusal(appliance_id, "dial_eq")
+        refusal = rq.appliance_refusal(self._state.roster, appliance_id, "dial_eq")
         if refusal is not None:
             return refusal
         held = self._snapshot.eq
         if held is not None and held.appliance_id != appliance_id:
             held = None
-        band_ids = _eq_band_ids(held)
+        band_ids = rq.eq_band_ids(held)
         if band_id not in band_ids:
             return ActionResult(False, "no_capability")
         if held is None:
@@ -597,23 +581,8 @@ class DialCore:
             ))
         return mutate, now
 
-    def _repeat_refusal(self, appliance_id: str, states: tuple) -> ActionResult | None:
-        """Why a replay or repeat request cannot go to *appliance_id*, or
-        None when it can: the appliance must be known, repeat-capable and
-        not have refused this dial, hold a usable record, and have that
-        record in one of *states*."""
-        return self._repeat_refusal_in(self._state, appliance_id, states)
-
-    def _repeat_refusal_in(self, state: CoreState, appliance_id: str, states: tuple) -> ActionResult | None:
-        refusal = self._refusal_in(state, appliance_id, "repeat_capable")
-        if refusal is not None:
-            return refusal
-        record = getattr(roster_entry(state.roster, appliance_id), "repeat", None)
-        if record is None or not record.available:
-            return ActionResult(False, "no_record")
-        if record.state not in states:
-            return ActionResult(False, "wrong_state")
-        return None
+    def _repeat_refusal_in(self, state: CoreState, appliance_id: str, kind: str) -> ActionResult | None:
+        return rq.repeat_refusal(state.roster, appliance_id, kind)
 
     def _send_transport(self, appliance_id: str, action: str) -> ActionResult:
         """Record the request as pending and queue it on the request lane."""
@@ -627,7 +596,7 @@ class DialCore:
         through the gap before the replay reaches the playing set; a
         rejected request drops that again when its reply is folded.
         Refused as restart_replay is."""
-        refusal = self._repeat_refusal(appliance_id, ("replaying", "hold"))
+        refusal = rq.repeat_refusal(self._state.roster, appliance_id, "seek")
         if refusal is not None:
             return refusal
         entry = roster_entry(self._state.roster, appliance_id)
@@ -640,7 +609,7 @@ class DialCore:
         """Seek a running replay back to its start, or start one from Hold.
         Refused unless the record is replaying or in hold (a live source
         recording, or a replay fading out, is not something to seek)."""
-        refusal = self._repeat_refusal(appliance_id, ("replaying", "hold"))
+        refusal = rq.repeat_refusal(self._state.roster, appliance_id, "seek")
         if refusal is not None:
             return refusal
         return self._send_transport(appliance_id, "seek")
@@ -649,7 +618,7 @@ class DialCore:
         """Stop a running replay (it fades out and lands in Hold, disarmed).
         Recorded as the pending request so its reply can be told from an
         unrelated seek's. Refused unless the record is replaying."""
-        refusal = self._repeat_refusal(appliance_id, ("replaying",))
+        refusal = rq.repeat_refusal(self._state.roster, appliance_id, "stop")
         if refusal is not None:
             return refusal
         return self._send_transport(appliance_id, "stop")
@@ -658,7 +627,7 @@ class DialCore:
         """Arm or disarm the appliance's repeat daemon. Refused unless the
         record is recording, pending or idle (the states that have the
         toggle)."""
-        refusal = self._repeat_refusal(appliance_id, ("recording", "pending", "idle"))
+        refusal = rq.repeat_refusal(self._state.roster, appliance_id, "arm")
         if refusal is not None:
             return refusal
         token = self.begin_transport(appliance_id, "arm")
@@ -1485,7 +1454,7 @@ class DialCore:
         if appliance_id != (state.focus.manual_id or state.focus.reporting_id):
             return "wrong_state"
         if name in _INTENT_REPEAT_STATES:
-            refusal = self._repeat_refusal_in(state, appliance_id, _INTENT_REPEAT_STATES[name])
+            refusal = self._repeat_refusal_in(state, appliance_id, _INTENT_KINDS[name])
             return None if refusal is None else _REFUSAL_NAMES.get(refusal.reason, refusal.reason)
         if name in ("outputs.set", "output.pin.submit"):
             row = self._output_row_in(state, appliance_id, args.get("id"))

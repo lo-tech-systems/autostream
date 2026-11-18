@@ -15,7 +15,8 @@ for _p in (_ROOT / "dial", _ROOT / "core"):
 
 import dial_core_requests as rq  # noqa: E402
 from autostream_peer_client import PeerReply, PeerSnapshot  # noqa: E402
-from dial_core_state import TransportRequest  # noqa: E402
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, ActionResult, TransportRequest  # noqa: E402
+from types import SimpleNamespace as NS  # noqa: E402
 
 AID = "a" * 20
 
@@ -335,6 +336,111 @@ class TestLane:
         thread = lane._thread
         lane.stop()
         assert not thread.is_alive()
+
+
+# ---- the shared validators -------------------------------------------------------------
+
+
+def entry(aid_=AID, *, auth=AUTH_AUTHORIZED, repeat_capable=True, dial_outputs=True, record=None):
+    return NS(appliance_id=aid_, auth=auth, repeat_capable=repeat_capable, dial_outputs=dial_outputs,
+              dial_eq=True, repeat=record)
+
+
+def record(state="hold", available=True):
+    return NS(state=state, available=available)
+
+
+def outputs(*rows, aid_=AID):
+    return NS(appliance_id=aid_, rows=rows)
+
+
+def row(id_="u1", *, selected=True, volume=40, remote_in_use=False):
+    return NS(id=id_, selected=selected, volume=volume, remote_in_use=remote_in_use)
+
+
+def refusal(result):
+    return None if result is None else (result.accepted, result.reason)
+
+
+class TestValidators:
+    def test_an_appliance_that_is_not_in_the_roster(self):
+        assert refusal(rq.appliance_refusal([entry()], "f" * 20, "dial_outputs")) == (False, "unknown_appliance")
+        assert refusal(rq.appliance_refusal([], AID, "dial_outputs")) == (False, "unknown_appliance")
+
+    def test_the_capability_is_checked_before_the_authorisation(self):
+        both = entry(dial_outputs=False, auth=AUTH_UNAUTHORIZED)
+        assert refusal(rq.appliance_refusal([both], AID, "dial_outputs")) == (False, "no_capability")
+        refused_ = entry(auth=AUTH_UNAUTHORIZED)
+        assert refusal(rq.appliance_refusal([refused_], AID, "dial_outputs")) == (False, "unauthorized")
+        assert rq.appliance_refusal([entry()], AID, "dial_outputs") is None
+
+    @pytest.mark.parametrize("kind, state, allowed", [
+        ("seek", "replaying", True), ("seek", "hold", True), ("seek", "recording", False),
+        ("stop", "replaying", True), ("stop", "hold", False),
+        ("arm", "recording", True), ("arm", "pending", True), ("arm", "idle", True),
+        ("arm", "replaying", False),
+    ])
+    def test_each_kind_acts_from_its_own_repeat_states(self, kind, state, allowed):
+        got = rq.repeat_refusal([entry(record=record(state))], AID, kind)
+        assert (got is None) is allowed
+        if not allowed:
+            assert refusal(got) == (False, "wrong_state")
+
+    def test_a_repeat_request_needs_a_usable_record(self):
+        assert refusal(rq.repeat_refusal([entry()], AID, "seek")) == (False, "no_record")
+        gone = entry(record=record("hold", available=False))
+        assert refusal(rq.repeat_refusal([gone], AID, "seek")) == (False, "no_record")
+
+    def test_a_repeat_request_is_refused_for_the_appliance_first(self):
+        assert refusal(rq.repeat_refusal([entry(repeat_capable=False)], AID, "seek")) == (False, "no_capability")
+        assert refusal(rq.repeat_refusal([], AID, "seek")) == (False, "unknown_appliance")
+
+    def test_a_row_is_found_only_among_this_appliances_outputs(self):
+        held = outputs(row("u1"), row("u2"))
+        assert rq.output_row(held, AID, "u2").id == "u2"
+        assert rq.output_row(held, AID, "u9") is None
+        assert rq.output_row(held, "f" * 20, "u1") is None
+        assert rq.output_row(None, AID, "u1") is None
+
+    def test_a_row_that_is_missing_or_taken_is_refused(self):
+        assert refusal(rq.row_refusal(None)) == (False, "wrong_state")
+        assert refusal(rq.row_refusal(row(remote_in_use=True))) == (False, "wrong_state")
+        assert rq.row_refusal(row()) is None
+
+    @pytest.mark.parametrize("pin, ok_", [
+        ("1234", True), ("12345678", True), ("123", False), ("123456789", False),
+        ("12a4", False), ("1234\n", False), (1234, False), (None, False),
+    ])
+    def test_a_pin_is_four_to_eight_digits(self, pin, ok_):
+        assert (rq.pin_refusal(pin) is None) is ok_
+        if not ok_:
+            assert refusal(rq.pin_refusal(pin)) == (False, "wrong_state")
+
+    @pytest.mark.parametrize("selected, volume, pin, expected", [
+        (None, None, False, (True, 40)),
+        (False, None, False, (False, 40)),
+        (True, 25, False, (True, 25)),
+        (None, 0, False, (True, 0)),
+        ("yes", 12.5, False, (True, 40)),
+        (True, True, False, (True, 40)),
+        (None, None, True, (True, 40)),
+        (False, 0, True, (True, 0)),
+    ])
+    def test_the_value_a_speaker_request_shows(self, selected, volume, pin, expected):
+        assert rq.output_shown(row(selected=True, volume=40), selected, volume, pin=pin) == expected
+
+    def test_the_value_shown_for_an_off_speaker_keeps_its_state(self):
+        assert rq.output_shown(row(selected=False, volume=10), None, None, pin=False) == (False, 10)
+
+    def test_eq_bands(self):
+        two = ("bass", "treble")
+        assert rq.eq_band_ids(None) == two
+        assert rq.eq_band_ids(NS(capability_version=1, bands=())) == two
+        six = NS(capability_version=2, bands=(NS(id="bass"), NS(id="peq1"), NS(id="peq2")))
+        assert rq.eq_band_ids(six) == two + ("peq1", "peq2")
+
+    def test_a_refusal_is_the_actions_own_type(self):
+        assert isinstance(rq.row_refusal(None), ActionResult)
 
 
 # ---- the core on the lane ------------------------------------------------------------
