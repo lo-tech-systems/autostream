@@ -3572,6 +3572,98 @@
    }
   },
   {
+   "name": "warningsFor: a fold of different links goes to their page",
+   "fn": "warningsFor",
+   "opts": {
+    "own": true
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "sample_rate_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "sample_rate",
+       "subject": "CD",
+       "title": "CD sample rate",
+       "message": "Turn on rate matching",
+       "link": "/setup#input1"
+      },
+      {
+       "id": "sample_rate_in2",
+       "incident": "",
+       "severity": "warning",
+       "kind": "sample_rate",
+       "subject": "Tape",
+       "title": "Tape sample rate",
+       "message": "Turn on rate matching",
+       "link": "/setup#input2"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "Sample rate",
+      "message": "Turn on rate matching on CD, Tape",
+      "link": "/setup"
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
+   "name": "warningsFor: a fold of different links on a remote page has no link",
+   "fn": "warningsFor",
+   "opts": {
+    "own": false
+   },
+   "parts": {
+    "warnings": {
+     "entries": [
+      {
+       "id": "sample_rate_in1",
+       "incident": "",
+       "severity": "warning",
+       "kind": "sample_rate",
+       "subject": "CD",
+       "title": "CD sample rate",
+       "message": "Turn on rate matching",
+       "link": "/setup#input1"
+      },
+      {
+       "id": "sample_rate_in2",
+       "incident": "",
+       "severity": "warning",
+       "kind": "sample_rate",
+       "subject": "Tape",
+       "title": "Tape sample rate",
+       "message": "Turn on rate matching",
+       "link": "/setup#input2"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "banner": [],
+    "strip": [
+     {
+      "severity": "warning",
+      "title": "Sample rate",
+      "message": "Turn on rate matching on CD, Tape",
+      "link": null
+     }
+    ],
+    "more": 0,
+    "serviceSeverity": null
+   }
+  },
+  {
    "name": "warningsFor: the same item at another severity does not fold",
    "fn": "warningsFor",
    "opts": {

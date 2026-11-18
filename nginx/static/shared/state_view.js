@@ -162,7 +162,7 @@ export function warningsFor(p, { own = true } = {}) {
   for (const e of all.filter((x) => x.severity !== 'critical')) {
     const key = e.subject ? e.kind + '|' + e.severity : '';
     const prior = key && folds.get(key);
-    if (prior) { prior.subjects.push(e.subject); continue; }
+    if (prior) { prior.subjects.push(e.subject); if (prior.link && e.link !== prior.link) prior.link = prior.link.split('#')[0]; continue; }
     const card = { severity: e.severity, kind: e.kind, title: e.title, message: e.message, link: own ? e.link || null : null, subjects: e.subject ? [e.subject] : [] };
     if (key) folds.set(key, card);
     cards.push(card);
