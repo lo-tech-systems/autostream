@@ -41,7 +41,7 @@ export function onOutputLevel(id, level, final) {
     const key = "out:" + id + ":volume";
     holdForReply(key, level);
     hooks.render();
-    sendDrag(key, final, submit, "outputs.set", { id: id, volume: level }, [key]);
+    sendDrag(key, final, submit, "outputs.set", { id: id, selected: true, volume: level }, [key]);
 }
 
 function onMasterLevel(level, final) {

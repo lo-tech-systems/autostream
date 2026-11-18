@@ -79,6 +79,18 @@ def watch_intents(page) -> list:
     return sent
 
 
+def assert_appliance_accepts(sent: list) -> None:
+    """Every (name, args) the page sent passes the appliance's own argument
+    check for that intent. The fake core accepts anything, so this is what
+    proves the appliance would not refuse the page's request outright."""
+    from autostream_intents.table import ROWS, _Table
+
+    table = _Table()
+    for name, args in sent:
+        checked = table._check_args(ROWS[name], args)
+        assert not isinstance(checked, str), f"{name} {args}: the appliance refuses it ({checked})"
+
+
 def fulfil(page, path, body, status=200):
     """Answer the page's POSTs to *path* itself with *body*."""
     page.route("**" + path, lambda route: route.fulfill(
@@ -547,6 +559,7 @@ class TestSpeakers:
         expect(patio.locator(".level-row")).to_be_visible()
         expect(patio.locator(".level-num")).to_have_text("30")
         assert sent == [("outputs.set", {"id": "o2", "selected": True})]
+        assert_appliance_accepts(sent)
 
     def test_toggle_confirmed_by_the_state(self, page, hd):
         page.clock.install()
@@ -579,7 +592,8 @@ class TestSpeakers:
         open_page(page, hd)
         drag_input(page, "#speakers .output-card-on input[type=range]", [], final=55)
         expect(card(page, "Lounge L + R").locator(".level-num")).to_have_text("55")
-        assert sent == [("outputs.set", {"id": "o1", "volume": 55})]
+        assert sent == [("outputs.set", {"id": "o1", "selected": True, "volume": 55})]
+        assert_appliance_accepts(sent)
 
     def test_state_update_leaves_a_dragged_slider_alone(self, page, hd):
         open_page(page, hd)
