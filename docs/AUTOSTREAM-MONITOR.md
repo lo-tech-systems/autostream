@@ -303,6 +303,12 @@ This ordering matters:
   Audio queued for a reader that never took it is not delivered ahead of the
   next stream, and the reported stall does not outlive the stream. The pipe
   itself is left open and untouched.
+- Each ended stream is summarised in one `[output] Stream ended after ... s`
+  line in the monitor log: the bytes lost (no reader, backlog overflow, write
+  error, stranded at the end), underrun and ring-drop frames, stalls, and
+  live-clock wait timeouts, counted over that stream. The line is a warning
+  when anything was lost, underran, was dropped or stalled, and a debug line
+  for a clean stream, so a clean stream logs nothing at the default level.
 - At startup the daemon calls `mlockall(MCL_CURRENT | MCL_FUTURE |
   MCL_ONFAULT)` so its memory is pinned as it is touched, rather than paged
   out under memory pressure. This requires `LimitMEMLOCK=infinity` in the

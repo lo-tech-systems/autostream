@@ -30,15 +30,72 @@ namespace
     constexpr double kSchedGapWarnSeconds       = 0.5;
     constexpr double kSchedGapWarnPeriodSeconds = 5.0;
 
-    // Reports what ending a stream discarded: audio still queued for a reader
-    // that never took it, or a stall that was still open. A stream that ends
-    // with neither is silent. Called without the FIFO lock held.
-    void log_stream_end(const FifoWriter::StreamEnd& end)
+    // Every loss and timing counter the stream summary reports, copied with
+    // relaxed loads (no allocation, no lock) when a stream opens and again
+    // when it ends.
+    struct StreamCounters
     {
-        if (end.dropped_bytes == 0 && end.stall_seconds <= 0.0)
-            return;
-        LOG_WARN("[output] Stream ended with the FIFO stalled: dropped %zu bytes of backlog, stall lasted %.1f s",
-                 end.dropped_bytes, end.stall_seconds);
+        FifoWriter::Counters        fifo;
+        OutputMixer::Counters       mixer;
+        OutputThreadStats::Counters thread;
+    };
+
+    // One stream's figures: the counters at its start and end, how long it
+    // ran, and the length of the stall streak still open when it ended.
+    struct StreamSummary
+    {
+        StreamCounters before;
+        StreamCounters after;
+        double         seconds   = 0.0;
+        double         end_stall = 0.0;
+    };
+
+    // Logs one line for a finished output stream from the counter deltas: a
+    // warning when anything was lost, underran, was dropped from a ring or
+    // stalled, debug otherwise. A partial prefill discarded at idle is
+    // reported but does not raise the level. Called without the FIFO lock
+    // held.
+    void log_stream_summary(const StreamSummary& sm)
+    {
+        const StreamCounters& a = sm.after;
+        const StreamCounters& b = sm.before;
+        auto d = [](uint64_t after, uint64_t before) -> unsigned long long
+        {
+            return static_cast<unsigned long long>(after >= before ? after - before : 0);
+        };
+
+        unsigned long long no_reader = d(a.fifo.no_reader_bytes, b.fifo.no_reader_bytes);
+        unsigned long long overflow  = d(a.fifo.overflow_bytes,  b.fifo.overflow_bytes);
+        unsigned long long error     = d(a.fifo.error_bytes,     b.fifo.error_bytes);
+        unsigned long long stranded  = d(a.fifo.stranded_bytes,  b.fifo.stranded_bytes);
+        unsigned long long prefill   = d(a.thread.prefill_dropped_bytes, b.thread.prefill_dropped_bytes);
+        unsigned long long stalls    = d(a.fifo.stall_events,    b.fifo.stall_events);
+
+        unsigned long long under[3], drops[3];
+        bool lost = no_reader || overflow || error || stranded || stalls;
+        for (int i = 0; i < 3; ++i)
+        {
+            under[i] = d(a.mixer.underrun_frames[i], b.mixer.underrun_frames[i]);
+            drops[i] = d(a.mixer.dropped_frames[i],  b.mixer.dropped_frames[i]);
+            lost = lost || under[i] || drops[i];
+        }
+
+        char line[512];
+        std::snprintf(line, sizeof(line),
+            "[output] Stream ended after %.1f s: lost bytes no_reader=%llu overflow=%llu error=%llu "
+            "stranded=%llu prefill=%llu; underrun frames live1=%llu live2=%llu replay=%llu; "
+            "ring_drop frames live1=%llu live2=%llu replay=%llu; stalls=%llu end_stall=%.1f s "
+            "live_wait_timeouts=%llu lock_waits_over_1ms=%llu",
+            sm.seconds, no_reader, overflow, error, stranded, prefill,
+            under[0], under[1], under[2], drops[0], drops[1], drops[2],
+            stalls, sm.end_stall,
+            d(a.thread.live_wait_timeouts, b.thread.live_wait_timeouts),
+            d(a.thread.lock_waits_over_1ms, b.thread.lock_waits_over_1ms));
+
+        if (lost)
+            LOG_WARN("%s", line);
+        else
+            LOG_DEBUG("%s", line);
     }
 }
 
@@ -113,10 +170,33 @@ void OutputStage::thread_func()
     // has been idle past the cold-start interval, or a new stream starts
     // after such a gap).
     bool   stream_open     = false;
+    // The counters, and the clock, as the open stream began.
+    StreamCounters stream_start;
+    double         stream_start_time = 0.0;
     // A stream ended at the cold-start decision, which holds the FIFO lock;
-    // its log line waits for the top of the next iteration.
-    bool   end_pending     = false;
-    FifoWriter::StreamEnd pending_end;
+    // its summary is finished there and logged at the top of the next
+    // iteration.
+    bool          end_pending = false;
+    StreamSummary pending_summary;
+
+    auto read_counters = [this]()
+    {
+        StreamCounters c;
+        c.fifo   = _writer.counters();
+        c.mixer  = _mixer.counters();
+        c.thread = _stats.counters();
+        return c;
+    };
+    // Called just before the first write of a stream, so the figures it
+    // reports include any loss in that write.
+    auto note_stream_open = [&]()
+    {
+        if (stream_open)
+            return;
+        stream_start      = read_counters();
+        stream_start_time = get_monotonic_time();
+        stream_open       = true;
+    };
     double warn_last_log   = 0.0;
     double sched_warn_last_log = 0.0;
     auto   deadline        = std::chrono::steady_clock::now();
@@ -125,7 +205,7 @@ void OutputStage::thread_func()
     {
         if (end_pending)
         {
-            log_stream_end(pending_end);
+            log_stream_summary(pending_summary);
             end_pending = false;
         }
 
@@ -155,7 +235,13 @@ void OutputStage::thread_func()
                     end = _writer.end_stream(last_write_time);
                 }
                 stream_open = false;
-                log_stream_end(end);
+
+                StreamSummary summary;
+                summary.before    = stream_start;
+                summary.after     = read_counters();
+                summary.seconds   = last_write_time - stream_start_time;
+                summary.end_stall = end.stall_seconds;
+                log_stream_summary(summary);
             }
             _mixer.wait_for_activity(std::chrono::milliseconds(100));
             continue;
@@ -264,7 +350,11 @@ void OutputStage::thread_func()
         // not yet ended when the wake from idle beat the idle check above.
         if (cold_start && stream_open)
         {
-            pending_end = _writer.end_stream(last_write_time);
+            FifoWriter::StreamEnd end = _writer.end_stream(last_write_time);
+            pending_summary.before    = stream_start;
+            pending_summary.after     = read_counters();
+            pending_summary.seconds   = last_write_time - stream_start_time;
+            pending_summary.end_stall = end.stall_seconds;
             end_pending = true;
             stream_open = false;
         }
@@ -276,17 +366,28 @@ void OutputStage::thread_func()
 
             if (prefill_buf.size() >= prefill_target_bytes)
             {
+                note_stream_open();
                 _writer.write(prefill_buf.data(), prefill_buf.size());
-                stream_open = true;
                 last_write_time = get_monotonic_time();
                 prefill_buf.clear();
             }
         }
         else
         {
+            note_stream_open();
             _writer.write(wire_ptr, wire_bytes);
-            stream_open = true;
             last_write_time = get_monotonic_time();
         }
+    }
+
+    // Shut down with a stream open: report it, leaving the writer as it is
+    // (stop() closes it).
+    if (stream_open)
+    {
+        StreamSummary summary;
+        summary.before  = stream_start;
+        summary.after   = read_counters();
+        summary.seconds = last_write_time - stream_start_time;
+        log_stream_summary(summary);
     }
 }
