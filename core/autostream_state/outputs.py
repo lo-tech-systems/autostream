@@ -2476,9 +2476,12 @@ class OutputAuthority:
 
     def _settle_pin_locked(self, u: UnitState, ev: DeviceEvent, fx: _Effects) -> None:
         """A PIN sent with its select is answered by the event that ends the
-        authorise: a refusal or a new prompt, or the speaker paired (any
-        other state with pin_pending false). While the authorise runs the
-        waiters keep waiting."""
+        authorise: a refusal or a new prompt; the speaker paired (stopped
+        with pin_pending false, or connected or streaming when that event
+        came before the answer was parked); or the pairing cancelled by a
+        switch-off. The authorise's own connecting, which may read
+        pin_pending false when the speaker was not waiting for a PIN, says
+        nothing yet, and while the authorise runs the waiters keep waiting."""
         if not u.pin_sinks:
             return
         if ev.state in ("failed", "password"):
@@ -2486,7 +2489,9 @@ class OutputAuthority:
             # it is not taken for a request that went unanswered
             code = {"timeout": "timed_out", "": "failed", "none": "failed"}.get(ev.reason, ev.reason)
             outcome = WriteOutcome(ok=False, error_code=code, error=code)
-        elif ev.pin_pending is False:
+        elif ev.state == "stopped" and ev.reason == "cancelled":
+            outcome = WriteOutcome(ok=False, error_code="cancelled", error="cancelled")
+        elif ev.state in ("stopped", "connected", "streaming") and ev.pin_pending is False:
             outcome = WriteOutcome(ok=True)
         else:
             return

@@ -3539,6 +3539,45 @@ class TestPinWithSelect:
         send(ew, "1", "connecting", selected=True, at_s=1.5)
         assert not applied.outcome.done()
 
+    def test_on_a_speaker_not_waiting_for_a_pin_the_authorise_connecting_does_not_settle_it(self, ew):
+        send(ew, "1", "failed", "refused", selected=False, pin_pending=False, at_s=0.1)
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        send(ew, "1", "connecting", selected=False, pin_pending=False, at_s=0.5)
+        assert not applied.outcome.done()
+        send(ew, "1", "stopped", selected=True, pin_pending=False, at_s=1)
+        assert applied.outcome.result(1) == (WriteOutcome(ok=True),)
+
+    def test_on_a_speaker_not_waiting_for_a_pin_a_wrong_pin_is_still_its_answer(self, ew):
+        applied = ew.a.submit_pin("1", "0000", select=True, volume=30)
+        send(ew, "1", "connecting", selected=False, pin_pending=False, at_s=0.5)
+        send(ew, "1", "password", "pin_invalid", selected=False, pin_pending=True, at_s=1)
+        out = applied.outcome.result(1)[0]
+        assert (out.ok, out.error_code) == (False, "pin_invalid")
+
+    def test_a_pairing_cancelled_by_a_switch_off_answers_cancelled(self, ew):
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        send(ew, "1", "connecting", selected=False, pin_pending=True, at_s=0.5)
+        ew.a.deselect("1", Origin.USER)
+        send(ew, "1", "stopping", selected=False, pin_pending=True, at_s=0.6)
+        assert not applied.outcome.done()
+        send(ew, "1", "stopped", "cancelled", selected=False, pin_pending=False, at_s=1)
+        out = applied.outcome.result(1)[0]
+        assert (out.ok, out.error_code) == (False, "cancelled")
+
+    def test_a_connected_event_settles_a_pairing_whose_stopped_came_before_the_204(self, ew):
+        def paired_first(output_id, pin, timeout, **kw):
+            ew.a.on_device_event(state_event("1", "stopped", selected=True, pin_pending=False))
+            ew.a.step(now=ew.t[0])
+            return original(output_id, pin, timeout, **kw)
+
+        original = ew.fb.submit_output_pin
+        ew.fb.submit_output_pin = paired_first
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        send(ew, "1", "connecting", selected=True, pin_pending=False, at_s=0.5)
+        assert not applied.outcome.done()
+        send(ew, "1", "connected", selected=True, pin_pending=False, at_s=1)
+        assert applied.outcome.result(1) == (WriteOutcome(ok=True),)
+
     def test_parked_outcomes_expire_as_pending(self, ew):
         applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
         at(ew, outputs.PIN_OUTCOME_S - 1)
