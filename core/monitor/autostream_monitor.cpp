@@ -1035,8 +1035,9 @@ void AudioMonitor::run()
             if (now < _restart_after[i])
                 continue;
 
-            LOG_WARN("[monitor] Input %d stopped unexpectedly; attempting auto-restart",
-                     i + 1);
+            LOG_WARN_EVERY(log_key(LogKey::WatchdogStopped, i + 1), 60.0,
+                           "[monitor] Input %d stopped unexpectedly; attempting auto-restart",
+                           i + 1);
             // stop_input_with_teardown() calls notify_input_stopped(), which
             // can block up to kDrainTimeoutMs (250 ms) if the repeat
             // controller is in the Recording state on this input,
@@ -1050,12 +1051,14 @@ void AudioMonitor::run()
             std::string err;
             if (_inputs[i]->start(&err))
             {
-                LOG_INFO("[monitor] Input %d restarted successfully", i + 1);
+                LOG_INFO_EVERY(log_key(LogKey::WatchdogRestarted, i + 1), 60.0,
+                               "[monitor] Input %d restarted successfully", i + 1);
             }
             else
             {
-                LOG_WARN("[monitor] Input %d restart failed: %s; will retry in %.0f s",
-                         i + 1, err.c_str(), RESTART_BACKOFF_SECONDS);
+                LOG_WARN_EVERY(log_key(LogKey::WatchdogRestartFailed, i + 1), 60.0,
+                               "[monitor] Input %d restart failed: %s; will retry in %.0f s",
+                               i + 1, err.c_str(), RESTART_BACKOFF_SECONDS);
                 _restart_after[i] = get_monotonic_time() + RESTART_BACKOFF_SECONDS;
             }
         }
