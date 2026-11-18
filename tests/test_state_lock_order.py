@@ -146,8 +146,7 @@ def test_the_repeat_overlay_lock_is_released_before_subscribers_run(tracked_sing
     }
     repeat.publish_from_daemon(block)
     with patch("autostream_repeat._rearm_replay_identification"), \
-         patch("autostream_repeat._announce_replay_playing"), \
-         patch("autostream_repeat.notify_state_changed"):
+         patch("autostream_repeat._announce_replay_playing"):
         repeat.apply_repeat_ack({"ok": True, "command": "set_repeat_armed",
                                  "state": "replaying", "armed": True,
                                  "position_seconds": 0.0})

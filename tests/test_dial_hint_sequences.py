@@ -84,10 +84,16 @@ def ack(**fields):
     return ("ack", fields)
 
 
+def dial_ack(**fields):
+    """An ack for a request that a dial made."""
+    return ("dial_ack", fields)
+
+
 def advance(seconds: float):
     return ("advance", seconds)
 
 
+DIAL = "dial-1"
 IDLE = block()
 HOLD = block(armed=True, recording_seconds=1260.0)
 REPLAYING = block(armed=True, recording_seconds=1260.0, replay_active=True,
@@ -132,7 +138,7 @@ SEQUENCES: dict[str, list] = {
     "seek_ack_hints_repeat": [
         tick(REPLAYING, TRACK_A),
         advance(5.0),
-        ack(ok=True, command="repeat_seek", state="replaying", armed=True,
+        dial_ack(ok=True, command="repeat_seek", state="replaying", armed=True,
             position_seconds=0.0),
         advance(1.0),
         tick(REPLAYING, TRACK_A),
@@ -234,6 +240,8 @@ class Driver:
                     batch.close()
             elif kind == "ack":
                 repeat.apply_repeat_ack(dict(arg))
+            elif kind == "dial_ack":
+                repeat.apply_repeat_ack(dict(arg), requester=f"dial:{DIAL}")
             elif kind == "advance":
                 self._advance(arg)
             else:
@@ -287,9 +295,9 @@ class TestRecordedBehaviour:
         emitted = self._run(monkeypatch, "analysing_gap_keeps_the_last_value")
         assert [e[0] for e in emitted] == [["track"]]
 
-    def test_a_seek_ack_hints_repeat_at_once(self, monkeypatch):
+    def test_a_seek_ack_hints_repeat_at_once_but_not_the_dial_that_asked(self, monkeypatch):
         emitted = self._run(monkeypatch, "seek_ack_hints_repeat")
-        assert emitted == [[["repeat"], [], 5.0]]
+        assert emitted == [[["repeat"], [DIAL], 5.0]]
 
     def test_changes_inside_one_window_are_emitted_together_when_it_ends(self, monkeypatch):
         emitted = self._run(monkeypatch, "two_edges_inside_one_window")

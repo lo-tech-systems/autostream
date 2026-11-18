@@ -500,13 +500,14 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_all_appliances=lambda: [],
              get_system_hostname=lambda: "golden.local",
              build_top_banner_html=lambda **kwargs: ("", ""))
-    setattrs(autostream_repeat, apply_repeat_ack=lambda ack: ack)
+    setattrs(autostream_repeat, apply_repeat_ack=lambda ack, requester=None: ack)
     setattrs(monitor_client, _connected_monitor=connected_monitor)
     setattrs(start_buffer_cache, current_ms=lambda base_url=None: START_BUFFER_MS)
     setattrs(system_stats, _read_get_throttled_value=lambda: scenario.throttled)
     setattrs(federation, create_session=lambda ip: ("golden-token", 0))
     # The seek rate limit is per process; every case starts outside it.
-    setattrs(api, _dial_seek_last=float("-inf"))
+    import autostream_intents.table as intent_table
+    intent_table.reset_for_tests()
     # A backend call through any namespace the scenario did not provide fails.
     for name in ("list_outputs", "get_setting", "update_output", "set_output_enabled",
                  "submit_output_pin"):

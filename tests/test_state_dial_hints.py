@@ -82,6 +82,26 @@ def rig(monkeypatch):
     return Rig(monkeypatch)
 
 
+def _ack(command="repeat_seek", state_name="replaying", position=0.0):
+    return {"type": "ack", "command": command, "ok": True, "state": state_name,
+            "armed": True, "position_seconds": position}
+
+
+def test_a_repeat_ack_hints_repeat_once_and_not_the_dial_that_asked(rig):
+    rig.cycle(repeat_block=_block(armed=True, replay_active=True, position=5.0))
+    before = len(rig.calls)
+    repeat.apply_repeat_ack(_ack(position=30.0), requester="dial:abc-1")
+    assert rig.calls[before:] == [(("repeat",), "abc-1")]
+
+
+def test_a_repeat_ack_whose_digest_did_not_move_still_hints(rig):
+    rig.cycle(repeat_block=_block(armed=True, replay_active=True, position=5.0))
+    repeat.apply_repeat_ack(_ack(position=30.0))
+    before = len(rig.calls)
+    repeat.apply_repeat_ack(_ack(position=31.0))
+    assert rig.calls[before:] == [(("repeat",), None)]
+
+
 def test_a_session_edge_makes_exactly_one_session_call(rig):
     rig.cycle(repeat_block=_block())
     assert rig.cycle(repeat_block=_block(), edge=True) == [(("session",), None)]

@@ -2,7 +2,7 @@
 
 The repeat block as a part of the state snapshot: the coordinator's per-cycle
 publish, the ack overlay from a request thread, their ordering, and the
-session note and direct dial hint that follow an ack.
+session note that follows an ack, and the tag and requester the ack's change carries.
 """
 from __future__ import annotations
 
@@ -46,12 +46,11 @@ def ack(command="repeat_seek", state_name="replaying", *, armed=True, position=0
             "armed": armed, "position_seconds": position}
 
 
-def apply(a):
+def apply(a, **kw):
     with patch("autostream_repeat._rearm_replay_identification") as rearm, \
-         patch("autostream_repeat._announce_replay_playing") as announce, \
-         patch("autostream_repeat.notify_state_changed") as hint:
-        result = repeat.apply_repeat_ack(a)
-    return result, rearm, announce, hint
+         patch("autostream_repeat._announce_replay_playing") as announce:
+        result = repeat.apply_repeat_ack(a, **kw)
+    return result, rearm, announce
 
 
 def test_the_part_starts_without_a_block():
@@ -80,14 +79,14 @@ def test_a_daemon_block_that_changes_nothing_shown_publishes_no_change():
     assert snap().repeat.block["replay"]["position_seconds"] == 6.0
 
 
-def test_an_ack_overlay_publishes_one_change_and_one_direct_hint():
+def test_an_ack_overlay_publishes_one_change_tagged_repeat_with_its_requester():
     repeat.publish_from_daemon(block())
     seen = collect()
-    result, rearm, announce, hint = apply(ack("set_repeat_armed", armed=True))
+    result, rearm, announce = apply(ack("set_repeat_armed", armed=True), requester="dial:abc")
     assert result is not None
     assert [c.parts for c in seen] == [frozenset({"repeat"}), frozenset({"session"})]
+    assert seen[0].tags == frozenset({"repeat"}) and seen[0].requester == "dial:abc"
     assert snap().repeat.block["replay"]["active"] is True
-    hint.assert_called_once_with("repeat")
     rearm.assert_called_once_with(1, in_session=False)
     announce.assert_called_once_with()
 
@@ -95,11 +94,10 @@ def test_an_ack_overlay_publishes_one_change_and_one_direct_hint():
 def test_an_ack_with_no_block_published_changes_nothing():
     seen = collect()
     a = ack()
-    result, rearm, announce, hint = apply(a)
+    result, rearm, announce = apply(a)
     assert result is a
     assert seen == []
     assert snap().repeat.block is None
-    hint.assert_not_called()
     rearm.assert_not_called()
 
 
@@ -108,8 +106,7 @@ def test_a_rejected_or_unknown_ack_changes_nothing():
     seen = collect()
     for bad in (dict(ack(), ok=False), dict(ack(), state="bogus"),
                 dict(ack(), command="set_log_level"), None):
-        _, _, _, hint = apply(bad)
-        hint.assert_not_called()
+        apply(bad)
     assert seen == []
 
 
@@ -125,14 +122,13 @@ def test_a_hold_ack_leaves_the_session_alone():
     assert snap().session.active is False
 
 
-def test_a_seek_that_moves_nothing_shown_publishes_no_change_but_still_hints():
+def test_a_seek_that_moves_nothing_shown_still_publishes_a_change_tagged_repeat():
     repeat.publish_from_daemon(block(armed=True, replay_active=True, position=5.0))
     state.store().publish_for_tests("session", state.SessionPart(True, "replay"))
     seen = collect()
-    _, rearm, announce, hint = apply(ack(position=30.0))
-    assert seen == []
+    _, rearm, announce = apply(ack(position=30.0))
+    assert [c.tags for c in seen] == [frozenset({"repeat"})]
     assert snap().repeat.block["replay"]["position_seconds"] == 30.0
-    hint.assert_called_once_with("repeat")
     rearm.assert_called_once_with(1, in_session=True)
     announce.assert_not_called()
 
@@ -159,8 +155,7 @@ def test_a_daemon_publish_waits_for_an_overlay_in_flight_and_lands_last():
     daemon_block = block(armed=False)
     with patch("autostream_repeat._overlay_repeat_status_from_ack", slow), \
          patch("autostream_repeat._rearm_replay_identification"), \
-         patch("autostream_repeat._announce_replay_playing"), \
-         patch("autostream_repeat.notify_state_changed"):
+         patch("autostream_repeat._announce_replay_playing"):
         t1 = threading.Thread(target=lambda: repeat.apply_repeat_ack(ack("set_repeat_armed")))
         t1.start()
         assert entered.wait(5)

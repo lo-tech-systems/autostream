@@ -26,7 +26,6 @@ import autostream_announce as announce
 import autostream_runtime as runtime
 import autostream_session
 import autostream_state
-from autostream_dial_push import notify_state_changed
 from autostream_state import RepeatPart
 
 _writer = autostream_state.store().claim("repeat", "autostream_repeat")
@@ -147,12 +146,14 @@ def _announce_replay_playing() -> None:
         logging.debug("replay playing announcement not submitted", exc_info=True)
 
 
-def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
+def apply_repeat_ack(ack: Optional[dict], *, requester: Optional[str] = None) -> Optional[dict]:
     """Fold an accepted transport/arm ack into the published repeat block.
 
     Called on the API thread by send_live_repeat_transport and
     set_live_repeat_armed_ack, so every entry point (dial, Web UI, gateway)
-    gets it. Returns *ack* unchanged. No-op for None, ok:false, or a shape
+    gets it. *requester* names who asked; the change is published with it and
+    with the "repeat" tag, so dials are hinted except the one that asked.
+    Returns *ack* unchanged. No-op for None, ok:false, or a shape
     the daemon never produces. The next poll cycle overwrites everything
     written here with the daemon's own report; this only closes the gap
     between the ack and that cycle.
@@ -179,7 +180,8 @@ def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
         if not isinstance(block, dict):
             return ack
         new_block, started, sought = _overlay_repeat_status_from_ack(block, ack)
-        pending = _writer.publish(RepeatPart(new_block))
+        pending = _writer.publish(
+            RepeatPart(new_block), requester=requester, tags=("repeat",))
     pending.notify()
 
     if ack["state"] == "replaying":
@@ -187,8 +189,6 @@ def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
         # coordinator's view; hold/idle are left to its session_ended path so
         # the OwnTone stop and now-playing end are not skipped).
         autostream_session.note_replay_started()
-
-    notify_state_changed("repeat")
 
     if sought or started:
         _rearm_replay_identification(

@@ -1,0 +1,9 @@
+# The repeat arm, stop and seek commands moved from the coordinator into the monitor control module.
+autostream_core.set_live_repeat_enabled -> autostream_monitor_control.set_live_repeat_enabled  alias=monitor_control
+autostream_webui_api.set_live_repeat_enabled -> autostream_monitor_control.set_live_repeat_enabled  alias=monitor_control
+autostream_core.set_live_repeat_armed_ack -> autostream_monitor_control.set_live_repeat_armed_ack  alias=monitor_control
+autostream_webui_api.set_live_repeat_armed_ack -> autostream_monitor_control.set_live_repeat_armed_ack  alias=monitor_control
+autostream_core.set_live_repeat_armed -> autostream_monitor_control.set_live_repeat_armed  alias=monitor_control
+autostream_webui_api.set_live_repeat_armed -> autostream_monitor_control.set_live_repeat_armed  alias=monitor_control
+autostream_core.send_live_repeat_transport -> autostream_monitor_control.send_live_repeat_transport  alias=monitor_control
+autostream_webui_api.send_live_repeat_transport -> autostream_monitor_control.send_live_repeat_transport  alias=monitor_control

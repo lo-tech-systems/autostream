@@ -37,6 +37,7 @@ from autostream_webui_api import (
 )
 
 DIAL_ID = "test-dial-uuid-1234"
+REQUESTER = f"dial:{DIAL_ID}"
 TEST_APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"  # 20 lowercase hex-shaped chars
 
 
@@ -79,7 +80,7 @@ def _invoke_transport(
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
-        patch("autostream_webui_api.send_live_repeat_transport", transport_mock),
+        patch("autostream_monitor_control.send_live_repeat_transport", transport_mock),
         patch("autostream_webui_api.store",
               side_effect=AssertionError("route must not read the repeat part")),
     ):
@@ -102,7 +103,7 @@ def _invoke_arm(
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
-        patch("autostream_webui_api.set_live_repeat_armed_ack", arm_mock),
+        patch("autostream_monitor_control.set_live_repeat_armed_ack", arm_mock),
         patch("autostream_webui_api.apply_repeat_arm_request", legacy_mock),
     ):
         send_dial_repeat_arm_post_json(handler, MagicMock(), json_obj)
@@ -110,8 +111,8 @@ def _invoke_arm(
     return code, body, arm_mock, legacy_mock
 
 
-# _dial_seek_last (the rate-limit clock) is reset after every test by
-# tests/conftest.py's autouse _reset_dial_seek_rate_limit fixture.
+# The seek limiter is the intent table's; the store fixture resets it after
+# every test.
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +214,7 @@ class TestInvalidPosition:
                            "position_seconds": 0.0},
         )
         assert code == 200
-        transport.assert_called_once_with("seek", 0.0)
+        transport.assert_called_once_with("seek", 0.0, requester=REQUESTER)
 
     def test_valid_positive_position_forwarded(self):
         code, body, transport = _invoke_transport(
@@ -222,7 +223,7 @@ class TestInvalidPosition:
                            "position_seconds": 12.5},
         )
         assert code == 200
-        transport.assert_called_once_with("seek", 12.5)
+        transport.assert_called_once_with("seek", 12.5, requester=REQUESTER)
 
     def test_stop_ignores_position_seconds_field(self):
         code, body, transport = _invoke_transport(
@@ -230,7 +231,7 @@ class TestInvalidPosition:
             transport_ack={"ok": True, "state": "hold", "armed": False, "position_seconds": 0.0},
         )
         assert code == 200
-        transport.assert_called_once_with("stop", 0.0)
+        transport.assert_called_once_with("stop", requester=REQUESTER)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +249,7 @@ class TestRateLimit:
         assert body1["ok"] is True
         transport.assert_called_once()
 
-        # Second call reuses the same rate-limit clock (module-level state).
+        # Second call reuses the same limiter.
         code2, body2, transport2 = _invoke_transport(
             {"dial_id": DIAL_ID, "action": "seek", "position_seconds": 0},
             transport_ack=ack,
@@ -268,18 +269,18 @@ class TestRateLimit:
             transport.assert_called_once()
 
     def test_seek_after_the_interval_elapses_is_not_rate_limited(self):
-        import autostream_webui_api as api
+        import autostream_intents.table as intent_table
         ack = {"ok": True, "state": "replaying", "armed": True, "position_seconds": 0.0}
-        api._dial_seek_last = 0.0
-        with patch("time.monotonic", return_value=100.0):
-            code1, body1, _ = _invoke_transport(
-                {"dial_id": DIAL_ID, "action": "seek"}, transport_ack=ack,
-            )
+        now = [100.0]
+        intent_table.set_clock_for_tests(lambda: now[0])
+        code1, body1, _ = _invoke_transport(
+            {"dial_id": DIAL_ID, "action": "seek"}, transport_ack=ack,
+        )
         assert body1["ok"] is True
-        with patch("time.monotonic", return_value=101.5):
-            code2, body2, transport2 = _invoke_transport(
-                {"dial_id": DIAL_ID, "action": "seek"}, transport_ack=ack,
-            )
+        now[0] = 101.5
+        code2, body2, transport2 = _invoke_transport(
+            {"dial_id": DIAL_ID, "action": "seek"}, transport_ack=ack,
+        )
         assert body2["ok"] is True
         transport2.assert_called_once()
 
@@ -390,7 +391,7 @@ class TestArmRoute:
             {"dial_id": DIAL_ID, "armed": armed}, arm_ack=ack,
         )
         assert code == 200
-        arm_mock.assert_called_once_with(armed)
+        arm_mock.assert_called_once_with(armed, requester=REQUESTER)
         legacy_mock.assert_not_called()
 
     def test_arm_allowed_while_playing(self):
@@ -400,7 +401,7 @@ class TestArmRoute:
         code, body, arm_mock, _ = _invoke_arm({"dial_id": DIAL_ID, "armed": True}, arm_ack=ack)
         assert code == 200
         assert body["ok"] is True
-        arm_mock.assert_called_once_with(True)
+        arm_mock.assert_called_once_with(True, requester=REQUESTER)
 
     def test_ack_mapping_shared_with_transport_route(self):
         ack = {"ok": False, "error": "repeat_unavailable", "state": "idle", "armed": False}

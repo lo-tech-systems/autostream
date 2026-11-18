@@ -509,16 +509,16 @@ class TestFederationRepeat:
         assert data["ok"] is False
 
     def test_valid_armed_true_applies_and_returns_ok(self, tmp_path):
-        with patch("autostream_webui_api.set_live_repeat_armed", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
             code, data = self._call_repeat(tmp_path, json.dumps({"armed": True}).encode())
-        m.assert_called_once_with(True)
+        m.assert_called_once_with(True, requester="webui")
         assert code == 200
         assert data == {"ok": True, "armed": True}
 
     def test_valid_armed_false_applies_and_returns_ok(self, tmp_path):
-        with patch("autostream_webui_api.set_live_repeat_armed", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
             code, data = self._call_repeat(tmp_path, json.dumps({"armed": False}).encode())
-        m.assert_called_once_with(False)
+        m.assert_called_once_with(False, requester="webui")
         assert code == 200
         assert data["ok"] is True
 
@@ -538,7 +538,7 @@ class TestFederationRepeat:
         assert data["ok"] is False
 
     def test_daemon_rejection_returns_ok_false_200(self, tmp_path):
-        with patch("autostream_webui_api.set_live_repeat_armed", return_value=False):
+        with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value=None):
             code, data = self._call_repeat(tmp_path, json.dumps({"armed": True}).encode())
         assert code == 200
         assert data["ok"] is False

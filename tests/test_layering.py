@@ -32,7 +32,7 @@ owntone owntone_mini pin_pairing playback_stats player_service players rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliances dial_push dial_warnings log_policy output_intents output_usage repeat session".split()
+_L2 = "align announce appliances dial_push dial_warnings live_config log_policy monitor_control output_intents output_usage repeat session".split()
 _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
@@ -59,10 +59,10 @@ EXCEPTIONS: dict[tuple[str, str], str] = {}
 L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_repeat", "autostream_session"),
     ("autostream_repeat", "autostream_announce"),
-    ("autostream_repeat", "autostream_dial_push"),
     ("autostream_monitor_control", "autostream_repeat"),
     ("autostream_audio_monitor", "autostream_selfheal"),
     ("autostream_selfheal", "autostream_session"),
+    ("autostream_live_config", "autostream_monitor_control"),
     ("autostream_live_config", "autostream_session"),
     ("autostream_output_intents", "autostream_output_usage"),
 })
@@ -346,15 +346,11 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_bearing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_belt'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_stylus'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'send_live_repeat_transport'),
     ('A', 'autostream_webui_api', 'autostream_core', 'set_live_input_eq'),
     ('A', 'autostream_webui_api', 'autostream_core', 'set_live_input_gain'),
     ('A', 'autostream_webui_api', 'autostream_core', 'set_live_output_auto_trim'),
     ('A', 'autostream_webui_api', 'autostream_core', 'set_live_output_eq'),
     ('A', 'autostream_webui_api', 'autostream_core', 'set_live_output_gain'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'set_live_repeat_armed'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'set_live_repeat_armed_ack'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'set_live_repeat_enabled'),
     ('A', 'autostream_webui_api', 'autostream_core', 'update_live_dynamic_rate_matching'),
     ('A', 'autostream_webui_api', 'autostream_core', 'update_live_input_type'),
     ('A', 'autostream_webui_api', 'autostream_core', 'update_live_owntone_runtime'),

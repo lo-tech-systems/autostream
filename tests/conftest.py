@@ -305,15 +305,6 @@ def _reset_dial_repeat_store():
 
 
 @pytest.fixture(autouse=True)
-def _reset_dial_seek_rate_limit():
-    """Reset the dial repeat-seek rate-limit timer after each test."""
-    yield
-    m = _mod("autostream_webui_api")
-    if m is not None:
-        m._dial_seek_last = 0.0
-
-
-@pytest.fixture(autouse=True)
 def _reset_dial_repeat_worker():
     """Reset the dial repeat-transport worker's module state after each
     test — a fresh queue (so a leftover enqueued item from one test can

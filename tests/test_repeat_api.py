@@ -50,13 +50,13 @@ from autostream_config import (
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
     _SETTINGS_FIELDS,
-    _validate_repeat_codec,
-    _validate_repeat_target_minutes,
     send_repeat_post_json,
     send_settings_get_json,
     send_settings_post_json,
     send_status_json,
 )
+from autostream_live_config import _validate_repeat_target_minutes
+from autostream_live_config import _validate_repeat_codec
 import autostream_core as core
 from autostream_core import (
     AudioMonitor,
@@ -66,11 +66,11 @@ from autostream_core import (
     _session_nowplaying_start,
     _SessionTracker,
     _start_session_owntone,
-    send_live_repeat_transport,
-    set_live_repeat_armed,
-    set_live_repeat_armed_ack,
-    set_live_repeat_enabled,
 )
+from autostream_monitor_control import send_live_repeat_transport
+from autostream_monitor_control import set_live_repeat_armed
+from autostream_monitor_control import set_live_repeat_armed_ack
+from autostream_monitor_control import set_live_repeat_enabled
 from autostream_repeat import publish_from_daemon as _set_repeat_status
 from autostream_session import publish as _set_session_state
 import autostream_state
@@ -272,14 +272,14 @@ class TestP1GetApiSettings:
 class TestP1StoreRoundTrip:
     def test_enabled_round_trip(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True):
+        with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True):
             resp, code = _post_settings(state, "repeat.enabled", True)
         assert resp["ok"] is True
         assert store.snapshot().repeat.enabled is True
 
     def test_codec_round_trip(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True):
+        with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True):
             resp, code = _post_settings(state, "repeat.codec", "mp2_224")
         assert resp["ok"] is True
         assert store.snapshot().repeat.codec == "mp2_224"
@@ -293,7 +293,7 @@ class TestP1StoreRoundTrip:
 
     def test_target_minutes_round_trip(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True):
+        with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True):
             resp, code = _post_settings(state, "repeat.target_minutes", 80)
         assert resp["ok"] is True
         assert store.snapshot().repeat.target_minutes == 80
@@ -311,7 +311,7 @@ class TestP1StoreRoundTrip:
 class TestP2LiveApplyNotReload:
     def test_enabled_calls_live_setter(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.enabled", True)
         m.assert_called_once_with(True, "auto", 33)
         assert resp["live"] is True
@@ -323,7 +323,7 @@ class TestP2LiveApplyNotReload:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with fake_repeat({"codec": "auto"}), \
-             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert m.call_count == 2
         assert m.call_args_list[0].args == (False, "pcm", 33)
@@ -332,7 +332,7 @@ class TestP2LiveApplyNotReload:
 
     def test_enabled_does_not_debounce_coordinator_reload(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True), \
+        with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
              patch("autostream_webui_api.request_config_reload") as m_rel:
             _post_settings(state, "repeat.enabled", True)
@@ -341,7 +341,7 @@ class TestP2LiveApplyNotReload:
 
     def test_codec_does_not_debounce_coordinator_reload(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=True), \
+        with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True), \
              patch("autostream_webui_api._debounce_coordinator_reload") as m_deb, \
              patch("autostream_webui_api.request_config_reload") as m_rel:
             _post_settings(state, "repeat.codec", "mp2_160")
@@ -350,7 +350,7 @@ class TestP2LiveApplyNotReload:
 
     def test_live_failure_reports_live_error_but_still_persists(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.set_live_repeat_enabled", return_value=False):
+        with patch("autostream_monitor_control.set_live_repeat_enabled", return_value=False):
             resp, _ = _post_settings(state, "repeat.enabled", True)
         assert resp["ok"] is True
         assert resp["live"] is False
@@ -371,7 +371,7 @@ class TestP2LiveTargetMinutesPulse:
         path forwards it later, so nothing should be pushed now."""
         state, _ = _make_state(str(tmp_path))
         with fake_repeat({"target_minutes": 80}), \
-             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 80)
         assert resp["ok"] is True
         assert resp["live"] is True
@@ -383,7 +383,7 @@ class TestP2LiveTargetMinutesPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with fake_repeat({"target_minutes": 80}), \
-             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 80)
         assert resp["ok"] is True
         assert resp["live"] is True
@@ -396,7 +396,7 @@ class TestP2LiveTargetMinutesPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True, "codec": "mp2_224"}))
         with fake_repeat({"target_minutes": 80}), \
-             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 33)
         assert resp["ok"] is True
         assert resp["live"] is True
@@ -408,7 +408,7 @@ class TestP2LiveTargetMinutesPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with fake_repeat({"target_minutes": 80}), \
-             patch("autostream_webui_api.set_live_repeat_enabled", side_effect=[True, False]):
+             patch("autostream_monitor_control.set_live_repeat_enabled", side_effect=[True, False]):
             resp, _ = _post_settings(state, "repeat.target_minutes", 33)
         assert resp["ok"] is True
         assert resp["live"] is False
@@ -421,7 +421,7 @@ class TestP2LiveTargetMinutesPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with fake_repeat(None), \
-             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 33)
         assert resp["live"] is True
         assert m.call_count == 2
@@ -439,7 +439,7 @@ class TestP2LiveCodecPulse:
         path forwards it later, so nothing should be pushed now."""
         state, _ = _make_state(str(tmp_path))
         with fake_repeat({"codec": "mp2_192"}), \
-             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.codec", "mp2_192")
         assert resp["ok"] is True
         assert resp["live"] is True
@@ -451,7 +451,7 @@ class TestP2LiveCodecPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with fake_repeat({"codec": "mp2_192"}), \
-             patch("autostream_webui_api.set_live_repeat_enabled") as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.codec", "mp2_192")
         assert resp["ok"] is True
         assert resp["live"] is True
@@ -464,7 +464,7 @@ class TestP2LiveCodecPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True, "target_minutes": 80}))
         with fake_repeat({"codec": "mp2_192"}), \
-             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert resp["ok"] is True
         assert resp["live"] is True
@@ -476,7 +476,7 @@ class TestP2LiveCodecPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with fake_repeat({"codec": "mp2_192"}), \
-             patch("autostream_webui_api.set_live_repeat_enabled", side_effect=[True, False]):
+             patch("autostream_monitor_control.set_live_repeat_enabled", side_effect=[True, False]):
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert resp["ok"] is True
         assert resp["live"] is False
@@ -489,7 +489,7 @@ class TestP2LiveCodecPulse:
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
         with fake_repeat(None), \
-             patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
+             patch("autostream_monitor_control.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert resp["live"] is True
         assert m.call_count == 2
@@ -503,9 +503,9 @@ class TestP3RepeatEndpoint:
     def test_valid_armed_true_calls_live_setter(self):
         responses: list = []
         h = _handler(responses)
-        with patch("autostream_webui_api.set_live_repeat_armed", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
             send_repeat_post_json(h, MagicMock(), json.dumps({"armed": True}))
-        m.assert_called_once_with(True)
+        m.assert_called_once_with(True, requester="webui")
         body = responses[0]["body"]
         assert body == {"ok": True, "armed": True}
         assert responses[0]["code"] == 200
@@ -513,9 +513,9 @@ class TestP3RepeatEndpoint:
     def test_valid_armed_false_calls_live_setter(self):
         responses: list = []
         h = _handler(responses)
-        with patch("autostream_webui_api.set_live_repeat_armed", return_value=True) as m:
+        with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
             send_repeat_post_json(h, MagicMock(), json.dumps({"armed": False}))
-        m.assert_called_once_with(False)
+        m.assert_called_once_with(False, requester="webui")
         assert responses[0]["body"]["ok"] is True
 
     def test_missing_armed_is_400(self):
@@ -546,7 +546,7 @@ class TestP3RepeatEndpoint:
     def test_daemon_rejection_returns_ok_false_200(self):
         responses: list = []
         h = _handler(responses)
-        with patch("autostream_webui_api.set_live_repeat_armed", return_value=False):
+        with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value=None):
             send_repeat_post_json(h, MagicMock(), json.dumps({"armed": True}))
         assert responses[0]["code"] == 200
         assert responses[0]["body"]["ok"] is False
@@ -1850,10 +1850,10 @@ class TestApplyRepeatAck:
         client.repeat_seek.return_value = ack
         with patch("autostream_monitor_client._connected_monitor") as cm, \
                 patch("autostream_repeat.apply_repeat_ack",
-                      side_effect=lambda a: a) as apply:
+                      side_effect=lambda a, requester=None: a) as apply:
             cm.return_value.__enter__.return_value = client
             assert send_live_repeat_transport("seek", 0.0) is ack
-        apply.assert_called_once_with(ack)
+        apply.assert_called_once_with(ack, requester=None)
 
     def test_send_live_repeat_transport_stop_applies_the_ack(self):
         ack = _ack("repeat_stop", "fading_out", armed=False)
@@ -1861,10 +1861,10 @@ class TestApplyRepeatAck:
         client.repeat_stop.return_value = ack
         with patch("autostream_monitor_client._connected_monitor") as cm, \
                 patch("autostream_repeat.apply_repeat_ack",
-                      side_effect=lambda a: a) as apply:
+                      side_effect=lambda a, requester=None: a) as apply:
             cm.return_value.__enter__.return_value = client
             assert send_live_repeat_transport("stop") is ack
-        apply.assert_called_once_with(ack)
+        apply.assert_called_once_with(ack, requester=None)
 
     def test_send_live_repeat_transport_unreachable_returns_none(self):
         with patch("autostream_monitor_client._connected_monitor") as cm, \
@@ -1879,7 +1879,7 @@ class TestApplyRepeatAck:
         client.set_repeat_armed_ack.return_value = ack
         with patch("autostream_monitor_client._connected_monitor") as cm, \
                 patch("autostream_repeat.apply_repeat_ack",
-                      side_effect=lambda a: a) as apply:
+                      side_effect=lambda a, requester=None: a) as apply:
             cm.return_value.__enter__.return_value = client
             assert set_live_repeat_armed_ack(True) is ack
-        apply.assert_called_once_with(ack)
+        apply.assert_called_once_with(ack, requester=None)

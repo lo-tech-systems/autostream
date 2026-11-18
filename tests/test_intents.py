@@ -142,10 +142,11 @@ class TestValidators:
 # ---------------------------------------------------------------------------
 
 class TestRows:
-    def test_the_table_names_the_output_rows(self):
+    def test_the_table_names_the_output_and_repeat_rows(self):
         assert set(table.ROWS) == {
             "outputs.set", "output.pin.submit", "outputs.select_default",
             "outputs.deselect_all", "volume.step", "mute.set",
+            "repeat.arm", "repeat.transport", "repeat.seek",
         }
 
     @pytest.mark.parametrize("name", sorted(table.ROWS))

@@ -170,8 +170,9 @@ class StateHints:
     active track are compared with their values at the previous close, the
     first close being the baseline and an analysing track keeping the previous
     value. Immediate (non-batch) repeat and track Changes, from the ack path
-    and the identification workers, are ignored here: the ack path hints
-    repeat directly, and comparing them too would hint a seek twice. Kinds are
+    and the identification workers, are not compared here: the ack path
+    carries the "repeat" tag, which is sent as it is, and comparing them too
+    would hint a seek twice. Kinds are
     sent one call each, session first, then repeat, then track, as the
     coordinator did.
 

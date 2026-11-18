@@ -82,6 +82,7 @@ Handler = Callable[[Intent, float], Outcome]
 
 _BAD_BODY = "invalid_request_body"
 _PIN = v.text(error="invalid_pin", max_len=16, pattern=pairing.PIN_RE)
+_MAX_REPEAT_POSITION_S = 1e7
 
 
 def _row(name, args, required, origins, wait=0.0, limit=None) -> Row:
@@ -154,6 +155,26 @@ def _build_rows() -> dict:
             {"action", "default_level"},
             {Origin.USER},
             wait=3.0,
+        ),
+        _row(
+            "repeat.arm",
+            {"armed": v.boolean(error="invalid_armed")},
+            {"armed"},
+            {Origin.USER, Origin.SYSTEM},
+        ),
+        _row(
+            "repeat.transport",
+            {"action": v.choice("stop", error="invalid_action")},
+            {"action"},
+            {Origin.USER},
+        ),
+        _row(
+            "repeat.seek",
+            {"position": v.number(0, _MAX_REPEAT_POSITION_S, error="invalid_position")},
+            {"position"},
+            {Origin.USER},
+            # One seek a second appliance-wide, whoever asks.
+            limit=RateLimit(1.0),
         ),
     ]
     return {row.name: row for row in rows}

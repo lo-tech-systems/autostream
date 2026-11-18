@@ -43,6 +43,7 @@ import sys
 import threading
 import time
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Optional
 
@@ -70,7 +71,6 @@ from autostream_config import (
     DEFAULT_AIRPLAY_MODE,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
-    REPEAT_CODEC_CHOICES,
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
     VALID_AIRPLAY_MODES,
@@ -82,7 +82,6 @@ from autostream_config import (
     normalize_airplay_mode,
     normalize_input_type,
     normalize_output_usage_poll_interval,
-    normalize_repeat_codec,
     normalize_track_id_analysis_lead_in_seconds,
     normalize_track_id_refresh_seconds,
     normalize_track_id_track_change_silence_seconds,
@@ -111,15 +110,11 @@ from autostream_core import (
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
-    send_live_repeat_transport,
     set_live_input_eq,
     set_live_input_gain,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
-    set_live_repeat_armed,
-    set_live_repeat_armed_ack,
-    set_live_repeat_enabled,
     update_live_dynamic_rate_matching,
     update_live_input_type,
     update_live_owntone_runtime,
@@ -1105,11 +1100,6 @@ _REPEAT_KNOWN_ERRORS = frozenset({
     "invalid_position",
 })
 
-_DIAL_SEEK_MIN_INTERVAL_S = 1.0
-_dial_seek_lock = threading.Lock()
-_dial_seek_last = 0.0
-
-
 def _send_dial_repeat_ack(handler, ack: Optional[dict]) -> None:
     """Map a daemon transport/arm ack to the dial protocol's repeat response.
 
@@ -1147,8 +1137,8 @@ def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> No
 
     UUID-in-body auth via _dial_auth_gate, same as POST /api/dial/status.
     Start is expressed as seek 0 -- the dial never sends a nonzero position.
-    Seek is rate-limited to one call per second appliance-wide; stop is
-    idempotent (the daemon acks ok:true in every state) and never
+    Seek is rate-limited to one call per second appliance-wide, whoever asks
+    (the intent table holds the limit); stop is idempotent (the daemon acks ok:true in every state) and never
     rate-limited. Never reads the repeat block: the response is built
     entirely from the daemon's own transport ack.
     """
@@ -1167,15 +1157,20 @@ def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> No
             send_json(handler, 400, {"ok": False, "error": "invalid_position"})
             return
         position = float(raw)
-        now = time.monotonic()
-        with _dial_seek_lock:
-            global _dial_seek_last
-            if now - _dial_seek_last < _DIAL_SEEK_MIN_INTERVAL_S:
-                send_json(handler, 200, {"ok": False, "error": "rate_limited",
-                                         "appliance_id": get_appliance_id()})
-                return
-            _dial_seek_last = now
-    ack = send_live_repeat_transport(action, position)
+    requester = f"dial:{dial_id}"
+    if action == "seek":
+        reply = submit(Intent("repeat.seek", {"position": position}, Origin.USER, requester))
+    else:
+        reply = submit(Intent("repeat.transport", {"action": "stop"}, Origin.USER, requester))
+    if reply.error == "rate_limited":
+        send_json(handler, 200, {"ok": False, "error": "rate_limited",
+                                 "appliance_id": get_appliance_id()})
+        return
+    ack = reply.result.get("ack")
+    if reply.error == "invalid_position" and "ack" not in reply.result:
+        # Past the largest position the intent accepts; the daemon refuses it
+        # with the same token.
+        ack = {"ok": False, "error": "invalid_position"}
     _send_dial_repeat_ack(handler, ack)
 
 
@@ -1183,7 +1178,7 @@ def send_dial_repeat_arm_post_json(handler, state: WebUIState, json_obj: dict) -
     """POST /api/dial/repeat/arm -- arm/disarm repeat-replay from the dial.
 
     UUID-in-body auth via _dial_auth_gate, same as POST /api/dial/status.
-    Calls set_live_repeat_armed_ack() directly, never apply_repeat_arm_request
+    Submits the arm intent directly, never apply_repeat_arm_request
     (that string-body API stays the contract for POST /api/repeat, federation
     and the gateway). Arm is allowed in every daemon state -- the daemon's
     Armed/Disarmed cells decide what it means.
@@ -1195,8 +1190,8 @@ def send_dial_repeat_arm_post_json(handler, state: WebUIState, json_obj: dict) -
     if not isinstance(armed, bool):
         send_json(handler, 400, {"ok": False, "error": "invalid_armed"})
         return
-    ack = set_live_repeat_armed_ack(armed)
-    _send_dial_repeat_ack(handler, ack)
+    reply = submit(Intent("repeat.arm", {"armed": armed}, Origin.USER, f"dial:{dial_id}"))
+    _send_dial_repeat_ack(handler, reply.result.get("ack"))
 
 
 def _dial_outputs_list(parsed) -> Optional[list]:
@@ -1721,136 +1716,6 @@ def _live_silence(state: object, value: object) -> bool:
     return bool(update_live_silence_seconds(int(value)))
 
 
-def _validate_repeat_codec(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"Value must be one of {', '.join(REPEAT_CODEC_CHOICES)}")
-    v = value.strip().lower()
-    if v not in REPEAT_CODEC_CHOICES:
-        raise ValueError(f"Value must be one of {', '.join(REPEAT_CODEC_CHOICES)}")
-    return normalize_repeat_codec(v)
-
-
-# Browser-editable buffer-target choices: Vinyl / CD. Direct config-file
-# edits still accept any value in [REPEAT_TARGET_MINUTES_MIN,
-# REPEAT_TARGET_MINUTES_MAX] via normalize_repeat_target_minutes(); this
-# validator only guards the Settings-page field.
-_REPEAT_TARGET_MINUTES_CHOICES = (33, 80)
-
-
-def _validate_repeat_target_minutes(value: object) -> int:
-    if isinstance(value, bool):
-        raise ValueError(
-            f"Value must be one of {', '.join(str(c) for c in _REPEAT_TARGET_MINUTES_CHOICES)}"
-        )
-    try:
-        v = int(float(str(value).strip()))
-    except Exception:
-        raise ValueError(
-            f"Value must be one of {', '.join(str(c) for c in _REPEAT_TARGET_MINUTES_CHOICES)}"
-        )
-    if v not in _REPEAT_TARGET_MINUTES_CHOICES:
-        raise ValueError(
-            f"Value must be one of {', '.join(str(c) for c in _REPEAT_TARGET_MINUTES_CHOICES)}"
-        )
-    return v
-
-
-def _live_repeat_enabled(state: object, value: object) -> bool:
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    return bool(set_live_repeat_enabled(bool(value), snap.repeat.codec, snap.repeat.target_minutes))
-
-
-def _live_repeat_codec(state: object, value: object) -> bool:
-    """Apply a codec-pin change while repeat is enabled.
-
-    Same off/on toggle shape as _live_repeat_target_minutes() below (repeat
-    arena redesign): a plain set_enabled(enabled, new_codec)
-    call with the daemon already enabled used to just rewrite the pinned
-    codec in place, with no re-plan of the (now fixed-per-arena) codec the
-    daemon actually records at. Pulsing off then on drives the daemon's own
-    config-change re-plan (RepeatController::set_enabled() -- an internal
-    disable+enable when target_minutes or codec actually changes while
-    staying enabled) so a codec pin takes effect immediately instead of only
-    at the next unrelated enable/disable. See _live_repeat_target_minutes()'s
-    own docstring for the staleness caveat, which applies identically here.
-    """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    if not snap.repeat.enabled:
-        return True
-
-    new_codec = str(value)
-    status = store().snapshot().repeat.block or {}
-    previous_codec = status.get("codec")
-    if previous_codec == new_codec:
-        return True
-
-    off_ok = set_live_repeat_enabled(False, new_codec, snap.repeat.target_minutes)
-    on_ok = set_live_repeat_enabled(True, new_codec, snap.repeat.target_minutes)
-    return bool(off_ok) and bool(on_ok)
-
-
-def _live_repeat_target_minutes(state: object, value: object) -> bool:
-    """Apply a buffer-target change while repeat is enabled.
-
-    By the time a live_fn runs, send_settings_post_json has already
-    committed the new value to the settings store (settings.update() runs
-    before live_fn is called) -- snap.repeat.target_minutes here is already
-    the NEW value, not the one the daemon is currently running with. The
-    daemon's own last-reported target (the repeat part) is used as the
-    "previous value" instead: it reflects what is actually live, independent
-    of settings-store write timing, so it is the only value that can
-    correctly answer "did this change from what's running".
-
-    If repeat is currently disabled, the new target just persists -- the
-    enable path forwards the stored value, so there is nothing to push now.
-    If enabled and the daemon-reported target differs from the new value,
-    pulse the policy off then on so the daemon frees any held buffer
-    (including an active replay) and re-arms at the new target. If the
-    daemon-reported target already matches, no daemon traffic is sent.
-
-    Known bounded staleness: the daemon status cache refreshes on the
-    coordinator's poll cycle, so two target changes inside one poll
-    interval can compare against a pre-pulse reading and skip a push,
-    leaving the daemon on the earlier target until the next repeat policy
-    push (enable/codec change or reconnect resync). The buffer note
-    reflects the daemon's actual target, so the mismatch is visible and
-    recoverable by re-selecting the target.
-    """
-    from autostream_settings import SettingsStore as _SettingsStore
-    settings = getattr(state, "settings", None)
-    if not isinstance(settings, _SettingsStore):
-        return False
-    snap = settings.snapshot()
-    if not snap.repeat.enabled:
-        return True
-
-    try:
-        new_target = int(value)
-    except Exception:
-        return False
-
-    status = store().snapshot().repeat.block or {}
-    try:
-        previous_target = int(status.get("target_minutes"))
-    except (TypeError, ValueError):
-        previous_target = None
-
-    if previous_target == new_target:
-        return True
-
-    off_ok = set_live_repeat_enabled(False, snap.repeat.codec, new_target)
-    on_ok = set_live_repeat_enabled(True, snap.repeat.codec, new_target)
-    return bool(off_ok) and bool(on_ok)
-
-
 def _validate_audio_path(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError(f"Value must be one of {', '.join(AUDIO_PATH_CHOICES)}")
@@ -2203,12 +2068,50 @@ _SETTINGS_FIELDS: dict = {
     "track_identification.analysis_lead_in_seconds": _reg_settings_field("track_identification.analysis_lead_in_seconds", "track_identification", "analysis_lead_in_seconds", _validate_track_id_lead_in, _live_track_id, form_coerce=normalize_track_id_analysis_lead_in_seconds, live_class=LiveClass.RELOAD),
     "track_identification.refresh_seconds":     _reg_settings_field("track_identification.refresh_seconds", "track_identification", "refresh_seconds", _validate_track_id_refresh, _live_track_id, form_coerce=normalize_track_id_refresh_seconds, live_class=LiveClass.RELOAD),
     "track_identification.track_change_silence_seconds": _reg_settings_field("track_identification.track_change_silence_seconds", "track_identification", "track_change_silence_seconds", _validate_track_id_silence, _live_track_id, form_coerce=normalize_track_id_track_change_silence_seconds, live_class=LiveClass.RELOAD),
-    # Repeat recording (live: monitor daemon; NOT _debounce_coordinator_reload
-    # -- toggling this must not tear down the playback it governs)
-    "repeat.enabled":                           _reg_settings_field("repeat.enabled", "repeat", "enabled", _validate_bool, _live_repeat_enabled, live_class=LiveClass.LIVE),
-    "repeat.codec":                             _reg_settings_field("repeat.codec", "repeat", "codec", _validate_repeat_codec, _live_repeat_codec, live_class=LiveClass.LIVE),
-    "repeat.target_minutes":                    _reg_settings_field("repeat.target_minutes", "repeat", "target_minutes", _validate_repeat_target_minutes, _live_repeat_target_minutes, live_class=LiveClass.LIVE),
 }
+
+
+class _LateFields(Mapping):
+    """Fields whose validator and live function are registered by
+    autostream_live_config, which the web layer does not import: each row is
+    read from the schema when asked, so it is there once that module is."""
+
+    _PATHS = ("repeat.enabled", "repeat.codec", "repeat.target_minutes")
+
+    def __getitem__(self, path):
+        spec = get_field_spec(path) if path in self._PATHS else None
+        if spec is None:
+            raise KeyError(path)
+        return (spec.section, spec.key, spec.validate, spec.live_fn)
+
+    def __iter__(self):
+        return (p for p in self._PATHS if get_field_spec(p) is not None)
+
+    def __len__(self):
+        return sum(1 for _ in self)
+
+
+class _SettingsFieldTable(Mapping):
+    """The fields declared here, then the late ones."""
+
+    def __init__(self, own: dict, late: Mapping) -> None:
+        self._own = own
+        self._late = late
+
+    def __getitem__(self, path):
+        if path in self._own:
+            return self._own[path]
+        return self._late[path]
+
+    def __iter__(self):
+        yield from self._own
+        yield from self._late
+
+    def __len__(self):
+        return len(self._own) + len(self._late)
+
+
+_SETTINGS_FIELDS = _SettingsFieldTable(_SETTINGS_FIELDS, _LateFields())
 
 
 def send_settings_get_json(handler, state) -> None:
@@ -2398,7 +2301,9 @@ def apply_repeat_arm_request(body: str) -> tuple[int, dict]:
     if not isinstance(armed, bool):
         return 400, {"ok": False, "error": "armed must be true or false"}
 
-    ok = bool(set_live_repeat_armed(armed))
+    reply = submit(Intent("repeat.arm", {"armed": armed}, Origin.USER, "webui"))
+    ack = reply.result.get("ack")
+    ok = bool(ack and ack.get("ok"))
     if not ok:
         return 200, {"ok": False, "armed": armed, "error": "Could not update repeat arm state"}
 

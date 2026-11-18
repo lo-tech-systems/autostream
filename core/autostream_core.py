@@ -237,6 +237,8 @@ def _set_monitor_runtime_info(
 def _bind_intent_handlers() -> None:
     """Import the modules that handle intents; each binds its rows when
     imported."""
+    import autostream_live_config  # noqa: F401
+    import autostream_monitor_control  # noqa: F401
     import autostream_output_intents  # noqa: F401
 
 
@@ -1632,72 +1634,6 @@ def set_live_input_gain(
                     if mon.input_index == input_index:
                         mon.gain_db = float(gain_db)
         return ok
-
-
-def set_live_repeat_enabled(
-    enabled: bool,
-    codec: str,
-    target_minutes: Optional[int] = None,
-    socket_path: Optional[str] = None,
-) -> bool:
-    """Push the global repeat enable/codec/target-duration policy immediately
-    to autostream_monitor.
-
-    Live setter -- must NOT trigger a coordinator reload; this
-    persists no state of its own and is safe to call at any time.
-    target_minutes is the target-duration goal; None means "leave whatever
-    the daemon already has" (MonitorClient.set_repeat_enabled's own default
-    sentinel).
-    """
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return False
-        return client.set_repeat_enabled(bool(enabled), str(codec), target_minutes)
-
-
-def set_live_repeat_armed_ack(
-    armed: bool,
-    socket_path: Optional[str] = None,
-) -> Optional[dict]:
-    """Arm/disarm repeat replay immediately on autostream_monitor and return
-    the parsed daemon ack (None when the daemon is unreachable).
-
-    Session arm is runtime-only: no settings write accompanies
-    this call. Disarming during replay triggers the daemon's fade-out.
-    """
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return None
-        return autostream_repeat.apply_repeat_ack(client.set_repeat_armed_ack(bool(armed)))
-
-
-def set_live_repeat_armed(
-    armed: bool,
-    socket_path: Optional[str] = None,
-) -> bool:
-    """Arm/disarm repeat replay immediately on autostream_monitor.
-
-    Session arm is runtime-only: no settings write accompanies
-    this call. Disarming during replay triggers the daemon's fade-out.
-    """
-    ack = set_live_repeat_armed_ack(armed, socket_path)
-    return bool(ack and ack.get("ok"))
-
-
-def send_live_repeat_transport(
-    action: str,
-    position_seconds: float = 0.0,
-    socket_path: Optional[str] = None,
-) -> Optional[dict]:
-    """Send a repeat-replay transport command ("stop" or "seek") to
-    autostream_monitor and return the parsed daemon ack (None when the
-    daemon is unreachable)."""
-    with monitor_client._connected_monitor(socket_path) as client:
-        if client is None:
-            return None
-        if action == "stop":
-            return autostream_repeat.apply_repeat_ack(client.repeat_stop())
-        return autostream_repeat.apply_repeat_ack(client.repeat_seek(position_seconds))
 
 
 def apply_output_eq(

@@ -916,8 +916,9 @@ class TestCallSites:
 
 
 class TestRepeatAndLoopCallSites:
-    """The repeat acknowledgement hints after the cache and session state are
-    written and outside the cache lock; the coordinator's watches read the
+    """The repeat acknowledgement is published with the "repeat" tag after the
+    cache is written and outside the cache lock, and the state hints send it
+    on as it is; the coordinator's watches read the
     cached repeat state and the identified track."""
 
     @staticmethod
@@ -934,7 +935,7 @@ class TestRepeatAndLoopCallSites:
         return {"type": "ack", "command": "repeat_seek", "ok": ok,
                 "state": state, "armed": True, "position_seconds": 5.0}
 
-    def _apply(self, ack, cached=True):
+    def _apply(self, ack, cached=True, requester=None):
         seen = []
 
         def notify(*kinds, **kw):
@@ -942,17 +943,18 @@ class TestRepeatAndLoopCallSites:
             if free:
                 repeat._overlay_lock.release()
             seen.append((kinds, kw, free,
-                         state.store().snapshot().repeat.block["replay"]["active"],
-                         state.store().snapshot().session.active))
+                         state.store().snapshot().repeat.block["replay"]["active"]))
 
+        n = MagicMock(side_effect=notify)
         repeat.publish_from_daemon(self._block() if cached else None)
         session.publish(False, None)
+        handle = state.store().subscribe(dp.StateHints(notify=n))
         try:
             with patch("autostream_repeat._rearm_replay_identification"), \
-                 patch("autostream_repeat._announce_replay_playing"), \
-                 patch("autostream_repeat.notify_state_changed", side_effect=notify) as n:
-                result = repeat.apply_repeat_ack(ack)
+                 patch("autostream_repeat._announce_replay_playing"):
+                result = repeat.apply_repeat_ack(ack, requester=requester)
         finally:
+            state.store().unsubscribe(handle)
             repeat.publish_from_daemon(None)
             session.publish(False, None)
         return result, n, seen
@@ -961,12 +963,15 @@ class TestRepeatAndLoopCallSites:
         ack = self._ack()
         result, notify, seen = self._apply(ack)
         assert result is ack
-        notify.assert_called_once_with("repeat")
-        kinds, kw, lock_free, replay_active, session_active = seen[0]
-        assert kinds == ("repeat",) and kw == {}
+        notify.assert_called_once_with("repeat", except_dial=None)
+        kinds, kw, lock_free, replay_active = seen[0]
+        assert kinds == ("repeat",) and kw == {"except_dial": None}
         assert lock_free is True
         assert replay_active is True
-        assert session_active is True
+
+    def test_a_repeat_ack_from_a_dial_leaves_that_dial_out_of_the_hint(self):
+        _, notify, _ = self._apply(self._ack(), requester="dial:abc")
+        notify.assert_called_once_with("repeat", except_dial="abc")
 
     def test_a_failed_ack_does_not_hint(self):
         _, notify, _ = self._apply(self._ack(ok=False))

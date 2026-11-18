@@ -1,0 +1,3 @@
+# The repeat policy settings (validators and live functions) moved from the web API into the live configuration module.
+autostream_webui_api._validate_repeat_codec -> autostream_live_config._validate_repeat_codec  alias=live_config
+autostream_webui_api._validate_repeat_target_minutes -> autostream_live_config._validate_repeat_target_minutes  alias=live_config
