@@ -593,8 +593,13 @@ class OutputAuthority:
                 out.append(u)
         return out
 
-    def _selected_locked(self) -> list:
-        return [u for u in self._ordered_units_locked() if u.desired.selected]
+    def _selected_locked(self, online_only: bool = False) -> list:
+        """The units desired selected; with *online_only*, only those the
+        player has a row for."""
+        return [
+            u for u in self._ordered_units_locked()
+            if u.desired.selected and not (online_only and u.reported is None)
+        ]
 
     def _muted_all_locked(self) -> bool:
         selected = [u for u in self._units.values() if u.desired.selected]
@@ -602,13 +607,14 @@ class OutputAuthority:
             return all(u.desired.muted for u in selected)
         return self._mute_held
 
-    def _master_locked(self) -> Optional[int]:
+    def _master_locked(self, online_only: bool = False) -> Optional[int]:
         """The level the selected speakers stand at, as a dial shows it: the
-        mean of their intended levels, rounded up."""
+        mean of their intended levels, rounded up. With *online_only*, the
+        speakers the player has not lost."""
         levels = [
             _clamp(u.desired.remembered_level if u.desired.muted and u.desired.remembered_level is not None
                    else u.desired.volume)
-            for u in self._selected_locked()
+            for u in self._selected_locked(online_only)
         ]
         if not levels:
             return None
@@ -694,6 +700,8 @@ class OutputAuthority:
             event_source=self._event_kind, muted_all=self._muted_all_locked(),
             silence_chosen=self._silence_chosen, start_failure=self._start_failure,
             device_events=self._delivers_device_events, include_tv_supported=self._include_tv_supported,
+            master_volume=self._master_locked(online_only=True),
+            selected_count=len(self._selected_locked(online_only=True)),
         )
 
     def _publish_locked(self, origin: Optional[Origin], requester: Optional[str]):
@@ -968,15 +976,61 @@ class OutputAuthority:
                 current = round(sum(u.desired.volume for u in audible) / len(audible))
                 new_master = _clamp(current + int(delta))
                 master = new_master
-                changed = []
-                for u in audible:
-                    d = u.desired
-                    new = new_master if current == 0 else _clamp(round(d.volume * new_master / current))
-                    if new != d.volume:
-                        d.volume = new
-                        self._stamp(u, cause, now)
-                        changed.append(u)
+                changed = self._scale_locked(audible, new_master, current, cause, now)
             future = self._queue_volume_writes_locked(changed)
+            pending = self._publish_locked(cause, requester)
+        return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
+
+    def _scale_locked(self, audible: list, level: int, base, cause: Origin, now: float) -> list:
+        """Move *audible* so a group standing at *base* stands at *level*, each
+        unit keeping its proportion. A zero base puts every unit at *level*.
+        Returns the units whose level moved."""
+        changed = []
+        for u in audible:
+            d = u.desired
+            new = level if base == 0 else _clamp(round(d.volume * level / base))
+            if new != d.volume:
+                d.volume = new
+                self._stamp(u, cause, now)
+                changed.append(u)
+        return changed
+
+    def set_master(self, level: int, cause: Origin, *, default_level: int,
+                   requester: Optional[str] = None) -> Applied:
+        """Bring the selected speakers the player has to *level* together,
+        keeping their proportions. A muted selection is restored first, unless
+        the level is 0, which leaves it muted."""
+        self._touched = True
+        now = self._clock()
+        level = _clamp(level)
+        with self._lock:
+            if not self._connected:
+                return self._refused("not_connected")
+            selected = self._selected_locked(online_only=True)
+            if not selected:
+                return self._refused("no_active_outputs")
+            restored = False
+            changed = []
+            if self._muted_all_locked():
+                if level == 0:
+                    return Applied(
+                        version=store().snapshot().version, outcome=None,
+                        master=self._master_locked(online_only=True), muted=True,
+                    )
+                changed = self._unmute_all_locked(cause, default_level, now)
+                restored = True
+            audible = [u for u in selected if not u.desired.muted]
+            if not audible:
+                # Only an offline speaker is still unmuted: nothing to scale.
+                return Applied(
+                    version=store().snapshot().version, outcome=None,
+                    master=self._master_locked(online_only=True), muted=True,
+                )
+            base = sum(u.desired.volume for u in audible) / len(audible)
+            moved = self._scale_locked(audible, level, base, cause, now)
+            changed = changed + [u for u in moved if u not in changed]
+            future = self._queue_volume_writes_locked(changed)
+            master = self._master_locked(online_only=True)
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
 

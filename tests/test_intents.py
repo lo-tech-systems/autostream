@@ -153,7 +153,7 @@ class TestRows:
     def test_the_table_names_every_row(self):
         assert set(table.ROWS) == {
             "outputs.set", "output.pin.submit", "outputs.select_default", "outputs.want_default",
-            "outputs.deselect_all", "volume.step", "mute.set",
+            "outputs.deselect_all", "volume.step", "volume.set", "mute.set",
             "repeat.arm", "repeat.transport", "repeat.seek", "input.eq.set",
             "output.eq.set", "output.eq.reset",
             "settings.apply", "settings.save", "settings.reload", "settings.form_apply",
@@ -216,6 +216,15 @@ class TestRows:
         reply, _ = self._submit_real("outputs.set", {"id": "7", "selected": 1})
         assert reply.error == "invalid_request_body"
 
+    def test_volume_set_refuses_a_level_out_of_range(self):
+        for level in (-1, 101, True, 5.5):
+            reply, seen = self._submit_real("volume.set", {"level": level, "default_level": 30})
+            assert (reply.error, seen) == ("invalid_level", [])
+        reply, seen = self._submit_real("volume.set", {"level": 100, "default_level": 30})
+        assert reply.ok and seen[0][0].args["level"] == 100
+        reply, _ = self._submit_real("volume.set", {"level": 5})
+        assert reply.error == "invalid_args"
+
     def test_rows_that_take_no_arguments_refuse_any(self):
         reply, _ = self._submit_real("outputs.deselect_all", {"force": True}, Origin.SESSION)
         assert reply.error == "invalid_args"
@@ -244,6 +253,76 @@ class TestRows:
         assert seen[0][1] == 3.0
         _, seen = self._submit_real("outputs.deselect_all", {}, Origin.SESSION)
         assert seen[0][1] == 0.0
+
+
+EXPOSED_PLAYBACK = {
+    "outputs.set", "output.pin.submit", "outputs.want_default", "volume.step", "volume.set",
+    "mute.set", "output.eq.set", "output.eq.reset", "repeat.arm", "repeat.transport", "repeat.seek",
+}
+
+
+class TestRoles:
+    def test_the_exposed_rows_and_their_roles(self):
+        exposed = {n for n, r in table.ROWS.items() if r.exposed}
+        assert exposed == EXPOSED_PLAYBACK | {"dials.authorize", "dials.revoke"}
+        for name, row in table.ROWS.items():
+            want = table.Role.PLAYBACK if name in EXPOSED_PLAYBACK else table.Role.ADMIN
+            assert row.role is want, name
+
+    def test_the_protocol_module_names_exactly_the_exposed_rows(self):
+        import autostream_protocol
+        names = autostream_protocol.EXPOSED_INTENTS
+        assert set(names) == {n for n, r in table.ROWS.items() if r.exposed}
+        assert len(set(names)) == len(names)
+
+    def test_role_is_exported(self):
+        assert intents.Role is table.Role and "Role" in intents.__all__
+
+    def _ask(self, name, args, role, origin=Origin.USER):
+        tbl = _Table()
+        seen = []
+        tbl.bind(name, lambda intent, wait: seen.append(intent) or Outcome(ok=True), owner="test")
+        reply = tbl.submit(Intent(name, args, origin, "webui", role=role))
+        return reply, seen
+
+    def test_a_playback_caller_is_refused_an_admin_row_as_admin_required(self):
+        reply, seen = self._ask("dials.revoke", {"uuid": "u"}, table.Role.PLAYBACK)
+        assert (reply.ok, reply.error, seen) == (False, "admin_required", [])
+
+    def test_a_caller_with_no_role_is_not_allowed(self):
+        reply, seen = self._ask("volume.step", {"delta": 1, "default_level": 5}, table.Role.NONE)
+        assert (reply.error, seen) == ("not_allowed", [])
+
+    def test_playback_reaches_a_playback_row_and_admin_reaches_all(self):
+        assert self._ask("volume.step", {"delta": 1, "default_level": 5}, table.Role.PLAYBACK)[0].ok
+        assert self._ask("dials.revoke", {"uuid": "u"}, table.Role.ADMIN)[0].ok
+
+    def test_the_role_check_is_for_users_only(self):
+        reply, _ = self._ask("settings.reload", {"reason": "x"}, table.Role.NONE, Origin.SYSTEM)
+        assert reply.ok
+
+    def test_the_role_reaches_the_handler(self):
+        _, seen = self._ask("volume.step", {"delta": 1, "default_level": 5}, table.Role.PLAYBACK)
+        assert seen[0].role is table.Role.PLAYBACK
+
+    def test_an_intent_defaults_to_admin(self):
+        assert Intent("x", {}, Origin.USER, "webui").role is table.Role.ADMIN
+
+    def test_the_role_check_comes_before_the_arguments(self):
+        reply, _ = self._ask("dials.revoke", {}, table.Role.PLAYBACK)
+        assert reply.error == "admin_required"
+
+    @pytest.mark.parametrize("name,args", [
+        ("dials.authorize", {"uuid": 5, "name": "n"}),
+        ("dials.authorize", {"uuid": "u", "name": ["n"]}),
+        ("dials.authorize", {"uuid": "u" * 65, "name": "n"}),
+        ("dials.revoke", {"uuid": {"a": 1}}),
+        ("dials.revoke", {"uuid": " "}),
+    ])
+    def test_the_dial_rows_refuse_text_that_is_not_text(self, name, args):
+        tbl = _Table()
+        tbl.bind(name, ok_handler, owner="test")
+        assert tbl.submit(Intent(name, args, Origin.USER, "webui")).error == "invalid_args"
 
 
 # ---------------------------------------------------------------------------

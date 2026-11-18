@@ -658,6 +658,124 @@ class TestStepVolume:
         assert mine and all(c.requester == "dial:abc" for c in mine[:1])
 
 
+class TestSetMaster:
+    def start(self, w, *levels):
+        merge(w, [row(i + 1, selected=True, volume_percent=v) for i, v in enumerate(levels)])
+        w.fb.calls.clear()
+
+    def levels(self):
+        return [u.volume for u in snap().units]
+
+    def test_it_scales_the_group_in_proportion(self, w):
+        self.start(w, 40, 60)
+        applied = w.a.set_master(75, Origin.USER, default_level=50)
+        assert self.levels() == [60, 90]
+        assert applied.master == 75 and applied.muted is False and applied.restored is False
+        assert dict(w.fb.updates()) == {"1": dict(volume_percent=60, timeout=3.0),
+                                        "2": dict(volume_percent=90, timeout=3.0)}
+
+    def test_the_reply_master_is_the_published_master(self, w):
+        self.start(w, 33, 50, 71)
+        applied = w.a.set_master(64, Origin.USER, default_level=50)
+        assert applied.master == snap().master_volume
+        assert abs(snap().master_volume - 64) <= 1
+
+    def test_a_group_clamped_at_the_top_ends_further_from_the_level(self, w):
+        self.start(w, 100, 50)
+        w.a.set_master(90, Origin.USER, default_level=50)
+        assert self.levels() == [100, 60]
+        assert snap().master_volume == 80
+
+    def test_a_zero_base_puts_every_unit_at_the_level(self, w):
+        self.start(w, 0, 0)
+        w.a.set_master(30, Origin.USER, default_level=50)
+        assert self.levels() == [30, 30]
+
+    def test_a_unit_that_does_not_move_is_not_written(self, w):
+        self.start(w, 40, 60)
+        w.a.set_master(50, Origin.USER, default_level=50)
+        assert w.fb.updates() == []
+
+    def test_level_zero_while_muted_changes_nothing(self, w):
+        self.start(w, 40, 60)
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        applied = w.a.set_master(0, Origin.USER, default_level=50)
+        assert w.fb.calls == [] and applied.outcome is None and applied.muted is True
+        assert snap().muted_all is True
+
+    def test_a_level_while_muted_restores_then_scales(self, w):
+        self.start(w, 40, 60)
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        applied = w.a.set_master(25, Origin.USER, default_level=50)
+        assert applied.restored is True and snap().muted_all is False
+        assert self.levels() == [20, 30]
+        assert dict(w.fb.updates()) == {"1": dict(volume_percent=20, timeout=3.0),
+                                        "2": dict(volume_percent=30, timeout=3.0)}
+
+    def test_a_unit_muted_on_its_own_is_left_alone(self, w):
+        self.start(w, 40, 60)
+        w.a.mute("1", Origin.USER)
+        w.a.set_master(30, Origin.USER, default_level=50)
+        p = snap()
+        assert p.unit("1").muted is True and p.unit("1").volume == 40
+        assert p.unit("2").volume == 30
+
+    def test_an_offline_selected_unit_is_left_alone_and_not_counted(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=80)])
+        merge(w, [row(2, selected=True, volume_percent=80)], boot="b1")
+        p = snap()
+        assert p.unit("1").offline and p.selected_count == 1 and p.master_volume == 80
+        w.fb.calls.clear()
+        applied = w.a.set_master(40, Origin.USER, default_level=50)
+        assert snap().unit("1").volume == 40 and snap().unit("2").volume == 40
+        assert [uid for uid, _ in w.fb.updates()] == ["2"]
+        assert applied.master == 40 and snap().master_volume == 40
+
+    def test_only_offline_units_selected_is_no_active_outputs(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        merge(w, [], boot="b1")
+        assert w.a.set_master(10, Origin.USER, default_level=50).refused == "no_active_outputs"
+
+    def test_no_selection_and_no_player_are_refused(self, w):
+        merge(w, [row(1)])
+        assert w.a.set_master(5, Origin.USER, default_level=50).refused == "no_active_outputs"
+        w.a.mark_unreachable_for_tests()
+        assert w.a.set_master(5, Origin.USER, default_level=50).refused == "not_connected"
+
+    def test_the_requester_is_on_the_change(self, w):
+        self.start(w, 40)
+        changes = []
+        state.store().subscribe(changes.append)
+        w.a.set_master(60, Origin.USER, default_level=50, requester="dial:abc")
+        mine = [c for c in changes if "outputs" in c.parts]
+        assert mine and mine[0].requester == "dial:abc"
+
+
+class TestMasterFields:
+    def test_none_and_zero_with_nothing_selected(self, w):
+        merge(w, [row(1)])
+        assert (snap().master_volume, snap().selected_count) == (None, 0)
+
+    def test_the_mean_rounded_up_and_the_count(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=51),
+                  row(3)])
+        assert (snap().master_volume, snap().selected_count) == (46, 2)
+
+    def test_a_muted_unit_counts_at_its_remembered_level(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=60)])
+        w.a.mute_all(Origin.USER)
+        assert snap().master_volume == 50
+
+    def test_both_move_the_outputs_digest(self, w):
+        from autostream_state.parts import DIGESTS
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        before = DIGESTS["outputs"](snap())
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=40)])
+        assert DIGESTS["outputs"](snap()) != before
+
+
 class TestMute:
     def test_mute_all_remembers_levels_and_silences_each_audible_unit(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=0), row(3)])

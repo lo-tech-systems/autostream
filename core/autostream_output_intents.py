@@ -240,6 +240,17 @@ def _volume_step(intent: Intent, wait: float) -> Outcome:
     return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
 
 
+def _volume_set(intent: Intent, wait: float) -> Outcome:
+    """Bring the volume of every selected speaker to a level together,
+    keeping their proportions. A set above 0 while muted is a restore."""
+    args = intent.args
+    applied = get_authority().set_master(
+        args["level"], Origin.USER, default_level=args["default_level"], requester=intent.requester,
+    )
+    result = _refusal(applied) if applied.refused is not None else _step_levels(intent, wait, applied)
+    return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
+
+
 def _mute_set(intent: Intent, wait: float) -> Outcome:
     """Mute every selected speaker, or restore them to their remembered
     levels. Both are idempotent."""
@@ -285,4 +296,5 @@ bind("outputs.select_default", _select_default, owner=_OWNER)
 bind("outputs.want_default", _want_default, owner=_OWNER)
 bind("outputs.deselect_all", _deselect_all, owner=_OWNER)
 bind("volume.step", _volume_step, owner=_OWNER)
+bind("volume.set", _volume_set, owner=_OWNER)
 bind("mute.set", _mute_set, owner=_OWNER)

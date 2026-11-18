@@ -89,6 +89,10 @@ class TestDefaults:
         assert state.MISSING_RATE_TEXTS == (
             state.RATE_MATCHING_NOTE_DEFAULT, state.SAMPLE_RATE_TEXT_NOT_RUNNING)
 
+    def test_the_outputs_part_starts_without_a_master(self):
+        p = state.OutputsPart()
+        assert (p.master_volume, p.selected_count) == (None, 0)
+
     def test_every_part_has_a_digest(self):
         assert set(DIGESTS) == set(PART_NAMES)
 

@@ -19,6 +19,16 @@ from typing import Optional
 
 PROTOCOL = 4
 
+# The intents a client may send to POST /api/v1/intents/<name>. Any other name
+# is answered unknown_intent.
+EXPOSED_INTENTS = (
+    "outputs.set", "output.pin.submit", "outputs.want_default",
+    "volume.step", "volume.set", "mute.set",
+    "output.eq.set", "output.eq.reset",
+    "repeat.arm", "repeat.transport", "repeat.seek",
+    "dials.authorize", "dials.revoke",
+)
+
 # A dial's id and an appliance's id are both 20 lowercase hex characters.
 APPLIANCE_ID_RE = re.compile(r"[0-9a-f]{20}")
 CLIENT_RE = re.compile(r"(dial|peer):([0-9a-f]{20})")

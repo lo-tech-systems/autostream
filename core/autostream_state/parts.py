@@ -241,6 +241,8 @@ class OutputsPart:
     device_events: bool = False             # the player reports receiver commands and device volumes
     include_tv_supported: bool = False      # rows carry has_homepods: an Apple TV's HomePods can play without it
     placeholder_id: str = ""                # the id of the default speaker's card when it has no unit behind it
+    master_volume: Optional[int] = None     # mean intended level of the selected speakers the player has; None when there are none
+    selected_count: int = 0                 # how many speakers that is
 
     def unit(self, unit_id: str) -> Optional[OutputUnitView]:
         for u in self.units:
@@ -417,7 +419,7 @@ def _outputs_digest(p: OutputsPart) -> tuple:
         ),
         p.connected, p.muted_all, p.silence_chosen,
         p.start_failure.seq if p.start_failure is not None else 0,
-        p.device_events, p.include_tv_supported,
+        p.device_events, p.include_tv_supported, p.master_volume, p.selected_count,
     )
 
 

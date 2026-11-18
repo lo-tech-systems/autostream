@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Callable, Mapping, Optional
 
 import autostream_pin_pairing as pairing
@@ -31,6 +32,14 @@ class HandlerTaken(RuntimeError):
     """A second owner tried to bind a row that another module already handles."""
 
 
+class Role(IntEnum):
+    """What a caller may ask for. A row names the least role it accepts."""
+
+    NONE = 0
+    PLAYBACK = 1
+    ADMIN = 2
+
+
 @dataclass(frozen=True)
 class Intent:
     name: str  # "outputs.set", "volume.step", ...
@@ -40,6 +49,9 @@ class Intent:
     # Route-local objects a handler needs. Never validated, never logged,
     # never kept.
     context: object = field(default=None, compare=False, repr=False)
+    # Checked against the row only for a USER request. In-process callers keep
+    # the default, so they are never refused on role.
+    role: Role = Role.ADMIN
 
 
 @dataclass(frozen=True)
@@ -66,6 +78,8 @@ class Row:
     origins: frozenset  # ADOPTED and BACKEND never appear
     wait: float = 0.0  # default bound on a backend outcome, seconds
     limit: Optional[RateLimit] = None  # appliance-wide, one timestamp per row
+    role: Role = Role.ADMIN  # the least role a USER request needs
+    exposed: bool = False  # served by POST /api/v1/intents/<name>
 
 
 @dataclass(frozen=True)
@@ -83,11 +97,16 @@ Handler = Callable[[Intent, float], Outcome]
 _BAD_BODY = "invalid_request_body"
 _PIN = v.text(error="invalid_pin", max_len=16, pattern=pairing.PIN_RE)
 _MAX_REPEAT_POSITION_S = 1e7
-_EQ_DB = v.number(-10, 10, error="EQ gain must be between -10 and 10 dB")
+_DIAL_TEXT = v.text(error="invalid_args", max_len=64)
+_EQ_DB =v.number(-10, 10, error="EQ gain must be between -10 and 10 dB")
 
 
-def _row(name, args, required, origins, wait=0.0, limit=None) -> Row:
-    return Row(name, args, frozenset(required), frozenset(origins), wait, limit)
+def _row(name, args, required, origins, wait=0.0, limit=None, role=Role.ADMIN, exposed=False) -> Row:
+    return Row(name, args, frozenset(required), frozenset(origins), wait, limit, role, exposed)
+
+
+# The rows a dial, a peer or a page without a PIN may use over the protocol.
+_PLAY = {"role": Role.PLAYBACK, "exposed": True}
 
 
 def _output_fields() -> dict:
@@ -112,6 +131,7 @@ def _build_rows() -> dict:
             {"id", "selected"},
             {Origin.USER, Origin.SYSTEM},
             wait=3.0,
+            **_PLAY,
         ),
         _row(
             "output.pin.submit",
@@ -124,6 +144,7 @@ def _build_rows() -> dict:
             {"id", "pin"},
             {Origin.USER},
             wait=3.0,
+            **_PLAY,
         ),
         _row(
             "outputs.select_default",
@@ -136,7 +157,7 @@ def _build_rows() -> dict:
             {"name", "volume"},
             {Origin.SESSION},
         ),
-        _row("outputs.want_default", {"wanted": v.boolean(error=_BAD_BODY)}, {"wanted"}, {Origin.USER}),
+        _row("outputs.want_default", {"wanted": v.boolean(error=_BAD_BODY)}, {"wanted"}, {Origin.USER}, **_PLAY),
         _row("outputs.deselect_all", {}, (), {Origin.SESSION, Origin.USER, Origin.POLICY}),
         _row("receiver.pause", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),
         _row("receiver.play", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),
@@ -150,6 +171,19 @@ def _build_rows() -> dict:
             {"delta", "default_level"},
             {Origin.USER},
             wait=3.0,
+            **_PLAY,
+        ),
+        _row(
+            "volume.set",
+            {
+                # No clamp: a level out of range is refused, not moved.
+                "level": v.integer(0, 100, error="invalid_level"),
+                "default_level": v.integer(0, 100, error=_BAD_BODY),
+            },
+            {"level", "default_level"},
+            {Origin.USER},
+            wait=3.0,
+            **_PLAY,
         ),
         _row(
             "mute.set",
@@ -160,6 +194,7 @@ def _build_rows() -> dict:
             {"action", "default_level"},
             {Origin.USER},
             wait=3.0,
+            **_PLAY,
         ),
         _row(
             "input.eq.set",
@@ -177,19 +212,22 @@ def _build_rows() -> dict:
             {"fields": v.pairs(error=_BAD_BODY)},
             {"fields"},
             {Origin.USER},
+            **_PLAY,
         ),
-        _row("output.eq.reset", {}, (), {Origin.USER}),
+        _row("output.eq.reset", {}, (), {Origin.USER}, **_PLAY),
         _row(
             "repeat.arm",
             {"armed": v.boolean(error="invalid_armed")},
             {"armed"},
             {Origin.USER, Origin.SYSTEM},
+            **_PLAY,
         ),
         _row(
             "repeat.transport",
             {"action": v.choice("stop", error="invalid_action")},
             {"action"},
             {Origin.USER},
+            **_PLAY,
         ),
         _row(
             "repeat.seek",
@@ -198,6 +236,7 @@ def _build_rows() -> dict:
             {Origin.USER},
             # One seek a second appliance-wide, whoever asks.
             limit=RateLimit(1.0),
+            **_PLAY,
         ),
         _row(
             "settings.apply",
@@ -332,17 +371,18 @@ def _build_rows() -> dict:
         ),
         _row(
             "dials.authorize",
-            # Passed as posted: the dial entry is written with exactly these
-            # strings.
-            {"uuid": v.anything(), "name": v.anything()},
+            # The handler checks the characters of the name.
+            {"uuid": _DIAL_TEXT, "name": _DIAL_TEXT},
             {"uuid", "name"},
             {Origin.USER},
+            exposed=True,
         ),
         _row(
             "dials.revoke",
-            {"uuid": v.anything()},
+            {"uuid": _DIAL_TEXT},
             {"uuid"},
             {Origin.USER},
+            exposed=True,
         ),
         _row(
             "log.level.set",
@@ -406,6 +446,8 @@ class _Table:
             return self._refuse(intent, "unknown_intent")
         if intent.origin in _NEVER_SUBMITTED or intent.origin not in row.origins:
             return self._refuse(intent, "origin_not_allowed")
+        if intent.origin is Origin.USER and intent.role < row.role:
+            return self._refuse(intent, "admin_required" if intent.role else "not_allowed")
 
         checked = self._check_args(row, intent.args)
         if isinstance(checked, str):
@@ -422,6 +464,7 @@ class _Table:
             origin=intent.origin,
             requester=intent.requester,
             context=intent.context,
+            role=intent.role,
         )
 
         refusal = self._take_limit(row, frozen.args)
