@@ -165,6 +165,14 @@ static void test_plain_write_byte_exact()
     CHECK(got == block, "bytes read back match exactly what was written");
 
     CHECK(fx.nothing_more_available(), "no extra bytes were queued behind the block");
+
+    FifoWriter::Counters c = writer.counters();
+    CHECK(c.opens == 1, "one successful open");
+    CHECK(c.pipe_bytes == ::fcntl(fx.reader_fd, F_GETPIPE_SZ), "pipe_bytes is the granted pipe size");
+    CHECK(c.no_reader_bytes == 0 && c.overflow_bytes == 0 && c.error_bytes == 0 && c.stranded_bytes == 0,
+          "a delivered block loses nothing");
+    CHECK(c.overflow_events == 0 && c.write_errors == 0 && c.stall_events == 0, "no events on a clean write");
+    CHECK(c.backlog_bytes == 0 && c.backlog_peak_bytes == 0, "nothing was queued");
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +205,15 @@ static void test_backlog_fills_and_drains_in_order()
     bool ok = writer.write(fill.data(), fill.size());
     CHECK(!ok, "write() reports false once the pipe cannot take the whole block");
 
+    {
+        FifoWriter::Counters c = writer.counters();
+        CHECK(c.stall_events == 1, "the first failed write starts one stall streak");
+        CHECK(c.backlog_bytes == tail_len, "the tail the pipe would not take is queued");
+        CHECK(c.backlog_peak_bytes == tail_len, "the peak follows the queued tail");
+        CHECK(c.pipe_bytes == pipe_cap, "pipe_bytes matches what the reader side reports");
+        CHECK(c.overflow_bytes == 0 && c.error_bytes == 0 && c.no_reader_bytes == 0, "backpressure loses nothing");
+    }
+
     // The pipe is now full of the first pipe_cap bytes of `fill`; the last
     // tail_len bytes are queued in the backlog, not on the pipe yet.
 
@@ -228,6 +245,16 @@ static void test_backlog_fills_and_drains_in_order()
           "backlog bytes precede the new block's bytes, byte-exact and in order");
 
     CHECK(fx.nothing_more_available(), "nothing further is queued after the combined read");
+
+    {
+        FifoWriter::Counters c = writer.counters();
+        CHECK(c.backlog_bytes == 0, "the backlog is empty once drained");
+        CHECK(c.backlog_peak_bytes == tail_len, "the peak is not lowered by the drain");
+        CHECK(c.stall_events == 1, "recovering does not add an event");
+        CHECK(c.stall_max_seconds >= 0.0, "the closed streak's length is recorded");
+        CHECK(writer.stalled_seconds() == 0.0, "a successful write clears the streak");
+        CHECK(c.overflow_bytes == 0 && c.error_bytes == 0 && c.no_reader_bytes == 0, "a drained backlog loses nothing");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +313,14 @@ static void test_backlog_overflow_drops_wholesale()
 
     CHECK(fx.nothing_more_available(),
           "no stale backlog or oversized-block bytes remain queued after the drop");
+
+    FifoWriter::Counters c = writer.counters();
+    CHECK(c.overflow_events == 1, "one overflow");
+    CHECK(c.overflow_bytes == small_tail_len + cap_bytes, "the queued tail and the refused block are both counted");
+    CHECK(c.backlog_bytes == 0, "the backlog is empty after the drop");
+    CHECK(c.backlog_peak_bytes == small_tail_len, "the refused block never raised the peak");
+    CHECK(c.stall_events == 1, "a second failed write inside one streak is not a new event");
+    CHECK(c.error_bytes == 0 && c.write_errors == 0, "an overflow is not a write error");
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +359,13 @@ static void test_end_stream_drops_backlog_and_closes_streak()
           "the streak ends at the last write attempt, not at the call");
     CHECK(writer.stalled_seconds() == 0.0, "the streak is closed");
     CHECK(writer.is_open(), "the fd stays open");
+
+    FifoWriter::Counters c = writer.counters();
+    CHECK(c.stranded_bytes == tail_len, "the dropped tail is counted as stranded");
+    CHECK(c.stall_events == 1, "the streak was one event");
+    CHECK(c.stall_max_seconds == end.stall_seconds, "the closed streak is the longest seen");
+    CHECK(c.backlog_bytes == 0, "no backlog is reported after the drop");
+    CHECK(c.overflow_bytes == 0 && c.error_bytes == 0, "ending a stream is not an overflow or an error");
 
     std::vector<uint8_t> drained = fx.read_available(static_cast<size_t>(pipe_cap) + tail_len);
     CHECK(drained.size() == static_cast<size_t>(pipe_cap),

@@ -668,7 +668,10 @@ private:
 //     Only when the backlog itself would grow past its cap (a reader
 //     stalled long enough to queue more than one second of audio) is data
 //     actually lost: the whole backlog is dropped and a throttled warning
-//     logged. That is the sole path on which this class still loses audio.
+//     logged. Audio is also lost when the pipe cannot be opened (the block
+//     is discarded), when a write fails hard (the backlog goes with the fd)
+//     and when end_stream() drops a backlog nobody read. Every loss path
+//     is counted; see counters().
 //
 //   - If the reader has gone away (EPIPE/EBADF), the fd is closed and the
 //     backlog dropped -- there is nothing to resume once the peer is gone,
@@ -676,6 +679,8 @@ private:
 //
 // Thread safety: all public methods must be called under AudioMonitor::_fifo_mutex.
 // This is enforced by convention -- FifoWriter has no mutex of its own.
+// The two exceptions are stalled_seconds() and counters(), which read
+// relaxed atomics only and are called from the control thread without it.
 // =============================================================================
 
 class FifoWriter
@@ -709,6 +714,27 @@ public:
 
     bool is_open()             const { return _fd >= 0; }
     const std::string& path()  const { return _path; }
+
+    // Cumulative loss and health counters for get_status(). Every count is
+    // since the daemon started; pipe_bytes and backlog_bytes are current.
+    // Relaxed loads only, no lock: safe from the control thread while the
+    // output thread is writing.
+    struct Counters
+    {
+        uint64_t no_reader_bytes    = 0;   // discarded: the pipe was not open and could not be opened
+        uint64_t overflow_bytes     = 0;   // discarded: the backlog overflowed its cap (what was queued plus the block)
+        uint64_t overflow_events    = 0;
+        uint64_t error_bytes        = 0;   // discarded: a hard write error (unwritten backlog plus the unwritten block)
+        uint64_t write_errors       = 0;
+        uint64_t stranded_bytes     = 0;   // discarded: still queued when the stream ended
+        uint64_t opens              = 0;   // successful opens; reopens are opens - 1
+        uint64_t stall_events       = 0;   // stall streaks started: a write() returned false with none in progress
+        double   stall_max_seconds  = 0.0; // longest stall streak that has ended
+        int64_t  pipe_bytes         = -1;  // pipe size granted at the last open; -1 if unknown or not open
+        uint64_t backlog_bytes      = 0;   // queued after the last write()
+        uint64_t backlog_peak_bytes = 0;
+    };
+    Counters counters() const;
 
     // What end_stream() discarded and closed.
     struct StreamEnd
@@ -763,6 +789,14 @@ private:
     // see the class comment.
     void append_to_backlog(const uint8_t* data, size_t len);
 
+    // Logs a hard write error (broken pipe or anything else), counts the
+    // bytes it cost, and closes the fd, which also drops the backlog. Both
+    // write paths in write_impl() end here on a hard error.
+    void fail_and_close(int hard_errno, size_t lost_bytes);
+
+    // Publishes the backlog depth after a write and raises the peak.
+    void note_backlog_depth();
+
     // One second of audio at the process-wide output format -- the backlog
     // cap. Cached on first call: the output format is fixed before any
     // input starts (see g_output_format's doc comment), so this is
@@ -782,6 +816,33 @@ private:
     // cleared does not leave a large allocation sitting around.
     std::vector<uint8_t> _backlog;
     size_t                _backlog_pos = 0;
+
+    // Loss and health counters, read by counters() without a lock. Written
+    // only by the thread that holds AudioMonitor::_fifo_mutex, so counts use
+    // fetch_add and the maxima and gauges plain stores, all relaxed: enough
+    // for a monitoring-only signal, and one lock-free atomic each on the
+    // output thread.
+    std::atomic<uint64_t> _no_reader_bytes{0};
+    std::atomic<uint64_t> _overflow_bytes{0};
+    std::atomic<uint64_t> _overflow_events{0};
+    std::atomic<uint64_t> _error_bytes{0};
+    std::atomic<uint64_t> _write_errors{0};
+    std::atomic<uint64_t> _stranded_bytes{0};
+    std::atomic<uint64_t> _opens{0};
+    std::atomic<uint64_t> _stall_events{0};
+    std::atomic<double>   _stall_max_seconds{0.0};
+    std::atomic<int64_t>  _pipe_bytes{-1};
+    std::atomic<uint64_t> _backlog_bytes{0};
+    std::atomic<uint64_t> _backlog_peak_bytes{0};
+
+    // The monitor ships on 64-bit only. These atomics are written on the
+    // real-time output thread, so a target where they would need a
+    // libatomic lock fails the build here instead of the audio thread.
+    static_assert(std::atomic<uint64_t>::is_always_lock_free &&
+                  std::atomic<int64_t>::is_always_lock_free &&
+                  std::atomic<double>::is_always_lock_free,
+                  "FifoWriter counters are written on the real-time output thread "
+                  "and must be lock-free");
 };
 
 

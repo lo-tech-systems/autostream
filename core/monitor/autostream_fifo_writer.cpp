@@ -72,12 +72,15 @@ bool FifoWriter::try_open()
     }
 
     _fd = fd;
+    _opens.fetch_add(1, std::memory_order_relaxed);
 
     // Grow the pipe buffer on every open/reopen -- the kernel does not keep
     // a closed pipe's size, so a resize done once at startup would not
     // survive the broken-pipe reopen path above. See kFifoPipeBytes's doc
-    // comment.
+    // comment. resize_fifo_pipe() returns -1 on failure, which is also what
+    // _pipe_bytes reports while closed.
     int pipe_bytes = resize_fifo_pipe(_fd);
+    _pipe_bytes.store(pipe_bytes, std::memory_order_relaxed);
     if (pipe_bytes >= 0)
     {
         LOG_INFO("[fifo] Opened '%s' for writing (pipe size %d bytes)", _path.c_str(), pipe_bytes);
@@ -98,6 +101,7 @@ bool FifoWriter::try_open()
 bool FifoWriter::write(const void* data, size_t len)
 {
     bool ok = write_impl(data, len);
+    note_backlog_depth();
 
     // Cheap stall tracking for get_status()'s top-level
     // "fifo.stalled_seconds" (single relaxed atomic; no new locks on this
@@ -105,14 +109,23 @@ bool FifoWriter::write(const void* data, size_t len)
     // an attempt by an active writer (the caller only calls write() when it
     // actually has data to deliver), so a false return is unambiguously a
     // dropped/failed write, and a true return unambiguously clears any
-    // in-progress stall streak.
+    // in-progress stall streak. The streak's length is recorded as it
+    // clears: one clock read per recovered stall, not per block.
     if (ok)
     {
-        _stall_since.store(0.0, std::memory_order_relaxed);
+        double since = _stall_since.load(std::memory_order_relaxed);
+        if (since != 0.0)
+        {
+            double streak = get_monotonic_time() - since;
+            if (streak > _stall_max_seconds.load(std::memory_order_relaxed))
+                _stall_max_seconds.store(streak, std::memory_order_relaxed);
+            _stall_since.store(0.0, std::memory_order_relaxed);
+        }
     }
     else if (_stall_since.load(std::memory_order_relaxed) == 0.0)
     {
         _stall_since.store(get_monotonic_time(), std::memory_order_relaxed);
+        _stall_events.fetch_add(1, std::memory_order_relaxed);
     }
 
     return ok;
@@ -168,13 +181,15 @@ void FifoWriter::append_to_backlog(const uint8_t* data, size_t len)
         // to know a PCM frame boundary inside the backlog's raw bytes, so
         // the whole queue is dropped rather than trimmed to fit -- and the
         // new block is not kept either, since it cannot be delivered in
-        // order without what was just discarded ahead of it. This is the
-        // only path on which this class still loses audio.
+        // order without what was just discarded ahead of it. Both are
+        // counted as the loss.
+        _overflow_bytes.fetch_add(static_cast<uint64_t>(pending + len), std::memory_order_relaxed);
+        _overflow_events.fetch_add(1, std::memory_order_relaxed);
         double now = get_monotonic_time();
         if (now - _stall_last_log_time >= 5.0)
         {
-            LOG_WARN("[fifo] Reader stalled; dropped %zu bytes of backlog on '%s'",
-                     pending, _path.c_str());
+            LOG_WARN("[fifo] Reader stalled; dropped %zu bytes (backlog and block) on '%s'",
+                     pending + len, _path.c_str());
             _stall_last_log_time = now;
         }
         _backlog.clear();
@@ -196,10 +211,15 @@ bool FifoWriter::write_impl(const void* data, size_t len)
 {
     if (_fd < 0)
     {
-        // Not yet open — try to open now.  If this fails (OwnTone not ready),
-        // silently discard the data and wait for the next call.
+        // Not yet open: try to open now. If this fails (OwnTone not ready),
+        // discard the data, count it, and wait for the next call. The
+        // backlog is always empty here, since close() clears it, so the
+        // block is the whole loss.
         if (!try_open())
+        {
+            _no_reader_bytes.fetch_add(static_cast<uint64_t>(len), std::memory_order_relaxed);
             return false;
+        }
     }
 
     const uint8_t* ptr = static_cast<const uint8_t*>(data);
@@ -218,11 +238,9 @@ bool FifoWriter::write_impl(const void* data, size_t len)
 
         if (hard_errno != 0)
         {
-            if (hard_errno == EPIPE || hard_errno == EBADF)
-                LOG_WARN("[fifo] Broken pipe on '%s'; will reopen on next write", _path.c_str());
-            else
-                LOG_WARN("[fifo] Write error on '%s': %s", _path.c_str(), strerror(hard_errno));
-            close();   // also drops the (now stale) backlog
+            // The block was never attempted, so all of it is lost along
+            // with whatever the backlog still held.
+            fail_and_close(hard_errno, (_backlog.size() - _backlog_pos) + len);
             return false;
         }
 
@@ -248,11 +266,9 @@ bool FifoWriter::write_impl(const void* data, size_t len)
 
     if (hard_errno != 0)
     {
-        if (hard_errno == EPIPE || hard_errno == EBADF)
-            LOG_WARN("[fifo] Broken pipe on '%s'; will reopen on next write", _path.c_str());
-        else
-            LOG_WARN("[fifo] Write error on '%s': %s", _path.c_str(), strerror(hard_errno));
-        close();
+        // The backlog is empty on this path, so the unwritten part of the
+        // block is the whole loss.
+        fail_and_close(hard_errno, len - written);
         return false;
     }
 
@@ -271,13 +287,17 @@ FifoWriter::StreamEnd FifoWriter::end_stream(double last_write_time)
 {
     StreamEnd end;
     end.dropped_bytes = _backlog.size() - _backlog_pos;
+    _stranded_bytes.fetch_add(static_cast<uint64_t>(end.dropped_bytes), std::memory_order_relaxed);
     _backlog.clear();
     _backlog_pos = 0;
+    _backlog_bytes.store(0, std::memory_order_relaxed);
 
     double since = _stall_since.load(std::memory_order_relaxed);
     if (since != 0.0)
     {
         end.stall_seconds = std::max(0.0, last_write_time - since);
+        if (end.stall_seconds > _stall_max_seconds.load(std::memory_order_relaxed))
+            _stall_max_seconds.store(end.stall_seconds, std::memory_order_relaxed);
         _stall_since.store(0.0, std::memory_order_relaxed);
     }
     return end;
@@ -290,10 +310,49 @@ void FifoWriter::close()
         ::close(_fd);
         _fd = -1;
     }
+    _pipe_bytes.store(-1, std::memory_order_relaxed);
 
     // The backlog's read offset only makes sense against this fd's pipe;
     // a reopen (whether from here or from a later try_open()) always
     // starts with an empty backlog.
     _backlog.clear();
     _backlog_pos = 0;
+    _backlog_bytes.store(0, std::memory_order_relaxed);
+}
+
+void FifoWriter::fail_and_close(int hard_errno, size_t lost_bytes)
+{
+    if (hard_errno == EPIPE || hard_errno == EBADF)
+        LOG_WARN("[fifo] Broken pipe on '%s'; will reopen on next write", _path.c_str());
+    else
+        LOG_WARN("[fifo] Write error on '%s': %s", _path.c_str(), strerror(hard_errno));
+    _error_bytes.fetch_add(static_cast<uint64_t>(lost_bytes), std::memory_order_relaxed);
+    _write_errors.fetch_add(1, std::memory_order_relaxed);
+    close();   // also drops the (now stale) backlog
+}
+
+void FifoWriter::note_backlog_depth()
+{
+    uint64_t depth = static_cast<uint64_t>(_backlog.size() - _backlog_pos);
+    _backlog_bytes.store(depth, std::memory_order_relaxed);
+    if (depth > _backlog_peak_bytes.load(std::memory_order_relaxed))
+        _backlog_peak_bytes.store(depth, std::memory_order_relaxed);
+}
+
+FifoWriter::Counters FifoWriter::counters() const
+{
+    Counters c;
+    c.no_reader_bytes    = _no_reader_bytes.load(std::memory_order_relaxed);
+    c.overflow_bytes     = _overflow_bytes.load(std::memory_order_relaxed);
+    c.overflow_events    = _overflow_events.load(std::memory_order_relaxed);
+    c.error_bytes        = _error_bytes.load(std::memory_order_relaxed);
+    c.write_errors       = _write_errors.load(std::memory_order_relaxed);
+    c.stranded_bytes     = _stranded_bytes.load(std::memory_order_relaxed);
+    c.opens              = _opens.load(std::memory_order_relaxed);
+    c.stall_events       = _stall_events.load(std::memory_order_relaxed);
+    c.stall_max_seconds  = _stall_max_seconds.load(std::memory_order_relaxed);
+    c.pipe_bytes         = _pipe_bytes.load(std::memory_order_relaxed);
+    c.backlog_bytes      = _backlog_bytes.load(std::memory_order_relaxed);
+    c.backlog_peak_bytes = _backlog_peak_bytes.load(std::memory_order_relaxed);
+    return c;
 }
