@@ -209,8 +209,7 @@ def test_a_monitors_identification_lock_is_released_before_subscribers_run(track
         mon = audio_monitor.AudioMonitor(
             input_index=1, input_device="hw:0,0", silence_threshold_dbfs=-50.0,
             silence_seconds=5, fifo_path="/tmp/test.fifo",
-            owntone_base_url="http://localhost:3689", owntone_output_name="Speaker A",
-            owntone_volume_percent=50)
+            owntone_base_url="http://localhost:3689")
     mon._ti_state_lock = lockcheck.TrackedLock("identification")
     seen = []
     tracked_singleton.subscribe(

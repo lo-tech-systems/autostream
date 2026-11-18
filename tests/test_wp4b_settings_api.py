@@ -92,8 +92,6 @@ def _make_live_monitor(input_index: int, **overrides) -> AudioMonitor:
         silence_seconds=5,
         fifo_path="/tmp/test.fifo",
         owntone_base_url="http://localhost:3689",
-        owntone_output_name="Test Speaker",
-        owntone_volume_percent=50,
     )
     defaults.update(overrides)
     with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \

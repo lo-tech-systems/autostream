@@ -53,8 +53,6 @@ def _make_monitor(**overrides) -> AudioMonitor:
         silence_seconds=5,
         fifo_path="/tmp/test.fifo",
         owntone_base_url="http://localhost:3689",
-        owntone_output_name="Test Speaker",
-        owntone_volume_percent=50,
         # Most tests here exercise the switch-off behaviour.
         dynamic_rate_matching=False,
     )
@@ -441,8 +439,6 @@ class TestStop:
                 silence_seconds=5,
                 fifo_path="/tmp/test.fifo",
                 owntone_base_url="",
-                owntone_output_name="",
-                owntone_volume_percent=50,
             )
 
             # release_shared_metadata_publisher is looked up as a
@@ -1079,8 +1075,10 @@ class TestUpdateLivePlatformLogLevel:
 # ---------------------------------------------------------------------------
 
 class TestDefaultOutputRequest:
-    def _retry(self, mon, rows):
+    def _retry(self, mon, rows, volume=50):
+        from autostream_state.outputs import get_authority
         from fake_store import FakeStore
+        get_authority().set_default_members([("", "Test Speaker", volume)], volume)
         FakeStore().outputs(rows)
         mon.is_capturing = True
         mon._owntone_enabled_ok = False
@@ -1092,17 +1090,17 @@ class TestDefaultOutputRequest:
 
     def test_an_unselected_default_is_asked_for_with_its_volume(self):
         from output_fakes import row
-        mon = _make_monitor(owntone_output_name="Test Speaker", owntone_volume_percent=42)
-        submit_mock = self._retry(mon, [row("77", "Test Speaker")])
+        mon = _make_monitor()
+        submit_mock = self._retry(mon, [row("77", "Test Speaker")], volume=42)
         submit_mock.assert_called_once()
         intent = submit_mock.call_args.args[0]
         assert intent.name == "outputs.select_default"
-        assert intent.args["name"] == "Test Speaker"
+        assert intent.args["key"] == "name:Test Speaker"
         assert intent.args["volume"] == 42
 
     def test_a_selected_output_is_left_alone(self):
         from output_fakes import row
-        mon = _make_monitor(owntone_output_name="Test Speaker")
+        mon = _make_monitor()
         submit_mock = self._retry(mon, [row("77", "Test Speaker", selected=True)])
         submit_mock.assert_not_called()
         assert mon._owntone_enabled_ok is True

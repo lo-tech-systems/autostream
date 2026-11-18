@@ -451,8 +451,6 @@ def _mk_monitor(**overrides) -> _AudioMonitor:
         silence_seconds=5,
         fifo_path="/tmp/test_wpr9.fifo",
         owntone_base_url="",
-        owntone_output_name="",
-        owntone_volume_percent=50,
     )
     defaults.update(overrides)
     with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \

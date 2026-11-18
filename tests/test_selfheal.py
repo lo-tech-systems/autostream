@@ -36,7 +36,15 @@ import autostream_selfheal as selfheal
 
 BASE_URL = "http://localhost:3689"
 DEFAULT_NAME = "Test Speaker"
+DEFAULT_KEY = "name:" + DEFAULT_NAME
+MEMBER = SimpleNamespace(key=DEFAULT_KEY, name=DEFAULT_NAME)
 NOW = 1000.0
+
+
+@pytest.fixture(autouse=True)
+def default_set():
+    """The Auto-Start set is the one speaker, by name, at level 50."""
+    get_authority().set_default_members([("", DEFAULT_NAME, 50)], 50)
 
 
 def _make_monitor(**overrides) -> AudioMonitor:
@@ -47,8 +55,6 @@ def _make_monitor(**overrides) -> AudioMonitor:
         silence_seconds=5,
         fifo_path="/tmp/test.fifo",
         owntone_base_url=BASE_URL,
-        owntone_output_name=DEFAULT_NAME,
-        owntone_volume_percent=50,
     )
     defaults.update(overrides)
     with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
@@ -127,7 +133,7 @@ class TestDefaultRule:
         mon = _make_monitor()
         _run(mon)
         assert submitted.intents == []
-        assert mon._owntone_enabled_ok is False
+        assert mon._owntone_enabled_ok is True
 
     def test_a_session_end_lifts_the_silence_veto(self, submitted, fifo_ok, player_ok):
         FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)])
@@ -158,11 +164,17 @@ class TestDefaultRule:
 
 
 class TestDefaultSelectArguments:
-    def test_name_and_clamped_volume_only_when_the_unit_is_unknown(self, submitted, fifo_ok):
+    def test_a_missing_member_is_not_asked_for(self, submitted, fifo_ok):
         FakeStore().outputs([row("1", "Other")])
-        mon = _make_monitor(owntone_volume_percent=150)
-        _run(mon)
-        assert submitted.intents[0].args == {"name": DEFAULT_NAME, "volume": 100}
+        _run(_make_monitor())
+        assert submitted.intents == []
+
+    def test_the_member_key_and_its_clamped_volume_are_sent(self, submitted, fifo_ok):
+        get_authority().set_default_members([("", DEFAULT_NAME, 150)], 50)
+        FakeStore().outputs([row("1", DEFAULT_NAME)])
+        _run(_make_monitor())
+        args = submitted.intents[0].args
+        assert (args["key"], args["volume"]) == (DEFAULT_KEY, 100) and "offset_ms" not in args
 
     def test_offset_and_mode_of_the_default_unit_are_added(self, submitted, fifo_ok):
         FakeStore().outputs([row("1", DEFAULT_NAME)])
@@ -172,7 +184,7 @@ class TestDefaultSelectArguments:
         )
         _run(mon)
         args = submitted.intents[0].args
-        assert args["name"] == DEFAULT_NAME
+        assert args["key"] == DEFAULT_KEY
         assert args["volume"] == 50
         assert args["offset_ms"] == 120
         assert args["mode"] == player_service.config_airplay_mode_to_backend("airplay2")
@@ -195,7 +207,7 @@ class TestDefaultRefusal:
     def test_the_line_for_each_reason(self, caplog, error, result, level, fragment):
         mon = _make_monitor()
         with caplog.at_level(logging.INFO):
-            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, error, result))
+            mon._log_default_output_refusal(NOW, MEMBER, _reply(False, error, result))
         lines = [r for r in caplog.records if fragment in r.getMessage()]
         assert len(lines) == 1
         assert lines[0].levelno == level
@@ -203,9 +215,9 @@ class TestDefaultRefusal:
     def test_the_line_is_throttled_per_reason(self, caplog):
         mon = _make_monitor()
         with caplog.at_level(logging.INFO):
-            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, "no_default"))
-            mon._log_default_output_refusal(NOW + 1, DEFAULT_NAME, _reply(False, "no_default"))
-            mon._log_default_output_refusal(NOW + 1, DEFAULT_NAME, _reply(False, "pin_required"))
+            mon._log_default_output_refusal(NOW, MEMBER, _reply(False, "no_default"))
+            mon._log_default_output_refusal(NOW + 1, MEMBER, _reply(False, "no_default"))
+            mon._log_default_output_refusal(NOW + 1, MEMBER, _reply(False, "pin_required"))
         assert len([r for r in caplog.records if "No default output configured" in r.getMessage()]) == 1
         assert len([r for r in caplog.records if "requires a PIN" in r.getMessage()]) == 1
 
@@ -213,7 +225,7 @@ class TestDefaultRefusal:
         mon = _make_monitor()
         with caplog.at_level(logging.INFO):
             for i in range(5):
-                mon._log_default_output_refusal(NOW + 10 * i, DEFAULT_NAME, _reply(False, "not_found"))
+                mon._log_default_output_refusal(NOW + 10 * i, MEMBER, _reply(False, "not_found"))
         lines = [r for r in caplog.records if "is not on the network yet" in r.getMessage()]
         assert len(lines) == 1 and lines[0].levelno == logging.INFO
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -222,7 +234,7 @@ class TestDefaultRefusal:
         mon = _make_monitor()
         with caplog.at_level(logging.INFO):
             for t in (0, 100, 299, 300, 400, 900):
-                mon._log_default_output_refusal(NOW + t, DEFAULT_NAME, _reply(False, "not_found"))
+                mon._log_default_output_refusal(NOW + t, MEMBER, _reply(False, "not_found"))
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1 and "still not on the network after 300 s" in warnings[0].getMessage()
 
@@ -230,20 +242,20 @@ class TestDefaultRefusal:
         FakeStore().outputs([row("1", "Other")])
         mon = _make_monitor()
         with caplog.at_level(logging.INFO):
-            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, "not_found"))
+            mon._log_default_output_refusal(NOW, MEMBER, _reply(False, "not_found"))
             FakeStore().outputs([row("1", "Other"), row("2", DEFAULT_NAME)])
             _run(mon, NOW + 42)
             _run(mon, NOW + 60)
         lines = [r.getMessage() for r in caplog.records if "appeared after" in r.getMessage()]
         assert lines == ["Default output 'Test Speaker' appeared after 42 s"]
-        assert mon._default_missing_since is None
+        assert mon._default_missing_since == {}
 
     def test_a_new_session_starts_the_wait_afresh(self, caplog):
         mon = _make_monitor()
         with caplog.at_level(logging.INFO):
-            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, "not_found"))
+            mon._log_default_output_refusal(NOW, MEMBER, _reply(False, "not_found"))
             mon.clear_default_output_wait()
-            mon._log_default_output_refusal(NOW + 5, DEFAULT_NAME, _reply(False, "not_found"))
+            mon._log_default_output_refusal(NOW + 5, MEMBER, _reply(False, "not_found"))
         assert len([r for r in caplog.records if "is not on the network yet" in r.getMessage()]) == 2
 
     def test_a_refusal_logs_both_lines_and_leaves_the_retry_armed(self, submitted, fifo_ok, caplog):
@@ -401,3 +413,129 @@ class TestHangWatchdogReachability:
             _maybe_run_owntone_hang_watchdog(wd, self._stalled(wd), True, BASE_URL, NOW)
         probe.assert_called_once()
         admin.assert_not_called()
+
+
+# -- the Auto-Start set --------------------------------------------------------
+
+LOUNGE = ("L1", "Lounge", 30)
+KITCHEN = ("K1", "Kitchen", 40)
+
+
+def _keys(submitted):
+    return [i.args["key"] for i in submitted.intents if i.name == "outputs.select_default"]
+
+
+def _pending():
+    return {m.key: m.pending for m in autostream_state.store().snapshot().outputs.default_members}
+
+
+class TestDefaultSetFill:
+    @pytest.fixture(autouse=True)
+    def two_members(self):
+        get_authority().set_default_members([LOUNGE, KITCHEN], 20)
+
+    def test_a_member_that_appears_later_is_added_by_a_later_cycle(self, submitted, fifo_ok, player_ok):
+        FakeStore().outputs([row("L1", "Lounge")])
+        get_authority().note_session(True)
+        mon = _make_monitor()
+        _run(mon)
+        assert _keys(submitted) == ["L1"]
+        assert mon._owntone_enabled_ok is False
+        get_authority().select("L1", Origin.SESSION, volume=30)
+        FakeStore().outputs([row("L1", "Lounge", selected=True), row("K1", "Kitchen")])
+        submitted.intents.clear()
+        _run(mon, NOW + 11)
+        assert _keys(submitted) == ["K1"]
+        assert mon._owntone_enabled_ok is True
+
+    def test_a_member_in_use_is_retried_until_it_is_released(self, submitted, fifo_ok, player_ok):
+        FakeStore().outputs([row("L1", "Lounge"), row("K1", "Kitchen")])
+        get_authority().note_session(True)
+        submitted.answers.extend([_reply(), _reply(False, "in_use", {"owner": "Hall"})])
+        mon = _make_monitor()
+        _run(mon)
+        assert _keys(submitted) == ["L1", "K1"]
+        assert mon._owntone_enabled_ok is False
+        get_authority().select("L1", Origin.SESSION, volume=30)
+        submitted.intents.clear()
+        _run(mon, NOW + 11)
+        assert _keys(submitted) == ["K1"]
+        assert mon._owntone_enabled_ok is True
+
+    def test_nothing_is_retried_before_the_interval(self, submitted, fifo_ok):
+        FakeStore().outputs([row("L1", "Lounge")])
+        get_authority().note_session(True)
+        mon = _make_monitor()
+        _run(mon)
+        submitted.intents.clear()
+        _run(mon, NOW + 1)
+        assert submitted.intents == []
+
+    def test_a_change_of_speakers_by_the_user_stops_the_fill_and_sets_the_flag(self, submitted, fifo_ok, player_ok):
+        FakeStore().outputs([row("1", "Other"), row("L1", "Lounge")])
+        get_authority().note_session(True)
+        mon = _make_monitor()
+        _run(mon)
+        assert mon._owntone_enabled_ok is False
+        get_authority().select("1", Origin.USER, volume=10)
+        assert not any(_pending().values())
+        submitted.intents.clear()
+        _run(mon, NOW + 11)
+        assert submitted.intents == []
+        assert mon._owntone_enabled_ok is True
+
+    def test_a_unit_waiting_for_a_pin_holds_the_whole_fill(self, submitted, fifo_ok):
+        FakeStore().outputs([row("L1", "Lounge"), row("K1", "Kitchen", needs_auth_key=True)])
+        get_authority().note_session(True)
+        mon = _make_monitor()
+        _run(mon)
+        assert submitted.intents == []
+        assert mon._owntone_enabled_ok is False
+
+    def test_a_tap_on_after_the_flag_was_set_re_arms_it(self, fifo_ok):
+        FakeStore().outputs([row("1", "Other", selected=True)])
+        get_authority().note_session(True)
+        get_authority().want_default(False, "L1")
+        get_authority().want_default(False, "K1")
+        mon = _make_monitor()
+        mon._owntone_enabled_ok = True
+        mon._owntone_last_attempt = 777.0
+        _SelfHeal.note_outputs(mon, True, NOW)
+        assert mon._owntone_enabled_ok is True
+        get_authority().want_default(True, "K1")
+        _SelfHeal.note_outputs(mon, True, NOW + 1)
+        assert mon._owntone_enabled_ok is False and mon._owntone_last_attempt == 0.0
+
+    def test_a_player_restart_while_a_member_is_pending_re_arms_and_counts(self, fifo_ok):
+        FakeStore().outputs([row("L1", "Lounge", selected=True)], boot="b0")
+        get_authority().note_session(True)
+        mon = _make_monitor()
+        mon._owntone_enabled_ok = True
+        mon._outputs_restarts_seen = 0
+        FakeStore().outputs([row("L1", "Lounge", selected=True)], boot="b1")
+        _SelfHeal.note_outputs(mon, True, NOW)
+        assert mon._owntone_enabled_ok is False
+        assert autostream_state.store().snapshot().health.reconcile_fired_count == 1
+
+    def test_a_replay_start_fills_the_whole_set(self, submitted, fifo_ok):
+        import autostream_session
+        FakeStore().outputs([row("L1", "Lounge"), row("K1", "Kitchen")])
+        mon = _make_monitor()
+        mon.is_capturing = False
+        autostream_session._start_session_owntone(mon)
+        assert [i.name for i in submitted.intents][0] == "outputs.deselect_all"
+        assert _keys(submitted) == ["L1", "K1"]
+
+    def test_a_pause_that_turns_everything_off_clears_pending_and_a_muting_pause_does_not(self, player_ok):
+        FakeStore().outputs([row("L1", "Lounge", selected=True)])
+        get_authority().note_session(True)
+        get_authority().mute_all(Origin.POLICY)
+        assert _pending()["K1"] is True
+        get_authority().deselect_all(Origin.POLICY)
+        assert not any(_pending().values())
+
+    def test_with_nothing_selected_and_no_silence_every_member_is_tried(self, submitted, fifo_ok):
+        FakeStore().outputs([row("L1", "Lounge"), row("K1", "Kitchen")])
+        assert not any(_pending().values())
+        _run(_make_monitor())
+        assert _keys(submitted) == ["L1", "K1"]

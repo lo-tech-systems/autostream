@@ -314,43 +314,55 @@ class SelfHeal:
         # nothing is pending, so this costs nothing in the steady state.
         retry_pending_format_reconcile(monitor.owntone_base_url, monitor_status)
 
-        if snap.unit_by_name((monitor.owntone_output_name or "").strip()) is not None:
-            monitor.note_default_output_found(now, monitor.owntone_output_name)
-        volume = _clamped_output_volume(monitor.owntone_volume_percent)
-        if not snap.selected_units():
-            if snap.silence_chosen:
-                # The user chose silence this session (switched the last
-                # speaker off, or a device did); the default speaker is not
-                # switched back on. The FIFO/format reconcile work above
-                # still ran this cycle.
-                return
-            if any(u.availability == "password" for u in snap.units):
-                monitor._throttled_owntone_log(
-                    now,
-                    logging.INFO,
-                    "An output is waiting for a PIN; not auto-enabling the default output.",
-                )
-                return
-            default_name = (monitor.owntone_output_name or "").strip()
-            default_unit = snap.unit_by_name(default_name) if default_name else None
-            args = {"name": monitor.owntone_output_name or "", "volume": volume}
-            if default_unit is not None:
-                offset_ms = monitor.owntone_output_offsets_ms.get(default_unit.id)
-                if offset_ms is not None:
-                    args["offset_ms"] = int(offset_ms)
-                mode = config_airplay_mode_to_backend(
-                    monitor.owntone_output_airplay_modes.get(default_unit.id))
-                if mode:
-                    args["mode"] = mode
+        for m in snap.default_members:
+            if not m.placeholder:
+                monitor.note_default_output_found(now, m)
+
+        if any(u.availability == "password" for u in snap.units):
+            monitor._throttled_owntone_log(
+                now,
+                logging.INFO,
+                "An output is waiting for a PIN; not auto-enabling the default output.",
+            )
+            return
+
+        # The members still to be added this session. With nothing selected
+        # and no silence chosen (a start the user's own select did not
+        # survive), every member is tried.
+        candidates = [m for m in snap.default_members if m.pending]
+        if not snap.selected_units() and not snap.silence_chosen:
+            candidates = list(snap.default_members)
+        left = False
+        for m in candidates:
+            unit = snap.unit(m.unit_id)
+            if m.placeholder or unit is None or unit.offline:
+                monitor.note_default_missing(now, m)
+                left = True
+                continue
+            if unit.selected:
+                continue
+            args = {"key": m.key, "volume": m.volume}
+            offset_ms = monitor.owntone_output_offsets_ms.get(unit.id)
+            if offset_ms is not None:
+                args["offset_ms"] = int(offset_ms)
+            mode = config_airplay_mode_to_backend(
+                monitor.owntone_output_airplay_modes.get(unit.id))
+            if mode:
+                args["mode"] = mode
             reply = intents.submit(Intent("outputs.select_default", args, Origin.SESSION, "coordinator"))
             if not reply.ok:
-                monitor._log_default_output_refusal(now, default_name, reply)
-                monitor._throttled_owntone_log(
-                    now,
-                    logging.INFO,
-                    "No outputs selected during capture; default fallback not available yet.",
-                )
-                return
+                monitor._log_default_output_refusal(now, m, reply)
+                left = True
+        if left:
+            # A member that is missing or refused keeps the retry running
+            # until it starts, the user changes the speakers, or the session
+            # ends.
+            monitor._throttled_owntone_log(
+                now,
+                logging.INFO,
+                "No outputs selected during capture; default fallback not available yet.",
+            )
+            return
         monitor._owntone_recovery_log.ok(now)
         monitor._owntone_enabled_ok = True
 
@@ -363,10 +375,16 @@ class SelfHeal:
         selection."""
         if not session_active or monitor is None:
             return
-        current = autostream_state.store().snapshot().outputs.backend_restarts
+        outputs = autostream_state.store().snapshot().outputs
+        current = outputs.backend_restarts
         seen = monitor._outputs_restarts_seen
         monitor._outputs_restarts_seen = current
-        if seen is None or seen == current or not monitor._owntone_enabled_ok:
+        was_ok = monitor._owntone_enabled_ok
+        if was_ok and any(m.pending for m in outputs.default_members):
+            # A tap on a default speaker's card after the fill was done.
+            monitor._owntone_enabled_ok = False
+            monitor._owntone_last_attempt = 0.0
+        if seen is None or seen == current or not was_ok:
             return
         monitor._owntone_enabled_ok = False
         monitor._owntone_last_attempt = 0.0
@@ -376,10 +394,3 @@ class SelfHeal:
             reconcile_last_fired_at=now,
         )
         logging.warning("OwnTone restarted mid-session; its outputs are restored by the output reconcile.")
-
-
-def _clamped_output_volume(value) -> int:
-    try:
-        return max(0, min(100, int(value)))
-    except Exception:
-        return 20

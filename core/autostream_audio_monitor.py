@@ -87,8 +87,6 @@ class AudioMonitor:
         silence_seconds: int,
         fifo_path: str,
         owntone_base_url: str,
-        owntone_output_name: str,
-        owntone_volume_percent: int,
         track_change_silence_seconds: float = 1.25,
         minimum_playback_seconds: int = 30,
         owntone_output_offsets_ms: Optional[dict[str, int]] = None,
@@ -112,8 +110,6 @@ class AudioMonitor:
         self.minimum_playback_seconds = minimum_playback_seconds
         self.fifo_path = fifo_path
         self.owntone_base_url = owntone_base_url
-        self.owntone_output_name = owntone_output_name
-        self.owntone_volume_percent = owntone_volume_percent
         self.owntone_output_offsets_ms = owntone_output_offsets_ms or {}
         self.owntone_output_airplay_modes = owntone_output_airplay_modes or {}
         self.gain_db = gain_db
@@ -192,10 +188,10 @@ class AudioMonitor:
         # --- OwnTone retry state ---
         self._owntone_last_attempt: float = 0.0
         self._owntone_enabled_ok: bool = False
-        # When the default output was first found missing this session, and
-        # whether the long wait has been warned about.
-        self._default_missing_since: Optional[float] = None
-        self._default_missing_warned: bool = False
+        # When each default output (by member key) was first found missing
+        # this session, and which have had the long wait warned about.
+        self._default_missing_since: dict[str, float] = {}
+        self._default_missing_warned: set[str] = set()
         # The output authority's count of player restarts when last looked at
         # (None: adopt the current count without treating it as a restart).
         self._outputs_restarts_seen: Optional[int] = None
@@ -1290,42 +1286,45 @@ class AudioMonitor:
         ):
             logging.log(level, msg, *args)
 
-    def note_default_output_found(self, now: float, default_name: str) -> None:
-        """The default speaker has a row again: end the wait the refusal
-        logging started."""
-        if self._default_missing_since is None:
+    def note_default_output_found(self, now: float, member) -> None:
+        """A default speaker has a row again: end the wait the logging started."""
+        since = self._default_missing_since.pop(member.key, None)
+        if since is None:
             return
-        logging.info(
-            "Default output '%s' appeared after %d s", default_name, int(now - self._default_missing_since),
-        )
-        self.clear_default_output_wait()
+        self._default_missing_warned.discard(member.key)
+        logging.info("Default output '%s' appeared after %d s", member.name, int(now - since))
 
     def clear_default_output_wait(self) -> None:
-        self._default_missing_since = None
-        self._default_missing_warned = False
+        self._default_missing_since.clear()
+        self._default_missing_warned.clear()
 
-    def _log_default_output_refusal(self, now: float, default_name: str, reply) -> None:
+    def note_default_missing(self, now: float, member) -> None:
+        """A default speaker is not on the network yet: one line when the wait
+        starts and one warning if it lasts."""
+        since = self._default_missing_since.get(member.key)
+        if since is None:
+            self._default_missing_since[member.key] = now
+            logging.info("Default output '%s' is not on the network yet; waiting", member.name)
+        elif (member.key not in self._default_missing_warned
+              and now - since >= self.DEFAULT_MISSING_WARN_SECONDS):
+            self._default_missing_warned.add(member.key)
+            logging.warning(
+                "Default output '%s' is still not on the network after %d s",
+                member.name, int(now - since),
+            )
+
+    def _log_default_output_refusal(self, now: float, member, reply) -> None:
         """The throttled line for a default-output select that was not made."""
         error = reply.error
+        default_name = member.name
         if error == "no_default":
             self._throttled_owntone_log(
                 now, logging.WARNING,
                 "No default output configured; cannot apply zero-target fallback.",
             )
         elif error == "not_found":
-            # A speaker that is not on the network yet is waited for: one line
-            # when the wait starts, one when it ends, and one warning if it
-            # lasts.
-            if self._default_missing_since is None:
-                self._default_missing_since = now
-                logging.info("Default output '%s' is not on the network yet; waiting", default_name)
-            elif (not self._default_missing_warned
-                  and now - self._default_missing_since >= self.DEFAULT_MISSING_WARN_SECONDS):
-                self._default_missing_warned = True
-                logging.warning(
-                    "Default output '%s' is still not on the network after %d s",
-                    default_name, int(now - self._default_missing_since),
-                )
+            # A speaker that is not on the network yet is waited for.
+            self.note_default_missing(now, member)
         elif error == "pin_pending":
             self._throttled_owntone_log(
                 now, logging.INFO,

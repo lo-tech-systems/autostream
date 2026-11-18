@@ -33,8 +33,8 @@ def make_monitor(index=1, **overrides) -> AudioMonitor:
     defaults = dict(
         input_index=index, input_device="hw:0,0", silence_threshold_dbfs=-50.0,
         silence_seconds=5, fifo_path="/tmp/test.fifo",
-        owntone_base_url="http://localhost:3689", owntone_output_name="Speaker A",
-        owntone_volume_percent=50, dynamic_rate_matching=False,
+        owntone_base_url="http://localhost:3689",
+        dynamic_rate_matching=False,
     )
     defaults.update(overrides)
     with patch("autostream_audio_monitor.PersistentNowPlayingCache") as cache, \

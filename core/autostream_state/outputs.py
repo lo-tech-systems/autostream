@@ -866,6 +866,8 @@ class OutputAuthority:
             u = self._units.get(unit_id)
             if u is None:
                 return self._refused("unknown_output")
+            if cause in (Origin.USER, Origin.POLICY, Origin.DEVICE):
+                self._pending.clear()
             d = u.desired
             if self._muted_all_locked():
                 # Joining a muted session: silent, and the level asked for is

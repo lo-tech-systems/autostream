@@ -149,12 +149,12 @@ def _build_rows() -> dict:
         _row(
             "outputs.select_default",
             {
-                "name": v.text(error=_BAD_BODY, allow_empty=True),
+                "key": v.text(error=_BAD_BODY, max_len=300),
                 "volume": v.integer(0, 100, error=_BAD_BODY),
                 "offset_ms": v.optional(v.integer(-2000, 2000, error=_BAD_BODY, clamp=True)),
                 "mode": v.optional(v.text(error=_BAD_BODY, max_len=64)),
             },
-            {"name", "volume"},
+            {"key", "volume"},
             {Origin.SESSION},
         ),
         _row(

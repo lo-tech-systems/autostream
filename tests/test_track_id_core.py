@@ -68,8 +68,6 @@ def _make_monitor(**overrides) -> AudioMonitor:
         silence_seconds=5,
         fifo_path="/tmp/test_ti.fifo",
         owntone_base_url="",
-        owntone_output_name="",
-        owntone_volume_percent=50,
     )
     defaults.update(overrides)
     with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \

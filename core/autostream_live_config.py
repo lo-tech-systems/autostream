@@ -357,10 +357,6 @@ def update_live_owntone_runtime(
 
         with runtime._monitors_lock:
             for monitor in runtime.all_monitors:
-                if settings is not None:
-                    o = settings.snapshot().owntone
-                    monitor.owntone_output_name = o.output_name
-                    monitor.owntone_volume_percent = o.volume_percent
                 monitor.owntone_output_offsets_ms = dict(live_output_offsets_ms)
                 monitor.owntone_output_airplay_modes = dict(live_output_airplay_modes)
         _push_default_set(settings)

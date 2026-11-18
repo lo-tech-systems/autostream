@@ -667,7 +667,7 @@ class TestVolumeStepAndMute:
 # ---------------------------------------------------------------------------
 
 def _default(name="Kitchen", volume=42, **extra):
-    args = {"name": name, "volume": volume, **extra}
+    args = {"key": "name:" + name, "volume": volume, **extra}
     return submit(Intent("outputs.select_default", args, Origin.SESSION, "coordinator"))
 
 
@@ -691,9 +691,13 @@ def usage(monkeypatch):
 
 
 class TestSelectDefault:
-    def test_an_empty_name_is_no_default(self, player, usage):
+    @pytest.fixture(autouse=True)
+    def _configured(self):
+        get_authority().set_default_members([("", "Kitchen", 42), ("", "Missing", 42)], 42)
+
+    def test_a_key_that_is_not_in_the_set_is_no_default(self, player, usage):
         arrange()
-        reply = _default(name="  ")
+        reply = _default(name="Nobody")
         assert reply.ok is False and reply.error == "no_default"
         assert player.calls == []
 
@@ -763,7 +767,7 @@ class TestSelectDefault:
 
     def test_only_the_session_may_ask(self, player, usage):
         arrange()
-        reply = submit(Intent("outputs.select_default", {"name": "Kitchen", "volume": 5}, Origin.USER, "webui"))
+        reply = submit(Intent("outputs.select_default", {"key": "name:Kitchen", "volume": 5}, Origin.USER, "webui"))
         assert reply.ok is False and reply.error == "origin_not_allowed"
 
 

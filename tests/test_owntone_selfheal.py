@@ -68,8 +68,6 @@ def _make_monitor(**overrides) -> AudioMonitor:
         silence_seconds=5,
         fifo_path="/tmp/test.fifo",
         owntone_base_url=BASE_URL,
-        owntone_output_name="Test Speaker",
-        owntone_volume_percent=50,
     )
     defaults.update(overrides)
     with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
@@ -113,8 +111,9 @@ class TestSelectDefaultPinVeto:
     instead of waiting for the user to pair it via the Web UI."""
 
     def _select(self):
+        get_authority().set_default_members([("", "Test Speaker", 50)], 50)
         return output_intents._select_default(
-            Intent("outputs.select_default", {"name": "Test Speaker", "volume": 50},
+            Intent("outputs.select_default", {"key": "name:Test Speaker", "volume": 50},
                    Origin.SESSION, "coordinator"),
             2.0,
         )

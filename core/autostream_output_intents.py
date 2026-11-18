@@ -171,16 +171,18 @@ def _want_default(intent: Intent, wait: float) -> Outcome:
 
 
 def _select_default(intent: Intent, wait: float) -> Outcome:
-    """Switch the configured default speaker on. The error names the reason
-    it was not: no_default, not_found, pin_pending, in_use, pin_required, or
-    the player's own text in the result."""
+    """Switch one speaker of the Auto-Start set on, named by its member key.
+    The error names the reason it was not: no_default, not_found, pin_pending,
+    in_use, pin_required, or the player's own text in the result."""
     args = intent.args
-    name = args["name"].strip()
-    if not name:
+    part = store().snapshot().outputs
+    member = next((m for m in part.default_members if m.key == args["key"]), None)
+    if member is None:
         return Outcome(ok=False, error="no_default")
-    unit = store().snapshot().outputs.unit_by_name(name)
-    if unit is None:
+    unit = None if member.placeholder else part.unit(member.unit_id)
+    if unit is None or unit.offline:
         return Outcome(ok=False, error="not_found")
+    name = unit.name
     if unit.availability == "password" or (unit.reported is not None and unit.reported.needs_auth_key):
         # The player deselected it pending pairing; asking again would make
         # the speaker prompt for a PIN on every retry.
