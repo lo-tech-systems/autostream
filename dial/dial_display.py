@@ -2031,7 +2031,7 @@ class DialDisplay:
         the backend, writing only the regions that differ from the frame the
         panel already shows when the backend can write a window: as many
         separate rectangles as the cost model says pay for themselves (see
-        dial_display_windows), or, on a dial without numpy, the bounding
+        dial_display_windows), or, if planning fails, the bounding
         box split in up to a few places (see _dirty_windows).
 
         The frame reaching here is final: rotate and colour order were
@@ -2062,7 +2062,7 @@ class DialDisplay:
         try:
             boxes, new_words = self._plan_transmit_locked(composed, last)
             if boxes is None:
-                # No planner (numpy missing, or a plan failure): the
+                # No planner (a plan failure): the
                 # bounding-box path, with its own vertical split.
                 diff = ImageChops.difference(composed, last)
                 bbox = diff.getbbox()
@@ -2097,7 +2097,7 @@ class DialDisplay:
         list of windows to write, top to bottom (empty: the frames are
         identical), and *new_words* the planner's view of *composed* for the
         caller to cache once it is on the panel. (None, None) when the
-        planner is unavailable (numpy missing, or a plan failure), in which
+        planner is unavailable (a plan failure), in which
         case the caller takes the bounding-box path. The previous frame's
         words come from the cache when it still names *last*, else from
         *last* itself. A planner failure is logged (rate-limited) and

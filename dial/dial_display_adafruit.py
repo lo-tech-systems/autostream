@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 
+import numpy
+
 import dial_spi_bus
 from dial_display import DisplayBackend
 from dial_display_profiles import DisplayProfile, backend_name_for
@@ -121,11 +123,6 @@ def _solid_background_image(width: int, height: int):
     return Image.new("RGB", (width, height), _BACKGROUND_RGB)
 
 
-# Logged at most once per process: a missing numpy is a one-time
-# misconfiguration, not something worth a warning on every frame.
-_numpy_missing_logged = False
-
-
 def _pack_rgb565(image) -> bytes | None:
     """Pack a PIL RGB image straight to big-endian RGB565 bytes ourselves.
 
@@ -137,29 +134,10 @@ def _pack_rgb565(image) -> bytes | None:
     measures ~6x faster (2.5ms/9.4ms vs 16.2ms/57.8ms at 160x128/320x240 on a
     Pi 2B), producing byte-identical output.
 
-    numpy is imported lazily, here inside the function, not because it is
-    hardware but to match this module's lazy-import discipline (see the
-    module docstring) so the module still imports cleanly on a machine
-    without numpy.
-
-    Returns None if numpy is unavailable, or if packing fails for any other
-    reason (e.g. *image* is not actually image-like), so the caller can fall
-    back to the driver's own image() path — slower, but always correct.
+    Returns None if packing fails (e.g. *image* is not actually image-like),
+    so the caller can fall back to the driver's own image() path — slower,
+    but always correct.
     """
-    global _numpy_missing_logged
-    try:
-        import numpy
-    except ImportError:
-        if not _numpy_missing_logged:
-            logging.warning(
-                "dial display: python3-numpy is not installed; falling back to "
-                "the driver's per-pixel frame conversion, which is hundreds of "
-                "milliseconds to seconds slower per frame. Install "
-                "python3-numpy to fix this."
-            )
-            _numpy_missing_logged = True
-        return None
-
     try:
         data = numpy.asarray(image.convert("RGB"), dtype=numpy.uint16)
         color = ((data[:, :, 0] & 0xF8) << 8) | ((data[:, :, 1] & 0xFC) << 3) | (data[:, :, 2] >> 3)
@@ -342,10 +320,9 @@ class AdafruitDisplayBackend(DisplayBackend):
         """Push one full-panel frame, packing RGB565 ourselves when possible.
 
         The driver's own image() does the same 565 conversion internally,
-        but — without numpy — via a per-pixel Python loop, and — with numpy
-        — via a helper that still materialises a large intermediate Python
-        list (see _pack_rgb565's docstring). Packing here and writing
-        straight to the driver's _block() window-write primitive skips both.
+        but via a helper that materialises a large intermediate Python list
+        (see _pack_rgb565's docstring). Packing here and writing straight to
+        the driver's _block() window-write primitive skips it.
 
         _block is a private attribute of a third-party class, so its
         absence (a future library version renaming/removing it) is guarded
@@ -370,7 +347,7 @@ class AdafruitDisplayBackend(DisplayBackend):
         (0, 0) is, and a region cropped from a panel-sized frame lands on
         exactly the pixels it came from. There is no slow-path equivalent:
         the driver's image() would re-run its own rotation on the region,
-        so without _block() or numpy this reports False and the caller
+        so without _block() this reports False and the caller
         writes the whole frame instead, which is today's behaviour.
 
         *region* must be exactly the window's size and the window must lie

@@ -53,6 +53,7 @@ import functools
 import logging
 from dataclasses import dataclass, field
 
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
@@ -541,8 +542,8 @@ class RevealLayers:
     strip_add: Image.Image
     strip_keep: Image.Image
     # The same layers as uint16 arrays for the numpy compositing path, plus
-    # the strip rows the chrome actually touches; None when numpy is not
-    # available (the Pillow path is used then). Derived from the images
+    # the strip rows the chrome actually touches; None when building them
+    # failed (the Pillow path is used then). Derived from the images
     # above, so excluded from equality and repr.
     arrays: "_RevealArrays | None" = field(default=None, compare=False, repr=False)
 
@@ -2065,28 +2066,6 @@ def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
     return img
 
 
-# Logged at most once per process: a missing numpy is a one-time
-# environment problem, not a per-frame event.
-_numpy_missing_logged = False
-
-
-def _numpy_module():
-    """Return the numpy module, or None (logged once) when it is missing."""
-    global _numpy_missing_logged
-    try:
-        import numpy
-    except ImportError:
-        if not _numpy_missing_logged:
-            _logger.warning(
-                "dial display: python3-numpy is not installed; the artwork "
-                "reveal falls back to slower Pillow compositing. Install "
-                "python3-numpy to fix this."
-            )
-            _numpy_missing_logged = True
-        return None
-    return numpy
-
-
 def _active_runs(np, add, keep) -> tuple:
     """Half-open row ranges of a layer where it is not the identity."""
     active = ((add != 0) | (keep != 255)).any(axis=(1, 2))
@@ -2096,9 +2075,6 @@ def _active_runs(np, add, keep) -> tuple:
 
 
 def _build_reveal_arrays(layers: RevealLayers) -> "_RevealArrays | None":
-    np = _numpy_module()
-    if np is None:
-        return None
     try:
         def arr(img):
             return np.array(img, dtype=np.uint16)
@@ -2241,17 +2217,15 @@ def _reveal_frame(base, layers: RevealLayers, progress: float) -> Image.Image:
     that keeps the per-frame cost low and, unlike Pillow's chop and blend
     calls, lets other threads run while it works. The bands are
     bit-identical to the Pillow path; the strip fade is exact too, apart
-    from possible one-level float rounding differences. Without numpy, or
-    if the array path fails for any reason, the same frame is built with
-    Pillow instead; this never raises for either."""
+    from possible one-level float rounding differences. If the array path
+    fails for any reason, the same frame is built with Pillow instead; this
+    never raises for either."""
     arrays = layers.arrays
     if arrays is not None:
-        np = _numpy_module()
-        if np is not None:
-            try:
-                return _reveal_frame_np(np, base, layers, arrays, progress)
-            except Exception:
-                _logger.warning("dial display: numpy reveal failed; using Pillow", exc_info=True)
+        try:
+            return _reveal_frame_np(np, base, layers, arrays, progress)
+        except Exception:
+            _logger.warning("dial display: numpy reveal failed; using Pillow", exc_info=True)
     return _reveal_frame_pillow(base, layers, progress)
 
 

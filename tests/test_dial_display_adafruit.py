@@ -619,17 +619,7 @@ class TestProfileDrivenDriverDispatch:
 # ---------------------------------------------------------------------------
 
 class TestPackRgb565:
-    @pytest.fixture(autouse=True)
-    def _reset_numpy_missing_logged(self):
-        """_numpy_missing_logged is a process-wide 'log once' latch — reset
-        it around every test in this class so one test's trip doesn't
-        suppress the warning assertion in another."""
-        dda._numpy_missing_logged = False
-        yield
-        dda._numpy_missing_logged = False
-
     def test_known_pixel_colors_pack_to_exact_bytes(self):
-        numpy = pytest.importorskip("numpy", reason="numpy not installed")
         image = Image.new("RGB", (5, 1))
         image.putpixel((0, 0), (255, 0, 0))    # pure red   -> 0xF800
         image.putpixel((1, 0), (0, 255, 0))    # pure green -> 0x07E0
@@ -648,43 +638,13 @@ class TestPackRgb565:
         )
 
     def test_packed_length_matches_width_times_height_times_two(self):
-        pytest.importorskip("numpy", reason="numpy not installed")
         image = Image.new("RGB", (160, 128), (14, 40, 65))
         packed = dda._pack_rgb565(image)
         assert len(packed) == 160 * 128 * 2
 
-    def test_returns_none_and_logs_once_when_numpy_unavailable(self, caplog, monkeypatch):
-        # Simulate numpy being absent by parking None in sys.modules for the
-        # duration: `import numpy` then raises ImportError, which is exactly
-        # the branch under test.
-        #
-        # Do NOT hook builtins.__import__ for this — numpy loads its own C
-        # submodules lazily, so a global hook fires during numpy's internals
-        # too and leaves it half-initialised, which then breaks every later
-        # test in the process with "cannot load module more than once per
-        # process". Parking None keeps the real module object alive and
-        # simply restores the reference afterwards, so nothing is
-        # re-initialised.
-        import logging as _logging
-
-        monkeypatch.setitem(sys.modules, "numpy", None)
-
-        image = Image.new("RGB", (4, 4), (1, 2, 3))
-        with caplog.at_level(_logging.WARNING):
-            first = dda._pack_rgb565(image)
-            second = dda._pack_rgb565(image)
-
-        assert first is None
-        assert second is None
-        numpy_warnings = [r for r in caplog.records if "numpy" in r.message.lower()]
-        assert len(numpy_warnings) == 1, (
-            "numpy-unavailable fallback must be logged exactly once, not per frame"
-        )
-
     def test_returns_none_on_packing_failure_rather_than_raising(self):
         """A non-image-like input must not raise — the caller falls back to
         the driver's own image() path instead."""
-        pytest.importorskip("numpy", reason="numpy not installed")
         assert dda._pack_rgb565(object()) is None
 
 
@@ -730,7 +690,7 @@ class TestPushFrameFastPath:
 
         no_block_display.image.assert_called_once_with(frame)
 
-    def test_display_falls_back_to_image_when_numpy_unavailable(self):
+    def test_display_falls_back_to_image_when_packing_fails(self):
         modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
             _install_fake_hardware_modules()
         )
@@ -779,7 +739,6 @@ class TestDisplayWindow:
         fake_display.image.assert_not_called()
 
     def test_real_packing_of_a_sub_region(self):
-        pytest.importorskip("numpy", reason="numpy not installed")
         modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (
             _install_fake_hardware_modules()
         )

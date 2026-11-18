@@ -21,7 +21,7 @@ generated cover art. Nothing here is collected by the test suite.
 ## Regenerating
 
 From the repository root, with the dial's Python dependencies, Pillow,
-Playwright and the WebKit engine installed:
+numpy (`spi_shots.py` needs it), Playwright and the WebKit engine installed:
 
     python tools/showcase/capture.py [OUT_DIR | --docs] [--engine webkit|chromium]
                                      [--only hd|spi] [--scenario NAME ...]

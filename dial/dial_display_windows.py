@@ -7,9 +7,8 @@ a machine word at a time with numpy, changed rows are coalesced into runs
 and each run into column segments, and the segments are merged greedily
 wherever the fixed price of one more windowed write is more than the
 unchanged pixels a merge would send. Pure planning: no hardware, no Pillow
-beyond the image's own tobytes(), and numpy is imported lazily so a dial
-without it can still import this module (frame_words() then reports it
-once and returns None, and the caller keeps its numpy-free path).
+beyond the image's own tobytes(). frame_words() returns None for an image
+it cannot view, and the caller keeps its whole-region path.
 
 Rectangles are (x0, y0, x1, y1) in panel pixels with x1/y1 exclusive, the
 same convention as PIL's getbbox(); the caller converts to the panel's
@@ -19,8 +18,9 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import logging
 from typing import NamedTuple
+
+import numpy
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 
@@ -55,11 +55,6 @@ _BYTES_PER_PIXEL = 3
 # touches at most four RGB pixels.
 _EDGE_PROBE_PX = 4
 
-# Logged at most once per process: a missing numpy is a one-time
-# misconfiguration, not something worth a warning on every frame.
-_numpy_missing_logged = False
-
-
 class FrameWords(NamedTuple):
     """One panel frame's bytes, viewed two ways over the same buffer:
     *words*, one row of machine words per panel row (*bytes_per_word* wide),
@@ -74,22 +69,9 @@ class FrameWords(NamedTuple):
 def frame_words(image, width: int, height: int) -> FrameWords | None:
     """The frame words of a panel-space RGB *image* of the given size: its
     bytes viewed as the widest integer word that divides a row, so a whole
-    row compares in one vector op. Returns None when numpy is unavailable
-    (logged once) or the image cannot be viewed that way (not RGB, not the
-    stated size). The view owns a copy of the bytes, so it stays valid
+    row compares in one vector op. Returns None when the image cannot be
+    viewed that way (not RGB, not the stated size). The view owns a copy of the bytes, so it stays valid
     whatever later happens to the image."""
-    global _numpy_missing_logged
-    try:
-        import numpy
-    except ImportError:
-        if not _numpy_missing_logged:
-            logging.warning(
-                "dial display: python3-numpy is not installed; falling back to "
-                "whole-region window writes without change-region planning. "
-                "Install python3-numpy to fix this."
-            )
-            _numpy_missing_logged = True
-        return None
     if getattr(image, "mode", None) != "RGB" or tuple(image.size) != (width, height):
         return None
     row_bytes = width * _BYTES_PER_PIXEL
@@ -123,8 +105,6 @@ def _intersects(a: Rect, b: Rect) -> bool:
 
 def _runs(flags) -> list[list[int]]:
     """[start, end) runs of true values in the boolean vector *flags*."""
-    import numpy
-
     padded = numpy.concatenate(([0], flags.astype(numpy.int8), [0]))
     edges = numpy.flatnonzero(numpy.diff(padded))
     return [[int(s), int(e)] for s, e in edges.reshape(-1, 2)]
@@ -148,8 +128,6 @@ def _refine(new: FrameWords, last: FrameWords, ne, c0: int, y0: int, c1: int, y1
     word boundary's pixel and are pulled in to the first and last pixel
     whose bytes really differ, so a window is never wider than the change
     by more than the rounding of a word."""
-    import numpy
-
     bpw = new.bytes_per_word
     changed_rows = numpy.flatnonzero(ne[y0:y1, c0:c1].any(axis=1))
     if changed_rows.size:
@@ -177,8 +155,6 @@ def bounding_box(new: FrameWords, last: FrameWords, width: int, height: int) -> 
     """The single rectangle tightly enclosing every difference between the
     two frames (the whole frame if they do not differ at all, which the
     caller never asks about: plan_windows() has already said so)."""
-    import numpy
-
     ne = new.words != last.words
     rows = numpy.flatnonzero(ne.any(axis=1))
     if not rows.size:
@@ -197,8 +173,6 @@ def plan_windows(new: FrameWords, last: FrameWords, width: int, height: int) -> 
     bounding_box(). Over-covers by rounding, never misses: a word that
     differs marks every pixel it touches, then each rectangle is pulled in
     to its first and last really changed row and column."""
-    import numpy
-
     if new.words.shape != last.words.shape or new.bytes_per_word != last.bytes_per_word:
         raise ValueError("frames are not comparable")
     bpw = new.bytes_per_word

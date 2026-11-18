@@ -6130,10 +6130,7 @@ class TestRevealAtPanelSize:
 # The reveal's numpy compositing path against the Pillow path it replaces.
 # ---------------------------------------------------------------------------
 
-try:
-    import numpy as np
-except ImportError:  # pragma: no cover
-    np = None
+import numpy as np
 
 import dial_display_compositor as _dc  # noqa: E402
 from dial_display_compositor import (  # noqa: E402
@@ -6202,7 +6199,6 @@ _PILLOW_PATH_CASES = [
 ]
 
 
-@pytest.mark.skipif(np is None, reason="numpy not installed")
 class TestRevealNumpyPath:
     @pytest.mark.parametrize("metrics,kind,p", _PILLOW_PATH_CASES)
     def test_matches_the_pillow_path(self, compositor, metrics, kind, p):
@@ -6305,25 +6301,6 @@ class TestRevealNumpyPath:
         with pytest.raises(dataclasses.FrozenInstanceError):
             layers.arrays = None
         assert layers == dataclasses.replace(layers, arrays=None)
-
-    def test_missing_numpy_falls_back_and_logs_once(self, caplog, monkeypatch):
-        metrics = _RICH_METRICS
-        layers = _now_layers(metrics)  # built with numpy available
-        base = _random_base(metrics)
-        monkeypatch.setattr(_dc, "_numpy_missing_logged", False)
-        monkeypatch.setitem(sys.modules, "numpy", None)
-        with caplog.at_level("WARNING", logger=_dc._logger.name):
-            first = _reveal_frame(base, layers, 0.5)
-            second = _reveal_frame(base, layers, 0.3)
-            _reset_render_caches()
-            rebuilt = _now_layers(metrics)
-            third = _reveal_frame(base, rebuilt, 0.5)
-        assert rebuilt.arrays is None
-        assert first.tobytes() == _reveal_frame_pillow(base, layers, 0.5).tobytes()
-        assert second.tobytes() == _reveal_frame_pillow(base, layers, 0.3).tobytes()
-        assert third.tobytes() == _reveal_frame_pillow(base, rebuilt, 0.5).tobytes()
-        assert sum("numpy is not installed" in r.getMessage() for r in caplog.records) == 1
-        _reset_render_caches()
 
     def test_numpy_failure_mid_frame_falls_back_without_raising(self, monkeypatch):
         metrics = _RICH_METRICS

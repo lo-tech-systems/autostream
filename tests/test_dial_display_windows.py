@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-np = pytest.importorskip("numpy", reason="numpy not installed")
+import numpy as np
 Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -212,16 +212,6 @@ def test_property_coverage_superset():
             assert changed[y1 - 1, x0:x1].any(), (case, a, "bottom edge")
             assert changed[y0:y1, x0].any(), (case, a, "left edge")
             assert changed[y0:y1, x1 - 1].any(), (case, a, "right edge")
-
-
-def test_numpy_missing_returns_none_and_logs_once(caplog, monkeypatch):
-    monkeypatch.setattr(ddw, "_numpy_missing_logged", False)
-    monkeypatch.setitem(sys.modules, "numpy", None)
-    image = Image.new("RGB", (4, 4), (1, 2, 3))
-    with caplog.at_level(logging.WARNING):
-        assert frame_words(image, 4, 4) is None
-        assert frame_words(image, 4, 4) is None
-    assert len([r for r in caplog.records if "numpy" in r.message.lower()]) == 1
 
 
 def test_unviewable_images_return_none():
