@@ -17,6 +17,7 @@ if _CORE not in sys.path:
 
 import autostream_announce as announce
 import autostream_state
+import autostream_rpi as rpi
 
 # The suite replaces this with a no-op for every test; the thread test wants the real one.
 _REAL_START = announce._start_playing_reconciliation
@@ -27,7 +28,7 @@ def avahi():
     """Fake avahi helpers that succeed, and a fixed appliance id."""
     with patch.object(announce, "write_avahi_playing_service", return_value=True) as write, \
          patch.object(announce, "remove_avahi_playing_service", return_value=True) as remove, \
-         patch.object(announce, "get_appliance_id", return_value="appliance-a"):
+         patch.object(rpi, "get_appliance_id", return_value="appliance-a"):
         yield SimpleHelpers(write, remove)
 
 

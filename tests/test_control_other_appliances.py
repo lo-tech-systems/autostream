@@ -222,7 +222,7 @@ class TestEquiliserLocalStripping:
             s.hostname = phostname
             peer_objs.append(s)
 
-        with patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_BOUND_ID), \
+        with patch("autostream_rpi.get_appliance_id", return_value=_BOUND_ID), \
              patch("autostream_webui_page_equaliser.get_system_hostname", return_value="my-device"), \
              patch("autostream_webui_page_equaliser.get_all_appliances", return_value=peer_objs):
             return _build_eq_appliances_for_selector()
@@ -244,7 +244,7 @@ class TestEquiliserLocalStripping:
 
     def test_bound_local_suffix_also_stripped(self):
         from autostream_webui_page_equaliser import _build_eq_appliances_for_selector
-        with patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_BOUND_ID), \
+        with patch("autostream_rpi.get_appliance_id", return_value=_BOUND_ID), \
              patch("autostream_webui_page_equaliser.get_system_hostname",
                    return_value="my-device.local"), \
              patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]):
@@ -267,10 +267,10 @@ class TestRemotePageGuard:
     def test_disabled_control_redirects_with_302(self):
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False):
             handler.do_GET()
         codes = [c for (c,) in [handler.send_response.call_args_list[i][0]
@@ -280,10 +280,10 @@ class TestRemotePageGuard:
     def test_disabled_control_does_not_call_send_remote_home_page(self):
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("autostream_webui.send_remote_home_page") as stub:
             handler.do_GET()
@@ -292,10 +292,10 @@ class TestRemotePageGuard:
     def test_enabled_control_calls_send_remote_home_page(self):
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=True), \
              patch("autostream_webui.send_remote_home_page") as stub:
             handler.do_GET()
@@ -304,10 +304,10 @@ class TestRemotePageGuard:
     def test_disabled_control_equaliser_also_redirects(self):
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/equaliser")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("autostream_webui.send_remote_equaliser_page") as stub:
             handler.do_GET()
@@ -320,10 +320,10 @@ class TestRemotePageGuard:
         """GET /a/<local-id>/ always redirects to / — the guard must not block this path."""
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_LOCAL_ID}/")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False):
             handler.do_GET()
         # Should get a redirect (302 to /) regardless of the guard
@@ -346,10 +346,10 @@ class TestGatewayGetGuard:
         def fake_send_json(h, code, data):
             sent_json_calls.append((code, data))
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             handler.do_GET()
@@ -364,10 +364,10 @@ class TestGatewayGetGuard:
         def fake_send_json(h, code, data):
             sent_json_calls.append((code, data))
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             handler.do_GET()
@@ -383,10 +383,10 @@ class TestGatewayGetGuard:
         def fake_send_json(h, code, data):
             sent_json_calls.append((code, data))
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=True), \
              patch("autostream_webui.send_gateway_home_json", side_effect=fake_send_json), \
              patch("webui.common.send_json", side_effect=fake_send_json):
@@ -403,10 +403,10 @@ class TestGatewayGetGuard:
         def fake_send_json(h, code, data):
             sent_json_calls.append((code, data))
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("autostream_webui.send_gateway_home_json", side_effect=fake_send_json), \
              patch("webui.common.send_json", side_effect=fake_send_json):
@@ -426,10 +426,10 @@ class TestGatewayPostGuard:
         def fake_send_json(h, code, data):
             sent_json_calls.append((code, data))
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             # Patch CSRF to pass so routing reaches the guard
@@ -448,10 +448,10 @@ class TestGatewayPostGuard:
         def fake_send_json(h, code, data):
             sent_json_calls.append((code, data))
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             mgr.validate_csrf = MagicMock(return_value=True)
@@ -498,7 +498,7 @@ class TestRemoteHomeMasterVolumeLabel:
         parsed.webui.show_hostname_on_home = False
         parsed.webui.control_other_appliances = False
         with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay._build_appliances_for_selector",
                    return_value=[local_appliance, remote_appliance]), \
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="local-host"):
@@ -588,7 +588,7 @@ class TestLocalHomeInUseCardHTML:
         buf_result = MagicMock(ok=True, value="2250")
 
         with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"), \
              fake_levels([]), \

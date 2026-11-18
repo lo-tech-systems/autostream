@@ -120,7 +120,7 @@ def _home_state(tmp_path) -> dict:
             patch("autostream_start_buffer_cache.current_ms", return_value=2250),
             fake_outputs([]),
             fake_playback(playback),
-            patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
+            patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="host"),
             patch("webui.system.updates.get_app_version", return_value="2.0.0"),
         ):
@@ -176,7 +176,7 @@ def _render_home(levels=None, show_input_detail=False) -> str:
     with ExitStack() as stack:
         for p in (
             patch("webui.common._config_snapshot", return_value=parsed),
-            patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
+            patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
             fake_levels(levels) if levels is not None else contextlib.nullcontext(),

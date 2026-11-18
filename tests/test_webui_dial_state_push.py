@@ -39,6 +39,7 @@ import autostream_session as session
 import autostream_repeat as repeat
 import autostream_monitor_control as monitor_control
 import autostream_dial_push as dial_push
+import autostream_rpi as rpi
 
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
 PATH = "/state-changed"
@@ -73,7 +74,7 @@ class _Rig:
             patch.object(dp, "parse_dial_entries",
                          return_value=[SimpleNamespace(uuid=u) for u in self.entries]),
             patch.object(dp, "get_dial_sighting", side_effect=self.sightings.get),
-            patch.object(dp, "get_appliance_id", return_value=self.appliance_id),
+            patch.object(rpi, "get_appliance_id", return_value=self.appliance_id),
             patch.object(dial_push, "_post_push_body", side_effect=self._post),
             patch.object(dial_push.time, "monotonic", side_effect=lambda: self.now),
             patch.object(dial_push.time, "sleep", side_effect=AssertionError("fan-out slept")),

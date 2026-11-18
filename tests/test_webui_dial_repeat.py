@@ -79,7 +79,7 @@ def _invoke_transport(
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_monitor_control.send_live_repeat_transport", transport_mock),
         patch("autostream_webui_api.store",
               side_effect=AssertionError("route must not read the repeat part")),
@@ -102,7 +102,7 @@ def _invoke_arm(
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_monitor_control.set_live_repeat_armed_ack", arm_mock),
         patch("autostream_webui_api.apply_repeat_arm_request", legacy_mock),
     ):

@@ -19,7 +19,7 @@ from autostream_state import active_track, format_khz, store
 from autostream_state.live import get_setting
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_config import input_type_label, normalize_input_type
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_sysutils import get_system_hostname, reboot_system
 from webui.components import output_card_html, slider_html
 from webui import static
@@ -63,7 +63,7 @@ def _build_appliances_for_selector() -> list:
     Format matches the /api/appliances JSON response so the same JS update
     function works for both server-rendered initial state and polled updates.
     """
-    local_id = get_appliance_id() or ""
+    local_id = rpi.get_appliance_id() or ""
     hostname = str(get_system_hostname() or "").strip()
     if hostname.lower().endswith(".local"):
         hostname = hostname[:-6]
@@ -359,7 +359,7 @@ def send_airplay_page(
     if master_inactive:
         initial_master = preset_volume
     _local_appliances = _build_appliances_for_selector()
-    _local_id = str(get_appliance_id() or "")
+    _local_id = str(rpi.get_appliance_id() or "")
     if show_hostname_on_home:
         _top_right_html = build_appliance_selector_html(
             _local_appliances, _local_id, "home",
@@ -596,7 +596,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     effective_control = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
 
     appliances = _build_appliances_for_selector()
-    _local_id = str(get_appliance_id() or "")
+    _local_id = str(rpi.get_appliance_id() or "")
 
     poll_url = f"/api/appliances/{appliance_id}/home"
     output_url = f"/api/appliances/{appliance_id}/output"

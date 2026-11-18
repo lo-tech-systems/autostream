@@ -31,13 +31,11 @@ import json
 
 # When executed as a script (the appliance entrypoint) this module is
 # registered in sys.modules as "__main__" only. A later
-# `import autostream_webui` — autostream_webui_routes.dispatch() does this at
-# request time to resolve AUTH/STATE/handlers patch-friendly — would load a
-# SECOND copy of this module whose AUTH/STATE globals are never set, and every
-# dispatched request would crash on AUTH=None (found live on-appliance;
-# invisible to tests, which import this module by name). Alias the running
-# module under its import name, before any project import can recurse into us,
-# so both routes resolve to the same module object.
+# `import autostream_webui` -- autostream_webui_routes.dispatch() does this at
+# request time to resolve the handler names of the route table -- would load
+# a SECOND copy of this module. Alias the running module under its import
+# name, before any project import can recurse into us, so both routes
+# resolve to the same module object.
 if __name__ == "__main__":
     sys.modules.setdefault("autostream_webui", sys.modules[__name__])
 
@@ -48,7 +46,7 @@ from autostream_sysutils import (
 
 from autostream_auth import AuthManager, FLASH_COOKIE_NAME
 
-from webui.session_state import WebUIState
+from webui import session_state
 from autostream_webui_api import (
     run_updater,
     send_audio_status_json,
@@ -163,7 +161,7 @@ from autostream_webui_page_first_boot import (
 )
 from autostream_webui_page_rebooting import send_rebooting_page
 from autostream_webui_page_service import send_service_page
-from webui.browser.setup.page import handle_setup_card_get, send_setup_page
+from webui.browser.setup.page import _route_get_setup, _route_get_setup_card, _route_post_setup_form
 from autostream_webui_post_handlers import (
     handle_factory_reset_post,
     handle_live_input_eq_update,
@@ -172,8 +170,8 @@ from autostream_webui_post_handlers import (
 )
 
 from autostream_config import STATE_PATH
-from autostream_commissioning import is_commissioning_required, required_first_boot_step
-from autostream_rpi import get_appliance_id
+import autostream_commissioning as commissioning
+import autostream_rpi as rpi
 from autostream_appliance_gateway import (
     send_appliances_json,
     send_gateway_eq_config_json,
@@ -239,7 +237,7 @@ def _settings_save_barrier(state) -> bool:
 
 def _route_get_home(handler, state):
     msg, flash_type = common._route_flash_msg_and_type(handler)
-    send_airplay_page(handler, state, AUTH, flash_msg=msg, flash_type=flash_type)
+    send_airplay_page(handler, state, session_state.AUTH, flash_msg=msg, flash_type=flash_type)
 
 
 def _route_get_equaliser(handler, state):
@@ -252,16 +250,6 @@ def _route_get_service(handler, state):
     send_service_page(handler, state, flash_msg=msg, flash_type=flash_type)
 
 
-def _route_get_setup(handler, state):
-    msg, _flash_type = common._route_flash_msg_and_type(handler)
-    send_setup_page(handler, state, AUTH, flash_msg=msg)
-
-
-def _route_get_setup_card(handler, state):
-    key = handler._normalized_path().rsplit("/", 1)[-1]
-    handle_setup_card_get(handler, state, AUTH, key)
-
-
 def _route_get_logs(handler, state):
     msg, _flash_type = common._route_flash_msg_and_type(handler)
     send_logs_page(handler, state, flash_msg=msg)
@@ -269,7 +257,7 @@ def _route_get_logs(handler, state):
 
 def _route_get_owntone_setup(handler, state):
     msg, _flash_type = common._route_flash_msg_and_type(handler)
-    send_owntone_setup_page(handler, state, AUTH, flash_msg=msg)
+    send_owntone_setup_page(handler, state, session_state.AUTH, flash_msg=msg)
 
 
 def _route_get_align_result(handler, state):
@@ -281,7 +269,7 @@ def _route_get_align_result(handler, state):
 
 
 def _route_get_rebooting(handler, state):
-    send_rebooting_page(handler, state, AUTH)
+    send_rebooting_page(handler, state, session_state.AUTH)
 
 
 def _route_get_about_system(handler, state):
@@ -425,7 +413,7 @@ def _route_post_reboot(handler, state, body_str):
 
 
 def _route_post_factory_reset(handler, state, body_str):
-    handle_factory_reset_post(handler, state, AUTH)
+    handle_factory_reset_post(handler, state, session_state.AUTH)
 
 
 # -----------------------------------------------------------------------------
@@ -577,7 +565,7 @@ def _route_post_dial_warnings(handler, state):
 
 
 def _route_commissioning_redirect_get(handler, state):
-    step = required_first_boot_step(state.config_path, state.state_path)
+    step = commissioning.required_first_boot_step(state.config_path, state.state_path)
     location = f"/first-boot/{step}" if step else "/first-boot/owntone"
     handler.send_response(302)
     handler.send_header("Location", location)
@@ -594,10 +582,10 @@ def _route_get_playing_status(handler, state):
     if handler._commissioning_required():
         _route_commissioning_redirect_get(handler, state)
         return
-    if AUTH.requires_auth("/api/playing-status") and not AUTH.is_authenticated(handler.headers):
-        AUTH.redirect_to_auth(handler, next_path=handler.path)
+    if session_state.AUTH.requires_auth("/api/playing-status") and not session_state.AUTH.is_authenticated(handler.headers):
+        session_state.AUTH.redirect_to_auth(handler, next_path=handler.path)
         return
-    handler._csrf_token = AUTH.ensure_session(handler)
+    handler._csrf_token = session_state.AUTH.ensure_session(handler)
     send_playing_status_json(handler)
 
 
@@ -611,7 +599,7 @@ def _route_get_log_level(handler, state):
     if handler._commissioning_required():
         _route_commissioning_redirect_get(handler, state)
         return
-    handler._csrf_token = AUTH.ensure_session(handler)
+    handler._csrf_token = session_state.AUTH.ensure_session(handler)
     send_log_level_get_json(handler, state)
 
 
@@ -653,7 +641,7 @@ def _route_put_log_level(handler, state):
         return
 
     csrf_token = handler._extract_csrf_token(None, json_obj)
-    if not AUTH.validate_csrf(handler, csrf_token):
+    if not session_state.AUTH.validate_csrf(handler, csrf_token):
         common.send_browser_api_error(handler, 403, "CSRF validation failed")
         return
 
@@ -673,7 +661,7 @@ def _route_get_gateway_sub(handler, state):
     parts = tail.split("/", 1)
     aid = parts[0]
     sub = parts[1] if len(parts) > 1 else ""
-    local_id = get_appliance_id() or ""
+    local_id = rpi.get_appliance_id() or ""
     if aid != local_id and not common._effective_control_other_appliances(state):
         common.send_json(handler, 403, {"ok": False, "error": "control_disabled"})
     elif sub == "home":
@@ -692,7 +680,7 @@ def _route_post_gateway(handler, state, body_str):
     parts = tail.split("/", 1)
     aid = parts[0]
     sub = parts[1] if len(parts) > 1 else ""
-    local_id = get_appliance_id() or ""
+    local_id = rpi.get_appliance_id() or ""
     if aid != local_id and not common._effective_control_other_appliances(state):
         common.send_json(handler, 403, {"ok": False, "error": "control_disabled"})
     elif sub == "output":
@@ -728,7 +716,7 @@ def _route_get_remote_page(handler, state):
     if not _APPLIANCE_ID_RE.match(aid):
         handler.send_error(404, "Not found")
         return
-    local_id = get_appliance_id() or ""
+    local_id = rpi.get_appliance_id() or ""
     if aid == local_id:
         # Canonical redirect for bound appliance
         location = "/equaliser" if sub == "equaliser" else "/"
@@ -748,29 +736,25 @@ def _route_get_remote_page(handler, state):
 
 
 def _route_get_auth(handler, state):
-    if not AUTH.is_enabled():
+    if not session_state.AUTH.is_enabled():
         handler.send_response(302)
         handler.send_header("Location", "/")
         handler.send_header("Content-Length", "0")
         handler.end_headers()
         return
     query = urlparse(handler.path).query
-    autostream_webui_page_auth.send_auth_page(handler, state, AUTH, query)
+    autostream_webui_page_auth.send_auth_page(handler, state, session_state.AUTH, query)
 
 
 def _route_post_auth_verify(handler, state, body_str):
-    AUTH.handle_auth_verify(handler, body_str.encode("utf-8"))
+    session_state.AUTH.handle_auth_verify(handler, body_str.encode("utf-8"))
 
 
 def _route_post_pin_change(handler, state, body_str):
-    AUTH.handle_pin_change(handler, body_str.encode("utf-8"))
+    session_state.AUTH.handle_pin_change(handler, body_str.encode("utf-8"))
 
 
 # --- Stateful pages: setup / owntone-setup form posts ------------------------
-
-
-def _route_post_setup_form(handler, state, body_str):
-    common.send_json(handler, 405, {"ok": False, "error": "form_post_disabled"})
 
 
 def _route_post_owntone_setup_form(handler, state, body_str):
@@ -781,19 +765,19 @@ def _route_post_owntone_setup_form(handler, state, body_str):
 
 
 def _route_get_first_boot_owntone(handler, state):
-    send_first_boot_owntone_page(handler, state, AUTH)
+    send_first_boot_owntone_page(handler, state, session_state.AUTH)
 
 
 def _route_get_first_boot_appliance(handler, state):
-    send_first_boot_appliance_page(handler, state, AUTH)
+    send_first_boot_appliance_page(handler, state, session_state.AUTH)
 
 
 def _route_post_first_boot_continue(handler, state, body_str):
-    handle_first_boot_continue_post(handler, state, AUTH, body_str)
+    handle_first_boot_continue_post(handler, state, session_state.AUTH, body_str)
 
 
 def _route_post_first_boot_finish(handler, state, body_str):
-    handle_first_boot_finish_post(handler, state, AUTH, body_str)
+    handle_first_boot_finish_post(handler, state, session_state.AUTH, body_str)
 
 
 # --- Logs download -------------------------------------------------------------
@@ -856,10 +840,6 @@ def _route_get_dial_sdcard_health(handler, state):
 # send_html() (matching send_json()'s shape) now lives in
 # webui/common.py -- imported above -- so page modules can use it
 # without importing this file (avoids a circular import back into here).
-
-# Global state
-STATE: Optional[WebUIState] = None
-AUTH: Optional[AuthManager] = None
 
 # -----------------------------------------------------------------------------
 # Background update-apply state
@@ -1011,7 +991,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         do_GET and do_POST each call this once instead of independently
         re-invoking the underlying config/state-path check.
         """
-        return is_commissioning_required(STATE.config_path, STATE.state_path)
+        return commissioning.is_commissioning_required(session_state.STATE.config_path, session_state.STATE.state_path)
 
     def _read_post_body_bytes(self) -> Optional[bytes]:
         try:
@@ -1154,10 +1134,10 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         # Unavailable during commissioning or when identity is missing.
         # 404 per the documented federation wire contract (peers key off the
         # "error" body field, never the status code).
-        if is_commissioning_required(STATE.config_path, STATE.state_path):
+        if commissioning.is_commissioning_required(session_state.STATE.config_path, session_state.STATE.state_path):
             common.send_json(self, 404, {"ok": False, "error": "appliance_unconfigured"})
             return
-        if not get_appliance_id():
+        if not rpi.get_appliance_id():
             common.send_json(self, 404, {"ok": False, "error": "appliance_unconfigured"})
             return
 
@@ -1167,7 +1147,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         # open for the local UI), an unreadable setting here must not leave
         # the security gap open.
         try:
-            if not common._config_snapshot(STATE).webui.advertise_appliance:
+            if not common._config_snapshot(session_state.STATE).webui.advertise_appliance:
                 common.send_json(self, 403, {"ok": False, "error": "control_disabled"})
                 return
         except Exception:
@@ -1204,11 +1184,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         if method == "GET":
             if path == f"{_FEDERATION_PREFIX}/home":
-                send_federation_home_json(self, STATE)
+                send_federation_home_json(self, session_state.STATE)
             elif path == f"{_FEDERATION_PREFIX}/equaliser":
-                send_federation_equaliser_json(self, STATE)
+                send_federation_equaliser_json(self, session_state.STATE)
             elif path == f"{_FEDERATION_PREFIX}/equaliser/status":
-                send_federation_eq_status_json(self, STATE)
+                send_federation_eq_status_json(self, session_state.STATE)
             else:
                 common.send_json(self, 400, {"ok": False, "error": "invalid_endpoint"})
             return
@@ -1221,19 +1201,19 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 if not body_str:
                     common.send_json(self, 400, {"ok": False, "error": "missing_body"})
                     return
-                send_federation_output_json(self, STATE, body_str)
+                send_federation_output_json(self, session_state.STATE, body_str)
             elif path == f"{_FEDERATION_PREFIX}/equaliser/config":
                 if not body_str:
                     common.send_json(self, 400, {"ok": False, "error": "missing_body"})
                     return
-                send_federation_eq_config_json(self, STATE, body_str)
+                send_federation_eq_config_json(self, session_state.STATE, body_str)
             elif path == f"{_FEDERATION_PREFIX}/equaliser/reset":
-                send_federation_eq_reset_json(self, STATE)
+                send_federation_eq_reset_json(self, session_state.STATE)
             elif path == f"{_FEDERATION_PREFIX}/repeat":
                 if not body_str:
                     common.send_json(self, 400, {"ok": False, "error": "missing_body"})
                     return
-                send_federation_repeat_json(self, STATE, body_str)
+                send_federation_repeat_json(self, session_state.STATE, body_str)
             else:
                 common.send_json(self, 400, {"ok": False, "error": "invalid_endpoint"})
             return
@@ -1272,7 +1252,7 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 or path.startswith("/logs")
             )
             if not allowed:
-                step = required_first_boot_step(STATE.config_path, STATE.state_path)
+                step = commissioning.required_first_boot_step(session_state.STATE.config_path, session_state.STATE.state_path)
                 location = f"/first-boot/{step}" if step else "/first-boot/owntone"
                 self.send_response(302)
                 self.send_header("Location", location)
@@ -1288,12 +1268,12 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
                 return
 
         # Gate protected pages
-        if AUTH.requires_auth(path) and not AUTH.is_authenticated(self.headers):
-            AUTH.redirect_to_auth(self, next_path=self.path)
+        if session_state.AUTH.requires_auth(path) and not session_state.AUTH.is_authenticated(self.headers):
+            session_state.AUTH.redirect_to_auth(self, next_path=self.path)
             return
 
         # Ensure UI session / CSRF exists
-        self._csrf_token = AUTH.ensure_session(self)
+        self._csrf_token = session_state.AUTH.ensure_session(self)
 
         self.send_error(404, "Not found")
 
@@ -1339,11 +1319,11 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
             return
 
         csrf_token = self._extract_csrf_token(form, json_obj)
-        if not AUTH.validate_csrf(self, csrf_token):
+        if not session_state.AUTH.validate_csrf(self, csrf_token):
             if path in ("/setup", "/owntone-setup", "/service"):
                 self._redirect_with_error_flash("Settings not saved, please try again")
             elif path.startswith("/api/"):
-                fresh_csrf = AUTH.ensure_session(self)
+                fresh_csrf = session_state.AUTH.ensure_session(self)
                 common.send_json(self, 403, {
                     "ok": False,
                     "error": "csrf_stale",
@@ -1399,12 +1379,10 @@ def start_webui_background(
     a store is created locally (used when the webui runs standalone or in tests).
     """
     from autostream_settings import SettingsStore
-    global STATE, AUTH
-
     if settings is None:
         settings = SettingsStore(config_path)
-    STATE = WebUIState(config_path, STATE_PATH, settings=settings)
-    AUTH = AuthManager(
+    session_state.STATE = session_state.WebUIState(config_path, STATE_PATH, settings=settings)
+    session_state.AUTH = AuthManager(
         config_path=config_path,
         state_path=STATE_PATH,
     )
@@ -1415,7 +1393,7 @@ def start_webui_background(
             from autostream_webui_page_owntone import start_owntone_restart_async
 
             autostream_live_config.apply_mdns_grace_period_startup(
-                STATE, on_restart=lambda state: start_owntone_restart_async(state, delay_s=0.75))
+                session_state.STATE, on_restart=lambda state: start_owntone_restart_async(state, delay_s=0.75))
 
             # Prime the app-version cache before the HTTP server starts so the
             # first /api/about/system request never incurs the helper timeout.

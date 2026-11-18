@@ -1,0 +1,16 @@
+# The web server's state and auth objects moved to webui.session_state, and the web modules
+# call the commissioning and appliance-id reads through their own modules.
+autostream_webui.STATE -> webui.session_state.STATE  alias=session_state
+autostream_webui.AUTH -> webui.session_state.AUTH  alias=session_state
+autostream_webui.is_commissioning_required -> autostream_commissioning.is_commissioning_required  alias=commissioning
+autostream_webui.required_first_boot_step -> autostream_commissioning.required_first_boot_step  alias=commissioning
+autostream_webui.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_webui_api.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_webui_page_airplay.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_webui_page_equaliser.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_appliance_models.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_appliance_gateway.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_appliances.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_dial_warnings.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_dial_push.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi
+autostream_announce.get_appliance_id -> autostream_rpi.get_appliance_id  alias=rpi

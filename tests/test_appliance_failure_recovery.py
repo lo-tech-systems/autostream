@@ -90,7 +90,7 @@ def _render_remote_home(aid: str = _REMOTE_ID) -> str:
     parsed.webui.show_hostname_on_home = False
     parsed.webui.control_other_appliances = False
     with patch("webui.common._config_snapshot", return_value=parsed), \
-         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
+         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
          patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
          patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound"):
         send_remote_home_page(handler, state, aid)
@@ -109,7 +109,7 @@ def _render_remote_equaliser(aid: str = _REMOTE_ID) -> str:
     parsed = MagicMock()
     parsed.webui.dark_mode = False
     with patch("webui.common._config_snapshot", return_value=parsed), \
-         patch("autostream_webui_page_equaliser.get_appliance_id", return_value=_LOCAL_ID), \
+         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
          patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
          patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound"):
         send_remote_equaliser_page(handler, state, aid)
@@ -257,9 +257,9 @@ class TestMsgPrefixParsing:
         chunks = []
         handler.wfile.write = lambda d: chunks.append(d)
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_airplay_page") as stub:
             handler.do_GET()
         if not stub.called:
@@ -300,10 +300,10 @@ class TestCanonicalEqualiserRedirect:
         locations = []
         handler.send_header = MagicMock(side_effect=lambda k, v: locations.append((k, v)))
         handler.send_response = MagicMock()
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         assert any(v == "/equaliser" for k, v in locations if k == "Location")
 
@@ -313,9 +313,9 @@ class TestCanonicalEqualiserRedirect:
         locations = []
         handler.send_header = MagicMock(side_effect=lambda k, v: locations.append((k, v)))
         handler.send_response = MagicMock()
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         assert any(v == "/" for k, v in locations if k == "Location")

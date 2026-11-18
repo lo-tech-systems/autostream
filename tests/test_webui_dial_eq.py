@@ -99,7 +99,7 @@ def _invoke_read(
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
     ):
         send_dial_eq_post_json(handler, state, json_obj)
@@ -123,7 +123,7 @@ def _invoke_set(
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_monitor_control.apply_eq_fields", apply_mock),
     ):

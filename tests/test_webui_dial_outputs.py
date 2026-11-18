@@ -128,7 +128,7 @@ def _invoke_list(
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_output_usage.get_usage_snapshot", return_value=usage_snapshot or {}),
     ):
@@ -162,7 +162,7 @@ def _invoke_set(
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_webui_api.submit_output_change", mutation_mock),
         patch("autostream_player_service.config_airplay_mode_to_backend", mode_mock),
@@ -496,7 +496,7 @@ class TestOutputsSetValidation:
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.dial_speaks_v2", return_value=True),
-            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+            patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("webui.common._config_snapshot", return_value=_parsed()),
             patch("autostream_player_service.submit_output_pin") as submit,
             caplog.at_level(_logging.DEBUG),

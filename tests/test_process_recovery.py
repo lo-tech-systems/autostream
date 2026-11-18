@@ -153,10 +153,10 @@ class TestWebuiBackgroundReturnsThread:
         except ImportError:
             pytest.skip("autostream_webui not importable")
 
-        with patch("autostream_webui.WebUIState"), \
+        with patch("webui.session_state.WebUIState"), \
              patch("autostream_webui.AuthManager"), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.AUTH", MagicMock()), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("webui.session_state.AUTH", MagicMock()), \
              patch("autostream_webui.ThreadingHTTPServer") as mock_server, \
              patch("autostream_live_config.apply_mdns_grace_period_startup"):
             # make the HTTP server block briefly then return

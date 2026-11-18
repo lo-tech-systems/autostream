@@ -18,7 +18,7 @@ from typing import Optional
 
 from autostream_federation import evict_session_for_ip
 from autostream_mdns import MdnsBrowser
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 
 _20HEX_RE = re.compile(r'^[0-9a-f]{20}$')
 
@@ -92,7 +92,7 @@ def _parse_appliance_event(parts: list, txt: dict) -> tuple | None:
     if 'v1' not in _cap_tokens(txt.get('federation', '')):
         return None
 
-    local_id = get_appliance_id()
+    local_id = rpi.get_appliance_id()
     if local_id and appliance_id == local_id:
         return None
 
@@ -262,7 +262,7 @@ def start_appliance_scanner(
     Idempotent. Safe to call multiple times. No-op when get_appliance_id() is None
     because self-filtering and bound-ID routing cannot be guaranteed without it.
     """
-    if get_appliance_id() is None:
+    if rpi.get_appliance_id() is None:
         logging.warning("appliance-scanner: local identity unavailable; not starting")
         return
     _browser.start(shutdown_event=shutdown_event)
@@ -303,7 +303,7 @@ def reconcile_appliance_announcement(version: str, advertise: bool) -> bool:
 
     Returns True on success, False on admin command failure.
     """
-    app_id = get_appliance_id()
+    app_id = rpi.get_appliance_id()
     with _ANNOUNCE_LOCK:
         if app_id is not None:
             control = "on" if advertise else "off"

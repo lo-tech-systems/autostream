@@ -72,7 +72,7 @@ from autostream_config import (
     normalize_output_usage_poll_interval,
     normalize_update_channel,
 )
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_dials import (
     AUTH_AUTHORIZED,
     AUTH_UNAVAILABLE,
@@ -883,7 +883,7 @@ def _dial_auth_gate(handler, json_obj: dict) -> str | None:
         common.send_json(handler, 412, {
             "ok": False,
             "error": "dial_not_authorized",
-            "appliance_id": get_appliance_id(),
+            "appliance_id": rpi.get_appliance_id(),
         })
         return None
     return dial_id
@@ -936,7 +936,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "master_volume": master_volume,
         "selected_output_count": selected_output_count,
         "track_id": _dial_track_id_dict(snap),
-        "appliance_id": get_appliance_id(),
+        "appliance_id": rpi.get_appliance_id(),
         "muted": muted,
         "input": _dial_input_dict(parsed, snap),
     }
@@ -976,7 +976,7 @@ def _send_dial_repeat_ack(handler, ack: Optional[dict]) -> None:
             "error": error,
             "state": (ack or {}).get("state", "idle"),
             "armed": bool((ack or {}).get("armed", False)),
-            "appliance_id": get_appliance_id(),
+            "appliance_id": rpi.get_appliance_id(),
         })
         return
     common.send_json(handler, 200, {
@@ -984,7 +984,7 @@ def _send_dial_repeat_ack(handler, ack: Optional[dict]) -> None:
         "state": ack.get("state", "idle"),
         "armed": bool(ack.get("armed", False)),
         "position_seconds": float(ack.get("position_seconds", 0.0)),
-        "appliance_id": get_appliance_id(),
+        "appliance_id": rpi.get_appliance_id(),
     })
 
 
@@ -1020,7 +1020,7 @@ def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> No
         reply = submit(Intent("repeat.transport", {"action": "stop"}, Origin.USER, requester))
     if reply.error == "rate_limited":
         common.send_json(handler, 200, {"ok": False, "error": "rate_limited",
-                                 "appliance_id": get_appliance_id()})
+                                 "appliance_id": rpi.get_appliance_id()})
         return
     ack = reply.result.get("ack")
     if reply.error == "invalid_position" and "ack" not in reply.result:
@@ -1092,7 +1092,7 @@ def send_dial_outputs_post_json(handler, state: WebUIState, json_obj: dict) -> N
     if outputs is None:
         common.send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
         return
-    common.send_json(handler, 200, {"ok": True, "outputs": outputs, "appliance_id": get_appliance_id()})
+    common.send_json(handler, 200, {"ok": True, "outputs": outputs, "appliance_id": rpi.get_appliance_id()})
 
 
 def send_dial_capabilities_json(handler, state: WebUIState) -> None:
@@ -1104,7 +1104,7 @@ def send_dial_capabilities_json(handler, state: WebUIState) -> None:
     """
     common.send_json(handler, 200, {
         "ok": True,
-        "appliance_id": get_appliance_id(),
+        "appliance_id": rpi.get_appliance_id(),
         "version": updates.get_app_version(),
         "dial_proto": int(DIAL_PROTO_VERSION[1:]),
         "capabilities": dict(DIAL_CAPABILITIES),
@@ -1126,7 +1126,7 @@ def send_dial_warnings_post_json(handler, state: WebUIState, json_obj: dict) -> 
         return
     common.send_json(handler, 200, {
         "ok": True,
-        "appliance_id": get_appliance_id(),
+        "appliance_id": rpi.get_appliance_id(),
         "warnings": warnings_payload(warnings),
     })
 
@@ -1172,7 +1172,7 @@ def send_dial_outputs_set_post_json(handler, state: WebUIState, json_obj: dict) 
         sanitized, requester=dial_requester(dial_id), pin_requester=requester,
         offset_ms=offset_ms, mode=mode,
     )
-    result["appliance_id"] = get_appliance_id()
+    result["appliance_id"] = rpi.get_appliance_id()
     common.send_json(handler, 200, result)
 
 
@@ -1197,7 +1197,7 @@ def _dial_eq_reply(parsed) -> dict:
     gain and range."""
     bass, treble = bass_treble_from_eq(parsed.output_eq)
     return {
-        "ok": True, "appliance_id": get_appliance_id(), "bass_db": bass, "treble_db": treble,
+        "ok": True, "appliance_id": rpi.get_appliance_id(), "bass_db": bass, "treble_db": treble,
         "bands": dial_eq_bands(parsed.output_eq),
     }
 
@@ -1252,7 +1252,7 @@ def send_dial_eq_set_post_json(handler, state: WebUIState, json_obj: dict) -> No
         context=state))
     if not reply.ok:
         logging.warning("dial eq set: apply failed: %s", reply.result.get("error", reply.error))
-        common.send_json(handler, 200, {"ok": False, "error": "eq_apply_failed", "appliance_id": get_appliance_id()})
+        common.send_json(handler, 200, {"ok": False, "error": "eq_apply_failed", "appliance_id": rpi.get_appliance_id()})
         return
     parsed = common._config_snapshot(state)
     common.send_json(handler, 200, _dial_eq_reply(parsed))
@@ -2799,7 +2799,7 @@ def send_bluetooth_pair_status_json(handler, state=None) -> None:
         return
     if result.get("state") == "done":
         try:
-            auto = _bt_pair_auto_configure(_bt_pairing_resolve_state(state))
+            auto = _bt_pair_auto_configure(state)
         except Exception:
             logging.exception("send_bluetooth_pair_status_json: auto-configure step failed")
             auto = None
@@ -2839,38 +2839,6 @@ def send_bluetooth_scan_post_json(handler, json_obj) -> None:
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
     common.send_json(handler, 200, {"ok": True, "action": action})
-
-
-def _bt_pairing_resolve_state(state):
-    """Resolve the ``WebUIState`` to use for the post-pair auto-configure step.
-
-    Callers that already have a ``WebUIState`` reference (the ``pair_status``
-    dispatcher passes the module-global ``STATE``) should just pass it
-    through. This fallback exists for callers that don't.
-
-    It must NOT ``import autostream_webui`` to get there. The webui process
-    is launched as a script (``python3 .../autostream_webui.py``), so the
-    running instance of that module is registered in ``sys.modules`` as
-    ``__main__``, not as ``autostream_webui``. A fresh ``import
-    autostream_webui`` would create a *second*, distinct module object --
-    one whose module-level ``STATE`` was never populated by the running
-    process -- and silently resolve to ``None`` forever. Instead, look the
-    already-loaded module up by name in ``sys.modules`` (covers the case
-    where something else legitimately imported it under that name, e.g. a
-    test) and fall back to ``__main__`` (covers the real running webui
-    process).
-    """
-    if state is not None:
-        return state
-    for _mod_name in ("autostream_webui", "__main__"):
-        mod = sys.modules.get(_mod_name)
-        resolved = getattr(mod, "STATE", None) if mod is not None else None
-        if resolved is not None:
-            return resolved
-    logging.warning(
-        "bluetooth pairing: WebUI state unavailable; input auto-configure skipped"
-    )
-    return None
 
 
 def _bt_pairing_set_field(state, settings, field: str, value) -> tuple[bool, Optional[str]]:

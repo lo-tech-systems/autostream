@@ -114,14 +114,14 @@ class TestResolveAppliance:
 
     def test_bound(self):
         local_id = "a" * 20
-        with patch("autostream_appliance_gateway.get_appliance_id", return_value=local_id):
+        with patch("autostream_rpi.get_appliance_id", return_value=local_id):
             res, sighting = gw.resolve_appliance(local_id)
         assert res == "bound"
         assert sighting is None
 
     def test_conflict(self):
         aid = "b" * 20
-        with patch("autostream_appliance_gateway.get_appliance_id", return_value="c" * 20), \
+        with patch("autostream_rpi.get_appliance_id", return_value="c" * 20), \
              patch("autostream_appliance_gateway.get_conflict_ids", return_value=frozenset({aid})):
             res, _ = gw.resolve_appliance(aid)
         assert res == "conflict"
@@ -129,7 +129,7 @@ class TestResolveAppliance:
     def test_remote(self):
         aid = "d" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch("autostream_appliance_gateway.get_appliance_id", return_value="e" * 20), \
+        with patch("autostream_rpi.get_appliance_id", return_value="e" * 20), \
              patch("autostream_appliance_gateway.get_conflict_ids", return_value=frozenset()), \
              patch("autostream_appliance_gateway.get_appliance_sighting", return_value=sighting):
             res, got = gw.resolve_appliance(aid)
@@ -138,7 +138,7 @@ class TestResolveAppliance:
 
     def test_offline(self):
         aid = "f" * 20
-        with patch("autostream_appliance_gateway.get_appliance_id", return_value="e" * 20), \
+        with patch("autostream_rpi.get_appliance_id", return_value="e" * 20), \
              patch("autostream_appliance_gateway.get_conflict_ids", return_value=frozenset()), \
              patch("autostream_appliance_gateway.get_appliance_sighting", return_value=None):
             res, got = gw.resolve_appliance(aid)
@@ -1033,7 +1033,7 @@ class TestSendAppliancesJson:
             sent_codes.append(code)
             sent_data.append(data)
 
-        with patch("autostream_appliance_gateway.get_appliance_id", return_value=local_id), \
+        with patch("autostream_rpi.get_appliance_id", return_value=local_id), \
              patch("autostream_appliance_gateway.scanner_ready", return_value=True), \
              patch("autostream_appliance_gateway.grace_remaining_ms", return_value=0), \
              patch("autostream_appliance_gateway.get_all_appliances", return_value=fake_peers), \
@@ -1064,7 +1064,7 @@ class TestSendAppliancesJson:
         def fake_send_json(h, code, data):
             sent_codes.append(code)
             sent_data.append(data)
-        with patch("autostream_appliance_gateway.get_appliance_id", return_value=None), \
+        with patch("autostream_rpi.get_appliance_id", return_value=None), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             gw.send_appliances_json(handler, MagicMock())
         assert sent_codes == [500]

@@ -133,7 +133,7 @@ class TestMainPageBanner:
 
         patches = [
             patch("autostream_webui_page_airplay.build_top_banner_html", return_value=("", "")),
-            patch("autostream_webui_page_airplay.get_appliance_id", return_value="local-id"),
+            patch("autostream_rpi.get_appliance_id", return_value="local-id"),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
             fake_levels([]),
@@ -193,7 +193,7 @@ class TestEqualiserPageBannerAbsent:
         handler._csrf_token = "tok"
 
         with patch("autostream_webui_page_equaliser.build_top_banner_html", return_value=("", "")), \
-             patch("autostream_webui_page_equaliser.get_appliance_id", return_value="local-id"), \
+             patch("autostream_rpi.get_appliance_id", return_value="local-id"), \
              patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]):
             send_equaliser_page(handler, state)
 

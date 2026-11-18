@@ -23,7 +23,7 @@ from typing import Optional
 from autostream_appliances import get_all_appliances
 from autostream_state.live import get_live_monitor_output_rate
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_sysutils import get_system_hostname
 from webui import static
 from webui.common import (
@@ -37,7 +37,7 @@ from webui import common
 
 def _build_eq_appliances_for_selector() -> list:
     """Return the bound-first appliance list for the equaliser selector widget."""
-    local_id = get_appliance_id() or ""
+    local_id = rpi.get_appliance_id() or ""
     hostname = str(get_system_hostname() or "").strip()
     if hostname.lower().endswith(".local"):
         hostname = hostname[:-6]
@@ -303,7 +303,7 @@ def send_equaliser_page(
     dark_mode = parsed.webui.dark_mode if parsed is not None else False
 
     _local_appliances = _build_eq_appliances_for_selector()
-    _local_id = str(get_appliance_id() or "")
+    _local_id = str(rpi.get_appliance_id() or "")
 
     if parsed is not None:
         _show_hostname = parsed.webui.show_hostname_on_home
@@ -381,7 +381,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
     dark_mode = parsed.webui.dark_mode
 
     appliances = _build_eq_appliances_for_selector()
-    _local_id = str(get_appliance_id() or "")
+    _local_id = str(rpi.get_appliance_id() or "")
 
     _remote_hostname = "autostream"
     for a in appliances:

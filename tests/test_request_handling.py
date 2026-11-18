@@ -123,7 +123,7 @@ class TestContentLength:
     def test_invalid_content_length_non_numeric(self):
         auth = _make_auth()
         h = _make_handler("/api/auth/verify", b"", content_length_override="notanumber")
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         h.send_error.assert_called_once()
         code = h.send_error.call_args[0][0]
@@ -132,7 +132,7 @@ class TestContentLength:
     def test_negative_content_length(self):
         auth = _make_auth()
         h = _make_handler("/api/auth/verify", b"", content_length_override="-1")
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         # -1 is invalid (not in 0 <= length <= MAX_POST_SIZE)
         h.send_error.assert_called_once()
@@ -143,7 +143,7 @@ class TestContentLength:
         auth = _make_auth()
         oversized = str(ConfigWebHandler.MAX_POST_SIZE + 1)
         h = _make_handler("/api/auth/verify", b"", content_length_override=oversized)
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         h.send_error.assert_called_once()
         code = h.send_error.call_args[0][0]
@@ -153,7 +153,7 @@ class TestContentLength:
         """Zero-length body on /api/auth/verify must return 400."""
         auth = _make_auth()
         h = _make_handler("/api/auth/verify", b"", content_length_override="0")
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         h.send_error.assert_called_once()
         code = h.send_error.call_args[0][0]
@@ -175,7 +175,7 @@ class TestBodyReadFailures:
             body,
             rfile_override=_ShortRfile(body),
         )
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         h.send_error.assert_called_once()
         code = h.send_error.call_args[0][0]
@@ -190,7 +190,7 @@ class TestBodyReadFailures:
             body,
             rfile_override=_FailRfile(),
         )
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         h.send_error.assert_called_once()
         code = h.send_error.call_args[0][0]
@@ -208,8 +208,8 @@ class TestUtf8Decoding:
         auth = _make_auth()
         tok, csrf = _csrf_session(auth)
         h = _make_handler(path, raw_body, content_type=content_type, sess_token=tok, csrf_token=csrf)
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()):
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()):
             h.do_POST()
         return h
 
@@ -237,8 +237,8 @@ class TestNonObjectJson:
         tok, csrf = _csrf_session(auth)
         raw = json.dumps(body).encode()
         h = _make_handler(path, raw, sess_token=tok, csrf_token=csrf)
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()):
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()):
             h.do_POST()
         return h
 
@@ -267,8 +267,8 @@ class TestNonObjectJson:
         auth = _make_auth()
         raw = json.dumps([1, 2]).encode()
         h = _make_handler("/api/dial/volume", raw)
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()), \
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_webui.send_dial_volume_post_json") as mock_handler:
             h.do_POST()
         h.send_error.assert_called_once()
@@ -280,8 +280,8 @@ class TestNonObjectJson:
         auth = _make_auth()
         raw = json.dumps([1, 2]).encode()
         h = _make_handler("/api/dial/mute", raw)
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()), \
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_webui.send_dial_mute_post_json") as mock_handler:
             h.do_POST()
         h.send_error.assert_called_once()
@@ -296,8 +296,8 @@ class TestNonObjectJson:
         sent_codes = []
         def fake_send_json(hnd, code, data):
             sent_codes.append(code)
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()), \
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_webui.send_dial_volume_post_json", side_effect=fake_send_json):
             h.do_POST()
         h.send_error.assert_not_called()
@@ -318,9 +318,9 @@ class TestFactoryResetFailure:
         sent = []
         def fake_send_json(hnd, code, data):
             sent.append((code, data))
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.handle_factory_reset_post",
                    side_effect=lambda h2, s, a: fake_send_json(h2, 500, {"ok": False})):
             h.do_POST()
@@ -355,7 +355,7 @@ class TestAuthVerifyEmptyBody:
     def test_empty_body_returns_400(self):
         auth = _make_auth()
         h = _make_handler("/api/auth/verify", b"")
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
@@ -364,7 +364,7 @@ class TestAuthVerifyEmptyBody:
         """If _read_post_body_bytes returns None (error), no second response is sent."""
         auth = _make_auth()
         h = _make_handler("/api/auth/verify", b"data", rfile_override=_FailRfile())
-        with patch("autostream_webui.AUTH", auth):
+        with patch("webui.session_state.AUTH", auth):
             h.do_POST()
         # send_error called exactly once (by body reader), handle_auth_verify never called
         h.send_error.assert_called_once()

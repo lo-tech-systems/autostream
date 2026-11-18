@@ -500,7 +500,7 @@ class TestDispatcherBehaviour:
     def test_unknown_path_returns_false(self):
         h = _make_handler("/no-such-route", "GET")
         h._commissioning_required = lambda: False
-        with patch("autostream_webui.STATE", MagicMock()):
+        with patch("webui.session_state.STATE", MagicMock()):
             assert dispatch(h, "GET", "/no-such-route-really") is False
 
     def test_auth_none_passes_through(self):
@@ -510,8 +510,8 @@ class TestDispatcherBehaviour:
         h = _make_handler("/tmp-none", "GET")
         h._commissioning_required = lambda: False
         with patch.object(routes_mod, "ROUTES", scratch), \
-             patch("autostream_webui.STATE", MagicMock()) as state, \
-             patch("autostream_webui.AUTH", MagicMock()):
+             patch("webui.session_state.STATE", MagicMock()) as state, \
+             patch("webui.session_state.AUTH", MagicMock()):
             result = dispatch(h, "GET", "/tmp-none")
         assert result is True
         stub.assert_called_once_with(h, state)
@@ -525,8 +525,8 @@ class TestDispatcherBehaviour:
         mock_auth = MagicMock()
         mock_auth.require_authenticated_if_pin_enabled.return_value = False
         with patch.object(routes_mod, "ROUTES", scratch), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.AUTH", mock_auth):
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("webui.session_state.AUTH", mock_auth):
             result = dispatch(h, "GET", "/tmp-full-page")
         assert result is True
         stub.assert_not_called()
@@ -543,8 +543,8 @@ class TestDispatcherBehaviour:
         mock_auth = MagicMock()
         mock_auth.require_authenticated_if_pin_enabled.return_value = False
         with patch.object(routes_mod, "ROUTES", scratch), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.AUTH", mock_auth):
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("webui.session_state.AUTH", mock_auth):
             result = dispatch(h, "GET", "/tmp-full-api")
         assert result is True
         stub.assert_not_called()
@@ -561,8 +561,8 @@ class TestDispatcherBehaviour:
         mock_auth = MagicMock()
         mock_auth.require_authenticated_if_pin_enabled.return_value = True
         with patch.object(routes_mod, "ROUTES", scratch), \
-             patch("autostream_webui.STATE", MagicMock()) as state, \
-             patch("autostream_webui.AUTH", mock_auth):
+             patch("webui.session_state.STATE", MagicMock()) as state, \
+             patch("webui.session_state.AUTH", mock_auth):
             result = dispatch(h, "GET", "/tmp-full-ok")
         assert result is True
         stub.assert_called_once_with(h, state)
@@ -575,8 +575,8 @@ class TestDispatcherBehaviour:
         h = _make_handler("/tmp-gated", "GET")
         h._commissioning_required = lambda: True
         with patch.object(routes_mod, "ROUTES", scratch), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.required_first_boot_step", return_value="owntone"):
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.required_first_boot_step", return_value="owntone"):
             result = dispatch(h, "GET", "/tmp-gated")
         assert result is True
         stub.assert_not_called()
@@ -590,8 +590,8 @@ class TestDispatcherBehaviour:
         h = _make_handler("/tmp-open-during-boot", "GET")
         h._commissioning_required = lambda: True
         with patch.object(routes_mod, "ROUTES", scratch), \
-             patch("autostream_webui.STATE", MagicMock()) as state, \
-             patch("autostream_webui.AUTH", MagicMock()):
+             patch("webui.session_state.STATE", MagicMock()) as state, \
+             patch("webui.session_state.AUTH", MagicMock()):
             result = dispatch(h, "GET", "/tmp-open-during-boot")
         assert result is True
         stub.assert_called_once_with(h, state)
@@ -616,19 +616,19 @@ class TestPilotRouteAboutPage:
 
     def test_about_reachable_without_session(self):
         h = _make_handler("/about", "GET")
-        with patch("autostream_webui.AUTH", _make_manager()), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", _make_manager()), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_about_page") as stub:
             h.do_GET()
         stub.assert_called_once()
 
     def test_about_gated_during_commissioning(self):
         h = _make_handler("/about", "GET")
-        with patch("autostream_webui.AUTH", _make_manager()), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=True), \
-             patch("autostream_webui.required_first_boot_step", return_value="owntone"), \
+        with patch("webui.session_state.AUTH", _make_manager()), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=True), \
+             patch("autostream_commissioning.required_first_boot_step", return_value="owntone"), \
              patch("autostream_webui.send_about_page") as stub:
             h.do_GET()
         stub.assert_not_called()
@@ -646,9 +646,9 @@ class TestPilotRouteApiRepeat:
         sess_token, csrf_token = _csrf_session(mgr)
         body = b'{"armed": true}'
         h = _make_handler("/api/repeat", "POST", sess_token, csrf_token, body=body)
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_called_once()
@@ -658,9 +658,9 @@ class TestPilotRouteApiRepeat:
         _csrf_session(mgr)  # session exists, but token below is wrong
         body = b'{"armed": true}'
         h = _make_handler("/api/repeat", "POST", "", "", body=body)
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_not_called()
@@ -669,9 +669,9 @@ class TestPilotRouteApiRepeat:
         mgr = _make_manager()
         sess_token, csrf_token = _csrf_session(mgr)
         h = _make_handler("/api/repeat", "POST", sess_token, csrf_token, body=b"")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_repeat_post_json") as stub:
             h.do_POST()
         stub.assert_not_called()
@@ -683,9 +683,9 @@ class TestPilotRouteApiRepeat:
         body = b'{"armed": true}'
         h = _make_handler("/api/repeat", "POST", sess_token, csrf_token, body=body)
         sent = []
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=True), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("autostream_webui.send_repeat_post_json") as stub:
             h.do_POST()

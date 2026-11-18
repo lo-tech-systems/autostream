@@ -62,7 +62,7 @@ from autostream_federation import EXPIRY_SECONDS as _FED_EXPIRY_SECONDS, FEDERAT
 from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_state.live import get_live_output_eq_status
 from autostream_player_service import config_airplay_mode_to_backend
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_webui_api import apply_repeat_arm_request
 from webui import common
 from webui.system import updates
@@ -130,7 +130,7 @@ def resolve_appliance(appliance_id: str) -> tuple[str, Optional[ApplianceSightin
     """
     if not _APPLIANCE_ID_RE.match(appliance_id):
         return "invalid", None
-    local_id = get_appliance_id()
+    local_id = rpi.get_appliance_id()
     if local_id and appliance_id == local_id:
         return "bound", None
     conflicts = get_conflict_ids()
@@ -647,7 +647,7 @@ def _handle_remote_response(handler, appliance_id: str, status: int, data: dict)
 
 def send_appliances_json(handler, state) -> None:  # noqa: ARG001
     """GET /api/appliances — bound-first appliance list."""
-    local_id = get_appliance_id()
+    local_id = rpi.get_appliance_id()
     if not local_id:
         common.send_json(handler, 500, {
             "ok": False,

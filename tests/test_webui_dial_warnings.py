@@ -42,7 +42,7 @@ def _invoke(json_obj, *, auth_state=AUTH_AUTHORIZED, speaks_v2=True, warnings=(S
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api.current_warnings", build),
     ):
         send_dial_warnings_post_json(handler, state, json_obj)

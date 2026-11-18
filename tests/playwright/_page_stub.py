@@ -130,7 +130,7 @@ def _render_equaliser(*, eq_fs: int = 96000, **_fakes) -> bytes:
         with ExitStack() as stack:
             for p in (
                 *_banner_patches("autostream_webui_page_equaliser"),
-                patch("autostream_webui_page_equaliser.get_appliance_id", return_value=LOCAL_APPLIANCE_ID),
+                patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID),
                 patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]),
                 patch("autostream_webui_page_equaliser.get_system_hostname", return_value="autostream"),
             ):
@@ -148,7 +148,7 @@ def _render_remote_equaliser(*, appliance_id: str = REMOTE_APPLIANCE_ID, **_fake
     parsed = MagicMock()
     parsed.webui.dark_mode = False
     with patch("webui.common._config_snapshot", return_value=parsed), \
-         patch("autostream_webui_page_equaliser.get_appliance_id", return_value=LOCAL_APPLIANCE_ID), \
+         patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID), \
          patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
          patch("autostream_webui_page_equaliser.get_system_hostname", return_value="autostream"):
         send_remote_equaliser_page(handler, state, appliance_id)

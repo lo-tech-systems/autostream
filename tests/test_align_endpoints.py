@@ -675,9 +675,9 @@ def test_align_post_routes_require_csrf(path, stub_target):
     mgr = _make_manager_no_pin()
     handler = _make_post_handler(path, csrf_token=None)
 
-    with patch("autostream_webui.AUTH", mgr), \
-         patch("autostream_webui.STATE", MagicMock()), \
-         patch("autostream_webui.is_commissioning_required", return_value=False), \
+    with patch("webui.session_state.AUTH", mgr), \
+         patch("webui.session_state.STATE", MagicMock()), \
+         patch("autostream_commissioning.is_commissioning_required", return_value=False), \
          patch(stub_target) as stub:
         handler.do_POST()
 

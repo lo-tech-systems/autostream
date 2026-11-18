@@ -39,7 +39,7 @@ from autostream_dials import (
     write_dial_entry,
 )
 from autostream_intents.table import Intent, Outcome, bind
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_state import (
     active_track,
     eq_band_digest,
@@ -251,7 +251,7 @@ def _fanout(job: _PushJob) -> None:
     eligible dial. No retry and no sleep. Dials that have not failed lately go
     first; one that failed is skipped for STATE_FANOUT_BACKOFF_S and goes last
     after that. Runs on the worker thread, which owns _fanout_failed_at."""
-    appliance_id = get_appliance_id()
+    appliance_id = rpi.get_appliance_id()
     if not appliance_id:
         return
     body = dict(job.body)
@@ -324,7 +324,7 @@ def notify_dial_auth_changed(uuid: str) -> None:
     identity (there is nothing to correlate on the dial). Goes to the one dial
     named, whether or not it is (still) authorised.
     """
-    appliance_id = get_appliance_id()
+    appliance_id = rpi.get_appliance_id()
     if not appliance_id:
         return
     enqueue_push(_AUTH_CHANGED_PATH, uuid, appliance_id)

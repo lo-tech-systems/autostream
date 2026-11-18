@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import autostream_state
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_sysutils import remove_avahi_playing_service, write_avahi_playing_service
 
 _AVAHI_PLAYING_PATH = Path("/etc/avahi/services/autostream-playing.service")
@@ -59,7 +59,7 @@ def sync_playing_announcement(active: bool, version: str) -> None:
     active = bool(active)
     with _playing_lock:
         if active and not _playing_announced:
-            if write_avahi_playing_service(version, get_appliance_id()):
+            if write_avahi_playing_service(version, rpi.get_appliance_id()):
                 _playing_announced = True
         elif not active and _playing_announced:
             if remove_avahi_playing_service():

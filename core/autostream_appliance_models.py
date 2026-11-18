@@ -17,7 +17,7 @@ from autostream_state.live import get_live_output_eq_status, pin_claim, start_bu
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_sysutils import get_system_hostname
 from webui.system import updates
 
@@ -115,7 +115,7 @@ def build_home_state(snap, parsed) -> dict:
     reply = {
         "ok": True,
         "appliance": {
-            "id": get_appliance_id() or "",
+            "id": rpi.get_appliance_id() or "",
             "hostname": hostname,
             "version": updates.get_app_version(),
         },

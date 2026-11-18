@@ -149,8 +149,8 @@ class TestPostRouterAuthEnforcement:
         sess_token, csrf_token = _csrf_session(mgr)
         handler = _make_handler(path, sess_token, csrf_token)
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch(stub_target) as stub:
             handler.do_POST()
 
@@ -165,9 +165,9 @@ class TestPostRouterAuthEnforcement:
         sess_token, csrf_token = _csrf_session(mgr)
         handler = _make_handler(path, sess_token, csrf_token)
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required",
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required",
                    return_value=False), \
              patch(stub_target) as stub:
             handler.do_POST()
@@ -188,9 +188,9 @@ class TestRetiredFormRoutes:
         def _cap(code, *a, **kw):
             sent.append(code)
         handler.send_response = _cap
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False):
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False):
             handler.do_POST()
         assert sent and sent[0] == 405
 
@@ -200,9 +200,9 @@ class TestRetiredFormRoutes:
         sess_token, csrf_token = _csrf_session(mgr)
         handler = _make_handler("/logs", sess_token, csrf_token)
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False):
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False):
             handler.do_POST()
 
         handler.send_error.assert_called_once_with(404, "Not found")
@@ -248,10 +248,10 @@ class TestFederationRoutesSkipBrowserAuth:
         sent = []
         fake_cfg = MagicMock()
         fake_cfg.webui.advertise_appliance = True
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"), \
              patch("webui.common._config_snapshot", return_value=fake_cfg), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             handler.do_POST()
@@ -266,10 +266,10 @@ class TestFederationRoutesSkipBrowserAuth:
             fed._rate.clear()
         mgr = _make_manager(pin="secret")
         handler = self._make_post_handler("/api/federation/v1/session")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"), \
              patch("webui.common.send_json"), \
              patch.object(mgr, "validate_csrf") as mock_csrf:
             handler.do_POST()
@@ -304,9 +304,9 @@ class TestGatewayRoutesAuth:
         handler = self._make_get("/api/appliances")
         redirect_codes = []
         handler.send_response = lambda c, *a: redirect_codes.append(c)
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_appliances_json"):
             handler.do_GET()
         assert 302 not in redirect_codes, "Gateway list must not redirect to /auth"
@@ -317,9 +317,9 @@ class TestGatewayRoutesAuth:
         handler = self._make_get("/api/appliances/aabbccdd1122334455aa/home")
         redirect_codes = []
         handler.send_response = lambda c, *a: redirect_codes.append(c)
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json"):
             handler.do_GET()
         assert 302 not in redirect_codes

@@ -179,7 +179,7 @@ def _invoke(
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth_state),
         patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
-        patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_player_service.update_output", update_mock),
         fake_session(session_state if session_state is not None
@@ -318,7 +318,7 @@ class TestPlayingField:
         _arrange_outputs(_ok_list())
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
-            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+            patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("webui.common._config_snapshot", return_value=parsed),
             fake_session({"active": True, "source": "replay"}),
             fake_repeat(None),
@@ -689,7 +689,7 @@ class TestFailurePaths:
         handler = _make_handler()
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
-            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+            patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             fake_session({"active": False, "source": None}),
             patch("webui.common._config_snapshot",
                   side_effect=OSError("disk full")),
@@ -715,7 +715,7 @@ class TestFailurePaths:
         _arrange_outputs(_fail_list("refused"))
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
-            patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+            patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             fake_session({"active": False, "source": None}),
             patch("webui.common._config_snapshot", return_value=parsed),
         ):
@@ -1025,8 +1025,8 @@ class TestRouterLevelDialStatus:
         body = b"[]"
         handler = _make_do_post_handler("/api/dial/status", body)
 
-        with patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.AUTH", MagicMock()), \
+        with patch("webui.session_state.STATE", MagicMock()), \
+             patch("webui.session_state.AUTH", MagicMock()), \
              patch("autostream_webui.send_dial_status_post_json") as mock_fn:
             handler.do_POST()
 
@@ -1042,8 +1042,8 @@ class TestRouterLevelDialStatus:
         body = b"null"
         handler = _make_do_post_handler("/api/dial/status", body)
 
-        with patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.AUTH", MagicMock()), \
+        with patch("webui.session_state.STATE", MagicMock()), \
+             patch("webui.session_state.AUTH", MagicMock()), \
              patch("autostream_webui.send_dial_status_post_json") as mock_fn:
             handler.do_POST()
 
@@ -1057,8 +1057,8 @@ class TestRouterLevelDialStatus:
         body = b"[]"
         handler = _make_do_post_handler("/api/dial/volume", body)
 
-        with patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.AUTH", MagicMock()), \
+        with patch("webui.session_state.STATE", MagicMock()), \
+             patch("webui.session_state.AUTH", MagicMock()), \
              patch("autostream_webui.send_dial_volume_post_json") as mock_fn:
             handler.do_POST()
 

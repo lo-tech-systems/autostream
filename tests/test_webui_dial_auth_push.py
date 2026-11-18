@@ -199,7 +199,7 @@ class TestCallSites:
 class TestNotifyDialAuthChanged:
     def test_no_op_when_appliance_has_no_identity(self):
         with (
-            patch("autostream_dial_push.get_appliance_id", return_value=None),
+            patch("autostream_rpi.get_appliance_id", return_value=None),
             patch("autostream_dial_push.enqueue_push") as mock_enqueue,
         ):
             notify_dial_auth_changed(UUID)
@@ -207,7 +207,7 @@ class TestNotifyDialAuthChanged:
 
     def test_queues_one_auth_changed_job_when_identified(self):
         with (
-            patch("autostream_dial_push.get_appliance_id", return_value=APPLIANCE_ID),
+            patch("autostream_rpi.get_appliance_id", return_value=APPLIANCE_ID),
             patch("autostream_dial_push.enqueue_push") as mock_enqueue,
         ):
             notify_dial_auth_changed(UUID)

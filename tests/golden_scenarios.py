@@ -496,24 +496,22 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
         for name, value in values.items():
             monkeypatch.setattr(module, name, value)
 
-    shared = dict(
-        get_appliance_id=lambda: APPLIANCE_ID,
-        _dial_update_banner_text=lambda: "",
-    )
+    shared = dict(_dial_update_banner_text=lambda: "")
+    import autostream_rpi as rpi
     import webui.common as web_common
+    setattrs(rpi, get_appliance_id=lambda: APPLIANCE_ID)
     import webui.system.updates as updates
     setattrs(web_common, _config_snapshot=lambda state: cfg)
     setattrs(updates, get_app_version=lambda: FIXED_APP_VERSION)
-    setattrs(api, **{k: v for k, v in shared.items() if k != "_dial_update_banner_text"},
+    setattrs(api,
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True,
              get_live_output_eq_status=lambda: scenario.eq_status)
-    setattrs(models, **{k: v for k, v in shared.items() if k not in ("get_app_version", "list_outputs")},
+    setattrs(models,
              get_system_hostname=lambda: "golden.local",
              _wall=lambda: FIXED_WALL_CLOCK,
              get_live_output_eq_status=lambda: scenario.eq_status)
-    setattrs(airplay, **{k: v for k, v in shared.items()
-                         if k in ("get_appliance_id", "_dial_update_banner_text")},
+    setattrs(airplay, **shared,
              get_setting=get_setting,
              get_all_appliances=lambda: [],
              get_system_hostname=lambda: "golden.local",

@@ -88,10 +88,10 @@ class TestRemoteHomeRouting:
     def test_valid_remote_id_calls_send_remote_home_page(self):
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page") as stub:
             handler.do_GET()
         stub.assert_called_once()
@@ -100,10 +100,10 @@ class TestRemoteHomeRouting:
         """Path /a/<id> (no trailing slash) should also route correctly."""
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page") as stub:
             handler.do_GET()
         stub.assert_called_once()
@@ -115,10 +115,10 @@ class TestRemoteHomeRouting:
         redirect_locations = []
         handler.send_header = MagicMock(side_effect=lambda k, v: redirect_locations.append((k, v)))
         handler.send_response = MagicMock()
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         codes = [c for c, in [handler.send_response.call_args_list[i][0] for i in range(len(handler.send_response.call_args_list))]]
         assert 302 in codes
@@ -129,10 +129,10 @@ class TestRemoteHomeRouting:
         """GET /a/invalid/ must return 404 — format guard."""
         mgr = _make_auth(pin=None)
         handler = _make_get("/a/invalid/")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         handler.send_error.assert_called()
 
@@ -140,10 +140,10 @@ class TestRemoteHomeRouting:
         """A valid-hex-but-short ID (< 20 chars) must 404."""
         mgr = _make_auth(pin=None)
         handler = _make_get("/a/aabb/")
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         handler.send_error.assert_called()
 
@@ -153,10 +153,10 @@ class TestRemoteHomeRouting:
         handler = _make_get(f"/a/{_REMOTE_ID}/")
         redirect_codes = []
         handler.send_response = MagicMock(side_effect=lambda c, *a: redirect_codes.append(c))
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page"):
             handler.do_GET()
         assert 302 not in redirect_codes
@@ -168,10 +168,10 @@ class TestRemoteHomeRouting:
         called_with = {}
         def _stub(h, s, aid):
             called_with["aid"] = aid
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page", side_effect=_stub):
             handler.do_GET()
         assert called_with.get("aid") == _REMOTE_ID
@@ -230,7 +230,7 @@ class TestRemoteHomePageContent:
         parsed.webui.show_hostname_on_home = False
         parsed.webui.control_other_appliances = False
         with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound-host"):
             send_remote_home_page(handler, state, aid)

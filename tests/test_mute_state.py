@@ -123,7 +123,7 @@ def _dial(fn, body, parsed=None):
          patch("autostream_webui_api.dial_authorization",
                return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
          patch("webui.common._config_snapshot", return_value=parsed or _parsed_config()), \
-         patch("autostream_webui_api.get_appliance_id", return_value=None):
+         patch("autostream_rpi.get_appliance_id", return_value=None):
         getattr(api, fn)(_handler(), MagicMock(), {"dial_id": "uid", **body})
     return captured
 
@@ -372,7 +372,7 @@ class TestStatusMuteAware:
                    return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
              patch("webui.common._config_snapshot", return_value=_parsed_config()), \
              fake_outputs(outputs), \
-             patch("autostream_webui_api.get_appliance_id", return_value=None), \
+             patch("autostream_rpi.get_appliance_id", return_value=None), \
              patch("webui.common._session_playing", return_value=False), \
              fake_repeat(None), \
              fake_track(_disabled_track_id_snapshot()):
@@ -507,7 +507,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
              fake_repeat(None), \
              patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
              patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_appliance_models.get_appliance_id", return_value="id"):
+             patch("autostream_rpi.get_appliance_id", return_value="id"):
             mock_playback.return_value = SimpleNamespace(
                 to_public_dict=lambda: {}, stylus_banner_text="", belt_banner_text="", bearing_banner_text="",
             )
@@ -662,7 +662,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
     from contextlib import ExitStack
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
-        patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
+        patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
         fake_levels(input_levels),
@@ -709,7 +709,7 @@ def _render_remote_home_html() -> str:
     from contextlib import ExitStack
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
-        patch("autostream_webui_page_airplay.get_appliance_id", return_value="1" * 20),
+        patch("autostream_rpi.get_appliance_id", return_value="1" * 20),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
     ]

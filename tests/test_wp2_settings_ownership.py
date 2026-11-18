@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 from settings_fixtures import fixed_view
 
 import pytest
+import webui.session_state as session_state
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -150,17 +151,18 @@ class TestStartWebuiBackground:
             patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
         ):
 
-            from autostream_webui import start_webui_background, STATE as _initial
+            from autostream_webui import start_webui_background
+            from webui.session_state import STATE as _initial
             import autostream_webui as _wm
 
-            _wm.STATE = None
+            session_state.STATE = None
             t = start_webui_background(str(cfg), settings=store)
             # Give the thread a brief moment to set globals
             t.join(timeout=2.0)
 
             from autostream_settings import writable_store
-            assert _wm.STATE is not None
-            assert writable_store(_wm.STATE.settings) is store
+            assert session_state.STATE is not None
+            assert writable_store(session_state.STATE.settings) is store
 
         store.close(save=False)
 
@@ -183,15 +185,15 @@ class TestStartWebuiBackground:
             patch("autostream_webui.AuthManager"),
             patch("autostream_webui.ThreadingHTTPServer", return_value=httpd_mock),
         ):
-            _wm.STATE = None
+            session_state.STATE = None
             t = start_webui_background(str(cfg))
             t.join(timeout=2.0)
 
-            assert _wm.STATE is not None
-            assert _wm.STATE.settings is not None
+            assert session_state.STATE is not None
+            assert session_state.STATE.settings is not None
             from autostream_settings import SettingsView, writable_store
-            assert isinstance(_wm.STATE.settings, SettingsView)
-            writable_store(_wm.STATE.settings).close(save=False)
+            assert isinstance(session_state.STATE.settings, SettingsView)
+            writable_store(session_state.STATE.settings).close(save=False)
 
     def test_startup_pushes_mdns_grace_period(self, tmp_path):
         from autostream_settings import SettingsStore
@@ -221,7 +223,7 @@ class TestStartWebuiBackground:
                   return_value=(True, False, "")),
             patch("autostream_appliances.set_grace_period") as m_set,
         ):
-            _wm.STATE = None
+            session_state.STATE = None
             t = start_webui_background(str(cfg), settings=store)
             t.join(timeout=2.0)
 

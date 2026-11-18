@@ -552,6 +552,7 @@ import autostream_state as state
 import autostream_input_status as input_status
 import autostream_selfheal as selfheal
 import autostream_startup as startup
+import autostream_rpi as rpi
 
 
 def _inputs():
@@ -1171,7 +1172,7 @@ _FIXED_APPLIANCE_ID = "a1b2c3d4e5f6a1b2c3d4"
 class TestSyncPlayingAnnouncement:
     def setup_method(self):
         announce._playing_announced = False
-        self._id_patcher = patch.object(announce, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID)
+        self._id_patcher = patch.object(rpi, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID)
         self._id_patcher.start()
 
     def teardown_method(self):
@@ -1330,7 +1331,7 @@ class TestReplayAckAnnouncement:
 
     def test_worker_announces_while_the_session_is_active(self):
         session.publish(True, "replay")
-        with patch.object(announce, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
+        with patch.object(rpi, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
              patch.object(announce, "write_avahi_playing_service",
                           return_value=True) as write:
             repeat._announce_playing_if_active("v1")

@@ -144,9 +144,9 @@ def _call(handler: "ConfigWebHandler", state) -> tuple[int, dict]:
         sent_code.append(code)
         sent_data.append(data)
 
-    with patch("autostream_webui.STATE", state), \
-         patch("autostream_webui.is_commissioning_required", return_value=False), \
-         patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+    with patch("webui.session_state.STATE", state), \
+         patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+         patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"), \
          patch("webui.common.send_json", side_effect=fake_send_json), \
          patch("webui.common.send_json", side_effect=fake_send_json):
         if handler.command == "GET":
@@ -214,9 +214,9 @@ class TestFederationSession:
         state = _fake_state(tmp_path)
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         sent = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=True), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=True), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
         assert sent and sent[0][0] == 404
@@ -226,9 +226,9 @@ class TestFederationSession:
         state = _fake_state(tmp_path)
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         sent = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value=""), \
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value=""), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
         assert sent and sent[0][0] == 404
@@ -241,9 +241,9 @@ class TestFederationSession:
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         # The handler sends 429 directly (not via send_json)
         resp_codes = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"):
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"):
             h.send_response = lambda code, *a: resp_codes.append(code)
             h.do_POST()
         assert resp_codes and resp_codes[0] == 429
@@ -344,9 +344,9 @@ class TestFederationControlDisabled:
         state = _fake_state(tmp_path)
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         sent = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"), \
              patch("webui.common._config_snapshot", side_effect=RuntimeError("boom")), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
@@ -373,7 +373,7 @@ class TestFederationHome:
         with fake_levels([]), \
              fake_playback(playback), \
              patch("autostream_start_buffer_cache.current_ms", return_value=100), \
-             patch("autostream_appliance_models.get_appliance_id", return_value="aabb"), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabb"), \
              patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
              patch("webui.system.updates.get_app_version", return_value="1.0"):
             code, data = _call(h, state)
@@ -397,7 +397,7 @@ class TestFederationHome:
         playback.stylus_banner_text = ""
         playback.belt_banner_text = ""
         playback.bearing_banner_text = ""
-        with fake_levels([]),              fake_playback(playback),              patch("autostream_appliance_models._wall", return_value=103.2),              patch("autostream_start_buffer_cache.current_ms", return_value=100),              patch("autostream_appliance_models.get_appliance_id", return_value="aabb"),              patch("autostream_appliance_models.get_system_hostname", return_value="host"),              patch("webui.system.updates.get_app_version", return_value="1.0"):
+        with fake_levels([]),              fake_playback(playback),              patch("autostream_appliance_models._wall", return_value=103.2),              patch("autostream_start_buffer_cache.current_ms", return_value=100),              patch("autostream_rpi.get_appliance_id", return_value="aabb"),              patch("autostream_appliance_models.get_system_hostname", return_value="host"),              patch("webui.system.updates.get_app_version", return_value="1.0"):
             code, data = _call(h, state)
         assert code == 200
         f = data["start_failure"]
@@ -656,9 +656,9 @@ class TestFederationOutput:
                           body=b"{}",
                           headers={"Authorization": bearer})
         sent = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
         assert sent and sent[0][0] == 400
@@ -706,9 +706,9 @@ class TestFederationOutput:
         h = _make_handler("GET", "/api/federation/v1/nonexistent",
                           headers={"Authorization": bearer})
         sent = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_GET()
         assert sent and sent[0][0] == 400
@@ -727,9 +727,9 @@ class TestFederationRoutingClassification:
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         # No CSRF token in request
         sent = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"), \
              patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
             h.do_POST()
         # Should NOT have returned a 403 CSRF error
@@ -740,9 +740,9 @@ class TestFederationRoutingClassification:
         """A federation GET without auth must not be redirected to /auth."""
         state = _fake_state(tmp_path)
         h = _make_handler("GET", "/api/federation/v1/home")
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"):
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"):
             h.do_GET()
         for call in h.send_response.call_args_list:
             assert call[0][0] != 302, "Federation GET must not redirect to /auth"
@@ -752,9 +752,9 @@ class TestFederationRoutingClassification:
         state = _fake_state(tmp_path)
         h = _make_handler("POST", "/api/federation/v1/session", b"")
         set_cookie_calls = []
-        with patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122334455aa"), \
+        with patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122334455aa"), \
              patch("webui.common.send_json"):
             h.send_header = lambda name, val: (
                 set_cookie_calls.append(val) if name == "Set-Cookie" else None

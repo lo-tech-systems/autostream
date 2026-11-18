@@ -415,7 +415,7 @@ class TestBuildHomeStateLocal:
             fake_outputs(outputs or []),
             fake_levels([]),
             fake_playback(playback),
-            patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
+            patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
             patch("webui.system.updates.get_app_version", return_value="2.0.0"),
         )
@@ -556,7 +556,7 @@ class TestBuildHomeStateNoPlayerCall:
              fake_outputs([]), \
              fake_levels([]), \
              fake_playback(playback), \
-             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
+             patch("autostream_rpi.get_appliance_id", return_value=""), \
              patch("autostream_appliance_models.get_system_hostname", return_value=""), \
              patch("webui.system.updates.get_app_version", return_value=""):
             cache.note_saved(1500)
@@ -617,7 +617,7 @@ class TestBuildHomeStateAnnotation:
                  fake_outputs(owntone_outputs), \
                  fake_levels([]), \
                  fake_playback(playback), \
-                 patch("autostream_appliance_models.get_appliance_id", return_value=""), \
+                 patch("autostream_rpi.get_appliance_id", return_value=""), \
                  patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
                  patch("webui.system.updates.get_app_version", return_value="1.0"), \
                  patch("autostream_output_usage.get_usage_snapshot", return_value=snapshot), \

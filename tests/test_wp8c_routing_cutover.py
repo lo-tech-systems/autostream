@@ -101,10 +101,10 @@ class TestCommissioningRouting:
         handler.send_response.side_effect = lambda code: codes.append(code)
         handler.send_header.side_effect = lambda k, v: headers.update({k: v})
 
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=commissioning), \
-             patch("autostream_webui.required_first_boot_step", return_value=step):
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=commissioning), \
+             patch("autostream_commissioning.required_first_boot_step", return_value=step):
             handler.do_GET()
 
         return codes, headers
@@ -131,9 +131,9 @@ class TestCommissioningRouting:
 
         handler = _make_get_handler("/first-boot/owntone")
 
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=True), \
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("autostream_webui.send_first_boot_owntone_page") as mock_page:
             handler.do_GET()
 
@@ -150,9 +150,9 @@ class TestCommissioningRouting:
         handler.send_response.side_effect = lambda code: codes.append(code)
         handler.send_header.side_effect = lambda k, v: headers.update({k: v})
 
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False):
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False):
             handler.do_GET()
 
         assert 302 in codes
@@ -197,9 +197,9 @@ class TestFirstBootPinRedirect:
         handler.send_header.side_effect = lambda k, v: headers.update({k: v})
         page = "send_first_boot_" + path.rsplit("/", 1)[1] + "_page"
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", _fake_state(tmp_path)), \
-             patch("autostream_webui.is_commissioning_required", return_value=True), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", _fake_state(tmp_path)), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("webui.common.send_json") as mock_json, \
              patch(f"autostream_webui.{page}") as mock_page:
             handler.do_GET()
@@ -379,9 +379,9 @@ class TestPostCommissioningGate:
         """POST /api/settings must return 409 during commissioning."""
         handler, mgr = self._make_post_handler("/api/settings", b'{"field":"x","value":"y"}')
         state = _fake_state(tmp_path)
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=True), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=True), \
              patch("webui.common.send_json") as mock_json:
             handler.do_POST()
         # 409 appliance_unconfigured expected
@@ -392,9 +392,9 @@ class TestPostCommissioningGate:
         """POST /first-boot/appliance/finish must return 409 when already configured."""
         handler, mgr = self._make_post_handler("/first-boot/appliance/finish", b"{}")
         state = _fake_state(tmp_path)
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("webui.common.send_json") as mock_json:
             handler.do_POST()
         calls = [(c[0][1], c[0][2]) for c in mock_json.call_args_list]
@@ -413,9 +413,9 @@ class TestPostCommissioningGate:
                 blocked_with_commissioning_error = True
             original_send_json(h, code, data)
 
-        with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", state), \
-             patch("autostream_webui.is_commissioning_required", return_value=False), \
+        with patch("webui.session_state.AUTH", mgr), \
+             patch("webui.session_state.STATE", state), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("webui.common.send_json", side_effect=track_send_json):
             handler.do_POST()
         assert not blocked_with_commissioning_error, (

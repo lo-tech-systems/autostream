@@ -2,13 +2,12 @@
 into sys.modules as "autostream_webui".
 
 On the appliance the webui file is the process entrypoint, so it executes
-as __main__. autostream_webui_routes.dispatch() resolves AUTH/STATE and
-handlers via `import autostream_webui` at request time; without the alias
-that import loads a SECOND copy of the module whose AUTH/STATE globals are
-never set, and every dispatched request crashes with AUTH=None (observed
-live on-appliance — the entire UI redirected to the nginx offline page
-while all services showed active). Tests import the module by name, so
-only this script-execution test can catch it.
+as __main__. autostream_webui_routes.dispatch() resolves the handler names
+of the route table via `import autostream_webui` at request time; without
+the alias that import loads a SECOND copy of the module, and its
+dispatched handlers would be a different set of objects from the ones the
+running process holds. Tests import the module by name, so only this
+script-execution test can catch it.
 
 The test executes the real file with run_name="__main__" (exactly the
 appliance's execution mode) in a subprocess, with autostream_core stubbed
@@ -36,10 +35,8 @@ def run_autostream(config_path, start_webui=None, **kwargs):
     main_mod = sys.modules.get("__main__")
     print("ALIAS_PRESENT:", alias is not None)
     print("ALIAS_IS_MAIN:", alias is main_mod)
-    # The routes dispatcher resolves attributes off this module object; the
-    # names it needs must exist on the aliased module (still None until
-    # start_webui_background runs, but present).
-    print("HAS_AUTH_ATTR:", hasattr(alias, "AUTH"))
+    # The routes dispatcher resolves handler names off this module object.
+    print("HAS_HANDLER_ATTR:", hasattr(alias, "_route_get_home"))
 
 autostream_core.run_autostream = run_autostream
 
@@ -60,4 +57,4 @@ def test_script_execution_aliases_module_name():
     out = result.stdout
     assert "ALIAS_PRESENT: True" in out, out + result.stderr[-500:]
     assert "ALIAS_IS_MAIN: True" in out, out
-    assert "HAS_AUTH_ATTR: True" in out, out
+    assert "HAS_HANDLER_ATTR: True" in out, out

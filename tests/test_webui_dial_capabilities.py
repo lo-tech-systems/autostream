@@ -29,7 +29,7 @@ APPLIANCE_ID = "a1b2c3d4e5f6a7b8c9d0"
 def _call(appliance_id=APPLIANCE_ID, version="0.8.0"):
     handler = MagicMock()
     handler.wfile = io.BytesIO()
-    with patch("autostream_webui_api.get_appliance_id", return_value=appliance_id), \
+    with patch("autostream_rpi.get_appliance_id", return_value=appliance_id), \
          patch("webui.system.updates.get_app_version", return_value=version):
         send_dial_capabilities_json(handler, MagicMock())
     code = handler.send_response.call_args[0][0]

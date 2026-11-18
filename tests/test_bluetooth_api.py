@@ -25,6 +25,7 @@ if _CORE not in sys.path:
 
 from autostream_bluetooth_client import BLUETOOTH_CAPTURE_DEVICE, BLUETOOTH_PLAYBACK_DEVICE
 from settings_fixtures import fixed_view
+import webui.session_state as session_state
 
 
 # ---------------------------------------------------------------------------
@@ -899,14 +900,12 @@ class TestBluetoothPairStatusAutoConfigure:
         assert snap.audio2_enabled is True
 
     def test_no_state_available_omits_auto_configure_field(self):
-        """When no WebUIState can be resolved (e.g. the module-global
-        singleton hasn't been set up), the response falls back to the
-        plain daemon-passthrough shape rather than raising."""
+        """When the route passes no WebUIState, the response is the plain
+        daemon-passthrough shape rather than raising."""
         from autostream_webui_api import send_bluetooth_pair_status_json
         handler = _make_handler()
         with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls, \
-             patch("autostream_webui_api._bt_pairing_resolve_state", return_value=None):
+             patch("autostream_webui_api.BluetoothClient") as m_cls:
             m_cls.return_value.pair_status.return_value = {"ok": True, "state": "done"}
             send_bluetooth_pair_status_json(handler)
         code, body = _response(handler)
@@ -983,76 +982,6 @@ class TestBluetoothPairStatusAutoConfigure:
         assert "input_auto_configure" not in body
         assert snap.audio1_enabled is False
         assert snap.audio1.capture_device == ""
-
-
-# ---------------------------------------------------------------------------
-# _bt_pairing_resolve_state — script-vs-module identity fix
-# ---------------------------------------------------------------------------
-
-class TestBtPairingResolveState:
-    """The webui process runs its own module as script (``__main__``), not
-    as an importable ``autostream_webui`` -- so resolving the process-wide
-    state must never ``import autostream_webui`` (that would create a
-    second, unpopulated module instance) and must look the already-loaded
-    modules up in ``sys.modules`` instead.
-    """
-
-    def test_explicit_state_passed_through_untouched(self):
-        from autostream_webui_api import _bt_pairing_resolve_state
-        sentinel = object()
-        assert _bt_pairing_resolve_state(sentinel) is sentinel
-
-    def test_falls_back_to_main_module_state(self):
-        from autostream_webui_api import _bt_pairing_resolve_state
-        fake_main = type("FakeMain", (), {"STATE": "main-state"})()
-        had_bt_module = "autostream_webui" in sys.modules
-        saved_bt_module = sys.modules.pop("autostream_webui", None)
-        saved_main = sys.modules.get("__main__")
-        try:
-            sys.modules["__main__"] = fake_main
-            assert _bt_pairing_resolve_state(None) == "main-state"
-            # Must not have imported (or otherwise populated) a distinct
-            # "autostream_webui" module entry as a side effect.
-            assert "autostream_webui" not in sys.modules
-        finally:
-            sys.modules["__main__"] = saved_main
-            if had_bt_module:
-                sys.modules["autostream_webui"] = saved_bt_module
-
-    def test_prefers_autostream_webui_module_over_main(self):
-        """When a real ``autostream_webui`` module entry does exist (e.g. a
-        test imported it) and carries a non-None STATE, it wins over
-        ``__main__`` -- covers the (non-production) case of running under
-        an actual import rather than as the launched script."""
-        from autostream_webui_api import _bt_pairing_resolve_state
-        fake_bt_module = type("FakeBtModule", (), {"STATE": "bt-module-state"})()
-        fake_main = type("FakeMain", (), {"STATE": "main-state"})()
-        saved_bt_module = sys.modules.get("autostream_webui")
-        saved_main = sys.modules.get("__main__")
-        try:
-            sys.modules["autostream_webui"] = fake_bt_module
-            sys.modules["__main__"] = fake_main
-            assert _bt_pairing_resolve_state(None) == "bt-module-state"
-        finally:
-            if saved_bt_module is not None:
-                sys.modules["autostream_webui"] = saved_bt_module
-            else:
-                sys.modules.pop("autostream_webui", None)
-            sys.modules["__main__"] = saved_main
-
-    def test_no_resolvable_state_returns_none_and_warns(self, caplog):
-        from autostream_webui_api import _bt_pairing_resolve_state
-        saved_bt_module = sys.modules.pop("autostream_webui", None)
-        saved_main = sys.modules.get("__main__")
-        try:
-            sys.modules["__main__"] = type("FakeMain", (), {})()
-            with caplog.at_level("WARNING"):
-                assert _bt_pairing_resolve_state(None) is None
-            assert "state unavailable" in caplog.text.lower()
-        finally:
-            sys.modules["__main__"] = saved_main
-            if saved_bt_module is not None:
-                sys.modules["autostream_webui"] = saved_bt_module
 
 
 # ---------------------------------------------------------------------------
@@ -1133,17 +1062,15 @@ class TestRouteRegistration:
             )
 
     def test_pair_status_dispatch_passes_module_state(self):
-        """The pair_status handler needs the module-global WebUIState to
-        run the post-pair auto-configure step (see
-        _bt_pairing_resolve_state's script-vs-module identity trap) --
-        dispatch() must pass it explicitly rather than relying on the
-        handler's own fallback resolution."""
+        """The pair_status handler needs the process-wide WebUIState to run
+        the post-pair auto-configure step -- dispatch() must pass it
+        explicitly."""
         _webui, routes_mod = self._webui()
         h = MagicMock()
         h._commissioning_required.return_value = False
         state = MagicMock()
-        with patch.object(_webui, "STATE", state), \
-             patch.object(_webui, "AUTH") as mock_auth, \
+        with patch.object(session_state, "STATE", state), \
+             patch.object(session_state, "AUTH") as mock_auth, \
              patch.object(_webui, "send_bluetooth_pair_status_json") as stub:
             mock_auth.require_authenticated_if_pin_enabled.return_value = True
             assert routes_mod.dispatch(h, "GET", "/api/bluetooth/pair_status") is True

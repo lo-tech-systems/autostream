@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
 import autostream_dial_push as dial_push
-from autostream_rpi import get_appliance_id
+import autostream_rpi as rpi
 from autostream_state import live, store
 
 # Limits a dial applies to what it receives; the text here is built to fit.
@@ -228,7 +228,7 @@ def notify_dials_warnings_changed() -> None:
     currently sighted and speaks a protocol generation with the warnings
     route. Never raises; a no-op when this appliance has no identity."""
     try:
-        appliance_id = get_appliance_id()
+        appliance_id = rpi.get_appliance_id()
         if not appliance_id:
             return
         for uuid in dial_push.eligible_dial_uuids(WARNINGS_MIN_GENERATION):

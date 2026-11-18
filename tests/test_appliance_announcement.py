@@ -118,7 +118,7 @@ class TestReconcileApplianceAnnouncement:
         import autostream_rpi
         calls = []
 
-        with patch("autostream_appliances.get_appliance_id", return_value=None), \
+        with patch("autostream_appliances.rpi.get_appliance_id", return_value=None), \
              patch("autostream_appliances._run_admin", side_effect=lambda args: (calls.append(args), 0)[1]):
             ok = m.reconcile_appliance_announcement("v1.0", True)
 
@@ -129,7 +129,7 @@ class TestReconcileApplianceAnnouncement:
         m = _make_module()
         calls = []
 
-        with patch("autostream_appliances.get_appliance_id", return_value=None), \
+        with patch("autostream_appliances.rpi.get_appliance_id", return_value=None), \
              patch("autostream_appliances._run_admin", side_effect=lambda args: (calls.append(args), 0)[1]):
             ok = m.reconcile_appliance_announcement("v1.0", False)
 
@@ -166,12 +166,12 @@ class TestReconcileApplianceAnnouncement:
 class TestStartApplianceScanner:
     def test_start_with_local_id_starts_browser(self):
         m = _make_module()
-        with patch("autostream_appliances.get_appliance_id", return_value="a1b2c3d4e5f6a1b2c3d4"):
+        with patch("autostream_appliances.rpi.get_appliance_id", return_value="a1b2c3d4e5f6a1b2c3d4"):
             m.start_appliance_scanner()
         assert m._browser._started
 
     def test_start_without_local_id_noop(self):
         m = _make_module()
-        with patch("autostream_appliances.get_appliance_id", return_value=None):
+        with patch("autostream_appliances.rpi.get_appliance_id", return_value=None):
             m.start_appliance_scanner()
         assert not m._browser._started

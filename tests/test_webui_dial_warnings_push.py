@@ -211,7 +211,7 @@ def _notify(entries, sightings, appliance_id=APPLIANCE_ID):
     """Run notify_dials_warnings_changed against canned stores; returns the
     enqueue_push calls."""
     with (
-        patch("autostream_dial_warnings.get_appliance_id", return_value=appliance_id),
+        patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_dial_push.parse_dial_entries",
               return_value=[SimpleNamespace(uuid=u) for u in entries]),
         patch("autostream_dial_push.get_dial_sighting", side_effect=sightings.get),
@@ -253,7 +253,7 @@ class TestTargets:
         assert _notify(["a"], {"a": _sighting("a", "v3")}, appliance_id=None) == []
 
     def test_never_raises(self):
-        with patch("autostream_dial_warnings.get_appliance_id", side_effect=RuntimeError("x")):
+        with patch("autostream_rpi.get_appliance_id", side_effect=RuntimeError("x")):
             dw.notify_dials_warnings_changed()
 
 

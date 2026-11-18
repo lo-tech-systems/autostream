@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Optional
 
+from autostream_auth import AuthManager
 from autostream_settings import SettingsView, as_view
 from autostream_state import store, thaw
 
@@ -111,3 +112,9 @@ class WebUIState:
                 "ok": self._owntone_restart_ok,
                 "message": self._owntone_restart_message,
             }
+
+
+# The running server's state and auth manager: set once when the server
+# starts, and read by every request adapter through this module.
+STATE: Optional[WebUIState] = None
+AUTH: Optional[AuthManager] = None

@@ -21,10 +21,9 @@ Handlers are registered by *name* (a string looked up on the
 reference. This is deliberate: existing tests patch handlers via
 ``patch("autostream_webui.send_repeat_post_json")`` etc, and a module
 attribute lookup at call time (rather than a reference captured once at
-import time) is required for that patching to take effect -- the same
-reasoning applies to AUTH/STATE/is_commissioning_required/
-required_first_boot_step, which are all resolved dynamically through the
-``autostream_webui`` module object rather than imported by name here.
+import time) is required for that patching to take effect. The state and
+auth objects are read through ``webui.session_state`` and the commissioning
+reads go through ``autostream_commissioning``: none is imported by name here.
 A raw callable is also accepted for handler (and is used as-is), for
 callers that don't need patch-ability (e.g. tests exercising dispatch()
 directly with a mock).
@@ -36,7 +35,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional, Union
 from urllib.parse import parse_qs
-from webui import common
+import autostream_commissioning as commissioning
+from webui import common, session_state
 
 
 class AuthRequirement(Enum):
@@ -280,13 +280,13 @@ def _read_and_parse_body(handler):
     return body_str, form, json_obj
 
 
-def _commissioning_redirect_get(handler, webui_mod) -> None:
+def _commissioning_redirect_get(handler) -> None:
     """Same redirect shape as do_GET's existing commissioning gate
     (autostream_webui.py lines ~630-636) -- no Content-Length header, to
     match that branch exactly.
     """
-    step = webui_mod.required_first_boot_step(
-        webui_mod.STATE.config_path, webui_mod.STATE.state_path
+    step = commissioning.required_first_boot_step(
+        session_state.STATE.config_path, session_state.STATE.state_path
     )
     location = f"/first-boot/{step}" if step else "/first-boot/owntone"
     handler.send_response(302)
@@ -294,7 +294,7 @@ def _commissioning_redirect_get(handler, webui_mod) -> None:
     handler.end_headers()
 
 
-def _csrf_failure_response(handler, webui_mod, path: str) -> None:
+def _csrf_failure_response(handler, path: str) -> None:
     """Same three-way branch as do_POST's existing CSRF-failure handling
     (autostream_webui.py lines ~936-957): form pages get an error-flash
     redirect, /api/* paths get the stale-session-recovery shape, anything
@@ -303,7 +303,7 @@ def _csrf_failure_response(handler, webui_mod, path: str) -> None:
     if path in ("/setup", "/owntone-setup", "/service"):
         handler._redirect_with_error_flash("Settings not saved, please try again")
     elif path.startswith("/api/"):
-        fresh_csrf = webui_mod.AUTH.ensure_session(handler)
+        fresh_csrf = session_state.AUTH.ensure_session(handler)
         common.send_json(
             handler, 403, {"ok": False, "error": "csrf_stale", "csrf_token": fresh_csrf}
         )
@@ -335,11 +335,9 @@ def dispatch(handler, method: str, path: str) -> bool:
     if route_obj is None:
         return False
 
-    import autostream_webui as _webui_mod  # deferred: avoids circular import
-
     if route_obj.scheme != "browser":
         fn = _resolve_handler(route_obj)
-        fn(handler, _webui_mod.STATE)
+        fn(handler, session_state.STATE)
         return True
 
     # --- Bidirectional first-boot gate (GET): the mirror image of the
@@ -365,7 +363,7 @@ def dispatch(handler, method: str, path: str) -> bool:
         and not route_obj.allow_unconfigured
         and handler._commissioning_required()
     ):
-        _commissioning_redirect_get(handler, _webui_mod)
+        _commissioning_redirect_get(handler)
         return True
 
     body_str = ""
@@ -393,8 +391,8 @@ def dispatch(handler, method: str, path: str) -> bool:
     # --- Auth ---
     if route_obj.auth in (AuthRequirement.CSRF, AuthRequirement.FULL) and method in ("POST", "PUT"):
         csrf_token = handler._extract_csrf_token(form, json_obj)
-        if not _webui_mod.AUTH.validate_csrf(handler, csrf_token):
-            _csrf_failure_response(handler, _webui_mod, path)
+        if not session_state.AUTH.validate_csrf(handler, csrf_token):
+            _csrf_failure_response(handler, path)
             return True
 
     # --- Bidirectional first-boot gate (POST/PUT): after CSRF, matching
@@ -419,7 +417,7 @@ def dispatch(handler, method: str, path: str) -> bool:
 
     if route_obj.auth == AuthRequirement.FULL:
         redirect_path = handler.path if route_obj.kind == "page" else None
-        if not _webui_mod.AUTH.require_authenticated_if_pin_enabled(
+        if not session_state.AUTH.require_authenticated_if_pin_enabled(
             handler, redirect_path=redirect_path
         ):
             return True
@@ -436,15 +434,15 @@ def dispatch(handler, method: str, path: str) -> bool:
     # handler._csrf_token with no fallback, so skipping this would leave
     # first-time visitors with a blank CSRF token embedded in the page.
     if method == "GET":
-        handler._csrf_token = _webui_mod.AUTH.ensure_session(handler)
+        handler._csrf_token = session_state.AUTH.ensure_session(handler)
 
     # --- Handler dispatch ---
     fn = _resolve_handler(route_obj)
     try:
         if method == "GET":
-            fn(handler, _webui_mod.STATE)
+            fn(handler, session_state.STATE)
         else:
-            fn(handler, _webui_mod.STATE, body_str)
+            fn(handler, session_state.STATE, body_str)
     finally:
         if method in ("POST", "PUT"):
             handler._parsed_body = None

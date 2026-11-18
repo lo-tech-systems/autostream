@@ -223,9 +223,9 @@ class TestRouteDistinction:
         h._pending_auth_cookie = None
         h._pending_set_cookies = []
 
-        with patch("autostream_webui.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.AUTH", MagicMock()), \
-             patch("autostream_webui.STATE", MagicMock()):
+        with patch("autostream_commissioning.is_commissioning_required", return_value=False), \
+             patch("webui.session_state.AUTH", MagicMock()), \
+             patch("webui.session_state.STATE", MagicMock()):
             h.do_GET()
 
         h.send_error.assert_called_with(404, "Not found")
@@ -251,9 +251,9 @@ class TestRouteDistinction:
         h._pending_auth_cookie = None
         h._pending_set_cookies = []
 
-        with patch("autostream_webui.AUTH", MagicMock()), \
-             patch("autostream_webui.STATE", MagicMock()), \
-             patch("autostream_webui.is_commissioning_required", return_value=False):
+        with patch("webui.session_state.AUTH", MagicMock()), \
+             patch("webui.session_state.STATE", MagicMock()), \
+             patch("autostream_commissioning.is_commissioning_required", return_value=False):
             h.do_POST()
 
         h.send_error.assert_called_with(404, "Not found")

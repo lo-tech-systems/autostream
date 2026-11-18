@@ -128,7 +128,7 @@ def render_home(
         for p in (
             patch("webui.common._config_snapshot",
                   return_value=_parsed_config(show_input_detail)),
-            patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
+            patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
             fake_playback(snap),
@@ -155,7 +155,7 @@ def render_remote_home(appliance_id: str = REMOTE_APPLIANCE_ID) -> bytes:
     state.config_path = "dummy.ini"
     with patch("webui.common._config_snapshot",
                return_value=_parsed_config(False)), \
-         patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20), \
+         patch("autostream_rpi.get_appliance_id", return_value="0" * 20), \
          patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
          patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"):
         send_remote_home_page(handler, state, appliance_id)

@@ -19,6 +19,7 @@ from typing import Optional
 from webui.assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED, INFO_MODAL_HTML
 from webui import static
 from webui.common import build_page_html, build_top_banner_html
+from webui import session_state
 from webui.session_state import WebUIState
 from webui.browser.setup import (
     cards_bluetooth,
@@ -404,3 +405,23 @@ def send_setup_page(
         dark_mode=parsed.webui.dark_mode,
     )
     common.send_html(handler, 200, html_body)
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters: the calling convention the dispatcher uses (handler,
+# state[, body]) in front of the senders above.
+# -----------------------------------------------------------------------------
+
+
+def _route_get_setup(handler, state):
+    msg, _flash_type = common._route_flash_msg_and_type(handler)
+    send_setup_page(handler, state, session_state.AUTH, flash_msg=msg)
+
+
+def _route_get_setup_card(handler, state):
+    key = handler._normalized_path().rsplit("/", 1)[-1]
+    handle_setup_card_get(handler, state, session_state.AUTH, key)
+
+
+def _route_post_setup_form(handler, state, body_str):
+    common.send_json(handler, 405, {"ok": False, "error": "form_post_disabled"})

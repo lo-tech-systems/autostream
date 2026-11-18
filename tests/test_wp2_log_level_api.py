@@ -448,8 +448,8 @@ class TestLogLevelPutRouting:
         auth.validate_csrf.return_value = True
         auth.require_authenticated_if_pin_enabled.return_value = False
 
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()), \
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_webui.send_log_level_put_json") as m_put:
             h.do_PUT()
 
@@ -464,8 +464,8 @@ class TestLogLevelPutRouting:
         auth = MagicMock()
         auth.validate_csrf.return_value = False
 
-        with patch("autostream_webui.AUTH", auth), \
-             patch("autostream_webui.STATE", MagicMock()), \
+        with patch("webui.session_state.AUTH", auth), \
+             patch("webui.session_state.STATE", MagicMock()), \
              patch("webui.common.send_browser_api_error") as m_error, \
              patch("autostream_webui.send_log_level_put_json") as m_put:
             h.do_PUT()

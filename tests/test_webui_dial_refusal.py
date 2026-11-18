@@ -99,7 +99,7 @@ def _call_refused(fn, body, dial_proto, auth=AUTH_NOT_AUTHORIZED):
     handler = _Capture()
     with (
         patch("autostream_webui_api.dial_authorization", return_value=auth),
-        patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+        patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
         patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto)),
     ):
         fn(handler, _state(), body)
@@ -172,7 +172,7 @@ def _success(fn, body, dial_proto):
     FakeStore().outputs(list(outputs.outputs))
     with (
         patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
-        patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
+        patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
         patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto)),
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_player_service.update_output", return_value=ActionResult(ok=True)),

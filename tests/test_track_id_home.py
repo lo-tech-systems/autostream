@@ -94,7 +94,7 @@ def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
         fake_outputs([]),
         fake_levels([]),
         fake_playback(playback),
-        patch("autostream_appliance_models.get_appliance_id", return_value="aabbcc"),
+        patch("autostream_rpi.get_appliance_id", return_value="aabbcc"),
         patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
         patch("webui.system.updates.get_app_version", return_value="1.0.0"),
         fake_track(snap),
