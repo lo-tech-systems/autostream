@@ -1377,16 +1377,19 @@ class DialDisplay:
         to bare artwork on their own — see _compact_controls_hidden().
         """
         return (
-            (
-                (self._config.always_show_controls and not self._compact_tier())
-                or (self._compact_tier() and not self._compact_controls_hidden())
-            )
-            and self._core.snapshot().now_playing is not None
-            and self._showing != "noop"
+            self._held_overlay_locked(time.monotonic())
             and self._backend_open
-            and not self._display_sleeping
             and self._screen == "main"
-            and not self._controls_hidden()
+        )
+
+    def _frame_controllable(self, snap) -> bool:
+        """Whether a controllable appliance is on screen: the snapshot carries
+        a now_playing, the panel is not cleared and it is not asleep. Plain
+        reads, safe from any thread."""
+        return (
+            snap.now_playing is not None
+            and self._showing != "noop"
+            and not self._display_sleeping
         )
 
     def _compact_tier(self) -> bool:
@@ -1560,9 +1563,7 @@ class DialDisplay:
                 (self._config.always_show_controls and not self._compact_tier())
                 or (self._compact_tier() and not self._compact_controls_hidden())
             )
-            and self._core.snapshot().now_playing is not None
-            and self._showing != "noop"
-            and not self._display_sleeping
+            and self._frame_controllable(self._core.snapshot())
             and not self._controls_hidden(now)
         )
 
@@ -2103,9 +2104,7 @@ class DialDisplay:
         slide_ok = (
             self._screen == "main"
             and self._slide_tier()
-            and self._core.snapshot().now_playing is not None
-            and self._showing != "noop"
-            and not self._display_sleeping
+            and self._frame_controllable(self._core.snapshot())
         )
         animating, progress = self._advance_reveal_locked(now, steady, slide_ok)
         overlay = self._effective_overlay_locked(snapshot, now=now, animating=animating)
@@ -2251,12 +2250,7 @@ class DialDisplay:
         # mid-slide draws nothing.
         snap = self._core.snapshot()
         now_playing = snap.now_playing
-        revealing = (
-            now_playing is not None
-            and self._showing != "noop"
-            and not self._display_sleeping
-            and animating
-        )
+        revealing = self._frame_controllable(snap) and animating
         # An artwork tap's hide window wins over a touch-published visible
         # snapshot: the user asked for the artwork, whichever mode the
         # controls are in. The touch side is told the same (see dial_touch_wiring's
