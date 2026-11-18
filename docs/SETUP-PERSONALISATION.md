@@ -33,3 +33,9 @@ Open **Setup** and expand the **Personalisation** card.
   details.
 - **Dark Mode** - switches the web UI to a dark colour theme. Applies immediately across
   the whole app.
+- **Volume changes made at any speaker apply to all playing speakers** - off by
+  default. When on, turning the volume up or down on a speaker itself (its
+  buttons, knob or app, or an Apple TV remote) moves the other playing speakers
+  too, each in proportion to its own level, so they all reach silent together.
+  Muted speakers stay muted. Needs owntone-mini's event channel; the switch is
+  greyed out without it.

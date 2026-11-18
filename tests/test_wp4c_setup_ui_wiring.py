@@ -787,3 +787,88 @@ class TestDevicePauseChoice:
 
     def test_the_card_text_is_latin_1(self):
         self._card("all").encode("latin-1")
+
+
+class TestSpeakerVolumeSwitch:
+    LABEL = "Volume changes made at any speaker apply to all playing speakers"
+    HELP = (
+        "Applies to a speaker's own volume buttons, knob or app, and to an Apple TV "
+        "remote. The other playing speakers move in proportion to their own levels, "
+        "so they all reach silent together. Muted speakers stay muted. A stereo pair, "
+        "or an Apple TV with its HomePods, counts as one speaker."
+    )
+    VERSION = ("Needs owntone-mini 1.6 or above. Until then a volume change at a speaker "
+               "applies to that speaker only.")
+    EVENTS = ("Needs owntone-mini's event channel, which is off or not connected. A volume "
+              "change at a speaker applies to that speaker only until it is.")
+
+    @staticmethod
+    def _card(on=False, *, rows=None, events=True):
+        import autostream_config
+        from autostream_backend_events import ConnectInfo
+        from autostream_state.outputs import get_authority
+        from webui.browser.setup.cards_customise import _setup_customise_card_html
+        from fake_store import FakeStore
+        from output_fakes import homepods_row
+
+        parsed = autostream_config.parse_config(
+            {"outputs": {"speaker_volume_applies_to_all": on}}, high_perf=False)
+        FakeStore().outputs([homepods_row(1)] if rows is None else rows)
+        if events:
+            caps = frozenset({"device_volume", "receiver_command"})
+            get_authority().on_connected(ConnectInfo("b0", 1, caps, "unix_socket"))
+            get_authority().step(now=1000.0)
+        return _setup_customise_card_html(parsed)
+
+    @staticmethod
+    def _row(html):
+        start = html.rindex('<div class="setup-customise-row"', 0, html.index('id="outputs_speaker_volume_applies_to_all"'))
+        return html[start:html.index("</div>", start)]
+
+    @staticmethod
+    def _input(html):
+        start = html.index('<input type="checkbox" name="outputs_speaker_volume_applies_to_all"')
+        return html[start:html.index(">", start)]
+
+    def test_the_label_and_help_are_the_agreed_text_without_a_dash(self):
+        html = self._card().replace("&#x27;", "'")
+        assert self.LABEL in html and self.HELP in html
+        row = html[html.index(self.LABEL):]
+        assert "\u2014" not in row and "&mdash;" not in row
+        self._card().encode("latin-1")
+
+    def test_it_is_checked_only_when_the_setting_is_on(self):
+        assert " checked" in self._input(self._card(True))
+        assert " checked" not in self._input(self._card(False))
+
+    def test_the_input_saves_the_field_on_change(self):
+        tag = self._input(self._card())
+        assert "settingsSaveField('outputs.speaker_volume_applies_to_all', this.checked)" in tag
+        assert "liveEnabled" not in tag
+
+    def test_it_is_enabled_when_the_player_reports_device_events(self):
+        html = self._card()
+        assert " disabled" not in self._input(html)
+        assert "opacity:0.4" not in self._row(html)
+
+    def test_an_older_player_disables_it_with_the_version_text(self):
+        from output_fakes import row
+        html = self._card(rows=[row(1)], events=False)
+        assert " disabled" in self._input(html)
+        assert "opacity:0.4" in self._row(html)
+        assert self.VERSION in html
+        assert self.HELP not in html
+
+    def test_a_closed_event_channel_disables_it_with_the_channel_text(self):
+        html = self._card(events=False)
+        assert " disabled" in self._input(html)
+        assert self.EVENTS in html.replace("&#x27;", "'")
+        assert self.VERSION not in html
+
+    def test_a_stored_on_shows_checked_but_disabled_without_the_channel(self):
+        tag = self._input(self._card(True, events=False))
+        assert " checked" in tag and " disabled" in tag
+
+    def test_the_row_comes_after_the_pause_row(self):
+        html = self._card()
+        assert html.index('id="device_pause_scope"') < html.index('id="outputs_speaker_volume_applies_to_all"')

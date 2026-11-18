@@ -3,7 +3,8 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-The Personalisation card of the Setup page, with its device pause row.
+The Personalisation card of the Setup page, with its device pause row and
+the switch that applies a volume change made at a speaker to all.
 """
 
 from __future__ import annotations
@@ -34,6 +35,21 @@ _DEVICE_PAUSE_NEEDS_VERSION = (
 _DEVICE_PAUSE_NEEDS_EVENTS = (
     "Needs owntone-mini's event channel, which is off or not connected. "
     "Pause on a speaker does nothing until it is."
+)
+_SPEAKER_VOLUME_LABEL = "Volume changes made at any speaker apply to all playing speakers"
+_SPEAKER_VOLUME_HELP = (
+    "Applies to a speaker's own volume buttons, knob or app, and to an Apple TV "
+    "remote. The other playing speakers move in proportion to their own levels, "
+    "so they all reach silent together. Muted speakers stay muted. A stereo pair, "
+    "or an Apple TV with its HomePods, counts as one speaker."
+)
+_SPEAKER_VOLUME_NEEDS_VERSION = (
+    "Needs owntone-mini 1.6 or above. Until then a volume change at a speaker "
+    "applies to that speaker only."
+)
+_SPEAKER_VOLUME_NEEDS_EVENTS = (
+    "Needs owntone-mini's event channel, which is off or not connected. A volume "
+    "change at a speaker applies to that speaker only until it is."
 )
 
 
@@ -81,8 +97,33 @@ def _device_pause_row_html(parsed, outputs_part) -> str:
           <div class="helptext">{help_html}</div>"""
 
 
+def _speaker_volume_row_html(parsed, outputs_part) -> str:
+    """The switch that applies a volume change made at a speaker to all."""
+    if not outputs_part.include_tv_supported:
+        unavailable = _SPEAKER_VOLUME_NEEDS_VERSION
+    elif not outputs_part.device_events:
+        unavailable = _SPEAKER_VOLUME_NEEDS_EVENTS
+    else:
+        unavailable = ""
+    style = "margin-top:0.75rem;opacity:0.4;" if unavailable else "margin-top:0.75rem;"
+    toggle = toggle_html(
+        name="outputs_speaker_volume_applies_to_all",
+        id="outputs_speaker_volume_applies_to_all",
+        checked=parsed.outputs.speaker_volume_applies_to_all,
+        disabled=bool(unavailable),
+        onchange="settingsSaveField('outputs.speaker_volume_applies_to_all', this.checked)",
+    )
+    return f"""
+          <div class="setup-customise-row" style="{style}">
+{toggle}
+            <span>{html.escape(_SPEAKER_VOLUME_LABEL)}</span>
+          </div>
+          <div class="helptext">{html.escape(unavailable or _SPEAKER_VOLUME_HELP)}</div>"""
+
+
 def _setup_customise_card_html(parsed) -> str:
     """Personalisation detail-panel card."""
+    outputs_part = store().snapshot().outputs
     _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
     _ctrl_other_disabled = ' disabled' if not parsed.webui.show_hostname_on_home else ''
     _ctrl_other_row_style = "margin-top:0.75rem;opacity:0.4;" if not parsed.webui.show_hostname_on_home else "margin-top:0.75rem;"
@@ -113,7 +154,7 @@ def _setup_customise_card_html(parsed) -> str:
           <div class="setup-customise-row" style="margin-top:0.75rem;">
 {toggle_html(name="webui_dark_mode", id="webui_dark_mode", checked=parsed.webui.dark_mode, onchange="applyDarkMode(this.checked); refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)")}
             <span>Dark Mode</span>
-          </div>{_device_pause_row_html(parsed, store().snapshot().outputs)}
+          </div>{_device_pause_row_html(parsed, outputs_part)}{_speaker_volume_row_html(parsed, outputs_part)}
         """, margin_top="0")
     return customise_card_html
 
