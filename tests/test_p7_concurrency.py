@@ -409,19 +409,22 @@ class TestModuleLevelStateIsolation:
         import dial_volume as dv
         dv._fail_counts["10.0.0.1"] = 7
 
-        import urllib.error
-        import io as _io
         target = MagicMock()
         target.ip = "10.0.0.1"
-        target.port = 3000
+        target.service_name = "autostream on Kitchen"
+        target.appliance_id = "kitchen"
 
-        response = MagicMock()
-        response.read.return_value = json.dumps({"ok": True, "volume": 50}).encode()
-        response.__enter__ = lambda s: s
-        response.__exit__ = MagicMock(return_value=False)
+        client = MagicMock()
+        client.submit.return_value = MagicMock(
+            ok=True, error=None, result={"ok": True, "volume": 50})
 
-        with patch("urllib.request.urlopen", return_value=response):
-            dv._send_one(target, "uuid", 5, [])
+        saved = dv._client_for
+        dv._client_for = {"kitchen": client}.get
+        try:
+            dv._send_one(target, 5, [])
+        finally:
+            dv._client_for = saved
+            dv.observe_master_volume(None, None)
 
         assert "10.0.0.1" not in dv._fail_counts, (
             "Success must clear the fail count for that host"
