@@ -189,6 +189,20 @@ def _etag_matches(header: str | None, etag: str) -> bool:
     return any(part.strip().removeprefix("W/") == etag for part in header.split(","))
 
 
+def _file_etag(info) -> str:
+    """The validator for a file: its modification time and size."""
+    return '"%x-%x"' % (info.st_mtime_ns, info.st_size)
+
+
+def _not_modified(handler, headers, *, page: bool = False) -> bool:
+    """Answer 304 with *headers* when the request already holds the ETag in
+    them; True if it did."""
+    if not _etag_matches(handler.headers.get("If-None-Match"), headers["ETag"]):
+        return False
+    handler.send_bytes(304, b"", None, headers, page=page)
+    return True
+
+
 class _HdHTTPServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -597,17 +611,14 @@ class HdServer:
             info = path.stat() if path is not None else None
             if info is None:
                 raise FileNotFoundError(name)
-            etag = '"%x-%x"' % (info.st_mtime_ns, info.st_size)
-            if _etag_matches(handler.headers.get("If-None-Match"), etag):
-                handler.send_bytes(304, b"", None, {"ETag": etag, "Cache-Control": "no-cache"}, page=True)
+            headers = {"ETag": _file_etag(info), "Cache-Control": "no-cache"}
+            if _not_modified(handler, headers, page=True):
                 return
             data = path.read_bytes()
         except OSError:
             handler.send_json(404, {"ok": False, "error": "not_found"})
             return
-        handler.send_bytes(
-            200, data, content_type, {"ETag": etag, "Cache-Control": "no-cache"}, page=True,
-        )
+        handler.send_bytes(200, data, content_type, headers, page=True)
 
     def _get_state(self, handler, rest) -> None:
         handler.send_bytes(200, self.state_body(), "application/json", {"Cache-Control": "no-store"})
@@ -635,8 +646,7 @@ class HdServer:
             "Cache-Control": ARTWORK_CACHE_CONTROL,
             "ETag": '"%s"' % artwork.key,
         }
-        if _etag_matches(handler.headers.get("If-None-Match"), headers["ETag"]):
-            handler.send_bytes(304, b"", None, headers)
+        if _not_modified(handler, headers):
             return
         body, content_type = ARTWORK_VARIANTS[variant](self, artwork)
         if body is None:
@@ -653,9 +663,8 @@ class HdServer:
         if info is None:
             handler.send_json(404, {"ok": False, "error": "not_found"})
             return
-        headers = {"ETag": '"%x-%x"' % (info.st_mtime_ns, info.st_size), "Cache-Control": "no-cache"}
-        if _etag_matches(handler.headers.get("If-None-Match"), headers["ETag"]):
-            handler.send_bytes(304, b"", None, headers)
+        headers = {"ETag": _file_etag(info), "Cache-Control": "no-cache"}
+        if _not_modified(handler, headers):
             return
         body = self._backdrops.logo()
         if body is None:
