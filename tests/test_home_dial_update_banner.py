@@ -1,6 +1,6 @@
 """Home page "Dial updates required" banner and the Setup page dial card flag.
 
-A dial that is currently sighted but advertises an older dial_proto than the
+A dial that is currently sighted but advertises an older protocol number than the
 appliance does works in an older dialect; the Home banner invites the owner to
 update it and links to the Setup page's dial card, where each such dial is
 flagged "Needs update" beside its Update firmware button.  Only dials sighted
@@ -26,10 +26,10 @@ _BANNER = "Dial updates required"
 _BANNER_OPEN = "<a id='dial-update-warning-banner' href='/setup#dials' style='display:"
 
 
-def _sighting(uuid="u1", dial_proto="", version="1.0.0") -> dials.DialSighting:
+def _sighting(uuid="u1", proto=None, version="1.0.0") -> dials.DialSighting:
     return dials.DialSighting(
         uuid=uuid, name="Dial", version=version, ip="192.0.2.9", port=7842,
-        pin_recovery=False, dial_proto=dial_proto,
+        pin_recovery=False, proto=proto,
     )
 
 
@@ -47,27 +47,27 @@ class TestBannerText:
             assert dials.build_dial_update_banner_text() == ""
 
     def test_empty_when_all_sighted_dials_advertise_current_dialect(self):
-        with _sightings(_sighting("a", "v3"), _sighting("b", "v3")):
+        with _sightings(_sighting("a", 4), _sighting("b", 4)):
             assert dials.build_dial_update_banner_text() == ""
 
     def test_one_legacy_dial_gives_banner(self):
-        with _sightings(_sighting("a", "")):
+        with _sightings(_sighting("a", None)):
             assert dials.build_dial_update_banner_text() == _BANNER
 
     def test_same_text_for_any_count(self):
-        with _sightings(_sighting("a", ""), _sighting("b", ""), _sighting("c", "v3")):
+        with _sightings(_sighting("a", None), _sighting("b", None), _sighting("c", 4)):
             assert dials.build_dial_update_banner_text() == _BANNER
 
     def test_unknown_dialect_counts_as_needing_update(self):
-        with _sightings(_sighting("a", "v1")):
+        with _sightings(_sighting("a", 2)):
             assert dials.build_dial_update_banner_text() == _BANNER
 
     def test_v2_dial_against_v3_appliance_gives_banner(self):
-        with _sightings(_sighting("a", "v2")):
+        with _sightings(_sighting("a", 3)):
             assert dials.build_dial_update_banner_text() == _BANNER
 
     def test_dial_newer_than_the_appliance_gives_no_banner(self):
-        with _sightings(_sighting("a", "v4")):
+        with _sightings(_sighting("a", 5)):
             assert dials.build_dial_update_banner_text() == ""
 
 
@@ -125,8 +125,8 @@ def _cards(sightings, entries):
 
 class TestDialCardsHtml:
     def test_only_legacy_dial_is_flagged(self):
-        legacy = _sighting("legacy", "", version="1.0.0")
-        modern = _sighting("modern", "v3", version="1.0.0")
+        legacy = _sighting("legacy", None, version="1.0.0")
+        modern = _sighting("modern", 4, version="1.0.0")
         cards_html, summary = _cards([legacy, modern], [_Entry("legacy"), _Entry("modern")])
         cards = cards_html.split('<div class="dial-card"')
         legacy_card = next(c for c in cards if 'data-dial-uuid="legacy"' in c)
@@ -138,7 +138,7 @@ class TestDialCardsHtml:
         assert summary.endswith("1 need update")
 
     def test_unauthorised_legacy_dial_is_flagged(self):
-        cards_html, summary = _cards([_sighting("new", "")], [])
+        cards_html, summary = _cards([_sighting("new", None)], [])
         assert cards_html.count("dial-badge-update") == 1
         assert "1 need update" in summary
 
@@ -148,7 +148,7 @@ class TestDialCardsHtml:
         assert "need update" not in summary
 
     def test_summary_has_no_suffix_when_all_current(self):
-        _, summary = _cards([_sighting("a", "v3")], [_Entry("a")])
+        _, summary = _cards([_sighting("a", 4)], [_Entry("a")])
         assert "need update" not in summary
 
 

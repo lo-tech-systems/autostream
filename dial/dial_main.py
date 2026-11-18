@@ -33,14 +33,11 @@ from dial_http_server import (
 )
 from dial_info import current_ipv4, gather_dial_info
 from dial_led import DialLED
+import dial_mdns
 from dial_mdns import (
     get_display_targets,
     get_known_ips,
     get_playing_targets,
-    start_general_browser,
-    start_playing_browser,
-    stop_general_browser,
-    stop_playing_browser,
 )
 from dial_network import latest as network_latest
 from dial_network import start_network_worker
@@ -308,11 +305,19 @@ class _HeadlessDisplay(NoOpDisplayStatusProvider):
         self.core.notify_state_changed(appliance_id, changed, wake=wake)
 
 
+def _core_view(core):
+    """What the volume control reads of an appliance: the core's last
+    published state for it (playing, since when, and whether it takes this
+    dial's writes)."""
+    return lambda appliance_id: core.snapshot().appliance(appliance_id)
+
+
 def _start_peer_pool(cfg, core, shutdown_event):
     """The appliances as the core reads them: one registry of sightings, a
     pool holding a PeerClient for each, and the core attached to both.
     Returns (registry, pool) for the caller to stop."""
     registry = PeerRegistry(local_id=None)
+    dial_mdns.attach(registry, _core_view(core))
     registry.start(shutdown_event)
     pool = PeerPool(registry, lambda peer_id: PeerClient(peer_id, client_id=f"dial:{cfg.uuid}"))
     pool.start()
@@ -863,20 +868,6 @@ def main() -> None:
     if recovery_armed:
         http_server.begin_recovery_window()
 
-    start_playing_browser(
-        shutdown_event=shutdown_event,
-        on_add=core.request_poll, on_remove=core.request_poll,
-    )
-    # The general-appliance browser feeds the roster/repeat-store machinery
-    # display.start() (and, later, touch) reads — an unfitted dial has no
-    # roster/repeat UI to feed, so it is not worth an extra avahi-browse
-    # child for that case. An appliance of the earlier dialect announces its
-    # id only on the general record, so the browser also starts, on any dial,
-    # as soon as an id-less playing target appears (checked in the loop below).
-    general_started = bool(cfg.display.fitted)
-    if general_started:
-        start_general_browser(shutdown_event=shutdown_event)
-
     # Wired here, after the HTTP server exists (its get_runtime_status()
     # supplies the dial's live name) and before display.start() (so the
     # provider is in place before the repeat thread can ever open the info
@@ -1027,11 +1018,7 @@ def main() -> None:
         http_server.set_can_confirm_presence(bool(inputs))
 
         while not shutdown_event.wait(5):
-            targets = get_playing_targets()
-            if not general_started and any(t.needs_id_resolution for t in targets):
-                general_started = True
-                start_general_browser(shutdown_event=shutdown_event)
-            led.set_playing() if targets else led.set_idle()
+            led.set_playing() if get_playing_targets() else led.set_idle()
     finally:
         _remove_running_marker()
         if hd_server is not None:
@@ -1040,8 +1027,6 @@ def main() -> None:
             hd_panel.stop()
         if hd_hub is not None:
             hd_hub.stop()
-        stop_playing_browser()
-        stop_general_browser()
         if touch_source is not None:
             touch_source.stop()
         core.stop()

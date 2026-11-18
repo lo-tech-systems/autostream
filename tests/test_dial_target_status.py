@@ -132,42 +132,6 @@ def _mock_conn(data: dict | bytes, status: int = 200, content_type: str | None =
 
 
 # ---------------------------------------------------------------------------
-# PlayingTarget.dial_status field in dial_mdns
-# ---------------------------------------------------------------------------
-
-class TestPlayingTargetDialStatus:
-    def setup_method(self):
-        with dm._browser._lock:
-            dm._browser._by_key.clear()
-            dm._browser._by_identity.clear()
-        dm._had_targets = False
-
-    def _add(self, txt):
-        line = f"=;eth0;IPv4;Kitchen;_autostream-playing._tcp;local;host;192.168.1.10;80;{txt}"
-        dm._browser._handle_line(line)
-
-    def test_dial_status_v1_sets_true(self):
-        self._add("dial_api=v1 dial_status=v1")
-        targets = dm.get_playing_targets()
-        assert targets[0].dial_status is True
-
-    def test_dial_status_absent_is_false(self):
-        self._add("dial_api=v1")
-        targets = dm.get_playing_targets()
-        assert targets[0].dial_status is False
-
-    def test_dial_status_wrong_version_is_false(self):
-        self._add("dial_api=v1 dial_status=v2")
-        targets = dm.get_playing_targets()
-        assert targets[0].dial_status is False
-
-    def test_dial_api_v1_still_required(self):
-        self._add("dial_status=v1")
-        targets = dm.get_playing_targets()
-        assert targets == []
-
-
-# ---------------------------------------------------------------------------
 # enrich_targets: no targets
 # ---------------------------------------------------------------------------
 

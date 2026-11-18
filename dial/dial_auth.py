@@ -31,9 +31,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
-AUTH_UNKNOWN = "unknown"
-AUTH_AUTHORIZED = "authorized"
-AUTH_UNAUTHORIZED = "unauthorized"
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN
 
 OUTCOME_AUTHORIZED = "authorized"      # 200 with valid, matching body
 OUTCOME_UNAUTHORIZED = "unauthorized"  # 412 dial_not_authorized, matching body

@@ -694,7 +694,6 @@ class TestDialMainButtonCallback:
              patch.object(dial_main, "_announce_self"), \
              patch("dial_main.DialLED"), \
              patch("dial_main.DialHTTPServer") as mock_server, \
-             patch("dial_main.start_playing_browser"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.get_playing_targets", return_value=[]), \
              patch("dial_core.enqueue_mute", side_effect=fake_enqueue_mute), \

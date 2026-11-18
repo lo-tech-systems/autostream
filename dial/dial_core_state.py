@@ -626,29 +626,39 @@ def _enum_or_default(value, allowed: tuple, default: str) -> str:
     return default
 
 
-# The id of the warning a dial raises for an appliance on an older dial protocol.
+# The ids of the warnings a dial raises for an appliance that speaks a
+# different protocol number: the appliance is older, or the dial is.
 PROTOCOL_WARNING_ID = "update_appliance"
+DIAL_WARNING_ID = "update_dial"
 _PROTOCOL_WARNING_MESSAGE = "Its software is older than this dial's. Update it from its web UI."
 
 
-def protocol_warning(entry, own_generation: int) -> ApplianceWarning | None:
-    """An "Update <appliance>" warning for a rostered, authorised appliance
-    with an identity whose advertised generation (entry.dial_proto_version)
-    is below *own_generation*; None otherwise. Severity "warning", dismissal
-    "week"; the title is "Update " plus the roster's display name, fitted to
-    APPLIANCE_WARNING_TITLE_MAX. Pure."""
+def protocol_warning(entry, own_protocol: int) -> ApplianceWarning | None:
+    """The warning for a rostered appliance with an identity whose protocol
+    number (entry.dial_proto_version: the hello's when it has been read, else
+    the one its record advertises) differs from *own_protocol*; None when they
+    agree or the appliance has not said one. A lower number gives "Update
+    <appliance>"; a higher one gives "Update this dial". Severity "warning",
+    dismissal "week". Access is not asked: a mismatch opens no stream, so it
+    is never learned. Pure."""
     appliance_id = getattr(entry, "appliance_id", "")
-    if not appliance_id or getattr(entry, "auth", "") != AUTH_AUTHORIZED:
+    if not appliance_id:
         return None
-    generation = getattr(entry, "dial_proto_version", 0)
-    if not isinstance(generation, int) or isinstance(generation, bool) or generation >= own_generation:
+    protocol = getattr(entry, "dial_proto_version", 0)
+    if not isinstance(protocol, int) or isinstance(protocol, bool) or protocol <= 0 or protocol == own_protocol:
         return None
     service_name = getattr(entry, "service_name", "")
     name = appliance_display_name(service_name) if isinstance(service_name, str) else ""
+    if protocol < own_protocol:
+        return ApplianceWarning(
+            id=PROTOCOL_WARNING_ID, severity=SEVERITY_WARNING,
+            title=_clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
+            message=_PROTOCOL_WARNING_MESSAGE, dismissal=DISMISS_WEEK, appliance_name=name,
+        )
     return ApplianceWarning(
-        id=PROTOCOL_WARNING_ID, severity=SEVERITY_WARNING,
-        title=_clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
-        message=_PROTOCOL_WARNING_MESSAGE, dismissal=DISMISS_WEEK, appliance_name=name,
+        id=DIAL_WARNING_ID, severity=SEVERITY_WARNING, title="Update this dial",
+        message=_clean_text(f"{name} needs a newer dial", APPLIANCE_WARNING_MESSAGE_MAX),
+        dismissal=DISMISS_WEEK, appliance_name=name,
     )
 
 

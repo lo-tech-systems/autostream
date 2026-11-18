@@ -358,10 +358,10 @@ class TestHandleLineDialScanner:
 # dial_proto capability: parsing, v2 predicate, needs-update helpers
 # ---------------------------------------------------------------------------
 
-def _sighting(uuid="u", dial_proto="") -> "dials.DialSighting":
+def _sighting(uuid="u", dial_proto="", proto=None) -> "dials.DialSighting":
     return dials.DialSighting(
         uuid=uuid, name="D", version="x", ip="10.0.0.9", port=7842,
-        pin_recovery=False, dial_proto=dial_proto,
+        pin_recovery=False, dial_proto=dial_proto, proto=proto,
     )
 
 
@@ -428,15 +428,22 @@ class TestDialProto:
 
     def test_sighting_needs_update(self):
         assert dials.sighting_needs_update(_sighting()) is True
-        assert dials.sighting_needs_update(_sighting(dial_proto="v3")) is False
-        assert dials.sighting_needs_update(_sighting(dial_proto="junk")) is True
-        assert dials.sighting_needs_update(_sighting(dial_proto="v2")) is True
-        assert dials.sighting_needs_update(_sighting(dial_proto="v4")) is False
+        assert dials.sighting_needs_update(_sighting(proto=4)) is False
+        assert dials.sighting_needs_update(_sighting(proto=3)) is True
+        assert dials.sighting_needs_update(_sighting(proto=5)) is False
+
+    def test_parse_dial_event_reads_proto(self):
+        with patch("autostream_dials.update_dial_sighting"):
+            dials._browser._handle_line(_av_add_dial(txt="id=uuid-p name=X proto=4"))
+            dials._browser._handle_line(_av_add_dial(txt="id=uuid-j name=X proto=four"))
+            dials._browser._handle_line(_av_add_dial(txt="id=uuid-n name=X"))
+        snap = dials._browser.get_snapshot()
+        assert (snap["uuid-p"].proto, snap["uuid-j"].proto, snap["uuid-n"].proto) == (4, None, None)
 
     def test_dials_needing_update_lists_only_below_current(self):
-        sightings = [_sighting("a"), _sighting("b", "v2"), _sighting("c", "v3"), _sighting("d", "junk")]
+        sightings = [_sighting("a"), _sighting("b", proto=3), _sighting("c", proto=4), _sighting("d", proto=9)]
         with patch("autostream_dials.get_all_sightings", return_value=sightings):
-            assert [s.uuid for s in dials.dials_needing_update()] == ["a", "b", "d"]
+            assert [s.uuid for s in dials.dials_needing_update()] == ["a", "b"]
 
     def test_dials_needing_update_empty_when_none_sighted(self):
         with patch("autostream_dials.get_all_sightings", return_value=[]):

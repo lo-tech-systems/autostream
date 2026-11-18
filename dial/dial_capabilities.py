@@ -30,10 +30,6 @@ from dataclasses import dataclass
 # The first protocol generation whose appliances serve a capabilities endpoint.
 CAPABILITIES_ENDPOINT_PROTO = 3
 
-# The dial protocol generation this dial speaks: the number in the dial_proto
-# record it advertises. Set by the release, with the appliance's.
-DIAL_PROTO_GENERATION = 3
-
 # A failed fetch is tried again after this long, doubling to the maximum.
 CAPABILITIES_BACKOFF_INITIAL_S = 60.0
 CAPABILITIES_BACKOFF_MAX_S = 600.0

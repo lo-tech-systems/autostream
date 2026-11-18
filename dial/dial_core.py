@@ -95,7 +95,7 @@ from dial_core_state import (
 from dial_eq import _EqTarget
 from dial_eq import enqueue_fetch as _enqueue_eq_fetch
 from dial_eq import enqueue_set as _enqueue_eq_set
-from dial_mdns import PlayingTarget
+from dial_mdns import PROTOCOL, PlayingTarget
 from dial_mdns import get_roster as _default_get_roster
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
 from dial_target_status import enrich_targets, fetch_target_status
@@ -2313,16 +2313,16 @@ class DialCore:
             _enqueue_appliance_fetch("warnings", _FetchTarget(appliance_id, a.ip, a.port))
 
     def _refresh_protocol_warnings(self) -> None:
-        """Raise the "Update <appliance>" warning for each rostered appliance
-        on an older dial protocol than this dial's, and end it for one that
-        has been updated, refused this dial or left the roster. The dial keeps
-        working with the appliance either way. One log line per change."""
+        """Raise the update warning for each rostered appliance whose protocol
+        number differs from this dial's ("Update <appliance>" when it is
+        lower, "Update this dial" when it is higher), and end it for one that
+        now agrees or has left the roster. One log line per change."""
         lines: list = []
 
         def mutate(state: _CoreState) -> "bool | None":
             wanted = {}
             for r in state.roster:
-                warning = protocol_warning(r, dial_capabilities.DIAL_PROTO_GENERATION)
+                warning = protocol_warning(r, PROTOCOL)
                 if warning is not None:
                     wanted[r.appliance_id] = warning
             held = state.protocol_warnings
@@ -2339,7 +2339,7 @@ class DialCore:
                     self.warnings.register(appliance_warning_descriptor(appliance_id, warning))
                     self.warnings.set_active(key, warning.severity)
                     if appliance_id not in held:
-                        lines.append(f"{warning.appliance_name} runs an older dial protocol")
+                        lines.append(f"{warning.appliance_name} speaks a different dial protocol")
             state.protocol_warnings = wanted
             state.appliances = self._derive_appliances_locked(state)
             self._sync_warnings_locked(state)

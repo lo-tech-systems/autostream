@@ -105,10 +105,6 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
          patch.multiple("dial_main", DialLED=DEFAULT, HdServer=mock_hd_class, ChangeHub=mock_hub_class,
                        HdPanel=mock_panel_class, detect_backlight=mock_backlight), \
          patch("dial_main.DialHTTPServer", return_value=mock_http), \
-         patch("dial_main.start_playing_browser") as playing_browser, \
-         patch("dial_main.start_general_browser"), \
-         patch("dial_main.stop_playing_browser"), \
-         patch("dial_main.stop_general_browser"), \
          patch("dial_main.start_volume_worker") as volume_worker, \
          patch("dial_main.PeerRegistry") as registry_class, \
          patch("dial_main.start_network_worker") as network_worker, \
@@ -123,7 +119,6 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
     captured.update(
         volume_worker=volume_worker, registry_class=registry_class,
         network_worker=network_worker, sdhealth_start=sdhealth_start,
-        playing_browser=playing_browser,
     )
     return captured
 
@@ -153,15 +148,11 @@ class TestCoreWiring:
         assert captured["network_worker"].call_args.kwargs["on_view"] == core.on_network_view
         assert captured["sdhealth_start"].call_args.kwargs["on_view"] == core.on_sd_health_view
 
-    def test_the_playing_browser_wakes_the_core_on_an_add(self):
+    def test_the_volume_control_reads_the_sightings_of_the_one_registry(self):
+        import dial_mdns
         captured = _run_core_wiring()
-        kwargs = captured["playing_browser"].call_args.kwargs
-        assert kwargs["on_add"] == captured["core"].request_poll
-
-    def test_the_playing_browser_wakes_the_core_when_a_record_goes_away(self):
-        captured = _run_core_wiring()
-        kwargs = captured["playing_browser"].call_args.kwargs
-        assert kwargs["on_remove"] == captured["core"].request_poll
+        assert dial_mdns._registry is captured["registry_class"].return_value
+        assert captured["volume_worker"].call_args.kwargs["client_for"] == captured["core"].pool.get
 
     def test_the_core_reads_the_appliances_from_the_pool(self):
         captured = _run_core_wiring()

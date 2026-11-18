@@ -20,8 +20,10 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from autostream_mdns import MdnsBrowser
+from autostream_protocol import PROTOCOL
 
 # ---------------------------------------------------------------------------
 # Dial authorization storage
@@ -249,6 +251,15 @@ class DialSighting:
     pin_recovery: bool
     sdmon: bool = False   # dial_sdmon=v1 in the TXT record: the dial has the SD health endpoint
     dial_proto: str = ""  # dial_proto value from the TXT record, verbatim; "" when absent
+    proto: Optional[int] = None  # the TXT proto key as an integer; None when absent or not one
+
+
+def _proto_number(raw) -> Optional[int]:
+    """The integer in a TXT proto value, None when absent or not one."""
+    try:
+        return int(raw) if raw is not None else None
+    except ValueError:
+        return None
 
 
 def _parse_dial_event(parts: list, txt: dict) -> tuple | None:
@@ -274,6 +285,7 @@ def _parse_dial_event(parts: list, txt: dict) -> tuple | None:
         pin_recovery=(txt.get("pin_recovery") == "1"),
         sdmon=(txt.get("dial_sdmon") == "v1"),
         dial_proto=txt.get("dial_proto", ""),
+        proto=_proto_number(txt.get("proto")),
     )
     # Update last_seen / current_name in dials.json (throttled write, outside lock).
     update_dial_sighting(uuid, sighting.name)
@@ -302,9 +314,9 @@ def dial_speaks_v2(uuid: str) -> bool:
 
 
 def sighting_needs_update(s: DialSighting) -> bool:
-    """True when the sighted dial advertises an older protocol generation than
-    this appliance does."""
-    return dial_proto_generation(s.dial_proto) < dial_proto_generation(DIAL_PROTO_VERSION)
+    """True when the sighted dial advertises an older protocol number than this
+    appliance speaks, or none at all."""
+    return s.proto is None or s.proto < PROTOCOL
 
 
 def dials_needing_update() -> list[DialSighting]:
