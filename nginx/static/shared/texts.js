@@ -40,6 +40,7 @@ export const SELECTOR_NOTE = { update: 'needs an update', setup: 'not set up' };
 export const CHIP = {
   on: 'On',
   off: 'Off',
+  paused: 'Paused',
   inUse: (by) => 'In Use by ' + (by || 'another appliance'),
   autoStart: 'Auto-Start',
   connecting: ' (Connecting)',

@@ -73,6 +73,14 @@ class TestSpeakerRows:
         expect(card(page, "Patio").locator(".output-state-chip")).to_have_class(re.compile(r"\boffline\b"))
         expect(card(page, "Patio").locator(".output-card-default")).to_have_text("Auto-Start")
 
+    def test_a_speaker_that_paused_itself_reads_paused(self, page, hd):
+        hd.show(with_units(unit("u1", "Lounge", selected=True, held=True), unit("u2", "Patio", selected=True)))
+        open_page(page, hd)
+        expect(card(page, "Lounge").locator(".output-state-chip")).to_have_text("Paused")
+        expect(card(page, "Lounge").locator(".output-state-chip")).to_have_class(re.compile(r"\bpaused\b"))
+        expect(card(page, "Lounge").locator(".output-card-name")).to_have_text("Lounge")
+        expect(card(page, "Patio").locator(".output-state-chip")).to_have_text("On")
+
     def test_an_offline_speaker_outside_the_auto_start_set_is_not_listed(self, page, hd):
         hd.show(with_units(unit("u1", "Lounge", selected=True), unit("u2", "Patio", offline=True)))
         open_page(page, hd)

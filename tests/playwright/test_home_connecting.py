@@ -154,3 +154,25 @@ class TestOfflineCard:
         expect(page.locator("#output_card_real")).to_have_class(_CONNECTING)
         expect(page.locator("#output_card_real")).not_to_have_class(_OFFLINE)
         expect(page.locator("#output_card_tv")).to_have_count(0)
+
+
+PAUSED = _unit(held=True)
+
+
+@_requires_browser
+class TestPausedCard:
+    def test_a_speaker_that_paused_itself_reads_paused_and_its_switch_turns_it_off(self, page: "Page", open_card):
+        open_card(PAUSED)
+        expect(page.locator("#output_state_tv")).to_have_text("Paused")
+        expect(page.locator("#output_state_tv")).to_have_class(re.compile(r"\bpaused\b"))
+        expect(page.locator("#output_label_tv")).to_be_hidden()
+        expect(page.locator("#output_enabled_tv")).to_be_checked()
+        _tap(page)
+        wait_for(page, lambda: stub.POSTS, "the request")
+        assert intents()[-1][1]["id"] == "tv" and intents()[-1][1]["selected"] is False
+
+    def test_a_change_that_ends_the_pause_shows_it_on(self, page: "Page", open_card):
+        open_card(PAUSED)
+        expect(page.locator("#output_state_tv")).to_have_text("Paused")
+        _push(PLAYING)
+        expect(page.locator("#output_state_tv")).to_have_text("On")

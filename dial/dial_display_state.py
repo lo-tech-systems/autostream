@@ -235,16 +235,19 @@ def picker_list_row(row: PickerRow) -> tuple:
 
 
 _OUTPUT_ROW_MARKS = {True: DEFAULT_MARK, False: ""}
+# What a speaker that paused itself shows in place of its level
+PAUSED_TEXT = "Paused"
 
 
 def output_list_row(row: "OutputRow") -> tuple:
     """One outputs-list row: the level rides in the same secondary-text
     slot the picker uses for durations, right-aligned by the existing row
-    renderer; a disabled output shows nothing on the right. No row is ever
-    "current" (no wash) and none carries the play marker — the outputs
-    list has no notion of either. The default output carries the trailing
-    default mark."""
-    return (row.name, False, str(row.volume) if row.selected else "", _OUTPUT_ROW_MARKS[row.is_default])
+    renderer; a disabled output shows nothing on the right, and a speaker
+    that paused itself shows PAUSED_TEXT. No row is ever "current" (no wash)
+    and none carries the play marker — the outputs list has no notion of
+    either. The default output carries the trailing default mark."""
+    right = (PAUSED_TEXT if row.paused else str(row.volume)) if row.selected else ""
+    return (row.name, False, right, _OUTPUT_ROW_MARKS[row.is_default])
 
 
 def eq_loaded(eq: "EqState") -> bool:

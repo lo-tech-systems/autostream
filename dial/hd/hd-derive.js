@@ -43,11 +43,12 @@ function deriveSpeakers(dial, p, usable) {
         const inUse = row.chip === "in-use";
         const elsewhere = !!row.pinClaim && row.pinClaim !== own;
         const connecting = row.connecting && on;
-        const tone = inUse ? "in-use" : connecting ? "connecting" : row.offline ? "offline" : on ? "on" : "off";
+        const paused = row.paused && on;
+        const tone = inUse ? "in-use" : paused ? "paused" : connecting ? "connecting" : row.offline ? "offline" : on ? "on" : "off";
         return {
             id: row.id, on: on, inUse: inUse, autoStart: row.autoStart, pill: AUTO_START_PILL,
             name: row.name + (connecting ? CHIP.connecting : row.offline ? CHIP.offline : ""),
-            chip: { text: inUse ? CHIP.inUse(row.inUseBy) : on ? CHIP.on : CHIP.off, tone: tone },
+            chip: { text: inUse ? CHIP.inUse(row.inUseBy) : paused ? CHIP.paused : on ? CHIP.on : CHIP.off, tone: tone },
             level: held("out:" + row.id + ":volume", row.volume),
             enabled: usable && !row.disabled && !elsewhere
         };

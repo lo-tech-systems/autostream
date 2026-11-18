@@ -82,12 +82,15 @@ export function speakerRows(p, opts = {}) {
     const on = !!u.selected && u.availability !== 'password';
     if (!u.id || !u.name || (u.offline && !(opts.includeOffline && u.auto_start)) || (u.hidden && !on && !u.auto_start)) continue;
     const by = u.in_use_by || '';
+    // A speaker that paused itself is on, held until its own Play
+    const paused = !by && on && !!u.held;
     rows.push({
       id: u.id,
       name: u.name,
       on,
       volume: Math.max(0, Math.min(100, Math.round(u.volume) || 0)),
-      chip: by ? 'in-use' : on ? 'on' : 'off',
+      chip: by ? 'in-use' : paused ? 'paused' : on ? 'on' : 'off',
+      paused,
       autoStart: !!u.auto_start,
       inUseBy: by,
       inUseId: by ? u.in_use_id || '' : '',

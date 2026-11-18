@@ -1886,7 +1886,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     },
     {
      "id": "b",
@@ -1901,7 +1902,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     },
     {
      "id": "c",
@@ -1916,7 +1918,8 @@
      "offline": false,
      "disabled": true,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -1986,7 +1989,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -2037,7 +2041,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -2126,7 +2131,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     },
     {
      "id": "a",
@@ -2141,7 +2147,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     },
     {
      "id": "b",
@@ -2156,7 +2163,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -2207,7 +2215,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -2259,7 +2268,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": true,
-     "pinClaim": "webui"
+     "pinClaim": "webui",
+     "paused": false
     }
    ]
   },
@@ -2311,7 +2321,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": true,
-     "pinClaim": "dial:7"
+     "pinClaim": "dial:7",
+     "paused": false
     }
    ]
   },
@@ -2394,7 +2405,8 @@
      "offline": true,
      "disabled": true,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -2445,7 +2457,8 @@
      "offline": true,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -2532,7 +2545,8 @@
      "offline": false,
      "disabled": true,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -2621,7 +2635,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     },
     {
      "id": "b",
@@ -2636,7 +2651,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     },
     {
      "id": "c",
@@ -2651,7 +2667,8 @@
      "offline": false,
      "disabled": false,
      "pinPending": false,
-     "pinClaim": ""
+     "pinClaim": "",
+     "paused": false
     }
    ]
   },
@@ -4026,6 +4043,94 @@
     "more": 0,
     "serviceSeverity": null
    }
+  },
+  {
+   "name": "speakerRows: a speaker that paused itself is on and paused",
+   "fn": "speakerRows",
+   "parts": {
+    "session": {
+     "active": true,
+     "source": "live"
+    },
+    "outputs": {
+     "units": [
+      {
+       "id": "1",
+       "name": "Study TV",
+       "selected": true,
+       "volume": 20,
+       "availability": "ok",
+       "held": true
+      },
+      {
+       "id": "2",
+       "name": "Kitchen",
+       "selected": true,
+       "volume": 30,
+       "availability": "ok",
+       "held": false
+      },
+      {
+       "id": "3",
+       "name": "Lounge",
+       "selected": false,
+       "volume": 25,
+       "availability": "ok",
+       "held": true
+      }
+     ]
+    }
+   },
+   "expect": [
+    {
+     "id": "2",
+     "name": "Kitchen",
+     "on": true,
+     "volume": 30,
+     "chip": "on",
+     "paused": false,
+     "autoStart": false,
+     "inUseBy": "",
+     "inUseId": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "3",
+     "name": "Lounge",
+     "on": false,
+     "volume": 25,
+     "chip": "off",
+     "paused": false,
+     "autoStart": false,
+     "inUseBy": "",
+     "inUseId": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    },
+    {
+     "id": "1",
+     "name": "Study TV",
+     "on": true,
+     "volume": 20,
+     "chip": "paused",
+     "paused": true,
+     "autoStart": false,
+     "inUseBy": "",
+     "inUseId": "",
+     "connecting": false,
+     "offline": false,
+     "disabled": false,
+     "pinPending": false,
+     "pinClaim": ""
+    }
+   ]
   }
  ]
 }

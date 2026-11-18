@@ -375,6 +375,11 @@ button[type=submit] {
   color: var(--color-chip-off-text);
 }
 
+.output-state-chip.paused {
+  background: var(--color-chip-neutral-bg);
+  color: var(--color-chip-neutral-text);
+}
+
 .output-state-chip.in-use {
   background: var(--color-chip-off-bg);
   color: var(--color-chip-off-text);

@@ -185,8 +185,9 @@ function paint(card, r) {
   lab.hidden = !lab.textContent;
   card.querySelector('.output-card-default').style.display = r.autoStart ? '' : 'none';
   const chip = $('output_state_' + id);
-  chip.className = 'output-state-chip ' + (r.inUseBy ? 'in-use' : on ? 'on' : 'off');
-  chip.textContent = r.inUseBy ? CHIP.inUse(r.inUseBy) : on ? CHIP.on : CHIP.off;
+  const paused = r.paused && on;
+  chip.className = 'output-state-chip ' + (r.inUseBy ? 'in-use' : paused ? 'paused' : on ? 'on' : 'off');
+  chip.textContent = r.inUseBy ? CHIP.inUse(r.inUseBy) : paused ? CHIP.paused : on ? CHIP.on : CHIP.off;
   const cb = $('output_enabled_' + id);
   cb.checked = on;
   cb.disabled = r.disabled;
