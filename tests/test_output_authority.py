@@ -375,11 +375,112 @@ class TestSelect:
         w.a.select("2", Origin.USER, volume=10)
         assert snap().silence_chosen is False
 
-    def test_the_volume_is_left_to_the_player_when_none_is_given(self, w):
+    def test_a_select_with_no_level_carries_the_units_desired_level(self, w):
         merge(w, [row(1, volume_percent=44)])
         w.a.select("1", Origin.SESSION)
-        assert w.fb.updates()[0][1]["volume_percent"] is None
+        assert w.fb.updates()[0][1]["volume_percent"] == 44
         assert snap().unit("1").volume == 44
+
+    def test_a_select_made_with_a_level_carries_it(self, w):
+        merge(w, [row(1, volume_percent=44)])
+        w.a.select("1", Origin.USER, volume=25)
+        assert w.fb.updates() == [("1", dict(enabled=True, volume_percent=25, offset_ms=None, mode=None, timeout=3.0))]
+
+    def test_a_speaker_joining_a_muted_session_starts_silent(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, volume_percent=30)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.select("2", Origin.USER, volume=30)
+        assert [f["volume_percent"] for _u, f in w.fb.updates()] == [0]
+
+    def test_a_player_that_starts_at_the_enabled_level_gets_one_request_with_both(self, w):
+        w.a.assume_start_volume_for_tests(True)
+        merge(w, [row(1, volume_percent=44)])
+        w.a.select("1", Origin.USER, volume=25)
+        assert len(w.fb.updates()) == 1
+
+    def test_a_player_that_does_not_gets_the_level_first_and_then_the_select(self, w):
+        w.a.assume_start_volume_for_tests(False)
+        merge(w, [row(1, volume_percent=44)])
+        w.a.select("1", Origin.USER, volume=25)
+        assert w.fb.updates() == [
+            ("1", dict(volume_percent=25, timeout=3.0)),
+            ("1", dict(enabled=True, volume_percent=25, offset_ms=None, mode=None, timeout=3.0)),
+        ]
+
+    def test_a_player_that_does_not_gets_a_muted_speaker_started_silent_by_both_requests(self, w):
+        w.a.assume_start_volume_for_tests(False)
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, volume_percent=30)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.select("2", Origin.USER, volume=30)
+        assert [f["volume_percent"] for _u, f in w.fb.updates()] == [0, 0]
+
+    def test_a_failed_level_request_does_not_stop_the_select(self, w):
+        w.a.assume_start_volume_for_tests(False)
+        merge(w, [row(1, volume_percent=44)])
+        w.fb.results = [error("request_failed")]
+        out = w.a.select("1", Origin.USER, volume=25).outcome.result()[0]
+        assert out.ok is True
+        assert len(w.fb.updates()) == 2
+
+    def test_the_start_volume_is_the_configured_default_level(self, w):
+        w.a.set_default_output("Speaker 1", 37)
+        assert w.a.start_volume() == 37
+
+
+class TestStartVolumeCapability:
+    def hello(self, w, caps, boot="b0"):
+        w.a._handle_connected(ConnectInfo(boot, 1, frozenset(caps), "unix_socket"))
+
+    def poll_connected(self, w):
+        w.a._handle_connected(ConnectInfo(None, None, frozenset(), "poll"))
+
+    def level_first(self, w):
+        merge(w, [row(1, volume_percent=44)])
+        w.fb.calls.clear()
+        w.a.select("1", Origin.USER, volume=25)
+        return len(w.fb.updates()) == 2
+
+    def test_no_hello_ever_seen_sends_the_level_first(self, w):
+        w.a.assume_start_volume_for_tests(False)
+        assert self.level_first(w) is True
+
+    def test_a_hello_that_lists_the_capability_sends_one_request(self, w):
+        w.a.assume_start_volume_for_tests(False)
+        self.hello(w, {"changed", "start_volume"})
+        assert self.level_first(w) is False
+
+    def test_a_hello_that_does_not_list_it_sends_the_level_first(self, w):
+        self.hello(w, {"changed"})
+        assert self.level_first(w) is True
+
+    def test_the_capability_is_kept_while_polling_between_sockets_of_one_boot(self, w):
+        self.hello(w, {"start_volume"})
+        merge(w, [row(1, volume_percent=44)])
+        self.poll_connected(w)
+        w.a.mark_unreachable_for_tests()
+        merge(w, [row(1, volume_percent=44)])
+        self.hello(w, {"start_volume"})
+        assert self.level_first(w) is False
+
+    def test_the_capability_is_kept_by_a_poll_source_connecting(self, w):
+        self.hello(w, {"start_volume"})
+        self.poll_connected(w)
+        assert self.level_first(w) is False
+
+    def test_a_restart_seen_without_a_hello_forgets_it(self, w):
+        w.a.merge_for_tests([row(1, volume_percent=44)], now=T0)
+        w.a.mark_unreachable_for_tests()
+        w.a.merge_for_tests([row(1, volume_percent=44)], now=T0)
+        assert self.level_first(w) is True
+
+    def test_a_new_hello_after_a_restart_sets_it_again(self, w):
+        w.a.merge_for_tests([row(1, volume_percent=44)], now=T0)
+        w.a.mark_unreachable_for_tests()
+        w.a.merge_for_tests([row(1, volume_percent=44)], now=T0)
+        self.hello(w, {"start_volume"}, boot="b5")
+        assert self.level_first(w) is False
 
 
 class TestDeselect:
@@ -933,6 +1034,7 @@ class TestStartFailureField:
         first = (state.store().snapshot().boot, snap().start_failure.seq)
         state.store().reset_for_tests()
         w.a.reset_for_tests()
+        w.a.assume_start_volume_for_tests()
         w.a.start(w.fb)
         merge(w, [row(1)])
         w.fb.results = [error("pin_required")]
@@ -1090,6 +1192,12 @@ class TestReselect:
         assert select["volume_percent"] == 0
         assert snap().unit("1").muted is True
         assert snap().silence_chosen == silence
+
+    def test_it_carries_the_units_level(self, w):
+        w.a.set_include_tv_reader(lambda uid: True)
+        merge(w, self.tv())
+        w.a.reselect("1", Origin.USER)
+        assert w.fb.updates()[-1][1]["volume_percent"] == 40
 
     def test_it_is_refused_for_an_unknown_or_an_unselected_unit(self, w):
         merge(w, [homepods_row(2)])
@@ -1655,6 +1763,15 @@ class TestRealThreads:
         real = applied.outcome.result(5)
         assert real[0].ok is False and real[0].error_code == "pin_required"
         assert snap().unit("2").availability == "password"
+
+    def test_a_select_to_a_player_that_needs_the_level_first_sends_both_in_order_on_the_apply_thread(self, live):
+        live.a.assume_start_volume_for_tests(False)
+        applied = live.a.select("2", Origin.USER, volume=30)
+        assert applied.outcome.result(5)[0].ok is True
+        assert live.fb.updates() == [
+            ("2", dict(volume_percent=30, timeout=3.0)),
+            ("2", dict(enabled=True, volume_percent=30, offset_ms=None, mode=None, timeout=3.0)),
+        ]
 
     def test_volume_writes_queued_behind_a_stalled_write_coalesce_to_the_last_level(self, live):
         live.fb.gate = threading.Event()

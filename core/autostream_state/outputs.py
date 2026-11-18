@@ -430,6 +430,10 @@ class OutputAuthority:
         self._boot_id: Optional[str] = None
         self._boot_changed = False
         self._epoch = 0
+        # Whether the player starts a speaker at the level it is enabled with,
+        # as its hello last said. Kept through the polling between two sockets
+        # of one boot; forgotten when a restart is seen without a hello.
+        self._start_volume_cap = False
         self._ever_connected = False
         self._source: Optional[EventSource] = None
         self._source_factory = create_event_source
@@ -526,6 +530,12 @@ class OutputAuthority:
         self.stop(timeout=2.0)
         self._init_fields()
 
+    def assume_start_volume_for_tests(self, supported: bool = True) -> None:
+        """The player's hello is taken to have advertised (or not) that it
+        starts a speaker at the level it is enabled with."""
+        with self._lock:
+            self._start_volume_cap = bool(supported)
+
     def merge_for_tests(self, rows: Sequence[OutputInfo], *, connected: bool = True,
                         boot: Optional[str] = None, now: Optional[float] = None) -> None:
         """A successful read of *rows*, through the same merge the worker uses."""
@@ -609,6 +619,12 @@ class OutputAuthority:
                     self._default_last_id = u.id
             pending = self._publish_locked(Origin.SYSTEM, None)
         pending.notify()
+
+    def start_volume(self) -> int:
+        """The level a speaker starts at when nothing else is asked: the
+        configured start volume."""
+        with self._lock:
+            return self._default_volume
 
     def want_default(self, wanted: bool) -> Applied:
         """The user switched the default speaker's card on or off while the
@@ -1278,6 +1294,9 @@ class OutputAuthority:
             self._boot_id = None
         delivers = {"device_volume", "receiver_command"} <= set(info.capabilities)
         with self._lock:
+            if info.boot is not None or info.capabilities:
+                # Only the event channel's hello says what the player can do.
+                self._start_volume_cap = "start_volume" in info.capabilities
             changed = delivers != self._delivers_device_events
             self._delivers_device_events = delivers
             pending = self._publish_locked(Origin.BACKEND, None) if changed else None
@@ -1459,6 +1478,7 @@ class OutputAuthority:
             if self._boot_id is None:
                 if self._ever_connected:
                     boot_changed = True
+                    self._start_volume_cap = False
                 self._epoch += 1
             self._connected = True
             self._ever_connected = True
@@ -1844,8 +1864,11 @@ class OutputAuthority:
             if u is None or u.reported is None:
                 return None
             d = u.desired
+            # Every select carries its level, and a muted speaker starts silent.
+            asked = w.params.get("volume")
+            level = 0 if d.muted else _clamp(d.volume if asked is None else asked)
             kwargs = dict(
-                enabled=True, volume_percent=0 if d.muted else w.params.get("volume"),
+                enabled=True, volume_percent=level,
                 offset_ms=w.params.get("offset_ms"), mode=w.params.get("mode"),
                 timeout=WRITE_TIMEOUT_S,
             )
@@ -1858,7 +1881,17 @@ class OutputAuthority:
                     u.held_until = self._clock() + u.group_hold_backoff
                     u.group_hold_backoff = min(u.group_hold_backoff * 2, RETRY_MAX_S)
                     return _HOLD
-            return lambda b: [b.update_output(uid, **kwargs)]
+            if self._start_volume_cap:
+                return lambda b: [b.update_output(uid, **kwargs)]
+
+            def select_after_level(b):
+                # A player that does not start a speaker at the level it is
+                # enabled with is given the level first, so the start uses it.
+                first = b.update_output(uid, volume_percent=level, timeout=WRITE_TIMEOUT_S)
+                if not first.ok:
+                    LOG.debug("Start level for %s not applied: %s", uid, first.message)
+                return [b.update_output(uid, **kwargs)]
+            return select_after_level
         if kind == "deselect":
             if u is None or u.reported is None:
                 return None

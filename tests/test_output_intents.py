@@ -114,10 +114,17 @@ class TestEnable:
         u = snap().unit(ID)
         assert u.selected and u.volume == 35 and u.cause is Origin.USER
 
-    def test_a_missing_volume_is_fifty(self, player):
+    def test_a_missing_volume_is_the_configured_start_volume(self, player):
         arrange()
+        get_authority().set_default_output("Lounge", 35)
         change(on())
-        assert player.calls[0][2]["volume_percent"] == 50
+        assert player.calls[0][2]["volume_percent"] == 35
+
+    def test_a_missing_volume_in_the_intent_is_the_configured_start_volume(self, player):
+        arrange()
+        get_authority().set_default_output("Lounge", 22)
+        submit(Intent("outputs.set", {"id": ID, "selected": True}, Origin.USER, "webui"))
+        assert player.calls[0][2]["volume_percent"] == 22
 
     def test_a_volume_is_clamped_to_the_scale(self, player):
         arrange()

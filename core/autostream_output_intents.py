@@ -25,7 +25,6 @@ from autostream_state import Origin, store
 from autostream_state.outputs import WriteOutcome, get_authority, set_pin_claim_handler, wait_outcome
 
 _OWNER = "autostream_output_intents"
-_DEFAULT_VOLUME = 50
 
 
 def _first(outcomes: tuple) -> WriteOutcome:
@@ -54,9 +53,9 @@ def _enable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
             logging.debug("outputs.set: usage check failed for %s", unit.name)
 
     volume = args.get("volume")
-    volume = _DEFAULT_VOLUME if volume is None else volume
-    cause = Origin.USER if user else Origin.SYSTEM
     authority = get_authority()
+    volume = authority.start_volume() if volume is None else volume
+    cause = Origin.USER if user else Origin.SYSTEM
 
     # The authority holds the mute: a deliberate volume change on a muted
     # speaker is its unmute (it sounds at the level just chosen); any other

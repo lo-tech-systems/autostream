@@ -371,6 +371,10 @@ def _reset_state_store():
     if intents_table is not None:
         intents_table.reset_for_tests()
     _outputs_module.get_authority().reset_for_tests()
+    # A player as the current owntone-mini presents itself: it starts a
+    # speaker at the level it is enabled with. A test of an older player
+    # says otherwise.
+    _outputs_module.get_authority().assume_start_volume_for_tests()
     live_config = _mod("autostream_live_config")
     if live_config is not None:
         live_config.reset_output_settings_for_tests()

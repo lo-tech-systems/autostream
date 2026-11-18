@@ -456,7 +456,9 @@ def submit_output_change(
         args["selected"] = bool(body.get("selected", False))
         row = "outputs.set"
     if args.get("selected"):
-        args["volume"] = max(0, min(100, int(body.get("volume", 50))))
+        if body.get("volume") is not None:
+            # Without a level the output is started at the configured start volume.
+            args["volume"] = max(0, min(100, int(body["volume"])))
         if offset_ms is not None:
             args["offset_ms"] = offset_ms
         if mode:
