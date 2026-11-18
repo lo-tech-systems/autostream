@@ -151,6 +151,7 @@ class TestRows:
             "settings.apply", "settings.save", "settings.reload", "settings.form_apply",
             "settings.advertisement", "settings.auto_update",
             "backend.setting.set", "log.level.set",
+            "receiver.pause", "receiver.play", "outputs.pause_off",
         }
 
     @pytest.mark.parametrize("name", sorted(table.ROWS))
@@ -200,6 +201,23 @@ class TestRows:
         assert reply.error == "invalid_args"
         reply, _ = self._submit_real("outputs.deselect_all", {}, Origin.POLICY)
         assert reply.ok
+
+    @pytest.mark.parametrize("name,allowed,id_limit", [
+        ("receiver.pause", Origin.DEVICE, 32),
+        ("receiver.play", Origin.DEVICE, 32),
+        ("outputs.pause_off", Origin.POLICY, 64),
+    ])
+    def test_the_pause_rows_take_one_origin_and_a_bounded_id(self, name, allowed, id_limit):
+        assert table.ROWS[name].origins == frozenset({allowed})
+        for origin in (Origin.USER, Origin.SYSTEM, Origin.SESSION, Origin.POLICY, Origin.DEVICE):
+            reply, seen = self._submit_real(name, {"id": "1001"}, origin)
+            assert reply.ok is (origin is allowed)
+            assert reply.error == (None if origin is allowed else "origin_not_allowed")
+            assert bool(seen) is (origin is allowed)
+        assert self._submit_real(name, {"id": " "}, allowed)[0].error == "missing_output_id"
+        assert self._submit_real(name, {}, allowed)[0].error == "invalid_args"
+        assert self._submit_real(name, {"id": "1" * (id_limit + 1)}, allowed)[0].error == "missing_output_id"
+        assert self._submit_real(name, {"id": "1" * id_limit}, allowed)[0].ok
 
     def test_wait_defaults_come_from_the_row(self):
         _, seen = self._submit_real("outputs.set", {"id": "7", "selected": False})

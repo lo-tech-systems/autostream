@@ -721,3 +721,108 @@ class TestPlaybackPanelCardSplit:
             "general_audio_path",
         ):
             assert f'id="{expected_id}"' in panel, expected_id
+
+
+# ---------------------------------------------------------------------------
+# Personalisation card -- what a Pause pressed on a speaker does
+# ---------------------------------------------------------------------------
+
+class TestDevicePauseChoice:
+    LABELS = ("Keep playing", "Mute that speaker", "Mute all playing speakers", "Turn off all speakers")
+    HELP = (
+        "Applies to Pause on a HomePod or on an Apple TV remote. Play on the same speaker "
+        "undoes the mute. A stereo pair, or an Apple TV with its HomePods, counts as one speaker."
+    )
+
+    @staticmethod
+    def _card(scope="output", seconds=300, *, rows=None, events=True):
+        import autostream_config
+        from autostream_backend_events import ConnectInfo
+        from autostream_state.outputs import get_authority
+        from autostream_webui_page_setup import _setup_customise_card_html
+        from fake_store import FakeStore
+        from output_fakes import homepods_row, row
+
+        parsed = autostream_config.parse_config(
+            {"outputs": {"device_pause_scope": scope, "pause_off_seconds": seconds}}, high_perf=False)
+        FakeStore().outputs([homepods_row(1)] if rows is None else rows)
+        if events:
+            caps = frozenset({"device_volume", "receiver_command"})
+            get_authority().on_connected(ConnectInfo("b0", 1, caps, "unix_socket"))
+            get_authority().step(now=1000.0)
+        return _setup_customise_card_html(parsed)
+
+    @staticmethod
+    def _select(html):
+        start = html.index('<select id="device_pause_scope"')
+        return html[start:html.index("</select>", start)]
+
+    @staticmethod
+    def _note(html):
+        start = html.index('<span id="device_pause_off_note"')
+        return html[start:html.index("</span>", start)]
+
+    def test_the_four_options_have_the_exact_labels_and_values(self):
+        sel = self._select(self._card())
+        for value, label in zip(("ignore", "output", "all", "off_all"), self.LABELS):
+            assert f'<option value="{value}"' in sel and f">{label}</option>" in sel
+
+    def test_the_title_and_help_are_the_agreed_text(self):
+        html = self._card()
+        assert "When Pause is pressed on a speaker" in html
+        assert self.HELP in html
+        assert "\u2014" not in html and "&mdash;" not in html.split("When Pause is pressed")[1]
+
+    @pytest.mark.parametrize("scope", ["ignore", "output", "all", "off_all"])
+    def test_the_parsed_scope_is_the_selected_option(self, scope):
+        sel = self._select(self._card(scope))
+        assert sel.count(" selected") == 1
+        assert f'<option value="{scope}" selected>' in sel
+
+    def test_the_choice_saves_on_change_without_a_form_name(self):
+        sel = self._select(self._card())
+        assert "settingsSaveField('outputs.device_pause_scope', this.value)" in sel
+        assert " name=" not in sel.split(">")[0]
+        assert "liveEnabled" not in sel
+
+    def test_the_select_is_enabled_when_the_player_reports_device_events(self):
+        assert " disabled" not in self._select(self._card()).split(">")[0]
+
+    def test_an_older_player_disables_it_with_the_version_text(self):
+        from output_fakes import row
+        html = self._card(rows=[row(1)], events=False)
+        assert " disabled" in self._select(html).split(">")[0]
+        assert "Needs owntone-mini 1.6 or above. The connected player handles Pause on its own." in html
+        assert self.HELP not in html
+
+    def test_a_closed_event_channel_disables_it_with_the_channel_text(self):
+        html = self._card(events=False)
+        assert " disabled" in self._select(html).split(">")[0]
+        assert ("Needs owntone-mini's event channel, which is off or not connected. "
+                "Pause on a speaker does nothing until it is.") in html.replace("&#x27;", "'")
+        assert "Needs owntone-mini 1.6" not in html
+
+    @pytest.mark.parametrize("scope", ["ignore", "off_all"])
+    def test_the_timeout_sentence_is_absent_when_nothing_is_left_to_time(self, scope):
+        assert self._note(self._card(scope)).endswith(">")
+        assert "Pause lasts longer" not in self._note(self._card(scope)).split(">", 1)[1]
+
+    @pytest.mark.parametrize("scope", ["output", "all"])
+    def test_the_timeout_sentence_is_shown_for_the_two_mute_choices(self, scope):
+        shown = self._note(self._card(scope)).split(">", 1)[1]
+        assert shown == " Speakers that Pause muted are turned off if Pause lasts longer than 5 minutes."
+
+    @pytest.mark.parametrize("seconds,words", [
+        (30, "30 seconds"), (45, "45 seconds"), (60, "1 minute"), (120, "2 minutes"),
+        (300, "5 minutes"), (90, "90 seconds"), (3600, "60 minutes"),
+    ])
+    def test_the_timeout_is_said_as_people_say_it(self, seconds, words):
+        assert f"longer than {words}." in self._note(self._card("all", seconds))
+
+    def test_changing_the_choice_shows_or_hides_the_sentence(self):
+        sel = self._select(self._card())
+        assert "(this.value === 'output' || this.value === 'all') ? ' ' +" in sel
+        assert "getAttribute('data-text')" in sel
+
+    def test_the_card_text_is_latin_1(self):
+        self._card("all").encode("latin-1")

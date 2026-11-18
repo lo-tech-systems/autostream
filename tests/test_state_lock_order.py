@@ -20,6 +20,8 @@ authority (20):
  10. submit() holds no lock when it calls a handler.
  11. The authority calls the policy with no authority lock held.
  12. The event source thread takes no authority lock; it only enqueues.
+ 13. The policy holds no lock across an authority call, a submit or anything
+     that reaches the player.
 """
 from __future__ import annotations
 
@@ -525,5 +527,71 @@ def test_the_settings_cache_parses_outside_its_lock(tracked_singleton, tmp_path,
     finally:
         settings.close(save=False)
     assert held_in_snapshot and all("settings_cache" not in h for h in held_in_snapshot)
+    assert lockcheck.ORDER_VIOLATIONS == []
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
+
+
+def _watch_authority_calls(a, monkeypatch, held):
+    """Record what the calling thread holds at the entry of each authority
+    call the policy makes."""
+    for name in ("mute", "mute_all", "unmute", "unmute_joined", "deselect", "deselect_all", "unit_marks"):
+        real = getattr(a, name)
+
+        def watched(*args, _real=real, _name=name, **kwargs):
+            held.append((_name, lockcheck.held()))
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(a, name, watched)
+
+
+@pytest.mark.parametrize("scope", ["output", "all", "off_all"])
+def test_a_receiver_pause_and_play_break_no_rule(authority, monkeypatch, scope):
+    import autostream_output_policy as op
+    import autostream_runtime as runtime
+    from autostream_backend_events import DeviceEvent
+    from autostream_config import OutputsConfig
+
+    a = authority
+    monkeypatch.setattr(runtime, "_metadata_push_lock", lockcheck.TrackedLock("metadata_push"))
+    pol = op.get_policy()
+    pol.bind_settings(lambda: OutputsConfig(device_pause_scope=scope))
+    a.set_policy(pol)
+    held = []
+    _watch_authority_calls(a, monkeypatch, held)
+    a.merge_for_tests([row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=30)],
+                      boot="b0", now=100.0)
+    runtime.note_metadata_push(50.0)
+    a.note_session(True)
+    a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "paus", None, 1, 100.0))
+    a.step(now=100.0)
+    a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "play", None, 2, 200.0))
+    a.step(now=200.0)
+    a.note_session(False)
+    a.step(now=201.0)
+    assert {name for name, _ in held} >= {"mute" if scope == "output" else "mute_all" if scope == "all" else "deselect_all"}
+    assert all(h == frozenset() for _, h in held)
+    assert lockcheck.ORDER_VIOLATIONS == []
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
+
+
+def test_a_pause_timeout_turn_off_breaks_no_rule(authority, monkeypatch):
+    import autostream_output_policy as op
+    from autostream_backend_events import DeviceEvent
+    from autostream_config import OutputsConfig
+
+    a = authority
+    pol = op.get_policy()
+    pol.bind_settings(lambda: OutputsConfig(device_pause_scope="all"))
+    a.set_policy(pol)
+    held = []
+    _watch_authority_calls(a, monkeypatch, held)
+    a.merge_for_tests([row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=30)],
+                      boot="b0", now=100.0)
+    a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "paus", None, 1, 100.0))
+    a.step(now=100.0)
+    a.step(now=500.0)
+    assert [name for name, _ in held].count("deselect") == 2
+    assert all(h == frozenset() for _, h in held)
+    assert a.held_when_told and all(h == frozenset() for h in a.held_when_told)
     assert lockcheck.ORDER_VIOLATIONS == []
     assert lockcheck.ACQUIRED_UNDER_STORE == []

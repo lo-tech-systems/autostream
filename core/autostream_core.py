@@ -239,6 +239,7 @@ def _bind_intent_handlers() -> None:
     import autostream_live_config
     import autostream_log_policy  # noqa: F401
     import autostream_output_intents  # noqa: F401
+    import autostream_output_policy  # noqa: F401
 
     # Each hook finds the coordinator's function when it is called.
     autostream_live_config.bind_coordinator(autostream_live_config.CoordinatorHooks(
@@ -3281,6 +3282,10 @@ def _start_output_authority(cfg, settings) -> None:
     are the authority's own, so the web server is never held up by the player."""
     import autostream_live_config
     autostream_live_config.bind_settings_store(settings)
+    import autostream_output_policy
+    policy = autostream_output_policy.get_policy()
+    policy.bind_settings(autostream_live_config.output_policy_settings)
+    get_authority().set_policy(policy)
     get_authority().start(PlayerServiceBackend(cfg.owntone.base_url))
 
 

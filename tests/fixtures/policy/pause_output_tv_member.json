@@ -1,0 +1,102 @@
+{
+ "outputs": [
+  {
+   "id": "1020",
+   "name": "TV A",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 40,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": true
+  },
+  {
+   "id": "1002",
+   "name": "Speaker B",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 30,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": false
+  }
+ ],
+ "settings": {
+  "device_pause_scope": "output"
+ },
+ "session": true,
+ "steps": [
+  {
+   "at": 0,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "paus",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1020",
+     "member_id": "1021",
+     "name": "TV A"
+    },
+    "at_ms": 190511
+   }
+  },
+  {
+   "at": 20,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "play",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1020",
+     "member_id": "1022",
+     "name": "TV A"
+    },
+    "at_ms": 190511
+   }
+  }
+ ],
+ "expect": {
+  "writes": [
+   [
+    "update_output",
+    "1020",
+    {
+     "volume_percent": 0
+    }
+   ],
+   [
+    "update_output",
+    "1020",
+    {
+     "volume_percent": 40
+    }
+   ]
+  ],
+  "units": {
+   "1020": {
+    "selected": true,
+    "muted": false,
+    "volume": 40
+   },
+   "1002": {
+    "selected": true,
+    "muted": false,
+    "volume": 30
+   }
+  },
+  "silence_chosen": false,
+  "paused": [],
+  "log": [
+   "receiver pause from TV A (1021): TV A muted",
+   "receiver play from TV A: TV A restored"
+  ]
+ }
+}

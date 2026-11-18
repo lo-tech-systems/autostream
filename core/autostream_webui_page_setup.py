@@ -1636,6 +1636,71 @@ def _setup_bluetooth_card_html(
     return bluetooth_card_html
 
 
+_DEVICE_PAUSE_OPTIONS = (
+    ("ignore", "Keep playing"),
+    ("output", "Mute that speaker"),
+    ("all", "Mute all playing speakers"),
+    ("off_all", "Turn off all speakers"),
+)
+_DEVICE_PAUSE_HELP = (
+    "Applies to Pause on a HomePod or on an Apple TV remote. Play on the same "
+    "speaker undoes the mute. A stereo pair, or an Apple TV with its HomePods, "
+    "counts as one speaker. \"Turn off all speakers\" keeps them off until you "
+    "turn one on again."
+)
+_DEVICE_PAUSE_NEEDS_VERSION = (
+    "Needs owntone-mini 1.6 or above. The connected player handles Pause on its own."
+)
+_DEVICE_PAUSE_NEEDS_EVENTS = (
+    "Needs owntone-mini's event channel, which is off or not connected. "
+    "Pause on a speaker does nothing until it is."
+)
+
+
+def _pause_off_duration_text(seconds: int) -> str:
+    """The pause timeout as people say it: whole minutes where it is one."""
+    if seconds >= 60 and seconds % 60 == 0:
+        minutes = seconds // 60
+        return "1 minute" if minutes == 1 else f"{minutes} minutes"
+    return f"{seconds} seconds"
+
+
+def _device_pause_row_html(parsed, outputs_part) -> str:
+    """The Pause choice: what a Pause pressed on a speaker does."""
+    scope = parsed.outputs.device_pause_scope
+    if not outputs_part.include_tv_supported:
+        unavailable = _DEVICE_PAUSE_NEEDS_VERSION
+    elif not outputs_part.device_events:
+        unavailable = _DEVICE_PAUSE_NEEDS_EVENTS
+    else:
+        unavailable = ""
+    options = "".join(
+        f'<option value="{value}"{" selected" if value == scope else ""}>{label}</option>'
+        for value, label in _DEVICE_PAUSE_OPTIONS
+    )
+    off_text = html.escape(
+        "Speakers that Pause muted are turned off if Pause lasts longer than "
+        + _pause_off_duration_text(parsed.outputs.pause_off_seconds) + "."
+    )
+    if unavailable:
+        help_html = html.escape(unavailable)
+    else:
+        shown = " " + off_text if scope in ("output", "all") else ""
+        help_html = (
+            html.escape(_DEVICE_PAUSE_HELP)
+            + f'<span id="device_pause_off_note" data-text="{off_text}">{shown}</span>'
+        )
+    return f"""
+          <div class="setup-customise-row" style="margin-top:0.75rem;">
+            <label style="margin:0;flex:1;">When Pause is pressed on a speaker
+              <select id="device_pause_scope"{' disabled' if unavailable else ''} onchange="var n=document.getElementById('device_pause_off_note'); if(n) n.textContent = (this.value === 'output' || this.value === 'all') ? ' ' + n.getAttribute('data-text') : ''; settingsSaveField('outputs.device_pause_scope', this.value);">
+                {options}
+              </select>
+            </label>
+          </div>
+          <div class="helptext">{help_html}</div>"""
+
+
 def _setup_customise_card_html(parsed) -> str:
     """Personalisation detail-panel card."""
     _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
@@ -1668,7 +1733,7 @@ def _setup_customise_card_html(parsed) -> str:
           <div class="setup-customise-row" style="margin-top:0.75rem;">
 {toggle_html(name="webui_dark_mode", id="webui_dark_mode", checked=parsed.webui.dark_mode, onchange="applyDarkMode(this.checked); refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)")}
             <span>Dark Mode</span>
-          </div>
+          </div>{_device_pause_row_html(parsed, store().snapshot().outputs)}
         """, margin_top="0")
     return customise_card_html
 

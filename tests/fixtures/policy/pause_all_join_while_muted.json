@@ -1,0 +1,161 @@
+{
+ "outputs": [
+  {
+   "id": "1001",
+   "name": "Speaker A",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 40,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": false
+  },
+  {
+   "id": "1002",
+   "name": "Speaker B",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 30,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": false
+  },
+  {
+   "id": "1003",
+   "name": "Speaker C",
+   "type": "AirPlay 2",
+   "selected": false,
+   "volume": 0,
+   "session": {
+    "state": "stopped",
+    "failure": "none"
+   },
+   "has_homepods": false
+  }
+ ],
+ "settings": {
+  "device_pause_scope": "all"
+ },
+ "session": true,
+ "steps": [
+  {
+   "at": 0,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "paus",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  },
+  {
+   "at": 10,
+   "user": [
+    "outputs.set",
+    {
+     "id": "1003",
+     "selected": true,
+     "volume": 35
+    }
+   ]
+  },
+  {
+   "at": 20,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "play",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  }
+ ],
+ "expect": {
+  "writes": [
+   [
+    "update_output",
+    "1001",
+    {
+     "volume_percent": 0
+    }
+   ],
+   [
+    "update_output",
+    "1002",
+    {
+     "volume_percent": 0
+    }
+   ],
+   [
+    "update_output",
+    "1003",
+    {
+     "enabled": true,
+     "volume_percent": 0,
+     "offset_ms": null,
+     "mode": null
+    }
+   ],
+   [
+    "update_output",
+    "1001",
+    {
+     "volume_percent": 40
+    }
+   ],
+   [
+    "update_output",
+    "1002",
+    {
+     "volume_percent": 30
+    }
+   ],
+   [
+    "update_output",
+    "1003",
+    {
+     "volume_percent": 35
+    }
+   ]
+  ],
+  "units": {
+   "1001": {
+    "selected": true,
+    "muted": false,
+    "volume": 40
+   },
+   "1002": {
+    "selected": true,
+    "muted": false,
+    "volume": 30
+   },
+   "1003": {
+    "selected": true,
+    "muted": false,
+    "volume": 35
+   }
+  },
+  "silence_chosen": false,
+  "paused": [],
+  "log": [
+   "receiver pause from Speaker A (1001): Speaker A, Speaker B muted",
+   "receiver play from Speaker A: Speaker A, Speaker B, Speaker C restored"
+  ]
+ }
+}

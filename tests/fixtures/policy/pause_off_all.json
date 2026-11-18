@@ -1,0 +1,92 @@
+{
+ "outputs": [
+  {
+   "id": "1001",
+   "name": "Speaker A",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 40,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": false
+  },
+  {
+   "id": "1002",
+   "name": "Speaker B",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 30,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": false
+  }
+ ],
+ "settings": {
+  "device_pause_scope": "off_all"
+ },
+ "session": true,
+ "steps": [
+  {
+   "at": 0,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "paus",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  },
+  {
+   "at": 20,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "play",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  }
+ ],
+ "expect": {
+  "writes": [
+   [
+    "set_selected_outputs",
+    []
+   ]
+  ],
+  "units": {
+   "1001": {
+    "selected": false,
+    "muted": false,
+    "volume": 40
+   },
+   "1002": {
+    "selected": false,
+    "muted": false,
+    "volume": 30
+   }
+  },
+  "silence_chosen": true,
+  "paused": [],
+  "log": [
+   "receiver pause from Speaker A (1001): every speaker turned off",
+   "receiver play from Speaker A: nothing paused"
+  ]
+ }
+}

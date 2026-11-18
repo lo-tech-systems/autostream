@@ -1,0 +1,70 @@
+{
+ "outputs": [
+  {
+   "id": "1001",
+   "name": "Speaker A",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 40,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": false
+  },
+  {
+   "id": "1003",
+   "name": "Speaker C",
+   "type": "AirPlay 2",
+   "selected": false,
+   "volume": 0,
+   "session": {
+    "state": "stopped",
+    "failure": "none"
+   },
+   "has_homepods": false
+  }
+ ],
+ "settings": {
+  "device_pause_scope": "all"
+ },
+ "session": true,
+ "steps": [
+  {
+   "at": 0,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "paus",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1003",
+     "member_id": "1003",
+     "name": "Speaker C"
+    },
+    "at_ms": 190511
+   }
+  }
+ ],
+ "expect": {
+  "writes": [],
+  "units": {
+   "1001": {
+    "selected": true,
+    "muted": false,
+    "volume": 40
+   },
+   "1003": {
+    "selected": false,
+    "muted": false,
+    "volume": 0
+   }
+  },
+  "silence_chosen": false,
+  "paused": [],
+  "log": [
+   "receiver pause from Speaker C: that speaker is not on"
+  ]
+ }
+}
