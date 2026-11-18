@@ -10,7 +10,7 @@ import {
     LOGO_URL,
     LOGO_BACKDROP_URL,
     REPLAY_BUTTONS,
-    SLEEP_CHOICES,
+    sleepLabel,
     signed
 } from "./hd-tables.js";
 import { make, setText, makeIcon, BELL_ICON, setLevel, syncList, els } from "./hd-dom.js";
@@ -243,8 +243,10 @@ function paintSheet(vm) {
     const bright = els.brightness;
     bright.style.setProperty("--fill", (bright.value - bright.min) / (bright.max - bright.min) * 100 + "%");
     setText(els.brightnessNum, String(st.brightness));
-    syncList(els.sleepAfter, SLEEP_CHOICES.map(([seconds, label]) => (
-        { id: String(seconds), seconds: seconds, label: label, on: st.sleepAfter === seconds }
+    // The state lists the choices with never first; the pull-down ends with it.
+    const choices = [...st.sleepChoices].sort((a, b) => (a || Infinity) - (b || Infinity));
+    syncList(els.sleepAfter, choices.map((seconds) => (
+        { id: String(seconds), seconds: seconds, label: sleepLabel(seconds), on: st.sleepAfter === seconds }
     )), createSleepChoice);
     els.power.disabled = !vm.sheet.canPower;
     syncList(els.info, vm.sheet.info.rows, createInfoRow);

@@ -5,7 +5,7 @@
 
 import {
     CONFIG, STATUS_RULES, PIN_TEXT, PIN_LINE_RULES, ARTWORK_PREFIX, REPLAY_ROWS, NO_TIME, POWER_CARDS,
-    POWER_RULES, AUTO_START_CARD, DIM_FLOOR, BRIGHTNESS_MAX, EQ_FILTERS, EQ_GRAPH, formatLength
+    POWER_RULES, AUTO_START_CARD, DIM_FLOOR, EQ_FILTERS, EQ_GRAPH, formatLength
 } from "./hd-tables.js";
 import { responseFilters, eqLabel } from "./hd-eq.js";
 import { bellBadge, bellCard } from "./hd-bell.js";
@@ -263,9 +263,10 @@ export function derive(dial, focused, local) {
     const settings = {
         brightness: held("brightness", panel.brightness),
         sleepAfter: held("sleep_after_s", panel.sleep_after_s),
+        sleepChoices: panel.sleep_choices,
         // Any real backlight kind (sysfs or ddc) does the dimming itself.
         dim: panel.backlight === "none"
-            ? DIM_FLOOR + (1 - DIM_FLOOR) * held("brightness", panel.brightness) / BRIGHTNESS_MAX : null
+            ? DIM_FLOOR + (1 - DIM_FLOOR) * held("brightness", panel.brightness) / panel.brightness_max : null
     };
 
     const replay = deriveReplay(focus, usable, local);

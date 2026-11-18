@@ -153,7 +153,8 @@ class TestShape:
         state = _state("nothing_playing", panel={"asleep": True, "backlight": "none"},
                        settings={"brightness": 55, "sleep_after_s": 900})
         assert state["panel"] == {
-            "asleep": True, "brightness": 55, "sleep_after_s": 900, "backlight": "none", "kiosk": False}
+            "asleep": True, "brightness": 55, "brightness_max": 100, "sleep_after_s": 900,
+            "sleep_choices": [0, 60, 300, 900], "backlight": "none", "kiosk": False}
         assert build_parts(hs.SCENARIOS["nothing_playing"].snapshot)["dial"]["panel"]["brightness"] == 80
 
     @pytest.mark.parametrize("kind", ["none", "sysfs", "ddc"])

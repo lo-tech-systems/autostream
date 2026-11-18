@@ -71,6 +71,13 @@
     "asleep": false,
     "brightness": 80,
     "sleep_after_s": 300,
+    "sleep_choices": [
+      0,
+      60,
+      300,
+      900
+    ],
+    "brightness_max": 100,
     "backlight": "sysfs",
     "kiosk": false
   },

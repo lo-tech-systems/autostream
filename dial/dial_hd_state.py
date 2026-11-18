@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from dial_config import BRIGHTNESS_DEFAULT, SLEEP_AFTER_DEFAULT_S
+from dial_config import BRIGHTNESS_DEFAULT, BRIGHTNESS_MAX, SLEEP_AFTER_CHOICES_S, SLEEP_AFTER_DEFAULT_S
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, awaiting_pin, pin_window_end
 from dial_values import clamp_percent, int_or_none
 from dial_warning_bell import appliance_bell, descriptor_map, dial_bell
@@ -255,6 +255,8 @@ def _panel_block(panel: "Mapping | None", settings: "Mapping | None") -> dict:
         "asleep": bool(panel.get("asleep", False)),
         "brightness": pick("brightness", BRIGHTNESS_DEFAULT),
         "sleep_after_s": pick("sleep_after_s", SLEEP_AFTER_DEFAULT_S),
+        "sleep_choices": list(SLEEP_AFTER_CHOICES_S),
+        "brightness_max": BRIGHTNESS_MAX,
         "backlight": _text(panel.get("backlight", "none")),
         "kiosk": bool(panel.get("kiosk", False)),
     }

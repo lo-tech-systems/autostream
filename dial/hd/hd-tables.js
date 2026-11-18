@@ -89,7 +89,10 @@ export const EMPTY_STATE = {
     started: false, dial: { uuid: "" }, focus: { appliance_id: null, reporting_id: null }, appliances: [],
     artwork: null, transport: null, outputs_request: null, start_failure: null,
     bell: { severity: null, entries: [] }, status: null,
-    panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", kiosk: false },
+    panel: {
+        asleep: false, brightness: 80, brightness_max: 100, sleep_after_s: 300, sleep_choices: [0, 60, 300, 900],
+        backlight: "none", kiosk: false
+    },
     recovery: { active: false, confirmed: false }, power: { state: "idle", changed_at: 0 }
 };
 
@@ -166,10 +169,10 @@ export const POWER_TAKEN_OVER = (p, u) =>
     p.state === "requested" || (p.state === "failed" && p.changed_at !== u.dismissedAt);
 export const POWER_IDLE_UI = { asked: false, sent: false, dismissedAt: 0 };
 
-// The pull-down's choices: [seconds, label]; 0 is never.
-export const SLEEP_CHOICES = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [0, "Never"]];
+// A pull-down choice's label: 0 seconds is never.
+export const sleepLabel = (seconds) => (seconds === 0 ? "Never" : `${seconds / 60} min`);
 // With no backlight to drive the screen is dimmed instead, down to DIM_FLOOR.
-export const DIM_FLOOR = 0.35, BRIGHTNESS_MAX = 100;
+export const DIM_FLOOR = 0.35;
 export const SEVERITY_ORDER = ["info", "warning", "critical"];
 
 // The equaliser's filters as the appliance applies them, in the order of its
