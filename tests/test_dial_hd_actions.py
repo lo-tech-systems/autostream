@@ -440,9 +440,13 @@ class TestRefusalSentences:
         assert not self.DROPPED & set(sentences)
 
     def test_every_reason_the_core_refuses_with_has_a_sentence_or_is_dropped(self):
+        import glob
         import re
-        with open(os.path.join(self.REPO, "dial", "dial_core.py"), encoding="utf-8") as f:
-            reasons = set(re.findall(r'ActionResult\(False, "(\w+)"', f.read()))
+        text = ""
+        for path in sorted(glob.glob(os.path.join(self.REPO, "dial", "dial_core*.py"))):
+            with open(path, encoding="utf-8") as f:
+                text += f.read()
+        reasons = set(re.findall(r'ActionResult\(False, "(\w+)"', text))
         assert reasons
         assert not [r for r in sorted(reasons - self.DROPPED) if r not in self._sentences()]
 
