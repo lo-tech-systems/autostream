@@ -1027,7 +1027,7 @@ std::string RepeatController::set_enabled(bool enabled, const std::string& codec
     // in-place arena resize. The Python target-minutes path already sends a
     // genuine off/on toggle (harmless double with this); the pinned-codec
     // path is switched to the same off/on shape on the Python side (see
-    // core/autostream_webui_api.py's _live_repeat_codec()) specifically so a
+    // core/autostream_live_config.py's _live_repeat_codec()) specifically so a
     // codec pin arriving here as a single set_enabled(true, new_codec) call
     // still re-plans via this branch.
     bool config_changed = was_enabled && enabled &&
