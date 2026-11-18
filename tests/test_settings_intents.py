@@ -19,7 +19,7 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_core  # noqa: F401  (binds the coordinator hooks)
+import autostream_core  # noqa: F401  (binds the intent handlers)
 import autostream_live_config as live_config
 import autostream_state as state
 import autostream_webui_api  # noqa: F401  (registers the personalisation rows)
@@ -289,10 +289,10 @@ def test_a_step_that_is_not_applied_makes_the_outcome_not_ok():
 
 
 def test_the_track_identification_step_rebuilds_from_the_config_file():
-    with patch("autostream_live_config._hooks") as hooks:
+    with patch("autostream_live_config.identification") as hooks:
         reply = _form(parse_config({}), ("track_id", "/etc/example.json"))
     assert reply.ok is True
-    hooks.return_value.apply_track_id_config_live.assert_called_once_with("/etc/example.json")
+    hooks.apply_track_id_config_live.assert_called_once_with("/etc/example.json")
 
 
 def test_an_unknown_step_is_refused():
@@ -303,16 +303,6 @@ def test_the_form_is_for_users_only():
     reply = submit(Intent("settings.form_apply", {"steps": ()}, Origin.SYSTEM, "coordinator",
                           context=parse_config({})))
     assert reply.error == "origin_not_allowed"
-
-
-def test_hooks_that_were_never_bound_fail_loud():
-    saved = live_config._coordinator
-    try:
-        live_config._coordinator = None
-        with pytest.raises(RuntimeError):
-            live_config._hooks()
-    finally:
-        live_config._coordinator = saved
 
 
 # ------------------------------------------------------------------ the output policy settings

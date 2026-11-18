@@ -27,6 +27,7 @@ from typing import Callable, Optional
 
 import autostream_announce as announce
 import autostream_audio_monitor as audio_monitor
+import autostream_identification as identification
 import autostream_input_status as input_status
 import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
@@ -44,7 +45,6 @@ from autostream_state.outputs import WRITE_TIMEOUT_S, PlayerServiceBackend, get_
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
     OutputEqConfig,
-    load_and_parse,
     normalize_audio_path,
     unconfigured,
 )
@@ -100,72 +100,6 @@ from autostream_sysutils import (
 #                                                 state vs. _apply_track_id_service
 
 
-def _build_track_id_service(cfg) -> Optional[object]:
-    """Build and return a TrackIdentificationService from config, or None."""
-    try:
-        from track_id.service import build_service
-        ti = cfg.track_identification
-        settings = dict(ti.providers.get(ti.provider, {}))
-        return build_service(
-            enabled=ti.enabled,
-            provider_id=ti.provider,
-            provider_settings=settings,
-            analysis_lead_in_seconds=ti.analysis_lead_in_seconds,
-            snapshot_seconds=ti.snapshot_seconds,
-            retry_seconds=ti.retry_seconds,
-            refresh_seconds=ti.refresh_seconds,
-            track_change_silence_seconds=ti.track_change_silence_seconds,
-        )
-    except Exception:
-        logging.warning("track_id: failed to build service", exc_info=True)
-        return None
-
-
-def apply_track_id_config_live(config_path: str) -> None:
-    """Rebuild the track identification service and push it to all monitors.
-
-    Called by the web UI when track identification settings change.  Avoids
-    tearing down the audio coordinator or stopping OwnTone -- only the service
-    singleton and each monitor's per-instance reference are replaced.
-    """
-    try:
-        from autostream_config import CONFIG_IO_LOCK
-        with CONFIG_IO_LOCK:
-            cfg = load_and_parse(config_path)
-    except Exception:
-        logging.warning("track_id: live reload: cannot read config", exc_info=True)
-        return
-    runtime._track_id_service = _build_track_id_service(cfg)
-    audio_monitor.publish_track_service(runtime._track_id_service is not None)
-    with runtime._monitors_lock:
-        monitors = list(runtime.all_monitors)
-    for m in monitors:
-        m._apply_track_id_service(runtime._track_id_service)
-    logging.info(
-        "track_id: service rebuilt live (enabled=%s)",
-        runtime._track_id_service is not None,
-    )
-
-
-def apply_track_id_config_live_from_parsed(cfg) -> None:
-    """Rebuild the track identification service from an already-parsed config.
-
-    Preferred over apply_track_id_config_live when the caller holds a fresh
-    in-memory snapshot (e.g. from SettingsStore) and disk may not yet reflect
-    the latest accepted settings.
-    """
-    runtime._track_id_service = _build_track_id_service(cfg)
-    audio_monitor.publish_track_service(runtime._track_id_service is not None)
-    with runtime._monitors_lock:
-        monitors = list(runtime.all_monitors)
-    for m in monitors:
-        m._apply_track_id_service(runtime._track_id_service)
-    logging.info(
-        "track_id: service rebuilt live from snapshot (enabled=%s)",
-        runtime._track_id_service is not None,
-    )
-
-
 _monitor_writer = autostream_state.store().claim("monitor", "autostream_core")
 
 
@@ -219,13 +153,6 @@ def _bind_intent_handlers() -> None:
     imported."""
     for name in _HANDLER_MODULES:
         importlib.import_module(name)
-
-    import autostream_live_config
-    # Each hook finds the coordinator's function when it is called.
-    autostream_live_config.bind_coordinator(autostream_live_config.CoordinatorHooks(
-        apply_track_id_config_live=lambda config_path: apply_track_id_config_live(config_path),
-        apply_track_id_config_live_from_parsed=lambda cfg: apply_track_id_config_live_from_parsed(cfg),
-    ))
 
 
 _bind_intent_handlers()
@@ -1314,7 +1241,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             client.close()
             break
 
-        runtime._track_id_service = _build_track_id_service(cfg)
+        runtime._track_id_service = identification.build_track_id_service(cfg)
         audio_monitor.publish_track_service(runtime._track_id_service is not None)
         for m in monitors:
             m._apply_track_id_service(runtime._track_id_service)

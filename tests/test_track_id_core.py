@@ -1123,7 +1123,7 @@ class TestGenerationGuard:
     def test_apply_service_live_rebuilds_service(self, tmp_path):
         """apply_track_id_config_live reads the saved config and rebuilds."""
         import json
-        from autostream_core import apply_track_id_config_live
+        from autostream_identification import apply_track_id_config_live
         cfg = {
             "general": {"silence_seconds": 30},
             "owntone": {"base_url": "http://localhost:3689"},
@@ -1496,7 +1496,7 @@ class TestApplyTrackIdConfigLiveEnabled:
 
     def test_apply_service_live_rebuilds_service_enabled(self, tmp_path):
         import json
-        from autostream_core import apply_track_id_config_live
+        from autostream_identification import apply_track_id_config_live
         cfg = {
             "general": {"silence_seconds": 30},
             "owntone": {"base_url": "http://localhost:3689"},
@@ -1523,7 +1523,7 @@ class TestApplyTrackIdConfigLiveEnabled:
 
     def test_apply_service_live_pushes_to_monitors(self, tmp_path):
         import json
-        from autostream_core import apply_track_id_config_live
+        from autostream_identification import apply_track_id_config_live
         cfg = {
             "general": {"silence_seconds": 30},
             "owntone": {"base_url": "http://localhost:3689"},

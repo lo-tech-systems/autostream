@@ -938,7 +938,7 @@ class TestPostHandlerChannel:
     def _live_effects_patched():
         """The live effects the form's save would otherwise push."""
         with patch("autostream_live_config.update_live_owntone_runtime"), \
-                patch("autostream_live_config._hooks"), \
+                patch("autostream_live_config.identification"), \
                 patch("autostream_live_config.update_live_silence_seconds", return_value=True), \
                 patch("autostream_runtime.request_config_reload"):
             yield

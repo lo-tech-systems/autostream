@@ -265,14 +265,14 @@ def _run_setup_post(form_fields: dict, tmp_path: Path, extra_cfg: dict | None = 
         patch.object(live_config, "update_live_owntone_runtime"),
         patch.object(cfg_mod, "suggested_silence_threshold_dbfs", return_value=-60.0),
         patch.object(runtime, "request_config_reload") as mock_reload,
-        patch.object(live_config, "_hooks") as hooks,
+        patch.object(live_config, "identification") as hooks,
         patch.object(live_config, "update_live_silence_seconds", return_value=True),
         patch.object(ph, "_set_flash_cookie"),
     ):
         ph.handle_setup_post(handler, state, auth, body)
 
     saved = json.loads(Path(state.config_path).read_text())
-    return saved, mock_reload, hooks.return_value.apply_track_id_config_live
+    return saved, mock_reload, hooks.apply_track_id_config_live
 
 
 class TestHandleSetupPostTrackId:

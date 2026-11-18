@@ -1,0 +1,4 @@
+# Track identification set-up moved out of the coordinator.
+autostream_core._build_track_id_service -> autostream_identification.build_track_id_service  alias=identification
+autostream_core.apply_track_id_config_live -> autostream_identification.apply_track_id_config_live  alias=identification
+autostream_core.apply_track_id_config_live_from_parsed -> autostream_identification.apply_track_id_config_live_from_parsed  alias=identification

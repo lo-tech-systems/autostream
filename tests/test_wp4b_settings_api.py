@@ -787,8 +787,8 @@ class TestTrackIdRebuildDebounce:
             fired.set()
 
         # Schedule rebuild via the real debounce function, at a short delay.
-        with patch("autostream_live_config._hooks") as hooks:
-            hooks.return_value.apply_track_id_config_live_from_parsed.side_effect = _capture
+        with patch("autostream_live_config.identification") as hooks:
+            hooks.apply_track_id_config_live_from_parsed.side_effect = _capture
             live_config._debounce_track_id_rebuild(state, delay=0.05)
 
             # Mutate store after scheduling, before timer fires

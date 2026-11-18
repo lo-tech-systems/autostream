@@ -10,8 +10,7 @@ then applied here without a restart where the field allows it.
 The routes and the Setup form reach this module through intents: saving,
 reloading and applying settings, the advertisement and automatic-update
 switches, and the coordinator reload are rows bound at the bottom of the
-file. The coordinator's track identification functions are reached through
-one set of hooks that the coordinator binds at import.
+file.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -25,6 +24,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Callable, Mapping, Optional
 
+import autostream_identification as identification
 import autostream_input_status as input_status
 import autostream_monitor_client as monitor_client
 import autostream_monitor_control as monitor_control
@@ -94,33 +94,6 @@ from autostream_state.outputs import get_authority
 from autostream_sysutils import run_admin_cmd
 
 _OWNER = "autostream_live_config"
-
-
-# ---------------------------------------------------------------------------
-# Coordinator hooks
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class CoordinatorHooks:
-    """The coordinator functions this module calls. The coordinator owns them
-    and binds them once, at import; this module never imports the coordinator."""
-
-    apply_track_id_config_live: Callable[[str], None]
-    apply_track_id_config_live_from_parsed: Callable[[object], None]
-
-
-_coordinator: Optional[CoordinatorHooks] = None
-
-
-def bind_coordinator(hooks: CoordinatorHooks) -> None:
-    global _coordinator
-    _coordinator = hooks
-
-
-def _hooks() -> CoordinatorHooks:
-    if _coordinator is None:
-        raise RuntimeError("the coordinator has not bound its hooks")
-    return _coordinator
 
 
 def _store_of(state: object) -> Optional[SettingsStore]:
@@ -802,7 +775,7 @@ def _debounce_track_id_rebuild(state: object, delay: float = 0.3) -> None:
         if isinstance(settings, _SettingsStore):
             try:
                 snap = settings.snapshot()
-                _hooks().apply_track_id_config_live_from_parsed(snap)
+                identification.apply_track_id_config_live_from_parsed(snap)
             except Exception:
                 logging.exception("debounced track-ID rebuild failed")
 
@@ -1076,7 +1049,7 @@ def _form_apply(intent: Intent, wait: float) -> Outcome:
         elif name == "silence_seconds":
             results.append(bool(update_live_silence_seconds(params)))
         elif name == "track_id":
-            _hooks().apply_track_id_config_live(params)
+            identification.apply_track_id_config_live(params)
             results.append(True)
         else:
             return Outcome(ok=False, error="invalid_steps")

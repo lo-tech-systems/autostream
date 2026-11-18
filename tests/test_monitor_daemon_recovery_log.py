@@ -35,6 +35,7 @@ import autostream_logging as log_setup
 import autostream_announce as announce
 import autostream_playback_tracking as playback_tracking
 import autostream_session
+import autostream_identification as identification
 
 
 def _minimal_cfg(tmp_path: Path) -> Path:
@@ -111,7 +112,7 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
             return_value=MagicMock(ok=True, message="")))
         stack.enter_context(patch.object(core, "_sync_audio_path_backend"))
         stack.enter_context(patch.object(core, "_configure_startup_monitors", return_value=[]))
-        stack.enter_context(patch.object(core, "_build_track_id_service", return_value=None))
+        stack.enter_context(patch.object(identification, "build_track_id_service", return_value=None))
         stack.enter_context(patch.object(announce, "_start_playing_reconciliation"))
         stack.enter_context(patch.object(autostream_session, "SessionTracker", mock_session_tracker_cls))
         stack.enter_context(patch.object(autostream_session, "dispatch_session_event"))

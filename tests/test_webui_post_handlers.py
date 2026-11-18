@@ -562,7 +562,7 @@ def _call_setup_post(form_data: dict, tmp_path: Path,
          patch("autostream_webui_post_handlers.run_admin_cmd",
                return_value=MagicMock(returncode=admin_rc, stderr="")), \
          patch("autostream_live_config.update_live_owntone_runtime"), \
-         patch("autostream_live_config._hooks"), \
+         patch("autostream_live_config.identification"), \
          patch("autostream_webui_post_handlers.send_setup_page",
                side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
          patch("autostream_webui_post_handlers._set_flash_cookie"), \
@@ -657,7 +657,7 @@ class TestSetupPost:
              patch("autostream_webui_post_handlers.run_admin_cmd",
                    return_value=MagicMock(returncode=0, stderr="")), \
              patch("autostream_live_config.update_live_owntone_runtime"), \
-             patch("autostream_live_config._hooks"), \
+             patch("autostream_live_config.identification"), \
              patch("autostream_webui_post_handlers._set_flash_cookie"), \
              patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
              patch("autostream_runtime.request_config_reload"):
@@ -748,7 +748,7 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
              _patch("autostream_live_config.update_live_owntone_runtime"), \
-             _patch("autostream_live_config._hooks"), \
+             _patch("autostream_live_config.identification"), \
              _patch("autostream_webui_post_handlers.send_setup_page",
                     side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
@@ -827,7 +827,7 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
              _patch("autostream_live_config.update_live_owntone_runtime"), \
-             _patch("autostream_live_config._hooks"), \
+             _patch("autostream_live_config.identification"), \
              _patch("autostream_webui_post_handlers.send_setup_page"), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
              _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
@@ -880,7 +880,7 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
              _patch("autostream_live_config.update_live_owntone_runtime"), \
-             _patch("autostream_live_config._hooks"), \
+             _patch("autostream_live_config.identification"), \
              _patch("autostream_webui_post_handlers.send_setup_page"), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
              _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
@@ -934,7 +934,7 @@ class TestSetupPost:
              _patch("autostream_webui_post_handlers.run_admin_cmd",
                     return_value=MagicMock(returncode=0, stderr="")), \
              _patch("autostream_live_config.update_live_owntone_runtime"), \
-             _patch("autostream_live_config._hooks"), \
+             _patch("autostream_live_config.identification"), \
              _patch("autostream_webui_post_handlers.send_setup_page"), \
              _patch("autostream_webui_post_handlers._set_flash_cookie"), \
              _patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
@@ -1013,7 +1013,7 @@ def _call_setup_post_advertise(
          patch("autostream_webui_post_handlers.run_admin_cmd",
                return_value=MagicMock(returncode=0, stderr="")), \
          patch("autostream_live_config.update_live_owntone_runtime"), \
-         patch("autostream_live_config._hooks"), \
+         patch("autostream_live_config.identification"), \
          patch("autostream_webui_post_handlers.send_setup_page",
                side_effect=lambda h, s, a, **kw: flash_calls.append(kw)), \
          patch("autostream_webui_post_handlers._set_flash_cookie"), \
