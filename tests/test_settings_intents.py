@@ -233,52 +233,30 @@ def test_a_failed_timer_call_does_not_store_the_preference(ctx, store):
     assert store.snapshot().updates.auto_update is before
 
 
-# ------------------------------------------------------------------ the Setup form's live steps
+# ------------------------------------------------------------------ the live steps of a settings save
 
 def _form(cfg, *steps):
     return submit(Intent("settings.form_apply", {"steps": steps}, Origin.USER, "webui", context=cfg))
 
 
-def test_the_steps_run_in_order_with_the_forms_values():
+def test_the_owntone_runtime_step_applies_the_new_values():
     cfg = parse_config({})
-    order = []
-    with patch("autostream_live_config.update_live_owntone_runtime",
-               side_effect=lambda **kw: order.append(("owntone", kw["output_name"], kw["volume_percent"])) or True), \
-            patch("autostream_playback_tracking.update_playback_input_config",
-                  side_effect=lambda i, **kw: order.append(("input", i, kw["enabled"], kw["input_type"])) or True), \
-            patch("autostream_live_config.update_live_silence_seconds",
-                  side_effect=lambda s: order.append(("silence", s)) or True):
-        reply = _form(
-            cfg,
-            ("owntone_runtime", {"output_name": "Speaker A", "volume_percent": "35"}),
-            ("playback_input", {"input": 1, "enabled": True, "is_turntable": True}),
-            ("playback_input", {"input": 2, "enabled": False, "is_turntable": False}),
-            ("silence_seconds", 20),
-        )
-    assert reply.ok is True and reply.result["results"] == [True, True, True, True]
-    assert order == [
-        ("owntone", "Speaker A", "35"),
-        ("input", 1, True, "turntable"),
-        ("input", 2, False, "line"),
-        ("silence", 20),
-    ]
+    with patch("autostream_live_config.update_live_owntone_runtime", return_value=True) as update:
+        reply = _form(cfg, ("owntone_runtime", {"output_name": "Speaker A", "volume_percent": "35"}))
+    assert reply.ok is True and reply.result["results"] == [True]
+    assert update.call_args.kwargs["output_name"] == "Speaker A"
+    assert update.call_args.kwargs["volume_percent"] == "35"
 
 
 def test_a_step_that_is_not_applied_makes_the_outcome_not_ok():
-    with patch("autostream_live_config.update_live_silence_seconds", return_value=False):
-        reply = _form(parse_config({}), ("silence_seconds", 20))
+    with patch("autostream_live_config.update_live_owntone_runtime", return_value=False):
+        reply = _form(parse_config({}), ("owntone_runtime", {"output_name": "Speaker A", "volume_percent": "35"}))
     assert reply.ok is False and reply.result["results"] == [False]
 
 
-def test_the_track_identification_step_rebuilds_from_the_config_file():
-    with patch("autostream_live_config.identification") as hooks:
-        reply = _form(parse_config({}), ("track_id", "/etc/example.json"))
-    assert reply.ok is True
-    hooks.apply_track_id_config_live.assert_called_once_with("/etc/example.json")
-
-
-def test_an_unknown_step_is_refused():
-    assert _form(parse_config({}), ("bogus", 1)).error == "invalid_steps"
+@pytest.mark.parametrize("step", ["bogus", "playback_input", "silence_seconds", "track_id"])
+def test_an_unknown_step_is_refused(step):
+    assert _form(parse_config({}), (step, 1)).error == "invalid_steps"
 
 
 def test_the_form_is_for_users_only():

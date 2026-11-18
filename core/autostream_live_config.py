@@ -1004,10 +1004,10 @@ def _settings_reload(intent: Intent, wait: float) -> Outcome:
 
 
 def _form_apply(intent: Intent, wait: float) -> Outcome:
-    """Apply, in order, the live parts of a Setup form save. *context* is the
-    configuration parsed before the form's changes; the steps carry the form's
-    own values. A step that is not applied makes the outcome not ok, and the
-    result lists each step's result."""
+    """Apply, in order, the live parts of a settings save. *context* is the
+    configuration parsed before the change; the steps carry the new values. A
+    step that is not applied makes the outcome not ok, and the result lists
+    each step's result."""
     cfg = intent.context
     results = []
     for name, params in intent.args["steps"]:
@@ -1018,26 +1018,6 @@ def _form_apply(intent: Intent, wait: float) -> Outcome:
                 output_offsets_ms=cfg.owntone.output_offsets_ms,
                 output_airplay_modes=cfg.owntone.output_airplay_modes,
             )))
-        elif name == "playback_input":
-            index = int(params["input"])
-            audio = cfg.audio1 if index == 1 else cfg.audio2
-            turntable = bool(params["is_turntable"])
-            results.append(bool(playback_tracking.update_playback_input_config(
-                index,
-                enabled=bool(params["enabled"]),
-                is_turntable=turntable,
-                input_type="turntable" if turntable else "line",
-                stylus_life_hours=audio.stylus_life_hours,
-                belt_life_hours=audio.belt_life_hours,
-                belt_life_years=audio.belt_life_years,
-                bearing_life_hours=audio.bearing_life_hours,
-                bearing_life_years=audio.bearing_life_years,
-            )))
-        elif name == "silence_seconds":
-            results.append(bool(update_live_silence_seconds(params)))
-        elif name == "track_id":
-            identification.apply_track_id_config_live(params)
-            results.append(True)
         else:
             return Outcome(ok=False, error="invalid_steps")
     return Outcome(ok=all(results), result={"results": results})
