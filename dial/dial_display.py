@@ -1428,9 +1428,8 @@ class DialDisplay:
         every cell on a compact screen is already a control, so a
         reveal-then-arm rule would cost every action a second tap; see
         _compact_tier(). Plain attribute reads;
-        the touch thread polls this once per loop iteration (see dial_touch.
-        TouchEventSource._poll_held_visible, the legacy fallback path) so a
-        finger can never arm against controls that are not actually drawn —
+        the touch side reads it through touch_surface() once per loop
+        iteration, so a finger can never arm against controls that are not actually drawn —
         when this turns False (screen went idle, went to sleep, the setting
         was turned off, or the selector opened), the touch side is forced
         back to reveal-on-touch within one loop tick.
@@ -1641,12 +1640,15 @@ class DialDisplay:
             and not self._controls_hidden(now)
         )
 
-    def touch_surface(self) -> tuple[str, bool, bool, bool]:
-        """(surface, name_active, dots_active, outputs_active) for
+    def touch_surface(self) -> tuple[str, bool, bool, bool, bool]:
+        """(surface, name_active, dots_active, outputs_active, bell_active) for
         dial_touch.TouchStateMachine.set_surface() — see that module's
         SURFACES paragraph. Polled once per loop iteration by
         TouchEventSource; a plain-attribute read discipline, same as
         persistent_overlay_shown() and noncomposited_generation().
+
+        bell_active is true when the screen draws a warning bell with
+        something to show.
 
         outputs_active is true whenever the currently focused/reporting
         appliance advertises dial_outputs — see DialCore._update_availability,

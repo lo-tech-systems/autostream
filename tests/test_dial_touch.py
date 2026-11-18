@@ -722,60 +722,6 @@ class TestTouchEventSourceNoncompositedPolling:
             source.stop()
 
 
-class TestTouchEventSourceHeldPolling:
-    def test_getter_changes_drive_set_held_visible_on_change_only(self):
-        driver = FakeDriver()
-        touch_filter = TouchFilter(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-
-        values = iter([False, False, True, True, False])
-        source = TouchEventSource(
-            driver, touch_filter, sm,
-            get_persistent_overlay=lambda: next(values),
-        )
-
-        source._poll_held_visible()  # False -> baseline, not held
-        assert sm._held is False
-
-        source._poll_held_visible()  # False -> False, no change
-        assert sm._held is False
-
-        source._poll_held_visible()  # False -> True
-        assert sm._held is True
-        assert sm._overlay_visible is True
-
-        source._poll_held_visible()  # True -> True, no change
-        assert sm._held is True
-
-        source._poll_held_visible()  # True -> False
-        assert sm._held is False
-        assert sm._overlay_visible is False
-
-    def test_raising_getter_is_treated_as_false(self):
-        driver = FakeDriver()
-        touch_filter = TouchFilter(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-        sm.set_held_visible(True, now=0.0)
-        assert sm._held is True
-
-        def boom():
-            raise RuntimeError("display gone")
-
-        source = TouchEventSource(
-            driver, touch_filter, sm, get_persistent_overlay=boom,
-        )
-        source._poll_held_visible()
-        assert sm._held is False
-
-    def test_no_getter_injected_is_a_no_op(self):
-        driver = FakeDriver()
-        touch_filter = TouchFilter(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-        source = TouchEventSource(driver, touch_filter, sm)
-        source._poll_held_visible()  # must not raise, must not change anything
-        assert sm._held is False
-
-
 # ---------------------------------------------------------------------------
 # overlay_hidden() — the display took the touch-revealed overlay down itself
 # (an artwork tap hid the controls): the session must count the overlay as
@@ -1361,11 +1307,11 @@ class TestTouchEventSourceSurfacePolling:
         sm = TouchStateMachine(WIDTH, HEIGHT)
 
         values = iter([
-            (SURFACE_HIDDEN, False),
-            (SURFACE_HIDDEN, False),
-            (SURFACE_SELECTOR, False),
-            (SURFACE_SELECTOR, False),
-            (SURFACE_HIDDEN, False),
+            (SURFACE_HIDDEN, False, False, False, False),
+            (SURFACE_HIDDEN, False, False, False, False),
+            (SURFACE_SELECTOR, False, False, False, False),
+            (SURFACE_SELECTOR, False, False, False, False),
+            (SURFACE_HIDDEN, False, False, False, False),
         ])
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -1399,31 +1345,6 @@ class TestTouchEventSourceSurfacePolling:
         source = TouchEventSource(driver, touch_filter, sm, get_touch_surface=boom)
         source._poll_surface()
         assert sm.surface == SURFACE_HIDDEN
-
-    def test_legacy_get_persistent_overlay_only_still_behaves_exactly_as_before(self):
-        """get_touch_surface omitted entirely: _poll_surface() must fall
-        back to the untouched legacy _poll_held_visible() path, so existing
-        held/hidden-only wiring (dial_main.py, pre-selector) keeps working
-        byte for byte."""
-        driver = FakeDriver()
-        touch_filter = TouchFilter(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-
-        values = iter([False, True, False])
-        source = TouchEventSource(
-            driver, touch_filter, sm,
-            get_persistent_overlay=lambda: next(values),
-        )
-        # The legacy path drives held_visible directly via
-        # set_held_visible() — it never touches surface at all, which is
-        # exactly the "byte for byte" guarantee: existing wiring that only
-        # ever polled get_persistent_overlay must see no new behaviour.
-        source._poll_surface()
-        assert sm._held is False
-        source._poll_surface()
-        assert sm._held is True
-        source._poll_surface()
-        assert sm._held is False
 
     def test_no_getter_at_all_is_a_no_op(self):
         driver = FakeDriver()
@@ -1511,7 +1432,7 @@ class TestSetPressedZoneDispatch:
 
 # ---------------------------------------------------------------------------
 # The REPEAT, IDLE and PICKER surfaces; DOTS/NAME gating; the new zones'
-# single-shot/zone-tap behaviour; touch_surface() 2- and 3-tuple polling.
+# single-shot/zone-tap behaviour; touch_surface() polling.
 # ---------------------------------------------------------------------------
 
 _REPEAT_LAYOUT = repeat_layout_for(WIDTH, HEIGHT)
@@ -1801,23 +1722,8 @@ class TestRepeatAndIdleZoneTaps:
 
 
 class TestTouchSurfacePollingTupleContracts:
-    """_poll_surface() accepts either the older 2-tuple or a 3-tuple
-    that adds dots_active — see dial_touch.py's TouchEventSource._poll_
-    surface docstring."""
-
-    def test_two_tuple_still_accepted_dots_active_defaults_false(self):
-        driver = FakeDriver()
-        touch_filter = TouchFilter(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-        source = TouchEventSource(
-            driver, touch_filter, sm,
-            get_touch_surface=lambda: (SURFACE_HIDDEN, True),
-        )
-        source._poll_surface()
-        assert sm.surface == SURFACE_HIDDEN
-        sm._overlay_visible = True
-        actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
-        assert actions == []  # dots_active defaulted to False
+    """_poll_surface() unpacks the display's 5-tuple — see dial_touch.py's
+    TouchEventSource._poll_surface docstring."""
 
     def test_three_tuple_carries_dots_active_through(self):
         driver = FakeDriver()
@@ -1825,7 +1731,7 @@ class TestTouchSurfacePollingTupleContracts:
         sm = TouchStateMachine(WIDTH, HEIGHT)
         source = TouchEventSource(
             driver, touch_filter, sm,
-            get_touch_surface=lambda: (SURFACE_HIDDEN, True, True),
+            get_touch_surface=lambda: (SURFACE_HIDDEN, True, True, False, False),
         )
         source._poll_surface()
         assert sm.surface == SURFACE_HIDDEN
@@ -1835,14 +1741,13 @@ class TestTouchSurfacePollingTupleContracts:
 
     def test_dots_only_change_still_triggers_set_surface(self):
         """Same surface, same name_active, only dots_active flips — must
-        still be detected and applied (not swallowed by a 2-tuple-shaped
-        equality check)."""
+        still be detected and applied."""
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
         values = iter([
-            (SURFACE_HIDDEN, True, False),
-            (SURFACE_HIDDEN, True, True),
+            (SURFACE_HIDDEN, True, False, False, False),
+            (SURFACE_HIDDEN, True, True, False, False),
         ])
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -1854,7 +1759,7 @@ class TestTouchSurfacePollingTupleContracts:
         actions = sm.on_filter_event(press_event(DOTS_XY), now=0.0)
         assert any(a.kind == ACTION_ZONE_TAP for a in actions)
 
-    def test_raising_getter_still_treated_as_hidden_with_a_2_or_3_tuple_fallback(self):
+    def test_raising_getter_is_treated_as_hidden(self):
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -1864,24 +1769,6 @@ class TestTouchSurfacePollingTupleContracts:
             raise RuntimeError("display gone")
 
         source = TouchEventSource(driver, touch_filter, sm, get_touch_surface=boom)
-        source._poll_surface()
-        assert sm.surface == SURFACE_HIDDEN
-
-
-class TestExistingPollingSuiteUnaffected:
-    """The existing polling tests (TestTouchEventSourceSurfacePolling)
-    already cover 2-tuple-only wiring end to end; this class only pins the
-    2-tuple contract still works when a bare non-tuple string is somehow
-    returned (defensive; not expected from any real caller)."""
-
-    def test_bare_string_result_still_handled(self):
-        driver = FakeDriver()
-        touch_filter = TouchFilter(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-        source = TouchEventSource(
-            driver, touch_filter, sm,
-            get_touch_surface=lambda: SURFACE_HIDDEN,
-        )
         source._poll_surface()
         assert sm.surface == SURFACE_HIDDEN
 
@@ -1940,7 +1827,7 @@ class TestRepeatCloseRevealWiring:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_HIDDEN, True, False)])
+        values = iter([(SURFACE_REPEAT, True, True, False, False), (SURFACE_HIDDEN, True, False, False, False)])
         reveal_calls = []
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -1957,7 +1844,7 @@ class TestRepeatCloseRevealWiring:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_HIDDEN, True, False)])
+        values = iter([(SURFACE_REPEAT, True, True, False, False), (SURFACE_HIDDEN, True, False, False, False)])
         reveal_calls = []
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -1974,7 +1861,7 @@ class TestRepeatCloseRevealWiring:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_SELECTOR, False, False), (SURFACE_HIDDEN, True, False)])
+        values = iter([(SURFACE_SELECTOR, False, False, False, False), (SURFACE_HIDDEN, True, False, False, False)])
         consume = MagicMock(return_value=True)
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -1989,7 +1876,7 @@ class TestRepeatCloseRevealWiring:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_HIDDEN, True, False)])
+        values = iter([(SURFACE_REPEAT, True, True, False, False), (SURFACE_HIDDEN, True, False, False, False)])
         source = TouchEventSource(
             driver, touch_filter, sm,
             get_touch_surface=lambda: next(values),
@@ -2059,7 +1946,7 @@ class TestRepeatSurfacesFormOneSet:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_REPEAT, True, True), (SURFACE_REPEAT_REPLAY, True, True)])
+        values = iter([(SURFACE_REPEAT, True, True, False, False), (SURFACE_REPEAT_REPLAY, True, True, False, False)])
         reveal_calls = []
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -2075,7 +1962,7 @@ class TestRepeatSurfacesFormOneSet:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_REPEAT_REPLAY, True, True), (SURFACE_REPEAT, True, True)])
+        values = iter([(SURFACE_REPEAT_REPLAY, True, True, False, False), (SURFACE_REPEAT, True, True, False, False)])
         reveal_calls = []
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -2091,7 +1978,7 @@ class TestRepeatSurfacesFormOneSet:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_REPEAT_REPLAY, True, True), (SURFACE_HIDDEN, True, False)])
+        values = iter([(SURFACE_REPEAT_REPLAY, True, True, False, False), (SURFACE_HIDDEN, True, False, False, False)])
         reveal_calls = []
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -2108,7 +1995,7 @@ class TestRepeatSurfacesFormOneSet:
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        values = iter([(SURFACE_REPEAT_REPLAY, True, True), (SURFACE_HELD, True, False)])
+        values = iter([(SURFACE_REPEAT_REPLAY, True, True, False, False), (SURFACE_HELD, True, False, False, False)])
         reveal_calls = []
         source = TouchEventSource(
             driver, touch_filter, sm,
@@ -2367,17 +2254,16 @@ class TestOutputsGate:
 
 
 class TestTouchSurfaceFourTupleContract:
-    """_poll_surface() accepts the full 4-tuple (surface, name_active,
-    dots_active, outputs_active), on top of the existing 2- and 3-tuple
-    forms — see TestTouchSurfacePollingTupleContracts above for those."""
+    """_poll_surface() carries outputs_active through from the display's
+    5-tuple — see TestTouchSurfacePollingTupleContracts above for dots."""
 
-    def test_four_tuple_carries_outputs_active_through(self):
+    def test_outputs_active_is_carried_through(self):
         driver = FakeDriver()
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
         source = TouchEventSource(
             driver, touch_filter, sm,
-            get_touch_surface=lambda: (SURFACE_HIDDEN, False, False, True),
+            get_touch_surface=lambda: (SURFACE_HIDDEN, False, False, True, False),
         )
         source._poll_surface()
         assert sm.surface == SURFACE_HIDDEN
@@ -2385,21 +2271,8 @@ class TestTouchSurfaceFourTupleContract:
         actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
         assert any(a.kind == ACTION_ZONE_TAP for a in actions)
 
-    def test_three_tuple_defaults_outputs_active_false(self):
-        driver = FakeDriver()
-        touch_filter = TouchFilter(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-        source = TouchEventSource(
-            driver, touch_filter, sm,
-            get_touch_surface=lambda: (SURFACE_HIDDEN, False, True),
-        )
-        source._poll_surface()
-        sm._overlay_visible = True
-        actions = sm.on_filter_event(press_event(OUTPUTS_XY), now=0.0)
-        assert actions == []
-
     def test_outputs_active_only_change_still_triggers_set_surface(self):
-        """A 4-tuple that differs only in its last element (no surface,
+        """A tuple that differs only in outputs_active (no surface,
         name_active or dots_active change) must still resync the state
         machine — the same "chrome changed with no surface change" case
         dots_active already handles for the main screen."""
@@ -2407,8 +2280,8 @@ class TestTouchSurfaceFourTupleContract:
         touch_filter = TouchFilter(WIDTH, HEIGHT)
         sm = TouchStateMachine(WIDTH, HEIGHT)
         values = iter([
-            (SURFACE_HIDDEN, False, False, False),
-            (SURFACE_HIDDEN, False, False, True),
+            (SURFACE_HIDDEN, False, False, False, False),
+            (SURFACE_HIDDEN, False, False, True, False),
         ])
         source = TouchEventSource(
             driver, touch_filter, sm,

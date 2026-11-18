@@ -49,8 +49,8 @@ resets, straight to counting down to dismiss).
 
 HELD VISIBLE: an external "always show controls" screen setting can hold the
 overlay visible on its own, independent of any touch — see
-TouchStateMachine.set_held_visible() and TouchEventSource's
-get_persistent_overlay polling. While held, the overlay counts as visible
+TouchStateMachine.set_held_visible(), driven from the display's
+touch_surface(). While held, the overlay counts as visible
 from the state machine's point of view: the next press arms immediately (the
 same "already visible" path REVEAL-ONLY FIRST TOUCH describes above) and the
 dismiss clock in tick() is disabled entirely, since there is no touch-driven
@@ -59,9 +59,9 @@ to the logo, went to sleep, or the setting was turned off), the session is
 forced back to hidden and a DISMISS is emitted so the touch-published
 overlay snapshot is cleared too — a finger must never be able to arm against
 controls that are no longer actually drawn. TouchEventSource polls the
-display's persistent_overlay_shown() (injected, never imported — see the
-class docstring) once per loop iteration so a transition is noticed within
-one tick either way. The display can also end a session itself, when an
+display's touch_surface() (injected, never imported — see the class
+docstring) once per loop iteration so a transition is noticed within one
+tick either way. The display can also end a session itself, when an
 artwork tap hides the controls it revealed: see overlay_hidden().
 
 SURFACES: which screen is currently on the panel decides which hit-test
@@ -102,12 +102,9 @@ ever meaningful on the geometry its own zone actually appears in. A
 surface CHANGE while a finger is
 down drops the zone latch exactly as set_held_visible(False) does, because
 the geometry under the finger just changed. TouchEventSource polls the
-display's touch_surface() (injected; falls back to the legacy
-get_persistent_overlay when that is all that is supplied, so existing
-"held"/"hidden" wiring behaves byte for byte) once per loop iteration; it
-accepts a 2-tuple (surface, name_active), the 3-tuple (surface,
-name_active, dots_active), or the 4-tuple (surface, name_active,
-dots_active, outputs_active) touch_surface() may return. Closing the repeat
+display's touch_surface() (injected) once per loop iteration; it returns
+the 5-tuple (surface, name_active, dots_active, outputs_active,
+bell_active). Closing the repeat
 screen via a DOTS tap also reveals the main screen's volume overlay on
 return — see TouchStateMachine.force_overlay_visible() and
 TouchEventSource._poll_surface(). "repeat_replay" is a physically-tiny-glass
@@ -793,7 +790,6 @@ class TouchEventSource:
         poll_interval_s: float = _POLL_INTERVAL_S,
         idle_tick_interval_s: float = _IDLE_TICK_INTERVAL_S,
         get_noncomposited_generation=None,
-        get_persistent_overlay=None,
         get_touch_surface=None,
         consume_repeat_close_reveal=None,
         axis_signs=None,
@@ -827,19 +823,10 @@ class TouchEventSource:
         # callbacks: this module must not import dial_display. None disables
         # the check entirely (e.g. in tests that don't care about it).
         self._get_noncomposited_generation = get_noncomposited_generation
-        # Injected read of dial_display.DialDisplay.persistent_overlay_shown
-        # — kept injected (not an import) for the same reason as the
-        # noncomposited getter above: this module must not import
-        # dial_display. None disables the "always show controls" sync
-        # entirely (e.g. in tests that don't care about it, or a dial with
-        # no display stack at all).
-        self._get_persistent_overlay = get_persistent_overlay
-        # Injected read of dial_display.DialDisplay.touch_surface — the new
-        # preferred sync (surface + name_active in one call). Takes priority
-        # over get_persistent_overlay when both are supplied; None disables
-        # it entirely and falls back to the legacy getter — see
-        # _poll_surface(). Kept injected, never imported, for the same
-        # reason as every other display-facing callback here.
+        # Injected read of dial_display.DialDisplay.touch_surface — the
+        # surface and its five flags in one call; None disables the sync
+        # entirely — see _poll_surface(). Kept injected, never imported,
+        # for the same reason as every other display-facing callback here.
         self._get_touch_surface = get_touch_surface
         # Injected read-and-clear of dial_display.DialDisplay.
         # consume_repeat_close_reveal — a one-shot flag set only when the
@@ -851,7 +838,6 @@ class TouchEventSource:
         # entirely (e.g. tests that don't care, or a display stand-in that
         # predates this feature).
         self._consume_repeat_close_reveal = consume_repeat_close_reveal
-        self._last_held: bool | None = None
         self._last_surface: tuple[str, bool, bool, bool, bool] | None = None
         # The profile's UNROTATED axis signs (swap, invert_x, invert_y),
         # kept so a live rotate toggle can re-derive the mapping. None when
@@ -968,46 +954,18 @@ class TouchEventSource:
             self._last_noncomposited_gen = gen
             self._dispatch(self._state_machine.force_reveal_only())
 
-    def _poll_held_visible(self) -> None:
-        """Check whether the display's "always show controls" state has
-        changed since we last looked, and sync the state machine to match —
-        see set_held_visible() and the module docstring's HELD VISIBLE
-        paragraph. A no-op when no getter was injected. A raising getter is
-        treated as False: display failure must never leave the touch side
-        believing controls are held visible when they might not be drawn.
-        Cheap (one bool read/compare) — safe to call every loop iteration.
-        """
-        if self._get_persistent_overlay is None:
-            return
-        try:
-            held = bool(self._get_persistent_overlay())
-        except Exception:
-            held = False
-        if held != self._last_held:
-            self._last_held = held
-            self._dispatch(self._state_machine.set_held_visible(held, self._clock()))
-
     def _poll_surface(self) -> None:
         """Sync the state machine's surface from the display each loop
         iteration — see TouchStateMachine.set_surface() and the module
         docstring's SURFACES paragraph.
 
-        Prefers get_touch_surface (surface + name_active[+ dots_active] in
-        one call) when it was supplied; a raising getter is treated as
-        SURFACE_HIDDEN, same discipline as _poll_held_visible's
-        raise-is-False. Falls back to _poll_held_visible entirely
-        (byte-for-byte, including its own None-getter no-op) when only the
-        legacy get_persistent_overlay was supplied — existing
-        "held"/"hidden"-only wiring is unaffected by this method's
-        existence.
-
-        Accepts a 2-tuple (surface, name_active) — the other flags default
-        to False — a 3-tuple (surface, name_active, dots_active), a
-        4-tuple adding outputs_active, or the full 5-tuple adding
-        bell_active. Either way self._last_surface is kept as a 5-tuple so
-        a flag-only change — main screen chrome appearing/disappearing
-        with no surface or name_active change — still triggers a
-        set_surface() call.
+        get_touch_surface returns (surface, name_active, dots_active,
+        outputs_active, bell_active); a raising getter is treated as
+        SURFACE_HIDDEN with every flag False. self._last_surface keeps the
+        full tuple so a flag-only change — main screen chrome
+        appearing/disappearing with no surface or name_active change —
+        still triggers a set_surface() call. A no-op when no getter was
+        injected.
 
         A transition AWAY from SURFACE_REPEAT additionally consumes the
         display's one-shot repeat-close-reveal flag (see
@@ -1018,17 +976,12 @@ class TouchEventSource:
         TouchStateMachine.force_overlay_visible().
         """
         if self._get_touch_surface is None:
-            self._poll_held_visible()
             return
         try:
             result = self._get_touch_surface()
         except Exception:
-            result = (SURFACE_HIDDEN, False)
-        if isinstance(result, tuple):
-            surface, name_active, dots_active, outputs_active, bell_active = (
-                tuple(result) + (False, False, False, False))[:5]
-        else:
-            surface, name_active, dots_active, outputs_active, bell_active = result, False, False, False, False
+            result = (SURFACE_HIDDEN, False, False, False, False)
+        surface, name_active, dots_active, outputs_active, bell_active = result
         current = (surface, bool(name_active), bool(dots_active), bool(outputs_active), bool(bell_active))
         if current != self._last_surface:
             previous_surface = self._last_surface[0] if self._last_surface is not None else None

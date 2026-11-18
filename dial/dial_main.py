@@ -626,13 +626,9 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         on_set_pressed_zone=on_set_pressed_zone,
         on_zone_tap=on_zone_tap,
         get_noncomposited_generation=display.noncomposited_generation,
-        # get_touch_surface (surface + name_active) is the preferred sync;
-        # get_persistent_overlay is kept as the legacy fallback so a
-        # display stand-in that only implements the older attribute (or
-        # the NoOp provider, which implements neither) still behaves
-        # exactly as before — see dial_touch.TouchEventSource._poll_surface.
+        # get_touch_surface carries the surface and its flags — see
+        # dial_touch.TouchEventSource._poll_surface.
         get_touch_surface=getattr(display, "touch_surface", None),
-        get_persistent_overlay=getattr(display, "persistent_overlay_shown", None),
         consume_repeat_close_reveal=getattr(display, "consume_repeat_close_reveal", None),
         axis_signs=(
             profile.touch_swap_xy, profile.touch_invert_x, profile.touch_invert_y
