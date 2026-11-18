@@ -297,6 +297,12 @@ This ordering matters:
   one block before resuming block-by-block writes. A transition between
   sources -- a crossfade, an input switch -- never triggers this, because
   the stream is already flowing.
+- That same gap also ends the previous stream: when the output has been idle
+  for more than 1 s, or a new stream starts after such a gap, the writer
+  drops whatever backlog it still holds and closes any open stall streak.
+  Audio queued for a reader that never took it is not delivered ahead of the
+  next stream, and the reported stall does not outlive the stream. The pipe
+  itself is left open and untouched.
 - At startup the daemon calls `mlockall(MCL_CURRENT | MCL_FUTURE |
   MCL_ONFAULT)` so its memory is pinned as it is touched, rather than paged
   out under memory pressure. This requires `LimitMEMLOCK=infinity` in the

@@ -29,6 +29,17 @@ namespace
     // which throttles a different warning on the live-clocked branch.
     constexpr double kSchedGapWarnSeconds       = 0.5;
     constexpr double kSchedGapWarnPeriodSeconds = 5.0;
+
+    // Reports what ending a stream discarded: audio still queued for a reader
+    // that never took it, or a stall that was still open. A stream that ends
+    // with neither is silent. Called without the FIFO lock held.
+    void log_stream_end(const FifoWriter::StreamEnd& end)
+    {
+        if (end.dropped_bytes == 0 && end.stall_seconds <= 0.0)
+            return;
+        LOG_WARN("[output] Stream ended with the FIFO stalled: dropped %zu bytes of backlog, stall lasted %.1f s",
+                 end.dropped_bytes, end.stall_seconds);
+    }
 }
 
 OutputStage::OutputStage(OutputMixer& mixer, FifoWriter& writer, std::mutex& processor_mutex,
@@ -98,12 +109,26 @@ void OutputStage::thread_func()
     // stalled pipe must not re-trigger the cold-start hold mid-stream, only
     // an idle gap does. 0 = nothing handed over yet this stage lifetime.
     double last_write_time = 0.0;
+    // True from the first write of a stream until it is ended (the output
+    // has been idle past the cold-start interval, or a new stream starts
+    // after such a gap).
+    bool   stream_open     = false;
+    // A stream ended at the cold-start decision, which holds the FIFO lock;
+    // its log line waits for the top of the next iteration.
+    bool   end_pending     = false;
+    FifoWriter::StreamEnd pending_end;
     double warn_last_log   = 0.0;
     double sched_warn_last_log = 0.0;
     auto   deadline        = std::chrono::steady_clock::now();
 
     while (!_stop_requested.load(std::memory_order_relaxed))
     {
+        if (end_pending)
+        {
+            log_stream_end(pending_end);
+            end_pending = false;
+        }
+
         if (!_mixer.any_active())
         {
             if (!idle)
@@ -114,6 +139,20 @@ void OutputStage::thread_func()
                 // ended; carrying it into whatever starts next would
                 // splice stale audio ahead of it.
                 prefill_buf.clear();
+            }
+
+            // Idle past the cold-start interval: the stream is over. This
+            // is the same test the next block applies to decide it is a
+            // cold start, so the two cannot disagree.
+            if (stream_open && output_gap_is_cold(last_write_time, get_monotonic_time()))
+            {
+                FifoWriter::StreamEnd end;
+                {
+                    std::lock_guard<std::mutex> lock(_processor_mutex);
+                    end = _writer.end_stream(last_write_time);
+                }
+                stream_open = false;
+                log_stream_end(end);
             }
             _mixer.wait_for_activity(std::chrono::milliseconds(100));
             continue;
@@ -215,6 +254,15 @@ void OutputStage::thread_func()
         double now = get_monotonic_time();
         bool cold_start = output_gap_is_cold(last_write_time, now);
 
+        // A stream that starts after a gap this long finds the previous one
+        // not yet ended when the wake from idle beat the idle check above.
+        if (cold_start && stream_open)
+        {
+            pending_end = _writer.end_stream(last_write_time);
+            end_pending = true;
+            stream_open = false;
+        }
+
         if (cold_start)
         {
             const uint8_t* bytes = static_cast<const uint8_t*>(wire_ptr);
@@ -223,6 +271,7 @@ void OutputStage::thread_func()
             if (prefill_buf.size() >= prefill_target_bytes)
             {
                 _writer.write(prefill_buf.data(), prefill_buf.size());
+                stream_open = true;
                 last_write_time = get_monotonic_time();
                 prefill_buf.clear();
             }
@@ -230,6 +279,7 @@ void OutputStage::thread_func()
         else
         {
             _writer.write(wire_ptr, wire_bytes);
+            stream_open = true;
             last_write_time = get_monotonic_time();
         }
     }

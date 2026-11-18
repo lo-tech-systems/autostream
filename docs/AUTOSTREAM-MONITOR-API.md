@@ -1232,8 +1232,10 @@ Top-level fields:
     (`ENXIO`), reader not draining (`EAGAIN`/poll timeout), or a broken pipe
     (`EPIPE`/`EBADF`). The same figure applies whichever source -- a live
     input, the replay, or both mid-crossfade -- is currently active
-  - `0.0` whenever the last write succeeded, or whenever nothing is currently
-    active (no input capturing and no active replay) -- this is a
+  - `0.0` whenever the last write succeeded, and from about a second into any
+    idle period (no input capturing and no active replay): once the output
+    has written nothing for more than a second the stream has ended, and an
+    open failure streak is closed -- this is a
     "is the downstream reader (e.g. OwnTone) actually keeping up" signal, not
     a general daemon-health signal
   - intended as an owntone-hang watchdog input for the Python side: a large,
