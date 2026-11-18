@@ -30,3 +30,31 @@ def test_reset_for_tests_clears_both_events():
 
 def test_the_task_pool_accessor_returns_the_shared_pool():
     assert runtime.get_task_pool() is runtime._task_pool
+
+
+def test_monitors_snapshot_is_a_copy_taken_under_the_lock():
+    sentinel = object()
+    runtime.all_monitors.append(sentinel)
+    snap = runtime.monitors_snapshot()
+    assert snap == [sentinel]
+    snap.clear()
+    assert runtime.all_monitors == [sentinel]
+    runtime.reset_for_tests()
+    assert runtime.all_monitors == []
+
+
+def test_reset_for_tests_clears_the_registry():
+    runtime._playback_tracker = object()
+    runtime._track_id_service = object()
+    runtime.reset_for_tests()
+    assert runtime._playback_tracker is None
+    assert runtime._track_id_service is None
+
+
+def test_reset_for_tests_frees_a_held_admission_gate():
+    gate = runtime._track_id_request_gate
+    assert gate.acquire(blocking=False)
+    runtime.reset_for_tests()
+    assert runtime._track_id_request_gate is not gate
+    assert runtime._track_id_request_gate.acquire(blocking=False)
+    runtime._track_id_request_gate.release()

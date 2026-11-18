@@ -111,19 +111,14 @@ from autostream_sysutils import (
 # --------------------------------------------------------------------------- #
 #
 # Process-wide signals (not tied to any store):
-#   stop_flag, reload_flag                    -- now in autostream_runtime
+#   stop_flag, reload_flag                    -- in autostream_runtime
 #   (log_queue -- async log fan-out, bounded 1000 -- is function-local to
 #    the logging-setup call today, not a module-level global; listed here
 #    only because an earlier gap-analysis pass described it as module-level)
 #
 # Independent, single-purpose locks (each guards something distinct enough
 # that folding it into a group below would blur its meaning):
-#   _monitors_lock                            -- all_monitors list
-#   _track_id_request_gate                    -- process-wide identification
-#                                                 single-flight admission gate
-#                                                 (semaphore-shaped, not a
-#                                                 plain data lock -- do not
-#                                                 merge with anything else)
+#   (_monitors_lock and _track_id_request_gate are in autostream_runtime)
 #   _playing_lock                             -- Avahi "playing" announcement
 #                                                 file state
 #   _nowplaying_republish_lock                -- one-shot republish-request flag
@@ -154,22 +149,6 @@ from autostream_sysutils import (
 #                                                 state vs. _apply_track_id_service
 
 
-# Track all AudioMonitor instances so coordination logic can inspect them.
-# _monitors_lock must be held when reading or mutating all_monitors or when
-# taking a snapshot of its elements for use on a different thread (Web UI).
-all_monitors: list["AudioMonitor"] = []
-_monitors_lock = threading.Lock()
-_playback_tracker: Optional[PlaybackTracker] = None
-
-# Track identification service singleton (replaced on each config reload).
-# Written only from the coordinator thread; read from worker threads under GIL.
-_track_id_service = None  # Optional[TrackIdentificationService]
-
-# Process-wide identification admission gate.  A non-blocking acquire is attempted
-# before every worker dispatch; at most one identification request runs globally.
-_track_id_request_gate = threading.Lock()
-
-
 def _build_track_id_service(cfg) -> Optional[object]:
     """Build and return a TrackIdentificationService from config, or None."""
     try:
@@ -198,7 +177,6 @@ def apply_track_id_config_live(config_path: str) -> None:
     tearing down the audio coordinator or stopping OwnTone -- only the service
     singleton and each monitor's per-instance reference are replaced.
     """
-    global _track_id_service
     try:
         from autostream_config import CONFIG_IO_LOCK
         with CONFIG_IO_LOCK:
@@ -206,14 +184,14 @@ def apply_track_id_config_live(config_path: str) -> None:
     except Exception:
         logging.warning("track_id: live reload: cannot read config", exc_info=True)
         return
-    _track_id_service = _build_track_id_service(cfg)
-    with _monitors_lock:
-        monitors = list(all_monitors)
+    runtime._track_id_service = _build_track_id_service(cfg)
+    with runtime._monitors_lock:
+        monitors = list(runtime.all_monitors)
     for m in monitors:
-        m._apply_track_id_service(_track_id_service)
+        m._apply_track_id_service(runtime._track_id_service)
     logging.info(
         "track_id: service rebuilt live (enabled=%s)",
-        _track_id_service is not None,
+        runtime._track_id_service is not None,
     )
 
 
@@ -224,22 +202,21 @@ def apply_track_id_config_live_from_parsed(cfg) -> None:
     in-memory snapshot (e.g. from SettingsStore) and disk may not yet reflect
     the latest accepted settings.
     """
-    global _track_id_service
-    _track_id_service = _build_track_id_service(cfg)
-    with _monitors_lock:
-        monitors = list(all_monitors)
+    runtime._track_id_service = _build_track_id_service(cfg)
+    with runtime._monitors_lock:
+        monitors = list(runtime.all_monitors)
     for m in monitors:
-        m._apply_track_id_service(_track_id_service)
+        m._apply_track_id_service(runtime._track_id_service)
     logging.info(
         "track_id: service rebuilt live from snapshot (enabled=%s)",
-        _track_id_service is not None,
+        runtime._track_id_service is not None,
     )
 
 
 def get_track_identification_snapshot(input_index: int):
     """Return the latest TrackIdentificationSnapshot for an input channel."""
-    with _monitors_lock:
-        monitors = list(all_monitors)
+    with runtime._monitors_lock:
+        monitors = list(runtime.all_monitors)
     for m in monitors:
         if m.input_index == input_index:
             return m._ti_snapshot  # atomic under GIL
@@ -278,8 +255,8 @@ def get_active_track_identification_snapshot():
     actively sourcing, or a disabled snapshot when the service itself is
     off. Never blocks.
     """
-    with _monitors_lock:
-        monitors = list(all_monitors)
+    with runtime._monitors_lock:
+        monitors = list(runtime.all_monitors)
 
     source = get_session_state().get("source")
     if source == "replay":
@@ -303,7 +280,7 @@ def get_active_track_identification_snapshot():
         if m._replay_origin:
             return m._ti_snapshot  # atomic under GIL
     from track_id.models import disabled_snapshot, waiting_snapshot
-    if _track_id_service is not None:
+    if runtime._track_id_service is not None:
         return waiting_snapshot()
     return disabled_snapshot()
 
@@ -731,9 +708,9 @@ def _rearm_replay_identification(origin_input: Optional[int], in_session: bool) 
     """
     if origin_input is None:
         return
-    with _monitors_lock:
+    with runtime._monitors_lock:
         target = next(
-            (m for m in all_monitors if m.input_index == origin_input), None)
+            (m for m in runtime.all_monitors if m.input_index == origin_input), None)
     if target is not None:
         target.on_replay_seek_accepted(in_session)
 
@@ -862,21 +839,19 @@ def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
 
 
 def _ensure_playback_tracker(cfg) -> Optional[PlaybackTracker]:
-    global _playback_tracker
-
     try:
-        if _playback_tracker is None:
-            _playback_tracker = PlaybackTracker()
-        _playback_tracker.replace_input_configs(_playback_input_configs_from_config(cfg))
+        if runtime._playback_tracker is None:
+            runtime._playback_tracker = PlaybackTracker()
+        runtime._playback_tracker.replace_input_configs(_playback_input_configs_from_config(cfg))
     except Exception as e:
         logging.warning("Playback tracker unavailable: %s", e)
-        _playback_tracker = None
+        runtime._playback_tracker = None
 
-    return _playback_tracker
+    return runtime._playback_tracker
 
 
 def get_playback_snapshot() -> PlaybackSnapshot:
-    tracker = _playback_tracker
+    tracker = runtime._playback_tracker
     if tracker is None:
         return _empty_playback_snapshot()
     try:
@@ -896,7 +871,7 @@ def get_input_playback_snapshot(input_index: int) -> InputPlaybackSnapshot:
 
 
 def _reset_input(input_index: int, method_name: str, item_name: str) -> MaintenanceResetResult:
-    tracker = _playback_tracker
+    tracker = runtime._playback_tracker
     if tracker is None:
         return MaintenanceResetResult(applied=False, persisted=False)
     try:
@@ -931,7 +906,7 @@ def update_playback_input_config(
     bearing_life_hours: int = 0,
     bearing_life_years: int = 0,
 ) -> bool:
-    tracker = _playback_tracker
+    tracker = runtime._playback_tracker
     if tracker is None:
         return False
     try:
@@ -1004,8 +979,8 @@ def update_live_owntone_runtime(
             output_airplay_modes
         )
 
-        with _monitors_lock:
-            for monitor in all_monitors:
+        with runtime._monitors_lock:
+            for monitor in runtime.all_monitors:
                 monitor.owntone_output_name = live_output_name
                 monitor.owntone_volume_percent = live_volume_percent
                 monitor.owntone_output_offsets_ms = dict(live_output_offsets_ms)
@@ -1037,8 +1012,8 @@ def update_live_silence_seconds(
         )
         return False
 
-    with _monitors_lock:
-        snapshot = list(all_monitors)
+    with runtime._monitors_lock:
+        snapshot = list(runtime.all_monitors)
 
     if not snapshot:
         return True
@@ -1068,8 +1043,8 @@ def update_live_silence_seconds(
                     )
                     return False
 
-            with _monitors_lock:
-                for monitor in all_monitors:
+            with runtime._monitors_lock:
+                for monitor in runtime.all_monitors:
                     monitor.silence_seconds = live_silence_seconds
             return True
     except Exception as e:
@@ -1145,9 +1120,9 @@ def update_live_silence_threshold_dbfs(
         )
         return False
 
-    with _monitors_lock:
+    with runtime._monitors_lock:
         target = next(
-            (m for m in all_monitors if m.input_index == input_index), None
+            (m for m in runtime.all_monitors if m.input_index == input_index), None
         )
     if target is None:
         return True
@@ -1182,9 +1157,9 @@ def update_live_input_type(
         )
         return False
 
-    with _monitors_lock:
+    with runtime._monitors_lock:
         target = next(
-            (m for m in all_monitors if m.input_index == input_index), None
+            (m for m in runtime.all_monitors if m.input_index == input_index), None
         )
     if target is None:
         return True
@@ -1222,9 +1197,9 @@ def update_live_dynamic_rate_matching(
     input has no running monitor or the daemon acknowledged the push, False
     when every push attempt failed.
     """
-    with _monitors_lock:
+    with runtime._monitors_lock:
         target = next(
-            (m for m in all_monitors if m.input_index == input_index), None
+            (m for m in runtime.all_monitors if m.input_index == input_index), None
         )
     if target is None:
         return True
@@ -1235,8 +1210,8 @@ def update_live_dynamic_rate_matching(
 
 def any_monitor_capturing() -> bool:
     """Return True if any AudioMonitor currently has an active capture."""
-    with _monitors_lock:
-        return any(m.is_capturing for m in all_monitors)
+    with runtime._monitors_lock:
+        return any(m.is_capturing for m in runtime.all_monitors)
 
 
 def _stop_and_disable_owntone(base_url: str, reason: str) -> None:
@@ -2265,8 +2240,8 @@ def get_monitor_levels_dbfs() -> list[dict]:
     AudioMonitor instance, so it is at most one poll interval stale.
     """
     levels: list[dict] = []
-    with _monitors_lock:
-        snapshot = list(all_monitors)
+    with runtime._monitors_lock:
+        snapshot = list(runtime.all_monitors)
     for mon in snapshot:
         levels.append({
             "index": int(mon.input_index),
@@ -2310,8 +2285,8 @@ def sample_rate_mismatch_input() -> int:
     after a successful push the daemon steps and clears the report within a
     window, and after a failed push the report (and the banner) correctly
     stays."""
-    with _monitors_lock:
-        snapshot = sorted(all_monitors, key=lambda m: m.input_index)
+    with runtime._monitors_lock:
+        snapshot = sorted(runtime.all_monitors, key=lambda m: m.input_index)
     for mon in snapshot:
         if mon.rate_mismatch_hz > 0:
             return mon.input_index
@@ -2385,8 +2360,8 @@ def input_rate_texts(input_index: int) -> tuple[str, str]:
     """The two rate texts on one input's Setup card, as (Dynamic Rate
     Matching note, sample rate readout). Both come from a single lookup of
     the input's monitor, so they cannot disagree with each other."""
-    with _monitors_lock:
-        mon = next((m for m in all_monitors if m.input_index == input_index), None)
+    with runtime._monitors_lock:
+        mon = next((m for m in runtime.all_monitors if m.input_index == input_index), None)
     connected = bool(get_monitor_runtime_info().connected)
     return _rate_matching_note_for(mon), _sample_rate_text_for(mon, connected)
 
@@ -2593,8 +2568,8 @@ def set_live_input_eq(
             return False
         ok = apply_input_eq(client, input_index, eq_40hz_db, eq_100hz_db, eq_8khz_db)
         if ok:
-            with _monitors_lock:
-                for mon in all_monitors:
+            with runtime._monitors_lock:
+                for mon in runtime.all_monitors:
                     if mon.input_index == input_index:
                         mon.eq_40hz_db = float(eq_40hz_db)
                         mon.eq_100hz_db = float(eq_100hz_db)
@@ -2613,8 +2588,8 @@ def set_live_input_gain(
             return False
         ok = apply_input_gain(client, input_index, gain_db)
         if ok:
-            with _monitors_lock:
-                for mon in all_monitors:
+            with runtime._monitors_lock:
+                for mon in runtime.all_monitors:
                     if mon.input_index == input_index:
                         mon.gain_db = float(gain_db)
         return ok
@@ -3356,8 +3331,8 @@ class AudioMonitor:
         self._capture_start_no_output_retry_at: float = 0.0
         self._capture_start_no_output_log_at: float = 0.0
 
-        with _monitors_lock:
-            all_monitors.append(self)
+        with runtime._monitors_lock:
+            runtime.all_monitors.append(self)
 
     # ── Public interface ─────────────────────────────────────────────────────
 
@@ -3500,7 +3475,7 @@ class AudioMonitor:
     def _on_possible_track_change(self, new_seq: int) -> None:
         """Handle a track_change_seq advance while capturing."""
         self._track_change_seq_baseline = new_seq
-        svc = _track_id_service
+        svc = runtime._track_id_service
         if svc is None:
             return
         from track_id.models import waiting_snapshot
@@ -3612,7 +3587,7 @@ class AudioMonitor:
         unaffected here -- they keep flowing from the daemon's replay-path
         track-change events independently.
         """
-        tracker = _playback_tracker
+        tracker = runtime._playback_tracker
         if tracker is None:
             self._tracker_playback_active = False
             self._tracker_wear_active = False
@@ -3681,8 +3656,8 @@ class AudioMonitor:
             self._ti_next_attempt = 0.0
             self._ti_next_attempt_reason = ""
             self._ti_last_identified_at = 0.0
-            if _track_id_service is not None:
-                svc = _track_id_service
+            if runtime._track_id_service is not None:
+                svc = runtime._track_id_service
                 delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
                 self._schedule_track_id_after(time.time(), delay, "initial")
                 logging.debug(
@@ -3770,8 +3745,8 @@ class AudioMonitor:
             self._ti_next_attempt = 0.0
             self._ti_next_attempt_reason = ""
         self._ti_last_identified_at = 0.0
-        if _track_id_service is not None:
-            svc = _track_id_service
+        if runtime._track_id_service is not None:
+            svc = runtime._track_id_service
             delay = svc.analysis_lead_in_seconds + svc.snapshot_seconds
             self._schedule_track_id_after(time.time(), delay, reason)
             logging.debug(
@@ -3879,7 +3854,7 @@ class AudioMonitor:
             self._ti_next_attempt_reason = ""
             self._track_change_seq_baseline = 0
 
-            if _track_id_service is not None:
+            if runtime._track_id_service is not None:
                 from track_id.models import waiting_snapshot
                 self._ti_snapshot = waiting_snapshot()
             else:
@@ -3915,7 +3890,7 @@ class AudioMonitor:
             self._ti_next_attempt_reason = ""
             self._ti_last_identified_at = 0.0
             self._track_change_seq_baseline = 0
-            if _track_id_service is not None:
+            if runtime._track_id_service is not None:
                 from track_id.models import waiting_snapshot
                 self._ti_snapshot = waiting_snapshot()
             else:
@@ -3999,7 +3974,7 @@ class AudioMonitor:
         parked forever. This bounds any such stall to one poll cycle plus
         the normal initial-attempt delay.
         """
-        svc = _track_id_service
+        svc = runtime._track_id_service
         if svc is None:
             return
         actively_sourcing = self.is_capturing or replay_origin
@@ -4022,14 +3997,14 @@ class AudioMonitor:
             return
 
         # Attempt non-blocking acquisition of the process-wide admission gate.
-        if not _track_id_request_gate.acquire(blocking=False):
+        if not runtime._track_id_request_gate.acquire(blocking=False):
             # Another input is active; retry after 1 s without disturbing the reason.
             self._ti_next_attempt = now + 1.0
             return
 
         # Gate acquired.  Recheck critical preconditions after acquiring.
-        if not actively_sourcing or _track_id_service is not svc:
-            _track_id_request_gate.release()
+        if not actively_sourcing or runtime._track_id_service is not svc:
+            runtime._track_id_request_gate.release()
             return
 
         # Capture generation before the blocking snapshot call so any live
@@ -4047,12 +4022,12 @@ class AudioMonitor:
         with self._ti_state_lock:
             # Recheck generation and service immediately after the blocking
             # snapshot call, before interpreting its result.
-            if self._ti_generation != dispatch_gen or _track_id_service is not svc:
+            if self._ti_generation != dispatch_gen or runtime._track_id_service is not svc:
                 logging.debug(
                     "track_id[%d]: generation or service changed during snapshot; aborting dispatch.",
                     self.input_index,
                 )
-                _track_id_request_gate.release()
+                runtime._track_id_request_gate.release()
                 return
 
             if snapshot is None or not snapshot[0]:
@@ -4060,7 +4035,7 @@ class AudioMonitor:
                     "track_id[%d]: get_id_snapshot returned no audio; retry in %.0fs.",
                     self.input_index, svc.retry_seconds,
                 )
-                _track_id_request_gate.release()
+                runtime._track_id_request_gate.release()
                 self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
                 return
             pcm_bytes, rate = snapshot
@@ -4076,7 +4051,7 @@ class AudioMonitor:
                     "track_id[%d]: snapshot too short (%.1f s); retry in %.0fs.",
                     self.input_index, duration_s, svc.retry_seconds,
                 )
-                _track_id_request_gate.release()
+                runtime._track_id_request_gate.release()
                 self._schedule_track_id_after(now, svc.retry_seconds, "no_match")
                 return
 
@@ -4122,7 +4097,7 @@ class AudioMonitor:
             # single-flight key -- same worker function, same args, just
             # scheduled via runtime._task_pool.submit() instead of a raw
             # threading.Thread(...).start(). The
-            # process-wide _track_id_request_gate above is still the true
+            # process-wide runtime._track_id_request_gate above is still the true
             # admission control (at most one identification in flight across
             # all inputs); this per-input key is a second, redundant guard
             # that should never actually reject a submission in practice.
@@ -4148,7 +4123,7 @@ class AudioMonitor:
                         self.input_index,
                     )
             if not submitted:
-                _track_id_request_gate.release()
+                runtime._track_id_request_gate.release()
                 if self._ti_inflight_token is worker_token:
                     self._ti_inflight = False
                     self._ti_inflight_token = None
@@ -4200,7 +4175,7 @@ class AudioMonitor:
         )
         my_gen = dispatch_gen
         try:
-            svc = _track_id_service
+            svc = runtime._track_id_service
             if svc is None:
                 return
 
@@ -4364,7 +4339,7 @@ class AudioMonitor:
                     state=STATE_ERROR,
                     status_text=state_status_text(STATE_ERROR),
                     input_index=self.input_index,
-                    provider=(_track_id_service.provider_id if _track_id_service else ""),
+                    provider=(runtime._track_id_service.provider_id if runtime._track_id_service else ""),
                     updated_at=now,
                     last_attempt_at=now,
                     error=type(exc).__name__,
@@ -4373,7 +4348,7 @@ class AudioMonitor:
                 )
 
         finally:
-            _track_id_request_gate.release()
+            runtime._track_id_request_gate.release()
             if self._ti_inflight_token is worker_token:
                 self._ti_inflight = False
                 self._ti_inflight_token = None
@@ -5532,10 +5507,9 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             client.close()
             break
 
-        global _track_id_service
-        _track_id_service = _build_track_id_service(cfg)
+        runtime._track_id_service = _build_track_id_service(cfg)
         for m in monitors:
-            m._apply_track_id_service(_track_id_service)
+            m._apply_track_id_service(runtime._track_id_service)
 
         logging.info(
             "autostream_core is now running with %d input(s). Press Ctrl+C to exit.",
@@ -5578,7 +5552,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # per (re)start, matching session_tracker/owntone_*_tracker above --
         # a row's last-run time must not carry across a reload/reconnect.
         def _flush_stats() -> None:
-            t = _playback_tracker
+            t = runtime._playback_tracker
             if t is not None:
                 t.maybe_flush()
 
@@ -5867,7 +5841,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             raise
 
         finally:
-            tracker = _playback_tracker
+            tracker = runtime._playback_tracker
             teardown_was_capturing = any(m.is_capturing for m in monitors)
             teardown_owntone_base_url = next(
                 (m.owntone_base_url for m in monitors if m.owntone_base_url),
@@ -5894,8 +5868,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 m.stop()
             if tracker is not None:
                 tracker.save()
-            with _monitors_lock:
-                all_monitors.clear()
+            with runtime._monitors_lock:
+                runtime.all_monitors.clear()
             _sync_playing_announcement(False, version)
             client.close()
             if not _reloading:

@@ -111,7 +111,7 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         stack.enter_context(patch.object(core, "_SessionTracker", mock_session_tracker_cls))
         stack.enter_context(patch.object(core, "_dispatch_session_event"))
         stack.enter_context(patch.object(core, "_sync_playing_announcement"))
-        stack.enter_context(patch.object(core, "_playback_tracker", None))
+        stack.enter_context(patch.object(runtime, "_playback_tracker", None))
         stack.enter_context(patch.object(core, "_cleanup_discovery"))
         stack.enter_context(patch.object(core.time, "sleep"))
 

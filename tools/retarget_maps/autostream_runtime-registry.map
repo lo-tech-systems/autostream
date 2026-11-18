@@ -1,0 +1,6 @@
+# Names that moved from the coordinator into the registry of autostream_runtime.
+autostream_core._track_id_service -> autostream_runtime._track_id_service  alias=runtime
+autostream_core._track_id_request_gate -> autostream_runtime._track_id_request_gate  alias=runtime
+autostream_core.all_monitors -> autostream_runtime.all_monitors  alias=runtime
+autostream_core._monitors_lock -> autostream_runtime._monitors_lock  alias=runtime
+autostream_core._playback_tracker -> autostream_runtime._playback_tracker  alias=runtime

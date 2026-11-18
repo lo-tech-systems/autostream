@@ -411,6 +411,7 @@ from track_id.models import disabled_snapshot as _disabled_snapshot
 from track_id.models import waiting_snapshot as _waiting_snapshot
 from track_id.models import TrackIdentificationSnapshot as _TISnapshot
 from track_id.models import STATE_IDENTIFIED as _STATE_IDENTIFIED
+import autostream_runtime as runtime
 
 
 def _mk_monitor(**overrides) -> _AudioMonitor:
@@ -452,7 +453,7 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon.is_capturing = False
         mon._replay_origin = True
         mon._ti_snapshot = origin_snap
-        _core_mod._track_id_service = MagicMock()
+        runtime._track_id_service = MagicMock()
 
         result = _core_mod.get_active_track_identification_snapshot()
         assert result is origin_snap
@@ -484,7 +485,7 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         capturing_mon.is_capturing = True
         capturing_mon._replay_origin = False
         capturing_mon._ti_snapshot = capturing_snap
-        _core_mod._track_id_service = MagicMock()
+        runtime._track_id_service = MagicMock()
 
         _core_mod._set_session_state(False, None)  # source unknown/absent -- fallback path
         try:
@@ -519,7 +520,7 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         capturing_mon.is_capturing = True
         capturing_mon._replay_origin = False
         capturing_mon._ti_snapshot = capturing_snap
-        _core_mod._track_id_service = MagicMock()
+        runtime._track_id_service = MagicMock()
 
         _core_mod._set_session_state(True, "replay")
         try:
@@ -549,7 +550,7 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon2.is_capturing = False
         mon2._replay_origin = False
         mon2._ti_snapshot = input2_snap
-        _core_mod._track_id_service = MagicMock()
+        runtime._track_id_service = MagicMock()
 
         _core_mod._set_session_state(True, "input2")
         try:
@@ -562,7 +563,7 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon = _mk_monitor(input_index=1)
         mon.is_capturing = False
         mon._replay_origin = False
-        _core_mod._track_id_service = MagicMock()
+        runtime._track_id_service = MagicMock()
 
         result = _core_mod.get_active_track_identification_snapshot()
         assert result.state == _waiting_snapshot().state
@@ -572,14 +573,14 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon = _mk_monitor(input_index=1)
         mon.is_capturing = False
         mon._replay_origin = False
-        _core_mod._track_id_service = None
+        runtime._track_id_service = None
 
         result = _core_mod.get_active_track_identification_snapshot()
         assert result == _disabled_snapshot()
 
     def test_no_monitors_falls_back_to_disabled_snapshot(self):
-        _core_mod._track_id_service = None
-        assert _core_mod.all_monitors == []
+        runtime._track_id_service = None
+        assert runtime.all_monitors == []
         result = _core_mod.get_active_track_identification_snapshot()
         assert result == _disabled_snapshot()
 

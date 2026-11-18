@@ -130,7 +130,7 @@ def _run_worker_sync(
         token = object()
     if dispatch_gen is None:
         dispatch_gen = mon._ti_generation
-    core._track_id_request_gate.acquire()
+    runtime._track_id_request_gate.acquire()
     mon._ti_inflight = True
     mon._ti_inflight_token = token
     mon._ti_worker(bytes(pcm), rate, token, dispatch_gen)
@@ -143,10 +143,10 @@ def _run_worker_sync(
 
 @pytest.fixture(autouse=True)
 def reset_track_id_service():
-    old = core._track_id_service
-    core._track_id_service = None
+    old = runtime._track_id_service
+    runtime._track_id_service = None
     yield
-    core._track_id_service = old
+    runtime._track_id_service = old
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def reset_track_id_service():
 class TestInitialState:
 
     def test_initial_snapshot_is_disabled_without_service(self):
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon = _make_monitor()
         assert mon._ti_snapshot.state == STATE_DISABLED
         assert mon._ti_snapshot.enabled is False
@@ -197,13 +197,13 @@ class TestInitialState:
         """On capture start, first attempt = analysis_lead_in + snapshot into the future."""
         svc = _make_service(analysis_lead_in=5, snapshot=15)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         mon._on_capture_started()
         assert mon._ti_next_attempt >= before + 19
 
     def test_capture_start_without_service_does_not_set_future_next_attempt(self):
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon = _active_monitor()
         mon._on_capture_started()
         assert mon._ti_next_attempt == 0.0
@@ -211,12 +211,12 @@ class TestInitialState:
     def test_capture_start_sets_waiting_snapshot_when_service_present(self):
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._on_capture_started()
         assert mon._ti_snapshot.state == STATE_WAITING
 
     def test_capture_start_sets_disabled_snapshot_when_no_service(self):
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon = _active_monitor()
         mon._on_capture_started()
         assert mon._ti_snapshot.state == STATE_DISABLED
@@ -224,7 +224,7 @@ class TestInitialState:
     def test_capture_start_clears_inflight_token(self):
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._ti_inflight = True
         mon._ti_inflight_token = object()
         mon._on_capture_started()
@@ -239,7 +239,7 @@ class TestInitialState:
 class TestDisabledConfig:
 
     def test_disabled_service_never_calls_get_id_snapshot(self):
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon = _active_monitor()
         client = _make_client()
         mon.maybe_trigger_track_identification(client, time.time())
@@ -257,7 +257,7 @@ class TestWaitingState:
         mon = _active_monitor()
         mon.is_silent = True
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon.maybe_trigger_track_identification(client, time.time())
         client.get_id_snapshot.assert_not_called()
@@ -268,7 +268,7 @@ class TestWaitingState:
         mon.is_capturing = False
         mon.is_silent = False
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon.maybe_trigger_track_identification(client, time.time())
         client.get_id_snapshot.assert_not_called()
@@ -284,7 +284,7 @@ class TestDispatchScheduling:
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0  # past deadline → trigger immediately
 
@@ -295,7 +295,7 @@ class TestDispatchScheduling:
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = time.time() + 1000.0  # far in the future
 
@@ -306,7 +306,7 @@ class TestDispatchScheduling:
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         # Prevent the task pool from actually running the worker — just
@@ -326,7 +326,7 @@ class TestDispatchScheduling:
         assert len(dispatched_submissions) == 1
 
         # Clean up — release gate that maybe_trigger acquired but thread never released.
-        core._track_id_request_gate.release()
+        runtime._track_id_request_gate.release()
 
     def test_skips_worker_when_pcm_too_short(self):
         from track_id.service import MIN_PCM_DURATION_SECONDS
@@ -335,7 +335,7 @@ class TestDispatchScheduling:
         short_pcm = b"\x00" * int(_DEFAULT_RATE * 2 * (MIN_PCM_DURATION_SECONDS - 1))
         client = MagicMock()
         client.get_id_snapshot.return_value = (short_pcm, _DEFAULT_RATE)
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 0.0
 
@@ -346,7 +346,7 @@ class TestDispatchScheduling:
         """If the generation advances while get_id_snapshot() runs, dispatch is aborted."""
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0  # past deadline
 
@@ -359,14 +359,14 @@ class TestDispatchScheduling:
 
         mon.maybe_trigger_track_identification(client, time.time())
 
-        assert not core._track_id_request_gate.locked()
+        assert not runtime._track_id_request_gate.locked()
         assert mon._ti_inflight is False
 
     def test_generation_change_during_snapshot_no_audio_aborts_without_scheduling(self):
         """Generation race with None snapshot must not schedule a retry on the old service."""
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
@@ -380,7 +380,7 @@ class TestDispatchScheduling:
         before_deadline = mon._ti_next_attempt
         mon.maybe_trigger_track_identification(client, time.time())
 
-        assert not core._track_id_request_gate.locked()
+        assert not runtime._track_id_request_gate.locked()
         assert mon._ti_inflight is False
         # Deadline must not have been overwritten with a stale retry from the old service.
         assert mon._ti_next_attempt == before_deadline
@@ -390,7 +390,7 @@ class TestDispatchScheduling:
         from track_id.service import MIN_PCM_DURATION_SECONDS
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
@@ -406,7 +406,7 @@ class TestDispatchScheduling:
         before_deadline = mon._ti_next_attempt
         mon.maybe_trigger_track_identification(client, time.time())
 
-        assert not core._track_id_request_gate.locked()
+        assert not runtime._track_id_request_gate.locked()
         assert mon._ti_inflight is False
         assert mon._ti_next_attempt == before_deadline
 
@@ -414,12 +414,12 @@ class TestDispatchScheduling:
         """If the service changes while get_id_snapshot() runs, dispatch is aborted."""
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
         def snapshot_and_swap(*_args, **_kw):
-            core._track_id_service = _make_service()
+            runtime._track_id_service = _make_service()
             return (_DEFAULT_PCM, _DEFAULT_RATE)
 
         client = MagicMock()
@@ -427,19 +427,19 @@ class TestDispatchScheduling:
 
         mon.maybe_trigger_track_identification(client, time.time())
 
-        assert not core._track_id_request_gate.locked()
+        assert not runtime._track_id_request_gate.locked()
         assert mon._ti_inflight is False
 
     def test_service_change_during_snapshot_no_audio_aborts_without_scheduling(self):
         """Service race with None snapshot must not schedule a retry on the replaced service."""
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
         def snapshot_and_swap(*_args, **_kw):
-            core._track_id_service = _make_service()
+            runtime._track_id_service = _make_service()
             return None
 
         client = MagicMock()
@@ -448,7 +448,7 @@ class TestDispatchScheduling:
         before_deadline = mon._ti_next_attempt
         mon.maybe_trigger_track_identification(client, time.time())
 
-        assert not core._track_id_request_gate.locked()
+        assert not runtime._track_id_request_gate.locked()
         assert mon._ti_inflight is False
         assert mon._ti_next_attempt == before_deadline
 
@@ -458,7 +458,7 @@ class TestDispatchScheduling:
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
@@ -466,7 +466,7 @@ class TestDispatchScheduling:
             mon.maybe_trigger_track_identification(client, time.time())
 
         # Gate must be released and inflight cleared despite the exception.
-        assert not core._track_id_request_gate.locked()
+        assert not runtime._track_id_request_gate.locked()
         assert mon._ti_inflight is False
         assert mon._ti_inflight_token is None
 
@@ -499,7 +499,7 @@ class TestDispatchScheduling:
         from track_id.models import STATE_ANALYSING, STATE_DISABLED
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
@@ -508,13 +508,13 @@ class TestDispatchScheduling:
             mon.maybe_trigger_track_identification(_make_client(), time.time())
 
         # Release the gate the dispatch acquired (no real worker to release it).
-        if core._track_id_request_gate.locked():
-            core._track_id_request_gate.release()
+        if runtime._track_id_request_gate.locked():
+            runtime._track_id_request_gate.release()
 
         assert mon._ti_snapshot.state == STATE_ANALYSING  # dispatch set this
 
         # Web handler disables identification after dispatch completed.
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon._apply_track_id_service(None)
 
         assert mon._ti_snapshot.state != STATE_ANALYSING, (
@@ -532,7 +532,7 @@ class TestInflightGuard:
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_inflight = True
         mon._ti_next_attempt = 0.0
@@ -545,12 +545,12 @@ class TestInflightGuard:
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0  # past deadline → trigger immediately
 
         # Hold the gate to simulate another input running.
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         try:
             before = time.time()
             mon.maybe_trigger_track_identification(client, before)
@@ -558,7 +558,7 @@ class TestInflightGuard:
             assert mon._ti_next_attempt >= before
             assert mon._ti_next_attempt < before + 5.0
         finally:
-            core._track_id_request_gate.release()
+            runtime._track_id_request_gate.release()
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +570,7 @@ class TestWorkerIdentified:
     def test_worker_success_sets_identified(self):
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_snapshot.state == STATE_IDENTIFIED
         assert mon._ti_snapshot.title == "Test Title"
@@ -584,7 +584,7 @@ class TestWorkerIdentified:
         already went out, so it must not emit a second one."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         mon._nowplaying_publisher.publish_refresh.assert_called()
         mon._nowplaying_publisher.publish_start.assert_not_called()
@@ -593,7 +593,7 @@ class TestWorkerIdentified:
         from autostream_core import NowPlayingMetadata
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._current_nowplaying = NowPlayingMetadata(
             title="Test Title", artist="Test Artist", album="Test Album"
         )
@@ -604,7 +604,7 @@ class TestWorkerIdentified:
     def test_identified_sets_last_identified_at(self):
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         assert mon._ti_last_identified_at == 0.0
         before = time.time()
         _run_worker_sync(mon)
@@ -615,7 +615,7 @@ class TestWorkerIdentified:
         from autostream_config import TRACK_ID_REFRESH_JITTER_SECONDS
         svc = _make_service(matched=True, refresh=60)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         # Must be in [refresh - jitter, refresh + jitter] from now (clamped ≥ 1).
@@ -634,7 +634,7 @@ class TestWorkerNotFound:
     def test_worker_no_match_sets_not_found(self):
         svc = _make_service(matched=False)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_snapshot.state == STATE_NOT_FOUND
         assert mon._ti_inflight is False
@@ -642,7 +642,7 @@ class TestWorkerNotFound:
     def test_not_found_schedules_retry(self):
         svc = _make_service(matched=False, retry=30)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + 29
@@ -651,7 +651,7 @@ class TestWorkerNotFound:
     def test_not_found_does_not_publish_nowplaying(self):
         svc = _make_service(matched=False)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._nowplaying_publisher.publish_refresh.reset_mock()
         _run_worker_sync(mon)
         mon._nowplaying_publisher.publish_refresh.assert_not_called()
@@ -670,7 +670,7 @@ class TestWorkerNotFound:
             is_configuration_error=True,
         )
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_snapshot.state == STATE_ERROR
         assert mon._ti_inflight is False
@@ -688,7 +688,7 @@ class TestWorkerNotFound:
             is_configuration_error=True,
         )
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + 29
@@ -704,7 +704,7 @@ class TestWorkerError:
     def test_worker_exception_sets_error_state(self):
         svc = _make_service(raise_exc=RuntimeError("connection refused"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_snapshot.state == STATE_ERROR
         assert mon._ti_inflight is False
@@ -713,7 +713,7 @@ class TestWorkerError:
         from autostream_config import TRACK_ID_ERROR_RETRY_SECONDS
         svc = _make_service(raise_exc=RuntimeError("boom"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_ERROR_RETRY_SECONDS - 1
@@ -723,7 +723,7 @@ class TestWorkerError:
         import logging
         svc = _make_service(raise_exc=RuntimeError("SECRETKEY=abc123"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         with caplog.at_level(logging.DEBUG):
             _run_worker_sync(mon)
         assert "SECRETKEY" not in caplog.text
@@ -744,7 +744,7 @@ class TestRateLimitBackoff:
         from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
         svc = _make_service(raise_exc=TrackIDRateLimitedError("rate_limited"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
@@ -753,7 +753,7 @@ class TestRateLimitBackoff:
     def test_rate_limited_error_sets_error_snapshot(self):
         svc = _make_service(raise_exc=TrackIDRateLimitedError("rate_limited"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_snapshot.state == STATE_ERROR
 
@@ -768,7 +768,7 @@ class TestRateLimitBackoff:
         )
         svc = _make_service(raise_exc=RuntimeError("boom"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt < before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
@@ -777,7 +777,7 @@ class TestRateLimitBackoff:
         import logging
         svc = _make_service(raise_exc=TrackIDRateLimitedError("rate_limited"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         with caplog.at_level(logging.WARNING):
             _run_worker_sync(mon)
         assert any("rate limited" in r.message for r in caplog.records)
@@ -793,7 +793,7 @@ class TestUpstreamRejectionBackoff:
         from autostream_config import TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS
         svc = _make_service(raise_exc=TrackIDUpstreamRejectionError(403))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS - 1
@@ -803,7 +803,7 @@ class TestUpstreamRejectionBackoff:
         from autostream_config import TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS
         svc = _make_service(raise_exc=TrackIDUpstreamRejectionError(406))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS - 1
@@ -811,7 +811,7 @@ class TestUpstreamRejectionBackoff:
     def test_upstream_rejection_sets_error_snapshot(self):
         svc = _make_service(raise_exc=TrackIDUpstreamRejectionError(403))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_snapshot.state == STATE_ERROR
 
@@ -823,7 +823,7 @@ class TestUpstreamRejectionBackoff:
         import logging
         svc = _make_service(raise_exc=TrackIDUpstreamRejectionError(403))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         with caplog.at_level(logging.WARNING):
             _run_worker_sync(mon)
         assert any("403" in r.message and "upstream" in r.message for r in caplog.records)
@@ -836,7 +836,7 @@ class TestUpstreamRejectionBackoff:
         )
         svc = _make_service(raise_exc=TrackIDUpstreamRejectionError(403))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_UPSTREAM_REJECTION_BACKOFF_SECONDS - 1
@@ -854,7 +854,7 @@ class TestProviderUnreachableBackoff:
         from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
         svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_error"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
@@ -863,7 +863,7 @@ class TestProviderUnreachableBackoff:
     def test_provider_unreachable_sets_error_snapshot(self):
         svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_timeout"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_snapshot.state == STATE_ERROR
 
@@ -877,7 +877,7 @@ class TestProviderUnreachableBackoff:
         assert TRACK_ID_ERROR_RETRY_SECONDS < TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
         svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_error"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
@@ -886,7 +886,7 @@ class TestProviderUnreachableBackoff:
         import logging
         svc = _make_service(raise_exc=TrackIDProviderUnreachableError("network_error"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         with caplog.at_level(logging.WARNING):
             _run_worker_sync(mon)
         assert any("unreachable" in r.message for r in caplog.records)
@@ -899,7 +899,7 @@ class TestProviderUnreachableBackoff:
         from autostream_config import TRACK_ID_ERROR_RETRY_SECONDS
         svc = _make_service(raise_exc=OSError("boom"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt < before + TRACK_ID_ERROR_RETRY_SECONDS + 5
@@ -913,7 +913,7 @@ class TestRateLimitRetryAfter:
             raise_exc=TrackIDRateLimitedError("rate_limited", retry_after_seconds=7.0)
         )
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         # 7s Retry-After, not the 120s fixed constant.
@@ -923,7 +923,7 @@ class TestRateLimitRetryAfter:
         from autostream_config import TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS
         svc = _make_service(raise_exc=TrackIDRateLimitedError("rate_limited"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
@@ -936,7 +936,7 @@ class TestRateLimitRetryAfter:
             raise_exc=TrackIDRateLimitedError("rate_limited", retry_after_seconds=0.0)
         )
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         before = time.time()
         _run_worker_sync(mon)
         assert mon._ti_next_attempt >= before + TRACK_ID_RATE_LIMIT_BACKOFF_SECONDS - 1
@@ -947,7 +947,7 @@ class TestRateLimitRetryAfter:
             raise_exc=TrackIDRateLimitedError("rate_limited", retry_after_seconds=7.0)
         )
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         with caplog.at_level(logging.WARNING):
             _run_worker_sync(mon)
         assert any("Retry-After" in r.message for r in caplog.records)
@@ -1016,7 +1016,7 @@ class TestWorkerTokenGuard:
         """Worker called with a stale token must not overwrite the snapshot."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         current_snapshot = mon._ti_snapshot
@@ -1024,7 +1024,7 @@ class TestWorkerTokenGuard:
         fresh_token = object()
 
         # Install fresh_token as current; call worker with stale_token.
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token  # current token ≠ stale_token
         mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
@@ -1036,11 +1036,11 @@ class TestWorkerTokenGuard:
         """Stale token must not clear _ti_inflight for the live generation."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         fresh_token = object()
         stale_token = object()
 
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token
         mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
@@ -1052,7 +1052,7 @@ class TestWorkerTokenGuard:
         """When the token matches, _ti_inflight and _ti_inflight_token are cleared."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         _run_worker_sync(mon)
         assert mon._ti_inflight is False
         assert mon._ti_inflight_token is None
@@ -1061,36 +1061,36 @@ class TestWorkerTokenGuard:
         """Gate must be released whether or not the token matches."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         stale_token = object()
         fresh_token = object()
 
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token
         mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
 
         # Gate should have been released; try acquiring it immediately.
-        acquired = core._track_id_request_gate.acquire(blocking=False)
+        acquired = runtime._track_id_request_gate.acquire(blocking=False)
         assert acquired, "Gate was not released after stale-token worker returned"
-        core._track_id_request_gate.release()
+        runtime._track_id_request_gate.release()
 
     def test_gate_released_on_exception_with_stale_token(self):
         """Gate is released even when the exception path encounters a stale token."""
         svc = _make_service(raise_exc=RuntimeError("boom"))
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         stale_token = object()
         fresh_token = object()
 
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = fresh_token
         mon._ti_worker(bytes(_DEFAULT_PCM), _DEFAULT_RATE, stale_token, mon._ti_generation)
 
-        acquired = core._track_id_request_gate.acquire(blocking=False)
+        acquired = runtime._track_id_request_gate.acquire(blocking=False)
         assert acquired, "Gate was not released after stale-token exception path"
-        core._track_id_request_gate.release()
+        runtime._track_id_request_gate.release()
 
 
 # ---------------------------------------------------------------------------
@@ -1121,12 +1121,12 @@ class TestGenerationGuard:
         }
         p = tmp_path / "autostream.json"
         p.write_text(json.dumps(cfg))
-        old_svc = core._track_id_service
+        old_svc = runtime._track_id_service
         try:
             apply_track_id_config_live(str(p))
-            assert core._track_id_service is None
+            assert runtime._track_id_service is None
         finally:
-            core._track_id_service = old_svc
+            runtime._track_id_service = old_svc
 
 
 # ---------------------------------------------------------------------------
@@ -1138,7 +1138,7 @@ class TestCaptureStopReset:
     def test_stop_resets_to_waiting_when_service_active(self):
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         from track_id.models import TrackIdentificationSnapshot
         mon._ti_snapshot = TrackIdentificationSnapshot(
@@ -1156,7 +1156,7 @@ class TestCaptureStopReset:
         assert mon._ti_snapshot.state == STATE_WAITING
 
     def test_stop_resets_to_disabled_when_no_service(self):
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon = _active_monitor()
         client = MagicMock(spec=MonitorClient)
         with patch.object(core, "any_monitor_capturing", return_value=False), \
@@ -1168,7 +1168,7 @@ class TestCaptureStopReset:
         """_on_capture_stopped must clear any pending next-attempt deadline."""
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = time.time() + 100.0
         mon._ti_next_attempt_reason = "match"
@@ -1183,7 +1183,7 @@ class TestCaptureStopReset:
         """_on_capture_stopped must bump the generation to invalidate running workers."""
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         gen_before = mon._ti_generation
         client = MagicMock(spec=MonitorClient)
@@ -1201,7 +1201,7 @@ class TestCaptureStopReset:
         """
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         # Pause the worker inside svc.identify so we can call stop while it runs.
@@ -1214,7 +1214,7 @@ class TestCaptureStopReset:
 
         stale_token = object()
         old_gen = mon._ti_generation
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = stale_token
 
@@ -1259,7 +1259,7 @@ class TestCaptureStoppedReplayOriginGuard:
 
     def _armed_monitor(self, svc):
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = time.time() + 100.0
         mon._ti_next_attempt_reason = "match"
@@ -1353,7 +1353,7 @@ class TestCaptureStartedReplayOriginGuard:
         survive untouched."""
         svc = _make_service()
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._replay_origin = True
         gen_before = mon._ti_generation
@@ -1377,7 +1377,7 @@ class TestCaptureStartedReplayOriginGuard:
         still resets and re-arms the cycle."""
         svc = _make_service(analysis_lead_in=5, snapshot=15)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._replay_origin = False
         before = time.time()
 
@@ -1417,7 +1417,7 @@ class TestMonitorSnapshotClamp:
         client.get_id_snapshot.return_value = (pcm, _DEFAULT_RATE)
         svc = _make_service(analysis_lead_in=analysis_lead_in, snapshot=snapshot)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0  # past deadline → trigger immediately
         mon.maybe_trigger_track_identification(client, time.time())
@@ -1451,7 +1451,7 @@ class TestShortSnapshotLog:
         short_pcm = b"\x00" * int(_DEFAULT_RATE * 2 * (MIN_PCM_DURATION_SECONDS - 1))
         client = MagicMock()
         client.get_id_snapshot.return_value = (short_pcm, _DEFAULT_RATE)
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0  # past deadline → trigger immediately
 
@@ -1470,7 +1470,7 @@ class TestShortSnapshotLog:
         pcm = b"\x00" * int(_DEFAULT_RATE * 2 * 15)
         client = MagicMock()
         client.get_id_snapshot.return_value = (pcm, _DEFAULT_RATE)
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0  # past deadline → trigger immediately
 
@@ -1507,13 +1507,13 @@ class TestApplyTrackIdConfigLiveEnabled:
         }
         p = tmp_path / "autostream.json"
         p.write_text(json.dumps(cfg))
-        old_svc = core._track_id_service
+        old_svc = runtime._track_id_service
         try:
             apply_track_id_config_live(str(p))
-            assert core._track_id_service is not None
-            assert core._track_id_service.analysis_lead_in_seconds == 5
+            assert runtime._track_id_service is not None
+            assert runtime._track_id_service.analysis_lead_in_seconds == 5
         finally:
-            core._track_id_service = old_svc
+            runtime._track_id_service = old_svc
 
     def test_apply_service_live_pushes_to_monitors(self, tmp_path):
         import json
@@ -1531,12 +1531,12 @@ class TestApplyTrackIdConfigLiveEnabled:
         p = tmp_path / "autostream.json"
         p.write_text(json.dumps(cfg))
         mon = _make_monitor()
-        old_svc = core._track_id_service
+        old_svc = runtime._track_id_service
         try:
             apply_track_id_config_live(str(p))
             assert mon._ti_snapshot.state == STATE_DISABLED
         finally:
-            core._track_id_service = old_svc
+            runtime._track_id_service = old_svc
 
 
 # ---------------------------------------------------------------------------
@@ -1548,7 +1548,7 @@ def _make_capturing_monitor_with_service(svc=None, **overrides) -> AudioMonitor:
     if svc is None:
         svc = _make_service()
     mon = _active_monitor(**overrides)
-    core._track_id_service = svc
+    runtime._track_id_service = svc
     mon._apply_track_id_service(svc)
     mon.track_change_seq = 0
     mon._track_change_seq_baseline = 0
@@ -1593,7 +1593,7 @@ class TestTrackChangeScheduling:
     def test_seq_advance_without_service_updates_baseline_only(self):
         """Without a service, baseline is updated but no scheduling occurs."""
         mon = _make_capturing_monitor_with_service()
-        core._track_id_service = None
+        runtime._track_id_service = None
         before_attempt = mon._ti_next_attempt
         mon._on_possible_track_change(3)
         assert mon._track_change_seq_baseline == 3
@@ -1637,7 +1637,7 @@ class TestTrackChangeScheduling:
         svc = _make_service()
         mon = _make_monitor()
         mon.is_capturing = False
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         gen_before = mon._ti_generation
 
@@ -1704,13 +1704,13 @@ class TestTrackChangeScheduling:
         """
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         # Pre-change: stale worker has acquired gate and installed its token.
         stale_token = object()
         old_gen = mon._ti_generation  # generation at dispatch time
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = stale_token
 
@@ -1742,13 +1742,13 @@ class TestTrackChangeScheduling:
         so the next coordinator poll can dispatch the replacement worker."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         # Simulate the stale worker: it holds the gate and its token.
         stale_token = object()
         old_gen = mon._ti_generation  # generation at dispatch time
-        core._track_id_request_gate.acquire()
+        runtime._track_id_request_gate.acquire()
         mon._ti_inflight = True
         mon._ti_inflight_token = stale_token
 
@@ -1761,7 +1761,7 @@ class TestTrackChangeScheduling:
 
         assert mon._ti_inflight is False   # cleared by stale worker's finally
         assert mon._ti_inflight_token is None
-        assert not core._track_id_request_gate.locked()  # gate released
+        assert not runtime._track_id_request_gate.locked()  # gate released
 
     def test_ingest_status_fires_track_change_on_seq_advance(self):
         """_ingest_status with advancing seq triggers _on_possible_track_change."""
@@ -1770,7 +1770,7 @@ class TestTrackChangeScheduling:
         mon.is_capturing = True
         mon.track_change_seq = 0
         mon._track_change_seq_baseline = 0
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         before = time.time()
@@ -1792,7 +1792,7 @@ class TestTrackChangeScheduling:
         mon.is_capturing = True
         mon.track_change_seq = 3
         mon._track_change_seq_baseline = 3
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = time.time() + 1000.0  # some future deadline
         mon._ti_next_attempt_reason = "match"
@@ -1848,7 +1848,7 @@ class TestTrackChangeInterstitial:
     def test_track_change_without_service_does_not_publish(self):
         """The svc-is-None early-out must still skip publishing entirely."""
         mon = _make_capturing_monitor_with_service()
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon._on_possible_track_change(3)
         mon._nowplaying_publisher.publish_refresh.assert_not_called()
 
@@ -1861,7 +1861,7 @@ class TestTrackChangeInterstitial:
         placeholder = ArtworkImage(data=b"placeholder-bytes", mime="image/png", ident="placeholder1234")
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         with patch("autostream_core._load_placeholder_artwork", return_value=placeholder):
@@ -1885,7 +1885,7 @@ class TestTrackChangeInterstitial:
         interstitial publishes that new track's metadata."""
         svc = _make_service(matched=True)
         mon = _active_monitor()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         mon._on_possible_track_change(1)
@@ -1928,7 +1928,7 @@ class TestTrackIdentificationDuringReplay:
         mon.is_capturing = False
         mon.is_silent = True  # replay input is silent by definition
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0  # past deadline
 
@@ -1944,7 +1944,7 @@ class TestTrackIdentificationDuringReplay:
         mon.is_capturing = False
         mon.is_silent = True
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
@@ -1958,7 +1958,7 @@ class TestTrackIdentificationDuringReplay:
         mon = _active_monitor()
         mon.is_silent = True
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
@@ -1971,7 +1971,7 @@ class TestTrackIdentificationDuringReplay:
         svc = _make_service()
         mon = _active_monitor()
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
@@ -1989,7 +1989,7 @@ class TestTrackIdentificationDuringReplay:
         mon._replay_origin = True  # was actively-sourcing via replay last cycle
         mon.track_change_seq = 0
         mon._track_change_seq_baseline = 0
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         before = time.time()
@@ -2016,7 +2016,7 @@ class TestTrackIdentificationDuringReplay:
         mon._replay_origin = False  # not actively-sourcing before this cycle
         mon.track_change_seq = 0
         mon._track_change_seq_baseline = 0
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         gen_before = mon._ti_generation
 
@@ -2038,7 +2038,7 @@ class TestTrackIdentificationDuringReplay:
         mon.is_capturing = False
         mon.track_change_seq = 9
         mon._track_change_seq_baseline = 0
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         before = time.time()
@@ -2052,7 +2052,7 @@ class TestTrackIdentificationDuringReplay:
         svc = _make_service()
         mon = _make_monitor()
         mon.is_capturing = False
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         gen_before = mon._ti_generation
         mon._ti_inflight = True
@@ -2068,7 +2068,7 @@ class TestTrackIdentificationDuringReplay:
         svc = _make_service()
         mon = _make_monitor()
         mon.is_capturing = False
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
         mon._arm_track_identification_for_session()
@@ -2077,7 +2077,7 @@ class TestTrackIdentificationDuringReplay:
     def test_arm_track_identification_for_session_disabled_service_sets_disabled_snapshot(self):
         mon = _make_monitor()
         mon.is_capturing = False
-        core._track_id_service = None
+        runtime._track_id_service = None
 
         mon._arm_track_identification_for_session()
         assert mon._ti_snapshot.state == STATE_DISABLED
@@ -2092,7 +2092,7 @@ class TestTrackIdentificationDuringReplay:
         origin_mon.is_capturing = False  # replay, not live capture
         origin_mon.track_change_seq = 4
         origin_mon._track_change_seq_baseline = 0
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         origin_mon._apply_track_id_service(svc)
 
         with patch.object(core, "_start_session_owntone"), \
@@ -2161,7 +2161,7 @@ class TestReplaySeekRearm:
         svc = _make_service(analysis_lead_in=lead_in, snapshot=snapshot)
         mon = _make_monitor(**monitor_kw)
         mon.is_capturing = False
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_snapshot = _identified_snapshot()
         return mon, svc
@@ -2212,7 +2212,7 @@ class TestReplaySeekRearm:
     def test_seek_with_service_disabled_publishes_disabled_snapshot(self):
         mon = _make_monitor()
         mon.is_capturing = False
-        core._track_id_service = None
+        runtime._track_id_service = None
         mon._ti_snapshot = _identified_snapshot()
         mon.on_replay_seek_accepted(in_session=True)
         assert mon._ti_snapshot.state == STATE_DISABLED
@@ -2225,8 +2225,8 @@ class TestReplaySeekRearm:
         _run_worker_sync(mon, dispatch_gen=pre_seek_gen)
         assert mon._ti_snapshot.state == STATE_WAITING
         # The worker released the process-wide gate on its way out.
-        assert core._track_id_request_gate.acquire(blocking=False)
-        core._track_id_request_gate.release()
+        assert runtime._track_id_request_gate.acquire(blocking=False)
+        runtime._track_id_request_gate.release()
 
     def test_in_session_seek_publishes_interstitial_nowplaying(self):
         mon, _ = self._armed_origin()
@@ -2297,7 +2297,7 @@ class TestReplaySeekRearm:
         other._ti_snapshot = _identified_snapshot()
         other_gen = other._ti_generation
         core._set_repeat_status(_repeat_block(replaying=True, origin_input=2))
-        with patch.object(core, "all_monitors", [other, origin]):
+        with patch.object(runtime, "all_monitors", [other, origin]):
             core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=30.0))
         assert origin._ti_snapshot.state == STATE_WAITING
         assert origin._ti_next_attempt_reason == "seek"
@@ -2307,7 +2307,7 @@ class TestReplaySeekRearm:
     def test_in_session_seek_ack_publishes_interstitial_on_the_origin(self):
         origin, _ = self._armed_origin()
         core._set_repeat_status(_repeat_block(replaying=True))
-        with patch.object(core, "all_monitors", [origin]), \
+        with patch.object(runtime, "all_monitors", [origin]), \
              patch.object(core, "_load_placeholder_artwork", return_value=None):
             core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
         origin._nowplaying_publisher.publish_refresh.assert_called_once()
@@ -2315,7 +2315,7 @@ class TestReplaySeekRearm:
     def test_apply_repeat_ack_without_cached_block_does_not_touch_monitors(self):
         origin, _ = self._armed_origin()
         gen_before = origin._ti_generation
-        with patch.object(core, "all_monitors", [origin]):
+        with patch.object(runtime, "all_monitors", [origin]):
             core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
         assert origin._ti_generation == gen_before
         assert origin._ti_snapshot.state == STATE_IDENTIFIED
@@ -2330,7 +2330,7 @@ class TestReplaySeekRearm:
         origin, _ = self._armed_origin()
         gen_before = origin._ti_generation
         core._set_repeat_status(_repeat_block(replaying=True))
-        with patch.object(core, "all_monitors", [origin]):
+        with patch.object(runtime, "all_monitors", [origin]):
             core.apply_repeat_ack(ack)
         assert origin._ti_generation == gen_before
         assert origin._ti_snapshot.state == STATE_IDENTIFIED
@@ -2342,7 +2342,7 @@ class TestReplaySeekRearm:
         ack = _repeat_ack("set_repeat_armed", "replaying", position=217.5)
 
         core._set_repeat_status(_repeat_block(replaying=False))
-        with patch.object(core, "all_monitors", [origin]):
+        with patch.object(runtime, "all_monitors", [origin]):
             core.apply_repeat_ack(ack)
         assert origin._ti_generation == gen_before + 1
         assert origin._ti_snapshot.state == STATE_WAITING
@@ -2351,7 +2351,7 @@ class TestReplaySeekRearm:
 
         origin._ti_snapshot = _identified_snapshot()
         core._set_repeat_status(_repeat_block(replaying=True))
-        with patch.object(core, "all_monitors", [origin]):
+        with patch.object(runtime, "all_monitors", [origin]):
             core.apply_repeat_ack(ack)
         assert origin._ti_generation == gen_before + 1
         assert origin._ti_snapshot.state == STATE_IDENTIFIED
@@ -2366,7 +2366,7 @@ class TestReplaySeekRearm:
         origin.track_change_seq = 0
         origin._track_change_seq_baseline = 0
         core._set_repeat_status(_repeat_block(replaying=False))
-        with patch.object(core, "all_monitors", [origin]):
+        with patch.object(runtime, "all_monitors", [origin]):
             core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
             assert core.get_active_track_identification_snapshot().state == STATE_WAITING
 
@@ -2398,7 +2398,7 @@ class TestReplayEndTeardown:
         svc = _make_service(analysis_lead_in=10, snapshot=15)
         mon = _make_monitor(**monitor_kw)
         mon.is_capturing = False
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_snapshot = _identified_snapshot()
         mon._ti_next_attempt = time.time() + 100
@@ -2441,7 +2441,7 @@ class TestReplayEndTeardown:
 
     def test_session_ended_from_replay_with_service_disabled_publishes_disabled(self):
         mon = self._origin()
-        core._track_id_service = None
+        runtime._track_id_service = None
         self._end(mon)
         assert mon._ti_snapshot.state == STATE_DISABLED
 
@@ -2459,8 +2459,8 @@ class TestReplayEndTeardown:
         self._end(mon)
         _run_worker_sync(mon, dispatch_gen=gen)
         assert mon._ti_snapshot.state == STATE_WAITING
-        assert core._track_id_request_gate.acquire(blocking=False)
-        core._track_id_request_gate.release()
+        assert runtime._track_id_request_gate.acquire(blocking=False)
+        runtime._track_id_request_gate.release()
 
     def test_session_ended_from_live_input_leaves_identification_alone(self):
         mon = self._origin()
@@ -2599,7 +2599,7 @@ class TestApplyServiceReplayOriginScheduling:
         mon = _make_monitor()
         mon.is_capturing = False
         mon._replay_origin = True
-        core._track_id_service = svc
+        runtime._track_id_service = svc
 
         before = time.time()
         mon._apply_track_id_service(svc)
@@ -2616,7 +2616,7 @@ class TestApplyServiceReplayOriginScheduling:
         mon = _make_monitor()
         mon.is_capturing = False
         mon._replay_origin = False
-        core._track_id_service = svc
+        runtime._track_id_service = svc
 
         mon._apply_track_id_service(svc)
 
@@ -2628,7 +2628,7 @@ class TestApplyServiceReplayOriginScheduling:
         svc = _make_service(analysis_lead_in=5, snapshot=15)
         mon = _active_monitor()
         mon._replay_origin = False
-        core._track_id_service = svc
+        runtime._track_id_service = svc
 
         before = time.time()
         mon._apply_track_id_service(svc)
@@ -2654,7 +2654,7 @@ class TestSelfHealSchedule:
         mon = _make_monitor()
         mon.is_capturing = False
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         # Simulate a missed/raced arming: schedule left at the sentinel.
         mon._ti_next_attempt = 0.0
@@ -2676,7 +2676,7 @@ class TestSelfHealSchedule:
         mon = _make_monitor()
         mon.is_capturing = False
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 0.0
 
@@ -2692,7 +2692,7 @@ class TestSelfHealSchedule:
         svc = _make_service()
         mon = _active_monitor()  # capturing=True, silent=False
         client = _make_client()
-        core._track_id_service = svc
+        runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 0.0
         mon._ti_next_attempt_reason = ""

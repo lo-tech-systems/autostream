@@ -32,6 +32,7 @@ from track_id.models import (
     disabled_snapshot,
     waiting_snapshot,
 )
+import autostream_runtime as runtime
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +240,12 @@ class TestNoProviderCallsInBuildHomeState:
         cfg_path = _make_config_file(tmp_path)
         mock_svc = MagicMock()
         mock_svc.identify.side_effect = RuntimeError("should not be called")
-        old_svc = core._track_id_service
-        core._track_id_service = mock_svc
+        old_svc = runtime._track_id_service
+        runtime._track_id_service = mock_svc
         try:
             result = _run_home(cfg_path)
         finally:
-            core._track_id_service = old_svc
+            runtime._track_id_service = old_svc
 
         mock_svc.identify.assert_not_called()
         assert "track_identification" in result

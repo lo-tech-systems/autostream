@@ -77,6 +77,7 @@ from autostream_core import (
     set_live_repeat_armed_ack,
     set_live_repeat_enabled,
 )
+import autostream_runtime as runtime
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
@@ -1334,12 +1335,12 @@ class TestP7ReloadTeardown:
 class TestP8PlaybackHoursDuringReplay:
     def _with_tracker(self):
         tracker = MagicMock()
-        original = core._playback_tracker
-        core._playback_tracker = tracker
+        original = runtime._playback_tracker
+        runtime._playback_tracker = tracker
         return tracker, original
 
     def _restore(self, original):
-        core._playback_tracker = original
+        runtime._playback_tracker = original
 
     def test_accrues_during_replay_for_origin_input(self):
         mon = _make_monitor(input_index=1)

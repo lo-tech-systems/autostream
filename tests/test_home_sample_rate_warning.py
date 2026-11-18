@@ -35,7 +35,7 @@ _BANNER_OPEN = "<a id='sample-rate-warning-banner' href='/setup#input"
 
 def _monitors(*mismatching: int):
     """Two fake monitors; the numbered inputs report a 44.1 kHz mismatch."""
-    return patch("autostream_core.all_monitors", [
+    return patch("autostream_runtime.all_monitors", [
         SimpleNamespace(input_index=n, rate_mismatch_hz=44100 if n in mismatching else 0)
         for n in (2, 1)
     ])
@@ -78,7 +78,7 @@ class TestStatusPayload:
             assert _status_body()["sample_rate_banner_text"] == ""
 
     def test_status_banner_text_empty_with_no_monitors(self):
-        with patch("autostream_core.all_monitors", []):
+        with patch("autostream_runtime.all_monitors", []):
             assert _status_body()["sample_rate_banner_text"] == ""
 
     def test_both_inputs_mismatched_give_the_one_string(self):

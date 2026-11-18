@@ -1,9 +1,11 @@
 """autostream_runtime.py -- process-wide runtime primitives.
 
-A leaf module (standard library only): the process stop and reload requests,
-the shared task pool for backgrounded single-flight work, and the recovery
-log helper.  Nothing here imports another application module, so any module
-may use it without creating an import cycle.
+A leaf module (standard library; the playback tracker type is imported for
+type checking only): the process stop and reload requests, the shared task
+pool for backgrounded single-flight work, the recovery log helper, and the
+registry of live monitors and the identification service.  Nothing here
+imports another application module at run time, so any module may use it
+without creating an import cycle.
 
 Process-wide signals (not tied to any store):
 
@@ -14,9 +16,15 @@ Process-wide signals (not tied to any store):
                   monitors, and clears it.
 """
 
+from __future__ import annotations
+
 import concurrent.futures
 import logging
 import threading
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from autostream_playback_stats import PlaybackTracker
 
 
 stop_flag = threading.Event()
@@ -134,8 +142,47 @@ class RecoveryLog:
         self._count = 0
 
 
+# --------------------------------------------------------------------------- #
+# Registry: the live monitors and the identification service                   #
+# --------------------------------------------------------------------------- #
+#
+# The names below are rebound by their writers (and cleared by the tests), so
+# every reader goes through the module object (``runtime._track_id_service``)
+# at the point of use, never ``from autostream_runtime import ...``.
+
+# Track all AudioMonitor instances so coordination logic can inspect them.
+# _monitors_lock must be held when reading or mutating all_monitors or when
+# taking a snapshot of its elements for use on a different thread (Web UI).
+all_monitors: list = []
+_monitors_lock = threading.Lock()
+_playback_tracker: Optional["PlaybackTracker"] = None
+
+# Track identification service singleton (replaced on each config reload).
+# Written only from the coordinator thread; read from worker threads under GIL.
+_track_id_service = None  # Optional[TrackIdentificationService]
+
+# Process-wide identification admission gate.  A non-blocking acquire is attempted
+# before every worker dispatch; at most one identification request runs globally.
+# Semaphore-shaped, not a plain data lock -- do not merge with anything else.
+_track_id_request_gate = threading.Lock()
+
+
+def monitors_snapshot() -> list:
+    """Return a copy of all_monitors, taken under the monitors lock."""
+    with _monitors_lock:
+        return list(all_monitors)
+
+
 def reset_for_tests() -> None:
-    """Clear both process events.  Called by an autouse fixture after every
-    test."""
+    """Return the process-wide state to its start-up values: no monitors, no
+    playback tracker, no identification service, a free admission gate and
+    both events clear.  Called by an autouse fixture after every test."""
+    global _playback_tracker, _track_id_service, _track_id_request_gate
+    with _monitors_lock:
+        all_monitors.clear()
+    _playback_tracker = None
+    _track_id_service = None
+    if _track_id_request_gate.locked():
+        _track_id_request_gate = threading.Lock()
     stop_flag.clear()
     reload_flag.clear()

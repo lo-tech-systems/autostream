@@ -332,25 +332,25 @@ class TestSyncPlaybackTrackerState:
     def _with_tracker(self):
         tracker = _make_fake_tracker()
         # Inject into module-level _playback_tracker
-        original = core._playback_tracker
-        core._playback_tracker = tracker
+        original = runtime._playback_tracker
+        runtime._playback_tracker = tracker
         return tracker, original
 
     def _restore_tracker(self, original):
-        core._playback_tracker = original
+        runtime._playback_tracker = original
 
     def test_no_tracker_sets_inactive(self):
         mon = _make_monitor()
         mon._tracker_playback_active = True
         mon._tracker_wear_active = True
-        original = core._playback_tracker
-        core._playback_tracker = None
+        original = runtime._playback_tracker
+        runtime._playback_tracker = None
         try:
             mon._sync_playback_tracker_state()
             assert mon._tracker_playback_active is False
             assert mon._tracker_wear_active is False
         finally:
-            core._playback_tracker = original
+            runtime._playback_tracker = original
 
     def test_starts_tracker_when_capturing_and_audible(self):
         mon = _make_monitor()
@@ -463,16 +463,16 @@ class TestStop:
 
 class TestAllMonitors:
     def test_constructor_registers_in_all_monitors(self):
-        initial_count = len(core.all_monitors)
+        initial_count = len(runtime.all_monitors)
         mon = _make_monitor(input_index=7)
-        assert mon in core.all_monitors
-        assert len(core.all_monitors) == initial_count + 1
+        assert mon in runtime.all_monitors
+        assert len(runtime.all_monitors) == initial_count + 1
 
     def test_monitors_autouse_fixture_clears_list(self):
         # The conftest autouse fixture clears all_monitors after each test.
         # After registration in test_constructor_registers, the list should be
         # empty at the start of THIS test (fresh test function).
-        assert core.all_monitors == []
+        assert runtime.all_monitors == []
 
 
 # ---------------------------------------------------------------------------

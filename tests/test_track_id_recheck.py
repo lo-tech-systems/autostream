@@ -67,11 +67,11 @@ CONFIG_ERROR = TrackIdentificationResult(
 
 @pytest.fixture(autouse=True)
 def _clean_globals(monkeypatch):
-    monkeypatch.setattr(core, "_track_id_service", None)
+    monkeypatch.setattr(runtime, "_track_id_service", None)
     yield
     # Whether or not a test left the admission gate held, leave it free.
-    core._track_id_request_gate.acquire(blocking=False)
-    core._track_id_request_gate.release()
+    runtime._track_id_request_gate.acquire(blocking=False)
+    runtime._track_id_request_gate.release()
 
 
 class _Rig:
@@ -86,7 +86,7 @@ class _Rig:
         self.mon = mon
         self.client = _make_client()
         self.pending: list = []
-        monkeypatch.setattr(core, "all_monitors", [mon])
+        monkeypatch.setattr(runtime, "all_monitors", [mon])
         monkeypatch.setattr(core, "get_session_state", lambda: {})
         monkeypatch.setattr(
             runtime._task_pool, "submit",
@@ -116,7 +116,7 @@ def rig(monkeypatch):
     """A monitor that has identified TRACK and is due its periodic re-check."""
     svc = _make_service()
     svc.identify.return_value = TRACK
-    core._track_id_service = svc
+    runtime._track_id_service = svc
     mon = _active_monitor()
     mon._apply_track_id_service(svc)
     mon._artwork_cache = _artwork_cache({ART_URL: COVER, OTHER_ART_URL: OTHER_COVER})

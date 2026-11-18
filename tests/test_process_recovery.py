@@ -84,9 +84,9 @@ class TestCoordinatorExceptionHandler:
         # Patch just enough to reach the coordinator and then fail.
         with patch.object(runtime, "stop_flag") as mock_flag, \
              patch.object(runtime, "reload_flag") as mock_reload, \
-             patch.object(_core_mod, "_playback_tracker", tracker), \
-             patch.object(_core_mod, "all_monitors", {}), \
-             patch.object(_core_mod, "_monitors_lock", threading.Lock()):
+             patch.object(runtime, "_playback_tracker", tracker), \
+             patch.object(runtime, "all_monitors", {}), \
+             patch.object(runtime, "_monitors_lock", threading.Lock()):
 
             # stop_flag.is_set(): False for first coordinator iteration, then trigger error.
             call_count = [0]
