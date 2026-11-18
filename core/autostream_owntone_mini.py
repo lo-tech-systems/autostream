@@ -37,6 +37,7 @@ from autostream_players import (
     SettingDescriptor,
     SettingValueResult,
     failure_code,
+    session_failure_for,
     SETTING_BUFFERED_AUDIO_ENABLED,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
     SETTING_IPV6,
@@ -99,7 +100,8 @@ _rows_carry_session_lock = threading.Lock()
 _rows_carry_session: dict[str, bool] = {}
 _rows_carry_has_homepods: dict[str, bool] = {}
 
-_SESSION_STATES = ("stopped", "startup", "connected", "streaming", "failed", "password")
+# "startup" is what an older daemon says for "connecting"
+_SESSION_STATES = ("stopped", "startup", "connecting", "connected", "streaming", "stopping", "failed", "password")
 
 # Maps owntone-mini server mode values to normalized internal mode constants.
 # "auto" is always a valid PUT value but is intentionally omitted from the
@@ -470,8 +472,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         if isinstance(session, dict):
             state = str(session.get("state") or "").strip().lower()
             fields["session_state"] = state if state in _SESSION_STATES else ""
-            failure = str(session.get("failure") or "").strip().lower()
-            fields["session_failure"] = "capacity" if failure == "capacity" else "none"
+            fields["session_failure"] = session_failure_for(state, session.get("failure"))
             fields["session_held"] = session.get("held") is True
             fields["session_holdable"] = session.get("holdable") is True
 

@@ -55,15 +55,29 @@ class ConnectInfo:
 
 @dataclass(frozen=True)
 class DeviceEvent:
-    kind: str  # "receiver_command" | "device_volume"
+    kind: str  # "receiver_command" | "device_volume" | "output_state"
     speaker_id: str  # the id as a string, "0" for an all-speakers volume
     speaker_name: Optional[str]
-    verb: str
+    verb: str  # "" for output_state
     value: Optional[str]  # device_volume only
     at_ms: int  # the player's monotonic clock, same origin as uptime_ms
     received: float  # time.monotonic() at the sink
     member_id: Optional[str] = None  # the device the event came from; for logs
     protocol: Optional[str] = None  # receiver commands: where it came from; for logs
+    seq: int = 0  # the message's number on its connection; 0 when absent
+    # output_state only: the row as the player has it at the transition. The
+    # state is the row's own, as a read shows it; member_state is the moved
+    # device's own phase, for logs. A field the event leaves out is None (or
+    # "" for the strings), and the row's current value stands.
+    state: str = ""
+    member_state: str = ""
+    reason: str = ""
+    selected: Optional[bool] = None
+    held: Optional[bool] = None
+    holdable: Optional[bool] = None
+    muted: Optional[bool] = None
+    volume: Optional[int] = None
+    pin_pending: Optional[bool] = None
 
 
 class EventSink(Protocol):
@@ -102,33 +116,70 @@ def _call_sink(method: Callable, *args) -> None:
         LOG.exception("Event sink call failed")
 
 
+def _int(value) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _flag(value) -> Optional[bool]:
+    return True if value is True else (False if value is False else None)
+
+
+def _text(value) -> str:
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
 def parse_event(msg: Mapping, received: float) -> Optional[DeviceEvent]:
     """One server "event" message as a DeviceEvent (member_id included), or
-    None for an unknown kind or a message without a speaker or verb (a DEBUG
-    line)."""
+    None for an unknown kind, a message without a speaker, a receiver command
+    or volume without a verb, or a speaker transition without a state (a
+    DEBUG line)."""
     kind = msg.get("kind")
-    if kind not in ("receiver_command", "device_volume"):
+    if kind not in ("receiver_command", "device_volume", "output_state"):
         return None
     speaker = msg.get("speaker")
     verb = msg.get("verb")
-    if not isinstance(speaker, dict) or not isinstance(verb, str) or speaker.get("id") is None:
-        LOG.debug("owntone-mini events: %s event without a speaker or verb ignored", kind)
+    state = _text(msg.get("state"))
+    if not isinstance(speaker, dict) or speaker.get("id") is None:
+        LOG.debug("owntone-mini events: %s event without a speaker ignored", kind)
+        return None
+    if kind == "output_state" and not state:
+        LOG.debug("owntone-mini events: output_state event without a state ignored")
+        return None
+    if kind != "output_state" and not isinstance(verb, str):
+        LOG.debug("owntone-mini events: %s event without a verb ignored", kind)
         return None
     name = speaker.get("name")
     member_id = speaker.get("member_id")
     value = msg.get("value")
-    at_ms = msg.get("at_ms")
     protocol = msg.get("protocol")
-    return DeviceEvent(
+    common = dict(
         kind=kind,
         speaker_id=str(speaker.get("id")),
         speaker_name=name if isinstance(name, str) else None,
-        verb=verb,
-        value=None if value is None or kind != "device_volume" else str(value),
-        at_ms=at_ms if isinstance(at_ms, int) and not isinstance(at_ms, bool) else 0,
+        at_ms=_int(msg.get("at_ms")) or 0,
         received=received,
         member_id=member_id if isinstance(member_id, str) else None,
+        seq=_int(msg.get("seq")) or 0,
+    )
+    if kind == "output_state":
+        volume = _int(msg.get("volume"))
+        return DeviceEvent(
+            verb="", value=None, **common,
+            state=state,
+            member_state=_text(msg.get("member_state")),
+            reason=_text(msg.get("reason")),
+            selected=_flag(msg.get("selected")),
+            held=_flag(msg.get("held")),
+            holdable=_flag(msg.get("holdable")),
+            muted=_flag(msg.get("muted")),
+            volume=None if volume is None else max(0, min(100, volume)),
+            pin_pending=_flag(msg.get("pin_pending")),
+        )
+    return DeviceEvent(
+        verb=verb,
+        value=None if value is None or kind != "device_volume" else str(value),
         protocol=protocol if kind == "receiver_command" and isinstance(protocol, str) else None,
+        **common,
     )
 
 
@@ -164,6 +215,9 @@ class UnixSocketEventSource(EventSource):
         self._buf = bytearray()
         self._recovery = runtime.RecoveryLog("owntone-mini events")
         self._failure_logged = False
+        # The number of the connection's last server message; the source
+        # thread only
+        self._last_seq: Optional[int] = None
         self.pongs = 0
 
     # ------------------------------------------------------------------ API
@@ -252,6 +306,7 @@ class UnixSocketEventSource(EventSource):
         The thread calls it; a test calls it with a scripted socket.
         """
         self._buf = bytearray()
+        self._last_seq = None
         announced = False
         try:
             info = self._handshake(sock)
@@ -265,6 +320,7 @@ class UnixSocketEventSource(EventSource):
         except _Closed as exc:
             reason = str(exc)
         finally:
+            self._last_seq = None
             with self._sock_lock:
                 self._connected = False
         if announced:
@@ -291,6 +347,8 @@ class UnixSocketEventSource(EventSource):
         boot = msg.get("boot")
         uptime = msg.get("uptime_ms")
         capabilities = msg.get("capabilities")
+        # Every server message of a connection is numbered from the hello on
+        self._last_seq = _int(msg.get("seq"))
         return ConnectInfo(
             boot=boot if isinstance(boot, str) and boot else None,
             uptime_ms=uptime if isinstance(uptime, int) and not isinstance(uptime, bool) else None,
@@ -318,6 +376,7 @@ class UnixSocketEventSource(EventSource):
                 msg = self._read_message(sock)
             except socket.timeout:
                 continue
+            self._check_seq(msg, sink)
             mtype = msg.get("type")
             if mtype == "changed":
                 if msg.get("what") == "outputs":
@@ -335,6 +394,19 @@ class UnixSocketEventSource(EventSource):
                 return "error:" + code
             # Any other type is from a newer protocol revision: ignored.
         return "stopped"
+
+    def _check_seq(self, msg: dict, sink: EventSink) -> None:
+        """A gap in the message numbers means messages were lost (the server
+        never drops one on purpose): the outputs are read again."""
+        seq = _int(msg.get("seq"))
+        if seq is None:
+            return
+        last = self._last_seq
+        self._last_seq = seq
+        if last is not None and seq != last + 1:
+            LOG.info("owntone-mini events: %d message(s) missing; reading the outputs again",
+                     max(1, seq - last - 1))
+            _call_sink(sink.on_outputs_changed)
 
     # ------------------------------------------------------------ line I/O
 

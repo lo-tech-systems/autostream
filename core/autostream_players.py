@@ -125,6 +125,27 @@ OUTPUT_MODE_AIRPLAY2_BUFFERED_24 = "airplay2_buffered_24"
 OUTPUT_MODE_AIRPLAY2_SURROUND_STEREO = "airplay2_surround_stereo"
 OUTPUT_MODE_AIRPLAY2_SURROUND_UPMIX = "airplay2_surround_upmix"
 
+# Why a speaker's start or session ended, as owntone-mini names it in a row's
+# session.failure and in an output_state event's reason.
+SESSION_FAILURES = (
+    "none", "pin_required", "pin_invalid", "refused", "unreachable", "timeout",
+    "no_clock", "capacity", "cancelled", "lost",
+)
+
+
+def session_failure_for(state: str, reason) -> str:
+    """A row's or an event's failure reason as autostream reads it: a known
+    reason as it is; an unknown one on a failed speaker as refused, on a
+    speaker waiting for a PIN as pin_required, and otherwise none."""
+    text = str(reason or "").strip().lower()
+    if text in SESSION_FAILURES:
+        return text
+    if state == "failed":
+        return "refused"
+    if state == "password":
+        return "pin_required"
+    return "none"
+
 
 @dataclass(frozen=True)
 class DetectionResult:
@@ -251,7 +272,7 @@ class OutputInfo:
     # Session and has_homepods fields of a backend whose rows carry them; the
     # defaults stand for a backend whose rows do not.
     session_state: str = ""  # "" when the backend has no session object
-    session_failure: str = "none"  # "none" | "capacity"
+    session_failure: str = "none"  # one of SESSION_FAILURES
     # An Apple TV whose HomePods are present; None: the row has no such field.
     has_homepods: Optional[bool] = None
     # The speaker paused itself and the player holds it, and whether a hold

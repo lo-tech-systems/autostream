@@ -167,7 +167,7 @@ class TestUnixConnection:
 
     def test_member_id_is_none_when_absent_or_not_a_string(self):
         def source_for(speaker):
-            line = json.dumps({"type": "event", "seq": 3, "kind": "receiver_command", "verb": "paus",
+            line = json.dumps({"type": "event", "seq": 2, "kind": "receiver_command", "verb": "paus",
                                "speaker": speaker, "at_ms": 1}).encode() + b"\n"
             _source, sink, _sock, _result = serve([fixture_bytes("hello.jsonl") + line])
             return sink.calls[1][1]
@@ -198,6 +198,43 @@ class TestUnixConnection:
     def test_pongs_are_counted(self):
         source, _sink, _sock, _result = serve([fixture_bytes("hello.jsonl", "pong.jsonl")])
         assert source.pongs == 1
+
+    @staticmethod
+    def lines(*msgs) -> bytes:
+        return b"".join(json.dumps(m).encode() + b"\n" for m in msgs)
+
+    def test_a_gap_in_seq_asks_for_a_read(self, caplog):
+        caplog.set_level("INFO", logger=be.__name__)
+        data = fixture_bytes("hello.jsonl") + self.lines(
+            {"type": "changed", "seq": 2, "what": "outputs"},
+            {"type": "event", "seq": 5, "kind": "output_state", "speaker": {"id": "1"}, "state": "connecting"},
+            {"type": "event", "seq": 6, "kind": "output_state", "speaker": {"id": "1"}, "state": "streaming"},
+        )
+        _source, sink, _sock, _result = serve([data])
+        assert sink.names() == ["connected", "changed", "changed", "event", "event", "disconnected"]
+        assert [r.getMessage() for r in caplog.records if "missing" in r.getMessage()] == [
+            "owntone-mini events: 2 message(s) missing; reading the outputs again"]
+
+    def test_seq_restarts_with_each_hello(self):
+        source = make_source()
+        first = fixture_bytes("hello.jsonl") + self.lines({"type": "changed", "seq": 2, "what": "outputs"},
+                                                          {"type": "changed", "seq": 3, "what": "outputs"})
+        _s, sink, _sock, _r = serve([first], source=source)
+        assert sink.names() == ["connected", "changed", "changed", "disconnected"]
+        # The next connection counts from its own hello: no gap
+        second = fixture_bytes("hello.jsonl") + self.lines({"type": "changed", "seq": 2, "what": "outputs"})
+        _s, sink, _sock, _r = serve([second], source=source)
+        assert sink.names() == ["connected", "changed", "disconnected"]
+
+    def test_pongs_count_in_the_sequence(self):
+        data = fixture_bytes("hello.jsonl") + self.lines(
+            {"type": "pong", "seq": 2, "t": 1},
+            {"type": "event", "seq": 3, "kind": "output_state", "speaker": {"id": "1"}, "state": "stopping"},
+            {"type": "error", "seq": 4, "code": "shutting_down"},
+        )
+        _source, sink, _sock, (reason, _good) = serve([data])
+        assert sink.names() == ["connected", "event", "disconnected"]
+        assert reason == "error:shutting_down"
 
     def test_an_error_message_closes_the_connection(self):
         _source, sink, _sock, (reason, good) = serve(
@@ -623,7 +660,55 @@ class TestParseEvent:
 
     def test_a_receiver_command(self):
         ev = be.parse_event(self.msg(), 12.5)
-        assert ev == be.DeviceEvent("receiver_command", "1001", "Speaker A", "paus", None, 190511, 12.5, "1002")
+        assert ev == be.DeviceEvent("receiver_command", "1001", "Speaker A", "paus", None, 190511, 12.5, "1002",
+                                    seq=3)
+
+    @staticmethod
+    def state_msg(**over):
+        base = {"type": "event", "seq": 118, "kind": "output_state",
+                "speaker": {"id": "7429", "member_id": "7430", "name": "Speaker B"},
+                "state": "streaming", "reason": "none", "member_state": "connecting", "member_reason": "none",
+                "selected": True, "held": False, "holdable": True, "muted": False, "volume": 42,
+                "pin_pending": False, "at_ms": 5532104}
+        base.update(over)
+        return base
+
+    def test_output_state_is_parsed_with_every_field(self):
+        ev = be.parse_event(self.state_msg(), 3.0)
+        assert ev == be.DeviceEvent(
+            "output_state", "7429", "Speaker B", "", None, 5532104, 3.0, "7430", seq=118,
+            state="streaming", member_state="connecting", reason="none", selected=True, held=False,
+            holdable=True, muted=False, volume=42, pin_pending=False)
+        failed = be.parse_event(self.state_msg(state="failed", reason="unreachable", selected=False), 3.0)
+        assert (failed.state, failed.reason, failed.selected) == ("failed", "unreachable", False)
+
+    def test_output_state_without_a_state_is_dropped(self):
+        assert be.parse_event(self.state_msg(state=None), 1.0) is None
+        assert be.parse_event(self.state_msg(state=""), 1.0) is None
+        assert be.parse_event(self.state_msg(state=3), 1.0) is None
+        assert be.parse_event(self.state_msg(speaker={"name": "x"}), 1.0) is None
+        # No verb is needed for a speaker transition
+        assert be.parse_event(self.state_msg(), 1.0).verb == ""
+
+    def test_absent_flags_read_none(self):
+        msg = {"type": "event", "kind": "output_state", "speaker": {"id": "5"}, "state": "connecting"}
+        ev = be.parse_event(msg, 1.0)
+        assert (ev.selected, ev.held, ev.holdable, ev.muted, ev.volume, ev.pin_pending) == (None,) * 6
+        assert (ev.reason, ev.member_state, ev.seq) == ("", "", 0)
+        ev = be.parse_event(self.state_msg(selected="yes", held=1, muted=0), 1.0)
+        assert (ev.selected, ev.held, ev.muted) == (None, None, None)
+
+    def test_a_bool_volume_is_not_a_level(self):
+        assert be.parse_event(self.state_msg(volume=True), 1.0).volume is None
+        assert be.parse_event(self.state_msg(volume="40"), 1.0).volume is None
+        assert be.parse_event(self.state_msg(volume=140), 1.0).volume == 100
+        assert be.parse_event(self.state_msg(volume=-3), 1.0).volume == 0
+
+    def test_unknown_fields_are_ignored(self):
+        ev = be.parse_event(self.state_msg(colour="red", member_reason="lost"), 1.0)
+        assert ev.state == "streaming" and not hasattr(ev, "colour")
+        # A state this version does not know still parses; the authority reads the list for it
+        assert be.parse_event(self.state_msg(state="Warming"), 1.0).state == "warming"
 
     def test_a_device_volume_carries_its_value(self):
         ev = be.parse_event(self.msg(kind="device_volume", verb="volumeup", value=45), 1.0)

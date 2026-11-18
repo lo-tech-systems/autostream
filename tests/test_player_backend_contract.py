@@ -1287,6 +1287,26 @@ class TestMiniSessionAndHomepodsFields:
         out = _mini()._normalize_output_info({"id": "x", "session": {"state": "failed", "failure": "capacity"}})
         assert (out.session_state, out.session_failure) == ("failed", "capacity")
 
+    @pytest.mark.parametrize("state", ["connecting", "stopping", "startup"])
+    def test_connecting_stopping_and_startup_parse(self, state):
+        out = _mini()._normalize_output_info({"id": "x", "session": {"state": state, "failure": "none"}})
+        assert out.session_state == state
+
+    @pytest.mark.parametrize("reason", ["none", "pin_required", "pin_invalid", "refused", "unreachable",
+                                        "timeout", "no_clock", "capacity", "cancelled", "lost"])
+    def test_every_reason_parses_into_session_failure(self, reason):
+        out = _mini()._normalize_output_info({"id": "x", "session": {"state": "failed", "failure": reason}})
+        assert out.session_failure == reason
+
+    def test_an_unknown_reason_reads_by_the_rows_state(self):
+        def failure(state):
+            row = {"id": "x", "session": {"state": state, "failure": "taken_over"}}
+            return _mini()._normalize_output_info(row).session_failure
+        # As an event's reason is read: a failed start was refused, a PIN prompt wants a PIN
+        assert failure("failed") == "refused"
+        assert failure("password") == "pin_required"
+        assert failure("streaming") == "none"
+
     def test_upstream_rows_have_no_session_fields(self):
         out = OwnToneBackend(base_url="http://localhost:3689")._normalize_output_info(_ROW_PLAIN)
         assert out.session_state == ""
