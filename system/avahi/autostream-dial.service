@@ -10,5 +10,6 @@
     <txt-record>version=__AUTOSTREAM_RELEASE_TAG__</txt-record>
     <txt-record>dial_sdmon=v1</txt-record>
     <txt-record>dial_proto=v3</txt-record>
+    <txt-record>proto=4</txt-record>
   </service>
 </service-group>

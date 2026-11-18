@@ -1788,6 +1788,10 @@ _APPLIANCE_ID_RE = _re.compile(r'^[0-9a-f]{20}$')
 # Independent of dial_api, which stays v1 so older dials keep working.
 DIAL_PROTO_VERSION = "v3"
 
+# Client protocol number advertised as proto in the appliance TXT records. The
+# script cannot import autostream_protocol, so a test keeps the two equal.
+PROTOCOL = 4
+
 
 def _validate_dial_name(name: str) -> None:
     if not _SAFE_NAME.match(name) or _BAD_CHARS.search(name):
@@ -1895,6 +1899,7 @@ def _write_appliance_service(args) -> int:
     <txt-record>federation=v1</txt-record>
     <txt-record>version={_html.escape(args.version)}</txt-record>
     <txt-record>control={control}</txt-record>
+    <txt-record>proto={PROTOCOL}</txt-record>
     <txt-record>dial_api=v1</txt-record>
     <txt-record>dial_proto={DIAL_PROTO_VERSION}</txt-record>
     <txt-record>dial_status=v1</txt-record>

@@ -27,7 +27,7 @@ _L0 = """
 align_tone appliance_identity artwork auth backend_events bluetooth_client
 bluetooth_facts bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
 federation licensing logging mdns monitor_client nowplaying
-owntone owntone_mini pin_pairing playback_stats player_service players rpi
+owntone owntone_mini pin_pairing playback_stats player_service players protocol rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
@@ -89,6 +89,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_auth": frozenset({"*"}),
     "autostream_commissioning": frozenset({"*"}),
     "autostream_dials": frozenset({"*"}),
+    "autostream_protocol": frozenset({"*"}),
     "autostream_federation": frozenset({"*"}),
     "autostream_sysutils": frozenset({"*"}),
     "autostream_debounce": frozenset({"*"}),

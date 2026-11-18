@@ -1231,6 +1231,36 @@ class TestApplianceService:
         assert "id=" + args.id in records
         assert not any(r.startswith("dial_api=") and r != "dial_api=v1" for r in records)
 
+    def test_appliance_service_advertises_the_protocol_number(self, tmp_path):
+        svc_dir = tmp_path / "avahi"
+        svc_dir.mkdir()
+        svc_file = svc_dir / "autostream.service"
+
+        args = MagicMock()
+        args.version = "v1.2.3"
+        args.id = "a1b2c3d4e5f6a1b2c3d4"
+
+        with patch.object(m, "_AVAHI_SERVICES_DIR", svc_dir), \
+             patch.object(m, "_APPLIANCE_SERVICE", svc_file):
+            assert m._write_appliance_service(args) == 0
+
+        records = [r.text for r in ET.parse(svc_file).getroot().iter("txt-record")]
+        assert f"proto={m.PROTOCOL}" in records
+
+    def test_the_protocol_number_agrees_across_its_copies(self):
+        """The admin script and the dial's service file carry copies of the
+        number the protocol module defines."""
+        core = Path(__file__).resolve().parent.parent / "core"
+        sys.path.insert(0, str(core))
+        try:
+            import autostream_protocol
+        finally:
+            sys.path.remove(str(core))
+        template = Path(__file__).resolve().parent.parent / "system" / "avahi" / "autostream-dial.service"
+        records = [r.text for r in ET.parse(template).getroot().iter("txt-record")]
+        assert m.PROTOCOL == autostream_protocol.PROTOCOL
+        assert f"proto={autostream_protocol.PROTOCOL}" in records
+
     def test_write_appliance_service_control_off_writes_off(self, tmp_path):
         svc_dir = tmp_path / "avahi"
         svc_dir.mkdir()
@@ -2123,7 +2153,7 @@ _FROZEN_PLAYING_KEYS = (
     "dial_status", "dial_outputs", "dial_eq", "id",
 )
 _FROZEN_APPLIANCE_KEYS = (
-    "id", "ui", "federation", "version", "control", "dial_api",
+    "id", "ui", "federation", "version", "control", "proto", "dial_api",
     "dial_proto", "dial_status", "dial_outputs", "dial_eq", "repeat",
 )
 _FROZEN_CAPABILITY_VALUES = {

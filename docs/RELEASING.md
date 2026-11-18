@@ -53,6 +53,12 @@ Draft releases are not returned by the GitHub releases API to unauthenticated ca
 
 ---
 
+## Client protocol number
+
+The client protocol number is defined once, as `PROTOCOL` in `core/autostream_protocol.py`. Two other files carry a copy because they cannot import it: `supervisor/autostream_admin` (`PROTOCOL`, written as `proto` in the appliance's mDNS records) and `system/avahi/autostream-dial.service` (`proto`). `tests/test_autostream_admin.py` fails when the copies disagree. When a release changes the number, change all three together, and release the appliance and the dials together, since a client written for another number is refused.
+
+---
+
 ## Pi appliance verification
 
 The checks below are for maintainers publishing a release. They need a running
