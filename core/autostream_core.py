@@ -15,6 +15,7 @@ variable.
 """
 
 import contextlib
+import importlib
 import os
 import json
 import logging
@@ -233,14 +234,23 @@ def _set_monitor_runtime_info(
         _publish_inputs()
 
 
+# Every module that binds intent rows when it is imported.
+_HANDLER_MODULES = (
+    "autostream_live_config",
+    "autostream_log_policy",
+    "autostream_monitor_control",
+    "autostream_output_intents",
+    "autostream_output_policy",
+)
+
+
 def _bind_intent_handlers() -> None:
     """Import the modules that handle intents; each binds its rows when
     imported."""
-    import autostream_live_config
-    import autostream_log_policy  # noqa: F401
-    import autostream_output_intents  # noqa: F401
-    import autostream_output_policy  # noqa: F401
+    for name in _HANDLER_MODULES:
+        importlib.import_module(name)
 
+    import autostream_live_config
     # Each hook finds the coordinator's function when it is called.
     autostream_live_config.bind_coordinator(autostream_live_config.CoordinatorHooks(
         publish_inputs=lambda: _publish_inputs(),

@@ -57,6 +57,11 @@ import autostream_state.outputs as _outputs_module  # noqa: E402
 
 _outputs_module._threads_allowed = False
 
+# Every intent handler is bound when its module is imported, and the process
+# imports them all at start. Importing the coordinator once here binds them for
+# every test, whichever files run first.
+import autostream_core  # noqa: E402,F401
+
 
 # ---------------------------------------------------------------------------
 # Helpers for loading extensionless supervisor scripts

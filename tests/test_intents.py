@@ -154,6 +154,14 @@ class TestRows:
             "receiver.pause", "receiver.play", "outputs.pause_off",
         }
 
+    def test_every_row_has_a_handler_once_the_coordinator_is_imported(self):
+        import autostream_core  # noqa: F401
+        assert set(table._table._handlers) == set(table.ROWS)
+
+    def test_the_handler_modules_are_the_bound_owners(self):
+        import autostream_core
+        assert set(table._table._owners.values()) == set(autostream_core._HANDLER_MODULES)
+
     @pytest.mark.parametrize("name", sorted(table.ROWS))
     @pytest.mark.parametrize("origin", [Origin.ADOPTED, Origin.BACKEND])
     def test_adopted_and_backend_are_refused_by_every_row(self, name, origin):
