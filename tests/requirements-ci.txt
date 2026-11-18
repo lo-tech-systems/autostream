@@ -13,6 +13,8 @@ pytest-timeout
 # Spreads the suite over the runner's CPUs (pytest -n auto).
 pytest-xdist
 pillow
+# pyflakes gates the dial modules in tests/test_dial_lint.py.
+pyflakes
 # numpy is required on the dial itself (the display driver falls back to a
 # per-pixel Python frame conversion without it, which is unusably slow), and
 # the backend packs RGB565 through it. Listed here so CI exercises that fast
