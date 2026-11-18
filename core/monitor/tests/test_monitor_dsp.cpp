@@ -720,6 +720,32 @@ static void test_reset_rearms_the_mismatch_warning()
           "T14 a mismatch after reset() warns at once");
 }
 
+static void test_discarded_window_lines_are_limited()
+{
+    logger_init(MonitorLogLevel::Debug);
+    logger_test_set_clock(fixed_clock_ns);
+    LogFileCapture capture;
+
+    RateEstimator est;
+    est.reset(48000, 48000);
+    double t = 0.0;
+    prime(est, t);
+    for (int i = 0; i < 20; ++i)
+    {
+        est.mark_capture_loss();
+        feed_reads(est, 48000.0, 6, t);
+    }
+    logger_flush_repeats();
+
+    std::vector<std::string> lines = capture.finish();
+    logger_test_set_clock(nullptr);
+    logger_init(MonitorLogLevel::Warn);
+    CHECK(count_lines_containing(lines, "Rate window discarded") == 1,
+          "T17 twenty discarded windows write one line");
+    CHECK(count_lines_containing(lines, "rate window discarded: ") == 1,
+          "T17 the rest are counted");
+}
+
 static void test_turning_matching_on_steps_from_existing_evidence()
 {
     RateEstimator est;
@@ -1824,6 +1850,7 @@ int main()
     test_mismatch_clears_only_after_three_nominal_windows();
     test_mismatch_warning_is_limited_and_paired_with_cleared();
     test_reset_rearms_the_mismatch_warning();
+    test_discarded_window_lines_are_limited();
     test_turning_matching_on_steps_from_existing_evidence();
     test_turning_matching_off_reverts_the_nominal();
     test_turning_matching_on_for_an_honest_device_does_not_step();

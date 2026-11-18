@@ -592,13 +592,14 @@ void RateEstimator::close_detector_window(double now)
 
     if (discard)
     {
+        const LogSlot discarded = log_key(LogKey::RateWindowDiscarded, _input_index);
         if (tainted)
-            LOG_DEBUG("[input%d] Rate window discarded: xrun inside window", _input_index);
+            LOG_DEBUG_EVERY(discarded, 5.0, "[input%d] Rate window discarded: xrun inside window", _input_index);
         else if (lost)
-            LOG_DEBUG("[input%d] Rate window discarded: no time elapsed", _input_index);
+            LOG_DEBUG_EVERY(discarded, 5.0, "[input%d] Rate window discarded: no time elapsed", _input_index);
         else
-            LOG_DEBUG("[input%d] Rate window discarded: %.1f Hz over %.3f s",
-                      _input_index, measured, elapsed);
+            LOG_DEBUG_EVERY(discarded, 5.0, "[input%d] Rate window discarded: %.1f Hz over %.3f s",
+                            _input_index, measured, elapsed);
         return;
     }
 
@@ -616,8 +617,9 @@ void RateEstimator::close_detector_window(double now)
         _run_class = cls;
         _run_count = (cls == 0) ? 0 : 1;
         if (cls != 0 && cls != _input_rate)
-            LOG_DEBUG("[input%d] Rate class candidate: %d Hz (measured %.1f Hz, nominal %d Hz)",
-                      _input_index, cls, measured, _input_rate);
+            LOG_DEBUG_EVERY(log_key(LogKey::RateClassCandidate, _input_index), 5.0,
+                            "[input%d] Rate class candidate: %d Hz (measured %.1f Hz, nominal %d Hz)",
+                            _input_index, cls, measured, _input_rate);
     }
     else if (_run_count < DETECT_AGREE_WINDOWS)
     {
