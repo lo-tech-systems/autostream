@@ -28,6 +28,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
+import autostream_announce as announce
 import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
@@ -79,7 +80,7 @@ from autostream_player_service import (
     sync_monitor_args_for_audio_path,
     update_output,
 )
-from autostream_rpi import get_appliance_id, is_high_performance_pi
+from autostream_rpi import is_high_performance_pi
 from autostream_playback_stats import (
     DEFAULT_FLUSH_INTERVAL_SECONDS,
     DEFAULT_STYLUS_LIFE_HOURS,
@@ -96,8 +97,6 @@ from autostream_sysutils import (
     get_install_state,
     log_lifecycle,
     run_admin_cmd,
-    write_avahi_playing_service,
-    remove_avahi_playing_service,
 )
 
 
@@ -115,9 +114,8 @@ from autostream_sysutils import (
 #
 # Independent, single-purpose locks (each guards something distinct enough
 # that folding it into a group below would blur its meaning):
-#   (_monitors_lock and _track_id_request_gate are in autostream_runtime)
-#   _playing_lock                             -- Avahi "playing" announcement
-#                                                 file state
+#   (_monitors_lock and _track_id_request_gate are in autostream_runtime;
+#    the Avahi "playing" announcement lock is in autostream_announce)
 #   _nowplaying_republish_lock                -- one-shot republish-request flag
 #
 # "Session/output-arbitration state" group -- all three read together by the
@@ -276,55 +274,6 @@ def get_active_track_identification_snapshot():
     if runtime._track_id_service is not None:
         return waiting_snapshot()
     return disabled_snapshot()
-
-
-# ---------------------------------------------------------------------------
-# mDNS playing-state lifecycle
-# ---------------------------------------------------------------------------
-
-_AVAHI_PLAYING_PATH = Path("/etc/avahi/services/autostream-playing.service")
-_playing_lock = threading.Lock()
-_playing_announced: bool = False
-_reconcile_started: bool = False
-# Release string the coordinator passes to _sync_playing_announcement; set by
-# run_autostream so an API-thread caller can announce without knowing it.
-# None until the coordinator has started.
-_playing_version: Optional[str] = None
-
-
-def _sync_playing_announcement(active: bool, version: str) -> None:
-    """Idempotently sync the _autostream-playing._tcp mDNS announcement.
-
-    *active* is the unified playback-session flag (live input or repeat
-    replay -- see get_session_state()): writes the avahi service file when a
-    session is active and the service is not yet announced; removes it when
-    no session is active and the service is currently announced.  Updates
-    _playing_announced only after a successful admin call.  Thread-safe;
-    never raises.
-    """
-    global _playing_announced
-    active = bool(active)
-    with _playing_lock:
-        if active and not _playing_announced:
-            if write_avahi_playing_service(version, get_appliance_id()):
-                _playing_announced = True
-        elif not active and _playing_announced:
-            if remove_avahi_playing_service():
-                _playing_announced = False
-
-
-def _start_playing_reconciliation(version: str) -> None:
-    """Start a daemon thread that periodically re-syncs the playing announcement.
-
-    Recovers from transient admin failures by re-driving the idempotent sync
-    from the current session state each tick.
-    """
-    def _reconcile() -> None:
-        while True:
-            time.sleep(60)
-            _sync_playing_announcement(get_session_state()["active"], version)
-
-    threading.Thread(target=_reconcile, daemon=True, name="playing-reconcile").start()
 
 
 _monitor_writer = autostream_state.store().claim("monitor", "autostream_core")
@@ -666,7 +615,7 @@ def _announce_playing_if_active(version: str) -> None:
     stop landing inside the window between this read and the write is
     corrected by the coordinator's next tick or the periodic reconciliation.
     """
-    _sync_playing_announcement(get_session_state()["active"], version)
+    announce.sync_playing_announcement(get_session_state()["active"], version)
 
 
 def _announce_replay_playing() -> None:
@@ -674,13 +623,13 @@ def _announce_replay_playing() -> None:
 
     Called from apply_repeat_ack on the API thread, so the write (a sudo
     admin call) is handed to the task pool rather than run inline. The
-    submission is single-flight, and _sync_playing_announcement is
-    idempotent under _playing_lock, so the coordinator's own sync later in
+    submission is single-flight, and sync_playing_announcement is
+    idempotent under its lock, so the coordinator's own sync later in
     the session either finds it announced or waits briefly for the write:
     one write per session. Never raises.
     """
-    version = _playing_version
-    if version is None or _playing_announced:
+    version = announce._playing_version
+    if version is None or announce._playing_announced:
         return
     try:
         runtime._task_pool.submit(
@@ -4654,7 +4603,6 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     if settings is None:
         settings = _SettingsStore(config_path)
 
-    global _playing_announced
     _install_signal_handlers()
     cfg = settings.snapshot()
     log_setup.setup_logging(cfg.general.log_file, cfg.general.log_level)
@@ -4689,10 +4637,9 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     switch_silence_seconds = 5.0 # how long current input must be silent before switching
 
     # Remove any stale playing announcement from a previous crash, then
-    # sync _playing_announced to filesystem truth so _sync_playing_announcement
+    # sync the announced flag to filesystem truth so sync_playing_announcement
     # does not attempt a redundant remove on the first poll.
-    remove_avahi_playing_service()
-    _playing_announced = _AVAHI_PLAYING_PATH.exists()
+    announce.reset_at_startup()
     _start_output_usage_poller(cfg)
 
     return _BootstrapResult(
@@ -4880,8 +4827,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     the coordinator exits.  Pass an externally-owned store to share the same
     in-memory config between the coordinator and the Web UI.
     """
-    global _reconcile_started, _playing_version
-
     bootstrap = _bootstrap(config_path, start_webui, settings)
     settings = bootstrap.settings
     _own_settings = bootstrap.own_settings
@@ -4889,7 +4834,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     webui_thread = bootstrap.webui_thread
     socket_path = bootstrap.socket_path
     version = bootstrap.version
-    _playing_version = version
+    announce.set_version(version)
     POLL_INTERVAL = bootstrap.poll_interval
     SWITCH_SILENCE_SECONDS = bootstrap.switch_silence_seconds
 
@@ -4934,9 +4879,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             len(monitors),
         )
 
-        if not _reconcile_started:
-            _start_playing_reconciliation(version)
-            _reconcile_started = True
+        announce.start_reconciliation_once(
+            version, session_active=lambda: get_session_state()["active"])
 
         _start_output_usage_poller(cfg)
 
@@ -5152,7 +5096,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # The LAN "playing" announcement is a consumer of the session
                 # state (so repeat replay counts, not just live capture); the
                 # sync is idempotent and only touches avahi on a transition.
-                _sync_playing_announcement(session_source is not None, version)
+                announce.sync_playing_announcement(session_source is not None, version)
 
                 hint_dials_after_cycle(session_event, dial_hint_watches)
 
@@ -5288,7 +5232,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 tracker.save()
             with runtime._monitors_lock:
                 runtime.all_monitors.clear()
-            _sync_playing_announcement(False, version)
+            announce.sync_playing_announcement(False, version)
             client.close()
             if not _reloading:
                 log_lifecycle("autostream stopped cleanly")

@@ -924,7 +924,7 @@ class TestRepeatAndLoopCallSites:
         assert src.count("hint_dials_after_cycle(") == 1
         hook = src.index("hint_dials_after_cycle(session_event, dial_hint_watches)")
         assert src.index(
-            "_sync_playing_announcement(session_source is not None, version)") < hook
+            "announce.sync_playing_announcement(session_source is not None, version)") < hook
         assert hook < src.index("_teardown_identification_after_replay_end(")
         flat = " ".join(src.split())
         assert ('ChangeWatch("repeat", lambda: '

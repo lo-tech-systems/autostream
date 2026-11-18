@@ -28,6 +28,7 @@ from autostream_core import _check_webui_thread
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_logging as log_setup
+import autostream_announce as announce
 
 
 # ---------------------------------------------------------------------------
@@ -338,9 +339,9 @@ class TestOutputUsageStartup:
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(_core_mod, "_ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
-             patch.object(_core_mod, "remove_avahi_playing_service",
+             patch.object(announce, "remove_avahi_playing_service",
                           side_effect=lambda: calls.append("remove-playing")), \
-             patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
              patch.object(_core_mod, "_start_output_usage_poller",
                           side_effect=lambda _cfg: calls.append("output-usage")), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
@@ -380,8 +381,8 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(_core_mod, "_ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
-             patch.object(_core_mod, "remove_avahi_playing_service"), \
-             patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(announce, "remove_avahi_playing_service"), \
+             patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
              patch.object(_core_mod, "_start_output_usage_poller"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(_core_mod, "_cleanup_discovery"):
@@ -413,8 +414,8 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(_core_mod, "_ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
-             patch.object(_core_mod, "remove_avahi_playing_service"), \
-             patch.object(_core_mod, "_AVAHI_PLAYING_PATH") as avahi_path, \
+             patch.object(announce, "remove_avahi_playing_service"), \
+             patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
              patch.object(_core_mod, "_start_output_usage_poller"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(_core_mod, "_cleanup_discovery"):

@@ -1,0 +1,10 @@
+# The playing announcement moved from the coordinator into its own module.
+autostream_core._sync_playing_announcement -> autostream_announce.sync_playing_announcement  alias=announce
+autostream_core._start_playing_reconciliation -> autostream_announce._start_playing_reconciliation  alias=announce
+autostream_core._playing_announced -> autostream_announce._playing_announced  alias=announce
+autostream_core._playing_version -> autostream_announce._playing_version  alias=announce
+autostream_core._reconcile_started -> autostream_announce._reconcile_started  alias=announce
+autostream_core._AVAHI_PLAYING_PATH -> autostream_announce._AVAHI_PLAYING_PATH  alias=announce
+autostream_core.write_avahi_playing_service -> autostream_announce.write_avahi_playing_service  alias=announce
+autostream_core.remove_avahi_playing_service -> autostream_announce.remove_avahi_playing_service  alias=announce
+autostream_core.get_appliance_id -> autostream_announce.get_appliance_id  alias=announce

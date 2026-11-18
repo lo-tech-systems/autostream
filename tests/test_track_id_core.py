@@ -2564,7 +2564,7 @@ class TestReplayEndTeardown:
         teardown = src.index("_teardown_identification_after_replay_end(")
         assert teardown > src.index("_dispatch_session_event(")
         assert teardown > src.index("_set_session_state(")
-        assert teardown > src.index("_sync_playing_announcement(")
+        assert teardown > src.index("announce.sync_playing_announcement(")
 
     def test_teardown_takes_the_ti_state_lock(self):
         mon = self._origin()

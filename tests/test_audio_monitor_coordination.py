@@ -542,6 +542,7 @@ import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
+import autostream_announce as announce
 
 
 def _fake_connected(client):
@@ -1267,48 +1268,48 @@ _FIXED_APPLIANCE_ID = "a1b2c3d4e5f6a1b2c3d4"
 
 class TestSyncPlayingAnnouncement:
     def setup_method(self):
-        core._playing_announced = False
-        self._id_patcher = patch.object(core, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID)
+        announce._playing_announced = False
+        self._id_patcher = patch.object(announce, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID)
         self._id_patcher.start()
 
     def teardown_method(self):
         self._id_patcher.stop()
-        core._playing_announced = False
+        announce._playing_announced = False
 
     def test_zero_to_one_writes_avahi_service(self):
-        with patch.object(core, "write_avahi_playing_service", return_value=True) as mock_write:
-            core._sync_playing_announcement(True, "v1")
+        with patch.object(announce, "write_avahi_playing_service", return_value=True) as mock_write:
+            announce.sync_playing_announcement(True, "v1")
         mock_write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
-        assert core._playing_announced is True
+        assert announce._playing_announced is True
 
     def test_write_failure_leaves_announced_false(self):
-        with patch.object(core, "write_avahi_playing_service", return_value=False):
-            core._sync_playing_announcement(True, "v1")
-        assert core._playing_announced is False
+        with patch.object(announce, "write_avahi_playing_service", return_value=False):
+            announce.sync_playing_announcement(True, "v1")
+        assert announce._playing_announced is False
 
     def test_one_to_zero_removes_avahi_service(self):
-        core._playing_announced = True
-        with patch.object(core, "remove_avahi_playing_service", return_value=True) as mock_remove:
-            core._sync_playing_announcement(False, "v1")
+        announce._playing_announced = True
+        with patch.object(announce, "remove_avahi_playing_service", return_value=True) as mock_remove:
+            announce.sync_playing_announcement(False, "v1")
         mock_remove.assert_called_once()
-        assert core._playing_announced is False
+        assert announce._playing_announced is False
 
     def test_remove_failure_leaves_announced_true(self):
-        core._playing_announced = True
-        with patch.object(core, "remove_avahi_playing_service", return_value=False):
-            core._sync_playing_announcement(False, "v1")
-        assert core._playing_announced is True
+        announce._playing_announced = True
+        with patch.object(announce, "remove_avahi_playing_service", return_value=False):
+            announce.sync_playing_announcement(False, "v1")
+        assert announce._playing_announced is True
 
     def test_already_announced_skips_write(self):
-        core._playing_announced = True
-        with patch.object(core, "write_avahi_playing_service") as mock_write:
-            core._sync_playing_announcement(True, "v1")
+        announce._playing_announced = True
+        with patch.object(announce, "write_avahi_playing_service") as mock_write:
+            announce.sync_playing_announcement(True, "v1")
         mock_write.assert_not_called()
 
     def test_not_announced_and_not_active_skips_remove(self):
-        core._playing_announced = False
-        with patch.object(core, "remove_avahi_playing_service") as mock_remove:
-            core._sync_playing_announcement(False, "v1")
+        announce._playing_announced = False
+        with patch.object(announce, "remove_avahi_playing_service") as mock_remove:
+            announce.sync_playing_announcement(False, "v1")
         mock_remove.assert_not_called()
 
     def test_reconciliation_reads_session_state_not_capture_flags(self):
@@ -1316,12 +1317,12 @@ class TestSyncPlayingAnnouncement:
         # the reconcile tick derives its predicate from get_session_state().
         core._set_session_state(True, "replay")
         try:
-            with patch.object(core, "write_avahi_playing_service", return_value=True) as mock_write:
-                core._sync_playing_announcement(
+            with patch.object(announce, "write_avahi_playing_service", return_value=True) as mock_write:
+                announce.sync_playing_announcement(
                     core.get_session_state()["active"], "v1"
                 )
             mock_write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
-            assert core._playing_announced is True
+            assert announce._playing_announced is True
         finally:
             core._set_session_state(False, None)
 
@@ -1347,13 +1348,13 @@ def _repeat_ack(command, state):
 
 class TestReplayAckAnnouncement:
     def setup_method(self):
-        core._playing_announced = False
-        core._playing_version = "v1"
+        announce._playing_announced = False
+        announce._playing_version = "v1"
         core._set_session_state(False, None)
 
     def teardown_method(self):
-        core._playing_announced = False
-        core._playing_version = None
+        announce._playing_announced = False
+        announce._playing_version = None
         core._set_repeat_status(None)
         core._set_session_state(False, None)
 
@@ -1371,12 +1372,12 @@ class TestReplayAckAnnouncement:
             "playing-announce", core._announce_playing_if_active, "v1")
 
     def test_replaying_ack_is_a_noop_when_already_announced(self):
-        core._playing_announced = True
+        announce._playing_announced = True
         submit = self._ack_from_hold()
         submit.assert_not_called()
 
     def test_replaying_ack_is_a_noop_without_a_version(self):
-        core._playing_version = None
+        announce._playing_version = None
         submit = self._ack_from_hold()
         submit.assert_not_called()
 
@@ -1420,26 +1421,25 @@ class TestReplayAckAnnouncement:
         # A stop that lands before the pooled task runs must not leave the
         # service announced.
         core._set_session_state(False, None)
-        with patch.object(core, "write_avahi_playing_service") as write:
+        with patch.object(announce, "write_avahi_playing_service") as write:
             core._announce_playing_if_active("v1")
         write.assert_not_called()
-        assert core._playing_announced is False
+        assert announce._playing_announced is False
 
     def test_worker_announces_while_the_session_is_active(self):
         core._set_session_state(True, "replay")
-        with patch.object(core, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
-             patch.object(core, "write_avahi_playing_service",
+        with patch.object(announce, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
+             patch.object(announce, "write_avahi_playing_service",
                           return_value=True) as write:
             core._announce_playing_if_active("v1")
-            core._sync_playing_announcement(True, "v1")
+            announce.sync_playing_announcement(True, "v1")
         write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
-        assert core._playing_announced is True
+        assert announce._playing_announced is True
 
     def test_run_autostream_records_the_version(self):
         import inspect
         src = inspect.getsource(core.run_autostream)
-        assert "_playing_version = version" in src
-        assert "_playing_version" in src.split("global", 1)[1].split("\n", 1)[0]
+        assert "announce.set_version(version)" in src
 
 
 # ---------------------------------------------------------------------------

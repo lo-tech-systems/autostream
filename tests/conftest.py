@@ -144,29 +144,24 @@ def _hermetic_playing_announcement(monkeypatch):
     run_autostream()/the poll cycle with mock monitors would therefore
     invoke the real avahi service-file helpers (a sudo autostream_admin
     subprocess per transition) and leave a real daemon thread running for
-    the rest of the pytest session. Stub both at the autostream_core
+    the rest of the pytest session. Stub both at the autostream_announce
     import site; tests that assert on the announcement itself re-patch
     these names inside the test, which nests over this seal.
-
-    autostream_core is imported here (not looked up lazily) because many
-    coordinator tests import it inside the test body, after fixture setup.
     """
     repo_core = str(Path(__file__).parent.parent / "core")
     if repo_core not in sys.path:
         sys.path.insert(0, repo_core)
     try:
-        import autostream_core as m
+        import autostream_announce as announce
     except Exception:
         yield
         return
-    monkeypatch.setattr(m, "write_avahi_playing_service", lambda version, appliance_id=None: True)
-    monkeypatch.setattr(m, "remove_avahi_playing_service", lambda: True)
-    monkeypatch.setattr(m, "_start_playing_reconciliation", lambda version: None)
-    m._playing_announced = False
+    monkeypatch.setattr(announce, "write_avahi_playing_service", lambda version, appliance_id=None: True)
+    monkeypatch.setattr(announce, "remove_avahi_playing_service", lambda: True)
+    monkeypatch.setattr(announce, "_start_playing_reconciliation", lambda version, session_active=None: None)
+    announce.reset_for_tests()
     yield
-    m._playing_announced = False
-    m._playing_version = None
-    m._reconcile_started = False
+    announce.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)
@@ -179,8 +174,8 @@ def _inert_dial_state_hints(monkeypatch):
     repo_core = str(Path(__file__).parent.parent / "core")
     if repo_core not in sys.path:
         sys.path.insert(0, repo_core)
-    import autostream_dial_push as m
-    monkeypatch.setattr(m, "_coalescer", m.StateChangeCoalescer(
+    import autostream_dial_push as dial_push
+    monkeypatch.setattr(dial_push, "_coalescer", dial_push.StateChangeCoalescer(
         lambda kinds, except_dials: None, schedule=lambda delay, fn: None))
     yield
 
