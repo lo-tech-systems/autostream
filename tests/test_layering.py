@@ -123,7 +123,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
         "get_all_appliances", "get_appliance_sighting", "get_conflict_ids",
         "scanner_ready", "grace_remaining_ms",
     }),
-    "autostream_pin_pairing": frozenset({"REQUESTER_WEBUI", "dial_requester"}),
+    "autostream_pin_pairing": frozenset({"PIN_RE", "REQUESTER_WEBUI", "dial_requester"}),
     "autostream_align": frozenset({
         "parse_result_entries", "AlignArrival", "AlignResult",
     }),
@@ -138,6 +138,7 @@ LIVE_PINNED: frozenset[str] = frozenset({
     "get_owntone_runtime_info", "get_vibra_runtime_info",
     "annotate_outputs", "get_log_level_state",
     "get_align_status", "get_align_review",
+    "start_buffer_ms", "pin_claim", "current_warnings", "warnings_payload",
 })
 
 # Packages whose public names (from __all__) an L3 module may import.
@@ -371,10 +372,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_routes', 'autostream_webui', '*'),
     ('C', 'autostream_appliance_gateway', 'autostream_appliances', 'ApplianceSighting'),
     ('C', 'autostream_appliance_gateway', 'autostream_appliances', 'register_peer_removal_callback'),
-    ('C', 'autostream_appliance_models', 'autostream_pin_pairing', '*'),
-    ('C', 'autostream_webui_api', 'autostream_dial_warnings', 'current_warnings'),
-    ('C', 'autostream_webui_api', 'autostream_dial_warnings', 'warnings_payload'),
-    ('C', 'autostream_webui_api', 'autostream_start_buffer_cache', '*'),
     ('C', 'autostream_webui_common', 'autostream_config', 'load_config'),
     ('C', 'autostream_webui_post_handlers', 'autostream_config', 'load_config'),
     ('D', 'autostream_webui_api', 'subprocess', '*'),

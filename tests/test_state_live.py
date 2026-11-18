@@ -203,3 +203,26 @@ class TestBoundReads:
             assert live.annotate_outputs([]) == ["patched"]
         with patch("autostream_log_policy.get_log_level_state", return_value={"ok": True}):
             assert live.get_log_level_state("c.ini") == {"ok": True}
+
+
+class TestPinClaimAndWarningsReads:
+    def test_pin_claim_returns_the_holder_of_a_claim(self):
+        import autostream_pin_pairing as pairing
+        fresh = pairing.PairingState(clock=lambda: 100.0)
+        with patch.object(pairing, "STATE", fresh):
+            assert live.pin_claim("o1") == ""
+            pairing.claim("o1", "dial:abc")
+            assert live.pin_claim("o1") == "dial:abc"
+            assert live.pin_claim("o2") == ""
+
+    def test_the_warnings_reads_are_unbound_until_their_owner_binds_them(self):
+        with patch.dict(live._bound, clear=True):
+            with pytest.raises(live.LiveNotBound):
+                live.current_warnings()
+            with pytest.raises(live.LiveNotBound):
+                live.warnings_payload([])
+
+    def test_the_warnings_reads_are_owned_by_the_dial_warnings_module(self):
+        import autostream_dial_warnings  # noqa: F401
+        assert live.bound_owner("current_warnings") == "autostream_dial_warnings"
+        assert live.bound_owner("warnings_payload") == "autostream_dial_warnings"

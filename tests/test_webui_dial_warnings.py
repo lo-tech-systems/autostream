@@ -20,6 +20,7 @@ if _core not in sys.path:
 
 import autostream_dial_warnings as dw
 import autostream_webui_routes as routes_mod
+from autostream_state import live
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE, DIAL_CAPABILITIES
 from autostream_webui_api import send_dial_warnings_post_json
 from autostream_webui_state import WebUIState
@@ -92,6 +93,14 @@ class TestReply:
     def test_identity_less_appliance_reports_null(self):
         _, body, _ = _invoke({"dial_id": DIAL_ID}, appliance_id=None)
         assert body["appliance_id"] is None
+
+    def test_the_list_is_the_payload_of_the_built_warnings(self):
+        payload = MagicMock(return_value=[{"id": "x"}])
+        with patch.dict(live._bound):
+            live._bound["warnings_payload"] = (payload, "autostream_dial_warnings")
+            _, body, _ = _invoke({"dial_id": DIAL_ID})
+        payload.assert_called_once_with([STYLUS])
+        assert body["warnings"] == [{"id": "x"}]
 
     def test_build_failure_is_config_error(self):
         code, body, _ = _invoke({"dial_id": DIAL_ID}, build_error=OSError("gone"))

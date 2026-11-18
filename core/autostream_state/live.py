@@ -83,7 +83,8 @@ class LiveNotBound(RuntimeError):
 
 
 # Names that a Level 2 module implements and binds when it is imported.
-BINDABLE = ("annotate_outputs", "get_log_level_state", "get_align_status", "get_align_review")
+BINDABLE = ("annotate_outputs", "get_log_level_state", "get_align_status", "get_align_review",
+            "current_warnings", "warnings_payload")
 
 _bound_lock = threading.Lock()
 _bound: dict[str, tuple[Callable, str]] = {}
@@ -152,6 +153,22 @@ def get_vibra_runtime_info():
     return vibra_shazam.get_vibra_runtime_info()
 
 
+def start_buffer_ms(base_url: Optional[str]) -> int:
+    """The player's audio start buffer in ms, from the in-memory cache: never
+    waits on the player, and may start one background refresh
+    (autostream_start_buffer_cache.current_ms)."""
+    import autostream_start_buffer_cache as start_buffer_cache  # noqa: PLC0415
+    return start_buffer_cache.current_ms(base_url)
+
+
+def pin_claim(output_id: str) -> str:
+    """Who is entering a PIN for *output_id* now ("webui", "dial:<id>"), or ""
+    (autostream_pin_pairing.holder). A claim lapses with time, so it is read,
+    not published."""
+    import autostream_pin_pairing as pairing  # noqa: PLC0415
+    return pairing.holder(output_id)
+
+
 def annotate_outputs(outputs: list[dict]) -> list[dict]:
     """The output dicts with remote-occupancy fields added (bound by autostream_output_usage)."""
     return _call_bound("annotate_outputs", outputs)
@@ -170,3 +187,13 @@ def get_align_status() -> dict:
 def get_align_review():
     """The calibration run's snapshots and pending result (bound by autostream_align)."""
     return _call_bound("get_align_review")
+
+
+def current_warnings() -> list:
+    """The warnings this appliance wants a dial to show (bound by autostream_dial_warnings)."""
+    return _call_bound("current_warnings")
+
+
+def warnings_payload(warnings) -> list:
+    """*warnings* as the dial warnings route's list of objects (bound by autostream_dial_warnings)."""
+    return _call_bound("warnings_payload", warnings)

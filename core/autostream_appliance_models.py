@@ -13,9 +13,9 @@ import math
 import time
 from typing import Optional
 
-import autostream_pin_pairing as pairing
 from autostream_config import parse_config
-from autostream_state.live import get_live_output_eq_status, get_setting
+from autostream_pin_pairing import PIN_RE
+from autostream_state.live import get_live_output_eq_status, get_setting, pin_claim
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, store
@@ -73,7 +73,7 @@ def build_output_list(parsed, units) -> list[dict]:
             "needs_auth_key": bool(row.needs_auth_key),
             "requires_auth": bool(row.requires_auth),
             "pin_pending": bool(row.pin_pending),
-            "pin_claim": pairing.holder(out_id),
+            "pin_claim": pin_claim(out_id),
         })
 
     if default_output_name:
@@ -448,7 +448,7 @@ def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
     op = str(body.get("op") or "").strip().lower()
     if op == "pin":
         pin_val = body.get("pin")
-        if not isinstance(pin_val, str) or not pairing.PIN_RE.match(pin_val):
+        if not isinstance(pin_val, str) or not PIN_RE.match(pin_val):
             return None, "invalid_request_body"
         sanitized["op"] = "pin"
         sanitized["pin"] = pin_val

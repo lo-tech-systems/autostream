@@ -47,7 +47,6 @@ from types import SimpleNamespace
 from typing import Optional
 
 import autostream_logging as log_setup
-import autostream_start_buffer_cache as start_buffer_cache
 import autostream_watcher_client as watcher_client
 
 from autostream_bluetooth_client import (
@@ -85,8 +84,12 @@ from autostream_dials import (
 from autostream_intents import Intent, submit
 from autostream_settings import SettingsView
 from autostream_state import Origin, active_track, session_source_input_index, store
-from autostream_dial_warnings import current_warnings, warnings_payload
-from autostream_state.live import get_live_output_eq_status
+from autostream_state.live import (
+    current_warnings,
+    get_live_output_eq_status,
+    start_buffer_ms,
+    warnings_payload,
+)
 from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
 from autostream_appliance_models import (
     home_outputs_reply,
@@ -929,7 +932,7 @@ def _dial_repeat_object(base_url: str | None = None, snap=None) -> dict | None:
             "position_seconds": float(rep.get("position_seconds") or 0.0),
             "duration_seconds": float(rep.get("duration_seconds") or 0.0),
         },
-        "latency_ms": start_buffer_cache.current_ms(base_url),
+        "latency_ms": start_buffer_ms(base_url),
     }
 
 

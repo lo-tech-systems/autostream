@@ -427,6 +427,7 @@ def _unpatched(recorder: Recorder, name: str) -> Callable:
 def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
     import autostream_appliance_models as models
+    import autostream_dial_warnings  # noqa: F401  binds the live warnings reads
     import autostream_monitor_client as monitor_client
     import autostream_federation as federation
     import autostream_player_service as player_service

@@ -532,7 +532,11 @@ class TestLatePin:
     def test_the_state_package_does_not_import_the_pairing_module(self):
         import ast
         from pathlib import Path as P
+        # Only the live reads may ask it, for who holds a PIN claim; the part
+        # publishers and the authority never do.
         for path in (P(intents_mod.__file__).parent / "autostream_state").glob("*.py"):
+            if path.name == "live.py":
+                continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             names = {
                 n.names[0].name if isinstance(n, ast.Import) else (n.module or "")

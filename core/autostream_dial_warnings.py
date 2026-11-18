@@ -23,7 +23,7 @@ from typing import Callable, Optional
 
 import autostream_dial_push as dial_push
 from autostream_rpi import get_appliance_id
-from autostream_state import store
+from autostream_state import live, store
 
 # Limits a dial applies to what it receives; the text here is built to fit.
 WARNINGS_MAX = 8
@@ -207,6 +207,10 @@ def current_warnings() -> list[DialWarning]:
 
 def warnings_payload(warnings) -> list[dict]:
     return [asdict(w) for w in warnings]
+
+
+live.bind("current_warnings", current_warnings, owner="autostream_dial_warnings")
+live.bind("warnings_payload", warnings_payload, owner="autostream_dial_warnings")
 
 
 def warnings_digest(warnings) -> str:
