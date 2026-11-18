@@ -877,31 +877,41 @@ def compact_picker_layout_for(
 @dataclass(frozen=True)
 class WarningLayout:
     """A warning or status card with any number of button cells: a card (the
-    whole panel on every tier) split into a full-width
-    message row over `cells` (left to right), with the usual 2*margin dead gap between every pair of neighbours, a horizontal divider
-    under the message row (divider_y) and a vertical divider between each
-    neighbouring pair of cells (divider_xs, one fewer than the cells,
-    drawn in the bottom row only). With no cells the message row is the
-    whole card and there is no divider."""
+    whole panel on every tier) split into a full-width message row over
+    `cells` (left to right), with the usual 2*margin dead gap between every
+    pair of neighbours, a horizontal divider under the message row
+    (divider_y) and a vertical divider between each neighbouring pair of
+    cells (divider_xs, one fewer than the cells, drawn in the bottom row
+    only). With no cells the message row is the whole card and there is no
+    divider. Off the compact tier the cells are the playing screen's footer
+    controls' height and source_band_h is the top bar's height (the source
+    band across the top of the message row); on compact the cells take a
+    third of the panel and source_band_h is None (the band is sized from
+    its text)."""
 
     card: Rect
     message: Rect
     cells: tuple[Rect, ...]
     divider_y: "int | None"
     divider_xs: tuple[int, ...]
+    source_band_h: "int | None" = None
 
 
 def warning_layout_for(
     width: int, height: int, buttons: int, metrics: "LayoutMetrics | None" = None,
 ) -> WarningLayout:
     """The card geometry for *buttons* cells. The card is the whole panel on
-    every tier (on compact it shares the 2x2 grid's columns for two cells);
-    its two rows (the message row two thirds, the buttons one third) and its
-    bottom-row cells are split with the same _split(total, margin, weights)
-    rule every table here uses. One cell spans the whole bottom row. No
-    buttons is a notice: the message row is the whole card, with no cells, no
-    dividers and no horizontal divider (divider_y is None). metrics=None
-    means metrics_for(width, height)."""
+    every tier. Off the compact tier the button row is the playing screen's
+    footer row (band_h tall, at the bottom, one cell per button split across
+    the width), the source band is the top bar's height (source_band_h =
+    band_h) and the message row is what is left above the row, a margin
+    short of it. On compact (which shares the 2x2 grid's columns for two
+    cells) the message row is two thirds and the buttons one third, split
+    with the same _split(total, margin, weights) rule every table here uses,
+    and source_band_h is None. One cell spans the whole bottom row. No
+    buttons is a notice on every tier: the message row is the whole card,
+    with no cells, no dividers and no horizontal divider (divider_y is
+    None). metrics=None means metrics_for(width, height)."""
     if metrics is None:
         metrics = metrics_for(width, height)
     m = metrics.margin
@@ -909,14 +919,25 @@ def warning_layout_for(
     count = max(0, int(buttons))
     if count == 0:
         return WarningLayout(card=card, message=card, cells=(), divider_y=None, divider_xs=())
-    (r0a, r0b), (r1a, r1b) = _split(height, m, [2, 1])
     bands = _split(width, m, [1] * count)
+    divider_xs = tuple((bands[i][1] + bands[i + 1][0]) // 2 for i in range(count - 1))
+    if metrics.content_tier == CONTENT_COMPACT:
+        (r0a, r0b), (r1a, r1b) = _split(height, m, [2, 1])
+        return WarningLayout(
+            card=card,
+            message=(0, r0a, width, r0b),
+            cells=tuple((a, r1a, b, r1b) for a, b in bands),
+            divider_y=(r0b + r1a) // 2,
+            divider_xs=divider_xs,
+        )
+    band_h = metrics.band_h
     return WarningLayout(
         card=card,
-        message=(0, r0a, width, r0b),
-        cells=tuple((a, r1a, b, r1b) for a, b in bands),
-        divider_y=(r0b + r1a) // 2,
-        divider_xs=tuple((bands[i][1] + bands[i + 1][0]) // 2 for i in range(count - 1)),
+        message=(0, 0, width, height - band_h - m),
+        cells=tuple((a, height - band_h + m, b, height) for a, b in bands),
+        divider_y=height - band_h,
+        divider_xs=divider_xs,
+        source_band_h=band_h,
     )
 
 

@@ -3189,10 +3189,11 @@ def _fit_plan(tier, source, title, message, severity="warning"):
     from dial_display_render import _plan_warning_band, _plan_warning_text
     width, height, mm = _APPLIANCE_TIERS[tier]
     metrics = metrics_for(width, height, mm)
-    rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
+    layout = warning_layout_for(width, height, buttons=1, metrics=metrics)
+    rect = layout.message
     body = Body(BODY_WARNING, title=title, line=message, buttons=("Close",), source=source, severity=severity)
     draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
-    band = _plan_warning_band(draw, rect, body, metrics)
+    band = _plan_warning_band(draw, rect, body, metrics, layout.source_band_h)
     below = (rect[0], rect[1] + band[2] + band[3], rect[2], rect[3])
     return draw, rect, metrics, _plan_warning_text(draw, below, body, metrics), band
 
@@ -3254,13 +3255,13 @@ class TestApplianceWarningText:
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_a_short_source_is_drawn_at_body_size(self, tier):
         draw, rect, metrics, plan, band = _fit_plan(tier, "Lounge", "Power supply", "")
-        assert band[2] == round(metrics.font_body * 1.2)
+        assert band[1].size == metrics.font_body
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_a_long_source_steps_down_before_it_is_cut(self, tier):
         from dial_display_render import WARNING_SMALL_FONT_FLOOR_PX
         draw, rect, metrics, plan, band = _fit_plan(tier, "Kitchen dial · 12 of 16", "Power supply", "")
-        assert not band[0].endswith("...") or band[2] == round(WARNING_SMALL_FONT_FLOOR_PX * 1.2)
+        assert not band[0].endswith("...") or band[1].size == WARNING_SMALL_FONT_FLOOR_PX
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     @pytest.mark.parametrize("texts", [(_WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE), _UNBROKEN, _TYPICAL],
@@ -3280,6 +3281,17 @@ class TestApplianceWarningText:
         assert box is not None
         assert rect[0] <= box[0] and box[2] <= rect[2]
         assert rect[1] <= box[1] and box[3] <= rect[3]
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_the_source_band_is_the_top_bar_height_off_compact_and_text_sized_on_compact(self, tier):
+        width, height, mm = _APPLIANCE_TIERS[tier]
+        metrics = metrics_for(width, height, mm)
+        _, _, _, _, band = _fit_plan(tier, "Lounge", "Power supply", "")
+        if tier.startswith("compact"):
+            assert band[2] == round(metrics.font_body * 1.2)
+        else:
+            top = layout_for(width, height, metrics=metrics).top_band
+            assert band[2] == top[3] - top[1]
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     @pytest.mark.parametrize("severity,rule_rgb", [

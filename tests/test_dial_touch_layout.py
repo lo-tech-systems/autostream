@@ -937,26 +937,57 @@ class TestWarningLayout:
     def test_rich_two_cells_pinned(self):
         w = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
         assert w.card == (0, 0, 320, 240)
-        assert w.message == (0, 0, 320, 152)
-        assert w.cells == ((0, 164, 154, 240), (166, 164, 320, 240))
-        assert (w.divider_xs, w.divider_y) == ((160,), 158)
+        assert w.message == (0, 0, 320, 186)
+        assert w.cells == ((0, 198, 154, 240), (166, 198, 320, 240))
+        assert (w.divider_xs, w.divider_y) == ((160,), 192)
+        assert w.source_band_h == 48
 
     def test_base_two_cells_pinned(self):
         w = warning_layout_for(160, 128, buttons=2)
         assert w.card == (0, 0, 160, 128)
-        assert w.message == (0, 0, 160, 81)
-        assert w.cells == ((0, 88, 77, 128), (83, 88, 160, 128))
-        assert (w.divider_xs, w.divider_y) == ((80,), 84)
+        assert w.message == (0, 0, 160, 93)
+        assert w.cells == ((0, 99, 77, 128), (83, 99, 160, 128))
+        assert (w.divider_xs, w.divider_y) == ((80,), 96)
+        assert w.source_band_h == 32
 
     def test_base_one_cell_spans_the_whole_row(self):
         w = warning_layout_for(160, 128, buttons=1)
-        assert w.cells == ((0, 88, 160, 128),)
+        assert w.cells == ((0, 99, 160, 128),)
         assert w.divider_xs == ()
 
     def test_base_three_cells_pinned(self):
         w = warning_layout_for(160, 128, buttons=3)
-        assert w.cells == ((0, 88, 49, 128), (55, 88, 104, 128), (111, 88, 160, 128))
+        assert w.cells == ((0, 99, 49, 128), (55, 99, 104, 128), (111, 99, 160, 128))
         assert w.divider_xs == (52, 107)
+
+    @pytest.mark.parametrize(
+        "width,height,mm", [(320, 240, 0.1778), (160, 128, None), (480, 320, 0.1778), (800, 480, 0.1778)])
+    @pytest.mark.parametrize("buttons", [1, 2, 3])
+    def test_off_compact_band_and_buttons_match_the_playing_screen(self, width, height, mm, buttons):
+        metrics = metrics_for(width, height, mm)
+        assert metrics.content_tier != "compact"
+        main = layout_for(width, height, metrics=metrics)
+        w = warning_layout_for(width, height, buttons=buttons, metrics=metrics)
+        assert w.source_band_h == main.top_band[3] - main.top_band[1]
+        for cell in w.cells:
+            assert (cell[1], cell[3]) == (main.footer_mute[1], main.footer_mute[3])
+        assert w.message == (0, 0, width, main.footer_mute[1] - 2 * metrics.margin)
+        assert w.divider_y == height - metrics.band_h
+
+    def test_the_large_tier_is_among_those_checked(self):
+        assert metrics_for(800, 480, 0.1778).content_tier == "large"
+
+    def test_compact_keeps_its_two_thirds_split_and_a_text_sized_band(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            w = warning_layout_for(metrics.width, metrics.height, buttons=2, metrics=metrics)
+            assert w.source_band_h is None
+        w = warning_layout_for(240, 240, buttons=2, metrics=_COMPACT_240x240)
+        assert (w.message, w.cells, w.divider_y) == (
+            (0, 0, 240, 152), ((0, 164, 114, 240), (126, 164, 240, 240)), 158)
+
+    def test_a_notice_has_no_band_height_on_any_tier(self):
+        for width, height in PROFILE_SIZES:
+            assert warning_layout_for(width, height, buttons=0).source_band_h is None
 
     def test_compact_two_cells_share_the_two_by_two_columns_with_a_shorter_button_row(self):
         for metrics in (_COMPACT_240x240, _COMPACT_128x128):

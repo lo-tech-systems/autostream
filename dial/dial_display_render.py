@@ -817,14 +817,17 @@ WARNING_RULE_WIDTH_FACTOR = 2
 
 def _plan_warning_band(
     draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", body: Body, metrics: LayoutMetrics,
+    fixed_band_h: "int | None" = None,
 ) -> "tuple[str, object, int, int] | None":
     """Lay out the source band across the top of *rect* (the card's message
     row) as (text, font, band height, rule height); None when the warning
     has no source, no font loads or the band and rule would not leave the
     row any room. The source is one line at body size, or at the largest
     smaller size (down to the floor) that holds it whole, and is
-    ellipsized at the floor when even that is too wide. Pure: measuring
-    calls only."""
+    ellipsized at the floor when even that is too wide. *fixed_band_h* is
+    the layout's source_band_h: off compact the band is the playing
+    screen's top bar height, with the text centred in it; None (compact)
+    sizes the band from the text. Pure: measuring calls only."""
     if not body.source:
         return None
     max_w = rect[2] - rect[0] - 2 * metrics.pad
@@ -838,7 +841,7 @@ def _plan_warning_band(
         if measured is not None and measured[0] <= max_w:
             break
     text = _truncate_to_width(draw, body.source, font, max_w)
-    band_h = round(px * 1.2)
+    band_h = fixed_band_h if fixed_band_h is not None else round(px * 1.2)
     rule_h = WARNING_RULE_WIDTH_FACTOR * metrics.divider_w
     if not text or band_h + rule_h >= rect[3] - rect[1]:
         return None
@@ -955,15 +958,17 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     rest at body size. Each button label is centred in its cell at body
     size. Then the crosshair: a horizontal line at divider_y across the
     card's full width, and one vertical line per gap between cells,
-    spanning the bottom row only (the message row is never split). The
-    card is the whole panel, so a two-button page
-    is exactly the 2x2's own bottom-row divider pattern and a one-button
+    spanning the bottom row only (the message row is never split). Off
+    compact the bottom row is the playing screen's footer row, so the
+    buttons match its controls in height; on compact a two-button page
+    is exactly the 2x2's own bottom-row divider pattern. A one-button
     page has no vertical line at all. A page with no cells has no
     crosshair. With body.percent set, a progress bar takes the bottom
     quarter of the message row (a dimmed track from the card's inner left
     to right edge, a white fill to the percent) and the text is laid out
     in the rest of the row. With body.source set, the row opens with the
-    source in a white band across its full width, a rule in the severity's
+    source in a white band across its full width (off compact the playing
+    screen's top bar height, on compact sized from the text), a rule in the severity's
     colour under it, and the title over the message below that, wrapped
     and shrunk to fit (see _plan_warning_band and _plan_warning_text)."""
     layout = warning_layout_for(metrics.width, metrics.height, buttons=len(body.buttons), metrics=metrics)
@@ -984,7 +989,7 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
         my1 -= zone
     if body.source:
         rect = (mx0, my0, mx1, my1)
-        band = _plan_warning_band(draw, rect, body, metrics)
+        band = _plan_warning_band(draw, rect, body, metrics, layout.source_band_h)
         if band is not None:
             rect = _draw_warning_band(draw, rect, band, body.severity, metrics)
         _draw_fitted_warning_text(draw, rect, body, metrics)
