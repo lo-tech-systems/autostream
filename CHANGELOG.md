@@ -128,6 +128,9 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   and the PIN dialog on the Home page. A PIN that was not given within
   2 minutes is no longer asked for when the Home page is opened later.
 - changed: a stereo pair pauses and resumes as one from the Home app.
+- fixed: when autostream stopped or restarted during a repeat replay, the
+  replay ended but its speakers were left switched on, with the master volume
+  greyed out. They are now switched off, as they are for live playback.
 
 ### Dials
 

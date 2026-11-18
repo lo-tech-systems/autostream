@@ -262,6 +262,16 @@ class _TickSnapshot:
         return input_index == self.replay_origin_idx
 
 
+def _teardown_had_session(monitors, session_tracker) -> bool:
+    """Whether a session was playing when the coordinator stopped: a live
+    capture, or a repeat replay. Teardown ends a replay along with a capture,
+    so the speakers are switched off for both; left on, they would play
+    nothing with no session to control them."""
+    if any(m.is_capturing for m in monitors):
+        return True
+    return session_tracker.active_source is not None
+
+
 @dataclass
 class _BootstrapResult:
     """Everything run_autostream()'s startup-retry and coordinator-loop
@@ -752,12 +762,11 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             if tick_batch is not None:
                 tick_batch.close()
             tracker = runtime._playback_tracker
-            teardown_was_capturing = any(m.is_capturing for m in monitors)
             teardown_owntone_base_url = next(
                 (m.owntone_base_url for m in monitors if m.owntone_base_url),
                 "",
             )
-            if teardown_was_capturing and teardown_owntone_base_url:
+            if _teardown_had_session(monitors, session_tracker) and teardown_owntone_base_url:
                 # stop_and_disable_all is a stop and then a deselect of
                 # everything, each bounded by its own write timeout.
                 intents.submit(

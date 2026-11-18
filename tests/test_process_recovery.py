@@ -138,6 +138,40 @@ class TestCoordinatorExceptionHandler:
         self._run_coordinator_with_error(RuntimeError, "webui dead")
 
 
+class TestTeardownHadSession:
+    """Teardown switches the speakers off when a session was playing, a
+    repeat replay as well as a live capture."""
+
+    @staticmethod
+    def _monitor(capturing):
+        m = MagicMock()
+        m.is_capturing = capturing
+        return m
+
+    @staticmethod
+    def _tracker(source):
+        t = MagicMock()
+        t.active_source = source
+        return t
+
+    def test_live_capture(self):
+        assert _core_mod._teardown_had_session(
+            [self._monitor(True)], self._tracker("input1"))
+
+    def test_replay_with_no_capture(self):
+        assert _core_mod._teardown_had_session(
+            [self._monitor(False)], self._tracker("replay"))
+
+    def test_nothing_playing(self):
+        assert not _core_mod._teardown_had_session(
+            [self._monitor(False)], self._tracker(None))
+
+    def test_teardown_uses_it(self):
+        import inspect
+        src = inspect.getsource(_core_mod.run_autostream)
+        assert "_teardown_had_session(monitors, session_tracker)" in src
+
+
 # ---------------------------------------------------------------------------
 # start_server returns a Thread
 # ---------------------------------------------------------------------------
