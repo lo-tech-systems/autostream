@@ -29,7 +29,7 @@ from autostream_config import (
 )
 from autostream_player_service import config_airplay_mode_to_backend
 from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
-from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
+
 from autostream_state import store
 from webui.assets import (
     logo_banner_html,
@@ -367,47 +367,15 @@ def build_top_banner_html(flash_msg: Optional[str] = None, flash_type: str = "su
         banner_id = "red-banner" if flash_type == "error" else "green-banner"
         return banner_html(banner_id, html.escape(flash_msg))
 
-    # Priority 2: System-level PSU warning
-    warn = get_psu_warning_text()
-    if warn:
-        return banner_html("red-banner", html.escape(warn))
-
-    # Priority 3: Licensing
-    if LICENSE_CHECK and (not cpu_is_licensed()):
-        return banner_html("red-banner", "This system is unlicensed")
-
-    return ("", "")
-
-
-# -----------------------------------------------------------------------------
-# No-input-configured notice — persistent, non-dismissable-required inline
-# notice shown on the Home and Setup pages whenever neither audio input is
-# enabled. Distinct from the fixed-position top banner above (flash/PSU/
-# licensing): this renders inline in the page body, so it can sit alongside
-# whatever top banner is already showing rather than competing for the same
-# slot.
-# -----------------------------------------------------------------------------
-
-def no_input_configured_notice_html(parsed) -> str:
-    """Return an inline warning notice when no audio input is enabled.
-
-    ``parsed`` is a parsed config snapshot (as returned by
-    ``_config_snapshot()``) or ``None`` when the config could not be loaded,
-    in which case no notice is shown -- the caller's own "Configuration
-    unavailable" handling already covers that case.
-    """
-    if parsed is None:
-        return ""
-    if bool(getattr(parsed, "audio1_enabled", True)) or bool(getattr(parsed, "audio2_enabled", False)):
-        return ""
-    return (
-        "<div style='margin:0 0 1rem;padding:0.75rem 1rem;"
-        "border:1.5px solid var(--color-status-warning);border-radius:8px;"
-        "font-size:0.9rem;'>"
-        "No input device configured &mdash; set one up in "
-        "<a href='/setup'>Setup</a>, or enable Bluetooth."
-        "</div>"
-    )
+    # Priority 2: the critical entries of the warnings part, most severe
+    # first; with several, the first and a count of the rest.
+    critical = [e for e in store().snapshot().warnings.entries if e.severity == "critical"]
+    if not critical:
+        return ("", "")
+    text = f"{critical[0].title}: {critical[0].message}"
+    if len(critical) > 1:
+        text += f" +{len(critical) - 1} more"
+    return banner_html("red-banner", html.escape(text))
 
 
 # -----------------------------------------------------------------------------

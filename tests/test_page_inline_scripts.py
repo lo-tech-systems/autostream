@@ -73,7 +73,7 @@ EXPECTED_INLINE = {
 }
 # The page's own scripts; the island must come before the first of them.
 FIRST_FILES = {
-    "home": ("home_cards.js",),
+    "home": ("home/home_main.js",),
     "remote_home": ("home_cards.js",),
     "equaliser": ("equaliser_curve.js", "equaliser.js"),
     "remote_equaliser": ("remote_equaliser.js", "equaliser_curve.js"),
@@ -88,7 +88,8 @@ FIRST_FILES = {
 }
 
 # Island keys each extracted page may carry, and the route that serves it.
-_HOME_KEYS = {
+_HOME_KEYS = {"state", "csrf", "prefs", "icons", "local_id"}
+_REMOTE_HOME_KEYS = {
     "preset_volume", "show_input_detail", "vu_delay_ms", "icons", "local_id",
     "selector_current_id", "output_url", "repeat_url", "outputs_empty_tolerance_ms",
     "pin_prompt_fallback", "control_other_appliances",
@@ -96,7 +97,7 @@ _HOME_KEYS = {
 _EQ_KEYS = {"local_id", "selector_current_page", "poll_url", "eq_bands", "eq_fs", "curve"}
 ISLAND_KEYS = {
     "home": _HOME_KEYS,
-    "remote_home": _HOME_KEYS | {"remote_aid", "remote_hostname", "poll_url"},
+    "remote_home": _REMOTE_HOME_KEYS | {"remote_aid", "remote_hostname", "poll_url"},
     "equaliser": _EQ_KEYS,
     "remote_equaliser": _EQ_KEYS | {"save_url", "reset_url", "status_url", "remote_aid", "remote_hostname"},
     "about": {"license_text"},
@@ -193,7 +194,7 @@ def test_an_island_on_a_public_route_carries_only_listed_keys(page):
         assert set(_source_text.page_data(_render(page))) <= ISLAND_KEYS[page]
 
 
-def test_the_island_of_the_home_page_holds_the_values_the_old_globals_did():
+def test_the_island_of_the_home_page_holds_the_state_the_page_starts_from():
     from webui.assets import ICON_BLUETOOTH
     from webui.assets import ICON_LINE_LEVEL
     from webui.assets import ICON_CD
@@ -202,15 +203,19 @@ def test_the_island_of_the_home_page_holds_the_values_the_old_globals_did():
     assert island["icons"] == {
         "turntable": ICON_TURNTABLE, "bluetooth": ICON_BLUETOOTH,
         "cd": ICON_CD, "line_level": ICON_LINE_LEVEL}
-    assert island["output_url"] == "/api/output"
-    assert island["repeat_url"] == "/api/repeat"
-    assert island["outputs_empty_tolerance_ms"] == 6000
-    assert island["pin_prompt_fallback"] == "Enter PIN shown on your device"
-    assert island["selector_current_id"] == island["local_id"]
-    assert isinstance(island["preset_volume"], int) and 0 <= island["preset_volume"] <= 100
-    assert isinstance(island["vu_delay_ms"], int)
-    assert isinstance(island["show_input_detail"], bool)
-    assert isinstance(island["control_other_appliances"], bool)
+    assert set(island["prefs"]) == {
+        "show_master_volume", "show_input_detail", "preset_volume", "vu_delay_ms",
+        "control_other_appliances"}
+    prefs = island["prefs"]
+    assert isinstance(prefs["preset_volume"], int) and 0 <= prefs["preset_volume"] <= 100
+    assert isinstance(prefs["vu_delay_ms"], int)
+    assert isinstance(prefs["show_input_detail"], bool)
+    assert isinstance(prefs["show_master_volume"], bool)
+    assert isinstance(prefs["control_other_appliances"], bool)
+    assert island["csrf"] == "t"
+    state = island["state"]
+    assert {"boot", "version", "time", "part_versions", "parts"} <= set(state)
+    assert "outputs" in state["parts"] and "warnings" in state["parts"]
 
 
 def test_the_island_of_the_remote_home_page_points_at_the_remote_appliance():

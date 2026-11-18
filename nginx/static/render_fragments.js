@@ -36,7 +36,7 @@ function buildOutputCardElement(o) {
   if (isDefault) {
     var badge = document.createElement('span');
     badge.className = 'output-card-default';
-    badge.textContent = 'Default';
+    badge.textContent = 'Auto-Start';
     meta.appendChild(badge);
   }
   var chip = document.createElement('span');

@@ -181,158 +181,6 @@ class TestRemoteHomeOutputShape:
 # poll-count debounce) and the tolerance constant injection
 # ---------------------------------------------------------------------------
 
-def _render_local_home_html() -> str:
-    from unittest.mock import MagicMock
-    from contextlib import ExitStack
-    from unittest.mock import patch as _patch
-    from webui.browser.home import send_airplay_page
-    from track_id.models import disabled_snapshot
-
-    handler = MagicMock()
-    chunks: list = []
-    handler.wfile.write = lambda d: chunks.append(d)
-    handler._csrf_token = "testcsrf"
-    handler._pending_set_cookies = []
-
-    auth = MagicMock()
-    auth.get_csrf_token.return_value = "testcsrf"
-
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-
-    parsed = MagicMock()
-    parsed.owntone.base_url = "http://localhost:3689"
-    from autostream_config import DefaultOutput
-    parsed.owntone.default_outputs = (DefaultOutput("", "autostream", 20),)
-    parsed.owntone.volume_percent = 20
-    parsed.webui.show_master_volume = True
-    parsed.webui.show_input_detail = False
-    parsed.webui.show_hostname_on_home = False
-    parsed.webui.control_other_appliances = False
-    parsed.webui.hidden_outputs = []
-    parsed.webui.dark_mode = False
-    parsed.track_identification = MagicMock(enabled=False)
-    parsed.repeat.enabled = True
-    parsed.repeat.codec = "auto"
-
-    playback = MagicMock()
-    playback.inputs = {}
-    playback.stylus_banner_text = ""
-    playback.belt_banner_text = ""
-    playback.bearing_banner_text = ""
-    playback.has_warning = False
-    playback.to_public_dict.return_value = {}
-
-    list_result = MagicMock(ok=False, outputs=[])
-    buf_result = MagicMock(ok=True, value="2250")
-
-    patches = [
-        _patch("webui.common._config_snapshot", return_value=parsed),
-        _patch("autostream_rpi.get_appliance_id", return_value="00000000000000000000"),
-        _patch("webui.browser.home.get_all_appliances", return_value=[]),
-        _patch("webui.browser.home.get_system_hostname", return_value="autostream"),
-        fake_levels([]),
-        fake_playback(playback),
-        fake_outputs_result(list_result),
-        _patch("webui.browser.home.get_setting", return_value=buf_result),
-        fake_track(disabled_snapshot()),
-        _patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
-    ]
-
-    with ExitStack() as stack:
-        for p in patches:
-            stack.enter_context(p)
-        send_airplay_page(handler, state, auth)
-
-    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
-
-
-@pytest.fixture(scope="module")
-def local_home_html() -> str:
-    return _render_local_home_html()
-
-
-class TestOutputsEmptyToleranceConstant:
-    def test_tolerance_constant_defined_in_python(self):
-        from webui.browser.home import OUTPUTS_EMPTY_TOLERANCE_SECONDS
-        assert OUTPUTS_EMPTY_TOLERANCE_SECONDS == 6.0
-
-    def test_tolerance_injected_into_local_script(self, local_home_html):
-        assert page_data(local_home_html)["outputs_empty_tolerance_ms"] == 6000
-        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS = pageData.outputs_empty_tolerance_ms;" in local_home_html
-
-    def test_tolerance_injected_into_remote_script(self):
-        from unittest.mock import MagicMock
-        from contextlib import ExitStack
-        from unittest.mock import patch as _patch
-        from webui.browser.home import send_remote_home_page
-
-        handler = MagicMock()
-        chunks: list = []
-        handler.wfile.write = lambda d: chunks.append(d)
-        handler._csrf_token = "testcsrf"
-        handler._pending_set_cookies = []
-
-        state = MagicMock()
-        state.config_path = "dummy.ini"
-        parsed = MagicMock()
-        parsed.owntone.base_url = "http://localhost:3689"
-        parsed.owntone.volume_percent = 20
-        parsed.webui.dark_mode = False
-        parsed.webui.show_hostname_on_home = False
-        parsed.webui.control_other_appliances = False
-        parsed.repeat.enabled = True
-        parsed.repeat.codec = "auto"
-
-        patches = [
-            _patch("webui.common._config_snapshot", return_value=parsed),
-            _patch("autostream_rpi.get_appliance_id", return_value="00000000000000000000"),
-            _patch("webui.browser.home._build_appliances_for_selector", return_value=[]),
-            _patch("webui.browser.home.build_appliance_selector_html", return_value=""),
-        ]
-        with ExitStack() as stack:
-            for p in patches:
-                stack.enter_context(p)
-            send_remote_home_page(handler, state, "some-remote-appliance-id")
-
-        remote_home_html = page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
-        assert page_data(remote_home_html)["outputs_empty_tolerance_ms"] == 6000
-        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS = pageData.outputs_empty_tolerance_ms;" in remote_home_html
-
-
-class TestLocalHomeOutputsEmptyDebounce:
-    def test_old_count_mechanism_removed(self, local_home_html):
-        assert "__OUTPUTS_EMPTY_COUNT" not in local_home_html
-
-    def test_time_based_debounce_present(self, local_home_html):
-        # Local Home's output-poll body migrated onto the shared Poller helper:
-        # the fetch/in-flight-guard wrapper moved into poll.js, leaving
-        # this page's own onOutputsPollData(j) as the onData callback holding
-        # the empty-list debounce logic that's specific to this one poller.
-        assert "__OUTPUTS_EMPTY_SINCE" in local_home_html
-        fn_idx = local_home_html.index("function onOutputsPollData")
-        fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
-        fn_body = local_home_html[fn_idx:fn_end]
-        assert "Date.now() - window.__OUTPUTS_EMPTY_SINCE" in fn_body
-        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS" in fn_body
-
-    def test_non_empty_outputs_resets_empty_since(self, local_home_html):
-        fn_idx = local_home_html.index("function onOutputsPollData")
-        fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
-        fn_body = local_home_html[fn_idx:fn_end]
-        assert "window.__OUTPUTS_EMPTY_SINCE = null;" in fn_body
-
-    def test_outputs_unknown_leaves_dom_alone(self, local_home_html):
-        """A non-array outputs field (missing despite ok:true) must be treated
-        as unknown, not as a confirmed empty list -- and must not consume or
-        reset the empty-tolerance timer."""
-        fn_idx = local_home_html.index("function onOutputsPollData")
-        fn_end = local_home_html.index("window.addEventListener('DOMContentLoaded'", fn_idx)
-        fn_body = local_home_html[fn_idx:fn_end]
-        unknown_idx = fn_body.index("!Array.isArray(j.outputs)")
-        unknown_branch = fn_body[unknown_idx:unknown_idx + 350]
-        assert "return;" in unknown_branch
-
 
 # ---------------------------------------------------------------------------
 # Remote Equaliser — full-state polling
@@ -813,3 +661,47 @@ class TestLocalEqualiserPendingFields:
         catch_idx = fn_body.index('.catch(function(')
         catch_body = fn_body[catch_idx:]
         assert 'if (_eqWriteSeq[field] !== seq) return;' in catch_body
+
+
+class TestOutputsEmptyToleranceConstant:
+    def test_tolerance_constant_defined_in_python(self):
+        from webui.browser.home import OUTPUTS_EMPTY_TOLERANCE_SECONDS
+        assert OUTPUTS_EMPTY_TOLERANCE_SECONDS == 6.0
+
+    def test_tolerance_injected_into_remote_script(self):
+        from unittest.mock import MagicMock
+        from contextlib import ExitStack
+        from unittest.mock import patch as _patch
+        from webui.browser.home import send_remote_home_page
+
+        handler = MagicMock()
+        chunks: list = []
+        handler.wfile.write = lambda d: chunks.append(d)
+        handler._csrf_token = "testcsrf"
+        handler._pending_set_cookies = []
+
+        state = MagicMock()
+        state.config_path = "dummy.ini"
+        parsed = MagicMock()
+        parsed.owntone.base_url = "http://localhost:3689"
+        parsed.owntone.volume_percent = 20
+        parsed.webui.dark_mode = False
+        parsed.webui.show_hostname_on_home = False
+        parsed.webui.control_other_appliances = False
+        parsed.repeat.enabled = True
+        parsed.repeat.codec = "auto"
+
+        patches = [
+            _patch("webui.common._config_snapshot", return_value=parsed),
+            _patch("autostream_rpi.get_appliance_id", return_value="00000000000000000000"),
+            _patch("webui.browser.home._build_appliances_for_selector", return_value=[]),
+            _patch("webui.browser.home.build_appliance_selector_html", return_value=""),
+        ]
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            send_remote_home_page(handler, state, "some-remote-appliance-id")
+
+        remote_home_html = page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
+        assert page_data(remote_home_html)["outputs_empty_tolerance_ms"] == 6000
+        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS = pageData.outputs_empty_tolerance_ms;" in remote_home_html

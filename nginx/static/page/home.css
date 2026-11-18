@@ -2,3 +2,25 @@
   #pinModal .modal-note[hidden]{display:none;}
 .vu-meter{flex-direction:row;gap:3px;width:23px;}.vu-col{display:flex;flex-direction:column-reverse;gap:2px;width:10px;flex:0 0 10px;}.np-level{display:flex;align-items:center;width:23px;flex:0 0 23px;}
 .now-playing-icon.np-icon-art{width:72px;height:72px;border-radius:6px;overflow:hidden;}.now-playing-icon.np-icon-art img{width:100%;height:100%;object-fit:cover;display:block;}
+
+/* Warnings: the strip above Now Playing, and the red banner's tap-to-expand. */
+#warnings-strip{margin:0 0 .75rem;}
+#warnings-strip[hidden]{display:none;}
+.warning-card{display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;padding:.55rem .75rem;border:1px solid var(--color-border-card);border-left:4px solid var(--color-accent);border-radius:12px;background:var(--color-surface-raised);color:var(--color-text);text-decoration:none;}
+.warning-card.sev-critical{border-left-color:var(--color-status-danger);}
+.warning-card.sev-warning{border-left-color:var(--color-status-warning);}
+.warning-card.sev-info{border-left-color:var(--color-accent);}
+.warning-card-body{flex:1 1 auto;min-width:0;font-size:.9rem;line-height:1.3;}
+.warning-card-title{font-weight:700;color:var(--color-text-strong);}
+.warning-card-chevron{flex:0 0 auto;font-size:1.4rem;color:var(--color-text-dim);}
+.warning-more{display:block;width:100%;margin:0 0 .5rem;padding:.4rem;border:none;background:none;color:var(--color-accent);font-size:.9rem;font-weight:600;cursor:pointer;}
+#red-banner.red-banner-tap{cursor:pointer;}
+#red-banner div{padding:.1rem 0;}
+
+/* Auto-Start pin: right-aligned above the speaker list; filled when the speakers on are the saved set. */
+.autostart-row{display:flex;justify-content:flex-end;margin:0 0 .35rem;}
+.autostart-row[hidden]{display:none;}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:2.2rem;height:2.2rem;padding:0;border:1px solid var(--color-border-card);border-radius:999px;background:var(--color-surface-raised);color:var(--color-text);cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.icon-btn[hidden]{display:none;}
+.icon-btn.is-set{border-color:var(--color-accent);background:var(--color-surface-selected);color:var(--color-accent);}
+.icon-btn.is-set svg{fill:currentColor;}

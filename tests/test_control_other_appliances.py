@@ -538,18 +538,9 @@ _skip_airplay = pytest.mark.skipif(
 
 
 @_skip_airplay
-class TestLocalHomeInUseCardHTML:
-    """Local Home page HTML when an output is occupied by a remote appliance."""
-
-    _IN_USE_OUTPUT = {
-        "id": "output-abc",
-        "name": "Dining Room",
-        "selected": False,
-        "volume": 50,
-        "is_default": False,
-        "remote_in_use": True,
-        "remote_owner": "Pi5",
-    }
+class TestLocalHomeControlFlag:
+    """The local Home page tells its script whether other appliances may be controlled
+    (the in-use card tap goes to the other appliance only then)."""
 
     def _render(self, effective_control: bool = True) -> str:
         handler = MagicMock()
@@ -566,8 +557,6 @@ class TestLocalHomeInUseCardHTML:
 
         parsed = MagicMock()
         parsed.owntone.base_url = "http://localhost:3689"
-        from autostream_config import DefaultOutput
-        parsed.owntone.default_outputs = (DefaultOutput("", "autostream", 20),)
         parsed.owntone.volume_percent = 20
         parsed.webui.show_master_volume = False
         parsed.webui.show_input_detail = False
@@ -575,61 +564,21 @@ class TestLocalHomeInUseCardHTML:
         parsed.webui.control_other_appliances = effective_control
         parsed.webui.hidden_outputs = []
         parsed.webui.dark_mode = False
-        parsed.track_identification = MagicMock(enabled=False)
 
-        playback = MagicMock()
-        playback.inputs = {}
-        playback.stylus_banner_text = ""
-        playback.belt_banner_text = ""
-        playback.bearing_banner_text = ""
-        playback.has_warning = False
-        playback.to_public_dict.return_value = {}
-
-        list_result = MagicMock(ok=True, outputs=[FakeStore.output_row("1", "Kitchen")])
-        buf_result = MagicMock(ok=True, value="2250")
-
-        with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.home.get_all_appliances", return_value=[]), \
-             patch("webui.browser.home.get_system_hostname", return_value="autostream"), \
-             fake_levels([]), \
-             fake_playback(playback), \
-             fake_outputs_result(list_result), \
-             patch("webui.browser.home.build_output_list",
-                   return_value=[self._IN_USE_OUTPUT]), \
-             patch("autostream_output_usage.annotate_outputs", side_effect=lambda x: x), \
-             patch("webui.browser.home.get_setting", return_value=buf_result), \
-             patch("webui.browser.home.build_top_banner_html",
-                   return_value=("", "")):
+        with patch("webui.common._config_snapshot", return_value=parsed),              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),              patch("webui.browser.home.get_all_appliances", return_value=[]),              patch("webui.browser.home.get_system_hostname", return_value="autostream"),              patch("webui.browser.home.get_setting", return_value=MagicMock(ok=True, value="2250")),              patch("webui.browser.home.build_top_banner_html", return_value=("", "")):
             _send_airplay_page(handler, state, auth)
 
         return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
-    def test_in_use_card_has_data_remote_in_use_attribute(self):
-        html = self._render()
-        assert 'data-remote-in-use="1"' in html
-
-    def test_in_use_card_has_data_remote_owner_attribute(self):
-        html = self._render()
-        assert 'data-remote-owner="Pi5"' in html
-
-    def test_in_use_chip_has_in_use_class(self):
-        html = self._render()
-        assert "output-state-chip in-use" in html
-
-    def test_in_use_chip_shows_owner_hostname(self):
-        html = self._render()
-        assert "In Use by Pi5" in html
-
-    def test_page_contains_navigate_script(self):
-        """navigateToRemoteAppliance must be present (via _NAVIGATE_SCRIPT)."""
-        html = self._render()
-        assert "navigateToRemoteAppliance" in html
-
     def test_control_flag_true_when_enabled(self):
         html = self._render(effective_control=True)
-        assert page_data(html)["control_other_appliances"] is True
+        assert page_data(html)["prefs"]["control_other_appliances"] is True
 
     def test_control_flag_false_when_disabled(self):
         html = self._render(effective_control=False)
-        assert page_data(html)["control_other_appliances"] is False
+        assert page_data(html)["prefs"]["control_other_appliances"] is False
+
+    def test_the_page_loads_its_module_and_no_script_of_the_old_page(self):
+        html = self._render()
+        assert "/static/page/home/home_main.js" in html
+        assert "home_cards.js" not in html and "render_fragments.js" not in html

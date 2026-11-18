@@ -17,6 +17,9 @@ export class Pending {
     return h && this._now() - h.at < HOLD_MS ? h.value : live;
   }
 
+  // Let go of key at once, for a request that failed.
+  drop(key) { this._held.delete(key); }
+
   // Drop what the copy has reached or the time has passed; all of it on a resync.
   settle(viewVersion, resync) {
     for (const [k, h] of this._held) {

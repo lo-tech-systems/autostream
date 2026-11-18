@@ -735,11 +735,6 @@ class TestNowPlayingLevelSlotMarkup:
         assert 'id="np-vu"' not in html
         assert 'id="np_mute_btn"' not in html
 
-    def test_master_card_no_longer_has_a_mute_button(self):
-        html = _render_airplay_page_html()
-        assert 'master-volume-card' in html  # the card itself still renders
-        assert 'master_mute_btn' not in html
-        assert 'master-mute-btn' not in html
 
     def test_remote_placeholder_page_mirrors_the_level_slot(self):
         html = _render_remote_home_html()
@@ -753,15 +748,7 @@ class TestNowPlayingLevelSlotMarkup:
 # ---------------------------------------------------------------------------
 
 class TestNowPlayingHeaderMutedSuffix:
-    def test_header_gains_muted_suffix_when_playing_and_muted(self):
-        _hold_mute()
-        html = _render_airplay_page_html_playing()
-        assert '>Now Playing (Muted)<' in html
 
-    def test_header_has_no_muted_suffix_when_playing_and_unmuted(self):
-        html = _render_airplay_page_html_playing()
-        assert '>Now Playing<' in html
-        assert '(Muted)<' not in html
 
     def test_ready_header_never_gets_the_muted_suffix(self):
         """Not playing: mute is real but there is no active session to

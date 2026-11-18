@@ -133,8 +133,9 @@ class TestRemoteStartFailureNotice:
         expect_notice(page)
         dismiss(page)
         stub.REMOTE_HOME.clear()
-        stub.set_page(render_home())
-        stub.START_FAILURE.update(failure(boot="boot-2"))
+        local = {"seq": 1, "unit_id": "tv", "name": "Speaker A", "reason": "refused",
+                 "requester": "webui", "at": time.time() - 4}
+        stub.set_page(render_home(parts={"outputs": stub.outputs_part(stub.unit(), start_failure=local)}))
         page.goto(f"{remote_url}/")
         expect_notice(page)
 

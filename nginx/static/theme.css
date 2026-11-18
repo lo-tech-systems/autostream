@@ -1234,6 +1234,9 @@ body.has-bottom-nav .container {
   color: var(--color-accent);
   box-shadow: inset 0 3px 0 var(--color-accent);
 }
+.nav-tab-warn-critical { color: var(--color-status-danger); }
+.nav-tab-warn-warning { color: var(--color-status-warning); }
+.nav-tab-warn-info { color: var(--color-accent); }
 .nav-tab-warn {
   color: var(--color-danger);
 }

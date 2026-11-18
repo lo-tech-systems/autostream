@@ -1,14 +1,12 @@
 """tests/test_wp8b_no_input_banner.py
 
-WP8B acceptance tests: post-setup "no input configured" notice.
+Acceptance tests: no page carries a separate "no input configured" notice.
 
-Tests cover:
-  - no_input_configured_notice_html(): the shared helper's on/off conditions
-  - Main page (/): notice renders above the Now Playing / master-volume
-    markup only when neither input is enabled
-  - Setup page: notice is absent (moved to the main page)
-  - Equaliser page (/equaliser): notice is absent (moved to the main page;
-    /equaliser is a distinct route, not the home page)
+With no input enabled the appliance reports it as an info entry of the
+warnings part, which Home shows in its strip. Tests cover:
+  - Main page (/): no separate notice, whatever inputs are enabled
+  - Setup page: notice is absent
+  - Equaliser page (/equaliser): notice is absent
 """
 from __future__ import annotations
 
@@ -29,38 +27,6 @@ REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
-
-
-# ---------------------------------------------------------------------------
-# Unit tests — no_input_configured_notice_html()
-# ---------------------------------------------------------------------------
-
-class TestNoInputConfiguredNoticeHtml:
-    def _snap(self, audio1_enabled: bool, audio2_enabled: bool):
-        return SimpleNamespace(audio1_enabled=audio1_enabled, audio2_enabled=audio2_enabled)
-
-    def test_none_snapshot_yields_empty(self):
-        from webui.common import no_input_configured_notice_html
-        assert no_input_configured_notice_html(None) == ""
-
-    def test_both_enabled_yields_empty(self):
-        from webui.common import no_input_configured_notice_html
-        assert no_input_configured_notice_html(self._snap(True, True)) == ""
-
-    def test_only_audio1_enabled_yields_empty(self):
-        from webui.common import no_input_configured_notice_html
-        assert no_input_configured_notice_html(self._snap(True, False)) == ""
-
-    def test_only_audio2_enabled_yields_empty(self):
-        from webui.common import no_input_configured_notice_html
-        assert no_input_configured_notice_html(self._snap(False, True)) == ""
-
-    def test_neither_enabled_yields_notice(self):
-        from webui.common import no_input_configured_notice_html
-        html = no_input_configured_notice_html(self._snap(False, False))
-        assert "No input device configured" in html
-        assert "/setup" in html
-        assert "Bluetooth" in html
 
 
 def _minimal_cfg(tmp_path: Path, *, audio1_enabled: bool = True, audio2_enabled: bool = False) -> Path:
@@ -94,8 +60,7 @@ def _minimal_cfg(tmp_path: Path, *, audio1_enabled: bool = True, audio2_enabled:
 
 
 # ---------------------------------------------------------------------------
-# Main page (/) — notice shown only when no input enabled, positioned above
-# the Now Playing card (which holds the master-volume control when enabled).
+# Main page (/) — no separate notice.
 # ---------------------------------------------------------------------------
 
 def _make_playback_snapshot():
@@ -151,25 +116,10 @@ class TestMainPageBanner:
         store.close(save=False)
         return handler.wfile.getvalue().decode("utf-8", errors="replace")
 
-    def test_banner_absent_when_input1_enabled(self, tmp_path):
-        html = self._render(tmp_path, audio1_enabled=True, audio2_enabled=False)
+    @pytest.mark.parametrize("audio1,audio2", [(True, False), (False, False), (False, True)])
+    def test_no_separate_notice_whatever_inputs_are_enabled(self, tmp_path, audio1, audio2):
+        html = self._render(tmp_path, audio1_enabled=audio1, audio2_enabled=audio2)
         assert "No input device configured" not in html
-
-    def test_banner_present_when_no_input_enabled(self, tmp_path):
-        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=False)
-        assert "No input device configured" in html
-
-    def test_banner_absent_when_only_input2_enabled(self, tmp_path):
-        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=True)
-        assert "No input device configured" not in html
-
-    def test_banner_positioned_above_now_playing_card(self, tmp_path):
-        html = self._render(tmp_path, audio1_enabled=False, audio2_enabled=False)
-        notice_idx = html.index("No input device configured")
-        now_playing_idx = html.index('id="now-playing-card"')
-        master_volume_idx = html.index('id="master-volume-card"')
-        assert notice_idx < now_playing_idx
-        assert notice_idx < master_volume_idx
 
 
 # ---------------------------------------------------------------------------

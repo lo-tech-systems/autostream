@@ -1,23 +1,18 @@
 """Playwright tests: the Home page PIN dialog pairs and enables in one request.
 
-The page comes from the real Home renderer; the outputs poll and the output
-POST are stubbed. Every PIN attempt is one POST carrying the PIN and
-selected:true. A wrong PIN shows a note and asks again, a rate-limited reply
-shows a counting-down wait with the input disabled, and the poll-driven
-prompt leaves a row claimed by a dial alone.
+The page comes from the real Home renderer; the state parts and the intent
+replies are stubbed. Every PIN attempt is one ``output.pin.submit`` carrying
+the PIN and selected:true. A wrong PIN shows a note and asks again, a
+rate-limited reply shows a counting-down wait with the input disabled, and the
+prompt a speaker's own request for a PIN opens leaves a row claimed by a dial
+alone.
 """
 from __future__ import annotations
 
 import pytest
-from _home_stub import (
-    OUTPUTS as _OUTPUTS,
-    POLLS as _POLLS,
-    POSTS as _POSTS,
-    REPLIES as _REPLIES,
-    STATUS as _STATUS,
-    render_home,
-    start_server,
-)
+import _home_stub as stub
+from _home_stub import start_server
+from _home_helpers import intents, open_home, outputs, speaker, wait_for
 
 try:
     from playwright.sync_api import Page, expect  # type: ignore[attr-defined]
@@ -31,31 +26,28 @@ _requires_browser = pytest.mark.skipif(
     not _PLAYWRIGHT_INSTALLED, reason="playwright not installed"
 )
 
+_OPEN = "modal-overlay show"
+_NEEDS_PIN = {"ok": False, "result": {"pin_required": True}}
+_WRONG_PIN = {"ok": False, "result": {"pin_invalid": True}}
 
-def _row(**extra) -> dict:
-    row = {"id": "tv", "name": "Lounge TV", "selected": False, "volume": 20,
-           "pin_pending": False}
-    row.update(extra)
-    return row
+
+def _limited(seconds: int) -> dict:
+    return {"ok": False, "error": "rate_limited", "retry_after_s": seconds,
+            "result": {"error": "rate_limited", "retry_after_s": seconds}}
 
 
 @pytest.fixture(scope="module")
 def home_url():
-    server, url = start_server(render_home())
+    server, url = start_server(b"")
     try:
         yield url
     finally:
         server.shutdown()
 
 
-def _open_home(page: "Page", base: str, outputs: list, replies: list, *, cards: bool = True) -> None:
-    _OUTPUTS[:] = outputs
-    _REPLIES[:] = replies
-    _POSTS.clear()
-    _POLLS.clear()
-    page.goto(f"{base}/")
-    if cards:
-        page.wait_for_selector("#output_enabled_tv", state="attached")
+def _open(page: "Page", base: str, replies: list, *units: dict, cards: bool = True) -> None:
+    open_home(page, base, {"outputs": outputs(*(units or (speaker(name="Lounge TV"),)))}, wait_cards=cards)
+    stub.REPLIES[:] = replies
 
 
 def _pause_clock(page: "Page") -> None:
@@ -78,51 +70,36 @@ class TestHomePinDialog:
     def test_switching_on_a_speaker_that_needs_a_pin_opens_the_dialog_and_one_request_pairs_and_enables(
         self, page: "Page", home_url: str
     ):
-        _open_home(page, home_url, [_row()],
-                   [{"ok": False, "pin_required": True}, {"ok": True}])
+        _open(page, home_url, [_NEEDS_PIN, {}])
         _toggle_on(page)
-        expect(page.locator("#pinModal")).to_have_class("modal-overlay show")
-        assert len(_POSTS) == 1
-        assert "op" not in _POSTS[0]
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+        expect(page.locator("#pinModalTitle")).to_have_text("Enter PIN for Lounge TV")
+        assert intents() == [("outputs.set", {"id": "tv", "selected": True, "volume": 20, "name": "Lounge TV"})]
         _type_pin(page, "2718")
         page.locator("#pinModalOk").click()
-        expect(page.locator("#pinModal")).not_to_have_class("modal-overlay show")
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
         expect(page.locator("#output_enabled_tv")).to_be_checked()
-        assert len(_POSTS) == 2
-        second = _POSTS[1]
-        assert second["id"] == "tv"
-        assert second["op"] == "pin"
-        assert second["pin"] == "2718"
-        assert second["selected"] is True
-        assert second["volume"] == 20
+        assert intents()[1:] == [("output.pin.submit", {
+            "id": "tv", "pin": "2718", "selected": True, "volume": 20, "name": "Lounge TV"})]
         page.wait_for_timeout(300)
-        assert len(_POSTS) == 2
+        assert len(stub.POSTS) == 2
 
     def test_a_wrong_pin_re_prompts_with_the_note(self, page: "Page", home_url: str):
-        _open_home(page, home_url, [_row()],
-                   [{"ok": False, "pin_required": True},
-                    {"ok": False, "pin_invalid": True},
-                    {"ok": True}])
+        _open(page, home_url, [_NEEDS_PIN, _WRONG_PIN, {}])
         _toggle_on(page)
         _type_pin(page, "1111")
         page.locator("#pinModalOk").click()
-        note = page.locator("#pinModalNote")
-        expect(note).to_have_text("That PIN was not accepted. Try again.")
+        expect(page.locator("#pinModalNote")).to_have_text("That PIN was not accepted. Try again.")
         expect(page.locator("#pinModalInput")).to_have_value("")
         expect(page.locator("#pinModalOk")).to_be_disabled()
         _type_pin(page, "2718")
         page.locator("#pinModalOk").click()
         expect(page.locator("#output_enabled_tv")).to_be_checked()
-        assert [p.get("pin") for p in _POSTS[1:]] == ["1111", "2718"]
+        assert [a.get("pin") for _, a in intents()[1:]] == ["1111", "2718"]
 
-    def test_a_rate_limited_reply_shows_the_wait_and_counts_down(
-        self, page: "Page", home_url: str
-    ):
+    def test_a_rate_limited_reply_shows_the_wait_and_counts_down(self, page: "Page", home_url: str):
         page.clock.install()
-        _open_home(page, home_url, [_row()],
-                   [{"ok": False, "pin_required": True},
-                    {"ok": False, "error": "rate_limited", "retry_after_s": 3},
-                    {"ok": True}])
+        _open(page, home_url, [_NEEDS_PIN, _limited(3), {}])
         _pause_clock(page)
         _toggle_on(page)
         _type_pin(page, "1111")
@@ -135,7 +112,7 @@ class TestHomePinDialog:
         expect(note).to_have_text("Wait 2 seconds before retry")
         page.clock.run_for(1000)
         expect(note).to_have_text("Wait 1 second before retry")
-        assert len(_POSTS) == 2
+        assert len(stub.POSTS) == 2
         page.clock.run_for(1000)
         expect(note).to_be_hidden()
         expect(page.locator("#pinModalInput")).to_be_enabled()
@@ -143,13 +120,11 @@ class TestHomePinDialog:
         _type_pin(page, "2718")
         page.locator("#pinModalOk").click()
         expect(page.locator("#output_enabled_tv")).to_be_checked()
-        assert len(_POSTS) == 3
-        assert _POSTS[2]["pin"] == "2718"
+        assert len(stub.POSTS) == 3
+        assert intents()[2][1]["pin"] == "2718"
 
-    def test_ok_stays_disabled_under_four_digits_and_letters_are_refused(
-        self, page: "Page", home_url: str
-    ):
-        _open_home(page, home_url, [_row()], [{"ok": False, "pin_required": True}])
+    def test_ok_stays_disabled_under_four_digits_and_letters_are_refused(self, page: "Page", home_url: str):
+        _open(page, home_url, [_NEEDS_PIN])
         _toggle_on(page)
         field = page.locator("#pinModalInput")
         ok = page.locator("#pinModalOk")
@@ -169,61 +144,94 @@ class TestHomePinDialog:
         self, page: "Page", home_url: str
     ):
         page.clock.install()
-        _open_home(page, home_url, [_row()],
-                   [{"ok": False, "pin_required": True},
-                    {"ok": False, "error": "rate_limited", "retry_after_s": 5}])
+        _open(page, home_url, [_NEEDS_PIN, _limited(5)])
         _pause_clock(page)
         _toggle_on(page)
         _type_pin(page, "1111")
         page.locator("#pinModalOk").click()
         expect(page.locator("#pinModalNote")).to_have_text("Wait 5 seconds before retry")
         page.locator("#pinModalCancel").click()
-        expect(page.locator("#pinModal")).not_to_have_class("modal-overlay show")
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
         expect(page.locator("#output_enabled_tv")).not_to_be_checked()
         page.clock.run_for(10000)
-        expect(page.locator("#pinModal")).not_to_have_class("modal-overlay show")
-        assert len(_POSTS) == 2
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        assert len(stub.POSTS) == 2
 
-    def test_the_poll_prompt_skips_a_row_claimed_by_a_dial(self, page: "Page", home_url: str):
-        _open_home(page, home_url, [_row(pin_pending=True, pin_claim="dial:x")], [])
-        start = len(_POLLS)
-        deadline_polls = start + 2
-        for _ in range(60):
-            if len(_POLLS) >= deadline_polls:
-                break
-            page.wait_for_timeout(100)
-        assert len(_POLLS) >= deadline_polls
-        expect(page.locator("#pinModal")).not_to_have_class("modal-overlay show")
-        assert _POSTS == []
+    def test_escape_cancels_the_dialog(self, page: "Page", home_url: str):
+        _open(page, home_url, [_NEEDS_PIN])
+        _toggle_on(page)
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+        page.keyboard.press("Escape")
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        expect(page.locator("#output_enabled_tv")).not_to_be_checked()
 
-    def test_the_poll_prompt_opens_for_an_unclaimed_row(self, page: "Page", home_url: str):
-        # The open prompt holds back the card render, so there is no card to wait for.
-        _open_home(page, home_url, [_row(pin_pending=True, pin_claim="")], [], cards=False)
-        expect(page.locator("#pinModal")).to_have_class("modal-overlay show")
+    def test_a_row_asking_for_a_pin_claimed_by_a_dial_is_left_alone(self, page: "Page", home_url: str):
+        _open(page, home_url, [], speaker(pin_pending=True, pin_claim="dial:x"))
+        page.wait_for_timeout(1500)
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        assert stub.POSTS == []
+
+    @pytest.mark.parametrize("claim", ["", "webui"])
+    def test_a_row_asking_for_a_pin_that_nobody_else_is_entering_opens_the_dialog(
+        self, page: "Page", home_url: str, claim: str
+    ):
+        _open(page, home_url, [], speaker(pin_pending=True, pin_claim=claim))
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+
+    def test_a_cancelled_prompt_does_not_come_back_until_the_speaker_asks_again(
+        self, page: "Page", home_url: str
+    ):
+        stub.stream_on()
+        _open(page, home_url, [], speaker(pin_pending=True))
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+        page.locator("#pinModalCancel").click()
+        stub.push({"outputs": outputs(speaker(pin_pending=True, volume=25))})
+        page.wait_for_timeout(500)
+        expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        stub.push({"outputs": outputs(speaker())})
+        stub.push({"outputs": outputs(speaker(pin_pending=True))})
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
 
 
-def _input_snapshot(input_type: str, label: str) -> dict:
-    return {"is_turntable": input_type == "turntable", "is_bluetooth": False,
-            "input_type": input_type, "type_label": label}
+def _input(input_type: str, is_turntable: bool = False) -> dict:
+    return {"is_turntable": is_turntable, "is_bluetooth": False, "input_type": input_type}
 
 
 @_requires_browser
 class TestHomeNowPlayingCard:
-    def test_the_card_reads_the_snapshot_of_the_levels_own_input_number(
-        self, page: "Page", home_url: str
-    ):
-        _STATUS.update({
-            "ok": True,
-            "input_levels": [{"index": 2, "label": "Input 2", "dbfs": -30.0,
-                              "detected_hz": 0, "is_above_threshold": True}],
-            "playback": {"inputs": {"1": _input_snapshot("turntable", "Turntable"),
-                                    "2": _input_snapshot("cd", "CD")}},
-            "track_identification": {"enabled": False},
-            "session": {"active": True, "source": "live"},
-        })
-        try:
-            _open_home(page, home_url, [], [], cards=False)
-            expect(page.locator("#np-name")).to_have_text("Input 2 · CD")
-            expect(page.locator("#np-icon")).to_have_attribute("data-np-icon-key", "svg:cd")
-        finally:
-            _STATUS.clear()
+    def test_the_card_reads_the_entry_of_the_inputs_own_number(self, page: "Page", home_url: str):
+        entry = {"index": 2, "device": "hw:1,0", "input_type": "cd", "capturing": True,
+                 "level": {"index": 2, "label": "Input 2", "dbfs": -30.0, "is_above_threshold": True}}
+        parts = {
+            "session": {"active": True, "source": "input2"},
+            "inputs": {"entries": [entry], "sample_rate_mismatch_input": 0, "sample_rate_warning_text": ""},
+            "playback": {"inputs": {"1": _input("turntable", True), "2": _input("cd")}},
+        }
+        open_home(page, home_url, {**parts, "outputs": outputs()}, wait_cards=False)
+        expect(page.locator("#np-name")).to_have_text("Input 2 · CD")
+        expect(page.locator("#np-icon")).to_have_attribute("data-np-icon-key", "svg:cd")
+        expect(page.locator("#np-hdr")).to_have_text("Now Playing")
+
+
+def _signal_parts(**level) -> dict:
+    entry = {"index": 1, "device": "hw:0,0", "input_type": "line", "capturing": True,
+             "level": {"index": 1, "label": "Input 1", "is_above_threshold": True, **level}}
+    return {"session": {"active": True, "source": "input1"},
+            "inputs": {"entries": [entry], "sample_rate_mismatch_input": 0, "sample_rate_warning_text": ""}}
+
+
+@_requires_browser
+class TestInputCardRateText:
+    def test_the_text_shows_with_input_detail_and_follows_the_state(self, page: "Page", home_url: str):
+        open_home(page, home_url, _signal_parts(rate_lock="locked", detected_khz="48 kHz"),
+                  show_input_detail=True, wait_cards=False)
+        stub.stream_on()
+        expect(page.locator("#np-signal")).to_have_text("Locked \u00b7 48 kHz")
+        wait_for(page, lambda: stub.open_streams() >= 1, "the stream")
+        stub.push({"inputs": _signal_parts(rate_lock="mismatch", rate_mismatch_khz="44.1 kHz")["inputs"]})
+        expect(page.locator("#np-signal")).to_have_text("Mismatch \u00b7 44.1 kHz")
+
+    def test_no_text_without_input_detail(self, page: "Page", home_url: str):
+        open_home(page, home_url, _signal_parts(rate_lock="locked", detected_khz="48 kHz"), wait_cards=False)
+        page.wait_for_timeout(300)
+        expect(page.locator("#np-signal")).to_have_text("")

@@ -132,29 +132,29 @@ def home_html() -> str:
 # ---------------------------------------------------------------------------
 
 class TestSessionActiveGatesNowPlayingCard:
-    def test_session_active_read_from_status_with_boolean_type_guard(self, home_html):
+    def test_session_active_read_from_status_with_boolean_type_guard(self, remote_home_html):
         assert (
             "var sessionActive = (session && typeof session.active === 'boolean') "
-            "? !!session.active : null;" in home_html
+            "? !!session.active : null;" in remote_home_html
         )
 
-    def test_effective_active_prefers_session_over_legacy_is_playing(self, home_html):
-        assert "var active = (sessionActive !== null) ? sessionActive : isPlaying;" in home_html
+    def test_effective_active_prefers_session_over_legacy_is_playing(self, remote_home_html):
+        assert "var active = (sessionActive !== null) ? sessionActive : isPlaying;" in remote_home_html
 
-    def test_np_ready_and_hdr_gated_on_active_not_is_playing(self, home_html):
+    def test_np_ready_and_hdr_gated_on_active_not_is_playing(self, remote_home_html):
         # The card's dim/disabled visual state (which also visually covers
         # the nested master-volume-wrap) and the now-playing-body visibility
         # (which contains the track-ID name/signal spans) both key off
         # `active`, not the raw level-threshold `isPlaying`.
-        assert "card.classList.toggle('np-ready', !active);" in home_html
-        assert "card.classList.toggle('np-ready', !isPlaying);" not in home_html
+        assert "card.classList.toggle('np-ready', !active);" in remote_home_html
+        assert "card.classList.toggle('np-ready', !isPlaying);" not in remote_home_html
 
-    def test_legacy_fallback_when_session_block_absent(self, home_html):
+    def test_legacy_fallback_when_session_block_absent(self, remote_home_html):
         # When the backend sends no "session" key at all (old coordinator),
         # sessionActive resolves to null and `active` falls back to the
         # pre-existing isPlaying (level-threshold) computation -- current
         # behaviour is preserved unchanged for old-backend tolerance.
-        assert "var session = (data && data.session) || null;" in home_html
+        assert "var session = (data && data.session) || null;" in remote_home_html
 
 
 # ---------------------------------------------------------------------------
@@ -162,24 +162,24 @@ class TestSessionActiveGatesNowPlayingCard:
 # ---------------------------------------------------------------------------
 
 class TestReplayHeading:
-    def test_heading_source_gate_present(self, home_html):
+    def test_heading_source_gate_present(self, remote_home_html):
         # The local page leaves window.__REMOTE_HOSTNAME unset, so hdrSuffix
         # resolves to '' and the local heading renders with no hostname
         # suffix. mutedSuffix similarly resolves to '' unless the appliance
         # is actually muted while a session is active (see test_mute_state.py).
         assert (
             "hdrEl.textContent = (active ? (sessionSource === 'replay' ? "
-            "'Repeat Play' : 'Now Playing') : 'Ready') + mutedSuffix + hdrSuffix;" in home_html
+            "'Repeat Play' : 'Now Playing') : 'Ready') + mutedSuffix + hdrSuffix;" in remote_home_html
         )
         assert (
             "var hdrSuffix = window.__REMOTE_HOSTNAME ? (' \\u00b7 ' + window.__REMOTE_HOSTNAME) : '';"
-            in home_html
+            in remote_home_html
         )
 
-    def test_session_source_read_as_string_with_type_guard(self, home_html):
+    def test_session_source_read_as_string_with_type_guard(self, remote_home_html):
         assert (
             "var sessionSource = (session && typeof session.source === 'string') "
-            "? session.source : null;" in home_html
+            "? session.source : null;" in remote_home_html
         )
 
 
@@ -188,18 +188,18 @@ class TestReplayHeading:
 # ---------------------------------------------------------------------------
 
 class TestReplayLastNeverWhileSessionActive:
-    def test_show_replay_last_gated_on_session_active_with_legacy_fallback(self, home_html):
+    def test_show_replay_last_gated_on_session_active_with_legacy_fallback(self, remote_home_html):
         assert (
             "var showReplayLast = (sessionActive === null)\n"
             "      ? (!on && hasBuffer)\n"
             "      : (!sessionActive && !on && hasBuffer && !armed && !replaying);"
-            in home_html
+            in remote_home_html
         )
 
-    def test_button_text_driven_by_show_replay_last_flag(self, home_html):
+    def test_button_text_driven_by_show_replay_last_flag(self, remote_home_html):
         assert (
             "btn.textContent = stopping ? 'Stopping\\u2026' : "
-            "(showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in home_html
+            "(showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in remote_home_html
         )
 
 
@@ -208,13 +208,13 @@ class TestReplayLastNeverWhileSessionActive:
 # ---------------------------------------------------------------------------
 
 class TestOptimisticClickState:
-    def test_optimistic_state_variable_declared(self, home_html):
-        assert "var __repeatOptimistic = null;" in home_html
+    def test_optimistic_state_variable_declared(self, remote_home_html):
+        assert "var __repeatOptimistic = null;" in remote_home_html
 
-    def test_click_sets_optimistic_override_before_post_resolves(self, home_html):
-        assert "__repeatOptimistic = { active: newArmed, kind: kind, ts: Date.now() };" in home_html
+    def test_click_sets_optimistic_override_before_post_resolves(self, remote_home_html):
+        assert "__repeatOptimistic = { active: newArmed, kind: kind, ts: Date.now() };" in remote_home_html
         # Class + transient title applied synchronously, before fetch() below.
-        click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
+        click_src = remote_home_html.split("function onRepeatButtonClick()", 1)[1]
         opt_idx = click_src.index("__repeatOptimistic = { active: newArmed")
         fetch_idx = click_src.index("fetch(window.__REPEAT_URL || '/api/repeat'")
         assert opt_idx < fetch_idx
@@ -223,27 +223,27 @@ class TestOptimisticClickState:
         assert "btn.title = 'Starting\\u2026';" in between
         assert "btn.title = 'Stopping\\u2026';" in between
 
-    def test_hold_until_agree_or_timeout(self, home_html):
+    def test_hold_until_agree_or_timeout(self, remote_home_html):
         assert (
             "var agrees = optimisticStopPending ? stopConfirmed : (__repeatOptimistic.active === polledOn);"
-            in home_html
+            in remote_home_html
         )
-        assert "var expired = (Date.now() - __repeatOptimistic.ts) >= timeoutMs;" in home_html
-        assert "if (agrees || expired) {" in home_html
+        assert "var expired = (Date.now() - __repeatOptimistic.ts) >= timeoutMs;" in remote_home_html
+        assert "if (agrees || expired) {" in remote_home_html
 
-    def test_start_and_stop_use_different_fallback_timeouts(self, home_html):
-        assert "var REPEAT_START_OPTIMISTIC_TIMEOUT_MS = 5000;" in home_html
-        assert "var REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS = 10000;" in home_html
+    def test_start_and_stop_use_different_fallback_timeouts(self, remote_home_html):
+        assert "var REPEAT_START_OPTIMISTIC_TIMEOUT_MS = 5000;" in remote_home_html
+        assert "var REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS = 10000;" in remote_home_html
         assert (
             "var timeoutMs = (__repeatOptimistic.kind === 'stop')\n"
             "        ? REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS\n"
-            "        : REPEAT_START_OPTIMISTIC_TIMEOUT_MS;" in home_html
+            "        : REPEAT_START_OPTIMISTIC_TIMEOUT_MS;" in remote_home_html
         )
 
-    def test_optimistic_override_wins_over_polled_state_while_held(self, home_html):
-        assert "on = __repeatOptimistic.active;" in home_html
+    def test_optimistic_override_wins_over_polled_state_while_held(self, remote_home_html):
+        assert "on = __repeatOptimistic.active;" in remote_home_html
 
-    def test_post_failure_reverts_optimistic_override(self, home_html):
+    def test_post_failure_reverts_optimistic_override(self, remote_home_html):
         # Both the explicit {ok:false} branch and the network-error catch()
         # clear the override, restore the pre-click class, re-enable the
         # button, and drop the page-quiesce state.
@@ -251,34 +251,34 @@ class TestOptimisticClickState:
             "if (!d || !d.ok) {\n        __repeatOptimistic = null;\n"
             "        btn.classList.toggle('active', wasActive);\n"
             "        btn.disabled = false;\n"
-            "        _setRepeatStopping(false);\n      }" in home_html
+            "        _setRepeatStopping(false);\n      }" in remote_home_html
         )
         assert (
             "}).catch(function(){\n      __repeatOptimistic = null;\n"
             "      btn.classList.toggle('active', wasActive);\n"
             "      btn.disabled = false;\n"
-            "      _setRepeatStopping(false);\n    });" in home_html
+            "      _setRepeatStopping(false);\n    });" in remote_home_html
         )
 
-    def test_no_new_timers_beyond_existing_poll(self, home_html):
+    def test_no_new_timers_beyond_existing_poll(self, remote_home_html):
         # The optimistic mechanism must not introduce its own setTimeout/
         # setInterval; it only participates in the existing 1.5 s
         # refreshStatus()/updateRepeatButton() poll cycle already wired at
         # DOMContentLoaded.
-        opt_block = home_html.split("var __repeatOptimistic = null;", 1)[1]
-        opt_block = opt_block.split("function getOutputIdKey", 1)[0]
+        opt_block = remote_home_html.split("var __repeatOptimistic = null;", 1)[1]
+        opt_block = opt_block.split("function initApplianceSelector", 1)[0]
         assert "setTimeout" not in opt_block
         assert "setInterval" not in opt_block
 
-    def test_no_volume_writes_in_stop_flow(self, home_html):
+    def test_no_volume_writes_in_stop_flow(self, remote_home_html):
         # Agreed design constraint: no master-volume writes of any kind are
         # part of the stop/fade feedback path.
-        opt_block = home_html.split("var __repeatOptimistic = null;", 1)[1]
+        opt_block = remote_home_html.split("var __repeatOptimistic = null;", 1)[1]
         # buildOutputCardElement moved out of the inline page HTML into
         # nginx/static/render_fragments.js -- use the same
         # end-of-block marker test_no_new_timers_beyond_existing_poll()
         # above already uses instead.
-        opt_block = opt_block.split("function getOutputIdKey", 1)[0]
+        opt_block = opt_block.split("function initApplianceSelector", 1)[0]
         assert "onMasterVolumeChange" not in opt_block
         assert "MasterVolume" not in opt_block
         assert "master_vol" not in opt_block
@@ -295,24 +295,24 @@ class TestDisarmIsNotAStop:
     tears down. Only a click landing on an actually-replaying session is a
     'stop'."""
 
-    def test_click_classifies_disarm_separately_from_stop(self, home_html):
+    def test_click_classifies_disarm_separately_from_stop(self, remote_home_html):
         assert (
             "var kind = newArmed ? 'start' : "
-            "(state === 'repeating' ? 'stop' : 'disarm');" in home_html
+            "(state === 'repeating' ? 'stop' : 'disarm');" in remote_home_html
         )
 
-    def test_stopping_visuals_confined_to_the_stop_branch(self, home_html):
+    def test_stopping_visuals_confined_to_the_stop_branch(self, remote_home_html):
         # "Stopping…", the disabled button and the 'stopping' data-state all
         # live inside `if (kind === 'stop')` -- never on the disarm path.
-        click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
+        click_src = remote_home_html.split("function onRepeatButtonClick()", 1)[1]
         stop_branch = click_src.split("if (kind === 'stop') {", 1)[1]
         stop_branch = stop_branch.split("} else if (kind === 'disarm') {", 1)[0]
         assert "btn.textContent = 'Stopping\\u2026';" in stop_branch
         assert "btn.setAttribute('data-state', 'stopping');" in stop_branch
         assert "btn.disabled = true;" in stop_branch
 
-    def test_disarm_branch_goes_straight_to_the_off_look(self, home_html):
-        click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
+    def test_disarm_branch_goes_straight_to_the_off_look(self, remote_home_html):
+        click_src = remote_home_html.split("function onRepeatButtonClick()", 1)[1]
         disarm_branch = click_src.split("} else if (kind === 'disarm') {", 1)[1]
         disarm_branch = disarm_branch.split("} else {", 1)[0]
         assert "btn.classList.remove('active');" in disarm_branch
@@ -322,71 +322,71 @@ class TestDisarmIsNotAStop:
         assert "Stopping\\u2026" not in disarm_branch
         assert "btn.textContent" not in disarm_branch
 
-    def test_page_quiesce_only_for_a_real_fade(self, home_html):
-        assert "_setRepeatStopping(kind === 'stop');" in home_html
+    def test_page_quiesce_only_for_a_real_fade(self, remote_home_html):
+        assert "_setRepeatStopping(kind === 'stop');" in remote_home_html
 
-    def test_disarm_never_enters_the_stopping_derivation(self, home_html):
+    def test_disarm_never_enters_the_stopping_derivation(self, remote_home_html):
         # The poll-side stopping flag keys on kind === 'stop' only, so a
         # held 'disarm' override can never render as stopping...
         assert (
             "optimisticStopPending = (__repeatOptimistic.kind === 'stop' "
-            "&& __repeatOptimistic.active === false);" in home_html
+            "&& __repeatOptimistic.active === false);" in remote_home_html
         )
         # ...and a stale 'armed' reading still self-heals: if the daemon did
         # start a fade, the server's own flag drives the stopping state.
-        assert "var stopping = optimisticStopPending || fadingOut;" in home_html
+        assert "var stopping = optimisticStopPending || fadingOut;" in remote_home_html
 
-    def test_disarm_reconciles_on_the_generic_agreement_path(self, home_html):
+    def test_disarm_reconciles_on_the_generic_agreement_path(self, remote_home_html):
         # Not a stop, so it clears as soon as the poll reports armed false,
         # under the shorter (start) fallback timeout rather than the stop one.
         assert (
             "var agrees = optimisticStopPending ? stopConfirmed : "
-            "(__repeatOptimistic.active === polledOn);" in home_html
+            "(__repeatOptimistic.active === polledOn);" in remote_home_html
         )
         assert (
             "var timeoutMs = (__repeatOptimistic.kind === 'stop')\n"
             "        ? REPEAT_STOP_OPTIMISTIC_TIMEOUT_MS\n"
-            "        : REPEAT_START_OPTIMISTIC_TIMEOUT_MS;" in home_html
+            "        : REPEAT_START_OPTIMISTIC_TIMEOUT_MS;" in remote_home_html
         )
 
 
 class TestStoppingState:
-    def test_fading_out_read_from_replay_block(self, home_html):
-        assert "var fadingOut = !!replay.fading_out;" in home_html
+    def test_fading_out_read_from_replay_block(self, remote_home_html):
+        assert "var fadingOut = !!replay.fading_out;" in remote_home_html
 
-    def test_optimistic_stop_pending_derivation(self, home_html):
+    def test_optimistic_stop_pending_derivation(self, remote_home_html):
         assert (
             "optimisticStopPending = (__repeatOptimistic.kind === 'stop' "
-            "&& __repeatOptimistic.active === false);" in home_html
+            "&& __repeatOptimistic.active === false);" in remote_home_html
         )
 
-    def test_stopping_derived_from_optimistic_pending_or_server_fading_out(self, home_html):
-        assert "var stopping = optimisticStopPending || fadingOut;" in home_html
+    def test_stopping_derived_from_optimistic_pending_or_server_fading_out(self, remote_home_html):
+        assert "var stopping = optimisticStopPending || fadingOut;" in remote_home_html
 
-    def test_stopping_label_text(self, home_html):
-        assert "btn.textContent = stopping ? 'Stopping\\u2026' : (showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in home_html
-        assert "btn.textContent = 'Stopping\\u2026';" in home_html
+    def test_stopping_label_text(self, remote_home_html):
+        assert "btn.textContent = stopping ? 'Stopping\\u2026' : (showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in remote_home_html
+        assert "btn.textContent = 'Stopping\\u2026';" in remote_home_html
 
-    def test_button_disabled_while_stopping(self, home_html):
-        assert "btn.disabled = stopping || (!hasBuffer && !replaying && !on);" in home_html
-        click_src = home_html.split("function onRepeatButtonClick()", 1)[1]
+    def test_button_disabled_while_stopping(self, remote_home_html):
+        assert "btn.disabled = stopping || (!hasBuffer && !replaying && !on);" in remote_home_html
+        click_src = remote_home_html.split("function onRepeatButtonClick()", 1)[1]
         assert "btn.disabled = true;" in click_src
 
-    def test_data_state_set_to_stopping(self, home_html):
-        assert "if (stopping) state = 'stopping';" in home_html
+    def test_data_state_set_to_stopping(self, remote_home_html):
+        assert "if (stopping) state = 'stopping';" in remote_home_html
         # Only the click that interrupts an actual replay goes to 'stopping'.
-        assert "btn.setAttribute('data-state', 'stopping');" in home_html
+        assert "btn.setAttribute('data-state', 'stopping');" in remote_home_html
 
-    def test_body_class_toggled_from_single_choke_point(self, home_html):
-        assert "document.body.classList.toggle('repeat-stopping', stopping);" in home_html
+    def test_body_class_toggled_from_single_choke_point(self, remote_home_html):
+        assert "document.body.classList.toggle('repeat-stopping', stopping);" in remote_home_html
         # Only called from updateRepeatButton and the click handler / its
         # failure paths -- not scattered elsewhere.
-        assert home_html.count("function _setRepeatStopping(stopping){") == 1
+        assert remote_home_html.count("function _setRepeatStopping(stopping){") == 1
 
-    def test_inert_toggled_on_sibling_controls_not_the_button(self, home_html):
-        assert "targets[i].setAttribute('inert', '');" in home_html
-        assert "targets[i].removeAttribute('inert');" in home_html
-        assert "if (kid.id === 'repeat-btn') continue;" in home_html
+    def test_inert_toggled_on_sibling_controls_not_the_button(self, remote_home_html):
+        assert "targets[i].setAttribute('inert', '');" in remote_home_html
+        assert "targets[i].removeAttribute('inert');" in remote_home_html
+        assert "if (kid.id === 'repeat-btn') continue;" in remote_home_html
 
     def test_css_quiesce_rules_exclude_repeat_btn(self):
         # The shared theme is served by nginx as a static file
@@ -398,8 +398,8 @@ class TestStoppingState:
         assert "body.repeat-stopping #repeat-btn {" in theme_css
         assert "pointer-events: auto;" in theme_css
 
-    def test_stop_confirmation_requires_both_active_false_and_not_fading_out(self, home_html):
-        assert "var stopConfirmed = optimisticStopPending && !replaying && !fadingOut;" in home_html
+    def test_stop_confirmation_requires_both_active_false_and_not_fading_out(self, remote_home_html):
+        assert "var stopConfirmed = optimisticStopPending && !replaying && !fadingOut;" in remote_home_html
 
 
 # ---------------------------------------------------------------------------
@@ -625,37 +625,37 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
 # ---------------------------------------------------------------------------
 
 class TestClientRendersTrackIdDuringReplay:
-    def test_replay_origin_resolved_before_arbitrary_levels_zero_fallback(self, home_html):
+    def test_replay_origin_resolved_before_arbitrary_levels_zero_fallback(self, remote_home_html):
         # The origin-input resolution block must appear, and appear textually
         # before the pre-existing "pick levels[0]" fallback so it takes
         # priority when both could apply.
-        src = home_html.split("function renderNowPlayingCard(data)", 1)[1]
+        src = remote_home_html.split("function renderNowPlayingCard(data)", 1)[1]
         origin_idx = src.index("sessionSource === 'replay'")
         fallback_idx = src.index(
             "if (!activeLevel && levels.length > 0) { activeLevel = levels[0]; activeIdx = 0; }"
         )
         assert origin_idx < fallback_idx
 
-    def test_origin_input_read_from_repeat_recording_block(self, home_html):
+    def test_origin_input_read_from_repeat_recording_block(self, remote_home_html):
         # Matches the naming convention already used by updateRepeatButton's
         # own "var recording = repeat.recording || {}": these exact
         # substrings are also on the wording-regression test's
         # internal-field-token allowlist (test_repeat_ui_wiring.py), so
         # introducing a differently-named intermediate variable here would
         # trip that guard.
-        assert "var repeat = (data && data.repeat) || {};" in home_html
-        assert "var recording = repeat.recording || {};" in home_html
+        assert "var repeat = (data && data.repeat) || {};" in remote_home_html
+        assert "var recording = repeat.recording || {};" in remote_home_html
         assert (
             "var originInput = Number.isFinite(Number(recording.origin_input))\n"
-            "        ? Number(recording.origin_input) : null;" in home_html
+            "        ? Number(recording.origin_input) : null;" in remote_home_html
         )
 
-    def test_vu_ingest_skipped_for_replay_origin_fallback(self, home_html):
+    def test_vu_ingest_skipped_for_replay_origin_fallback(self, remote_home_html):
         # A replay-origin fallback level is not a genuine live level -- its
         # vu_history must not be fed into the VU meter queue.
-        assert "if (!usingReplayOrigin) vuIngestHistory(activeIdx, activeLevel.vu_history);" in home_html
+        assert "if (!usingReplayOrigin) vuIngestHistory(activeIdx, activeLevel.vu_history);" in remote_home_html
         # And the legacy unconditional call must be gone from this copy.
-        assert "\n          vuIngestHistory(activeIdx, activeLevel.vu_history);\n        }}" not in home_html
+        assert "\n          vuIngestHistory(activeIdx, activeLevel.vu_history);\n        }}" not in remote_home_html
 
 
 def _render_remote_home_page() -> str:
@@ -702,14 +702,6 @@ class TestRemoteHomeDelegatesToSharedNowPlayingRenderer:
     def test_remote_page_embeds_shared_now_playing_renderer(self, remote_home_html):
         assert "function renderNowPlayingCard(data)" in remote_home_html
 
-    def test_shared_script_is_byte_identical_on_both_pages(self, home_html, remote_home_html):
-        # Regression guard for the refactor itself: both pages must embed
-        # the exact same script file, not independently hand-maintained
-        # copies that can drift apart again.
-        assert "page/home_cards.js" in linked_static(home_html)
-        assert "page/home_cards.js" in linked_static(remote_home_html)
-        assert static_text("page/home_cards.js") in home_html
-        assert static_text("page/home_cards.js") in remote_home_html
 
     def test_info_modal_shared_across_both_pages(self, home_html, remote_home_html):
         # Regression guard for the info-modal extraction: both pages must
@@ -747,8 +739,6 @@ class TestRemoteShellTopControls:
 
 
 class TestRepeatUrlParameterization:
-    def test_local_page_sets_repeat_url_to_api_repeat(self, home_html):
-        assert page_data(home_html)["repeat_url"] == "/api/repeat"
 
     def test_remote_page_sets_repeat_url_to_gateway_path(self, remote_home_html):
         assert page_data(remote_home_html)["repeat_url"] == "/api/appliances/some-remote-appliance-id/repeat"

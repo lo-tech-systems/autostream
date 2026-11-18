@@ -74,18 +74,19 @@ def _wait_for(page: "Page", done, what: str) -> None:
 @_requires_browser
 class TestHome:
     def test_loads_with_no_error_and_reads_its_island(self, page: "Page"):
-        server, base = start_server(render_home())
+        server, base = start_server(render_home(show_input_detail=True))
         try:
             errors = _watch_errors(page)
-            stub.STATUS.update({"ok": True})
             page.goto(f"{base}/")
-            _wait_for(page, lambda: stub.POLLS, "the first speaker list poll")
+            _wait_for(page, lambda: stub.STATE_FETCHES, "the first state read")
             assert errors == []
-            assert page.evaluate("window.__OUTPUT_URL") == "/api/output"
-            assert page.evaluate("window.__REPEAT_URL") == "/api/repeat"
-            assert page.evaluate("window.__OUTPUTS_EMPTY_TOLERANCE_MS") == 6000
-            assert page.evaluate("window.__PRESET_VOLUME") == 20
-            assert page.evaluate("window.__ICON_CD").startswith("<svg")
+            island = page.evaluate("JSON.parse(document.getElementById('page-data').textContent)")
+            assert island["prefs"] == {"show_master_volume": False, "show_input_detail": True,
+                                       "preset_volume": 20, "vu_delay_ms": 2250,
+                                       "control_other_appliances": False}
+            assert island["state"]["boot"] == stub.STREAM["boot"]
+            assert island["icons"]["cd"].startswith("<svg")
+            assert island["csrf"] == "t"
         finally:
             server.shutdown()
 
@@ -560,3 +561,33 @@ class TestSetup:
             assert errors == []
         finally:
             server.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Line ceilings of the shared and Home modules
+# ---------------------------------------------------------------------------
+
+STATIC = stub.REPO_ROOT / "nginx" / "static"
+
+# file under nginx/static -> the most lines it may have. Growth past a ceiling
+# needs a reason, so it is a decision, not drift.
+CEILINGS = {
+    "shared/state_stream.js": 160,
+    "shared/state_view.js": 250,
+    "shared/texts.js": 50,
+    "shared/pending.js": 35,
+    "page/home/home_main.js": 50,
+    "page/home/home_intents.js": 30,
+    "page/home/home_speakers.js": 380,
+    "page/home/home_now_playing.js": 170,
+    "page/home/home_repeat.js": 110,
+    "page/home/home_warnings.js": 80,
+    "page/home/home_autostart.js": 45,
+    "page/selector_menu.js": 55,
+}
+
+
+@pytest.mark.parametrize("rel", sorted(CEILINGS))
+def test_a_module_stays_within_its_line_ceiling(rel: str):
+    lines = len((STATIC / rel).read_text(encoding="utf-8").splitlines())
+    assert lines <= CEILINGS[rel], f"{rel} has {lines} lines; its ceiling is {CEILINGS[rel]}"

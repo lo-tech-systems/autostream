@@ -1,31 +1,40 @@
 """Shared Home page renderer and stub server for the Playwright tests.
 
 The page comes from the real Home renderer; every other request is answered
-by a small stub server. ``/static/*`` is served from ``nginx/static`` (through ``_page_stub``),
-``/api/owntone/outputs_state`` from ``OUTPUTS``, ``/api/status`` from
-``STATUS`` and the remote Home poll from ``REMOTE_HOME``; each is served only
-while its dict is non-empty, so a test that leaves one empty sees the plain
-``{"ok": true}`` reply every other ``/api/*`` path gets. The module-level
-containers are shared by every importer and are mutated in place, never
-rebound. ``START_FAILURE``, when non-empty, is added to the outputs reply as its
-``start_failure`` field. ``PATHS`` lists the path of every ``/api/*`` GET the
-server has answered; ``API`` maps a GET path to the reply it gets, ahead of the
-plain ``{"ok": true}``. ``POST_PATHS`` and ``POST_TOKENS`` record, for each POST
-or PUT, its path and its ``X-CSRF-Token`` header.
+by a small stub server. ``/static/*`` is served from ``nginx/static`` (through
+``_page_stub``).
 
-``STREAM`` and ``STREAM_CONNECTS`` drive ``/api/v1/events``. In the default
-``"refuse"`` mode the path gets the plain ``{"ok": true}`` reply, which an
-event source cannot use, so a page falls back to polling. After
-``stream_on()`` the path holds an event stream open: ``push`` writes one
-change event to every open stream, ``drop`` ends them, ``refuse_from_now``
-returns to the plain reply and ``open_streams`` counts the streams not yet
-closed. ``STREAM_CONNECTS`` has one dict per connection (its ``Last-Event-ID``
-header, its ``since`` query, ``opened_at`` and ``closed_at``, which stays
-``None`` while the connection is open). ``start_server`` and ``set_page``
-reset all of it.
+The protocol routes serve ``PARTS``, the state parts a test arranges
+(``base_parts`` gives a quiet appliance, ``unit`` builds a speaker row):
+
+* ``GET /api/v1/state`` (and ``?parts=``) answers the state body. Every query
+  string is kept in ``STATE_FETCHES``.
+* ``GET /api/v1/events`` is refused in the default ``"refuse"`` mode (the plain
+  ``{"ok": true}`` reply, which an event source cannot use, so a page falls
+  back to polling the state). After ``stream_on()`` it holds an event stream
+  open: ``push(data, resync=False)`` merges ``data`` (part name -> value) into
+  ``PARTS`` and writes one change event to every open stream, ``drop`` ends
+  them, ``refuse_from_now`` returns to the plain reply, ``open_streams``
+  counts the streams not yet closed and ``new_boot`` starts a new boot id at
+  a lower version. ``STREAM_CONNECTS`` has one dict per connection (its
+  ``Last-Event-ID`` header, its ``since`` query, ``opened_at`` and
+  ``closed_at``, which stays ``None`` while the connection is open).
+  ``set_parts`` changes ``PARTS`` and the version without an event, for a page
+  that is polling.
+* ``POST /api/v1/intents/<name>`` answers ``{"ok": true, ...}`` or the next
+  entry of ``REPLIES`` merged over it. ``POSTS`` has the body of each POST or
+  PUT, ``POST_PATHS`` its path and ``POST_TOKENS`` its ``X-CSRF-Token``.
+
+The older routes stay for the remote Home page and Setup: ``/api/status`` from
+``STATUS`` and ``/api/owntone/outputs_state`` from ``OUTPUTS`` (``START_FAILURE``
+is its ``start_failure`` field), the remote Home poll from ``REMOTE_HOME``;
+each is served only while its dict is non-empty. ``PATHS`` lists the path of
+every ``/api/*`` GET answered, and ``API`` maps a GET path to its reply.
+``start_server``, ``set_page`` and ``render_home`` reset the stream.
 """
 from __future__ import annotations
 
+import copy
 import json
 import queue
 import select
@@ -38,7 +47,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from fake_store import fake_outputs_result
 
 import _page_stub
 
@@ -47,9 +55,9 @@ REPO_ROOT = Path(__file__).parent.parent.parent
 REMOTE_APPLIANCE_ID = "aabbccdd1122334455aa"
 
 PAGE: bytes = b""
-OUTPUTS: list = []
 REPLIES: list = []
 POSTS: list = []
+OUTPUTS: list = []
 POLLS: list = []
 STATUS: dict = {}
 STATUS_POLLS: list = []
@@ -60,27 +68,95 @@ PATHS: list = []
 API: dict = {}
 POST_PATHS: list = []
 POST_TOKENS: list = []
+STATE_FETCHES: list = []
+REPLY_DELAY_S: list = [0.0]
+PARTS: dict = {}
+PART_VERSIONS: dict = {}
 STREAM: dict = {"mode": "refuse", "boot": "0123456789abcdef", "version": 1000}
 STREAM_CONNECTS: list = []
 _STREAM_QUEUES: list = []
 _STREAM_LOCK = threading.Lock()
 
-_BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update", "sample_rate")
+_INTENTS = "/api/v1/intents/"
 
 
-def _parsed_config(show_input_detail: bool) -> MagicMock:
+def unit(uid: str = "tv", name: str = "Speaker A", **fields) -> dict:
+    """One speaker row of the outputs part, as the state body carries it.
+    ``offline=True`` is a unit the player has no row for."""
+    offline = fields.pop("offline", False)
+    pin_pending = fields.pop("pin_pending", False)
+    row = {
+        "id": uid, "name": name, "selected": False, "volume": 20, "muted": False,
+        "availability": "ok", "cause": "user",
+        "reported": None if offline else {"pin_pending": pin_pending},
+        "connecting": False, "auto_start": False, "hidden": False,
+        "pin_claim": "", "in_use_by": "", "offline": offline,
+    }
+    row.update(fields)
+    return row
+
+
+def base_parts(**parts) -> dict:
+    """A quiet appliance: no session, no speakers, no warnings. Each keyword
+    replaces the whole part of that name."""
+    base = {
+        "session": {"active": False, "source": None},
+        "repeat": {"block": None},
+        "track": {"entries": {}, "service_enabled": False},
+        "inputs": {"entries": [], "sample_rate_mismatch_input": 0, "sample_rate_warning_text": ""},
+        "playback": {"inputs": {}},
+        "outputs": {
+            "units": [], "connected": True, "muted_all": False, "start_failure": None,
+            "default_members": [], "default_matches": False, "master_volume": None,
+            "selected_count": 0,
+        },
+        "warnings": {"entries": []},
+        "monitor": {"connected": True, "output_trim_db": None},
+        "appliance": {"id": "0" * 20, "hostname": "autostream", "configured": True},
+    }
+    base.update(parts)
+    return base
+
+
+def outputs_part(*units: dict, **fields) -> dict:
+    """An outputs part with *units*, the selected ones counted for the master level."""
+    selected = [u for u in units if u["selected"]]
+    part = base_parts()["outputs"]
+    part.update(units=list(units), selected_count=len(selected),
+                master_volume=round(sum(u["volume"] for u in selected) / len(selected)) if selected else None)
+    part.update(fields)
+    return part
+
+
+def state_body(names=None) -> dict:
+    """The state body for the current ``PARTS`` (only *names* when given)."""
+    with _STREAM_LOCK:
+        parts = {n: copy.deepcopy(v) for n, v in PARTS.items() if names is None or n in names}
+        return {
+            "boot": STREAM["boot"], "version": STREAM["version"], "protocol": 4,
+            "time": time.time(), "clients": 1, "part_versions": dict(PART_VERSIONS), "parts": parts,
+        }
+
+
+def set_parts(**parts) -> None:
+    """Change parts without an event: the version moves, as a stream's would."""
+    with _STREAM_LOCK:
+        STREAM["version"] += 1
+        PARTS.update(copy.deepcopy(parts))
+        for name in parts:
+            PART_VERSIONS[name] = STREAM["version"]
+
+
+def _parsed_config(show_input_detail: bool, show_master_volume: bool, control_other: bool) -> MagicMock:
     parsed = MagicMock()
     parsed.owntone.base_url = "http://localhost:3689"
-    from autostream_config import DefaultOutput
-    parsed.owntone.default_outputs = (DefaultOutput("", "autostream", 20),)
     parsed.owntone.volume_percent = 20
-    parsed.webui.show_master_volume = False
+    parsed.webui.show_master_volume = show_master_volume
     parsed.webui.show_input_detail = show_input_detail
-    parsed.webui.show_hostname_on_home = False
-    parsed.webui.control_other_appliances = False
+    parsed.webui.show_hostname_on_home = control_other
+    parsed.webui.control_other_appliances = control_other
     parsed.webui.hidden_outputs = []
     parsed.webui.dark_mode = False
-    parsed.track_identification = MagicMock(enabled=False)
     return parsed
 
 
@@ -95,75 +171,37 @@ def _fake_handler() -> tuple[MagicMock, list]:
 
 def render_home(
     *,
-    banners: dict[str, str] | None = None,
-    levels: list[dict] | None = None,
+    parts: dict | None = None,
     show_input_detail: bool = False,
-    outputs: list[dict] | None = None,
+    show_master_volume: bool = False,
+    control_other: bool = False,
 ) -> bytes:
-    """Render the Home page as the server would.
-
-    ``banners`` maps a banner name (stylus, belt, bearing, dial_update,
-    sample_rate) to the text the server renders into it; names left out
-    render empty. ``levels`` is what the input levels lookup returns; the
-    sample rate banner links to the lowest-numbered level that reports a
-    mismatch. ``outputs`` is the speaker list the page is rendered with (the
-    row dicts the list poll carries); without it the player is unreachable.
-    """
-    banners = dict(banners or {})
-    unknown = set(banners) - set(_BANNER_KEYS)
-    if unknown:
-        raise ValueError(f"unknown banner name(s): {sorted(unknown)}")
-
+    """Render the Home page as the server would, starting from *parts* (each
+    key replaces that part of ``base_parts()``). ``PARTS`` becomes what the
+    page was rendered with, so the stub's state routes agree with it."""
     sys.path.insert(0, str(REPO_ROOT / "core"))
     from webui.browser.home import send_airplay_page  # noqa: PLC0415
-    from track_id.models import disabled_snapshot  # noqa: PLC0415
 
+    reset_stream()
+    with _STREAM_LOCK:
+        PARTS.clear()
+        PARTS.update(copy.deepcopy(base_parts(**(parts or {}))))
+        PART_VERSIONS.clear()
+        PART_VERSIONS.update({n: STREAM["version"] for n in PARTS})
     handler, chunks = _fake_handler()
     auth = MagicMock()
     auth.get_csrf_token.return_value = "t"
     state = MagicMock()
     state.config_path = "dummy.ini"
-
-    mismatching = [
-        int(lv["index"]) for lv in (levels or [])
-        if lv.get("rate_mismatch_hz", 0) and "index" in lv
-    ]
-    mismatch_input = min(mismatching) if mismatching else 0
-
-    snap = MagicMock()
-    snap.inputs = {}
-    snap.stylus_banner_text = banners.get("stylus", "")
-    snap.belt_banner_text = banners.get("belt", "")
-    snap.bearing_banner_text = banners.get("bearing", "")
-    snap.has_warning = False
-    snap.to_public_dict.return_value = {}
-
-    sys.path.insert(0, str(REPO_ROOT / "tests"))
-    from fake_store import FakeStore, fake_playback, fake_track  # noqa: PLC0415
-
-    fake = FakeStore()
-    fake.inputs(
-        [fake.input_entry(lv["index"], **{k: v for k, v in lv.items() if k != "index"})
-         for lv in (levels or [])],
-        mismatch=mismatch_input, banner=banners.get("sample_rate", ""))
-
     with ExitStack() as stack:
         for p in (
             patch("webui.common._config_snapshot",
-                  return_value=_parsed_config(show_input_detail)),
+                  return_value=_parsed_config(show_input_detail, show_master_volume, control_other)),
             patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
             patch("webui.browser.home.get_all_appliances", return_value=[]),
             patch("webui.browser.home.get_system_hostname", return_value="autostream"),
-            fake_playback(snap),
-            patch("webui.browser.home._dial_update_banner_text",
-                  return_value=banners.get("dial_update", "")),
-            fake_outputs_result(
-                MagicMock(ok=outputs is not None, outputs=[{"id": "tv", "name": "Speaker A"}])),
-            *([patch("webui.browser.home.build_output_list", return_value=list(outputs))]
-              if outputs is not None else []),
-            patch("webui.browser.home.get_setting",
-                  return_value=MagicMock(ok=True, value="2250")),
-            fake_track(disabled_snapshot()),
+            patch("webui.browser.home._state_for_island", return_value=state_body()),
+            patch("webui.browser.home.get_setting", return_value=MagicMock(ok=True, value="2250")),
             patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
         ):
             stack.enter_context(p)
@@ -180,7 +218,7 @@ def render_remote_home(appliance_id: str = REMOTE_APPLIANCE_ID) -> bytes:
     state = MagicMock()
     state.config_path = "dummy.ini"
     with patch("webui.common._config_snapshot",
-               return_value=_parsed_config(False)), \
+               return_value=_parsed_config(False, False, False)), \
          patch("autostream_rpi.get_appliance_id", return_value="0" * 20), \
          patch("webui.browser.home.get_all_appliances", return_value=[]), \
          patch("webui.browser.home.get_system_hostname", return_value="autostream"):
@@ -200,14 +238,19 @@ def _peer_closed(sock) -> bool:
 
 
 def reset_stream() -> None:
-    """Back to the default mode (refuse), with no stream open and no record."""
+    """Back to the default mode (refuse) and the first boot id and version,
+    with no stream open and no record."""
     with _STREAM_LOCK:
         for events in _STREAM_QUEUES:
             events.put(None)
         _STREAM_QUEUES.clear()
         STREAM_CONNECTS.clear()
+        STATE_FETCHES.clear()
         STREAM["mode"] = "refuse"
+        STREAM["boot"] = "0123456789abcdef"
         STREAM["version"] = 1000
+        for name in PART_VERSIONS:
+            PART_VERSIONS[name] = 1000
 
 
 def stream_on() -> None:
@@ -220,15 +263,31 @@ def refuse_from_now() -> None:
     STREAM["mode"] = "refuse"
 
 
-def push(parts, *, resync: bool = False) -> None:
-    """Write one change event naming *parts* to every open stream."""
+def new_boot(boot: str = "fedcba9876543210", version: int = 5) -> None:
+    """The appliance starts again: a new boot id at a version lower than before,
+    with the parts as they are and every part at that version."""
+    with _STREAM_LOCK:
+        STREAM["boot"] = boot
+        STREAM["version"] = version
+        for name in PARTS:
+            PART_VERSIONS[name] = version
+
+
+def push(data: dict | None = None, *, resync: bool = False) -> None:
+    """Merge *data* (part name -> value) into the parts and write one change
+    event carrying it to every open stream. With ``resync=True`` the event
+    carries no data and tells the page to read the state again."""
     with _STREAM_LOCK:
         STREAM["version"] += 1
         version = STREAM["version"]
-        data = json.dumps(
-            {"boot": STREAM["boot"], "version": version, "parts": list(parts), "resync": bool(resync)},
-            separators=(",", ":"))
-        chunk = f"id: {STREAM['boot']}-{version}\nevent: change\ndata: {data}\n\n".encode()
+        body = {"boot": STREAM["boot"], "version": version, "resync": bool(resync)}
+        if not resync:
+            PARTS.update(copy.deepcopy(data or {}))
+            for name in data or {}:
+                PART_VERSIONS[name] = version
+            body["data"] = data or {}
+        chunk = (f"id: {STREAM['boot']}-{version}\nevent: change\n"
+                 f"data: {json.dumps(body, separators=(',', ':'))}\n\n").encode()
         for events in _STREAM_QUEUES:
             events.put(chunk)
 
@@ -260,6 +319,14 @@ class Handler(BaseHTTPRequestHandler):
             PATHS.append(path)
         if self.path.startswith("/static/"):
             _page_stub.serve_static(self, self.path)
+        elif path == "/api/v1/state":
+            query = urlsplit(self.path).query
+            STATE_FETCHES.append(query)
+            wanted = parse_qs(query).get("parts")
+            names = wanted[0].split(",") if wanted else None
+            self._send(json.dumps(state_body(names)).encode(), "application/json")
+        elif path == "/api/v1/events" and STREAM["mode"] == "serve":
+            self._serve_stream()
         elif self.path.startswith("/api/owntone/outputs_state"):
             POLLS.append(1)
             reply = {"ok": True, "outputs": OUTPUTS}
@@ -272,8 +339,6 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/appliances/") and path.endswith("/home") and REMOTE_HOME:
             REMOTE_HOME_POLLS.append(1)
             self._send(json.dumps(REMOTE_HOME).encode(), "application/json")
-        elif path == "/api/v1/events" and STREAM["mode"] == "serve":
-            self._serve_stream()
         elif path in API:
             self._send(json.dumps(API[path]).encode(), "application/json")
         elif self.path.startswith("/api/"):
@@ -323,9 +388,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         n = int(self.headers.get("Content-Length", "0"))
         POSTS.append(json.loads(self.rfile.read(n) or b"{}"))
-        POST_PATHS.append(self.path.split("?", 1)[0])
+        path = self.path.split("?", 1)[0]
+        POST_PATHS.append(path)
         POST_TOKENS.append(self.headers.get("X-CSRF-Token", ""))
-        reply = REPLIES.pop(0) if REPLIES else {"ok": True}
+        reply = REPLIES.pop(0) if REPLIES else {}
+        if path.startswith(_INTENTS):
+            with _STREAM_LOCK:
+                STREAM["version"] += 1          # an intent is a change; its reply names the version after it
+            envelope = {"ok": True, "error": None, "version": STREAM["version"],
+                        "boot": STREAM["boot"], "result": {}}
+            envelope.update(reply)
+            reply = envelope
+        elif not reply:
+            reply = {"ok": True}
+        time.sleep(REPLY_DELAY_S[0])
         self._send(json.dumps(reply).encode(), "application/json")
 
     do_PUT = do_POST
