@@ -1,4 +1,4 @@
-// The pin above the speaker list: it saves the speakers playing now as the
+// The pin (in the Master Volume header, or above the speaker list): it saves the speakers playing now as the
 // Auto-Start set, after a confirmation.
 import { AUTO_START_CONFIRM, REFUSAL } from '../../shared/texts.js';
 import { playing } from '../../shared/state_view.js';

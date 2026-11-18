@@ -86,13 +86,40 @@ class TestPinIcon:
         stub.push({"outputs": outputs(speaker(selected=True), default_matches=False)})
         expect(pin).to_have_attribute("aria-pressed", "false")
 
-    def test_it_sits_right_aligned_directly_above_the_speaker_list(self, page: "Page", home_url: str):
+    def test_without_master_volume_it_sits_right_aligned_directly_above_the_speaker_list(
+        self, page: "Page", home_url: str
+    ):
         _open(page, home_url)
+        expect(page.locator(".autostart-row #autostart-pin")).to_have_count(1)
+        expect(page.locator("#autostart-pin")).to_have_count(1)
         pin = page.locator("#autostart-pin").bounding_box()
         lst = page.locator("#outputs-list").bounding_box()
         vp = page.viewport_size["width"]
         assert pin["y"] < lst["y"] and lst["y"] - (pin["y"] + pin["height"]) < 60
         assert pin["x"] + pin["width"] > vp * 0.7
+
+    @pytest.mark.parametrize("input_detail", [False, True], ids=["no_meters", "with_meters"])
+    def test_with_master_volume_it_sits_at_the_right_of_the_volume_header(
+        self, page: "Page", home_url: str, input_detail: bool
+    ):
+        open_home(page, home_url, {"session": _LIVE, "outputs": outputs(speaker(selected=True))},
+                  show_master_volume=True, show_input_detail=input_detail)
+        wait_stream(page, 200)
+        pin = page.locator("#master-volume-card .slider-header #autostart-pin")
+        expect(pin).to_have_count(1)
+        expect(page.locator("#autostart-pin")).to_have_count(1)
+        expect(page.locator(".autostart-row")).to_have_count(0)
+        expect(pin).to_be_visible()
+        box, card = pin.bounding_box(), page.locator("#master-volume-card").bounding_box()
+        rem = page.evaluate("parseFloat(getComputedStyle(document.documentElement).fontSize)")
+        assert round(box["width"]) == round(box["height"]) == round(2 * rem)
+        assert abs((card["x"] + card["width"]) - (box["x"] + box["width"])) <= 1
+        assert page.locator("#master-volume-card .slider-header span").bounding_box()["x"] < box["x"]
+        if input_detail:
+            level = page.locator("#np-level").bounding_box()
+            assert abs((level["x"] + level["width"]) - (box["x"] + box["width"])) <= 1
+        pin.click()
+        expect(page.locator("#autoStartModal")).to_have_class(SHOWN)
 
 
 @_requires_browser

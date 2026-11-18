@@ -17,10 +17,13 @@
 #red-banner.red-banner-tap{cursor:pointer;}
 #red-banner div{padding:.1rem 0;}
 
-/* Auto-Start pin: right-aligned above the speaker list; filled when the speakers on are the saved set. */
+/* Auto-Start pin: at the right of the Master Volume header, or right-aligned above the speaker list
+   when that is hidden; filled when the speakers on are the saved set. */
 .autostart-row{display:flex;justify-content:flex-end;margin:0 0 .35rem;}
 .autostart-row[hidden]{display:none;}
 .icon-btn{display:inline-flex;align-items:center;justify-content:center;width:2.2rem;height:2.2rem;padding:0;border:1px solid var(--color-border-card);border-radius:999px;background:var(--color-surface-raised);color:var(--color-text);cursor:pointer;-webkit-tap-highlight-color:transparent;}
 .icon-btn[hidden]{display:none;}
+.slider-header .icon-btn{width:2rem;height:2rem;margin:-.3rem 0 -.3rem .5rem;}
+.slider-header .icon-btn svg{width:20px;height:20px;}
 .icon-btn.is-set{border-color:var(--color-accent);background:var(--color-surface-selected);color:var(--color-accent);}
 .icon-btn.is-set svg{fill:currentColor;}

@@ -219,10 +219,18 @@ def send_airplay_page(
     )
     _top_controls_html = f"<div class='airplay-top-controls'>{_repeat_btn_html}{_top_right_html}</div>"
 
+    # The Auto-Start pin: in the Master Volume header when that is shown,
+    # otherwise in a row of its own above the speaker list.
+    _autostart_pin_html = (
+        '<button id="autostart-pin" class="icon-btn" type="button"'
+        ' aria-label="Auto-Start these speakers" aria-pressed="false" hidden>'
+        f'{_PIN_ICON}</button>'
+    )
+
     # Master volume wrapper embedded inside the Now Playing card.
     _np_vol_html = (
         '<div class="np-volume-wrap master-volume-inactive" id="master-volume-card">'
-        '<div class="slider-header"><span>Master Volume</span></div>'
+        f'<div class="slider-header"><span>Master Volume</span>{_autostart_pin_html}</div>'
         + slider_html(id="master_vol_slider", value=preset_volume, disabled=True)
         + '</div>'
     ) if show_master_volume else ""
@@ -247,11 +255,7 @@ def send_airplay_page(
         f'{_np_vol_html}'
         '</div>'
     )
-    _autostart_html = (
-        '<div class="autostart-row"><button id="autostart-pin" class="icon-btn" type="button"'
-        ' aria-label="Auto-Start these speakers" aria-pressed="false" hidden>'
-        f'{_PIN_ICON}</button></div>'
-    )
+    _autostart_html = "" if show_master_volume else f'<div class="autostart-row">{_autostart_pin_html}</div>'
     _body_html = (
         f"<div class='airplay-masthead'><div class='airplay-brand'>{BANNER_LOGO_HTML}</div></div>"
         + _top_controls_html

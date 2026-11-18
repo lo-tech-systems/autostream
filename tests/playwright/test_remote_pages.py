@@ -159,7 +159,7 @@ class TestRemoteHome:
     def test_the_pin_icon_saves_the_speakers_through_the_relay(self, page: "Page", remote):
         rig = remote(parts=parts(speaker(selected=True), session={"active": True, "source": "turntable"}))
         open_home(page, rig)
-        expect(page.locator("#autostart-pin")).to_be_visible()
+        expect(page.locator("#master-volume-card .slider-header #autostart-pin")).to_be_visible()
         page.locator("#autostart-pin").click()
         expect(page.locator("#autoStartModal")).to_have_class("modal-overlay show")
         page.locator("#autoStartYes").click()
@@ -171,7 +171,7 @@ class TestRemoteHome:
         open_home(page, rig)
         page.locator("#appliance-selector-btn").click()
         expect(page.locator("#appliance-selector-dropdown a.appliance-selector-option")).to_have_count(2)
-        page.locator("body").click()
+        page.locator("body").click(position={"x": 2, "y": 2})
         rig.set_peers(roster(PEER_ID, "Kitchen"), roster(OTHER_ID, "Bedroom", protocol_ok=False),
                       roster(THIRD_ID, "Shed", configured=False))
         with page.expect_request(lambda r: "/api/v1/state?parts=peers" in r.url):
