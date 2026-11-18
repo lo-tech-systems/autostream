@@ -249,6 +249,17 @@ NOT_AUTHORISED_TEXT = "Not authorised"
 # PIN) in the appliance's web UI, which the small screen cannot do.
 PAIR_IN_AUTOSTREAM_TEXT = "Pair in Autostream"
 
+# The hint page's title and lines for a speaker that could not start, by the
+# reason the appliance gave. {name} is replaced by the speaker's name.
+START_FAILURE_TITLE = "Could not start"
+START_FAILURE_LINES = {
+    "refused": "{name} turned the request down",
+    "failed": "{name} did not start",
+    "timed_out": "{name} did not answer in time",
+    "encoder_capacity": "No capacity to stream to {name}",
+}
+START_FAILURE_LINE_FALLBACK = "{name} did not start"
+
 # A list row's trailing mark for the appliance's default output. Drawn after
 # the label and never truncated; present in the DejaVu faces the dial ships.
 DEFAULT_MARK = "•"

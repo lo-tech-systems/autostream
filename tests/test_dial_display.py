@@ -11124,3 +11124,153 @@ class TestPairInAutostreamPage:
         )
         assert view_spy.acquire_calls == 0
         assert core_spy.acquire_calls == 0
+
+
+class TestStartFailureNotice:
+    AID = "a" * 20
+
+    def _display(self, screen="main"):
+        display = _make_outputs_display()
+        if screen in ("outputs", "output"):
+            display._open_outputs_locked()
+            seed_outputs(display, (OutputRow(id="1", name="Patio", selected=False, volume=0),),
+                         loaded=False)
+            display._screen = screen
+            if screen == "output":
+                display._output_detail = dd.OutputDetailState(
+                    appliance_id=self.AID, output_id="1", opened_at=time.monotonic())
+        elif screen != "main":
+            display._screen = screen
+        return display
+
+    @staticmethod
+    def _effect(reason="refused", name="Speaker A", appliance_id="a" * 20):
+        return dd.StartFailureEffect(appliance_id, f"{appliance_id}:b:1", name, reason)
+
+    def _fold(self, display):
+        display._apply_pending_snapshot()
+        with display._lock:
+            display._apply_screen_requests_locked()
+
+    def test_the_text_for_each_reason(self):
+        assert dd._start_failure_hint("Speaker A", "refused") == (
+            "Could not start", "Speaker A turned the request down")
+        assert dd._start_failure_hint("Speaker A", "failed")[1] == "Speaker A did not start"
+        assert dd._start_failure_hint("Speaker A", "timed_out")[1] == "Speaker A did not answer in time"
+        assert dd._start_failure_hint("Speaker A", "encoder_capacity")[1] == "No capacity to stream to Speaker A"
+        assert dd._start_failure_hint("Speaker A", "mystery")[1] == "Speaker A did not start"
+
+    def test_braces_in_a_name_are_shown_as_written(self):
+        assert dd._start_failure_hint("{0} {name} {", "refused")[1] == "{0} {name} { turned the request down"
+
+    @pytest.mark.parametrize("screen", ["main", "outputs", "output"])
+    def test_the_value_page_opens_over_the_main_screen_the_list_and_a_speakers_page(self, screen):
+        display = self._display(screen)
+        display._apply_start_failure(self._effect())
+        self._fold(display)
+        assert display._screen == "info_value"
+        assert display._info_value.hint == ("Could not start", "Speaker A turned the request down")
+        assert display._back_target("info_value") == screen
+
+    @pytest.mark.parametrize("screen", ["repeat", "eq", "info", "picker"])
+    def test_it_never_opens_over_the_other_screens(self, screen):
+        display = self._display(screen)
+        display._apply_start_failure(self._effect())
+        self._fold(display)
+        assert display._screen == screen
+
+    def test_a_sleeping_screen_is_not_woken(self):
+        display = self._display()
+        with display._lock:
+            display._sleep_locked()
+        display._apply_start_failure(self._effect())
+        assert display._screen_request is None and display._info_value_hint is None
+        assert display.is_sleeping() is True
+
+    def test_another_appliance_shows_nothing(self):
+        display = self._display()
+        display._apply_start_failure(self._effect(appliance_id="b" * 20))
+        assert display._screen_request is None
+
+    def test_the_effect_never_reaches_the_source_effects(self):
+        display = self._display()
+        with patch.object(display, "_apply_source_effects") as source:
+            display.core._queue_effects(self._effect())
+            display._drain_effects()
+        source.assert_not_called()
+        assert display._screen_request == "info_value"
+
+    def test_the_notice_does_not_change_where_the_other_hints_open(self):
+        display = self._display("main")
+        display._apply_start_failure(self._effect())
+        self._fold(display)
+        display.close_list()
+        self._fold(display)
+        assert display._screen == "main"
+        display._screen = "outputs"
+        display._info_value_hint = dd._pairing_hint("Lounge")
+        with display._lock:
+            assert display._open_info_value_locked() is False
+
+
+class TestLatePairingHint:
+    AID = "a" * 20
+
+    def _display(self, screen):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        seed_outputs(display, (OutputRow(id="1", name="Apple TV", selected=False, volume=0),
+                               OutputRow(id="2", name="Patio", selected=False, volume=0)),
+                     loaded=False)
+        display._screen = screen
+        if screen == "output":
+            display._output_detail = dd.OutputDetailState(
+                appliance_id=self.AID, output_id="2", opened_at=time.monotonic())
+        return display
+
+    def _late(self, display, output_id="1", late=True, appliance_id=None):
+        display._apply_outputs_outcome(dd.OutputsEffect(
+            appliance_id or self.AID, output_id, "output_set", "rejected", "pin_required", 1.0, late))
+        display._apply_pending_snapshot()
+        with display._lock:
+            display._apply_screen_requests_locked()
+
+    def test_a_late_request_shows_the_hint_on_the_speaker_list(self):
+        display = self._display("outputs")
+        self._late(display)
+        assert display._screen == "info_value"
+        assert display._info_value.hint[0] == "Pair in Autostream"
+        assert display._back_target("info_value") == "outputs"
+
+    def test_a_late_request_shows_the_hint_on_another_speakers_page(self):
+        display = self._display("output")
+        self._late(display, output_id="1")
+        assert display._screen == "info_value"
+        assert display._back_target("info_value") == "output"
+
+    def test_a_late_request_shows_nothing_on_the_main_screen(self):
+        display, fb, gt = make_display(targets=[])
+        display.core.set_field("reporting_id", self.AID)
+        self._late(display)
+        assert display._screen == "main" and display._info_value is None
+
+    def test_a_late_request_for_another_appliance_shows_nothing(self):
+        display = self._display("outputs")
+        self._late(display, appliance_id="b" * 20)
+        assert display._screen == "outputs"
+
+    def test_an_on_time_request_still_shows_only_on_that_speakers_page(self):
+        display = self._display("outputs")
+        self._late(display, late=False)
+        assert display._screen == "outputs"
+        display = self._display("output")
+        self._late(display, output_id="1", late=False)
+        assert display._screen == "output"
+        self._late(display, output_id="2", late=False)
+        assert display._screen == "info_value"
+
+    def test_the_unauthorised_row_hint_still_opens_only_over_the_selector(self):
+        display = self._display("outputs")
+        display._info_value_hint = dd._unauthorised_hint("Lounge")
+        with display._lock:
+            assert display._open_info_value_locked() is False

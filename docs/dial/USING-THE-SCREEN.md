@@ -314,7 +314,15 @@ readout to tap, so this whole feature is unreachable there.
 
 If a speaker needs pairing (a new Apple TV, for example), the page reads
 **Pair in Autostream**: enter the PIN in the appliance's web UI, where the
-prompt appears, then try again. Tap anywhere to go back.
+prompt appears, then try again. Tap anywhere to go back. A speaker that asks
+for its PIN a few seconds after you switch it on (an Apple TV often does)
+shows the same page, on the speaker list or on any speaker's page of that
+appliance.
+
+If a speaker you switched on from the dial does not start, a page reads
+**Could not start** with the speaker's name and a short reason. It shows only
+on the main screen, the speaker list or a speaker's page, and never wakes a
+sleeping screen. Tap anywhere to go back.
 
 ## EQ page
 

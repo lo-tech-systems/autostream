@@ -22,8 +22,8 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
     ApplianceState, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqBand, EqState,
-    FocusState, NowPlaying, OutputRow, OutputsState, PowerState, TransportRequest, WarningState,
-    artwork_key,
+    FocusState, NowPlaying, OutputRow, OutputsState, PowerState, StartFailureNotice,
+    TransportRequest, WarningState, artwork_key,
 )
 from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView
 from dial_repeat_store import RepeatRecord
@@ -167,6 +167,12 @@ def pin_request(state, error=None, kind="output_set", at=NOW - 1, retry_after_s=
     """An output request on the Lounge's Patio speaker (id o2), made at *at*
     and now in *state*."""
     return TransportRequest(LOUNGE, kind, at, state, at, error, "o2", retry_after_s)
+
+
+def _start_failure_notice(appliance_id, reason) -> StartFailureNotice:
+    """A notice for the Patio speaker (id o2) of *appliance_id*."""
+    return StartFailureNotice(
+        appliance_id, f"{appliance_id}:boot-a:3", "o2", "Patio", reason, NOW - 1)
 
 
 def _pin_snapshot(request, outputs_version=2) -> CoreSnapshot:
@@ -322,6 +328,12 @@ def _build() -> dict:
     add(Scenario("pin_required_v1", _pin_snapshot(
         pin_request("rejected", "pin_required"), outputs_version=1)))
     add(Scenario("pin_expired", _pin_snapshot(pin_request("rejected", "pin_required", at=NOW - 100))))
+    add(Scenario("start_failure_refused", _playing(
+        start_failure=_start_failure_notice(LOUNGE, "refused"))))
+    add(Scenario("start_failure_elsewhere", _playing(
+        start_failure=_start_failure_notice(KITCHEN, "refused"))))
+    add(Scenario("start_failure_late_pin", _pin_snapshot(TransportRequest(
+        LOUNGE, "output_set", NOW - 5, "rejected", NOW - 1, "pin_required", "o2", 0))))
     add(Scenario("disconnected", base(
         polling=False, appliances=(), network=NetworkView(link=LINK_DOWN), sd_health=None,
     ), muted=None))

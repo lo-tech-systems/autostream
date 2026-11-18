@@ -79,6 +79,7 @@ class TestCorpus:
             "appliance_warning", "appliance_warning_notice", "disconnected",
             "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited", "pin_required_v1",
             "pin_expired", "power_requested", "power_failed",
+            "start_failure_refused", "start_failure_elsewhere", "start_failure_late_pin",
         }
 
     def test_a_build_is_repeatable(self):
@@ -398,6 +399,30 @@ class TestOutputsRequest:
     def test_the_body_never_carries_a_pin_field(self):
         text = json.dumps(_state("pin_busy"))
         assert '"pin"' not in text and "pin_value" not in text
+
+
+class TestStartFailure:
+    def test_the_block_names_the_notice(self):
+        block = _state("start_failure_refused")["start_failure"]
+        assert block == {
+            "appliance_id": hs.LOUNGE, "key": hs.LOUNGE + ":boot-a:3", "unit_id": "o2",
+            "name": "Patio", "reason": "refused", "raised_at": hs.NOW - 1}
+
+    def test_the_block_is_none_without_a_notice(self):
+        assert _state("playing_artwork")["start_failure"] is None
+        assert _state("start_failure_late_pin")["start_failure"] is None
+
+    def test_a_long_name_is_capped(self):
+        scenario = hs.SCENARIOS["start_failure_refused"]
+        notice = dataclasses.replace(scenario.snapshot.start_failure, name="y" * 5000)
+        state = dataclasses.replace(
+            scenario, snapshot=dataclasses.replace(scenario.snapshot, start_failure=notice)).state()
+        assert state["start_failure"]["name"] == "y" * STRING_MAX
+
+    def test_a_reopened_request_is_a_pin_request_with_its_window_from_the_reopening(self):
+        block = _state("start_failure_late_pin")["outputs_request"]
+        assert block["awaiting_pin"] is True and block["requested_at"] < block["changed_at"]
+        assert block["awaiting_until"] == block["changed_at"] + PIN_WINDOW_S
 
 
 class TestOutputs:

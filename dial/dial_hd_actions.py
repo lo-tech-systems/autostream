@@ -186,6 +186,10 @@ ACTIONS: "dict[str, tuple[dict, Callable[[Context, dict], ActionResult]]]" = {
         {"appliance_id": text},
         lambda c, a: c.core.mute_toggle(a["appliance_id"]),
     ),
+    "start_failure_dismiss": (
+        {"key": text},
+        lambda c, a: c.core.dismiss_start_failure(a["key"]),
+    ),
     "warning_dismiss": (
         {"warning_id": text},
         lambda c, a: c.core.dismiss_warning(a["warning_id"]),

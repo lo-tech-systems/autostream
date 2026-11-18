@@ -82592,6 +82592,411 @@
       ]
     }
   ],
+  "rich_start_failure_notice_over_main_and_back": [
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "rsf10000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "RSF1",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "rsf10000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "rsf10000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          320,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "RSF1",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "rsf10000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "rsf10000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "RSF1",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "rsf10000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": "info_value",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "rsf10000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          320,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "RSF1",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "rsf10000000000000000",
+      "restarting_open": false,
+      "screen": "info_value",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info_value",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "rsf10000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "RSF1",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 0
+      },
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "rsf10000000000000000",
+      "restarting_open": false,
+      "screen": "info_value",
+      "screen_request": "main",
+      "sdhealth_open": false,
+      "selector": {
+        "opened_at": 0.0,
+        "page": 0,
+        "rows": 1
+      },
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "info_value",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": "rsf10000000000000000",
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          320,
+          240
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": {
+        "album": "",
+        "artist": "",
+        "master_volume": 50,
+        "service_name": "RSF1",
+        "title": ""
+      },
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": "rsf10000000000000000",
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "hidden",
+        true,
+        false,
+        false
+      ]
+    }
+  ],
   "screen_change_clears_pressed": [
     {
       "bound_appliance_id": null,

@@ -161,6 +161,7 @@
     "retry_until": 900.0,
     "awaiting_until": 990.0
   },
+  "start_failure": null,
   "warnings": {
     "due": null,
     "cards": []

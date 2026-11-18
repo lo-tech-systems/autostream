@@ -141,6 +141,7 @@ VALID = [
     ("volume_step", {"appliance_id": L, "delta": -3}, "volume_step", (-3, L), {}),
     ("mute_toggle", {"appliance_id": L}, "mute_toggle", (L,), {}),
     ("warning_dismiss", {"warning_id": "sdhealth"}, "dismiss_warning", ("sdhealth",), {}),
+    ("start_failure_dismiss", {"key": L + ":boot-a:3"}, "dismiss_start_failure", (L + ":boot-a:3",), {}),
     ("warning_dismiss", {"warning_id": "appliance:" + L + ":w1"}, "dismiss_warning",
      ("appliance:" + L + ":w1",), {}),
 ]
@@ -176,7 +177,7 @@ class TestActionTable:
         assert set(hda.ACTIONS) == {
             "focus", "output", "eq", "eq_reset", "replay_start", "replay_restart",
             "replay_stop", "repeat_arm", "volume_set", "volume_step", "mute_toggle",
-            "warning_dismiss", "dial_restart", "dial_shutdown", "presence",
+            "start_failure_dismiss", "warning_dismiss", "dial_restart", "dial_shutdown", "presence",
         }
 
     def test_the_valid_table_covers_every_core_calling_action(self):
@@ -236,6 +237,9 @@ class TestActionTable:
         ("mute_toggle", {}, "appliance_id"),
         ("warning_dismiss", {}, "warning_id"),
         ("warning_dismiss", {"warning_id": 4}, "warning_id"),
+        ("start_failure_dismiss", {}, "key"),
+        ("start_failure_dismiss", {"key": 4}, "key"),
+        ("start_failure_dismiss", {"key": ""}, "key"),
     ])
     def test_a_bad_field_is_400_naming_it_and_calls_nothing(self, server, core, name, body, field):
         response, data = act(server, name, body)

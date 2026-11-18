@@ -325,6 +325,12 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
             "set", aid, status, body, {"token": None if held is None else held.requested_at},
         )
         d._apply_pending_snapshot()
+    elif kind == "start_failure_effect":
+        # ("start_failure_effect", appliance_id, name, reason) -- the notice
+        # the core raised for a start this dial asked for, queued for the view.
+        _, aid, name, reason = step
+        d.core._queue_effects(dd.StartFailureEffect(aid, f"{aid}:b:1", name, reason))
+        d._apply_pending_snapshot()
     elif kind == "tick_outputs_refresh":
         d._tick_outputs_refresh()
     elif kind == "hide_controls":
@@ -2213,6 +2219,26 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("repaint",),  # window over, "repeat" again
         ],
         {"cfg": cfg6, "backend": fb6},
+    ))
+
+    # A speaker that could not start puts the notice on the value page over
+    # the main screen; a tap returns there.
+    cfg7, fb7 = _rich_display_args()
+    aid7 = _aid("rsf1")
+    t7 = _target("RSF1", aid7)
+    scenarios.append((
+        "rich_start_failure_notice_over_main_and_back",
+        [
+            ("targets", [t7]),
+            ("status", {aid7: _status_result(appliance_id=aid7)}),
+            ("poll",),
+            ("repaint",),
+            ("start_failure_effect", aid7, "Speaker A", "refused"),
+            ("repaint",),  # the value page: "Could not start"
+            ("close_list",),
+            ("repaint",),  # back on the main screen
+        ],
+        {"cfg": cfg7, "backend": fb7},
     ))
 
     return scenarios

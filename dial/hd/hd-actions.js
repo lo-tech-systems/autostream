@@ -172,6 +172,11 @@ export const CARD_ACTIONS = {
         ui.power = Object.assign({}, ui.power, { asked: false });
         hooks.render();
     },
+    start_failure_ok: (card) => {
+        ui.startFailureAnswered = card.failureKey;
+        post("start_failure_dismiss", { key: card.failureKey });
+        hooks.render();
+    },
     pin_cancel: (card) => {
         const at = card.kind === "pin" ? card.pin.requestedAt : card.requestedAt;
         ui.pin = Object.assign({}, ui.pin, PIN_IDLE, { dismissedAt: at });

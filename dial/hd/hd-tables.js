@@ -92,6 +92,16 @@ export const PIN_KEY_OFF = {
 };
 export const PIN_KEY_OFF_DIGIT = (p) => p.busy || p.waiting || p.digits.length >= CONFIG.pinMax;
 
+// What the card for a speaker that could not start says, by the reason the
+// appliance gave; any other reason reads as the fallback.
+export const START_FAILURE_TEXT = {
+    refused: "The speaker turned down the request to play. Check that it is switched on and not in use by another app, then try again.",
+    failed: "The speaker did not start. autostream keeps trying while the music plays.",
+    timed_out: "The speaker did not answer in time. Check that it is switched on and connected to the network.",
+    encoder_capacity: "The appliance cannot encode another stream at the chosen quality. Turn another speaker off or choose a lighter audio mode."
+};
+export const START_FAILURE_FALLBACK = "The speaker did not start.";
+
 export const EMPTY_STATE = {
     started: false,
     focus: { appliance_id: null },
@@ -101,6 +111,7 @@ export const EMPTY_STATE = {
     volume: { appliance_id: null, level: null, muted: null },
     outputs: null,
     outputs_request: null,
+    start_failure: null,
     eq: null,
     warnings: { due: null, cards: [] },
     panel: { asleep: false, brightness: 80, sleep_after_s: 300, backlight: "none", kiosk: false },

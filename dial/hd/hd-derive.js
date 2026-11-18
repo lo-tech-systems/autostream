@@ -9,6 +9,8 @@ import {
     PIN_TEXT,
     PIN_LINE_RULES,
     PAIR_ELSEWHERE,
+    START_FAILURE_TEXT,
+    START_FAILURE_FALLBACK,
     ARTWORK_PREFIX,
     REPLAY_ROWS,
     NO_TIME,
@@ -204,6 +206,20 @@ function derivePinCard(s, focus, local) {
     };
 }
 
+// The "could not start" card for the focused appliance, until it is answered.
+function deriveStartFailure(s, focus, local) {
+    const f = s.start_failure;
+    if (!f || !focus || f.appliance_id !== focus.id || local.startFailureAnswered === f.key) { return null; }
+    return {
+        kind: "notice", key: "start_failure", source: "", severity: "warning", progress: null,
+        closable: false, timed: false,
+        title: "Could not start " + f.name,
+        message: START_FAILURE_TEXT[f.reason] || START_FAILURE_FALLBACK,
+        buttons: [{ id: "ok", label: "OK", act: "start_failure_ok" }],
+        failureKey: f.key
+    };
+}
+
 // The shut-down card to show, if any: its key in POWER_CARDS.
 function derivePower(s, local) {
     const rule = POWER_RULES.find((r) => r[0](s.power, local.power));
@@ -212,8 +228,8 @@ function derivePower(s, local) {
 
 // The one modal card to show, if any: the shut-down card first (the person
 // has just asked for it), then the PIN recovery confirmation,
-// then a speaker's PIN, the not-authorised notice, an appliance warning
-// opened from its badge, then the warning the dial says is due.
+// then a speaker's PIN, a speaker that could not start, the not-authorised
+// notice, an appliance warning opened from its badge, then the warning the dial says is due.
 function deriveModal(s, focus, local) {
     const cardsById = new Map(s.warnings.cards.map((c) => [c.id, c]));
     const owners = new Map();
@@ -235,6 +251,8 @@ function deriveModal(s, focus, local) {
     }
     const pinCard = derivePinCard(s, focus, local);
     if (pinCard) { return pinCard; }
+    const failureCard = deriveStartFailure(s, focus, local);
+    if (failureCard) { return failureCard; }
     const unauthorised = s.appliances.find((a) => a.id === local.notice && a.auth !== "authorized");
     if (unauthorised) {
         return {

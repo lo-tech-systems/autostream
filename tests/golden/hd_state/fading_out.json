@@ -166,6 +166,7 @@
     "awaiting_until": null
   },
   "outputs_request": null,
+  "start_failure": null,
   "warnings": {
     "due": null,
     "cards": []

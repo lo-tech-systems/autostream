@@ -135,6 +135,13 @@ then they are in name order.
   it is time. Cancel closes the card, and so does leaving it alone for a
   minute and a half. The appliance's Home page waits while the dial is doing
   this.
+- A speaker can ask for its code a few seconds after you switch it on, as an
+  Apple TV often does. The keypad card then opens on its own, and if you have
+  moved to another appliance meanwhile it is waiting when you come back.
+- If a speaker you switched on from the dial does not start, a card says
+  **Could not start** with the speaker's name and the likely reason. Press OK
+  to clear it, on the dial's screen or on a laptop view of the same dial. A
+  speaker switched on from the web UI or another dial shows nothing here.
 
 ### Now playing and volume
 

@@ -419,6 +419,15 @@ def _capped(value):
 # ---- the body ----------------------------------------------------------------
 
 
+def _start_failure_block(snapshot) -> dict | None:
+    """The raised "could not start" notice, or None."""
+    held = snapshot.start_failure
+    if held is None:
+        return None
+    return {"appliance_id": held.appliance_id, "key": held.key, "unit_id": held.unit_id,
+            "name": held.name, "reason": held.reason, "raised_at": _round(held.raised_at, 3)}
+
+
 def build_state(
     snapshot, *, descriptors: "Mapping | Iterable | None" = None, panel: "Mapping | None" = None,
     settings: "Mapping | None" = None, recovery=None, hub_seq: int = 0, now: float = 0.0,
@@ -464,6 +473,7 @@ def build_state(
         "eq_available": bool(snapshot.eq_available),
         "transport": _request_block(snapshot.transport, now, _pin_accepted(snapshot, snapshot.transport)),
         "outputs_request": _request_block(snapshot.outputs_request, now, _pin_accepted(snapshot, snapshot.outputs_request)),
+        "start_failure": _start_failure_block(snapshot),
         "warnings": _warnings_block(snapshot, descriptors, wall_now),
         "network": _network_block(snapshot.network),
         "sd_health": _sd_health_block(snapshot.sd_health),

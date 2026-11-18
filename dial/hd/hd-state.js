@@ -15,6 +15,8 @@ export const ui = {
     state: null, stateAt: Date.now(), offline: false, vm: null,
     eqOpen: false, eqFor: null, sheetOpen: false, info: null, infoBusy: false,
     notice: null, viewing: null,
+    // The key of the "could not start" card the person has answered.
+    startFailureAnswered: null,
     activityAt: 0,
     // The idle clock for the open panels: its timer, the fingers now held
     // on a followed drag, and whether the last look at the state was asleep.

@@ -51,6 +51,9 @@ from dial_display_compositor import (
     OverlayState,
     PAIR_IN_AUTOSTREAM_TEXT,
     RepeatViewState,
+    START_FAILURE_LINES,
+    START_FAILURE_LINE_FALLBACK,
+    START_FAILURE_TITLE,
     WIFI_GREY,
     WIFI_OFF,
     WIFI_RED,
@@ -77,7 +80,7 @@ from dial_core_state import (
 import dial_core_poll
 from dial_core import (
     DEFAULT_POLL_INTERVAL_S, RECONCILE_INTERVAL_S, DialCore, PollIO,
-    OutputsEffect, RepeatEffect,
+    OutputsEffect, RepeatEffect, StartFailureEffect,
 )
 from dial_mdns import appliance_display_name
 from dial_mdns import get_roster as _default_get_roster
@@ -694,10 +697,24 @@ def _unauthorised_hint(label: str) -> tuple[str, str]:
     return NOT_AUTHORISED_TEXT, f"Allow this dial in {label}'s web UI (Setup, Dials)"
 
 
+# The screens a hint on the value page may open over, by what asks for it.
+_HINT_OVER_DEFAULT = ("selector", "output")
+_LATE_PIN_OVER = ("outputs", "output")
+_START_FAILURE_OVER = ("main", "outputs", "output")
+
+
 def _pairing_hint(label: str) -> tuple[str, str]:
     """The (title, text) the value view shows for a speaker that must be
     paired in the appliance's web UI, which the small screen cannot do."""
     return PAIR_IN_AUTOSTREAM_TEXT, f"Enter the PIN in {label}'s web UI"
+
+
+def _start_failure_hint(name: str, reason: str) -> tuple[str, str]:
+    """The (title, text) the value view shows for a speaker that could not
+    start. The name is appliance text: it is put in by replacement, never
+    handed to a format call."""
+    line = START_FAILURE_LINES.get(reason, START_FAILURE_LINE_FALLBACK)
+    return START_FAILURE_TITLE, line.replace("{name}", name)
 
 
 def _picker_list_row(row: PickerRow) -> tuple:
@@ -1083,8 +1100,11 @@ class DialDisplay:
         # unauthorised selector row asks the value view to show, consumed
         # by the view's opener like self._info_value_index.
         self._info_value_hint: tuple[str, str] | None = None
-        # The screen a hint view returns to: the one it opened over
-        # ("selector" or "output"). Written only by _open_info_value_locked.
+        # The screens the pending hint may open over, set with each hint
+        # that wants more than the default; reset by _open_info_value_locked.
+        self._info_value_hint_over: tuple[str, ...] = _HINT_OVER_DEFAULT
+        # The screen a hint view returns to: the one it opened over.
+        # Written only by _open_info_value_locked.
         self._info_value_return: str = "selector"
         # Zero-arg callable -> tuple[InfoRow, ...], wired by set_info_provider()
         # at startup (dial_main.py, after the HTTP server exists). None
@@ -3058,20 +3078,42 @@ class DialDisplay:
         if self._core.set_output(state.appliance_id, row.id, selected=not row.selected).accepted:
             self._overlay_signal.set()
 
-    def _show_pairing_hint(self, state) -> None:
-        """Ask for the pairing hint over the output page. Lock-free."""
+    def _show_pairing_hint(self, state, over: tuple[str, ...] = _HINT_OVER_DEFAULT) -> None:
+        """Ask for the pairing hint over the screens in *over* (by default
+        the selector and a speaker's page). Lock-free."""
         self._info_value_hint = _pairing_hint(appliance_display_name(state.service_name))
+        self._info_value_hint_over = over
+        self._screen_request = "info_value"
+        self._overlay_signal.set()
+
+    def _apply_start_failure(self, effect: StartFailureEffect) -> None:
+        """Show the notice on the value page when the screen is awake, follows
+        the failure's appliance and shows the main screen or an output page.
+        Lock-free, as _apply_outputs_outcome."""
+        if self.is_sleeping() or effect.appliance_id != self._core.snapshot().focused_id():
+            return
+        self._info_value_hint = _start_failure_hint(effect.name, effect.reason)
+        self._info_value_hint_over = _START_FAILURE_OVER
         self._screen_request = "info_value"
         self._overlay_signal.set()
 
     def _apply_outputs_outcome(self, effect: OutputsEffect) -> None:
         """React to what an output request's outcome means for the screen:
         a speaker that wants a PIN gets the pairing hint, when its own page
-        is the one up. Every other outcome needs nothing here, since the
-        fetch after the set already reconciles. Lock-free."""
+        is the one up (or, for a request that came after the switch's reply,
+        the speaker list or any speaker's page of that appliance). Every
+        other outcome needs nothing here, since the fetch after the set
+        already reconciles. Lock-free."""
         if effect.outcome != "rejected" or effect.error not in PIN_ERRORS:
             return
         state, detail = self._outputs, self._output_detail
+        if effect.late:
+            if (
+                self._screen in ("outputs", "output") and state is not None
+                and state.appliance_id == effect.appliance_id
+            ):
+                self._show_pairing_hint(state, _LATE_PIN_OVER)
+            return
         if (
             self._screen == "output" and state is not None and detail is not None
             and state.appliance_id == effect.appliance_id and detail.output_id == effect.output_id
@@ -3183,13 +3225,14 @@ class DialDisplay:
         the view is the list's child and its own back_to returns there.
 
         A pending hint (self._info_value_hint, from an unauthorised selector
-        row or a speaker that needs pairing) opens the view over the
-        screen it came from instead, only while the
-        selector or the output page is showing; that screen's state is left
-        untouched."""
+        row, a speaker that needs pairing or one that could not start) opens
+        the view over the screen it came from instead, only while one of the
+        screens the hint named (self._info_value_hint_over) is showing; that
+        screen's state is left untouched."""
         hint, self._info_value_hint = self._info_value_hint, None
+        over, self._info_value_hint_over = self._info_value_hint_over, _HINT_OVER_DEFAULT
         if hint is not None:
-            if self._screen not in ("selector", "output"):
+            if self._screen not in over:
                 return False
             self._info_value_return = self._screen
             self._info_value = InfoValueState(index=0, opened_at=time.monotonic(), hint=hint)
@@ -4541,6 +4584,8 @@ class DialDisplay:
                 self._apply_repeat_outcome(effect.appliance_id, effect.outcome)
             elif isinstance(effect, OutputsEffect):
                 self._apply_outputs_outcome(effect)
+            elif isinstance(effect, StartFailureEffect):
+                self._apply_start_failure(effect)
             else:
                 self._apply_source_effects(effect)
 
