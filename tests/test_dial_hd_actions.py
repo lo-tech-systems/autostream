@@ -111,29 +111,10 @@ def act(server, name, body=None, **kwargs):
 
 # ---- the action table ------------------------------------------------------
 
-GAINS = {"peq1": 3, "peq6": -2}
-
 VALID = [
     ("focus", {"appliance_id": L}, "set_focus", (L,), {}),
     ("focus", {"appliance_id": None}, "set_focus", (None,), {}),
     ("focus", {}, "set_focus", (None,), {}),
-    ("output", {"appliance_id": L, "output_id": "7", "selected": True, "volume": 30},
-     "set_output", (L, "7"), {"selected": True, "volume": 30, "pin": None, "pin_entry": True}),
-    ("output", {"appliance_id": L, "output_id": "7", "volume": 0},
-     "set_output", (L, "7"), {"selected": None, "volume": 0, "pin": None, "pin_entry": True}),
-    ("output", {"appliance_id": L, "output_id": "7", "selected": False},
-     "set_output", (L, "7"), {"selected": False, "volume": None, "pin": None, "pin_entry": True}),
-    ("output", {"appliance_id": L, "output_id": "7", "selected": True, "pin": "1234"},
-     "set_output", (L, "7"), {"selected": True, "volume": None, "pin": "1234", "pin_entry": True}),
-    ("output", {"appliance_id": L, "output_id": "7", "pin": "12345678"},
-     "set_output", (L, "7"), {"selected": None, "volume": None, "pin": "12345678", "pin_entry": True}),
-    ("eq", {"appliance_id": L, "gains": GAINS}, "set_eq", (L, GAINS), {}),
-    ("eq_reset", {"appliance_id": L}, "reset_eq", (L,), {}),
-    ("replay_start", {"appliance_id": L}, "start_replay", (L,), {}),
-    ("replay_restart", {"appliance_id": L}, "restart_replay", (L,), {}),
-    ("replay_stop", {"appliance_id": L}, "stop_replay", (L,), {}),
-    ("repeat_arm", {"appliance_id": L, "armed": True}, "set_repeat_armed", (L, True), {}),
-    ("repeat_arm", {"appliance_id": L, "armed": False}, "set_repeat_armed", (L, False), {}),
     ("volume_set", {"appliance_id": L, "level": 55}, "volume_set", (55, L), {}),
     ("volume_set", {"appliance_id": L, "level": 0}, "volume_set", (0, L), {}),
     ("volume_set", {"appliance_id": L, "level": 100}, "volume_set", (100, L), {}),
@@ -155,20 +136,20 @@ class TestActionTable:
         assert core.calls == [(method, args, kwargs)]
 
     def test_an_accepted_reply_carries_the_token_the_core_gave(self, server, core):
-        core.set_result("restart_replay", ActionResult(True, token=12.5))
-        response, data = act(server, "replay_restart", {"appliance_id": L})
+        core.set_result("mute_toggle", ActionResult(True, token=12.5))
+        response, data = act(server, "mute_toggle", {"appliance_id": L})
         assert response.status == 200
         reply = json.loads(data)
         assert reply == {"ok": True, "token": 12.5}
         assert isinstance(reply["token"], float)
 
     def test_an_accepted_reply_with_no_token_has_no_token_key(self, server, core):
-        response, data = act(server, "replay_restart", {"appliance_id": L})
+        response, data = act(server, "mute_toggle", {"appliance_id": L})
         assert json.loads(data) == {"ok": True}
 
     def test_a_refusal_carries_no_token(self, server, core):
-        core.set_result("restart_replay", ActionResult(False, "wrong_state", token=12.5))
-        response, data = act(server, "replay_restart", {"appliance_id": L})
+        core.set_result("mute_toggle", ActionResult(False, "wrong_state", token=12.5))
+        response, data = act(server, "mute_toggle", {"appliance_id": L})
         assert response.status == 409
         assert "token" not in json.loads(data)
 
@@ -180,8 +161,7 @@ class TestActionTable:
 
     def test_the_table_names_exactly_the_documented_actions(self):
         assert set(hda.ACTIONS) == {
-            "focus", "output", "eq", "eq_reset", "replay_start", "replay_restart",
-            "replay_stop", "repeat_arm", "volume_set", "volume_step", "mute_toggle",
+            "focus", "volume_set", "volume_step", "mute_toggle",
             "start_failure_dismiss", "warning_dismiss", "dial_restart", "dial_shutdown", "presence",
         }
 
@@ -195,41 +175,6 @@ class TestActionTable:
         ("focus", {"appliance_id": "x" * 129}, "appliance_id"),
         ("focus", {"appliance_id": ["a"]}, "appliance_id"),
         ("focus", {"appliance_id": "a\nb"}, "appliance_id"),
-        ("output", {"output_id": "7"}, "appliance_id"),
-        ("output", {"appliance_id": L}, "output_id"),
-        ("output", {"appliance_id": L, "output_id": 7}, "output_id"),
-        ("output", {"appliance_id": L, "output_id": "7", "selected": "yes"}, "selected"),
-        ("output", {"appliance_id": L, "output_id": "7", "selected": 1}, "selected"),
-        ("output", {"appliance_id": L, "output_id": "7", "volume": 101}, "volume"),
-        ("output", {"appliance_id": L, "output_id": "7", "volume": -1}, "volume"),
-        ("output", {"appliance_id": L, "output_id": "7", "volume": 5.5}, "volume"),
-        ("output", {"appliance_id": L, "output_id": "7", "volume": True}, "volume"),
-        ("output", {"appliance_id": L, "output_id": "7", "volume": "30"}, "volume"),
-        ("output", {"appliance_id": L, "output_id": "7", "pin": "12"}, "pin"),
-        ("output", {"appliance_id": L, "output_id": "7", "pin": "123456789"}, "pin"),
-        ("output", {"appliance_id": L, "output_id": "7", "pin": "abcd"}, "pin"),
-        ("output", {"appliance_id": L, "output_id": "7", "pin": 1234}, "pin"),
-        ("output", {"appliance_id": L, "output_id": "7", "pin": "１２３４"}, "pin"),
-        ("output", {"appliance_id": L, "output_id": "7", "pin": "1234\n"}, "pin"),
-        ("output", {"appliance_id": L, "output_id": "7", "pin": True}, "pin"),
-        ("eq", {"appliance_id": L}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": []}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {"peq1": 25}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {"peq1": -25}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {"peq1": 1.5}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {"peq1": "3"}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {"peq1": True}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {"PEQ 1": 3}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {"a" * 17: 3}}, "gains"),
-        ("eq", {"appliance_id": L, "gains": {f"b{i}": 0 for i in range(17)}}, "gains"),
-        ("eq_reset", {}, "appliance_id"),
-        ("replay_start", {}, "appliance_id"),
-        ("replay_restart", {"appliance_id": None}, "appliance_id"),
-        ("replay_stop", {"appliance_id": 3}, "appliance_id"),
-        ("repeat_arm", {"appliance_id": L}, "armed"),
-        ("repeat_arm", {"appliance_id": L, "armed": 1}, "armed"),
-        ("repeat_arm", {"appliance_id": L, "armed": "true"}, "armed"),
         ("volume_set", {"appliance_id": L}, "level"),
         ("volume_set", {"appliance_id": L, "level": 101}, "level"),
         ("volume_set", {"appliance_id": L, "level": -1}, "level"),
@@ -252,15 +197,12 @@ class TestActionTable:
         assert error_of(data) == f"invalid_{field}"
         assert core.calls == []
 
-    def test_a_refused_pin_is_never_echoed_or_logged(self, server, core, caplog):
+    def test_a_pin_in_the_request_is_not_an_action_field(self, server, core, caplog):
         caplog.set_level("DEBUG")
-        response, data = act(server, "output", {"appliance_id": L, "output_id": "7", "pin": "98x7"})
+        response, data = act(server, "focus", {"appliance_id": L, "pin": "98765"})
         assert response.status == 400
-        assert "98x7" not in str(data)
-        response, data = act(server, "output", {"appliance_id": L, "output_id": "7", "pin": "98765"})
-        assert response.status == 200
-        assert "98765" not in str(data)
-        assert "98765" not in caplog.text and "98x7" not in caplog.text
+        assert "98765" not in str(data) and "98765" not in caplog.text
+        assert core.calls == []
 
     @pytest.mark.parametrize("name", sorted(hda.ACTIONS))
     def test_an_unknown_field_is_refused_for_every_action(self, server, core, name):
@@ -468,6 +410,38 @@ class TestRefusalMapping:
             if response.status != 404 or error_of(data) != "unknown_appliance":
                 wrong.append((name, body, response.status, data))
         assert not wrong, f"(action, body, status, reply) not a 404 unknown_appliance: {wrong}"
+
+
+class TestRefusalSentences:
+    """Every reason the page can meet from a dial action or an appliance
+    intent has a sentence of its own in the page's table (the appliance's own
+    intent errors read from the shared texts instead)."""
+
+    REPO = os.path.join(os.path.dirname(__file__), "..")
+    DROPPED = {"unauthorized", "no_capability", "not_polling", "not_focused"}
+
+    def _sentences(self):
+        import re
+        with open(os.path.join(self.REPO, "dial", "hd", "hd-tables.js"), encoding="utf-8") as f:
+            block = re.search(r"DIAL_REFUSALS = \{(.*?)\};", f.read(), re.S).group(1)
+        return dict(re.findall(r'(\w+):\s*"([^"]+)"', block))
+
+    def test_the_transport_and_dial_reasons_each_have_a_sentence(self):
+        import autostream_peer_http as http
+        reasons = {
+            http.UNREACHABLE, http.TIMEOUT, http.BAD_REPLY, "backoff", "protocol_mismatch",
+            "dial_not_authorized", "unknown_appliance", "wrong_state", "no_record", "local_only",
+        }
+        sentences = self._sentences()
+        assert not [r for r in sorted(reasons) if not sentences.get(r)]
+        assert not self.DROPPED & set(sentences)
+
+    def test_every_reason_the_core_refuses_with_has_a_sentence_or_is_dropped(self):
+        import re
+        with open(os.path.join(self.REPO, "dial", "dial_core.py"), encoding="utf-8") as f:
+            reasons = set(re.findall(r'ActionResult\(False, "(\w+)"', f.read()))
+        assert reasons
+        assert not [r for r in sorted(reasons - self.DROPPED) if r not in self._sentences()]
 
 
 class TestDialRestart:

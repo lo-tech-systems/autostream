@@ -63,6 +63,11 @@ REMOVED = (
     "/auth-changed",
     "/warnings-changed",
     "/state-changed",
+    # The dial page's old appliance actions, now intents.
+    "replay_start",
+    "replay_restart",
+    "replay_stop",
+    "repeat_arm",
 )
 
 # Modules that have been removed, with what replaced them. Neither the shipped

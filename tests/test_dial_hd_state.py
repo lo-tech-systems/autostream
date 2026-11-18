@@ -25,7 +25,7 @@ from hd_fake_core import FakeCore
 from dial_core_state import (
     PIN_WINDOW_S, ActionResult, TransportRequest, validate_appliance_warnings,
 )
-from dial_hd_state import STATE_VERSION, STRING_MAX, build_state, dumps
+from dial_hd_state import STRING_MAX, build_parts
 
 GOLDEN_DIR = Path(__file__).parent / "golden" / "hd_state"
 UPDATE = bool(os.environ.get("HD_GOLDEN_UPDATE"))
@@ -41,6 +41,10 @@ def _strings(value):
     elif isinstance(value, list):
         for v in value:
             yield from _strings(v)
+
+
+def dumps(state):
+    return json.dumps(state, separators=(",", ":"), ensure_ascii=False)
 
 
 def _drop_key(value, name):
@@ -60,10 +64,10 @@ class TestCorpus:
         assert set(hs.SCENARIO_NAMES) == {
             "starting", "nothing_playing", "playing_artwork", "playing_no_artwork",
             "playing_untitled", "playing_untitled_input", "replay_hold", "replaying", "fading_out", "replay_elsewhere", "in_use_speaker",
-            "unreachable", "unauthorized", "recovery_pending", "eq_none", "eq_two", "eq_six",
+            "unreachable", "unauthorized", "recovery_pending", "eq_none", "eq_six",
             "warning_sdhealth", "warning_update", "warning_update_result", "warning_nowifi",
             "appliance_warning", "appliance_warning_notice", "disconnected",
-            "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited", "pin_required_v1",
+            "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited",
             "pin_expired", "power_requested", "power_failed",
             "start_failure_refused", "start_failure_elsewhere", "start_failure_late_pin",
             "appliance_needs_update",
@@ -95,16 +99,14 @@ class TestGolden:
 
 
 class TestShape:
-    def test_every_body_is_versioned_and_json(self):
+    def test_every_part_is_json(self):
         for scenario in hs.SCENARIOS.values():
-            state = scenario.state(hub_seq=7)
-            assert state["v"] == STATE_VERSION == 1
-            assert state["seq"] == 7 and state["core_seq"] == scenario.snapshot.seq
+            state = scenario.state()
             assert json.loads(dumps(state)) == state
 
-    def test_the_wire_form_is_compact_and_keeps_unicode(self):
-        wire = dumps({"a": [1, 2], "t": "café"})
-        assert wire == '{"a":[1,2],"t":"café"}'
+    def test_it_carries_neither_an_envelope_nor_the_appliances_own_readings(self):
+        for scenario in hs.SCENARIOS.values():
+            assert not {"seq", "now", "core_seq", "now_playing", "volume", "outputs", "eq"} & set(scenario.state())
 
     def test_started_follows_the_tick_count(self):
         assert _state("starting")["started"] is False
@@ -113,41 +115,8 @@ class TestShape:
     def test_focus_block(self):
         state = _state("replay_hold")
         assert state["focus"] == {
-            "appliance_id": hs.LOUNGE, "manual": True, "pending": False, "idle": True}
-
-    def test_now_playing_names_the_reporting_appliance(self):
-        state = _state("playing_artwork")
-        assert state["now_playing"] == {
-            "appliance_id": hs.LOUNGE, "title": "Tunnel of Love", "artist": "Dire Straits",
-            "album": "Making Movies", "playing": True, "title_fallback": ""}
-        assert _state("nothing_playing")["now_playing"] is None
-
-    def test_a_playing_appliance_without_a_title_carries_the_screens_word(self):
-        import dial_display
-        from dial_core_state import NowPlaying, PLAYING_TEXT
-        assert _state("playing_untitled")["now_playing"]["title_fallback"] == PLAYING_TEXT == "Playing"
-        # The same word the screen's view puts in its artist row.
-        assert PLAYING_TEXT == dial_display.PLAYING_ARTIST_TEXT
-
-        assert _state("playing_untitled_input")["now_playing"]["title_fallback"] == "CD"
-
-        def fallback(playing, title, input_label=""):
-            held = hs.SCENARIOS["playing_untitled"]
-            now_playing = NowPlaying(
-                "Lounge", "Dire Straits", title, 42, playing=playing, input_label=input_label)
-            return held.with_snapshot(now_playing=now_playing).state()["now_playing"]["title_fallback"]
-        assert fallback(True, "") == "Playing"
-        assert fallback(True, "Tunnel of Love") == ""
-        assert fallback(False, "") == ""
-        assert fallback(True, "", "CD") == "CD"
-        assert fallback(True, "Tunnel of Love", "CD") == ""
-        assert fallback(False, "", "CD") == ""
-
-    def test_volume_carries_the_readout_and_the_mute_flag_handed_in(self):
-        assert _state("playing_artwork", muted=True)["volume"] == {
-            "appliance_id": hs.LOUNGE, "level": 42, "muted": True}
-        assert _state("nothing_playing")["volume"]["level"] is None
-        assert _state("nothing_playing")["volume"]["muted"] is None
+            "appliance_id": hs.LOUNGE, "manual": True, "pending": False, "idle": True,
+            "reporting_id": hs.LOUNGE}
 
     def test_only_listed_appliances_appear(self):
         scenario = hs.SCENARIOS["nothing_playing"]
@@ -175,25 +144,21 @@ class TestShape:
         assert [a["name"] for a in state["appliances"]] == ["Beta", "Zulu", "Alpha"]
         assert [r.label for r in snapshot.selector_rows()] == ["Beta", "Zulu", "Alpha"]
 
-    def test_capability_versions_and_webui_text(self):
+    def test_the_webui_text_and_update_flag(self):
         a = _state("playing_artwork")["appliances"][0]
-        assert a["capabilities"] == {
-            "outputs": 1, "eq": 2, "repeat": True, "warnings": True, "proto": 3}
-        assert a["webui"] == "http://192.0.2.20:80/"
-        assert a["volume"] == 42 and a["muted"] is False
+        assert a["webui"] == "http://192.0.2.20:80/" and a["update_needed"] is False
+        assert "volume" not in a and "muted" not in a and "capabilities" not in a
 
     def test_the_panel_falls_back_to_the_settings(self):
         state = _state("nothing_playing", panel={"asleep": True, "backlight": "none"},
                        settings={"brightness": 55, "sleep_after_s": 900})
         assert state["panel"] == {
-            "asleep": True, "brightness": 55, "sleep_after_s": 900, "backlight": "none",
-            "always_show_controls": False, "kiosk": False}
-        assert build_state(hs.SCENARIOS["nothing_playing"].snapshot)["panel"]["brightness"] == 80
+            "asleep": True, "brightness": 55, "sleep_after_s": 900, "backlight": "none", "kiosk": False}
+        assert build_parts(hs.SCENARIOS["nothing_playing"].snapshot)["dial"]["panel"]["brightness"] == 80
 
     @pytest.mark.parametrize("kind", ["none", "sysfs", "ddc"])
     def test_the_backlight_kind_is_reported_as_given(self, kind):
         assert _state("nothing_playing", panel={"backlight": kind})["panel"]["backlight"] == kind
-        assert _state("nothing_playing")["v"] == 1
 
     def test_the_kiosk_flag_is_false_unless_the_panel_says_so(self):
         assert _state("playing_artwork")["panel"]["kiosk"] is False
@@ -220,17 +185,17 @@ class TestShape:
 
 
 class TestRepeat:
-    def test_a_replay_position_runs_on_between_readings(self):
+    def test_a_replay_position_is_the_reported_one_less_the_latency(self):
         repeat = _state("replaying")["appliances"][0]["repeat"]
-        assert repeat["position_s"] == 119.0 and repeat["duration_s"] == 1100.0
+        assert repeat["position_s"] == 118.0 and repeat["duration_s"] == 1100.0
         assert repeat["armed"] is True
 
-    def test_the_position_stops_at_the_duration(self):
+    def test_the_position_does_not_run_on_with_the_clock(self):
         scenario = hs.SCENARIOS["replaying"]
-        assert dataclasses.replace(scenario, now=hs.NOW + 5000).state()[
-            "appliances"][0]["repeat"]["position_s"] == 1098.0
+        assert dataclasses.replace(scenario, now=hs.NOW + 5000).state()["appliances"][0]["repeat"] == (
+            scenario.state()["appliances"][0]["repeat"])
 
-    def test_a_fading_replay_is_not_extrapolated(self):
+    def test_a_fading_replay_reads_as_reported(self):
         assert _state("fading_out")["appliances"][0]["repeat"]["position_s"] == 1097.0
 
     @staticmethod
@@ -252,20 +217,23 @@ class TestRepeat:
         assert self._with_latency("replaying", 0.3)["latency_s"] == 0.3
 
     def test_the_position_is_the_heard_position(self):
-        # Reported 120.0 s at the reading, one second old: 121.0 on, less latency.
-        assert self._with_latency("replaying", 0.3)["position_s"] == 120.7
-        assert self._with_latency("replaying", 3.5)["position_s"] == 117.5
+        # Reported 120.0 s at the reading, less latency.
+        assert self._with_latency("replaying", 0.3)["position_s"] == 119.7
+        assert self._with_latency("replaying", 3.5)["position_s"] == 116.5
 
-    def test_the_heard_position_is_never_negative(self):
+    def test_a_replaying_position_may_be_below_zero_and_another_state_is_held_at_zero(self):
         scenario = hs.SCENARIOS["replaying"]
         appliance = scenario.snapshot.appliances[0]
-        record = dataclasses.replace(
-            appliance.repeat, position_seconds=0.0, observed_at=hs.NOW, latency_seconds=3.5)
-        snapshot = dataclasses.replace(
-            scenario.snapshot, appliances=(dataclasses.replace(appliance, repeat=record),)
-            + scenario.snapshot.appliances[1:])
-        out = dataclasses.replace(scenario, snapshot=snapshot).state()
-        assert out["appliances"][0]["repeat"]["position_s"] == 0.0
+
+        def position(state):
+            record = dataclasses.replace(
+                appliance.repeat, state=state, position_seconds=0.0, observed_at=hs.NOW, latency_seconds=3.5)
+            snapshot = dataclasses.replace(
+                scenario.snapshot, appliances=(dataclasses.replace(appliance, repeat=record),)
+                + scenario.snapshot.appliances[1:])
+            return dataclasses.replace(scenario, snapshot=snapshot).state()["appliances"][0]["repeat"]["position_s"]
+        assert position("replaying") == -3.5
+        assert position("fading_out") == 0.0
 
     def test_replaying_covers_replay_and_fade(self):
         assert _state("replaying")["appliances"][0]["replaying"] is True
@@ -306,7 +274,6 @@ class TestOutputsRequest:
             "appliance_id": hs.LOUNGE, "kind": "output_set", "state": "rejected",
             "error": "pin_required", "output_id": "o2", "retry_after_s": 0,
             "requested_at": hs.NOW - 1, "changed_at": hs.NOW - 1, "awaiting_pin": True,
-            "pin_accepted": True,
             "retry_until": hs.NOW - 1, "awaiting_until": hs.NOW - 1 + PIN_WINDOW_S}
         assert (block("pin_rate_limited")["awaiting_pin"], block("pin_rate_limited")["retry_after_s"]) == (True, 7)
         assert block("pin_expired")["awaiting_pin"] is False
@@ -323,22 +290,12 @@ class TestOutputsRequest:
         # A lapsed outcome keeps its deadline, in the past.
         expired = _state("pin_expired")
         assert expired["outputs_request"]["awaiting_pin"] is False
-        assert expired["outputs_request"]["awaiting_until"] <= expired["now"]
-
-    def test_the_block_says_whether_the_appliance_takes_a_pin_from_a_dial(self):
-        assert _state("pin_required")["outputs_request"]["pin_accepted"] is True
-        assert _state("pin_required_v1")["outputs_request"]["pin_accepted"] is False
-        assert _state("replaying")["transport"]["pin_accepted"] is False
+        assert expired["outputs_request"]["awaiting_until"] <= hs.NOW
 
     def test_the_transport_block_has_no_pin_window(self):
         transport = _state("replaying")["transport"]
         assert transport["awaiting_until"] is None
         assert transport["retry_until"] == transport["changed_at"]
-
-    def test_the_body_carries_the_clock_it_was_built_at(self):
-        assert _state("pin_required")["now"] == hs.NOW
-        later = dataclasses.replace(hs.SCENARIOS["pin_required"], now=hs.NOW + 12.3456)
-        assert later.state()["now"] == hs.NOW + 12.346
 
     def test_the_transport_block_gained_the_same_keys(self):
         transport = _state("replaying")["transport"]
@@ -355,15 +312,6 @@ class TestOutputsRequest:
     def test_no_request_is_null(self):
         state = _state("playing_artwork")
         assert state["outputs_request"] is None and state["transport"] is None
-
-    def test_rows_carry_no_pairing_field(self):
-        for name in ("pin_required", "pin_invalid", "playing_artwork"):
-            for row in _state(name)["outputs"]["rows"]:
-                assert set(row) == {"id", "name", "selected", "volume", "in_use", "owner", "default"}
-
-    def test_the_capability_version_reaches_the_page(self):
-        assert _state("pin_required")["appliances"][0]["capabilities"]["outputs"] == 2
-        assert _state("pin_required_v1")["appliances"][0]["capabilities"]["outputs"] == 1
 
     def test_the_body_never_carries_a_pin_field(self):
         text = json.dumps(_state("pin_busy"))
@@ -392,87 +340,6 @@ class TestStartFailure:
         block = _state("start_failure_late_pin")["outputs_request"]
         assert block["awaiting_pin"] is True and block["requested_at"] < block["changed_at"]
         assert block["awaiting_until"] == block["changed_at"] + PIN_WINDOW_S
-
-
-class TestOutputs:
-    def test_rows_are_renamed_and_in_use_shows_the_owner(self):
-        rows = _state("in_use_speaker")["outputs"]["rows"]
-        assert rows[2] == {
-            "id": "o3", "name": "Bedroom", "selected": False, "volume": 20,
-            "in_use": True, "owner": "Kitchen", "default": False}
-        assert _state("playing_artwork")["outputs"]["rows"][2]["owner"] == ""
-
-    def test_the_default_output_is_flagged(self):
-        rows = _state("playing_artwork")["outputs"]["rows"]
-        assert [r["default"] for r in rows] == [True, False, False]
-
-    def _rows_with(self, output_id, shown, appliance_id=None, state="pending"):
-        """The rows block for a scenario whose output request shows *shown*."""
-        scenario = hs.SCENARIOS["playing_artwork"]
-        request = TransportRequest(
-            appliance_id or scenario.snapshot.outputs.appliance_id, "output_set", hs.NOW, state,
-            hs.NOW, None, output_id, 0, shown,
-        )
-        snapshot = dataclasses.replace(scenario.snapshot, outputs_request=request)
-        return dataclasses.replace(scenario, snapshot=snapshot).state()["outputs"]["rows"]
-
-    def test_the_optimistic_tap_overrides_the_row(self):
-        rows = self._rows_with("o2", (True, 60))
-        assert rows[1]["selected"] is True and rows[1]["volume"] == 60
-        assert rows[0]["selected"] is True and rows[0]["volume"] == 45
-
-    def test_an_optimistic_selection_keeps_the_row_volume(self):
-        rows = self._rows_with("o1", (False, None))
-        assert rows[0]["selected"] is False and rows[0]["volume"] == 45
-
-    def test_a_request_with_nothing_shown_leaves_the_rows(self):
-        assert self._rows_with("o1", None, state="accepted") == _state("playing_artwork")["outputs"]["rows"]
-
-    def test_a_request_for_another_appliance_shows_nothing(self):
-        assert self._rows_with("o1", (False, 10), appliance_id="b" * 20) == _state("playing_artwork")["outputs"]["rows"]
-
-    def test_nothing_held_is_null(self):
-        assert _state("nothing_playing")["outputs"] is None
-        assert _state("nothing_playing")["outputs_available"] is False
-        assert _state("playing_artwork")["outputs_available"] is True
-
-
-class TestEq:
-    def test_a_six_band_state_leaves_out_the_derived_bands(self):
-        eq = _state("eq_six")["eq"]
-        assert eq["version"] == 2
-        assert [b["id"] for b in eq["bands"]] == [f"peq{n}" for n in range(1, 7)]
-        assert eq["bands"][0] == {
-            "id": "peq1", "frequency_hz": 40, "gain_db": 2, "min_db": -12, "max_db": 12}
-
-    def test_a_capability_one_state_has_the_two_derived_bands(self):
-        eq = _state("eq_two")["eq"]
-        assert eq["version"] == 1
-        assert [b["id"] for b in eq["bands"]] == ["bass", "treble"]
-        assert eq["bands"][0]["frequency_hz"] is None
-
-    def test_a_tap_inside_its_window_shows_ahead_of_the_reading(self):
-        bands = {b["id"]: b["gain_db"] for b in _state("eq_two")["eq"]["bands"]}
-        assert bands == {"bass": 4, "treble": 1}
-
-    def test_a_tap_past_its_window_is_dropped(self):
-        scenario = hs.SCENARIOS["eq_two"]
-        bands = {b["id"]: b["gain_db"] for b in dataclasses.replace(
-            scenario, now=hs.NOW + 10).state()["eq"]["bands"]}
-        assert bands == {"bass": 2, "treble": 1}
-
-    def test_a_six_band_tap_applies_to_its_band(self):
-        scenario = hs.SCENARIOS["eq_six"]
-        held = dataclasses.replace(scenario.snapshot.eq, optimistic=(("peq3", 5),),
-                                   optimistic_expires_at=hs.NOW + 1)
-        bands = {b["id"]: b["gain_db"] for b in dataclasses.replace(
-            scenario, snapshot=dataclasses.replace(scenario.snapshot, eq=held)).state()["eq"]["bands"]}
-        assert bands["peq3"] == 5 and bands["peq1"] == 2
-
-    def test_no_eq_is_null(self):
-        state = _state("eq_none")
-        assert state["eq"] is None and state["eq_available"] is False
-        assert state["appliances"][0]["capabilities"]["eq"] == 0
 
 
 class TestArtwork:
@@ -526,7 +393,7 @@ class TestWarnings:
         state = _state("appliance_needs_update")
         key = f"appliance:{hs.LOUNGE}:update_appliance"
         block = state["appliances"][0]
-        assert block["capabilities"]["proto"] == 2
+        assert block["update_needed"] is True
         assert block["warnings"] == [{
             "key": key, "id": "update_appliance", "severity": "warning", "title": "Update Lounge",
             "message": "Its software is older than this dial's. Update it from its web UI.",
@@ -591,12 +458,14 @@ class TestNothingLeaks:
         assert not long, f"(scenario, start of a string over {STRING_MAX}): {long}"
 
     def test_a_long_string_is_cut(self):
-        scenario = hs.SCENARIOS["playing_artwork"]
+        scenario = hs.SCENARIOS["appliance_warning"]
         long = "x" * 5000
-        snapshot = dataclasses.replace(scenario.snapshot, now_playing=dataclasses.replace(
-            scenario.snapshot.now_playing, title=long, artist=long))
+        appliance = scenario.snapshot.appliances[0]
+        warning = dataclasses.replace(appliance.warnings[0], title=long, message=long)
+        snapshot = dataclasses.replace(
+            scenario.snapshot, appliances=(dataclasses.replace(appliance, warnings=(warning,)),))
         state = dataclasses.replace(scenario, snapshot=snapshot).state()
-        assert state["now_playing"]["title"] == "x" * STRING_MAX
+        assert state["appliances"][0]["warnings"][0]["title"] == "x" * STRING_MAX
         assert all(len(t) <= STRING_MAX for t in _strings(state))
 
     def test_hostile_warning_text_round_trips_unchanged_after_cleaning(self):
@@ -663,10 +532,10 @@ class TestFakeCore:
         assert core.volume_set(50, hs.LOUNGE) == ActionResult(True)
         core.set_result("set_focus", ActionResult(False, "unknown_appliance"))
         assert core.set_focus("zzz") == ActionResult(False, "unknown_appliance")
-        core.set_output(hs.LOUNGE, "o1", selected=True, volume=40)
+        core.mute_toggle(hs.LOUNGE)
         assert core.calls_to("volume_set") == [((50, hs.LOUNGE), {})]
-        assert core.calls_to("set_output") == [((hs.LOUNGE, "o1"), {"selected": True, "volume": 40})]
-        assert [m for m, _a, _k in core.calls] == ["volume_set", "set_focus", "set_output"]
+        assert core.calls_to("mute_toggle") == [((hs.LOUNGE,), {})]
+        assert [m for m, _a, _k in core.calls] == ["volume_set", "set_focus", "mute_toggle"]
 
     def test_reboot_and_watches(self):
         core = self._core()

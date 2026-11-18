@@ -20,11 +20,10 @@ from dial_core_state import ActionResult
 from dial_warning_text import WARNING_DESCRIPTORS
 from dial_warnings import WarningManager, WarningStore
 
-# The core methods the HD actions call, each recorded and answered.
+# The core methods the HD actions call, each recorded and answered. Appliance
+# intents go through submit_intent, below.
 ACTION_METHODS = (
-    "set_focus", "set_output", "step_output_volume", "set_eq", "step_eq", "reset_eq",
-    "start_replay", "restart_replay", "stop_replay", "set_repeat_armed", "dismiss_warning",
-    "volume_step", "volume_set", "mute_toggle", "dismiss_start_failure",
+    "set_focus", "dismiss_warning", "volume_step", "volume_set", "mute_toggle", "dismiss_start_failure",
 )
 
 

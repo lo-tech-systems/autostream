@@ -253,11 +253,11 @@ class TestView:
 
     def test_the_view_feeds_the_state_body(self, panel):
         import hd_scenarios as hs
-        from dial_hd_state import build_state
-        body = build_state(
+        from dial_hd_state import build_parts
+        body = build_parts(
             hs.SCENARIOS["playing_artwork"].snapshot, panel=panel.view(),
-            settings={"brightness": 1}, hub_seq=1, now=0.0,
-        )
+            settings={"brightness": 1}, now=0.0,
+        )["dial"]
         assert body["panel"]["asleep"] is False
         assert body["panel"]["backlight"] == "none"
 

@@ -1,15 +1,14 @@
-"""dial_hd_state.py: the HD dial's state body, built from a core snapshot.
+"""dial_hd_state.py: the HD dial's state, built from a core snapshot.
 
-One pure function, build_state(), turns a CoreSnapshot (plus the dial's own
-panel and settings, the warning descriptors and the clock readings it is
-handed) into the plain dict that the HD page's state route and event stream
-send. No I/O, no locks and no clock reads: everything that varies is an
-argument, so the same input is the same output, which is what the golden
-tests and the offline mock rely on.
+build_parts() turns a CoreSnapshot (plus the dial's own panel and settings,
+the warning descriptors and the clock readings it is handed) into the two
+parts the HD page's state route and event stream send: `dial`, what the dial
+itself knows, and `focused`, the focused appliance's own parts. No I/O, no
+locks and no clock reads: everything that varies is an argument, so the same
+input is the same output, which is what the golden tests and the offline
+preview rely on.
 
-The body is versioned ("v") and only ever grows: a field is added, never
-renamed or removed, so a page and a dial of different ages still agree.
-It carries nothing the page does not draw. Artwork is a local key and URL
+The `dial` part carries nothing the page does not draw. Artwork is a local key and URL
 (never the appliance's own URL), appliances are shown by id and display
 name, and appliance-supplied text arrives already cleaned by the core and is
 capped again here so one pathological reply cannot bloat the stream.
@@ -18,32 +17,17 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Iterable, Mapping
 
-from dial_core_state import (
-    AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, DERIVED_EQ_IDS, awaiting_pin, outputs_tap, pin_capable_outputs, pin_window_end, six_band,
-    title_fallback,
-)
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, awaiting_pin, pin_window_end
 from dial_warning_text import appliance_warning_key
 
-# The body's version. Bumped only for a change an older page could not read;
-# an added field never bumps it.
-STATE_VERSION = 1
-
-# The version of the `dial` part of the two-part body, bumped on the same terms.
+# The version of the `dial` part, bumped only for a change the page could not read.
 DIAL_PART_VERSION = 2
 
 # The appliance's own parts the `focused` part passes through; the page reads
 # nothing else of the appliance's state.
 FOCUSED_PART_NAMES = ("session", "repeat", "track", "inputs", "outputs", "eq")
-
-# What the `dial` part leaves out of the full body: what the appliance's own
-# parts carry, and the readings that change at every step.
-_DIAL_PART_DROPPED = (
-    "seq", "now", "core_seq", "now_playing", "volume", "outputs", "outputs_available", "eq", "eq_available",
-)
-_DIAL_PART_APPLIANCE_DROPPED = ("volume", "muted", "capabilities")
 
 # No string in the body is longer than this many characters.
 STRING_MAX = 200
@@ -82,10 +66,6 @@ def _int_or_none(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
-
-
-def _bool_or_none(value: Any) -> bool | None:
-    return value if isinstance(value, bool) else None
 
 
 def _round(value: Any, places: int = 1) -> float:
@@ -130,21 +110,17 @@ def _dial_block(snapshot) -> dict:
     }
 
 
-def _repeat_block(record, now: float, extrapolate: bool = True) -> dict | None:
+def _repeat_block(record) -> dict | None:
     if record is None:
         return None
     position = record.position_seconds
-    if extrapolate and record.state == "replaying":
-        # Between two status readings the replay keeps moving.
-        position += max(0.0, now - record.observed_at)
-        if record.duration_seconds > 0:
-            position = min(position, record.duration_seconds)
     # What the listener hears trails the reported position by the
     # appliance's audio start buffer; the page's timer follows this figure.
-    # A replay's position left unextrapolated can be below zero, so whoever
-    # carries it on to a later time stops it at zero only then.
+    # The position is the reported one, as of observed_at, and a replay's can
+    # be below zero, so whoever carries it on to a later time stops it at zero
+    # only then.
     heard = position - record.latency_seconds
-    if extrapolate or record.state != "replaying":
+    if record.state != "replaying":
         heard = max(0.0, heard)
     return {
         "available": record.available,
@@ -177,7 +153,7 @@ def _appliance_warnings(appliance, snoozed_until: dict, wall_now: float) -> list
     return out
 
 
-def _appliance_block(a, now: float, wall_now: float, snoozed_until: dict, extrapolate: bool = True) -> dict:
+def _appliance_block(a, wall_now: float, snoozed_until: dict) -> dict:
     return {
         "id": a.appliance_id,
         "name": a.name,
@@ -188,16 +164,7 @@ def _appliance_block(a, now: float, wall_now: float, snoozed_until: dict, extrap
         # protocol than this dial's, is reachable; its auth and update_needed
         # say the rest.
         "reachable": a.status_error is None or a.status_error in ("unauthorized", "protocol"),
-        "volume": _int_or_none(a.master_volume),
-        "muted": _bool_or_none(a.muted),
-        "capabilities": {
-            "outputs": a.dial_outputs_version,
-            "eq": a.dial_eq_version,
-            "repeat": bool(a.repeat_capable),
-            "warnings": bool(a.supplies_warnings),
-            "proto": a.dial_proto_version,
-        },
-        "repeat": _repeat_block(a.repeat, now, extrapolate),
+        "repeat": _repeat_block(a.repeat),
         "warnings": _appliance_warnings(a, snoozed_until, wall_now),
         "webui": f"{a.webui_scheme}://{a.webui_host}:{a.webui_port}/" if a.webui_host else "",
         "update_needed": a.status_error == "protocol",
@@ -214,23 +181,6 @@ def _focus_block(snapshot) -> dict:
     }
 
 
-def _now_playing_block(snapshot) -> dict | None:
-    playing = snapshot.now_playing
-    if playing is None:
-        return None
-    return {
-        "appliance_id": snapshot.focus.reporting_id,
-        "title": playing.title,
-        "artist": playing.artist,
-        "album": playing.album,
-        "playing": bool(playing.playing),
-        # What the page shows as the track while the appliance is playing but
-        # has not named it yet: the input's name when the appliance sent one,
-        # else the same word the screen's view uses.
-        "title_fallback": title_fallback(playing),
-    }
-
-
 def _artwork_block(snapshot) -> dict | None:
     artwork = snapshot.artwork
     if artwork is None:
@@ -239,69 +189,7 @@ def _artwork_block(snapshot) -> dict | None:
     return {"key": artwork.key, "url": url, "backdrop_url": url + BACKDROP_SUFFIX}
 
 
-def _volume_block(snapshot, muted: bool | None) -> dict:
-    return {
-        "appliance_id": snapshot.focus.reporting_id,
-        "level": _int_or_none(snapshot.volume_readout[1]),
-        "muted": _bool_or_none(muted),
-    }
-
-
-def _outputs_block(snapshot) -> dict | None:
-    held = snapshot.outputs
-    if held is None:
-        return None
-    pending = outputs_tap(snapshot)
-    rows = []
-    for row in held.rows:
-        selected, volume = row.selected, row.volume
-        if pending is not None and pending[0] == row.id:
-            selected = pending[1]
-            if pending[2] is not None:
-                volume = pending[2]
-        rows.append({
-            "id": row.id,
-            "name": row.name,
-            "selected": bool(selected),
-            "volume": volume,
-            "in_use": bool(row.remote_in_use),
-            "owner": row.remote_owner or "",
-            "default": bool(row.is_default),
-        })
-    return {"appliance_id": held.appliance_id, "loaded": bool(held.loaded), "rows": rows}
-
-
-def _eq_block(snapshot, now: float) -> dict | None:
-    held = snapshot.eq
-    if held is None:
-        return None
-    pending = dict(held.optimistic) if held.optimistic_expires_at > now else {}
-    version = held.capability_version
-    bands = []
-    for band in held.bands:
-        if six_band(version) and band.id in DERIVED_EQ_IDS:
-            continue
-        bands.append({
-            "id": band.id,
-            "frequency_hz": band.frequency_hz,
-            "gain_db": pending.get(band.id, band.gain_db),
-            "min_db": band.min_db,
-            "max_db": band.max_db,
-        })
-    return {
-        "appliance_id": held.appliance_id,
-        "version": version,
-        "loaded": bool(held.loaded),
-        "bands": bands,
-    }
-
-
-def _pin_accepted(snapshot, held) -> bool:
-    appliance = None if held is None else snapshot.appliance(held.appliance_id)
-    return appliance is not None and pin_capable_outputs(appliance.dial_outputs_version)
-
-
-def _request_block(held, now: float, pin_accepted: bool) -> dict | None:
+def _request_block(held, now: float) -> dict | None:
     if held is None:
         return None
     window_end = pin_window_end(held)
@@ -317,8 +205,6 @@ def _request_block(held, now: float, pin_accepted: bool) -> dict | None:
         # When the request reached its current state, on the same clock.
         "changed_at": _round(held.changed_at, 3),
         "awaiting_pin": awaiting_pin(held, now),
-        # Whether the appliance takes a PIN from this dial.
-        "pin_accepted": pin_accepted,
         # Absolute times on the body's "now" clock: when a rate-limit wait
         # ends, and when an outcome stops being answered on the screen (null
         # for a request that takes no PIN).
@@ -401,9 +287,6 @@ def _panel_block(panel: "Mapping | None", settings: "Mapping | None") -> dict:
         "brightness": pick("brightness", DEFAULT_BRIGHTNESS),
         "sleep_after_s": pick("sleep_after_s", DEFAULT_SLEEP_AFTER_S),
         "backlight": _text(panel.get("backlight", "none")),
-        # Not read by the page (it always shows its controls); a constant, kept
-        # so an older page loaded against this dial still finds the key.
-        "always_show_controls": False,
         "kiosk": bool(panel.get("kiosk", False)),
     }
 
@@ -435,9 +318,6 @@ def _capped(value):
     return value
 
 
-# ---- the body ----------------------------------------------------------------
-
-
 def _start_failure_block(snapshot) -> dict | None:
     """The raised "could not start" notice, or None."""
     held = snapshot.start_failure
@@ -447,53 +327,44 @@ def _start_failure_block(snapshot) -> dict | None:
             "name": held.name, "reason": held.reason, "raised_at": _round(held.raised_at, 3)}
 
 
-def build_state(
-    snapshot, *, descriptors: "Mapping | Iterable | None" = None, panel: "Mapping | None" = None,
-    settings: "Mapping | None" = None, recovery=None, hub_seq: int = 0, now: float = 0.0,
-    wall_now: float = 0.0, muted: bool | None = None, extrapolate: bool = True,
-) -> dict:
-    """The state body for *snapshot*.
+# ---- the two parts ------------------------------------------------------------
 
-    *descriptors* are the warning descriptors by id (or an iterable of
-    them), the dial's own and any registered for appliances. *panel* is the
-    panel's view (asleep, brightness, sleep_after_s, backlight) and
-    *settings* the dial's screen settings, which fill in what the panel does
-    not say. *recovery* is (active, confirmed) or a mapping with those keys.
-    *hub_seq* is the sequence the change hub has reached. *now* is the
-    monotonic time (the repeat position and the EQ tap window are read
-    against it) and *wall_now* the wall clock (a snooze runs to a wall-clock
-    time). *muted* is the shown mute flag of the reporting appliance, read
-    by the caller because it is not part of the snapshot. With *extrapolate*
-    False a replaying record's position is the one reported, as of its
-    observed_at, instead of carried on to *now*."""
+
+def _dial_part(
+    snapshot, *, descriptors: "Mapping | Iterable | None" = None, panel: "Mapping | None" = None,
+    settings: "Mapping | None" = None, recovery=None, now: float = 0.0, wall_now: float = 0.0,
+) -> dict:
+    """The part about the dial itself, with none of the appliance's own parts
+    and no reading that moves with the clock, so it changes only when
+    something in it does. A replaying record's position is the reported one,
+    as of its observed_at.
+
+    *descriptors* are the warning descriptors by id (or an iterable of them),
+    the dial's own and any registered for appliances. *panel* is the panel's
+    view (asleep, brightness, sleep_after_s, backlight) and *settings* the
+    dial's screen settings, which fill in what the panel does not say.
+    *recovery* is (active, confirmed) or a mapping with those keys. *now* is
+    the monotonic time (the request deadlines are readings on it) and
+    *wall_now* the wall clock (a snooze runs to a wall-clock time)."""
     descriptors = _descriptor_map(descriptors)
     snoozed_until = {s.id: s.snoozed_until for s in snapshot.warnings}
     appliances = [
-        _appliance_block(a, now, wall_now, snoozed_until, extrapolate)
+        _appliance_block(a, wall_now, snoozed_until)
         for a in snapshot.appliances
         if a.appliance_id and a.auth in (AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)
     ]
+    focus = _focus_block(snapshot)
+    focus["reporting_id"] = snapshot.focus.reporting_id
     body = {
-        "v": STATE_VERSION,
-        "seq": hub_seq,
-        # The core's clock when the body was built; the request deadlines and
-        # the replay's observed_at are readings on it.
-        "now": _round(now, 3),
-        "core_seq": snapshot.seq,
+        "v": DIAL_PART_VERSION,
         "started": snapshot.ticks > 0,
         "polling": bool(snapshot.polling),
         "dial": _dial_block(snapshot),
-        "focus": _focus_block(snapshot),
+        "focus": focus,
         "appliances": appliances,
-        "now_playing": _now_playing_block(snapshot),
         "artwork": _artwork_block(snapshot),
-        "volume": _volume_block(snapshot, muted),
-        "outputs": _outputs_block(snapshot),
-        "outputs_available": bool(snapshot.outputs_available),
-        "eq": _eq_block(snapshot, now),
-        "eq_available": bool(snapshot.eq_available),
-        "transport": _request_block(snapshot.transport, now, _pin_accepted(snapshot, snapshot.transport)),
-        "outputs_request": _request_block(snapshot.outputs_request, now, _pin_accepted(snapshot, snapshot.outputs_request)),
+        "transport": _request_block(snapshot.transport, now),
+        "outputs_request": _request_block(snapshot.outputs_request, now),
         "start_failure": _start_failure_block(snapshot),
         "warnings": _warnings_block(snapshot, descriptors, wall_now),
         "network": _network_block(snapshot.network),
@@ -504,30 +375,6 @@ def build_state(
         "power": _power_block(snapshot),
     }
     return _capped(body)
-
-
-def dumps(state: dict) -> str:
-    """The wire form of a state body."""
-    return json.dumps(state, separators=(",", ":"), ensure_ascii=False)
-
-
-# ---- the two-part body --------------------------------------------------------
-
-
-def _dial_part(snapshot, **kwargs) -> dict:
-    """The part about the dial itself: the full body without the appliance's
-    own parts and without any reading that moves with the clock, so it changes
-    only when something in it does. A replaying record's position is the
-    reported one, as of its observed_at."""
-    body = build_state(snapshot, extrapolate=False, **kwargs)
-    part = {k: v for k, v in body.items() if k not in _DIAL_PART_DROPPED}
-    part["v"] = DIAL_PART_VERSION
-    part["focus"] = dict(part["focus"], reporting_id=snapshot.focus.reporting_id)
-    part["appliances"] = [
-        {k: v for k, v in a.items() if k not in _DIAL_PART_APPLIANCE_DROPPED} for a in part["appliances"]
-    ]
-    part["panel"] = {k: v for k, v in part["panel"].items() if k != "always_show_controls"}
-    return part
 
 
 def _focused_part(peer) -> dict | None:
@@ -552,7 +399,7 @@ def build_parts(
     """The two parts of the page's state, {"dial": ..., "focused": ... | None}.
     Both come from the one *snapshot*: the focused part is the appliance
     snapshot the core folded into it, never a live read, so the roster and the
-    focus always agree. Arguments as for build_state."""
+    focus always agree. Arguments as for _dial_part."""
     return {
         "dial": _dial_part(
             snapshot, descriptors=descriptors, panel=panel, settings=settings, recovery=recovery,

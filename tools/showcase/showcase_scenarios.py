@@ -86,23 +86,22 @@ def _appliances(playing_name, volume, *, muted=False, repeat=None, eq_version=2,
     return tuple(out)
 
 
-def playing(track: Track, *, volume=42, muted=False, rows=None, eq="six", repeat=None,
+def playing(track: Track, *, volume=42, muted=False, rows=None, repeat=None,
             artwork=True, **overrides):
     """A snapshot of *track* playing on its appliance, with the other
     appliances idle."""
     ident = IDS[track.appliance]
     url, held = _art(track)
-    eq_version = {"six": 2, "two": 1}[eq]
-    bands = _bands(SIX_GAINS) + hs.DERIVED_BANDS if eq == "six" else hs.DERIVED_BANDS
+    bands = _bands(SIX_GAINS) + hs.DERIVED_BANDS
     values = dict(
-        appliances=_appliances(track.appliance, volume, muted=muted, repeat=repeat, eq_version=eq_version),
+        appliances=_appliances(track.appliance, volume, muted=muted, repeat=repeat),
         focus=hs._focus(reporting=ident, service=track.appliance),
         now_playing=NowPlaying(track.appliance, track.artist, track.title, volume, album=track.album,
                                artwork_url=url if artwork else ""),
         artwork=held if artwork else None,
         volume_readout=(track.appliance, volume), visible_playing=(ident,),
         outputs=OutputsState(ident, rows or speakers(), True, NOW - 1), outputs_available=True,
-        eq=EqState(ident, eq_version, bands, True, (), 0.0), eq_available=True,
+        eq=EqState(ident, 2, bands, True, (), 0.0), eq_available=True,
     )
     values.update(overrides)
     return hs.base(**values)
@@ -162,12 +161,8 @@ def build() -> list:
     # The appliance list: the turntable playing, the CD player idle.
     add("appliances", playing(folk, volume=36))
 
-    # The equaliser panel, in both of its layouts.
+    # The equaliser panel.
     add("equaliser-six-band", playing(rock, volume=58), action="eq")
-    two = playing(classical, volume=30, eq="two")
-    two = dataclasses.replace(two, eq=EqState(CD_PLAYER, 1, (
-        EqBand("bass", None, 2, -6, 6), EqBand("treble", None, 3, -6, 6)), True, (), 0.0))
-    add("equaliser-bass-treble", two, action="eq")
 
     # Repeat Play: enabled while playing live, then replaying.
     add("repeat-enabled", playing(jazz, repeat=hs.repeat_record("recording", armed=True)))

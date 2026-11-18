@@ -36,7 +36,7 @@ from dial_config import (
 )
 from autostream_peer_client import PeerReply
 from dial_hd_actions import (
-    ACTION_NAME_RE, ACTIONS, HD_INTENTS, Context, InvalidArgument, boolean, integer, prepare,
+    ACTION_NAME_RE, ACTIONS, HD_INTENTS, Context, InvalidArgument, integer, prepare,
 )
 from dial_hd_backdrop import BackdropStore
 from dial_hd_events import SSE_MAX_CLIENTS, PartDiffer, PartStep, encode_parts, serve_events, state_bytes

@@ -18,7 +18,7 @@ import hd_scenarios as hs
 from dial_hd_events import (
     PartDiffer, change_bytes, encode_parts, must_resync, parse_since, state_bytes,
 )
-from dial_hd_state import FOCUSED_PART_NAMES, build_parts, build_state
+from dial_hd_state import FOCUSED_PART_NAMES, build_parts
 from dial_pool_support import Rig, peer, replay_block, unit
 
 BOOT = "0123456789abcdef"
@@ -78,12 +78,10 @@ class TestDialPart:
     def test_a_replaying_position_is_the_reported_one_with_its_observed_at(self):
         scenario = hs.SCENARIOS["replaying"]
         part = parts_of(scenario)["dial"]
-        old = build_state(scenario.snapshot, now=scenario.now, wall_now=scenario.wall_now)
         row = next(a for a in part["appliances"] if a["repeat"] is not None)
-        old_row = next(a for a in old["appliances"] if a["repeat"] is not None)
-        assert row["repeat"]["observed_at"] == old_row["repeat"]["observed_at"]
-        # The full body carries the position on to now; the part does not.
-        assert row["repeat"]["position_s"] <= old_row["repeat"]["position_s"]
+        record = next(a for a in scenario.snapshot.appliances if a.repeat is not None).repeat
+        assert row["repeat"]["observed_at"] == round(record.observed_at, 3)
+        assert row["repeat"]["position_s"] == round(record.position_seconds - record.latency_seconds, 1)
         later = parts_of(scenario, now=scenario.now + 10)["dial"]
         assert next(a for a in later["appliances"] if a["repeat"] is not None)["repeat"] == row["repeat"]
 

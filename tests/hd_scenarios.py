@@ -294,14 +294,9 @@ class Scenario:
         peer = focused_peer(self.snapshot, self.muted) if self.peer == DERIVED else self.peer
         object.__setattr__(self, "snapshot", dataclasses.replace(self.snapshot, focused_peer=peer))
 
-    def state(self, hub_seq: int = 4821) -> dict:
-        """This scenario's state body, as the dial would build it."""
-        from dial_hd_state import build_state
-        return build_state(
-            self.snapshot, descriptors=self.descriptors, panel=self.panel, settings=self.settings,
-            recovery=self.recovery, hub_seq=hub_seq, now=self.now, wall_now=self.wall_now,
-            muted=self.muted,
-        )
+    def state(self) -> dict:
+        """This scenario's `dial` part, as the dial would build it."""
+        return self.parts()["dial"]
 
     def parts(self) -> dict:
         """This scenario's two parts, as the dial would build them."""
@@ -409,10 +404,6 @@ def _build() -> dict:
     add(Scenario("power_failed", base(power=PowerState("failed", NOW - 1)), muted=None))
     add(Scenario("eq_none", _playing(eq=None, eq_available=False, appliances=(
         appliance(playing=True, eq_version=0, master_volume=42, muted=False),))))
-    add(Scenario("eq_two", _playing(
-        appliances=(appliance(playing=True, eq_version=1, master_volume=42, muted=False),),
-        eq=EqState(LOUNGE, 1, DERIVED_BANDS, True, (("bass", 4),), NOW + 1.5),
-    )))
     add(Scenario("eq_six", _playing()))
 
     add(Scenario("warning_sdhealth", base(
@@ -445,8 +436,6 @@ def _build() -> dict:
     add(Scenario("pin_busy", _pin_snapshot(pin_request("pending", None, "output_pin"))))
     add(Scenario("pin_rate_limited", _pin_snapshot(
         pin_request("rejected", "rate_limited", "output_pin", retry_after_s=7))))
-    add(Scenario("pin_required_v1", _pin_snapshot(
-        pin_request("rejected", "pin_required"), outputs_version=1)))
     add(Scenario("pin_expired", _pin_snapshot(pin_request("rejected", "pin_required", at=NOW - 100))))
     add(Scenario("start_failure_refused", _playing(
         start_failure=_start_failure_notice(LOUNGE, "refused"))))

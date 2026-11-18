@@ -40,7 +40,7 @@ view](#the-hd-page-is-a-second-view).
 | `dial_hd_server.py` | `HdServer`: the HD page's loopback web server, the page's static files, the state body, the held artwork, the event stream route and the settings, info, action and panel routes. Also the optional development listener. |
 | `dial_hd_backdrop.py` | `BackdropStore`: the page's blurred backdrops, rendered on first request on the handler thread and kept in memory, one per artwork key and one for the logo. |
 | `dial_hd_events.py` | `ChangeHub`: turns the core's change signals into a sequence number, builds each state body once per change and feeds the event stream. |
-| `dial_hd_state.py` | `build_state()`: the pure function that turns a core snapshot into the page's state body. |
+| `dial_hd_state.py` | `build_parts()`: the pure function that turns a core snapshot into the page's two state parts, `dial` and `focused`. |
 | `dial_hd_actions.py` | The page's actions as one table onto core methods, with the argument checks. |
 | `dial_hd_panel.py` | `HdPanel`: the HD dial's sleep, wake and brightness, and the sysfs backlight writes. |
 | `dial_hd_ddc.py` | The HDMI panel's backlight over DDC/CI through i2c-dev: the packet codec, panel detection, and `DdcBacklight`, which has the same interface as the sysfs backlight and applies levels on its own worker thread. |
@@ -120,16 +120,19 @@ request line and body are capped, and a POST must carry a custom header that a
 cross-site form cannot set. No cross-origin headers are ever sent, and the page
 is served under a content security policy that forbids inline script.
 
-**State.** `build_state()` is a pure function from a `CoreSnapshot` (plus the
+**State.** `build_parts()` is a pure function from a `CoreSnapshot` (plus the
 dial's panel and settings, the warning descriptors and the clock readings it
-is handed) to a plain dictionary. It does no I/O, takes no lock and reads no
-clock, so the same input is always the same output. The body carries a version
-and only grows: fields are added, never renamed or removed. It carries only
-what the page draws, with artwork as a local key and URL rather than the
-appliance's address. It also carries the core's clock reading when it was
-built, at most about a second before it is sent (`now`), and the deadlines in it are absolute readings on that clock, so
-the page estimates the dial's clock from `now` and the time since the body
-arrived and never compares a deadline with its own wall clock. The blurred backdrop behind the artwork is rendered the
+is handed) to two plain dictionaries: `dial`, what the dial itself knows
+(roster, focus, warnings, panel, artwork and the like), and `focused`, the
+focused appliance's own parts exactly as the core folded them in. It does no
+I/O, takes no lock and reads no clock, so the same input is always the same
+output, and `dial` carries no reading that moves with the clock, so it changes
+only when something in it does. It carries only what the page draws, with
+artwork as a local key and URL rather than the appliance's address. The
+deadlines in `dial` are absolute readings on the core's clock, which the body
+carries as `time`, so the page estimates the dial's clock from `time` and the
+time since the body arrived and never compares a deadline with its own wall
+clock. The blurred backdrop behind the artwork is rendered the
 first time the page asks for it. The render runs on that request's own thread
 under the store's lock and nothing else.
 

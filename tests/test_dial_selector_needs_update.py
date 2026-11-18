@@ -55,13 +55,13 @@ def test_selector_rows_reads_the_protocol_status(rig):
 def test_the_hd_row(rig, status_error, reachable, update_needed):
     rig.add("Kitchen")
     a = dataclasses.replace(rig.fold().appliance(aid("Kitchen")), status_error=status_error)
-    block = _appliance_block(a, 0.0, 0.0, {})
+    block = _appliance_block(a, 0.0, {})
     assert (block["reachable"], block["update_needed"]) == (reachable, update_needed)
 
 
 def test_the_hd_row_of_a_mismatched_appliance(rig):
     rig.add("Old", peer("Old", protocol_ok=False, protocol=3, access="unknown"))
-    block = _appliance_block(rig.fold().appliance(aid("Old")), 0.0, 0.0, {})
+    block = _appliance_block(rig.fold().appliance(aid("Old")), 0.0, {})
     assert block["update_needed"] and block["reachable"] and block["auth"] == AUTH_UNKNOWN
 
 

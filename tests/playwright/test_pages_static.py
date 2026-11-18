@@ -588,3 +588,30 @@ def test_an_hd_page_module_stays_within_its_line_ceiling(name: str):
 
 def test_every_hd_page_module_has_a_ceiling():
     assert {p.name for p in HD.glob("hd*.js")} == set(HD_CEILINGS)
+
+
+# The dial's Python modules behind the HD page -> the most non-blank lines each may have.
+HD_PY_CEILINGS = {
+    "dial_hd_state.py": 340,
+    "dial_hd_actions.py": 145,
+    "dial_hd_server.py": 940,
+    "dial_hd_events.py": 285,
+}
+
+
+@pytest.mark.parametrize("name", sorted(HD_PY_CEILINGS))
+def test_an_hd_python_module_stays_within_its_line_ceiling(name: str):
+    path = stub.REPO_ROOT / "dial" / name
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) <= HD_PY_CEILINGS[name], f"{name} has {len(lines)} lines; its ceiling is {HD_PY_CEILINGS[name]}"
+
+
+# Names of removed page code. The removal guard matches whole quoted strings
+# only, so these identifiers are searched for here.
+REMOVED_HD_IDENTIFIERS = ("EQ_TWO_BAND", "PAIR_ELSEWHERE")
+
+
+@pytest.mark.parametrize("identifier", REMOVED_HD_IDENTIFIERS)
+def test_no_hd_page_file_uses_a_removed_identifier(identifier: str):
+    hits = [p.name for p in HD.glob("*") if p.is_file() and re.search(r"\b%s\b" % identifier, p.read_text(encoding="utf-8"))]
+    assert not hits, f"{identifier} is back in {hits}"
