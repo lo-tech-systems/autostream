@@ -21,6 +21,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
+import autostream_dial_push as dial_push
 from autostream_rpi import get_appliance_id
 from autostream_state import store
 
@@ -226,10 +227,8 @@ def notify_dials_warnings_changed() -> None:
         appliance_id = get_appliance_id()
         if not appliance_id:
             return
-        from autostream_webui_dials import eligible_dial_uuids, enqueue_push
-
-        for uuid in eligible_dial_uuids(WARNINGS_MIN_GENERATION):
-            enqueue_push(WARNINGS_PUSH_PATH, uuid, appliance_id)
+        for uuid in dial_push.eligible_dial_uuids(WARNINGS_MIN_GENERATION):
+            dial_push.enqueue_push(WARNINGS_PUSH_PATH, uuid, appliance_id)
     except Exception:
         logging.debug("dial warnings: push enqueue failed", exc_info=True)
 

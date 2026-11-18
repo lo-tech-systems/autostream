@@ -279,6 +279,20 @@ def _build_rows() -> dict:
             {Origin.USER},
         ),
         _row(
+            "dials.authorize",
+            # Passed as posted: the dial entry is written with exactly these
+            # strings.
+            {"uuid": v.anything(), "name": v.anything()},
+            {"uuid", "name"},
+            {Origin.USER},
+        ),
+        _row(
+            "dials.revoke",
+            {"uuid": v.anything()},
+            {"uuid"},
+            {Origin.USER},
+        ),
+        _row(
             "log.level.set",
             {
                 # The log policy names what it does not support.

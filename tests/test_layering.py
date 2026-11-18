@@ -76,6 +76,7 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_services", "autostream_appliances"),
     ("autostream_services", "autostream_dial_warnings"),
     ("autostream_services", "autostream_output_usage"),
+    ("autostream_dial_warnings", "autostream_dial_push"),
     ("autostream_output_intents", "autostream_output_usage"),
 })
 
@@ -346,9 +347,6 @@ def l2_cycle(edges) -> list[str] | None:
 
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_auth', 'autostream_webui_common', 'send_html'),
-    ('A', 'autostream_dial_push', 'autostream_webui_dials', 'enqueue_fanout'),
-    ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
-    ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
     ('A', 'autostream_webui_routes', 'autostream_webui', '*'),
     ('C', 'autostream_appliance_gateway', 'autostream_appliances', 'ApplianceSighting'),
     ('C', 'autostream_appliance_gateway', 'autostream_appliances', 'register_peer_removal_callback'),
@@ -413,9 +411,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('D', 'autostream_webui_common', 'subprocess', '*'),
     ('D', 'autostream_webui_page_about', 'subprocess', '*'),
     ('E', 'autostream_auth', 'autostream_webui_common', 'send_html'),
-    ('E', 'autostream_dial_push', 'autostream_webui_dials', 'enqueue_fanout'),
-    ('E', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
-    ('E', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
 })
 
 

@@ -30,14 +30,14 @@ if _core not in sys.path:
 
 from autostream_dials import DialSighting
 from autostream_webui_dials import (
-    _PUSH_RETRY_DELAY_S,
-    _PUSH_TIMEOUT_S,
-    _post_push,
-    _push_once,
     handle_dial_authorize_post,
     handle_dial_revoke_post,
-    notify_dial_auth_changed,
 )
+from autostream_dial_push import _PUSH_RETRY_DELAY_S
+from autostream_dial_push import _PUSH_TIMEOUT_S
+from autostream_dial_push import notify_dial_auth_changed
+from autostream_dial_push import _push_once
+from autostream_dial_push import _post_push
 
 UUID = "dial-uuid-push-1"
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
@@ -49,46 +49,58 @@ def _sighting(ip="192.168.1.50", port=7842) -> DialSighting:
 
 
 # ---------------------------------------------------------------------------
-# Call sites: authorize / revoke fire the push after their 200
+# Call sites: authorize / revoke write, push, then reply
 # ---------------------------------------------------------------------------
 
+def _recorder():
+    calls = []
+
+    def send_json(handler, code, body):
+        calls.append(("send_json", code, dict(body)))
+
+    return calls, send_json
+
+
+def _submitted(calls_out):
+    """Capture the intents the routes submit, passing them through."""
+    from autostream_intents import submit as real_submit
+
+    def spy(intent):
+        calls_out.append(intent)
+        return real_submit(intent)
+
+    return spy
+
+
 class TestCallSites:
-    def test_authorize_calls_notify_after_200_response(self):
-        calls = []
-
-        def fake_send_json(handler, code, body):
-            calls.append(("send_json", code, dict(body)))
-
-        def fake_notify(uuid):
-            calls.append(("notify", uuid))
-
+    def test_authorize_pushes_after_the_write_and_replies_after_both(self):
+        calls, fake_send_json = _recorder()
         with (
             patch("autostream_webui_dials.send_json", side_effect=fake_send_json),
-            patch("autostream_webui_dials.write_dial_entry"),
-            patch("autostream_webui_dials.validate_dial_name", return_value=True),
-            patch("autostream_webui_dials.notify_dial_auth_changed", side_effect=fake_notify),
+            patch("autostream_dial_push.write_dial_entry",
+                  side_effect=lambda u, n: calls.append(("write", u, n))),
+            patch("autostream_dial_push.validate_dial_name", return_value=True),
+            patch("autostream_dial_push.notify_dial_auth_changed",
+                  side_effect=lambda u: calls.append(("notify", u))),
         ):
             handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "Kitchen"})
 
-        assert calls == [("send_json", 200, {"ok": True}), ("notify", UUID)]
+        assert calls == [("write", UUID, "Kitchen"), ("notify", UUID),
+                         ("send_json", 200, {"ok": True})]
 
-    def test_revoke_calls_notify_after_200_response(self):
-        calls = []
-
-        def fake_send_json(handler, code, body):
-            calls.append(("send_json", code, dict(body)))
-
-        def fake_notify(uuid):
-            calls.append(("notify", uuid))
-
+    def test_revoke_pushes_after_the_removal_and_replies_after_both(self):
+        calls, fake_send_json = _recorder()
         with (
             patch("autostream_webui_dials.send_json", side_effect=fake_send_json),
-            patch("autostream_webui_dials.remove_dial_entry"),
-            patch("autostream_webui_dials.notify_dial_auth_changed", side_effect=fake_notify),
+            patch("autostream_dial_push.remove_dial_entry",
+                  side_effect=lambda u: calls.append(("remove", u))),
+            patch("autostream_dial_push.notify_dial_auth_changed",
+                  side_effect=lambda u: calls.append(("notify", u))),
         ):
             handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
 
-        assert calls == [("send_json", 200, {"ok": True}), ("notify", UUID)]
+        assert calls == [("remove", UUID), ("notify", UUID),
+                         ("send_json", 200, {"ok": True})]
 
     def test_authorize_response_not_delayed_by_notify_failure(self):
         """A thread-creation (or any other) failure inside notify_dial_auth_changed
@@ -96,9 +108,9 @@ class TestCallSites:
         wraps the call in try/except."""
         with (
             patch("autostream_webui_dials.send_json") as mock_send_json,
-            patch("autostream_webui_dials.write_dial_entry"),
-            patch("autostream_webui_dials.validate_dial_name", return_value=True),
-            patch("autostream_webui_dials.notify_dial_auth_changed",
+            patch("autostream_dial_push.write_dial_entry"),
+            patch("autostream_dial_push.validate_dial_name", return_value=True),
+            patch("autostream_dial_push.notify_dial_auth_changed",
                   side_effect=RuntimeError("boom")),
         ):
             handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "Kitchen"})
@@ -108,13 +120,76 @@ class TestCallSites:
     def test_revoke_response_not_delayed_by_notify_failure(self):
         with (
             patch("autostream_webui_dials.send_json") as mock_send_json,
-            patch("autostream_webui_dials.remove_dial_entry"),
-            patch("autostream_webui_dials.notify_dial_auth_changed",
+            patch("autostream_dial_push.remove_dial_entry"),
+            patch("autostream_dial_push.notify_dial_auth_changed",
                   side_effect=RuntimeError("boom")),
         ):
             handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
 
         mock_send_json.assert_called_once_with(ANY, 200, {"ok": True})
+
+    def test_an_invalid_name_answers_400_and_writes_and_queues_nothing(self):
+        with (
+            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("autostream_dial_push.write_dial_entry") as write,
+            patch("autostream_dial_push.notify_dial_auth_changed") as notify,
+        ):
+            handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "bad;name"})
+
+        mock_send_json.assert_called_once_with(ANY, 400, {"ok": False, "error": "invalid_name"})
+        write.assert_not_called()
+        notify.assert_not_called()
+
+    def test_the_other_refusals_keep_their_bodies(self):
+        with patch("autostream_webui_dials.send_json") as mock_send_json:
+            handle_dial_authorize_post(MagicMock(), {"name": "Kitchen"})
+            handle_dial_authorize_post(MagicMock(), {"uuid": UUID})
+            handle_dial_revoke_post(MagicMock(), {"uuid": ""})
+        assert [c.args[1:] for c in mock_send_json.call_args_list] == [
+            (400, {"ok": False, "error": "missing_uuid"}),
+            (400, {"ok": False, "error": "missing_name"}),
+            (400, {"ok": False, "error": "missing_uuid"}),
+        ]
+
+    def test_a_raising_write_answers_500_and_queues_no_push(self):
+        with (
+            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("autostream_dial_push.write_dial_entry", side_effect=OSError("read-only")),
+            patch("autostream_dial_push.validate_dial_name", return_value=True),
+            patch("autostream_dial_push.notify_dial_auth_changed") as notify,
+        ):
+            handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "Kitchen"})
+        mock_send_json.assert_called_once_with(ANY, 500, {"ok": False, "error": "internal_error"})
+        notify.assert_not_called()
+
+    def test_a_raising_removal_answers_500_and_queues_no_push(self):
+        with (
+            patch("autostream_webui_dials.send_json") as mock_send_json,
+            patch("autostream_dial_push.remove_dial_entry", side_effect=OSError("read-only")),
+            patch("autostream_dial_push.notify_dial_auth_changed") as notify,
+        ):
+            handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
+        mock_send_json.assert_called_once_with(ANY, 500, {"ok": False, "error": "internal_error"})
+        notify.assert_not_called()
+
+    def test_the_intents_are_the_users_and_carry_the_strings_unstripped(self):
+        from autostream_state import Origin
+        seen = []
+        with (
+            patch("autostream_webui_dials.submit", side_effect=_submitted(seen)),
+            patch("autostream_webui_dials.send_json"),
+            patch("autostream_dial_push.write_dial_entry") as write,
+            patch("autostream_dial_push.validate_dial_name", return_value=True),
+            patch("autostream_dial_push.remove_dial_entry"),
+            patch("autostream_dial_push.notify_dial_auth_changed"),
+        ):
+            handle_dial_authorize_post(MagicMock(), {"uuid": " " + UUID, "name": " Kitchen "})
+            handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
+        assert [(i.name, i.origin, i.requester) for i in seen] == [
+            ("dials.authorize", Origin.USER, "webui"),
+            ("dials.revoke", Origin.USER, "webui"),
+        ]
+        write.assert_called_once_with(" " + UUID, " Kitchen ")
 
 
 # ---------------------------------------------------------------------------
@@ -124,16 +199,16 @@ class TestCallSites:
 class TestNotifyDialAuthChanged:
     def test_no_op_when_appliance_has_no_identity(self):
         with (
-            patch("autostream_webui_dials.get_appliance_id", return_value=None),
-            patch("autostream_webui_dials.enqueue_push") as mock_enqueue,
+            patch("autostream_dial_push.get_appliance_id", return_value=None),
+            patch("autostream_dial_push.enqueue_push") as mock_enqueue,
         ):
             notify_dial_auth_changed(UUID)
         mock_enqueue.assert_not_called()
 
     def test_queues_one_auth_changed_job_when_identified(self):
         with (
-            patch("autostream_webui_dials.get_appliance_id", return_value=APPLIANCE_ID),
-            patch("autostream_webui_dials.enqueue_push") as mock_enqueue,
+            patch("autostream_dial_push.get_appliance_id", return_value=APPLIANCE_ID),
+            patch("autostream_dial_push.enqueue_push") as mock_enqueue,
         ):
             notify_dial_auth_changed(UUID)
         mock_enqueue.assert_called_once_with("/auth-changed", UUID, APPLIANCE_ID)
@@ -146,17 +221,17 @@ class TestNotifyDialAuthChanged:
 class TestPushOnce:
     def test_skips_silently_when_not_sighted(self):
         with (
-            patch("autostream_webui_dials.get_dial_sighting", return_value=None),
-            patch("autostream_webui_dials._post_push") as mock_post,
+            patch("autostream_dial_push.get_dial_sighting", return_value=None),
+            patch("autostream_dial_push._post_push") as mock_post,
         ):
             _push_once("/auth-changed", UUID, APPLIANCE_ID)
         mock_post.assert_not_called()
 
     def test_single_success_does_not_retry(self):
         with (
-            patch("autostream_webui_dials.get_dial_sighting", return_value=_sighting()),
-            patch("autostream_webui_dials._post_push", return_value=True) as mock_post,
-            patch("autostream_webui_dials.time.sleep") as mock_sleep,
+            patch("autostream_dial_push.get_dial_sighting", return_value=_sighting()),
+            patch("autostream_dial_push._post_push", return_value=True) as mock_post,
+            patch("autostream_dial_push.time.sleep") as mock_sleep,
         ):
             _push_once("/auth-changed", UUID, APPLIANCE_ID)
         mock_post.assert_called_once()
@@ -164,10 +239,10 @@ class TestPushOnce:
 
     def test_failure_retries_once_after_delay(self):
         with (
-            patch("autostream_webui_dials.get_dial_sighting", return_value=_sighting()),
-            patch("autostream_webui_dials._post_push",
+            patch("autostream_dial_push.get_dial_sighting", return_value=_sighting()),
+            patch("autostream_dial_push._post_push",
                   side_effect=[False, True]) as mock_post,
-            patch("autostream_webui_dials.time.sleep") as mock_sleep,
+            patch("autostream_dial_push.time.sleep") as mock_sleep,
         ):
             _push_once("/auth-changed", UUID, APPLIANCE_ID)
         assert mock_post.call_count == 2
@@ -176,10 +251,10 @@ class TestPushOnce:
     def test_both_attempts_use_the_sighting_address(self):
         sighting = _sighting(ip="10.0.0.9", port=7842)
         with (
-            patch("autostream_webui_dials.get_dial_sighting", return_value=sighting),
-            patch("autostream_webui_dials._post_push",
+            patch("autostream_dial_push.get_dial_sighting", return_value=sighting),
+            patch("autostream_dial_push._post_push",
                   side_effect=[False, False]) as mock_post,
-            patch("autostream_webui_dials.time.sleep"),
+            patch("autostream_dial_push.time.sleep"),
         ):
             _push_once("/auth-changed", UUID, APPLIANCE_ID)
         for call in mock_post.call_args_list:
@@ -202,7 +277,7 @@ class TestPostPush:
         resp.status = 202
         conn.getresponse.return_value = resp
 
-        with patch("autostream_webui_dials.http.client.HTTPConnection",
+        with patch("autostream_dial_push.http.client.HTTPConnection",
                    return_value=conn):
             result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
                                         _PUSH_TIMEOUT_S)
@@ -224,7 +299,7 @@ class TestPostPush:
         resp.status = 404
         conn.getresponse.return_value = resp
 
-        with patch("autostream_webui_dials.http.client.HTTPConnection",
+        with patch("autostream_dial_push.http.client.HTTPConnection",
                    return_value=conn):
             result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
                                         _PUSH_TIMEOUT_S)
@@ -232,7 +307,7 @@ class TestPostPush:
         assert result is False
 
     def test_connection_refused_never_raises(self):
-        with patch("autostream_webui_dials.http.client.HTTPConnection",
+        with patch("autostream_dial_push.http.client.HTTPConnection",
                    side_effect=ConnectionRefusedError("refused")):
             result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
                                         _PUSH_TIMEOUT_S)
@@ -242,7 +317,7 @@ class TestPostPush:
         conn = MagicMock()
         conn.request.side_effect = TimeoutError("timed out")
 
-        with patch("autostream_webui_dials.http.client.HTTPConnection",
+        with patch("autostream_dial_push.http.client.HTTPConnection",
                    return_value=conn):
             result = _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID,
                                         _PUSH_TIMEOUT_S)
@@ -254,7 +329,7 @@ class TestPostPush:
         resp.status = 202
         conn.getresponse.return_value = resp
 
-        with patch("autostream_webui_dials.http.client.HTTPConnection",
+        with patch("autostream_dial_push.http.client.HTTPConnection",
                    return_value=conn):
             _post_push("192.168.1.50", 7842, "/auth-changed", APPLIANCE_ID, _PUSH_TIMEOUT_S)
 

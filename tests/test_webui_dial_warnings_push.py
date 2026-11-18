@@ -32,8 +32,8 @@ if _core not in sys.path:
 
 from fake_store import fake_playback
 import autostream_dial_warnings as dw
-import autostream_webui_dials as wd
 from autostream_dials import DialSighting
+import autostream_dial_push as dial_push
 
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
 
@@ -212,10 +212,10 @@ def _notify(entries, sightings, appliance_id=APPLIANCE_ID):
     enqueue_push calls."""
     with (
         patch("autostream_dial_warnings.get_appliance_id", return_value=appliance_id),
-        patch("autostream_webui_dials.parse_dial_entries",
+        patch("autostream_dial_push.parse_dial_entries",
               return_value=[SimpleNamespace(uuid=u) for u in entries]),
-        patch("autostream_webui_dials.get_dial_sighting", side_effect=sightings.get),
-        patch("autostream_webui_dials.enqueue_push") as enqueue,
+        patch("autostream_dial_push.get_dial_sighting", side_effect=sightings.get),
+        patch("autostream_dial_push.enqueue_push") as enqueue,
     ):
         dw.notify_dials_warnings_changed()
     return enqueue.call_args_list
@@ -261,11 +261,11 @@ class TestEligible:
     def test_returns_the_authorised_order_less_exclusions(self):
         sightings = {u: _sighting(u, "v3") for u in ("a", "b", "c")}
         with (
-            patch("autostream_webui_dials.parse_dial_entries",
+            patch("autostream_dial_push.parse_dial_entries",
                   return_value=[SimpleNamespace(uuid=u) for u in ("a", "b", "c")]),
-            patch("autostream_webui_dials.get_dial_sighting", side_effect=sightings.get),
+            patch("autostream_dial_push.get_dial_sighting", side_effect=sightings.get),
         ):
-            assert wd.eligible_dial_uuids(3, exclude={"b"}) == ["a", "c"]
+            assert dial_push.eligible_dial_uuids(3, exclude={"b"}) == ["a", "c"]
 
 
 class TestSharedWorker:
@@ -274,10 +274,10 @@ class TestSharedWorker:
         conn.getresponse.return_value = MagicMock(status=202)
         sighting = _sighting("a", "v3")
         with (
-            patch("autostream_webui_dials.get_dial_sighting", return_value=sighting),
-            patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn),
+            patch("autostream_dial_push.get_dial_sighting", return_value=sighting),
+            patch("autostream_dial_push.http.client.HTTPConnection", return_value=conn),
         ):
-            wd._push_once("/warnings-changed", "a", APPLIANCE_ID)
+            dial_push._push_once("/warnings-changed", "a", APPLIANCE_ID)
         method, path = conn.request.call_args[0][:2]
         assert (method, path) == ("POST", "/warnings-changed")
         assert json.loads(conn.request.call_args.kwargs["body"]) == {"appliance_id": APPLIANCE_ID}
@@ -285,17 +285,17 @@ class TestSharedWorker:
     def test_refused_connection_is_retried_once_and_never_raises(self):
         sighting = _sighting("a", "v3")
         with (
-            patch("autostream_webui_dials.get_dial_sighting", return_value=sighting),
-            patch("autostream_webui_dials.http.client.HTTPConnection",
+            patch("autostream_dial_push.get_dial_sighting", return_value=sighting),
+            patch("autostream_dial_push.http.client.HTTPConnection",
                   side_effect=ConnectionRefusedError("refused")) as conn,
-            patch("autostream_webui_dials.time.sleep") as sleep,
+            patch("autostream_dial_push.time.sleep") as sleep,
         ):
-            wd._push_once("/warnings-changed", "a", APPLIANCE_ID)
+            dial_push._push_once("/warnings-changed", "a", APPLIANCE_ID)
         assert conn.call_count == 2
-        sleep.assert_called_once_with(wd._PUSH_RETRY_DELAY_S)
+        sleep.assert_called_once_with(dial_push._PUSH_RETRY_DELAY_S)
 
     def test_worker_survives_a_failing_job(self):
-        jobs = wd.queue.SimpleQueue()
+        jobs = dial_push.queue.SimpleQueue()
         handled = []
         done = threading.Event()
 
@@ -305,36 +305,36 @@ class TestSharedWorker:
                 raise RuntimeError("boom")
             done.set()
 
-        with patch("autostream_webui_dials._push_once", side_effect=fake_push):
-            thread = threading.Thread(target=wd._push_worker_loop, args=(jobs,), daemon=True)
+        with patch("autostream_dial_push._push_once", side_effect=fake_push):
+            thread = threading.Thread(target=dial_push._push_worker_loop, args=(jobs,), daemon=True)
             thread.start()
-            jobs.put(wd._PushJob("/warnings-changed", "bad", {"appliance_id": APPLIANCE_ID}))
-            jobs.put(wd._PushJob("/warnings-changed", "good", {"appliance_id": APPLIANCE_ID}))
+            jobs.put(dial_push._PushJob("/warnings-changed", "bad", {"appliance_id": APPLIANCE_ID}))
+            jobs.put(dial_push._PushJob("/warnings-changed", "good", {"appliance_id": APPLIANCE_ID}))
             assert done.wait(2.0)
         assert handled == ["bad", "good"]
 
     def test_many_jobs_use_one_thread(self):
-        queue_ = wd.queue.SimpleQueue()
+        queue_ = dial_push.queue.SimpleQueue()
         with (
-            patch.object(wd, "_push_queue", queue_),
-            patch.object(wd, "_push_worker_thread", None),
-            patch("autostream_webui_dials.threading.Thread") as mock_thread,
+            patch.object(dial_push, "_push_queue", queue_),
+            patch.object(dial_push, "_push_worker_thread", None),
+            patch("autostream_dial_push.threading.Thread") as mock_thread,
         ):
             mock_thread.return_value.is_alive.return_value = True
             for i in range(5):
-                wd.enqueue_push("/warnings-changed", f"d{i}", APPLIANCE_ID)
+                dial_push.enqueue_push("/warnings-changed", f"d{i}", APPLIANCE_ID)
         mock_thread.assert_called_once()
         assert mock_thread.call_args.kwargs["daemon"] is True
         assert queue_.qsize() == 5
 
     def test_enqueue_never_blocks_on_the_network(self):
-        queue_ = wd.queue.SimpleQueue()
+        queue_ = dial_push.queue.SimpleQueue()
         with (
-            patch.object(wd, "_push_queue", queue_),
-            patch.object(wd, "_push_worker_thread", MagicMock(is_alive=lambda: True)),
-            patch("autostream_webui_dials.http.client.HTTPConnection") as conn,
+            patch.object(dial_push, "_push_queue", queue_),
+            patch.object(dial_push, "_push_worker_thread", MagicMock(is_alive=lambda: True)),
+            patch("autostream_dial_push.http.client.HTTPConnection") as conn,
         ):
-            wd.enqueue_push("/warnings-changed", "a", APPLIANCE_ID)
+            dial_push.enqueue_push("/warnings-changed", "a", APPLIANCE_ID)
         conn.assert_not_called()
 
 

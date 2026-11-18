@@ -153,6 +153,7 @@ class TestRows:
             "backend.setting.set", "log.level.set",
             "receiver.pause", "receiver.play", "outputs.pause_off",
             "input.counters.reset", "input.playback_config.set",
+            "dials.authorize", "dials.revoke",
         }
 
     def test_every_row_has_a_handler_once_the_coordinator_is_imported(self):
@@ -240,6 +241,21 @@ class TestRows:
 # ---------------------------------------------------------------------------
 
 class TestSubmit:
+    @pytest.mark.parametrize("name,args", [
+        ("dials.authorize", {"uuid": "u", "name": "n"}),
+        ("dials.revoke", {"uuid": "u"}),
+    ])
+    def test_the_dial_rows_take_users_only(self, name, args):
+        for origin in (Origin.SYSTEM, Origin.ADOPTED, Origin.BACKEND):
+            assert intents.submit(Intent(name, args, origin, "t")).error == "origin_not_allowed"
+
+    @pytest.mark.parametrize("name,args", [
+        ("dials.authorize", {"uuid": "u", "name": "n", "extra": 1}),
+        ("dials.revoke", {"uuid": "u", "extra": 1}),
+    ])
+    def test_the_dial_rows_refuse_unknown_keys(self, name, args):
+        assert intents.submit(Intent(name, args, Origin.USER, "t")).ok is False
+
     def test_an_unknown_intent_is_refused(self):
         tbl = one_row_table()
         reply = ask(tbl, name="nothing.here")

@@ -10,9 +10,9 @@ hint that is lost, late or repeated can never leave a dial wrong.
 
 A change is sent at once; further changes inside a short window are sent
 together when it ends (StateChangeCoalescer). The send is one fan-out job on
-the shared push worker in autostream_webui_dials, which is imported only when
-a hint is emitted so that the modules that report changes can import this one
-without an import cycle.
+the push worker in this module, which also sends the authorisation and
+warnings pushes. Dial authorisation is written and pushed here too: the
+authorise and revoke rows are bound by this module.
 
 Some state is changed only by the coordinator (the daemon's repeat block, the
 identified track, a session starting or ending). StateHints, a subscriber to
@@ -22,10 +22,24 @@ mutes.
 """
 from __future__ import annotations
 
+import http.client
+import json as _json
 import logging
+import queue
 import threading
 import time
+from dataclasses import dataclass
 
+from autostream_dials import (
+    dial_proto_generation,
+    get_dial_sighting,
+    parse_dial_entries,
+    remove_dial_entry,
+    validate_dial_name,
+    write_dial_entry,
+)
+from autostream_intents.table import Intent, Outcome, bind
+from autostream_rpi import get_appliance_id
 from autostream_state import (
     active_track,
     eq_band_digest,
@@ -131,9 +145,224 @@ class StateChangeCoalescer:
         return kinds, names
 
 
+# ---------------------------------------------------------------------------
+# Dial pushes
+# ---------------------------------------------------------------------------
+# Best-effort notifications to a dial: "authorization may have changed"
+# (/auth-changed) and "warnings may have changed" (/warnings-changed). Each
+# only causes the dial to fetch or poll now instead of waiting for its next
+# scheduled tick, and grants nothing by itself, so a lost or failed push is
+# harmless: the dial's own poll and reconcile are the source of truth.
+#
+# Every push goes through one worker thread fed by a queue, so a burst of
+# changes costs one thread however many pushes it holds; a slow dial delays
+# the pushes behind it by at most the timeout and one retry.
+#
+# A job naming one dial is tried, then retried once. A job naming no dial is a
+# fan-out: the worker resolves the eligible dials when it runs it and sends to
+# each once with no retry. A dial that did not answer is skipped for a few
+# seconds and tried last afterwards, so an unreachable dial does not hold up
+# the others.
+
+_PUSH_TIMEOUT_S = 1.0
+_PUSH_RETRY_DELAY_S = 2.0
+_AUTH_CHANGED_PATH = "/auth-changed"
+
+# After a failed fan-out send a dial is skipped for this long and sent to last
+# thereafter.
+STATE_FANOUT_BACKOFF_S = 5.0
+# A failure mark older than this is forgotten, which bounds the table.
+_PUSH_ENTRY_MAX_AGE_S = 60.0
+
+
+@dataclass(frozen=True)
+class _PushJob:
+    path: str
+    uuid: str | None          # None: every eligible dial, resolved when the job runs
+    body: dict
+    min_generation: int = 0
+    exclude: frozenset = frozenset()
+
+
+_push_queue: "queue.SimpleQueue[_PushJob]" = queue.SimpleQueue()
+_push_worker_lock = threading.Lock()
+_push_worker_thread: threading.Thread | None = None
+# uuid -> monotonic time of its last failed fan-out send. Worker thread only.
+_fanout_failed_at: dict[str, float] = {}
+
+
+def _post_push_body(ip: str, port: int, path: str, body: dict, timeout: float) -> bool:
+    """One POST of the JSON object *body* to *path* on the dial's own server.
+    Never raises.
+
+    Returns True on any 2xx response. Plain http.client, no redirects
+    followed and no interest in the response body -- the push is advisory.
+    """
+    conn = None
+    try:
+        conn = http.client.HTTPConnection(ip, port, timeout=timeout)
+        conn.request("POST", path, body=_json.dumps(body).encode(),
+                     headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        return 200 <= resp.status < 300
+    except Exception as e:
+        logging.debug("dial push: POST %s:%s%s failed: %s", ip, port, path, e)
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _post_push(ip: str, port: int, path: str, appliance_id: str, timeout: float) -> bool:
+    """One POST of {"appliance_id": ...} to *path*; see _post_push_body."""
+    return _post_push_body(ip, port, path, {"appliance_id": appliance_id}, timeout)
+
+
+def _push_once(path: str, uuid: str, appliance_id: str) -> None:
+    """One push job: one attempt, one retry after a short delay."""
+    sighting = get_dial_sighting(uuid)
+    if sighting is None:
+        logging.debug("dial push: %s not sighted, skipping", uuid)
+        return
+    if _post_push(sighting.ip, sighting.port, path, appliance_id, _PUSH_TIMEOUT_S):
+        return
+    time.sleep(_PUSH_RETRY_DELAY_S)
+    _post_push(sighting.ip, sighting.port, path, appliance_id, _PUSH_TIMEOUT_S)
+
+
+def eligible_dial_uuids(min_generation: int, *, exclude=()) -> list[str]:
+    """The authorised dials that are sighted now and speak at least
+    *min_generation*, in the authorised list's order, less *exclude*. Reads
+    the dials file: not for a request thread or the coordinator loop."""
+    out = []
+    for entry in parse_dial_entries():
+        if entry.uuid in exclude:
+            continue
+        sighting = get_dial_sighting(entry.uuid)
+        if sighting is None or dial_proto_generation(sighting.dial_proto) < min_generation:
+            continue
+        out.append(entry.uuid)
+    return out
+
+
+def _fanout(job: _PushJob) -> None:
+    """One fan-out job: *job.body* plus the appliance id, sent once to each
+    eligible dial. No retry and no sleep. Dials that have not failed lately go
+    first; one that failed is skipped for STATE_FANOUT_BACKOFF_S and goes last
+    after that. Runs on the worker thread, which owns _fanout_failed_at."""
+    appliance_id = get_appliance_id()
+    if not appliance_id:
+        return
+    body = dict(job.body)
+    body["appliance_id"] = appliance_id
+    now = time.monotonic()
+    for uuid in [u for u, t in _fanout_failed_at.items() if now - t > _PUSH_ENTRY_MAX_AGE_S]:
+        del _fanout_failed_at[uuid]
+    uuids = eligible_dial_uuids(job.min_generation, exclude=job.exclude)
+    for uuid in sorted(uuids, key=lambda u: _fanout_failed_at.get(u, 0.0)):
+        failed_at = _fanout_failed_at.get(uuid)
+        if failed_at is not None and now - failed_at < STATE_FANOUT_BACKOFF_S:
+            continue
+        sighting = get_dial_sighting(uuid)
+        if sighting is None:
+            continue
+        if _post_push_body(sighting.ip, sighting.port, job.path, body, _PUSH_TIMEOUT_S):
+            _fanout_failed_at.pop(uuid, None)
+        else:
+            _fanout_failed_at[uuid] = time.monotonic()
+            logging.debug("dial push: %s did not take %s, skipping it for %.0f s",
+                          uuid, job.path, STATE_FANOUT_BACKOFF_S)
+
+
+def _run_job(job: _PushJob) -> None:
+    if job.uuid is not None:
+        _push_once(job.path, job.uuid, job.body["appliance_id"])
+    else:
+        _fanout(job)
+
+
+def _push_worker_loop(jobs: "queue.SimpleQueue[_PushJob]") -> None:
+    while True:
+        job = jobs.get()
+        try:
+            _run_job(job)
+        except Exception:
+            logging.debug("dial push: job failed", exc_info=True)
+
+
+def _enqueue(job: _PushJob) -> None:
+    """Queue *job*, starting the worker thread on first use. Never blocks on
+    the network."""
+    global _push_worker_thread
+    with _push_worker_lock:
+        if _push_worker_thread is None or not _push_worker_thread.is_alive():
+            _push_worker_thread = threading.Thread(
+                target=_push_worker_loop, args=(_push_queue,),
+                daemon=True, name="dial-push")
+            _push_worker_thread.start()
+    _push_queue.put(job)
+
+
+def enqueue_push(path: str, uuid: str, appliance_id: str) -> None:
+    """Queue one push of *path* to the dial *uuid*, starting the worker
+    thread on first use. Never blocks on the network."""
+    _enqueue(_PushJob(path, uuid, {"appliance_id": appliance_id}))
+
+
+def enqueue_fanout(path: str, body: dict, *, min_generation: int,
+                   exclude: frozenset = frozenset()) -> None:
+    """Queue one push of *path* to every eligible dial, resolved when the
+    worker runs it, with no retry. The appliance id is added then."""
+    _enqueue(_PushJob(path, None, dict(body),
+                      min_generation=min_generation, exclude=frozenset(exclude)))
+
+
+def notify_dial_auth_changed(uuid: str) -> None:
+    """Best-effort, fire-and-forget. Called by the authorize and revoke
+    handlers once the dial entry is written. No-op when this appliance has no
+    identity (there is nothing to correlate on the dial). Goes to the one dial
+    named, whether or not it is (still) authorised.
+    """
+    appliance_id = get_appliance_id()
+    if not appliance_id:
+        return
+    enqueue_push(_AUTH_CHANGED_PATH, uuid, appliance_id)
+
+
+# ---------------------------------------------------------------------------
+# Authorize / revoke
+# ---------------------------------------------------------------------------
+
+def _authorize(intent: Intent, wait: float) -> Outcome:
+    uuid, name = intent.args["uuid"], intent.args["name"]
+    if not validate_dial_name(name):
+        return Outcome(ok=False, error="invalid_name")
+    write_dial_entry(uuid, name)
+    _notify_after_write(uuid, "authorize")
+    return Outcome(ok=True)
+
+
+def _revoke(intent: Intent, wait: float) -> Outcome:
+    uuid = intent.args["uuid"]
+    remove_dial_entry(uuid)
+    _notify_after_write(uuid, "revoke")
+    return Outcome(ok=True)
+
+
+def _notify_after_write(uuid: str, verb: str) -> None:
+    try:
+        notify_dial_auth_changed(uuid)
+    except Exception as e:
+        logging.debug("dial auth push: enqueue failed after %s: %s", verb, e)
+
+
+bind("dials.authorize", _authorize, owner="autostream_dial_push")
+bind("dials.revoke", _revoke, owner="autostream_dial_push")
+
+
 def _emit_hint(kinds: frozenset, except_dials: frozenset) -> None:
     try:
-        from autostream_webui_dials import enqueue_fanout
         enqueue_fanout(
             STATE_PUSH_PATH, {"changed": sorted(kinds)},
             min_generation=STATE_PUSH_MIN_GENERATION, exclude=except_dials,
