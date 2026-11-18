@@ -687,6 +687,20 @@ def _held_eq(snapshot, state: "EqScreenState | None"):
     return held
 
 
+# How each repeat-store state draws the repeat page: (layout, start_enabled,
+# stop_enabled, stop_pressed). A state with no live replay draws the enable
+# layout; hold, replaying and fading_out draw the Restart/Stop row, with
+# Stop drawn pressed once the fade-out has begun.
+_REPEAT_LAYOUTS = {
+    "recording": ("enable", False, False, False),
+    "pending": ("enable", False, False, False),
+    "idle": ("enable", False, False, False),
+    "hold": ("replaying", True, False, False),
+    "replaying": ("replaying", True, True, False),
+    "fading_out": ("replaying", False, True, True),
+}
+
+
 # ---------------------------------------------------------------------------
 # Display manager
 # ---------------------------------------------------------------------------
@@ -1391,6 +1405,11 @@ class DialDisplay:
             and self._showing != "noop"
             and not self._display_sleeping
         )
+
+    def _readout(self, service_name: str) -> "tuple[str, int | None]":
+        """The top band's display-only readout for the appliance
+        *service_name*: its display name and its shown volume."""
+        return appliance_display_name(service_name), shown_volume(service_name)
 
     def _pressed_zone(self):
         """The zone the finger is down on, or None. The touch thread clears
@@ -2281,8 +2300,7 @@ class DialDisplay:
                 artist = title_fallback(now_playing)
         title = now_playing.title if now_playing is not None else ""
         album = now_playing.album if now_playing is not None else ""
-        name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
-        volume = shown_volume(now_playing.service_name) if now_playing is not None else None
+        name, volume = self._readout(now_playing.service_name) if now_playing is not None else ("", None)
         muted = shown_muted(now_playing.service_name) if now_playing is not None else False
         pressed = self._pressed_zone()
         # Belt and braces: dots are meaningful only on the main screen —
@@ -3849,56 +3867,26 @@ class DialDisplay:
                 start_enabled=False, stop_enabled=False, stop_pressed=False, pressed=pressed,
                 eq_pages=eq_pages,
             )
-        name = appliance_display_name(screen.service_name)
-        volume = shown_volume(screen.service_name)
+        name, volume = self._readout(screen.service_name)
         rec = self._repeat_record(screen.appliance_id)
         if rec is None or not rec.available:
-            return RepeatViewState(
-                name=name, layout="enable", armed=False, line="",
-                start_enabled=False, stop_enabled=False, stop_pressed=False,
-                volume=volume, pressed=pressed, eq_pages=eq_pages,
-            )
-        if rec.state in ("recording", "pending", "idle"):
-            return RepeatViewState(
-                name=name, layout="enable", armed=rec.armed, line="",
-                start_enabled=False, stop_enabled=False, stop_pressed=False,
-                volume=volume, pressed=pressed, eq_pages=eq_pages,
-            )
-        if rec.state == "hold":
-            # Already reads 0:00 — there is nothing running yet for the
-            # counter-latency clamp to apply to.
-            line, _ = self._repeat_position_line(rec, now)
-            return RepeatViewState(
-                name=name, layout="replaying", armed=rec.armed, line=line,
-                start_enabled=True, stop_enabled=False, stop_pressed=False,
-                volume=volume, pressed=pressed, eq_pages=eq_pages,
-            )
-        if rec.state == "replaying":
-            # The counter reads the record's latency behind the true
-            # position, floored (never rounded, so the displayed second
-            # cannot advance before the full second has elapsed), clamped
-            # at zero so a fresh (re)start reads "0:00" for the first
-            # couple of seconds, and resolved against the second last
-            # painted so a status re-sync that moved the clock back a
-            # little never makes the line step back or repeat. All of that
-            # is _repeat_counter_second(); the frame carries the integer
-            # it drew so _display_repeat_locked() can commit it.
+            layout, start_enabled, stop_enabled, stop_pressed = _REPEAT_LAYOUTS["idle"]
+        else:
+            # An unlisted state reads as fading_out.
+            layout, start_enabled, stop_enabled, stop_pressed = _REPEAT_LAYOUTS.get(
+                rec.state, _REPEAT_LAYOUTS["fading_out"])
+        line, second = "", None
+        if layout == "replaying":
+            # hold reads 0:00 (nothing is running for the counter-latency
+            # clamp to apply to); replaying carries the counter's second,
+            # which _display_repeat_locked() commits; fading_out freezes at
+            # the last observed position.
             line, second = self._repeat_position_line(rec, now)
-            return RepeatViewState(
-                name=name, layout="replaying", armed=rec.armed, line=line,
-                start_enabled=True, stop_enabled=True, stop_pressed=False,
-                volume=volume, pressed=pressed, eq_pages=eq_pages,
-                counter_second=second,
-            )
-        # fading_out: the line freezes at the last observed position (no
-        # interpolation — the fade is a fixed-length event, not a running
-        # clock), Start is dimmed and inert, Stop is drawn pressed to read
-        # as "already actioned" rather than merely disabled.
-        line, _ = self._repeat_position_line(rec, now)
         return RepeatViewState(
-            name=name, layout="replaying", armed=rec.armed, line=line,
-            start_enabled=False, stop_enabled=True, stop_pressed=True,
+            name=name, layout=layout, armed=rec is not None and rec.available and rec.armed, line=line,
+            start_enabled=start_enabled, stop_enabled=stop_enabled, stop_pressed=stop_pressed,
             volume=volume, pressed=pressed, eq_pages=eq_pages,
+            counter_second=second,
         )
 
     def _display_repeat_locked(self) -> None:
@@ -3982,8 +3970,7 @@ class DialDisplay:
         pressed = self._pressed_zone()
         if screen is None:
             return EqViewState(name="", bass_db=None, treble_db=None, loaded=False, pressed=pressed)
-        name = appliance_display_name(screen.service_name)
-        volume = shown_volume(screen.service_name)
+        name, volume = self._readout(screen.service_name)
         held = _held_eq(self._core.snapshot(), screen)
         return EqViewState(
             name=name,
