@@ -559,29 +559,27 @@ class DialCore:
         playing set, so the ordinary "gone from the roster" clear must not
         fire before it has had a chance to appear."""
         def mutate(state: _CoreState) -> None:
-            state.focus = dataclasses.replace(
-                state.focus, manual_id=appliance_id,
-                pending=(appliance_id, service_name, expires_at),
-            )
+            state.focus = dial_core_focus.with_pending(state.focus, appliance_id, service_name, expires_at)
         self._publish(mutate)
 
     def drop_pending_focus(self, appliance_id: str) -> bool:
         """Clear the manual and pending focus when the pending focus is for
         *appliance_id* (its replay did not start). True if it was cleared."""
         def mutate(state: _CoreState) -> "bool | None":
-            pending = state.focus.pending
-            if pending is None or pending[0] != appliance_id:
+            dropped = dial_core_focus.dropped_pending(state.focus, appliance_id)
+            if dropped is None:
                 return False
-            state.focus = dataclasses.replace(state.focus, manual_id=None, pending=None)
+            state.focus = dropped
         return self._changed(mutate)
 
     def accept_replay(self, appliance_id: str, until: float) -> bool:
         """Open the accepted-replay window for *appliance_id* until *until*,
         when the dial is following that appliance. True if it was opened."""
         def mutate(state: _CoreState) -> "bool | None":
-            if state.focus.manual_id != appliance_id:
+            accepted = dial_core_focus.with_accepted(state.focus, appliance_id, until)
+            if accepted is None:
                 return False
-            state.focus = dataclasses.replace(state.focus, accepted_replay=(appliance_id, until))
+            state.focus = accepted
         return self._changed(mutate)
 
     def _changed(self, mutate_fn: Callable[[_CoreState], "bool | None"]) -> bool:
