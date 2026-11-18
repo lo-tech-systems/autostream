@@ -492,6 +492,25 @@ def writable_store(settings: object) -> Optional[SettingsStore]:
     return None
 
 
+_process_store: Optional[SettingsStore] = None
+_process_store_lock = threading.Lock()
+
+
+def bind_process_store(store: Optional[SettingsStore]) -> None:
+    """Bootstrap: the store the process runs on. None unbinds."""
+    global _process_store
+    with _process_store_lock:
+        _process_store = store
+
+
+def process_store() -> Optional[SettingsStore]:
+    """The process's store, for an intent handler whose caller passes no
+    settings in its context. None before bootstrap, or in a test that bound
+    none."""
+    with _process_store_lock:
+        return _process_store
+
+
 def as_view(value: object) -> object:
     """A store wrapped in a SettingsView; a view, None or any other object (a
     test's MagicMock) returned as it is, for the caller to refuse."""

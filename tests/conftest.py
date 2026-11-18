@@ -334,6 +334,10 @@ def _reset_state_store():
     live_config = _mod("autostream_live_config")
     if live_config is not None:
         live_config.reset_output_settings_for_tests()
+    settings_module = _mod("autostream_settings")
+    if settings_module is not None:
+        # A test that bound a store must not leak it into the next test.
+        settings_module.bind_process_store(None)
     output_policy = _mod("autostream_output_policy")
     if output_policy is not None:
         output_policy.get_policy().reset_for_tests()

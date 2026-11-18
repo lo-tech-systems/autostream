@@ -7,6 +7,7 @@ for the speaker rows, and the refusals that arrive after the reply.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import http.client
 import json
@@ -16,6 +17,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -25,13 +27,16 @@ if _CORE not in sys.path:
 
 import autostream_appliance_state  # noqa: F401  (binds the dials rows)
 import autostream_dials as dials
+import autostream_live_config as live_config
 import autostream_logging as log_setup
+import autostream_monitor_control  # noqa: F401  (binds the equaliser rows)
 import autostream_output_intents  # noqa: F401  (binds the output rows)
 import autostream_pin_pairing as pairing
 import autostream_protocol
 from autostream_auth import SESSION_COOKIE_NAME, Session
 from autostream_intents import Intent, Origin, Reply, table
 from autostream_players import ActionResult
+from autostream_settings import SettingsStore
 from autostream_state.outputs import START_PENDING_S, get_authority
 from fake_store import FakeStore
 from output_fakes import FakeBackend, group_row, row, snap
@@ -427,8 +432,13 @@ class TestFilledArguments:
         env.post("outputs.set", {"client": DIAL, "pin_capable": "yes", "args": {"id": ID, "selected": True}})
         assert [i.context for i in spy.intents] == [DIAL, None, None]
 
-    def test_the_other_rows_carry_no_context(self, env, spy):
-        env.post("volume.set", {"client": DIAL, "pin_capable": True, "args": {"level": 4}})
+    @pytest.mark.parametrize("name,args", [
+        ("volume.set", {"level": 4}),
+        ("output.eq.set", {"fields": [["peq1_db", "1"]]}),
+        ("output.eq.reset", {}),
+    ])
+    def test_the_other_rows_carry_no_context(self, env, spy, name, args):
+        env.post(name, {"client": DIAL, "pin_capable": True, "args": args})
         assert spy.intents[0].context is None
 
 
@@ -539,6 +549,67 @@ class TestRealRows:
         monkeypatch.setattr(autostream_appliance_state, "write_dial_entry", lambda u, n: written.append((u, n)))
         _, body = env.post("dials.authorize", {"args": {"uuid": "d1", "name": "Kitchen"}}, headers=env.browser())
         assert body["ok"] is True and written == [("d1", "Kitchen")]
+
+
+@pytest.fixture
+def eq_store(tmp_path):
+    path = tmp_path / "autostream.json"
+    path.write_text(json.dumps({"output_eq": {}}), encoding="utf-8")
+    s = SettingsStore(str(path), _save_interval_seconds=9999, _writer=MagicMock())
+    live_config.bind_settings_store(s)
+    yield s
+    live_config.bind_settings_store(None)
+    s.close(save=False)
+
+
+@pytest.fixture
+def monitor():
+    client = MagicMock()
+    for name in ("set_output_eq", "set_output_gain", "set_output_auto_trim"):
+        getattr(client, name).return_value = True
+
+    @contextlib.contextmanager
+    def connected(path=None):
+        yield client
+
+    with patch("autostream_monitor_client._connected_monitor", connected):
+        yield client
+
+
+class TestEqualiserRows:
+    def test_an_equaliser_field_from_the_page_is_saved_and_applied(self, env, eq_store, monitor):
+        _, body = env.post("output.eq.set", {"args": {"fields": [["peq2_db", "3"]]}},
+                           headers=env.browser())
+        assert body["ok"] is True
+        assert body["result"] == {"ok": True, "field": "peq2_db", "value": "3.0", "error": ""}
+        assert eq_store.snapshot().output_eq.peq2_db == 3.0
+        monitor.set_output_eq.assert_called_once()
+
+    def test_a_dial_s_bass_write_is_one_merged_band_write(self, env, eq_store, monitor):
+        _, body = env.post("output.eq.set", {"client": DIAL, "args": {
+            "fields": [["peq1_db", 6.0], ["peq2_db", 6.0]]}})
+        assert body["ok"] is True
+        assert body["result"] == {"ok": True, "error": ""}
+        saved = eq_store.snapshot().output_eq
+        assert (saved.peq1_db, saved.peq2_db) == (6.0, 6.0)
+        monitor.set_output_eq.assert_called_once()
+
+    def test_an_equaliser_reset_zeroes_the_bands_from_the_page_and_a_dial(self, env, eq_store, monitor):
+        for headers, extra in ((env.browser(), {}), (None, {"client": DIAL})):
+            eq_store.update(lambda raw: raw.setdefault("output_eq", {}).update(
+                {"peq1_db": 4.0, "gain_db": 2.0}))
+            _, body = env.post("output.eq.reset", {"args": {}, **extra}, headers=headers)
+            assert body["ok"] is True and body["result"] == {"ok": True, "error": ""}
+            saved = eq_store.snapshot().output_eq
+            assert [getattr(saved, f"peq{n}_db") for n in range(1, 7)] == [0.0] * 6
+            assert saved.gain_db == 2.0
+        monitor.set_output_gain.assert_not_called()
+
+    def test_an_equaliser_change_without_a_store_is_refused(self, env, monitor):
+        _, body = env.post("output.eq.set", {"args": {"fields": [["peq2_db", "3"]]}},
+                           headers=env.browser())
+        assert body["ok"] is False and body["error"] == "settings_unavailable"
+        monitor.set_output_eq.assert_not_called()
 
 
 # -----------------------------------------------------------------------------

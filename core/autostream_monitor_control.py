@@ -620,10 +620,15 @@ def _input_eq_set(intent: Intent, wait: float) -> Outcome:
 def _output_eq_set(intent: Intent, wait: float) -> Outcome:
     """Save and apply output equaliser fields. One field is the Equaliser
     page's (or a peer's) request, its value a string; several are a dial's
-    band write, applied together. *context* is the request's state."""
-    state = intent.context
-    settings = getattr(state, "settings", None)
-    config_path = getattr(state, "config_path", None)
+    band write, applied together. The change is saved through the process's
+    settings store."""
+    from autostream_settings import process_store
+
+    settings = process_store()
+    if settings is None:
+        return Outcome(ok=False, error="settings_unavailable",
+                       result={"ok": False, "error": "settings_unavailable"})
+    config_path = settings.config_path
     fields = intent.args["fields"]
     try:
         if len(fields) == 1:
@@ -640,10 +645,16 @@ def _output_eq_set(intent: Intent, wait: float) -> Outcome:
 
 
 def _output_eq_reset(intent: Intent, wait: float) -> Outcome:
-    state = intent.context
+    """Zero the output equaliser bands, saved through the process's settings
+    store."""
+    from autostream_settings import process_store
+
+    settings = process_store()
+    if settings is None:
+        return Outcome(ok=False, error="settings_unavailable",
+                       result={"ok": False, "error": "settings_unavailable"})
     ok, error = apply_eq_reset(
-        getattr(state, "config_path", None), settings=getattr(state, "settings", None),
-        requester=intent.requester)
+        settings.config_path, settings=settings, requester=intent.requester)
     return Outcome(ok=ok, error=error or None, result={"ok": ok, "error": error})
 
 

@@ -20,7 +20,7 @@ if _CORE not in sys.path:
 
 import autostream_config as cfg
 import autostream_live_config as lc
-from autostream_settings import SettingsStore
+from autostream_settings import SettingsStore, process_store
 
 
 @pytest.fixture
@@ -88,6 +88,13 @@ def test_binding_again_forgets_what_was_cached(store, tmp_path):
     assert lc.include_tv_for("1") is False
     lc.bind_settings_store(None)
     assert lc.include_tv_for("1") is True
+
+
+def test_binding_the_store_makes_it_the_process_store(store):
+    lc.bind_settings_store(store)
+    assert process_store() is store
+    lc.bind_settings_store(None)
+    assert process_store() is None
 
 
 def test_the_reset_is_cheap_when_nothing_touched_the_cache():

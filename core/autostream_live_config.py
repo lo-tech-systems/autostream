@@ -80,7 +80,7 @@ from autostream_players import (
     SETTING_USER_AGENT,
 )
 from autostream_system_stats import is_high_performance_pi
-from autostream_settings import SettingsStore, writable_store
+from autostream_settings import SettingsStore, bind_process_store, process_store, writable_store
 from autostream_settings_schema import (
     CrossFieldValidationError,
     LiveClass,
@@ -350,7 +350,7 @@ def update_live_owntone_runtime(
 ) -> bool:
     try:
         if settings is None:
-            settings = _output_settings_store
+            settings = process_store()
         live_output_offsets_ms = _normalize_owntone_output_offsets(output_offsets_ms)
         live_output_airplay_modes = _normalize_owntone_output_airplay_modes(
             output_airplay_modes
@@ -1381,16 +1381,16 @@ class OutputSettings:
 
 _UNBOUND_OUTPUT_SETTINGS = OutputSettings(-1, MappingProxyType({}), OutputsConfig())
 _output_settings_lock = threading.Lock()
-_output_settings_store: Optional[SettingsStore] = None
 _output_settings: OutputSettings = _UNBOUND_OUTPUT_SETTINGS
 _output_settings_touched = False
 
 
 def bind_settings_store(settings: Optional[SettingsStore]) -> None:
-    """Bootstrap: where output_settings() reads from. None unbinds."""
-    global _output_settings_store, _output_settings, _output_settings_touched
+    """Bootstrap: where output_settings() reads from, and the process's store
+    for every intent handler. None unbinds."""
+    global _output_settings, _output_settings_touched
+    bind_process_store(settings)
     with _output_settings_lock:
-        _output_settings_store = settings
         _output_settings = _UNBOUND_OUTPUT_SETTINGS
         _output_settings_touched = True
 
@@ -1398,8 +1398,7 @@ def bind_settings_store(settings: Optional[SettingsStore]) -> None:
 def _bound_store() -> Optional[SettingsStore]:
     """The settings store bootstrap bound, for a handler whose caller passes
     none in its context."""
-    with _output_settings_lock:
-        return _output_settings_store
+    return process_store()
 
 
 def _save_default(intent: Intent, wait: float) -> Outcome:
@@ -1432,8 +1431,8 @@ def output_settings() -> OutputSettings:
     """The include-Apple-TV choices and the policy settings, re-read only when
     the settings store's generation moved. Unbound: the defaults."""
     global _output_settings, _output_settings_touched
+    store_ = process_store()
     with _output_settings_lock:
-        store_ = _output_settings_store
         cached = _output_settings
     if store_ is None:
         return cached
@@ -1462,11 +1461,11 @@ def speaker_volume_applies_to_all() -> bool:
 
 def reset_output_settings_for_tests() -> None:
     """Unbind and forget. Returns at once when nothing touched the cache."""
-    global _output_settings_store, _output_settings, _output_settings_touched
+    global _output_settings, _output_settings_touched
+    bind_process_store(None)
     if not _output_settings_touched:
         return
     with _output_settings_lock:
-        _output_settings_store = None
         _output_settings = _UNBOUND_OUTPUT_SETTINGS
         _output_settings_touched = False
 
