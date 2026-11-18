@@ -6,7 +6,6 @@ and the plan is judged against them (coverage, tightness, order, cost).
 """
 from __future__ import annotations
 
-import logging
 import random
 import sys
 from pathlib import Path

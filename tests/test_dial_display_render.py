@@ -1397,7 +1397,6 @@ class TestRepeatOutputsWash:
             assert list(unpressed.crop(rect).getdata()) == list(pressed.crop(rect).getdata())
 
     def test_stale_mute_press_washes_nothing_on_the_repeat_surface(self, compositor):
-        layout = repeat_layout_for(160, 128)
         unpressed = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
         pressed = compositor.compose_repeat(
             160, 128, _repeat_state(pressed=TouchZone.MUTE), rotate=False, bgr=False,
@@ -2665,7 +2664,6 @@ class TestHeaderDotsCount:
     def test_now_playing_frame_byte_identical_outside_dots_when_eq_pages_false(self, compositor):
         """eq_pages=False renders byte-identical to before this field
         existed, everywhere outside the dots box."""
-        layout = layout_for(160, 128)
         base = _marked_image(size=(160, 128))
         default = compositor.compose(
             base, 160, 128, rotate=False, bgr=False, is_artwork=False,

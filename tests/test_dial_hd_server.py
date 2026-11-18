@@ -27,6 +27,9 @@ from dial_config import DialDisplayConfig
 from dial_core_state import Artwork, artwork_key
 from dial_hd_backdrop import BackdropStore
 from dial_hd_state import build_parts
+from autostream_peer_client import PeerReply
+from dial_pool_support import Rig, aid, peer, replay_block, unit as pool_unit
+from hd_http_support import error_of, post
 
 PAGE = b"<!doctype html><title>t</title>"
 CSS = b"body{}"
@@ -119,10 +122,6 @@ def raw(server, payload: bytes, timeout=5) -> bytes:
                 break
             chunks.append(chunk)
     return b"".join(chunks)
-
-
-def error_of(data: bytes) -> str:
-    return json.loads(data)["error"]
 
 
 POST_HEADERS = {"X-Requested-With": "autostream-hd", "Content-Type": "application/json"}
@@ -834,10 +833,6 @@ def test_the_server_never_holds_a_lock_across_a_response(server, core):
 
 
 # ---- the intents route -----------------------------------------------------
-
-from autostream_peer_client import PeerReply  # noqa: E402
-from dial_pool_support import Rig, aid, peer, replay_block, unit as pool_unit  # noqa: E402
-from hd_http_support import error_of, post  # noqa: E402
 
 REPLY_KEYS = {"ok", "error", "version", "boot", "result", "retry_after_s"}
 APPLIANCE = "a" * 20

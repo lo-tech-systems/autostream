@@ -73,8 +73,6 @@ class TestDecodeArtwork:
 
     def test_oversized_pixel_count_rejected(self):
         # width * height exceeds MAX_DECODED_ARTWORK_PIXELS
-        w = 20000
-        h = 20000
         buf = io.BytesIO()
         # Use a small actual image but monkeypatch is unnecessary — PIL's
         # own MAX_IMAGE_PIXELS guard raises during Image.open()/load() for

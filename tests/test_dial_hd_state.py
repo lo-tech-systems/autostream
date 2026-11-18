@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 import hd_scenarios as hs
 from hd_fake_core import FakeCore
 from dial_appliance_warnings import APPLIANCE_WARNINGS_MAX, appliance_warning_entries
-from dial_core_state import PIN_WINDOW_S, ActionResult, TransportRequest
+from dial_core_state import PIN_WINDOW_S, ActionResult
 from dial_hd_state import STRING_MAX, build_parts
 
 GOLDEN_DIR = Path(__file__).parent / "golden" / "hd_state"

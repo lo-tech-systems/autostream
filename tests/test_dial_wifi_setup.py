@@ -17,7 +17,7 @@ import os
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

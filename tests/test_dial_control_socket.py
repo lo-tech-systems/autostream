@@ -449,7 +449,6 @@ class TestCallbackIdentity:
             enqueue_calls.append(d)
 
         # Simulate the nudge_delta closure from dial_main
-        import dial_http_server as dhs
         mock_http = MagicMock()
         mock_http.step_percent = 2
         mock_http.confirm_volume = fake_confirm

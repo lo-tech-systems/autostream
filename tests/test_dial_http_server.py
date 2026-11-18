@@ -13,7 +13,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -252,7 +251,6 @@ class TestFieldBoundaries:
         assert r["save_calls"][0].pin == "1234"
 
     def test_new_pin_empty_string_clears_pin(self):
-        cfg = DialConfig(uuid="x", pin="old")
         # No current_pin needed to clear when using recovery_window
         # Clear without PIN protection (no current PIN guarding empty_pin)
         cfg2 = DialConfig(uuid="x", pin="")  # no existing PIN
@@ -498,7 +496,6 @@ class TestSaveAndRollback:
         """If toggle-dial-update-timer fails, the live and saved config must be rolled back."""
         cfg = DialConfig(uuid="x", auto_update=False)
         result: dict = {}
-        rollback_saves: list = []
         server = FakeDialServer(cfg)
         handler_cls = server._make_handler()
         body_bytes = json.dumps({"auto_update": True}).encode()
@@ -2332,7 +2329,6 @@ class TestCanConfirmPresenceAndRemainingMs:
         assert r3["data"]["recovery_remaining_ms"] == 0
 
     def test_set_can_confirm_presence_updates_real_server(self):
-        cfg = DialConfig(uuid="x")
         server = DialHTTPServer.__new__(DialHTTPServer)
         server._can_confirm_presence = False
         assert server._can_confirm_presence is False
@@ -2378,8 +2374,6 @@ class TestCanConfirmPresenceAndRemainingMs:
         h._send_json     = lambda s, d: result.update(status=s, data=d)
         h.send_error     = lambda code, *_: result.update(status=code)
 
-        fake_env = {"STATUS": "success", "MESSAGE": "ok", "PERCENT_COMPLETE": "100",
-                    "LAST_RUN_AT": "2026-01-01T00:00:00+00:00"}
         with patch("dial_http_server._read_update_state", return_value="complete"):
             h.do_GET()
         assert result.get("status") == 200, (

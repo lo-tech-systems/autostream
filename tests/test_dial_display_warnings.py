@@ -42,7 +42,6 @@ from dial_test_support import (  # noqa: E402
     tick_update_watch,
     tick_warnings,
     warning_active,
-    warning_cleared,
 )
 from dial_touch_layout import CARD_BUTTON_ZONES  # noqa: E402
 from dial_warning_text import appliance_warning_key  # noqa: E402

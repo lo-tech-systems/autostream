@@ -4,7 +4,6 @@ in-memory session cookie, the shared per-IP limiter, Origin and Host checks,
 and the sessions and event streams ending when access goes away."""
 from __future__ import annotations
 
-import http.client
 import json
 import os
 import re
@@ -24,11 +23,10 @@ import dial_http_common
 import dial_hd_server as hds
 import dial_hd_session as hss
 import dial_hd_static as hst
-import dial_http_server as dhs
 import dial_pin_guard as pg
 import hd_scenarios as hs
 from hd_http_support import (
-    HEADER, error_of, post, raw, request, write_static,
+    HEADER, error_of, post, request, write_static,
 )
 from hd_preview import HdPreview
 

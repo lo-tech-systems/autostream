@@ -11,7 +11,6 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -40,8 +39,6 @@ def _install_fake_board_and_digitalio(monkeypatch, fake_spi):
     matters)."""
     fake_board = types.SimpleNamespace(GPIO16="GPIO16-pin")
     fake_digitalio = types.ModuleType("digitalio")
-
-    created_cs = MagicMock(name="cs_digitalinout")
 
     class _DigitalInOut:
         def __init__(self, pin):

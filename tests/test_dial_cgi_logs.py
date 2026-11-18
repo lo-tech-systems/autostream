@@ -12,7 +12,6 @@ Covers:
 Bash execution tests are skipped when bash cannot run scripts at Windows
 paths (CI/WSL limitation).
 """
-import os
 import subprocess
 import zipfile
 from pathlib import Path

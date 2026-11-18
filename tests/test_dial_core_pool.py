@@ -10,7 +10,7 @@ import pytest
 
 from dial_pool_support import Rig, aid, peer, track, unit, replay_block
 
-from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN, NowPlaying
+from dial_core_state import AUTH_UNAUTHORIZED, AUTH_UNKNOWN, NowPlaying
 from dial_warning_text import appliance_warning_key
 
 

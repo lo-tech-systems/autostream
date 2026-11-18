@@ -15,7 +15,6 @@ import os
 import queue
 import sys
 import time
-from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
@@ -362,7 +361,6 @@ class TestWorkerReportsMuteChanges:
         assert seen == [(True, False)]
 
     def test_a_failed_mute_still_reports(self):
-        appliances = Appliances(LOUNGE)
         seen = []
 
         class Down:

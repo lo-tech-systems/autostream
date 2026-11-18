@@ -512,7 +512,6 @@ class TestInfoListVariant:
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_no_row_is_ever_highlighted(self, compositor, metrics):
-        p = compact_picker_layout_for(metrics.width, metrics.height, metrics=metrics)
         # The info page never marks a row current — the manager always
         # passes checked=False; even if it somehow did, only the frame
         # actually rendered from real info state matters, which is

@@ -298,7 +298,7 @@ class TestSignalHandlers:
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED"), \
-             patch("dial_main.DialHTTPServer") as mock_http_cls, \
+             patch("dial_main.DialHTTPServer"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.PeerRegistry"), \
              patch("dial_main.start_network_worker"), \
@@ -343,7 +343,7 @@ class TestSignalHandlers:
              patch("dial_main._reconcile_update_timer"), \
              patch("dial_main._announce_self"), \
              patch("dial_main.DialLED"), \
-             patch("dial_main.DialHTTPServer") as mock_http_cls, \
+             patch("dial_main.DialHTTPServer"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.PeerRegistry"), \
              patch("dial_main.start_network_worker"), \
@@ -2060,7 +2060,6 @@ class TestInfoProviderWiring:
         assert mock_gather.call_args_list[1].args[0] == "Renamed Dial"
 
     def test_network_worker_started_with_sdhealth_tick(self):
-        import dial_main as dm
         import dial_sdhealth
 
         captured = self._run()
@@ -2072,7 +2071,6 @@ class TestInfoProviderWiring:
         """set_info_provider is only ever called when the display stack
         actually has one — the NoOpDisplayStatusProvider fallback (a Pillow/
         display-stack import failure) has no screen at all."""
-        import dial_main as dm
         from dial_screen_settings import NoOpDisplayStatusProvider
 
         noop = NoOpDisplayStatusProvider()

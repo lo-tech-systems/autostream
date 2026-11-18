@@ -173,7 +173,7 @@ class TestDialConfigSwGpio:
         assert DialConfig.sw_gpio == 22
 
     def test_sw_gpio_missing_key_uses_default(self, tmp_path):
-        from dial_config import DialConfig, load_config, HW_CONFIG_PATH, SETTINGS_PATH
+        from dial_config import load_config
         hw = {"clk_gpio": 17, "dt_gpio": 27, "led_gpio": None, "port": 7842,
               "uuid": "test-uuid-1234"}
         # sw_gpio key intentionally absent
@@ -242,7 +242,7 @@ class TestDialMainButtonCallback:
              patch.object(dial_main, "_reconcile_update_timer"), \
              patch.object(dial_main, "_announce_self"), \
              patch("dial_main.DialLED"), \
-             patch("dial_main.DialHTTPServer") as mock_server, \
+             patch("dial_main.DialHTTPServer"), \
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.get_playing_targets", return_value=[]), \
              patch("dial_core.enqueue_mute", side_effect=fake_enqueue_mute), \

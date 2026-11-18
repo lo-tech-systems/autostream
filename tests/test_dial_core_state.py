@@ -293,7 +293,6 @@ class TestChoosePin:
         assert cf.choose_pin(None, None, [a]) == (None, None)
 
     def test_no_lookup_when_caller_passes_no_binding(self):
-        a = _target("A")
         assert cf.choose_pin(None, None, []) == (None, None)
 
 

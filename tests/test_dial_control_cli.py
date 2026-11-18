@@ -18,12 +18,9 @@ from __future__ import annotations
 
 import io
 import json
-import socket
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).parent.parent
 _DIAL = str(REPO_ROOT / "dial")
@@ -421,7 +418,6 @@ class TestTransportFailure:
 
 class TestImportIsolation:
     def test_cli_does_not_import_dial_volume(self):
-        import importlib
         # dial_volume should not be in the imported modules of the CLI
         cli_source = (REPO_ROOT / "dial" / "autostream_dial_control.py").read_text()
         assert "dial_volume" not in cli_source

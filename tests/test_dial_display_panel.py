@@ -678,7 +678,6 @@ class TestPushFrameWindowed:
         rng = random.Random(12345)
         for _ in range(20):
             width, height = 128, 160
-            base = Image.new("L", (width, height), 0)
             rects = []
             for _ in range(rng.randint(1, 4)):
                 x0 = rng.randint(0, width - 2)
@@ -1657,7 +1656,7 @@ class TestUpdateConfigLayoutChange:
         fb.displayed.clear()
         display._core._wake.clear()
 
-        status = display.update_config(DialDisplayConfig(
+        display.update_config(DialDisplayConfig(
             fitted=True, screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="large",
         ))
 

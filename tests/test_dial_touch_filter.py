@@ -10,8 +10,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).parent.parent
 _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:

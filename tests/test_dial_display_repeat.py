@@ -330,7 +330,6 @@ class TestRepeatScreenTouchEntries:
         mock_transport.assert_called_once()
         target, intent, token = sent(mock_transport)
         action = {"repeat.seek": "seek", "repeat.transport": "stop"}[intent.name]
-        position = float(intent.args.get("position", 0.0))
         assert target.appliance_id == aid
         assert action == "stop"
 
@@ -1237,7 +1236,6 @@ class TestReplayTimer:
         display, fb, gt = make_display(targets=[])
         display.enable()
         display.core.set_field_for_tests("manual_id", self.AID)
-        now = time.monotonic()
         seed_repeat(self.AID, _repeat_obj(state=state, **repeat))
         display._repeat_line.arm(self.AID, time.monotonic())
         return display, fb

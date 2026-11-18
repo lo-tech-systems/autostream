@@ -1838,7 +1838,6 @@ class TestIdleAffordanceRepaintSignal:
         aid = "5" * 20
         display, fb, gt = make_display(targets=[], roster=[self._roster_row(aid)])
         display.enable()
-        now = time.monotonic()
         seed_repeat(aid, _repeat_obj(state="hold"))
         display._overlay_signal.clear()
         display.fold_for_tests()

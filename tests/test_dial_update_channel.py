@@ -8,12 +8,9 @@ import json
 import os
 import sys
 import urllib.error
-from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 import _source_text
 
@@ -111,7 +108,6 @@ class TestDialConfigModel:
         assert cfg.update_channel == "stable"
 
     def test_load_config_stable_from_settings(self, tmp_path):
-        from dial_config import DialConfig, SETTINGS_PATH, HW_CONFIG_PATH, load_config
         # Write minimal HW config
         hw = tmp_path / "autostream-dial.json"
         hw.write_text(json.dumps({"uuid": "test-uuid"}), encoding="utf-8")

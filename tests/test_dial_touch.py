@@ -63,7 +63,6 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_CARD1,
     GEOMETRY_CARD2,
     GEOMETRY_CARD3,
-    GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT_REPLAY,
     TouchZone,
     compact_layout_for,
@@ -77,7 +76,7 @@ from dial_touch_layout import (  # noqa: E402
     band_bell_rect,
     warning_layout_for,
 )
-from dial_zone_helpers import list_zone_at, zones_for  # noqa: E402
+from dial_zone_helpers import zones_for  # noqa: E402
 
 WIDTH, HEIGHT = 160, 128
 _ZONES = zones_for(WIDTH, HEIGHT)
@@ -2209,7 +2208,7 @@ class TestOutputZoneTaps:
         sm.on_filter_event(press_event(OUTPUT_DOWN_XY), now=0.0)
         assert sm.pressed_zone == TouchZone.OUTPUT_DOWN
         # Not cleared by the single-shot flash timer.
-        actions = sm.tick(now=PRESSED_FLASH_S)
+        sm.tick(now=PRESSED_FLASH_S)
         assert sm.pressed_zone == TouchZone.OUTPUT_DOWN
         sm.on_filter_event(release_event(OUTPUT_DOWN_XY), now=0.5)
         assert sm.pressed_zone is None

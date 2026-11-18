@@ -715,8 +715,6 @@ class TestPushFrameFastPath:
 
 class TestDisplayWindow:
     def test_capability_flags(self):
-        import dial_display
-
         assert AdafruitDisplayBackend.supports_window_write is True
         assert dial_display_backend.DisplayBackend.supports_window_write is False
         assert dial_display_backend.NoOpBackend().display_window(
