@@ -4,6 +4,11 @@
   "body": "{\"ok\": true, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"warnings\": []}",
   "calls": []
  },
+ "POST /api/dial/warnings one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": true, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"warnings\": []}",
+  "calls": []
+ },
  "POST /api/dial/warnings one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": true, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"warnings\": []}",
@@ -35,6 +40,11 @@
   "calls": []
  },
  "POST /api/dial/capabilities idle": {
+  "status": 200,
+  "body": "{\"ok\": true, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"version\": \"1.0.0-golden\", \"dial_proto\": 3, \"capabilities\": {\"dial_status\": 1, \"dial_outputs\": 2, \"dial_eq\": 2, \"repeat\": 1, \"audio_status\": 1, \"dial_warnings\": 1}}",
+  "calls": []
+ },
+ "POST /api/dial/capabilities one_output_start_refused": {
   "status": 200,
   "body": "{\"ok\": true, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\", \"version\": \"1.0.0-golden\", \"dial_proto\": 3, \"capabilities\": {\"dial_status\": 1, \"dial_outputs\": 2, \"dial_eq\": 2, \"repeat\": 1, \"audio_status\": 1, \"dial_warnings\": 1}}",
   "calls": []

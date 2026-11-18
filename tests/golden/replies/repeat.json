@@ -10,6 +10,17 @@
    ]
   ]
  },
+ "POST /api/dial/repeat seek one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_recording\", \"state\": \"idle\", \"armed\": false, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\"}",
+  "calls": [
+   [
+    "monitor",
+    "repeat_seek",
+    0.0
+   ]
+  ]
+ },
  "POST /api/dial/repeat seek one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": false, \"error\": \"source_active\", \"state\": \"idle\", \"armed\": true, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\"}",
@@ -81,6 +92,17 @@
    ]
   ]
  },
+ "POST /api/dial/repeat/arm one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": true, \"state\": \"idle\", \"armed\": true, \"position_seconds\": 0.0, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\"}",
+  "calls": [
+   [
+    "monitor",
+    "set_repeat_armed",
+    true
+   ]
+  ]
+ },
  "POST /api/dial/repeat/arm one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": true, \"state\": \"idle\", \"armed\": true, \"position_seconds\": 0.0, \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\"}",
@@ -142,6 +164,17 @@
   ]
  },
  "POST /api/repeat idle": {
+  "status": 200,
+  "body": "{\"ok\": true, \"armed\": true}",
+  "calls": [
+   [
+    "monitor",
+    "set_repeat_armed",
+    true
+   ]
+  ]
+ },
+ "POST /api/repeat one_output_start_refused": {
   "status": 200,
   "body": "{\"ok\": true, \"armed\": true}",
   "calls": [

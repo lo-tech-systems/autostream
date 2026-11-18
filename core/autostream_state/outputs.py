@@ -37,6 +37,7 @@ every lock is released.
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import logging
 import queue
 import threading
@@ -528,6 +529,17 @@ class OutputAuthority:
         self._on_read_ok(list(rows), now)
         if not connected:
             self.mark_unreachable_for_tests()
+
+    def record_start_failure_for_tests(self, unit_id: str, reason: str, requester: Optional[str] = None,
+                                       at: Optional[float] = None) -> None:
+        """Publish a failed start of *unit_id*, as the apply thread would."""
+        with self._lock:
+            u = self._units[unit_id]
+            self._start_failure_locked(u, reason, requester)
+            if at is not None:
+                self._start_failure = dataclasses.replace(self._start_failure, at=at)
+            pending = self._publish_locked(Origin.BACKEND, None)
+        pending.notify()
 
     def mark_unreachable_for_tests(self) -> None:
         """Three failed reads."""
@@ -1822,7 +1834,7 @@ class OutputAuthority:
             fx.republish = True
             return WriteOutcome(ok=True)
         if code in ("pin_required", "pin_invalid", "encoder_capacity"):
-            reason = {"pin_required": "pin_required", "pin_invalid": "refused",
+            reason = {"pin_required": "pin_required", "pin_invalid": "pin_invalid",
                       "encoder_capacity": "encoder_capacity"}[code]
             if u is not None:
                 if code == "pin_required":

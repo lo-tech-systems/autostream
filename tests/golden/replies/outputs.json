@@ -4,6 +4,11 @@
   "body": "{\"ok\": true, \"outputs\": [\"Speaker A\", \"Speaker B\"], \"selected\": \"Speaker A\"}",
   "calls": []
  },
+ "GET /api/owntone/outputs one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": true, \"outputs\": [\"Speaker A\", \"Speaker B\"], \"selected\": \"Speaker A\"}",
+  "calls": []
+ },
  "GET /api/owntone/outputs one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": true, \"outputs\": [\"Speaker A\", \"Speaker B\"], \"selected\": \"Speaker A\"}",
@@ -39,6 +44,11 @@
   "body": "{\"ok\": true, \"outputs\": [{\"id\": \"1001\", \"name\": \"Speaker A\", \"selected\": false, \"volume\": 40, \"is_default\": true, \"needs_auth_key\": false, \"requires_auth\": false, \"pin_pending\": false, \"pin_claim\": \"\", \"remote_in_use\": false, \"remote_owner\": \"\", \"remote_owner_service\": \"\"}, {\"id\": \"1002\", \"name\": \"Speaker B\", \"selected\": false, \"volume\": 60, \"is_default\": false, \"needs_auth_key\": false, \"requires_auth\": false, \"pin_pending\": false, \"pin_claim\": \"\", \"remote_in_use\": false, \"remote_owner\": \"\", \"remote_owner_service\": \"\"}], \"muted\": false}",
   "calls": []
  },
+ "GET /api/owntone/outputs_state one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": true, \"outputs\": [{\"id\": \"1001\", \"name\": \"Speaker A\", \"selected\": false, \"volume\": 40, \"is_default\": true, \"needs_auth_key\": false, \"requires_auth\": false, \"pin_pending\": false, \"pin_claim\": \"\", \"remote_in_use\": false, \"remote_owner\": \"\", \"remote_owner_service\": \"\"}, {\"id\": \"1002\", \"name\": \"Speaker B\", \"selected\": false, \"volume\": 60, \"is_default\": false, \"needs_auth_key\": false, \"requires_auth\": false, \"pin_pending\": false, \"pin_claim\": \"\", \"remote_in_use\": false, \"remote_owner\": \"\", \"remote_owner_service\": \"\"}], \"muted\": false, \"start_failure\": {\"seq\": 1, \"boot\": \"golden-boot\", \"unit_id\": \"1002\", \"name\": \"Speaker B\", \"reason\": \"refused\", \"requester\": \"webui\", \"age_s\": 4}}",
+  "calls": []
+ },
  "GET /api/owntone/outputs_state one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": true, \"outputs\": [{\"id\": \"1001\", \"name\": \"Speaker A\", \"selected\": true, \"volume\": 40, \"is_default\": true, \"needs_auth_key\": false, \"requires_auth\": false, \"pin_pending\": false, \"pin_claim\": \"\", \"remote_in_use\": false, \"remote_owner\": \"\", \"remote_owner_service\": \"\"}, {\"id\": \"1002\", \"name\": \"Speaker B\", \"selected\": false, \"volume\": 60, \"is_default\": false, \"needs_auth_key\": false, \"requires_auth\": false, \"pin_pending\": false, \"pin_claim\": \"\", \"remote_in_use\": false, \"remote_owner\": \"\", \"remote_owner_service\": \"\"}], \"muted\": false}",
@@ -70,6 +80,11 @@
   "calls": []
  },
  "POST /api/dial/outputs idle": {
+  "status": 200,
+  "body": "{\"ok\": true, \"outputs\": [{\"id\": \"1001\", \"name\": \"Speaker A\", \"selected\": false, \"volume\": 40, \"remote_in_use\": false, \"remote_owner\": \"\", \"is_default\": true, \"pin_pending\": false, \"needs_auth_key\": false, \"pin_claim\": \"\"}, {\"id\": \"1002\", \"name\": \"Speaker B\", \"selected\": false, \"volume\": 60, \"remote_in_use\": false, \"remote_owner\": \"\", \"is_default\": false, \"pin_pending\": false, \"needs_auth_key\": false, \"pin_claim\": \"\"}], \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\"}",
+  "calls": []
+ },
+ "POST /api/dial/outputs one_output_start_refused": {
   "status": 200,
   "body": "{\"ok\": true, \"outputs\": [{\"id\": \"1001\", \"name\": \"Speaker A\", \"selected\": false, \"volume\": 40, \"remote_in_use\": false, \"remote_owner\": \"\", \"is_default\": true, \"pin_pending\": false, \"needs_auth_key\": false, \"pin_claim\": \"\"}, {\"id\": \"1002\", \"name\": \"Speaker B\", \"selected\": false, \"volume\": 60, \"remote_in_use\": false, \"remote_owner\": \"\", \"is_default\": false, \"pin_pending\": false, \"needs_auth_key\": false, \"pin_claim\": \"\"}], \"appliance_id\": \"aaaaaaaaaaaaaaaaaaaa\"}",
   "calls": []

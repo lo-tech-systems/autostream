@@ -53,7 +53,7 @@ def test_replies_match_the_recorded_files(family, monkeypatch):
 
 def test_every_scenario_is_exercised_by_every_route():
     assert set(gs.SCENARIOS) == {
-        "idle", "one_output_playing_input1", "two_outputs_one_muted", "replay_holding",
+        "idle", "one_output_start_refused", "one_output_playing_input1", "two_outputs_one_muted", "replay_holding",
         "replaying", "monitor_down", "backend_unreachable",
     }
     assert gs.families() == [

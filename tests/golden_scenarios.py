@@ -34,6 +34,9 @@ if _CORE not in sys.path:
 
 FIXED_APP_VERSION = "1.0.0-golden"
 FIXED_CSRF_TOKEN = "golden-csrf-token"
+FIXED_BOOT = "golden-boot"
+# The wall clock the age of a start failure is measured against.
+FIXED_WALL_CLOCK = 2_000_000.0
 DIAL_ID = "dial-a"
 APPLIANCE_ID = "a" * 20
 PEER_IP = "192.0.2.10"
@@ -72,6 +75,8 @@ class Scenario:
     throttled: Optional[int] = None
     eq_status: Optional[dict] = None
     monitor_reachable: bool = True
+    # A failed speaker start to publish: unit_id, reason, requester and when.
+    start_failure: Optional[dict] = None
 
 
 def _output(out_id: str, name: str, volume: int, selected: bool):
@@ -178,6 +183,23 @@ SCENARIOS: dict[str, Scenario] = {s.id: s for s in (
         playback=_playback(),
         eq_status={"output_auto_trim_enabled": False, "output_auto_trim_db": 0.0,
                    "effective_output_gain_db": 0.0},
+    ),
+    Scenario(
+        id="one_output_start_refused",
+        session=dict(_IDLE_SESSION),
+        repeat=_repeat(armed=False),
+        levels=(_level(1, -80.0, False), _level(2, -80.0, False)),
+        monitor_connected=True,
+        selfheal=_selfheal(),
+        outputs=_TWO_DESELECTED,
+        setting_raises=False,
+        track=_track("disabled"),
+        source_input=None,
+        playback=_playback(),
+        eq_status={"output_auto_trim_enabled": False, "output_auto_trim_db": 0.0,
+                   "effective_output_gain_db": 0.0},
+        start_failure={"unit_id": "1002", "reason": "refused", "requester": "webui",
+                       "at": FIXED_WALL_CLOCK - 4},
     ),
     Scenario(
         id="one_output_playing_input1",
@@ -421,7 +443,9 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
 
     rec = Recorder()
     cfg = parsed_config()
-    # Each case starts from an authority that has adopted nothing.
+    # Each case starts from a store with a known boot id and an authority that
+    # has adopted nothing.
+    state.store().reset_for_tests(boot=FIXED_BOOT)
     get_authority().reset_for_tests()
 
     def get_setting(base_url, key, timeout=None):
@@ -441,7 +465,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     elif scenario.muted_levels:
         _begin_mute(scenario, fake, monkeypatch)
     else:
-        fake.outputs(list(scenario.outputs))
+        fake.outputs(list(scenario.outputs), start_failure=scenario.start_failure)
     fake.monitor(monitor_build="golden", log_level="info",
                  connected=scenario.monitor_connected, last_seen_at=1000.0)
     fake.health(**scenario.selfheal)
@@ -484,6 +508,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_app_version=lambda: FIXED_APP_VERSION,
              get_setting=get_setting,
              get_system_hostname=lambda: "golden.local",
+             _wall=lambda: FIXED_WALL_CLOCK,
              get_live_output_eq_status=lambda: scenario.eq_status,
              locked_load_config=lambda path: {
                  "audio1": {"enabled": True, "input_type": "turntable"},

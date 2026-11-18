@@ -1,0 +1,62 @@
+"""The Home speaker list reply and the failed start it may carry."""
+from __future__ import annotations
+
+import pytest
+
+import autostream_appliance_models as models
+from autostream_state import store
+from fake_store import FakeStore
+
+CLOCK = 5000.0
+
+
+@pytest.fixture(autouse=False)
+def fake(monkeypatch):
+    store().reset_for_tests(boot="test-boot")
+    from autostream_state.outputs import get_authority
+    get_authority().reset_for_tests()
+    monkeypatch.setattr(models, "_wall", lambda: CLOCK)
+    return FakeStore()
+
+
+def _rows():
+    return [FakeStore.output_row("1001", "Speaker A"), FakeStore.output_row("1002", "Speaker B")]
+
+
+def _reply(snap):
+    return models.home_outputs_reply(snap, _parsed())
+
+
+def _parsed():
+    from autostream_config import parse_config
+    return parse_config({}, None, high_perf=False)
+
+
+def test_the_key_is_absent_when_no_start_has_failed(fake):
+    snap = fake.outputs(_rows())
+    assert "start_failure" not in _reply(snap)
+
+
+def test_the_key_carries_the_failure_the_boot_and_its_age(fake):
+    snap = fake.outputs(_rows(), start_failure={
+        "unit_id": "1002", "reason": "refused", "requester": "webui", "at": CLOCK - 4.9})
+    assert _reply(snap)["start_failure"] == {
+        "seq": 1, "boot": "test-boot", "unit_id": "1002", "name": "Speaker B",
+        "reason": "refused", "requester": "webui", "age_s": 4}
+
+
+def test_the_requester_is_null_for_the_coordinator(fake):
+    snap = fake.outputs(_rows(), start_failure={"unit_id": "1001", "reason": "failed", "at": CLOCK})
+    f = _reply(snap)["start_failure"]
+    assert f["requester"] is None and f["age_s"] == 0
+
+
+def test_a_failure_stamped_in_the_future_has_age_zero(fake):
+    snap = fake.outputs(_rows(), start_failure={"unit_id": "1001", "reason": "failed", "at": CLOCK + 60})
+    assert _reply(snap)["start_failure"]["age_s"] == 0
+
+
+def test_the_age_follows_the_clock(fake, monkeypatch):
+    snap = fake.outputs(_rows(), start_failure={"unit_id": "1001", "reason": "timed_out", "at": CLOCK})
+    monkeypatch.setattr(models, "_wall", lambda: CLOCK + 125)
+    assert _reply(snap)["start_failure"]["age_s"] == 125

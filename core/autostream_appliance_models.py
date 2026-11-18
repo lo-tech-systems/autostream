@@ -205,10 +205,26 @@ def home_status_fields(snap) -> dict:
     }
 
 
+# The wall clock for the age of a start failure; tests replace it.
+_wall = time.time
+
+
+def _start_failure_reply(snap) -> dict:
+    """The latest failed speaker start, for the Home page's notice. The age is
+    given in seconds so the browser never compares its clock with ours; with the
+    boot id, (boot, seq) names one failure for ever."""
+    f = snap.outputs.start_failure
+    return {
+        "seq": f.seq, "boot": snap.boot, "unit_id": f.unit_id, "name": f.name,
+        "reason": f.reason, "requester": f.requester,
+        "age_s": max(0, int(_wall() - f.at)),
+    }
+
+
 def home_outputs_reply(snap, parsed) -> dict:
     """The Home speaker list reply: the outputs of one snapshot (empty while
-    the player is unreachable), shaped by the parsed settings, and the
-    all-speakers mute."""
+    the player is unreachable), shaped by the parsed settings, the
+    all-speakers mute, and, only when a start has failed, that failure."""
     outputs: list[dict] = []
     if snap.outputs.connected:
         outputs = build_output_list(parsed, snap.outputs.units)
@@ -217,7 +233,10 @@ def home_outputs_reply(snap, parsed) -> dict:
         outputs = annotate_outputs(outputs)
     except Exception:
         pass
-    return {"ok": True, "outputs": outputs, "muted": snap.outputs.muted_all}
+    reply = {"ok": True, "outputs": outputs, "muted": snap.outputs.muted_all}
+    if snap.outputs.start_failure is not None:
+        reply["start_failure"] = _start_failure_reply(snap)
+    return reply
 
 
 def _dial_update_banner_text() -> str:

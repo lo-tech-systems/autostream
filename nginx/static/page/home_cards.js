@@ -414,6 +414,7 @@ window.__CONTROL_OTHER_APPLIANCES = pageData.control_other_appliances;
 
       if (selected && j && j.error === 'encoder_capacity') {
         if (c) { c.checked = false; updateOutputStateVisual(String(id), false); }
+        (window.__HANDLED_FAILURE = window.__HANDLED_FAILURE || {})[String(id)] = Date.now();
         showInfoModal('CPU limit reached',
           'Unable to enable ' + (nm || 'this output') + ': the appliance\'s CPU cannot encode another stream at the selected quality. Disable another output or choose a lighter audio mode.');
         return;

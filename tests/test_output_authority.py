@@ -661,7 +661,7 @@ class TestOutcomes:
     @pytest.mark.parametrize("cause", [Origin.USER, Origin.SESSION, Origin.SYSTEM])
     @pytest.mark.parametrize("code,reason", [
         ("pin_required", "pin_required"), ("encoder_capacity", "encoder_capacity"),
-        ("pin_invalid", "refused"),
+        ("pin_invalid", "pin_invalid"),
     ])
     def test_a_refusal_by_the_device_reverts_for_every_cause(self, w, cause, code, reason):
         merge(w, [row(1)])
@@ -674,6 +674,23 @@ class TestOutcomes:
         assert (sf.unit_id, sf.name, sf.reason, sf.seq) == ("1", "Speaker 1", reason, 1)
         out = applied.outcome.result()[0]
         assert out.ok is False and out.error_code == code and out.pending is False
+
+    def test_a_wrong_pin_on_a_user_select_is_its_own_reason_with_the_requester(self, w):
+        merge(w, [row(1, selected=False)])
+        before = snap().unit("1")
+        w.fb.results = [error("pin_invalid", "wrong")]
+        w.a.select("1", Origin.USER, volume=30, requester="webui").outcome.result()
+        u = snap().unit("1")
+        assert u.selected is False
+        assert u.availability == before.availability
+        sf = snap().start_failure
+        assert (sf.reason, sf.requester, sf.unit_id) == ("pin_invalid", "webui", "1")
+
+    def test_a_refusal_by_any_other_code_is_still_refused(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("unsupported", "no")]
+        w.a.select("1", Origin.USER, volume=30, requester="webui").outcome.result()
+        assert snap().start_failure.reason == "refused"
 
     def test_a_user_select_reverts_on_any_other_failure(self, w):
         merge(w, [row(1)])

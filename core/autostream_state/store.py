@@ -186,11 +186,11 @@ class StateStore:
 
     # -- construction --------------------------------------------------
 
-    def _reset_state(self) -> None:
+    def _reset_state(self, boot: Optional[str] = None) -> None:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._digests: dict[str, object] = {}
-        snap = Snapshot(boot=secrets.token_hex(8), part_versions=FrozenDict())
+        snap = Snapshot(boot=boot or secrets.token_hex(8), part_versions=FrozenDict())
         for part in PART_NAMES:
             self._digests[part] = DIGESTS[part](getattr(snap, part))
         self._snapshot = snap
@@ -335,13 +335,13 @@ class StateStore:
 
     # -- tests -----------------------------------------------------------
 
-    def reset_for_tests(self, *, track_locks: bool = False) -> None:
-        """In place: new boot id, version 0, default parts, no subscribers, no
+    def reset_for_tests(self, *, track_locks: bool = False, boot: Optional[str] = None) -> None:
+        """In place: new boot id (or *boot*, so a recorded reply can name it), version 0, default parts, no subscribers, no
         open batches, leak record emptied, test mode on. Claims survive, so
         handles held by modules stay valid. With track_locks the store lock
         is replaced by a recording lock and the Condition used by
         wait_for_change is rebuilt on that new lock."""
-        self._reset_state()
+        self._reset_state(boot)
         self._test_mode = True
         self._held_locks_probe = lambda: ()
         self.lock_violations = []

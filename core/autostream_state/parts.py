@@ -195,7 +195,7 @@ class StartFailure:
     seq: int                                # starts at 1 per process, +1 per failure; a client shows each seq once
     unit_id: str
     name: str                               # display name at the time of the failure
-    reason: str                             # "pin_required" | "encoder_capacity" | "refused" | "failed" | "timed_out"
+    reason: str                             # "pin_required" | "pin_invalid" | "encoder_capacity" | "refused" | "failed" | "timed_out"
     at: float                               # wall clock; not in the digest
     requester: Optional[str] = None         # who asked for the start ("webui", "dial:<id>", "peer"); None: the coordinator
     # With the store's boot id, (boot, seq) names one failure for ever: a

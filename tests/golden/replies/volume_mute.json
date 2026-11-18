@@ -4,6 +4,11 @@
   "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
   "calls": []
  },
+ "POST /api/dial/volume +5 one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
  "POST /api/dial/volume +5 one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": true, \"volume\": 45, \"muted\": false}",
@@ -62,6 +67,11 @@
   "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
   "calls": []
  },
+ "POST /api/dial/volume -5 one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
  "POST /api/dial/volume -5 one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": true, \"volume\": 35, \"muted\": false}",
@@ -109,6 +119,11 @@
   "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
   "calls": []
  },
+ "POST /api/dial/mute mute one_output_start_refused": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
  "POST /api/dial/mute mute one_output_playing_input1": {
   "status": 200,
   "body": "{\"ok\": true, \"muted\": true}",
@@ -152,6 +167,11 @@
   "calls": []
  },
  "POST /api/dial/mute restore idle": {
+  "status": 200,
+  "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
+  "calls": []
+ },
+ "POST /api/dial/mute restore one_output_start_refused": {
   "status": 200,
   "body": "{\"ok\": false, \"error\": \"no_active_outputs\"}",
   "calls": []

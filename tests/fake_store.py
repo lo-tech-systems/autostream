@@ -111,13 +111,17 @@ class FakeStore:
     def settings(self, generation: int):
         return self._put("settings", state.SettingsPart(generation))
 
-    def outputs(self, rows, *, connected: bool = True, boot: str = "b0"):
+    def outputs(self, rows, *, connected: bool = True, boot: str = "b0", start_failure=None):
         """Adopt *rows* (OutputInfo, or dicts of its fields) as a successful
         read, through the output authority's own merge, so the authority and
-        the part agree."""
+        the part agree. *start_failure*, a dict of unit_id, reason and
+        optionally requester and at, then publishes a failed start of that
+        unit."""
         from autostream_state.outputs import get_authority
         infos = [r if isinstance(r, OutputInfo) else OutputInfo(**r) for r in rows]
         get_authority().merge_for_tests(infos, connected=connected, boot=boot)
+        if start_failure is not None:
+            get_authority().record_start_failure_for_tests(**start_failure)
         return self.snapshot
 
     def outputs_unreachable(self):
