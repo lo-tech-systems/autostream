@@ -1708,9 +1708,9 @@ install_code_tree() {
     mkdir -p "${dest}"
     # A dial-only install must deploy the system-stats, identity, licensing
     # and GPIO modules or dial_main's setup_rotary_encoder/setup_button import
-    # (and wifi_watcher's check_cpu import) fails at startup. dial_display
-    # imports the shared artwork fetch
-    # from autostream_artwork; without it the dial cannot start. The Wi-Fi
+    # (and wifi_watcher's check_cpu import) fails at startup. dial_artwork
+    # imports the shared artwork fetch from autostream_artwork; without it
+    # the dial cannot start. The Wi-Fi
     # recovery helper is deployed alongside the watcher so the recovery
     # executable's import resolves on every install/update. The dial reads
     # and controls the appliances through the peer library (protocol, HTTP,
