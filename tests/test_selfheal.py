@@ -2,8 +2,8 @@
 
 The coordinator's output self-heal against the output authority: the default
 speaker rule (and what vetoes it), the arguments of the default select and the
-throttled line for each way it is refused, the re-apply after the player
-restarts, and the mid-session re-arm. The speakers are arranged through the
+throttled line for each way it is refused, the pass after the player restarts,
+and the mid-session re-arm. The speakers are arranged through the
 state store; the intent the coordinator submits is recorded by a fake.
 """
 from __future__ import annotations
@@ -256,62 +256,53 @@ class TestDefaultRefusal:
         assert "is in use by Hall" in text
         assert "default fallback not available yet" in text
         assert mon._owntone_enabled_ok is False
-        assert mon._outputs_boot_seen is None
+        assert mon._outputs_restarts_seen is None
 
 
-# -- re-apply after the player restarts ---------------------------------------
+# -- the pass after the player restarts --------------------------------------
 
-class TestReapplyAfterBootChange:
+class TestPassAfterRestart:
     @pytest.fixture
-    def authority_spy(self, monkeypatch):
-        spy = SimpleNamespace(reapply=[])
-        spy.reapply_selected = lambda **kw: spy.reapply.append(kw)
-        monkeypatch.setattr(selfheal, "get_authority", lambda: spy)
-        return spy
+    def no_authority_writes(self, monkeypatch):
+        """The authority alone restores the selection: the pass asks it for nothing."""
+        def fail(*a, **k):
+            raise AssertionError("the pass reached the authority")
+        monkeypatch.setattr(get_authority(), "select", fail)
+        monkeypatch.setattr(get_authority(), "set_volume", fail)
 
-    def test_first_pass_records_the_boot_and_does_not_reapply(self, fifo_ok, authority_spy):
+    def test_a_restart_is_not_re_applied_by_the_pass(self, fifo_ok, no_authority_writes):
         FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot="b0")
-        mon = _make_monitor()
-        _run(mon)
-        assert authority_spy.reapply == []
-        assert mon._outputs_boot_seen == "b0"
-
-    def test_same_boot_does_not_reapply(self, fifo_ok, authority_spy):
-        FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot="b0")
-        mon = _make_monitor()
-        mon._outputs_boot_seen = "b0"
-        _run(mon)
-        assert authority_spy.reapply == []
-
-    def test_a_boot_change_reapplies_with_the_clamped_volume_and_moves_the_marker(
-            self, fifo_ok, authority_spy):
         FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot="b1")
-        mon = _make_monitor(owntone_volume_percent=150)
-        mon._outputs_boot_seen = "b0"
+        mon = _make_monitor()
+        mon._outputs_restarts_seen = 0
         _run(mon)
-        assert authority_spy.reapply == [{"recovery_volume": 100}]
-        assert mon._outputs_boot_seen == "b1"
+        assert not hasattr(get_authority(), "reapply_selected")
         assert mon._owntone_enabled_ok is True
 
-    def test_no_reapply_while_the_outputs_are_unreachable(self, fifo_ok, authority_spy):
+    def test_no_pass_while_the_outputs_are_unreachable(self, fifo_ok):
         FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot="b0")
         FakeStore().outputs_unreachable()
         mon = _make_monitor()
-        mon._outputs_boot_seen = "b0"
         _run(mon)
-        assert authority_spy.reapply == []
         assert mon._owntone_enabled_ok is False
 
 
 # -- the mid-session re-arm ---------------------------------------------------
 
 class TestNoteOutputs:
-    def _armed(self, seen="b0", current="b1"):
-        FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot=current)
+    def _restart(self, boot):
+        FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot=boot)
+
+    def _armed(self, restarted=True, seen=0):
+        """A monitor that has counted *seen* restarts; with *restarted* the
+        player then restarts once."""
+        self._restart("b0")
         mon = _make_monitor()
         mon._owntone_enabled_ok = True
         mon._owntone_last_attempt = 777.0
-        mon._outputs_boot_seen = seen
+        mon._outputs_restarts_seen = seen
+        if restarted:
+            self._restart("b1")
         return mon
 
     def _health(self):
@@ -325,7 +316,9 @@ class TestNoteOutputs:
         assert mon._owntone_last_attempt == 0.0
         assert self._health().reconcile_fired_count == 1
         assert self._health().reconcile_last_fired_at == 1234.0
-        assert any(r.levelno == logging.WARNING for r in caplog.records)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings == ["OwnTone restarted mid-session; its outputs are restored by the output reconcile."]
+        assert mon._outputs_restarts_seen == 1
 
     def test_idle_does_nothing(self):
         mon = self._armed()
@@ -343,23 +336,24 @@ class TestNoteOutputs:
         _SelfHeal.note_outputs(mon, True, 1234.0)
         assert self._health().reconcile_fired_count == 0
 
-    def test_same_boot_does_nothing(self):
-        mon = self._armed(seen="b1", current="b1")
+    def test_no_restart_does_nothing(self):
+        mon = self._armed(restarted=False)
         _SelfHeal.note_outputs(mon, True, 1234.0)
         assert mon._owntone_enabled_ok is True
         assert self._health().reconcile_fired_count == 0
 
-    def test_no_marker_yet_does_nothing(self):
+    def test_no_count_yet_adopts_the_current_one_without_counting(self):
         mon = self._armed(seen=None)
         _SelfHeal.note_outputs(mon, True, 1234.0)
         assert mon._owntone_enabled_ok is True
+        assert mon._outputs_restarts_seen == 1
         assert self._health().reconcile_fired_count == 0
 
     def test_two_restarts_count_twice(self):
         mon = self._armed()
         _SelfHeal.note_outputs(mon, True, 1.0)
         mon._owntone_enabled_ok = True
-        mon._outputs_boot_seen = "b0"
+        self._restart("b2")
         _SelfHeal.note_outputs(mon, True, 2.0)
         assert self._health().reconcile_fired_count == 2
 
@@ -372,11 +366,11 @@ class TestNoRepublish:
         _run(_make_monitor())
         assert republish == []
 
-    def test_the_boot_change_path_raises_no_republish_request(self, fifo_ok, republish, monkeypatch):
-        monkeypatch.setattr(selfheal, "get_authority", lambda: SimpleNamespace(reapply_selected=lambda **k: None))
+    def test_the_restart_path_raises_no_republish_request(self, fifo_ok, republish):
+        FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot="b0")
         FakeStore().outputs([row("1", DEFAULT_NAME, selected=True)], boot="b1")
         mon = _make_monitor()
-        mon._outputs_boot_seen = "b0"
+        mon._outputs_restarts_seen = 0
         _run(mon)
         _SelfHeal.note_outputs(mon, True, NOW)
         assert republish == []

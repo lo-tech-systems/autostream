@@ -345,7 +345,7 @@ class _Batch:
 
 @dataclass
 class _Write:
-    kind: str                         # select | deselect | volume | deselect_all | pin | reapply
+    kind: str                         # select | deselect | volume | deselect_all | pin
     unit_id: Optional[str]
     seq: int                          # the unit's desired_seq when the write was queued
     params: dict
@@ -430,6 +430,11 @@ class OutputAuthority:
         self._boot_id: Optional[str] = None
         self._boot_changed = False
         self._epoch = 0
+        # Restarts of the player seen so far, for the self-heal's re-arm.
+        self._backend_restarts = 0
+        # A socket closed and the player may have restarted before it came
+        # back; the next good read counts it like an unreachable spell.
+        self._maybe_restarted = False
         # Whether the player starts a speaker at the level it is enabled with,
         # as its hello last said. Kept through the polling between two sockets
         # of one boot; forgotten when a restart is seen without a hello.
@@ -681,6 +686,7 @@ class OutputAuthority:
         return OutputsPart(
             placeholder_id=placeholder.id if placeholder is not None else "",
             units=tuple(views), connected=self._connected, backend_boot=self._backend_boot,
+            backend_restarts=self._backend_restarts,
             event_source=self._event_kind, muted_all=self._muted_all_locked(),
             silence_chosen=self._silence_chosen, start_failure=self._start_failure,
             device_events=self._delivers_device_events, include_tv_supported=self._include_tv_supported,
@@ -1116,17 +1122,6 @@ class OutputAuthority:
         self._after_intent()
         return Applied(version=store().snapshot().version, outcome=batch.future)
 
-    def reapply_selected(self, *, recovery_volume: int) -> Applied:
-        """Send the desired selection again after the player restarted, and
-        lift any selected speaker the restart left silent."""
-        self._touched = True
-        batch = _Batch(1)
-        self._enqueue(_Write(
-            "reapply", None, 0, {"recovery": _clamp(recovery_volume)}, [(batch, 0)],
-        ))
-        self._after_intent()
-        return Applied(version=store().snapshot().version, outcome=batch.future)
-
     def note_session(self, active: bool) -> None:
         """Session edges. A session end clears the user's "silence" choice and
         the retry back-offs of speakers that failed to start."""
@@ -1290,8 +1285,10 @@ class OutputAuthority:
     def _handle_connected(self, info: ConnectInfo) -> None:
         if info.boot is not None:
             self._note_boot(info.boot)
-        else:
+        elif self._source is None or self._source.kind == "unix_socket":
             self._boot_id = None
+        # Otherwise a boot id the socket gave stays through the polling
+        # between two sockets of one boot; the next hello compares it.
         delivers = {"device_volume", "receiver_command"} <= set(info.capabilities)
         with self._lock:
             if info.boot is not None or info.capabilities:
@@ -1309,6 +1306,7 @@ class OutputAuthority:
             LOG.info("Event channel degraded; polling the player instead")
             self._swap_source(PollEventSource(self._poll_interval), now)
             return
+        self._maybe_restarted = True
         with self._lock:
             for u in self._units.values():
                 u.start_pending_until = 0.0
@@ -1474,7 +1472,9 @@ class OutputAuthority:
             self._include_tv_supported = True
         boot_changed = self._boot_changed
         self._boot_changed = False
-        if not self._connected:
+        maybe_restarted = self._maybe_restarted
+        self._maybe_restarted = False
+        if not self._connected or maybe_restarted:
             if self._boot_id is None:
                 if self._ever_connected:
                     boot_changed = True
@@ -1484,6 +1484,7 @@ class OutputAuthority:
             self._ever_connected = True
         self._backend_boot = self._boot_id if self._boot_id is not None else f"epoch:{self._epoch}"
         if boot_changed:
+            self._backend_restarts += 1
             for u in self._units.values():
                 u.after_boot = True
 
@@ -1908,30 +1909,6 @@ class OutputAuthority:
         if kind == "pin":
             pin = w.params.get("pin", "")
             return lambda b: [b.submit_output_pin(uid, pin, timeout=WRITE_TIMEOUT_S)]
-        if kind == "reapply":
-            ids = [x.id for x in self._selected_locked()]
-            recover = [
-                x.id for x in self._selected_locked()
-                if not x.desired.muted and x.reported is not None and x.reported.volume_percent == 0
-            ]
-            level = w.params.get("recovery", 0)
-            if not ids:
-                return None
-
-            def run(b):
-                first = b.set_selected_outputs(ids, timeout=WRITE_TIMEOUT_S)
-                results = [first]
-                if not first.ok:
-                    return results
-                refresh = b.refresh_runtime_state(timeout=WRITE_TIMEOUT_S)
-                if not refresh.ok and refresh.error_code != "unsupported":
-                    LOG.debug("Player state refresh after reselect: %s", refresh.message)
-                for rid in recover:
-                    r = b.update_output(rid, volume_percent=level, timeout=WRITE_TIMEOUT_S)
-                    if not r.ok:
-                        LOG.debug("Recovery volume for %s not applied: %s", rid, r.message)
-                return results
-            return run
         return None
 
     def _record_locked(self, w: _Write, results: list, now: float, fx: _Effects) -> WriteOutcome:

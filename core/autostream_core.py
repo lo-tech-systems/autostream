@@ -507,7 +507,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     for m in monitors:
                         m._owntone_enabled_ok = False
                         m._owntone_last_attempt = 0.0
-                        m._outputs_boot_seen = None
+                        m._outputs_restarts_seen = None
                     session_tracker.reset()
                     # The hang watchdog's 10-minute restart rate limit is
                     # intentionally NOT reset here -- it is a hard global

@@ -22,7 +22,6 @@ from autostream_player_service import (
     retry_pending_format_reconcile,
 )
 from autostream_state import Origin
-from autostream_state.outputs import get_authority
 from autostream_sysutils import run_admin_cmd
 
 
@@ -352,23 +351,22 @@ class SelfHeal:
                     "No outputs selected during capture; default fallback not available yet.",
                 )
                 return
-        if monitor._outputs_boot_seen not in (None, snap.backend_boot):
-            # owntone-mini restarted since the selection was last applied.
-            get_authority().reapply_selected(recovery_volume=volume)
-        monitor._outputs_boot_seen = snap.backend_boot
         monitor._owntone_recovery_log.ok(now)
         monitor._owntone_enabled_ok = True
 
     @staticmethod
     def note_outputs(monitor: Optional["AudioMonitor"], session_active: bool, now: float) -> None:
         """Called every coordinator cycle. When a session is active and the
-        output authority has seen the player restart since the selection was
-        last applied, re-arm the output retry and count it (the figures the
-        status reply shows)."""
-        if not session_active or monitor is None or not monitor._owntone_enabled_ok:
+        output authority has seen the player restart, re-arm the output retry
+        (which re-runs the FIFO and format reconcile) and count it (the
+        figures the status reply shows). The authority itself restores the
+        selection."""
+        if not session_active or monitor is None:
             return
-        seen = monitor._outputs_boot_seen
-        if seen is None or seen == autostream_state.store().snapshot().outputs.backend_boot:
+        current = autostream_state.store().snapshot().outputs.backend_restarts
+        seen = monitor._outputs_restarts_seen
+        monitor._outputs_restarts_seen = current
+        if seen is None or seen == current or not monitor._owntone_enabled_ok:
             return
         monitor._owntone_enabled_ok = False
         monitor._owntone_last_attempt = 0.0
@@ -377,7 +375,7 @@ class SelfHeal:
             reconcile_fired_count=cur.reconcile_fired_count + 1,
             reconcile_last_fired_at=now,
         )
-        logging.warning("OwnTone restarted mid-session; re-applying the selected outputs.")
+        logging.warning("OwnTone restarted mid-session; its outputs are restored by the output reconcile.")
 
 
 def _clamped_output_volume(value) -> int:

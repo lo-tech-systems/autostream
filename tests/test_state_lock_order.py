@@ -301,7 +301,6 @@ def _every_intent(a, merge):
     a.reselect("1", Origin.USER)
     a.deselect("3", Origin.USER)
     a.submit_pin("3", "1234")
-    a.reapply_selected(recovery_volume=40)
     a.note_session(True)
     a.deselect_all(Origin.USER)
     a.deselect_all(Origin.SESSION)
@@ -379,7 +378,7 @@ def test_no_backend_call_is_made_under_the_authority_lock(authority):
         a.step(now=200.0 + 3 * i)         # timers and a reconcile
     kinds = {c[0] for c in backend.calls}
     assert {"update_output", "set_selected_outputs", "stop_and_disable_all",
-            "submit_output_pin", "refresh_runtime_state"} <= kinds
+            "submit_output_pin"} <= kinds
     assert backend.reads >= 1 and backend.channel_calls >= 1
 
 

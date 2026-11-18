@@ -196,9 +196,9 @@ class AudioMonitor:
         # whether the long wait has been warned about.
         self._default_missing_since: Optional[float] = None
         self._default_missing_warned: bool = False
-        # The output authority's player-restart marker when the selection was
-        # last applied; a different one later means the player restarted.
-        self._outputs_boot_seen: Optional[str] = None
+        # The output authority's count of player restarts when last looked at
+        # (None: adopt the current count without treating it as a restart).
+        self._outputs_restarts_seen: Optional[int] = None
         self._owntone_recovery_log = runtime.RecoveryLog("OwnTone output-enable")
         self._capture_start_no_output_retry_at: float = 0.0
         self._capture_start_no_output_log_at: float = 0.0

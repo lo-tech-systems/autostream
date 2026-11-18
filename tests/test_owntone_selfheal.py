@@ -360,7 +360,7 @@ class TestSelfHealComposition:
         FakeStore().outputs([row("1", "Test Speaker", selected=True)], boot="b0")
         mon = _make_monitor()
         mon._owntone_enabled_ok = True
-        mon._outputs_boot_seen = "b0"
+        mon._outputs_restarts_seen = 0
         watchdog = _OwntoneHangWatchdog()
 
         base = 1000.0
@@ -402,7 +402,7 @@ class TestSelfHealComposition:
         FakeStore().outputs([row("1", "Test Speaker", selected=True)], boot="b0")
         mon = _make_monitor()
         mon._owntone_enabled_ok = True
-        mon._outputs_boot_seen = "b0"
+        mon._outputs_restarts_seen = 0
 
         get_authority().deselect("1", Origin.USER)  # user just switched everything off
         for i in range(5):

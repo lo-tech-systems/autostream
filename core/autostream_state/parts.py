@@ -233,6 +233,7 @@ class OutputsPart:
     units: tuple[OutputUnitView, ...] = ()  # backend row order
     connected: bool = False                 # reads succeed (or a start is pending)
     backend_boot: str = ""                  # the player's boot id, or "epoch:<n>" when it has none
+    backend_restarts: int = 0               # restarts of the player seen since autostream started
     event_source: str = "poll"
     muted_all: bool = False                 # the appliance-level mute shown by dials and Home
     silence_chosen: bool = False            # per session: the user turned every speaker off

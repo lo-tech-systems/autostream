@@ -717,7 +717,7 @@ class TestMute:
         assert not u.muted and u.cause is Origin.DEVICE
 
 
-class TestPinAndReapply:
+class TestPin:
     def test_a_pin_is_a_write_only(self, w):
         merge(w, [row(1)])
         version = state.store().snapshot().version
@@ -730,28 +730,6 @@ class TestPinAndReapply:
         w.fb.results = [error("pin_invalid", "wrong")]
         out = w.a.submit_pin("1", "0000").outcome.result()[0]
         assert out.ok is False and out.error_code == "pin_invalid" and out.error == "wrong"
-
-    def test_reapply_sends_the_selection_then_refreshes_then_lifts_silent_units(self, w):
-        merge(w, [row(1, selected=True, volume_percent=0), row(2, selected=True, volume_percent=40), row(3)])
-        w.fb.results = [ActionResult(ok=True), error("unsupported")]
-        w.a.reapply_selected(recovery_volume=45)
-        assert [c[0] for c in w.fb.calls] == [
-            "set_selected_outputs", "refresh_runtime_state", "update_output"]
-        assert w.fb.calls[0][1] == (["1", "2"],)
-        assert w.fb.updates() == [("1", dict(volume_percent=45, timeout=3.0))]
-
-    def test_reapply_leaves_a_muted_unit_silent(self, w):
-        merge(w, [row(1, selected=True, volume_percent=40)])
-        w.a.mute_all(Origin.USER)
-        merge(w, [row(1, selected=True, volume_percent=0)])
-        w.fb.calls.clear()
-        w.a.reapply_selected(recovery_volume=45)
-        assert w.fb.updates() == []
-
-    def test_reapply_with_nothing_selected_sends_nothing(self, w):
-        merge(w, [row(1)])
-        w.a.reapply_selected(recovery_volume=45)
-        assert w.fb.calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -1470,6 +1448,69 @@ class TestReconcile:
         assert uid == "1" and kw["volume_percent"] == 40
         assert "restored after the player restarted: 1 output(s)" in caplog.text
 
+    def test_the_restart_select_carries_the_desired_level_and_the_players_default_is_not_adopted(self, w):
+        put(w, [group_row(1, "streaming", selected=True, volume_percent=31)], boot="b0")
+        put(w, [group_row(1, "stopped", selected=False, volume_percent=50)], boot="b1")
+        at(w, 0.1)
+        assert snap().unit("1").volume == 31
+        at(w, 2.5)
+        (uid, kw), = selects(w)
+        assert uid == "1" and kw["volume_percent"] == 31
+        assert snap().unit("1").volume == 31
+
+    def test_a_restart_selects_each_unit_once_with_its_own_level(self, w):
+        put(w, [group_row(1, "streaming", selected=True, volume_percent=31),
+                group_row(2, "streaming", selected=True, volume_percent=64)], boot="b0")
+        put(w, [group_row(1, "stopped", selected=False), group_row(2, "stopped", selected=False)], boot="b1")
+        at(w, 0.1)
+        at(w, 2.5)
+        assert sorted((uid, kw["volume_percent"]) for uid, kw in selects(w)) == [("1", 31), ("2", 64)]
+        assert [c for c in w.fb.calls if c[0] == "set_selected_outputs"] == []
+        w.fb.calls.clear()
+        at(w, 2.6)
+        assert selects(w) == []
+
+    def test_a_restart_is_counted_once_per_boot_change(self, w):
+        put(w, [group_row(1, "streaming", selected=True)], boot="b0")
+        assert snap().backend_restarts == 0
+        put(w, [group_row(1, "stopped", selected=False)], boot="b1")
+        put(w, [group_row(1, "stopped", selected=False)], boot="b1")
+        assert snap().backend_restarts == 1
+        put(w, [group_row(1, "stopped", selected=False)], boot="b2")
+        assert snap().backend_restarts == 2
+
+    def test_a_player_without_a_boot_id_is_restarted_by_an_unreachable_spell(self, w):
+        w.a.merge_for_tests([row(1)], now=T0)
+        assert snap().backend_restarts == 0
+        w.a.mark_unreachable_for_tests()
+        w.a.merge_for_tests([row(1)], now=T0)
+        assert snap().backend_restarts == 1
+
+    def test_a_websocket_close_then_a_good_read_is_a_restart(self, w):
+        w.a.merge_for_tests([row(1)], now=T0)
+        assert snap().backend_restarts == 0
+        w.a.on_disconnected("closed")
+        w.a.step(now=T0 + 1)
+        w.a.merge_for_tests([row(1)], now=T0 + 1)
+        assert snap().backend_restarts == 1
+        w.a.merge_for_tests([row(1)], now=T0 + 2)
+        assert snap().backend_restarts == 1
+
+    def test_a_socket_close_is_not_a_restart_while_the_boot_is_known(self, w):
+        w.a._handle_connected(ConnectInfo("b0", 1, frozenset(), "unix_socket"))
+        w.a.merge_for_tests([row(1)], now=T0)
+        w.a.on_disconnected("closed")
+        w.a.step(now=T0 + 1)
+        w.a.merge_for_tests([row(1)], now=T0 + 1)
+        assert snap().backend_restarts == 0
+
+    def test_a_poll_source_keeps_the_boot_a_socket_gave(self, w):
+        w.a._handle_connected(ConnectInfo("b0", 1, frozenset(), "unix_socket"))
+        w.a._source = FakeSource("poll")
+        w.a._handle_connected(ConnectInfo(None, None, frozenset(), "poll"))
+        w.a.merge_for_tests([row(1)], now=T0)
+        assert snap().backend_boot == "b0"
+
     def test_a_player_that_is_unreachable_is_left_alone(self, w):
         put(w, [group_row(1, "streaming", selected=True)], boot="b0")
         put(w, [group_row(1, "stopped", selected=False)], boot="b1")
@@ -2087,11 +2128,10 @@ class TestSelectSeq:
         w.a.select("1", Origin.USER, volume=25)
         assert w.a.unit_marks("1").select_seq == 2
 
-    def test_a_volume_or_a_reapply_does_not_move_it(self, w):
+    def test_a_volume_does_not_move_it(self, w):
         merge(w, [row(1, selected=True, volume_percent=30)])
         w.a.set_volume("1", 50, Origin.USER)
         w.a.mute_all(Origin.USER)
-        w.a.reapply_selected(recovery_volume=40)
         assert w.a.unit_marks("1").select_seq == 1
 
     def test_an_unknown_unit_has_no_marks(self, w):
