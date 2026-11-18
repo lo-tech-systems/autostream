@@ -223,6 +223,7 @@ class OutputUnitView:
     pin_claim: str = ""                     # who is entering a PIN for it ("webui", "dial:<id>"), or ""
     in_use_by: str = ""                     # the hostname of the other appliance playing it, or "" (never while it is selected here)
     in_use_id: str = ""                     # that appliance's id, or ""
+    held: bool = False                      # the speaker paused itself and is held until its Play
 
     @property
     def offline(self) -> bool:
@@ -486,7 +487,7 @@ def _outputs_digest(p: OutputsPart) -> tuple:
         tuple(
             (u.id, u.name, u.shown_selected, u.volume, u.muted, u.availability,
              _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting,
-             u.auto_start, u.hidden, u.pin_claim, u.in_use_by, u.in_use_id)
+             u.auto_start, u.hidden, u.pin_claim, u.in_use_by, u.in_use_id, u.held)
             for u in p.units
         ),
         p.connected, p.muted_all, p.silence_chosen,

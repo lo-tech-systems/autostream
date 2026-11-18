@@ -1510,3 +1510,38 @@ class TestTimeoutsHaveTheirOwnCode:
             _payload, _response, err = b._get_json("/api/x")
         assert ap.is_timeout(err)
         assert "timed out" in err
+
+
+class TestMiniHold:
+    def test_the_row_carries_held_and_holdable(self):
+        out = _mini()._normalize_output_info(
+            {"id": "x", "session": {"state": "streaming", "failure": "none", "held": True, "holdable": True}})
+        assert out.session_held is True and out.session_holdable is True
+
+    def test_a_row_without_them_is_neither(self):
+        out = _mini()._normalize_output_info({"id": "x", "session": {"state": "streaming", "failure": "none"}})
+        assert out.session_held is False and out.session_holdable is False
+        out = _mini()._normalize_output_info({"id": "x", "session": {"state": "streaming", "held": "yes"}})
+        assert out.session_held is False
+
+    def test_a_hold_and_its_end_are_put_on_the_output(self):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players._session.put", return_value=r) as put:
+            assert _mini().set_output_hold("12", True).ok is True
+            assert _mini().set_output_hold("12", False).ok is True
+        bodies = [call.kwargs.get("json") for call in put.call_args_list]
+        assert bodies == [{"hold": True}, {"hold": False}]
+        assert all(call.args[0].endswith("/api/outputs/12") for call in put.call_args_list)
+
+    def test_a_refusal_names_not_holdable(self):
+        r = _resp(status=409, json_data={"error": "not_holdable"}, content=b'{"error":"not_holdable"}')
+        r.text = '{"error":"not_holdable"}'
+        with patch("autostream_players._session.put", return_value=r):
+            result = _mini().set_output_hold("12", True)
+        assert result.ok is False and result.error_code == "not_holdable"
+
+    def test_a_player_without_holds_refuses_without_a_request(self):
+        with patch("autostream_players._session.put") as put:
+            result = OwnToneBackend(base_url="http://localhost:3689").set_output_hold("12", True)
+        assert result.ok is False and result.error_code == "not_holdable"
+        put.assert_not_called()

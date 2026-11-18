@@ -193,6 +193,8 @@ class OutputBackend(Protocol):
 
     def submit_output_pin(self, output_id: str, pin: str, timeout: float) -> ActionResult: ...
 
+    def set_output_hold(self, output_id: str, held: bool, timeout: float) -> ActionResult: ...
+
     def refresh_runtime_state(self, timeout: float) -> ActionResult: ...
 
     def capabilities(self) -> BackendCapabilities: ...
@@ -222,6 +224,9 @@ class PlayerServiceBackend:
     def submit_output_pin(self, output_id: str, pin: str, timeout: float) -> ActionResult:
         return player_service.submit_output_pin(self.base_url, output_id, pin, timeout=timeout)
 
+    def set_output_hold(self, output_id: str, held: bool, timeout: float) -> ActionResult:
+        return player_service.set_output_hold(self.base_url, output_id, held, timeout=timeout)
+
     def refresh_runtime_state(self, timeout: float) -> ActionResult:
         return player_service.refresh_runtime_state(self.base_url, timeout=timeout)
 
@@ -246,6 +251,7 @@ class UnitDesired:
     changed_at: float
     mute_token: int = 0               # the token of the current mute; 0 when not muted
     mute_joined: bool = False         # the current mute came from joining a muted selection
+    held: bool = False                # the speaker paused itself and the player holds it
 
 
 @dataclass
@@ -286,6 +292,7 @@ class UnitState:
     select_seq: int = 0               # +1 each time the desired selection goes from off to on
     held_until: float = 0.0           # a select the player cannot take yet is not tried again before this
     reselect_retry: bool = False      # a restart's select was refused: send it once more when the unit reads off
+    hold_write_at: float = 0.0        # when a hold or its end was last asked of the player
 
 
 class _OwnedLock:
@@ -360,7 +367,7 @@ class _Batch:
 
 @dataclass
 class _Write:
-    kind: str                         # select | deselect | volume | deselect_all | pin
+    kind: str                         # select | deselect | volume | deselect_all | pin | hold
     unit_id: Optional[str]
     seq: int                          # the unit's desired_seq when the write was queued
     params: dict
@@ -812,6 +819,8 @@ class OutputAuthority:
         r = u.reported
         if not (u.desired.selected and self._session_active) or r is None or u.availability == "password":
             return False
+        if u.desired.held:
+            return False
         if self._rows_carry_session:
             return r.session_state != "streaming"
         return not r.selected
@@ -847,7 +856,7 @@ class OutputAuthority:
             view = OutputUnitView(
                 id=u.id, name=name, selected=d.selected, volume=level, muted=d.muted,
                 availability=u.availability, cause=d.cause, reported=u.reported,
-                connecting=self._connecting_locked(u), auto_start=u.id in matched,
+                connecting=self._connecting_locked(u), auto_start=u.id in matched, held=d.held,
             )
             views.append(self._with_outside_fields_locked(view, claims))
         views.extend(self._with_outside_fields_locked(v, claims) for v in self._placeholders_locked())
@@ -954,6 +963,7 @@ class OutputAuthority:
                 d.volume = vol
             if not d.selected:
                 u.select_seq += 1
+                d.held = False
             d.selected = True
             u.retry_allowed = cause != Origin.USER
             u.attempt = True
@@ -979,6 +989,7 @@ class OutputAuthority:
     def _deselect_locked(self, u: UnitState, cause: Origin, now: float) -> None:
         d = u.desired
         d.selected = False
+        d.held = False
         self._clear_mute_locked(d)
         u.attempt = False
         u.retry_at = None
@@ -1002,6 +1013,7 @@ class OutputAuthority:
                 return self._refused("unknown_output")
             if not u.desired.selected:
                 return self._refused("not_selected")
+            u.desired.held = False
             u.attempt = True
             u.failure_reported = False
             u.start_pending_until = 0.0
@@ -1053,6 +1065,53 @@ class OutputAuthority:
             self._enqueue(_Write(
                 "deselect_all", None, 0, {"session": cause == Origin.SESSION}, [(batch, 0)],
             ))
+            pending = self._publish_locked(cause, requester)
+        return self._finish_intent(pending, batch.future)
+
+    def deselect_others(self, keep_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
+        """Switch off every selected speaker but *keep_id*."""
+        self._touched = True
+        now = self._clock()
+        with self._lock:
+            others = [u for u in self._selected_locked() if u.id != keep_id]
+            if not others:
+                return self._refused("no_active_outputs")
+            batch = _Batch(len(others))
+            for i, u in enumerate(others):
+                self._deselect_locked(u, cause, now)
+                self._enqueue(_Write("deselect", u.id, u.desired_seq, {}, [(batch, i)]))
+            pending = self._publish_locked(cause, requester)
+        return self._finish_intent(pending, batch.future)
+
+    def hold(self, unit_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
+        """The speaker paused itself: ask the player to hold it, so it is sent
+        no audio until its hold ends. Refused as not_holdable when the
+        player's row says it cannot be held; holding a held speaker changes
+        nothing."""
+        return self._set_hold(unit_id, True, cause, requester)
+
+    def resume(self, unit_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
+        """End a speaker's hold: the player restarts it at the live position."""
+        return self._set_hold(unit_id, False, cause, requester)
+
+    def _set_hold(self, unit_id: str, held: bool, cause: Origin, requester: Optional[str]) -> Applied:
+        self._touched = True
+        now = self._clock()
+        with self._lock:
+            u = self._units.get(unit_id)
+            if u is None:
+                return self._refused("unknown_output")
+            d = u.desired
+            if not d.selected:
+                return self._refused("not_selected")
+            if d.held == held:
+                return Applied(version=store().snapshot().version, outcome=None)
+            if held and (u.reported is None or not u.reported.session_holdable):
+                return self._refused("not_holdable")
+            d.held = held
+            u.hold_write_at = now
+            batch = _Batch(1)
+            self._enqueue(_Write("hold", unit_id, u.desired_seq, {}, [(batch, 0)], requester=requester))
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, batch.future)
 
@@ -1199,13 +1258,17 @@ class OutputAuthority:
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
 
-    def mute_all(self, cause: Origin, *, requester: Optional[str] = None) -> Applied:
+    def mute_all(self, cause: Origin, *, requester: Optional[str] = None,
+                 except_id: Optional[str] = None) -> Applied:
+        """Mute every selected speaker. With *except_id*, every one but that
+        speaker (a Pause holds it instead), and the mute is not carried over
+        to speakers switched on later."""
         self._touched = True
         now = self._clock()
         with self._lock:
             if not self._connected:
                 return self._refused("not_connected")
-            selected = self._selected_locked()
+            selected = [u for u in self._selected_locked() if u.id != except_id]
             if not selected:
                 return self._refused("no_active_outputs")
             changed = []
@@ -1228,7 +1291,8 @@ class OutputAuthority:
                 if d.volume > 0:
                     d.volume = 0
                     changed.append(u)
-            self._mute_held = True
+            if except_id is None:
+                self._mute_held = True
             future = self._queue_volume_writes_locked(changed)
             master = self._master_locked()
             token_at = self._mute_counter
@@ -1359,6 +1423,7 @@ class OutputAuthority:
                     u.group_hold_backoff = RETRY_MIN_S
                     u.retry_n = 0
                     u.retry_at = None
+                    u.desired.held = False
             pending = self._publish_locked(Origin.SESSION, None)
         pending.notify()
 
@@ -1686,6 +1751,7 @@ class OutputAuthority:
     def _revert_locked(self, u: UnitState, now: float) -> None:
         d = u.desired
         d.selected = False
+        d.held = False
         self._clear_mute_locked(d)
         u.attempt = False
         u.retry_at = None
@@ -1729,6 +1795,8 @@ class OutputAuthority:
         self._backend_boot = self._boot_id if self._boot_id is not None else f"epoch:{self._epoch}"
         if boot_changed:
             self._backend_restarts += 1
+            for u in self._units.values():
+                u.desired.held = False
             self._ws_degraded_until = 0.0
             for u in self._units.values():
                 u.after_boot = True
@@ -1789,10 +1857,26 @@ class OutputAuthority:
             elif now - u.absent_since >= ABSENT_KEEP_S and not is_default:
                 del self._units[uid]
 
+    def _follow_hold_locked(self, u: UnitState, row: OutputInfo, now: float) -> None:
+        """Take the player's word on a hold once no hold write of ours is
+        queued, running or just done: a held row is adopted (autostream
+        restarted while the speaker was held), and a hold the player no
+        longer has is over (its session ended or was restarted)."""
+        d = u.desired
+        if not (self._rows_carry_session and d.selected):
+            return
+        if self._inflight > 0 or any(w.kind == "hold" and w.unit_id == u.id for w in self._wq):
+            return
+        if now - u.hold_write_at < DEBOUNCE_S:
+            return
+        if row.session_held != d.held:
+            d.held = row.session_held
+
     def _update_unit_locked(self, u: UnitState, row: OutputInfo, now: float, fx: _Effects) -> None:
         was = u.was_streaming
         d = u.desired
         sel = d.selected
+        self._follow_hold_locked(u, row, now)
         avail = self._availability_locked(row, sel)
         if self._rows_carry_session:
             u.was_streaming = row.session_state in ("streaming", "connected")
@@ -2256,6 +2340,13 @@ class OutputAuthority:
         if kind == "pin":
             pin = w.params.get("pin", "")
             return lambda b: [b.submit_output_pin(uid, pin, timeout=WRITE_TIMEOUT_S)]
+        if kind == "hold":
+            # The hold as it is wanted now: a hold and its end queued close
+            # together send the latest twice, which the player takes as one.
+            if u is None or u.reported is None or not u.desired.selected:
+                return None
+            held = u.desired.held
+            return lambda b: [b.set_output_hold(uid, held, timeout=WRITE_TIMEOUT_S)]
         return None
 
     def _record_locked(self, w: _Write, results: list, now: float, fx: _Effects) -> WriteOutcome:
@@ -2263,6 +2354,11 @@ class OutputAuthority:
         u = self._units.get(w.unit_id) if w.unit_id is not None else None
         if w.kind == "select":
             return self._record_select_locked(w, r, u, now, fx)
+        if w.kind == "hold" and not r.ok and u is not None and u.desired.held:
+            # The player could not hold it after all (its session changed
+            # since its row was read): it plays on, and so it reads.
+            u.desired.held = False
+            fx.log(logging.INFO, "Hold of %s refused by the player (%s)", w.unit_id, r.error_code)
         if r.ok or (w.kind == "volume" and r.error_code == "timeout"):
             if u is not None:
                 u.own_write_at = now

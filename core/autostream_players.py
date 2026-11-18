@@ -254,6 +254,10 @@ class OutputInfo:
     session_failure: str = "none"  # "none" | "capacity"
     # An Apple TV whose HomePods are present; None: the row has no such field.
     has_homepods: Optional[bool] = None
+    # The speaker paused itself and the player holds it, and whether a hold
+    # would be accepted now
+    session_held: bool = False
+    session_holdable: bool = False
 
     def extra_dict(self) -> dict[str, Any]:
         """Return extra metadata as a plain dict when needed."""
@@ -393,6 +397,12 @@ class PlayerBackend(ABC):
         include_tv chooses, for an Apple TV that leads its HomePods,
         whether the TV itself plays too.  Backends without the option ignore it.
         """
+
+    def set_output_hold(self, output_id: str, held: bool) -> ActionResult:
+        """Hold a speaker that paused itself, so it is sent no audio, or end
+        the hold, which restarts it at the live position. A backend that
+        cannot hold a speaker refuses with not_holdable."""
+        return ActionResult(ok=False, error="This player cannot hold a speaker", error_code="not_holdable")
 
     @abstractmethod
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
@@ -606,7 +616,7 @@ def detect_backend(
     return None, tuple(detections)
 
 
-_CONFLICT_CODES = ("reselect_required", "group_not_present")
+_CONFLICT_CODES = ("reselect_required", "group_not_present", "not_holdable")
 
 
 def _conflict_code(payload: object) -> str:

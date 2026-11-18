@@ -471,6 +471,8 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             fields["session_state"] = state if state in _SESSION_STATES else ""
             failure = str(session.get("failure") or "").strip().lower()
             fields["session_failure"] = "capacity" if failure == "capacity" else "none"
+            fields["session_held"] = session.get("held") is True
+            fields["session_holdable"] = session.get("holdable") is True
 
         if isinstance(output.get("has_homepods"), bool):
             fields["has_homepods"] = output["has_homepods"]
@@ -611,6 +613,9 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             payload,
             allow_pin_required=bool(enabled),
         )
+
+    def set_output_hold(self, output_id: str, held: bool) -> ActionResult:
+        return self._put_output_fields(output_id, {"hold": bool(held)})
 
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
         pin_text = str(pin or "").strip()

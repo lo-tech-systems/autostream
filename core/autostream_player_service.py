@@ -1476,6 +1476,10 @@ def update_output(
     )
 
 
+def set_output_hold(base_url: str, output_id: str, held: bool, *, timeout: float = 3.0) -> ActionResult:
+    return resolve_backend(base_url, timeout=timeout).backend.set_output_hold(output_id, held)
+
+
 def submit_output_pin(base_url: str, output_id: str, pin: str, *, timeout: float = 3.0) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.submit_output_pin(output_id, pin)
 
