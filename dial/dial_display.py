@@ -1920,6 +1920,26 @@ class DialDisplay:
             width, height, mm_per_px=self._mm_per_px, size_chosen=self._layout.size_chosen,
         )
 
+    def _paint_locked(self, compose, *lead, metrics=None, after=(), panel_size=False, **options) -> None:
+        """Compose one screen with the compositor method *compose* and push
+        it (see _push_frame_locked()). The call is
+        compose(*lead, width, height, *after, rotate, bgr, metrics, **options)
+        at the logical size of *metrics* (the current layout when None). With
+        *panel_size* the compositor is also told the backend's physical size,
+        read inside the guard. Caller holds self._lock and has already
+        checked the backend is open. Never raises."""
+        if metrics is None:
+            metrics = self._layout_metrics()
+
+        def build():
+            extra = dict(options, output_size=(self._backend.width, self._backend.height)) if panel_size else options
+            return compose(
+                *lead, metrics.width, metrics.height, *after,
+                rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics, **extra,
+            )
+
+        self._push_frame_locked(build)
+
     def _push_frame_locked(self, compose) -> None:
         """Compose one frame at the logical size and push it to the
         backend, resampling to the panel's physical size first if the two
@@ -2110,18 +2130,14 @@ class DialDisplay:
         animating, progress = self._advance_reveal_locked(now, steady, slide_ok)
         overlay = self._effective_overlay_locked(snapshot, now=now, animating=animating)
         timer = self._replay_timer_locked(now) if self._screen == "main" else None
-        self._push_frame_locked(lambda: self._compositor.compose(
-            image, metrics.width, metrics.height,
-            rotate=self._config.rotate,
-            bgr=self._config.bgr,
+        self._paint_locked(
+            self._compositor.compose, image, metrics=metrics, panel_size=True,
             is_artwork=False,
             overlay=overlay,
-            metrics=metrics,
             reveal_progress=progress,
             timer_text=timer[0] if timer else None,
             timer_alpha=timer[1] if timer else 1.0,
-            output_size=(self._backend.width, self._backend.height),
-        ))
+        )
         if timer:
             # The same reference the repeat screen's own counter advances
             # against (see _display_repeat_locked()); that screen re-anchors
@@ -3616,11 +3632,7 @@ class DialDisplay:
         compose path, like the appliance selector/replay picker/outputs
         list. Caller holds self._lock."""
         view = self._build_output_view_locked(time.monotonic())
-        metrics = self._layout_metrics()
-        self._push_frame_locked(lambda: self._compositor.compose_output(
-            metrics.width, metrics.height, view,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
+        self._paint_locked(self._compositor.compose_output, after=(view,))
 
     def _display_info_value_locked(self) -> None:
         """Compose and push the compact info page's own drill-in frame —
@@ -3641,11 +3653,7 @@ class DialDisplay:
             rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
             row = rows[view_state.index] if view_state is not None and 0 <= view_state.index < len(rows) else None
             view = InfoValueView(label=row.label if row else "", value=row.value if row else "-")
-        metrics = self._layout_metrics()
-        self._push_frame_locked(lambda: self._compositor.compose_info_value(
-            metrics.width, metrics.height, view,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
+        self._paint_locked(self._compositor.compose_info_value, after=(view,))
 
     def _display_card_locked(self) -> None:
         """Compose and push the card on screen (the warnings page, or a
@@ -3671,32 +3679,19 @@ class DialDisplay:
             pressed=CARD_BUTTON_ZONES.index(zone) if zone in CARD_BUTTON_ZONES else None,
             percent=card.percent, source=card.source,
         )
-        metrics = self._layout_metrics()
-        base = self._current_base_image
-        self._push_frame_locked(lambda: self._compositor.compose_warning(
-            base, metrics.width, metrics.height, view,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
+        self._paint_locked(self._compositor.compose_warning, self._current_base_image, after=(view,))
 
     def _display_restarting_locked(self) -> None:
         """Compose and push the "Restarting..." frame. Caller holds
         self._lock."""
-        metrics = self._layout_metrics()
-        self._push_frame_locked(lambda: self._compositor.compose_restarting(
-            metrics.width, metrics.height,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
+        self._paint_locked(self._compositor.compose_restarting)
 
     def _display_starting_locked(self) -> None:
         """Compose and push the "Starting..." frame and mark it as what is
         showing. Caller holds self._lock and has checked the backend is
         open. Leaves the base-image cache empty on purpose: the first poll
         must paint the logo or artwork over this, not find a stale base."""
-        metrics = self._layout_metrics()
-        self._push_frame_locked(lambda: self._compositor.compose_starting(
-            metrics.width, metrics.height,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
+        self._paint_locked(self._compositor.compose_starting)
         self._showing = "starting"
 
     def _display_list_locked(self) -> None:
@@ -3722,10 +3717,9 @@ class DialDisplay:
         else:
             screen = self._screen if self._screen in _ROW_LISTS else "selector"
             list_state = self._build_row_list_state_locked(screen, metrics.width, metrics.height, metrics=metrics)
-        self._push_frame_locked(lambda: self._compositor.compose_list(
-            metrics.width, metrics.height, list_state, base=self._current_base_image,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
+        self._paint_locked(
+            self._compositor.compose_list, metrics=metrics, after=(list_state,), base=self._current_base_image,
+        )
 
     def _repeat_position_line(self, rec, now: float) -> "tuple[str, int | None] | None":
         """The replay position line for repeat-store record *rec* and the
@@ -3868,12 +3862,10 @@ class DialDisplay:
         steady = not self._compact_controls_hidden() and not self._controls_hidden(now)
         animating, progress = self._advance_reveal_locked(now, steady, replaying and self._slide_tier())
         controls = steady or animating
-        self._push_frame_locked(lambda: self._compositor.compose_repeat(
-            metrics.width, metrics.height, view, base=self._current_base_image,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-            controls=controls, reveal_progress=progress,
-            output_size=(self._backend.width, self._backend.height),
-        ))
+        self._paint_locked(
+            self._compositor.compose_repeat, metrics=metrics, after=(view,), panel_size=True,
+            base=self._current_base_image, controls=controls, reveal_progress=progress,
+        )
         if animating:
             self._reveal_frame_at = time.monotonic()
         # Committed whether or not the push succeeded, and whether or not
@@ -3924,11 +3916,7 @@ class DialDisplay:
         entirely: this screen has its own compose path and must never pick
         up the main now-playing overlay. Caller holds self._lock."""
         view = dataclasses.replace(self._build_eq_view_locked(self._eq, time.monotonic()), bell=self._bell_badge())
-        metrics = self._layout_metrics()
-        self._push_frame_locked(lambda: self._compositor.compose_eq(
-            metrics.width, metrics.height, view,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
-        ))
+        self._paint_locked(self._compositor.compose_eq, after=(view,))
 
     def eq_step(self, control: str, delta: int) -> None:
         """Touch-thread entry (dial_touch_wiring's on_zone_tap, for an EQ_BASS_*/
@@ -4144,11 +4132,10 @@ class DialDisplay:
         )
         wifi_bars, wifi_style = self._idle_wifi_args_locked()
         bell = self._bell_badge()
-        self._push_frame_locked(lambda: self._compositor.compose_idle(
-            base, metrics.width, metrics.height,
-            rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
+        self._paint_locked(
+            self._compositor.compose_idle, base, metrics=metrics,
             wifi_bars=wifi_bars, wifi_style=wifi_style, bell=bell,
-        ))
+        )
 
     # ---- polling loop ----------------------------------------------------
 
