@@ -14,6 +14,7 @@
 // =============================================================================
 
 #include "autostream_monitor_utils.h"
+#include "test_log_capture.h"
 
 #include <array>
 #include <atomic>
@@ -144,81 +145,6 @@ static void test_logger_set_get_level()
 
     logger_set_level(MonitorLogLevel::Info);
     CHECK(logger_get_level() == MonitorLogLevel::Info, "set to info");
-}
-
-// ---------------------------------------------------------------------------
-// StderrRedirect: swap fd 2 to an arbitrary fd for the duration of a scope.
-//
-// The logger writes to the process's `stderr` FILE*, which glibc keeps
-// unbuffered -- each fwrite() triggers an immediate write(2) against
-// whatever fd 2 currently refers to.  Redirecting fd 2 to a pipe/file we
-// control, without touching any production code, is what lets these tests
-// exercise the logging thread's real sink-write path (including making it
-// block) from a single process.  IMPORTANT: no CHECK()/fprintf(stderr, ...)
-// diagnostics may run while a redirect that could block is active -- they
-// would themselves block on it.  Restore first, then assert.
-// ---------------------------------------------------------------------------
-
-class StderrRedirect
-{
-public:
-    explicit StderrRedirect(int new_fd)
-    {
-        std::fflush(stderr);
-        _saved_fd = ::dup(STDERR_FILENO);
-        ::dup2(new_fd, STDERR_FILENO);
-    }
-
-    ~StderrRedirect()
-    {
-        restore();
-    }
-
-    void restore()
-    {
-        if (_saved_fd < 0)
-            return;
-        std::fflush(stderr);
-        ::dup2(_saved_fd, STDERR_FILENO);
-        ::close(_saved_fd);
-        _saved_fd = -1;
-    }
-
-private:
-    int _saved_fd = -1;
-};
-
-// ---------------------------------------------------------------------------
-// PipeDrain: continuously drain a pipe's read end in a background thread.
-//
-// IMPORTANT: a naive `while (read(fd, ...) > 0) {}` loop deadlocks here --
-// read() only returns 0 (EOF) once every write end of the pipe is closed,
-// but our write end stays open (dup2'd onto stderr) for the whole test, so
-// such a loop blocks forever waiting for data that will never come once the
-// logging thread finishes its current backlog. poll() with a short timeout,
-// checked against a stop flag, lets the drain run concurrently with
-// logger_test_wait_drained() (new messages can keep arriving while we wait)
-// and still be stopped deterministically from the test thread.
-// ---------------------------------------------------------------------------
-
-static void pipe_drain_loop(int read_fd, std::atomic<bool>* stop_flag)
-{
-    char buf[4096];
-    struct pollfd pfd;
-    pfd.fd = read_fd;
-    pfd.events = POLLIN;
-
-    while (!stop_flag->load(std::memory_order_relaxed))
-    {
-        pfd.revents = 0;
-        int rc = ::poll(&pfd, 1, 50 /* ms */);
-        if (rc > 0 && (pfd.revents & POLLIN))
-        {
-            ssize_t n = ::read(read_fd, buf, sizeof(buf));
-            if (n <= 0)
-                break;  // pipe closed or genuine error
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -711,13 +637,7 @@ static void test_logger_ordering_and_format()
     }
     ::close(tmp_fd);
 
-    std::ifstream in(tmp_path);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line))
-        if (!line.empty())
-            lines.push_back(line);
-    in.close();
+    std::vector<std::string> lines = read_captured_lines(tmp_path);
     ::unlink(tmp_path);
 
     CHECK(lines.size() == 3, "exactly 3 lines captured");
