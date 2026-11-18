@@ -15,6 +15,7 @@ from autostream_players import (
     BackendCapabilities,
     BackendStatus,
     DetectionResult,
+    EventChannelInfo,
     GetOutputResult,
     ListOutputsResult,
     PlaybackMetadata,
@@ -23,6 +24,7 @@ from autostream_players import (
     SaveSettingResult,
     SettingDescriptor,
     SettingValueResult,
+    failure_code,
 )
 
 
@@ -99,7 +101,19 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             supports_runtime_settings=False,
             supports_restart_required_reporting=False,
             supported_setting_keys=(),
+            event_source="websocket",
         )
+
+    def event_channel_info(self) -> EventChannelInfo:
+        """The websocket port /api/config reports (0 when it reports none)."""
+        payload, resp, err = self._get_json("/api/config")
+        if err or resp is None or not resp.ok or not isinstance(payload, dict):
+            return EventChannelInfo(kind="websocket", reachable=False)
+        try:
+            port = int(payload.get("websocket_port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        return EventChannelInfo(kind="websocket", websocket_port=max(0, port), reachable=True)
 
     def get_status(self) -> BackendStatus:
         config_payload, config_resp, config_err = self._get_json("/api/config")
@@ -147,7 +161,7 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             return ListOutputsResult(
                 ok=False,
                 error="Failed to list outputs",
-                error_code="request_failed" if err else "http_error",
+                error_code=failure_code(err) if err else "http_error",
             )
         outputs = payload.get("outputs", [])
         if not isinstance(outputs, list):
@@ -167,7 +181,7 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             return GetOutputResult(ok=False, error="Missing output id", error_code="missing_output_id")
         payload, resp, err = self._get_json(f"/api/outputs/{out_id}")
         if err:
-            return GetOutputResult(ok=False, error="Failed to get output", error_code="request_failed")
+            return GetOutputResult(ok=False, error="Failed to get output", error_code=failure_code(err))
         if resp is None:
             return GetOutputResult(ok=False, error="No backend response", error_code="no_response")
         if resp.status_code == 404:
@@ -213,7 +227,10 @@ class OwnToneBackend(OwnToneHttpBackendBase):
         volume_percent: Optional[int] = None,
         offset_ms: Optional[int] = None,
         mode: Optional[str] = None,
+        include_tv: Optional[bool] = None,
     ) -> ActionResult:
+        # include_tv belongs to owntone-mini's Apple TV groups; upstream has
+        # no such option, so it is accepted and left out of the request.
         payload: dict[str, Any] = {}
         if enabled is not None:
             payload["selected"] = bool(enabled)

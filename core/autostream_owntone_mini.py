@@ -19,6 +19,7 @@ from autostream_players import (
     BackendCapabilities,
     BackendStatus,
     DetectionResult,
+    EventChannelInfo,
     GetOutputResult,
     ListOutputsResult,
     OUTPUT_MODE_AUTO,
@@ -35,6 +36,8 @@ from autostream_players import (
     SaveSettingResult,
     SettingDescriptor,
     SettingValueResult,
+    SpeakersSummary,
+    failure_code,
     SETTING_BUFFERED_AUDIO_ENABLED,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
     SETTING_IPV6,
@@ -80,6 +83,31 @@ _monitor_format_probe_cache: dict[str, tuple[float, str]] = {}
 _LIVE_OFFSET_PROBE_CACHE_SECONDS = 60.0
 _live_offset_probe_lock = threading.Lock()
 _live_offset_probe_cache: dict[str, tuple[float, bool]] = {}
+
+# Event channel probe cache (GET /api/config event_channel and event_socket).
+# Same keyed-by-base_url idiom and TTL as the live-offset cache; a transport
+# failure is not cached. The value is (protocol, socket path or None).
+_EVENT_CHANNEL_PROBE_CACHE_SECONDS = 60.0
+_event_channel_probe_lock = threading.Lock()
+_event_channel_probe_cache: dict[str, tuple[float, tuple[int, Optional[str]]]] = {}
+
+# Whether the last list of outputs from a base_url carried session objects.
+# That, and not the event channel, says the rows have session and group
+# fields and that PUT takes include_tv: a build whose socket is off still
+# sends both. Set by list_outputs() from any non-empty list.
+_rows_carry_session_lock = threading.Lock()
+_rows_carry_session: dict[str, bool] = {}
+
+_SESSION_STATES = ("stopped", "startup", "connected", "streaming", "failed", "password")
+_GROUP_ROLES = ("none", "pair", "tv_leader")
+_SPEAKERS_STATES = ("streaming", "startup", "password", "failed", "stopped")
+_SPEAKERS_LISTED_MAX = 8
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    """A non-empty string, else None."""
+    text = str(value).strip() if value is not None else ""
+    return text or None
 
 # Maps owntone-mini server mode values to normalized internal mode constants.
 # "auto" is always a valid PUT value but is intentionally omitted from the
@@ -273,7 +301,54 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             ),
         )
 
+    def _event_channel_probe(self) -> Optional[tuple[int, Optional[str]]]:
+        """(protocol, socket path) from /api/config, cached for a minute.
+
+        None when the player could not be asked; that is not cached.
+        """
+        cache_key = self._base_url
+        now = time.monotonic()
+        with _event_channel_probe_lock:
+            cached = _event_channel_probe_cache.get(cache_key)
+            if cached is not None and (now - cached[0]) <= _EVENT_CHANNEL_PROBE_CACHE_SECONDS:
+                return cached[1]
+
+        answer = self._read_event_channel()
+        if answer is None:
+            return None
+        with _event_channel_probe_lock:
+            _event_channel_probe_cache[cache_key] = (now, answer)
+        return answer
+
+    def _read_event_channel(self) -> Optional[tuple[int, Optional[str]]]:
+        payload, resp, err = self._get_json("/api/config")
+        if err or resp is None or not resp.ok or not isinstance(payload, dict):
+            return None
+        try:
+            protocol = int(payload.get("event_channel") or 0)
+        except (TypeError, ValueError):
+            protocol = 0
+        path = payload.get("event_socket")
+        socket_path = path if isinstance(path, str) and path else None
+        return protocol, socket_path
+
+    def event_channel_info(self) -> EventChannelInfo:
+        """The event channel as /api/config reports it now (not cached)."""
+        answer = self._read_event_channel()
+        if answer is None:
+            return EventChannelInfo(kind="poll", reachable=False)
+        protocol, socket_path = answer
+        if protocol >= 1 and socket_path:
+            return EventChannelInfo(
+                kind="unix_socket", protocol=protocol, socket_path=socket_path, reachable=True
+            )
+        return EventChannelInfo(kind="poll", protocol=protocol, socket_path=socket_path, reachable=True)
+
     def get_capabilities(self) -> BackendCapabilities:
+        channel = self._event_channel_probe()
+        has_channel = channel is not None and channel[0] >= 1
+        with _rows_carry_session_lock:
+            rows_carry_session = _rows_carry_session.get(self._base_url, False)
         return BackendCapabilities(
             can_list_outputs=True,
             can_get_output=True,
@@ -297,6 +372,10 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             supports_runtime_settings=True,
             supports_restart_required_reporting=True,
             supported_setting_keys=tuple(_SETTING_SPECS.keys()),
+            event_source="unix_socket" if has_channel else "poll",
+            delivers_device_events=has_channel,
+            supports_group_fields=rows_carry_session,
+            supports_include_tv=rows_carry_session,
         )
 
     def get_status(self) -> BackendStatus:
@@ -388,7 +467,52 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         paused_by_device = bool(output.get("paused_by_device", False))
         extra = base.extra + (("paused_by_device", paused_by_device),)
 
-        return replace(base, current_mode=current_mode, supported_modes=supported_modes, extra=extra)
+        return replace(
+            base,
+            current_mode=current_mode,
+            supported_modes=supported_modes,
+            extra=extra,
+            **self._session_and_group_fields(output),
+        )
+
+    @staticmethod
+    def _session_and_group_fields(output: dict[str, Any]) -> dict[str, Any]:
+        """The session and group fields of a row; absent objects leave the
+        defaults, and an unknown state or role reads as the neutral value."""
+        fields: dict[str, Any] = {}
+
+        session = output.get("session")
+        if isinstance(session, dict):
+            state = str(session.get("state") or "").strip().lower()
+            fields["session_state"] = state if state in _SESSION_STATES else ""
+            failure = str(session.get("failure") or "").strip().lower()
+            fields["session_failure"] = "capacity" if failure == "capacity" else "none"
+
+        group = output.get("group")
+        if isinstance(group, dict):
+            role = str(group.get("role") or "").strip().lower()
+            fields["group_role"] = role if role in _GROUP_ROLES else "none"
+            fields["group_gid"] = _optional_text(group.get("gid"))
+            fields["group_leader_id"] = _optional_text(group.get("leader_id"))
+            fields["pair_name"] = _optional_text(group.get("pair_name"))
+            fields["group_hidden"] = bool(group.get("hidden", False))
+            if isinstance(group.get("include_tv"), bool):
+                fields["include_tv"] = group["include_tv"]
+            speakers = group.get("speakers")
+            if isinstance(speakers, dict):
+                ids = speakers.get("ids")
+                listed = tuple(str(i) for i in ids) if isinstance(ids, list) else ()
+                try:
+                    count = int(speakers.get("count", len(listed)))
+                except (TypeError, ValueError):
+                    count = len(listed)
+                speakers_state = str(speakers.get("state") or "").strip().lower()
+                fields["speakers"] = SpeakersSummary(
+                    ids=listed[:_SPEAKERS_LISTED_MAX],
+                    count=max(0, count),
+                    state=speakers_state if speakers_state in _SPEAKERS_STATES else "stopped",
+                )
+        return fields
 
     def list_outputs(self) -> ListOutputsResult:
         payload, resp, err = self._get_json("/api/outputs")
@@ -402,11 +526,16 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             return ListOutputsResult(
                 ok=False,
                 error="Failed to list outputs",
-                error_code="request_failed",
+                error_code=failure_code(err),
             )
         outputs = payload.get("outputs", [])
         if not isinstance(outputs, list):
             return ListOutputsResult(ok=False, error="Invalid outputs payload", error_code="invalid_payload")
+        rows = [output for output in outputs if isinstance(output, dict)]
+        if rows:
+            carries = any(isinstance(row.get("session"), dict) for row in rows)
+            with _rows_carry_session_lock:
+                _rows_carry_session[self._base_url] = carries
         return ListOutputsResult(
             ok=True,
             outputs=tuple(
@@ -422,7 +551,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             return GetOutputResult(ok=False, error="Missing output id", error_code="missing_output_id")
         payload, resp, err = self._get_json(f"/api/outputs/{out_id}")
         if err:
-            return GetOutputResult(ok=False, error="Failed to get output", error_code="request_failed")
+            return GetOutputResult(ok=False, error="Failed to get output", error_code=failure_code(err))
         if resp is None:
             return GetOutputResult(ok=False, error="No backend response", error_code="no_response")
         if resp.status_code == 404:
@@ -468,10 +597,15 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         volume_percent: Optional[int] = None,
         offset_ms: Optional[int] = None,
         mode: Optional[str] = None,
+        include_tv: Optional[bool] = None,
     ) -> ActionResult:
         payload: dict[str, Any] = {}
         if enabled is not None:
             payload["selected"] = bool(enabled)
+        if include_tv is not None:
+            # Applied together with "selected"; the daemon ignores it for an
+            # output that is not an Apple TV leading a group.
+            payload["include_tv"] = bool(include_tv)
         if volume_percent is not None:
             try:
                 volume = int(volume_percent)

@@ -32,6 +32,25 @@ import requests
 _session = requests
 
 
+class TimeoutDetail(str):
+    """The error text of a request that timed out.
+
+    The HTTP helpers return their failure as text; this subclass lets a caller
+    tell a timeout (the player is busy, for example starting a speaker) from a
+    refused or reset connection without changing the helpers' return shape.
+    """
+
+
+def is_timeout(detail: object) -> bool:
+    """True when *detail* is the error text of a request timeout."""
+    return isinstance(detail, TimeoutDetail)
+
+
+def failure_code(detail: object) -> str:
+    """The error code for a failed request: "timeout" or "request_failed"."""
+    return "timeout" if is_timeout(detail) else "request_failed"
+
+
 BACKEND_OWNTONE = "owntone"
 BACKEND_OWNTONE_MINI = "owntone-mini"
 
@@ -200,6 +219,24 @@ class BackendCapabilities:
     supports_runtime_settings: bool = False
     supports_restart_required_reporting: bool = False
     supported_setting_keys: tuple[str, ...] = ()
+    # How output changes and device events reach autostream: "unix_socket"
+    # (owntone-mini's event channel), "websocket" (upstream OwnTone) or "poll".
+    event_source: str = "poll"
+    # receiver_command and device_volume events arrive on that channel.
+    delivers_device_events: bool = False
+    # Output rows carry a session and a group object.
+    supports_group_fields: bool = False
+    # PUT /api/outputs/{id} takes include_tv.
+    supports_include_tv: bool = False
+
+
+@dataclass(frozen=True)
+class SpeakersSummary:
+    """The other outputs of a pair or an Apple TV group, as the row reports them."""
+
+    ids: tuple[str, ...] = ()
+    count: int = 0
+    state: str = "stopped"  # streaming | startup | password | failed | stopped
 
 
 @dataclass(frozen=True)
@@ -220,10 +257,32 @@ class OutputInfo:
     current_mode: str = OUTPUT_MODE_AUTO
     supported_modes: tuple[str, ...] = ()
     extra: tuple[tuple[str, Any], ...] = ()
+    # Session and group fields of a backend whose rows carry them; the
+    # defaults stand for a backend whose rows do not.
+    session_state: str = ""  # "" when the backend has no session object
+    session_failure: str = "none"  # "none" | "capacity"
+    group_role: str = "none"  # "none" | "pair" | "tv_leader"
+    group_gid: Optional[str] = None
+    group_leader_id: Optional[str] = None
+    pair_name: Optional[str] = None
+    group_hidden: bool = False
+    include_tv: Optional[bool] = None  # only on a tv_leader row, as reported
+    speakers: Optional[SpeakersSummary] = None  # only on pair and tv_leader rows
 
     def extra_dict(self) -> dict[str, Any]:
         """Return extra metadata as a plain dict when needed."""
         return dict(self.extra)
+
+
+@dataclass(frozen=True)
+class EventChannelInfo:
+    """How a backend can push output changes, as it reports it right now."""
+
+    kind: str  # "unix_socket" | "websocket" | "poll"
+    protocol: int = 0  # event channel protocol version, 0 when off
+    socket_path: Optional[str] = None
+    websocket_port: int = 0
+    reachable: bool = False  # the probe got an answer
 
 
 @dataclass(frozen=True)
@@ -336,6 +395,7 @@ class PlayerBackend(ABC):
         volume_percent: Optional[int] = None,
         offset_ms: Optional[int] = None,
         mode: Optional[str] = None,
+        include_tv: Optional[bool] = None,
     ) -> ActionResult:
         """Update multiple fields on one output in a single backend request.
 
@@ -343,6 +403,9 @@ class PlayerBackend(ABC):
         OUTPUT_MODE_AIRPLAY1, OUTPUT_MODE_AIRPLAY2).  Backends that do not
         support mode must absorb an unsupported-mode condition internally:
         log at INFO and return ok=True rather than propagating a failure.
+
+        include_tv chooses, for an Apple TV that leads a group of speakers,
+        whether the TV itself plays too.  Backends without the option ignore it.
         """
 
     @abstractmethod
@@ -384,6 +447,15 @@ class PlayerBackend(ABC):
     @abstractmethod
     def list_supported_settings(self) -> list[SettingDescriptor]:
         """Return normalized settings that this backend supports."""
+
+    def event_channel_info(self) -> EventChannelInfo:
+        """How this backend can push output changes right now.
+
+        Concrete default: polling, nothing reachable. Backends with a push
+        channel override it. It may make a request, so a caller keeps it off
+        request threads.
+        """
+        return EventChannelInfo(kind="poll", reachable=False)
 
     def supports_live_offset(self) -> bool:
         """Whether set_output_offset()/update_output(offset_ms=...) takes
@@ -548,6 +620,18 @@ def detect_backend(
     return None, tuple(detections)
 
 
+_CONFLICT_CODES = ("reselect_required", "group_not_present")
+
+
+def _conflict_code(payload: object) -> str:
+    """The conflict a 409 body names, or "" for a body that names none."""
+    if isinstance(payload, dict):
+        text = str(payload.get("error") or "")
+        if text in _CONFLICT_CODES:
+            return text
+    return ""
+
+
 class OwnToneHttpBackendBase(PlayerBackend, ABC):
     """Shared HTTP helpers for OwnTone-flavoured backends."""
 
@@ -613,6 +697,8 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
     ) -> tuple[Optional[dict[str, Any]], Optional[requests.Response], str]:
         try:
             resp = _session.get(self._url(path), timeout=self._timeout)
+        except requests.Timeout as exc:
+            return None, None, TimeoutDetail(str(exc))
         except requests.RequestException as exc:
             return None, None, str(exc)
         if not resp.content:
@@ -641,7 +727,7 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
                 detail=(resp.text or "").strip() or err,
             )
         if err:
-            return ActionResult(ok=False, error="Backend request failed", error_code="request_failed", detail=err)
+            return ActionResult(ok=False, error="Backend request failed", error_code=failure_code(err), detail=err)
         return ActionResult(ok=True)
 
     def _put_json_for_response(
@@ -656,6 +742,8 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
                 resp = _session.put(self._url(path), timeout=self._timeout)
             else:
                 resp = _session.put(self._url(path), json=payload, timeout=self._timeout)
+        except requests.Timeout as exc:
+            return None, None, TimeoutDetail(str(exc))
         except requests.RequestException as exc:
             return None, None, str(exc)
 
@@ -691,7 +779,7 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
         if not out_id:
             return ActionResult(ok=False, error="Missing output id", error_code="missing_output_id")
 
-        _response_payload, resp, err = self._put_json_for_response(
+        response_payload, resp, err = self._put_json_for_response(
             f"/api/outputs/{out_id}",
             payload,
             success_statuses=(204,),
@@ -711,6 +799,15 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
                     error_code="pin_required",
                     detail=(resp.text or "").strip(),
                 )
+        if resp is not None and resp.status_code == 409:
+            conflict = _conflict_code(response_payload)
+            if conflict:
+                return ActionResult(
+                    ok=False,
+                    error=f"Backend refused the change: {conflict}",
+                    error_code=conflict,
+                    detail=(resp.text or "").strip(),
+                )
         if resp is not None and resp.status_code == 503 and "encoder_capacity" in ((resp.text or "")):
             return ActionResult(
                 ok=False,
@@ -726,7 +823,7 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
                 detail=(resp.text or "").strip() or err,
             )
         if err:
-            return ActionResult(ok=False, error="Backend request failed", error_code="request_failed", detail=err)
+            return ActionResult(ok=False, error="Backend request failed", error_code=failure_code(err), detail=err)
         if resp is None:
             return ActionResult(ok=False, error="No backend response", error_code="no_response")
         return ActionResult(ok=True)

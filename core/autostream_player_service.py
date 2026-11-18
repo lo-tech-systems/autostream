@@ -1438,19 +1438,6 @@ def get_output(base_url: str, output_id: str, *, timeout: float = 3.0) -> GetOut
     return resolve_backend(base_url, timeout=timeout).backend.get_output(output_id)
 
 
-def get_output_by_name(base_url: str, output_name: str, *, timeout: float = 3.0) -> Optional[OutputInfo]:
-    wanted = str(output_name or "").strip()
-    if not wanted:
-        return None
-    result = list_outputs(base_url, timeout=timeout)
-    if not result.ok:
-        return None
-    for output in result.outputs:
-        if str(output.name or "").strip() == wanted:
-            return output
-    return None
-
-
 def set_output_enabled(base_url: str, output_id: str, enabled: bool, *, timeout: float = 3.0) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.set_output_enabled(output_id, enabled)
 
@@ -1475,6 +1462,7 @@ def update_output(
     volume_percent: int | None = None,
     offset_ms: int | None = None,
     mode: str | None = None,
+    include_tv: bool | None = None,
     timeout: float = 3.0,
 ) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.update_output(
@@ -1483,6 +1471,7 @@ def update_output(
         volume_percent=volume_percent,
         offset_ms=offset_ms,
         mode=mode,
+        include_tv=include_tv,
     )
 
 

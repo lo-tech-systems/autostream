@@ -1132,3 +1132,352 @@ class TestMiniSupportsLiveOffsetProbe:
             r2 = b2.supports_live_offset()
         assert r1 is True
         assert r2 is False
+
+
+# ---------------------------------------------------------------------------
+# Session and group fields, capability flags, event channel, timeouts
+# ---------------------------------------------------------------------------
+
+# Example rows as the owntone-mini API documents them.
+_ROW_PLAIN = {
+    "id": "1",
+    "name": "Speaker A",
+    "type": "AirPlay 2",
+    "selected": True,
+    "has_password": False,
+    "requires_auth": False,
+    "needs_auth_key": False,
+    "volume": 50,
+    "offset_ms": 0,
+    "format": "alac",
+    "supported_formats": ["pcm", "alac"],
+    "mode": "auto",
+    "supported_modes": ["raop", "airplay2"],
+    "session": {"state": "streaming", "failure": "none"},
+    "group": {"gid": None, "role": "none", "leader_id": None, "pair_name": None, "hidden": False},
+}
+
+_ROW_TV_LEADER = {
+    "id": "186916976721924",
+    "name": "TV A",
+    "selected": True,
+    "session": {"state": "stopped", "failure": "none"},
+    "group": {
+        "gid": "5B2C0A44", "role": "tv_leader", "leader_id": "186916976721924",
+        "pair_name": "Pair A", "hidden": False, "include_tv": False,
+        "speakers": {"ids": ["186916976721925", "186916976721926"], "count": 2, "state": "streaming"},
+    },
+}
+
+_ROW_OLD = {"id": "7", "name": "Speaker B", "selected": False, "volume": 30}
+
+
+def _clear_mini_caches():
+    import autostream_owntone_mini as om
+    om._event_channel_probe_cache.clear()
+    om._rows_carry_session.clear()
+    om._live_offset_probe_cache.clear()
+
+
+def _mini(base_url="http://mini-fields:3689"):
+    return OwnToneMiniBackend(base_url=base_url)
+
+
+class TestMiniSessionAndGroupFields:
+    def test_plain_row_carries_session_and_default_group(self):
+        out = _mini()._normalize_output_info(_ROW_PLAIN)
+        assert out.session_state == "streaming"
+        assert out.session_failure == "none"
+        assert out.group_role == "none"
+        assert out.group_gid is None
+        assert out.group_hidden is False
+        assert out.include_tv is None
+        assert out.speakers is None
+
+    def test_tv_leader_row_carries_group_fields(self):
+        out = _mini()._normalize_output_info(_ROW_TV_LEADER)
+        assert out.session_state == "stopped"
+        assert out.group_role == "tv_leader"
+        assert out.group_gid == "5B2C0A44"
+        assert out.group_leader_id == "186916976721924"
+        assert out.pair_name == "Pair A"
+        assert out.include_tv is False
+        assert out.speakers == ap.SpeakersSummary(
+            ids=("186916976721925", "186916976721926"), count=2, state="streaming")
+
+    def test_row_without_session_or_group_keeps_defaults(self):
+        out = _mini()._normalize_output_info(_ROW_OLD)
+        assert out.session_state == ""
+        assert out.session_failure == "none"
+        assert out.group_role == "none"
+        assert out.speakers is None
+        assert out.include_tv is None
+
+    def test_unknown_role_and_states_read_as_neutral(self):
+        out = _mini()._normalize_output_info({
+            "id": "x",
+            "session": {"state": "warming", "failure": "mystery"},
+            "group": {"role": "stack", "speakers": {"ids": [], "count": 0, "state": "odd"}},
+        })
+        assert out.session_state == ""
+        assert out.session_failure == "none"
+        assert out.group_role == "none"
+        assert out.speakers.state == "stopped"
+
+    def test_capacity_failure_is_kept(self):
+        out = _mini()._normalize_output_info({"id": "x", "session": {"state": "failed", "failure": "capacity"}})
+        assert (out.session_state, out.session_failure) == ("failed", "capacity")
+
+    def test_at_most_eight_speaker_ids_are_kept(self):
+        ids = [str(n) for n in range(12)]
+        out = _mini()._normalize_output_info({
+            "id": "x", "group": {"role": "pair", "speakers": {"ids": ids, "count": 12, "state": "streaming"}}})
+        assert len(out.speakers.ids) == 8
+        assert out.speakers.count == 12
+
+    def test_include_tv_only_when_boolean(self):
+        out = _mini()._normalize_output_info({"id": "x", "group": {"role": "tv_leader", "include_tv": "no"}})
+        assert out.include_tv is None
+
+    def test_upstream_rows_have_no_session_fields(self):
+        out = OwnToneBackend(base_url="http://localhost:3689")._normalize_output_info(_ROW_PLAIN)
+        assert out.session_state == ""
+        assert out.group_role == "none"
+
+
+class TestMiniRowFlagsAndChannelCapabilities:
+    def setup_method(self):
+        _clear_mini_caches()
+
+    def teardown_method(self):
+        _clear_mini_caches()
+
+    @staticmethod
+    def _get(config, outputs):
+        def fake_get(url, **kw):
+            if url.endswith("/api/config"):
+                return _resp(json_data=config)
+            if url.endswith("/api/outputs"):
+                return _resp(json_data={"outputs": outputs})
+            return _resp(status=404, content=b"")
+        return fake_get
+
+    def test_channel_on_reports_unix_socket_and_device_events(self):
+        b = _mini()
+        config = {"event_channel": 1, "event_socket": "/run/owntone-mini/events.sock"}
+        with patch("autostream_players._session.get", side_effect=self._get(config, [])):
+            caps = b.get_capabilities()
+        assert caps.event_source == "unix_socket"
+        assert caps.delivers_device_events is True
+
+    def test_channel_off_reports_poll(self):
+        b = _mini()
+        config = {"event_channel": 0, "event_socket": None}
+        with patch("autostream_players._session.get", side_effect=self._get(config, [])):
+            caps = b.get_capabilities()
+        assert caps.event_source == "poll"
+        assert caps.delivers_device_events is False
+
+    def test_channel_absent_reports_poll(self):
+        b = _mini()
+        with patch("autostream_players._session.get", side_effect=self._get({"product_name": "owntone-mini"}, [])):
+            caps = b.get_capabilities()
+        assert caps.event_source == "poll"
+        assert caps.delivers_device_events is False
+
+    def test_row_flags_come_from_rows_even_when_the_channel_is_off(self):
+        b = _mini()
+        config = {"event_channel": 0, "event_socket": None}
+        with patch("autostream_players._session.get", side_effect=self._get(config, [_ROW_PLAIN])):
+            before = b.get_capabilities()
+            assert b.list_outputs().ok
+            after = b.get_capabilities()
+        assert (before.supports_group_fields, before.supports_include_tv) == (False, False)
+        assert (after.supports_group_fields, after.supports_include_tv) == (True, True)
+        assert after.event_source == "poll"
+
+    def test_rows_without_a_session_leave_the_row_flags_false(self):
+        b = _mini()
+        with patch("autostream_players._session.get", side_effect=self._get({}, [_ROW_OLD])):
+            assert b.list_outputs().ok
+            caps = b.get_capabilities()
+        assert (caps.supports_group_fields, caps.supports_include_tv) == (False, False)
+
+    def test_an_empty_list_does_not_change_the_row_flags(self):
+        b = _mini()
+        with patch("autostream_players._session.get", side_effect=self._get({}, [_ROW_PLAIN])):
+            b.list_outputs()
+        with patch("autostream_players._session.get", side_effect=self._get({}, [])):
+            b.list_outputs()
+            caps = b.get_capabilities()
+        assert caps.supports_group_fields is True
+
+    def test_channel_probe_is_cached(self):
+        b = _mini()
+        config = {"event_channel": 1, "event_socket": "/run/x.sock"}
+        with patch("autostream_players._session.get", side_effect=self._get(config, [])) as mock_get:
+            b.get_capabilities()
+            b.get_capabilities()
+        assert mock_get.call_count == 1
+
+    def test_channel_probe_is_not_cached_on_a_transport_failure(self):
+        b = _mini()
+        with patch("autostream_players._session.get", side_effect=_req_exc()):
+            first = b.get_capabilities()
+        config = {"event_channel": 1, "event_socket": "/run/x.sock"}
+        with patch("autostream_players._session.get", side_effect=self._get(config, [])):
+            second = b.get_capabilities()
+        assert first.event_source == "poll"
+        assert second.event_source == "unix_socket"
+
+
+class TestEventChannelInfo:
+    def test_default_is_poll_and_unreachable(self):
+        stub = _make_stub_backend_cls()()
+        info = stub.event_channel_info()
+        assert (info.kind, info.reachable) == ("poll", False)
+
+    def test_mini_with_channel_names_the_socket(self):
+        config = {"event_channel": 1, "event_socket": "/run/owntone-mini/events.sock"}
+        with patch("autostream_players._session.get", return_value=_resp(json_data=config)):
+            info = _mini().event_channel_info()
+        assert info == ap.EventChannelInfo(
+            kind="unix_socket", protocol=1, socket_path="/run/owntone-mini/events.sock", reachable=True)
+
+    def test_mini_with_channel_off_is_poll_but_reachable(self):
+        config = {"event_channel": 0, "event_socket": None}
+        with patch("autostream_players._session.get", return_value=_resp(json_data=config)):
+            info = _mini().event_channel_info()
+        assert (info.kind, info.reachable, info.socket_path) == ("poll", True, None)
+
+    def test_mini_without_a_socket_path_is_poll(self):
+        config = {"event_channel": 1, "event_socket": ""}
+        with patch("autostream_players._session.get", return_value=_resp(json_data=config)):
+            info = _mini().event_channel_info()
+        assert info.kind == "poll"
+
+    def test_mini_without_the_keys_is_poll(self):
+        with patch("autostream_players._session.get", return_value=_resp(json_data={"product_name": "owntone-mini"})):
+            info = _mini().event_channel_info()
+        assert (info.kind, info.protocol, info.reachable) == ("poll", 0, True)
+
+    def test_mini_unreachable_is_poll_and_not_reachable(self):
+        with patch("autostream_players._session.get", side_effect=_req_exc()):
+            info = _mini().event_channel_info()
+        assert (info.kind, info.reachable) == ("poll", False)
+
+    def test_mini_probe_is_not_cached(self):
+        b = _mini()
+        with patch("autostream_players._session.get", return_value=_resp(json_data={})) as mock_get:
+            b.event_channel_info()
+            b.event_channel_info()
+        assert mock_get.call_count == 2
+
+    def test_upstream_is_a_websocket_with_its_port(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        with patch("autostream_players._session.get", return_value=_resp(json_data={"websocket_port": 3688})):
+            info = b.event_channel_info()
+        assert info == ap.EventChannelInfo(kind="websocket", websocket_port=3688, reachable=True)
+        assert b.get_capabilities().event_source == "websocket"
+        assert b.get_capabilities().delivers_device_events is False
+
+    def test_upstream_without_a_port_reports_zero(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        with patch("autostream_players._session.get", return_value=_resp(json_data={})):
+            info = b.event_channel_info()
+        assert (info.kind, info.websocket_port, info.reachable) == ("websocket", 0, True)
+
+
+class TestIncludeTv:
+    def test_mini_puts_include_tv_next_to_selected(self):
+        b = _mini()
+        with patch("autostream_players._session.put", return_value=_resp(status=204, content=b"")) as mock_put:
+            result = b.update_output("9", enabled=True, include_tv=False)
+        assert result.ok
+        assert mock_put.call_args.kwargs["json"] == {"selected": True, "include_tv": False}
+
+    def test_mini_leaves_include_tv_out_when_not_given(self):
+        b = _mini()
+        with patch("autostream_players._session.put", return_value=_resp(status=204, content=b"")) as mock_put:
+            b.update_output("9", enabled=True)
+        assert "include_tv" not in mock_put.call_args.kwargs["json"]
+
+    def test_upstream_accepts_and_ignores_include_tv(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        with patch("autostream_players._session.put", return_value=_resp(status=204, content=b"")) as mock_put:
+            result = b.update_output("9", enabled=True, include_tv=False)
+        assert result.ok
+        assert mock_put.call_args.kwargs["json"] == {"selected": True}
+
+    @pytest.mark.parametrize("code", ["reselect_required", "group_not_present"])
+    def test_409_bodies_become_error_codes(self, code):
+        b = _mini()
+        r = _resp(status=409, json_data={"error": code})
+        with patch("autostream_players._session.put", return_value=r):
+            result = b.update_output("9", enabled=True, include_tv=False)
+        assert not result.ok
+        assert result.error_code == code
+
+    def test_other_409_stays_an_http_error(self):
+        b = _mini()
+        r = _resp(status=409, json_data={"error": "something_else"})
+        with patch("autostream_players._session.put", return_value=r):
+            result = b.update_output("9", enabled=True)
+        assert result.error_code == "http_error"
+
+    def test_player_service_passes_include_tv_through(self):
+        import autostream_player_service as ps
+        backend = MagicMock()
+        backend.update_output.return_value = ap.ActionResult(ok=True)
+        with patch.object(ps, "resolve_backend", return_value=MagicMock(backend=backend)):
+            ps.update_output("http://x:3689", "9", enabled=True, include_tv=False)
+        assert backend.update_output.call_args.kwargs["include_tv"] is False
+
+
+class TestTimeoutsHaveTheirOwnCode:
+    def _timeout(self):
+        import requests as rq
+        return rq.Timeout("timed out")
+
+    def _refused(self):
+        import requests as rq
+        return rq.ConnectionError("refused")
+
+    @pytest.mark.parametrize("make", [OwnToneBackend, OwnToneMiniBackend])
+    def test_list_outputs(self, make):
+        b = make(base_url="http://localhost:3689")
+        with patch("autostream_players._session.get", side_effect=self._timeout()):
+            assert b.list_outputs().error_code == "timeout"
+        with patch("autostream_players._session.get", side_effect=self._refused()):
+            assert b.list_outputs().error_code == "request_failed"
+
+    @pytest.mark.parametrize("make", [OwnToneBackend, OwnToneMiniBackend])
+    def test_get_output(self, make):
+        b = make(base_url="http://localhost:3689")
+        with patch("autostream_players._session.get", side_effect=self._timeout()):
+            assert b.get_output("1").error_code == "timeout"
+        with patch("autostream_players._session.get", side_effect=self._refused()):
+            assert b.get_output("1").error_code == "request_failed"
+
+    @pytest.mark.parametrize("make", [OwnToneBackend, OwnToneMiniBackend])
+    def test_put_output_fields(self, make):
+        b = make(base_url="http://localhost:3689")
+        with patch("autostream_players._session.put", side_effect=self._timeout()):
+            assert b.set_output_enabled("1", True).error_code == "timeout"
+        with patch("autostream_players._session.put", side_effect=self._refused()):
+            assert b.set_output_enabled("1", True).error_code == "request_failed"
+
+    @pytest.mark.parametrize("make", [OwnToneBackend, OwnToneMiniBackend])
+    def test_put_json(self, make):
+        b = make(base_url="http://localhost:3689")
+        with patch("autostream_players._session.put", side_effect=self._timeout()):
+            assert b.set_selected_outputs([]).error_code == "timeout"
+        with patch("autostream_players._session.put", side_effect=self._refused()):
+            assert b.set_selected_outputs([]).error_code == "request_failed"
+
+    def test_get_json_marks_a_timeout_in_its_error_text(self):
+        b = OwnToneBackend(base_url="http://localhost:3689")
+        with patch("autostream_players._session.get", side_effect=self._timeout()):
+            _payload, _response, err = b._get_json("/api/x")
+        assert ap.is_timeout(err)
+        assert "timed out" in err
