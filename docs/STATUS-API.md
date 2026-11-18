@@ -207,6 +207,89 @@ reschedule request cannot pull the deadline earlier, only push it later.
 
 ---
 
+## `GET /api/v1/events` and `GET /api/v1/state` (unstable until the next release line)
+
+These two routes are new and **unstable**: their shape, names and auth may
+change before the next release line, and nothing outside this appliance's own
+Home page should depend on them yet.
+
+### `GET /api/v1/events`
+
+A Server-Sent Events stream that says **which parts of the appliance state
+moved**. It carries no state: a client that sees a part it cares about move
+fetches the route that shows it (the Home page fetches `/api/status` and
+`/api/owntone/outputs_state`). Like `GET /api/status` it needs no PIN. It
+carries only part names, versions and the boot id.
+
+Headers: `Content-Type: text/event-stream`, `Cache-Control: no-store`. There is
+no `Content-Length`; the response ends when the server closes the connection.
+The first bytes of every stream are `retry: 2000` and a blank line, which sets
+the browser's reconnect delay.
+
+An event:
+
+```
+id: 3f9a0c1d2e4b5a69-1234
+event: change
+data: {"boot":"3f9a0c1d2e4b5a69","version":1234,"parts":["outputs","session"],"resync":false}
+
+```
+
+| Field | Description |
+|---|---|
+| `id` | `<boot>-<version>`: the 16-hex boot id of the state store and the version the event describes. A browser sends it back as `Last-Event-ID` when it reconnects. |
+| `boot`, `version` | The same two values, so a client never parses the id. |
+| `parts` | The parts that moved since the version the client last had, in a fixed order, never empty. The part names are `session`, `repeat`, `track`, `inputs`, `monitor`, `playback`, `health`, `settings`, `outputs`, `eq` and `devices`. |
+| `resync` | `true` when the server cannot say what moved (a new client, a restart of the appliance's service, an id it does not know). `parts` is then every part and a client refetches everything it shows. |
+
+There is one event name, `change`. When nothing has happened for ten seconds
+the server writes a comment line (`: ka`) to keep the connection alive; it is
+not an event. Changes that follow each other within about 0.3 seconds are
+folded into one event.
+
+Some values on the Home page are not versioned and so are never announced: the
+level meters, the VU history, the replay position and the unidentified track
+texts, besides another appliance's use of a speaker, the dial update banner
+and a dial's claim on a speaker's PIN. A client that shows them keeps polling
+`/api/status` while a session or replay is live and fetches again every 15
+seconds.
+
+**Resuming.** A client names the version it last had in the `Last-Event-ID`
+request header, or in a `since` query parameter (`?since=<id>`) when it
+opens a new stream. The same boot and an older version gives one event naming
+exactly the parts that moved since; the current version gives nothing until
+the next change; a different boot, a newer version than the server has or an
+id that does not parse gives a `resync` event. No event history is kept, so a
+client that was away for an hour gets the same exact answer as one that was
+away for a second.
+
+**Limits.** At most eight streams are served at once. A ninth request gets
+HTTP 200 with the JSON body `{"ok": false, "error": "too_many_clients",
+"error_status": 503, "retryable": true}` (an event source treats any reply
+that is not a stream as a failed connection, which is what a page needs to
+fall back to polling). A stream is ended by the server after about five
+minutes (each stream's limit varies by 10 percent) and the browser resumes it
+with its last id. A client that stops reading is dropped after two seconds of
+blocked writes. A request whose `Origin` header names another host is refused
+with 403 (`cross_origin`).
+
+The Home page uses the stream when it is available and polls as before when
+it is not (the stream refused, the service restarting, an older web server in
+front), trying the stream again after about 30 seconds.
+
+### `GET /api/v1/state`
+
+The state snapshot as it is held: `boot`, `version`, `clients` (the number of
+open streams), `part_versions` (the version at which each part last moved) and
+`parts` (every part, serialised field by field with the internal field names).
+It is **behind the PIN** when one is set, unlike the stream, because it
+carries the paired Bluetooth device, the capture device list, health counters
+and equaliser settings. The body is internal and will change when the parts
+do; it is meant for diagnosis. It is built at most once a second however many
+clients ask.
+
+---
+
 ## Related files
 
 | File | Role |

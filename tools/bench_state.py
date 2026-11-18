@@ -12,6 +12,7 @@ one cycle every half second.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -47,6 +48,34 @@ def inputs_part(i: int) -> state.InputsPart:
     return state.InputsPart((entry, entry), 0, "")
 
 
+def hub_row(st, session, n: int, waiters: int = 8) -> tuple[float, float]:
+    """Publish with notify while a stream hub is subscribed and *waiters*
+    threads are parked on it, as eight open streams are."""
+    from webui import stream
+
+    hub = stream.StreamHub(st)
+    hub.start()
+    stop = threading.Event()
+
+    def park() -> None:
+        seen = hub.generation()
+        while not stop.is_set():
+            woke = hub.wait_past(seen, 1.0)
+            if woke is not None:
+                seen = woke
+
+    threads = [threading.Thread(target=park, daemon=True) for _ in range(waiters)]
+    for t in threads:
+        t.start()
+    try:
+        return timed(lambda i: session.publish(state.SessionPart(bool(i & 1), "input1")).notify(), n)
+    finally:
+        stop.set()
+        hub.stop()
+        for t in threads:
+            t.join(2.0)
+
+
 def main() -> None:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 100_000
     st = state.store()
@@ -66,6 +95,8 @@ def main() -> None:
     print(f"publish+notify (digest equal): p50 {p50:.1f} us  p99 {p99:.1f} us")
     p50, p99 = timed(lambda i: st.snapshot(), n)
     print(f"snapshot():                    p50 {p50:.2f} us  p99 {p99:.2f} us")
+    p50, p99 = hub_row(st, session, max(n // 10, 1000))
+    print(f"publish+notify, stream hub, 8 waiters: p50 {p50:.1f} us  p99 {p99:.1f} us")
 
     def cycle(i: int) -> None:
         with st.batch():
