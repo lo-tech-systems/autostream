@@ -1029,11 +1029,29 @@ void AudioMonitor::run()
         for (int i = 0; i < NUM_INPUTS; ++i)
         {
             if (!_inputs[i])
+            {
+                _quick_death_noted[i] = false;
                 continue;
+            }
             if (!_inputs[i]->is_started() || _inputs[i]->is_running())
                 continue;
             if (now < _restart_after[i])
                 continue;
+
+            const double not_before = watchdog_restart_not_before(
+                now, _restarted_at[i], kWatchdogQuickDeathSeconds, RESTART_BACKOFF_SECONDS);
+            if (not_before > now)
+            {
+                if (!_quick_death_noted[i])
+                {
+                    LOG_WARN_EVERY(log_key(LogKey::WatchdogQuickDeath, i + 1), 60.0,
+                                   "[monitor] Input %d stopped within %.0f s of a restart; next attempt in %.0f s",
+                                   i + 1, kWatchdogQuickDeathSeconds, not_before - now);
+                    _quick_death_noted[i] = true;
+                }
+                continue;
+            }
+            _quick_death_noted[i] = false;
 
             LOG_WARN_EVERY(log_key(LogKey::WatchdogStopped, i + 1), 60.0,
                            "[monitor] Input %d stopped unexpectedly; attempting auto-restart",
@@ -1042,15 +1060,17 @@ void AudioMonitor::run()
             // can block up to kDrainTimeoutMs (250 ms) if the repeat
             // controller is in the Recording state on this input,
             // waiting for a bounded drain. Blocking here is acceptable: run()
-            // is the main thread (not audio/process/control), this restart
-            // path is already 5 s backoff-throttled, and self-stopped ALSA
-            // errors are rare. Teardown must complete before the start()
+            // is the main thread (not audio/process/control), self-stopped ALSA
+            // errors are rare, and the back-off applies after a failed attempt
+            // or when an input dies within kWatchdogQuickDeathSeconds of a
+            // restart. Teardown must complete before the start()
             // retry below, exactly as it does on the api_stop_input() path.
             stop_input_with_teardown(i);
 
             std::string err;
             if (_inputs[i]->start(&err))
             {
+                _restarted_at[i] = get_monotonic_time();
                 LOG_INFO_EVERY(log_key(LogKey::WatchdogRestarted, i + 1), 60.0,
                                "[monitor] Input %d restarted successfully", i + 1);
             }

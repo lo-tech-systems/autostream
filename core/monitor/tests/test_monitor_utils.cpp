@@ -1211,6 +1211,29 @@ static void test_rate_suppressed_path_does_not_allocate()
 
 
 // ---------------------------------------------------------------------------
+// watchdog_restart_not_before
+// ---------------------------------------------------------------------------
+
+static void test_watchdog_restart_not_before()
+{
+    const double quick = 5.0;
+    const double backoff = 5.0;
+
+    CHECK(watchdog_restart_not_before(100.0, 0.0, quick, backoff) == 100.0,
+          "T18 no recent restart: now");
+    CHECK(watchdog_restart_not_before(100.0, 95.0, quick, backoff) == 100.0,
+          "T18 exactly quick_death_s after a restart: now");
+    CHECK(watchdog_restart_not_before(100.0, 90.0, quick, backoff) == 100.0,
+          "T18 past quick_death_s: now");
+    CHECK(watchdog_restart_not_before(100.0, 98.0, quick, backoff) == 103.0,
+          "T18 inside quick_death_s: restarted_at + backoff_s, not now + backoff_s");
+    CHECK(watchdog_restart_not_before(100.0, 99.9, quick, 2.0) == 101.9,
+          "T18 the deadline is measured from the restart");
+    CHECK(watchdog_restart_not_before(100.0, 96.0, quick, 2.0) == 100.0,
+          "T18 inside quick_death_s but past restarted_at + backoff_s: now");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1290,6 +1313,8 @@ int main()
     test_rate_rearm_admits_inside_the_window();
     test_rate_flush_and_init_handle_pending_counts();
     test_rate_suppressed_path_does_not_allocate();
+
+    test_watchdog_restart_not_before();
 
     // The logging thread is a background std::thread owned by process-wide
     // state (g_logger); it must be stopped (joined) before main() returns,

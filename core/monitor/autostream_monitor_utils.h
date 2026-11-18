@@ -11,6 +11,7 @@
 
 #include <samplerate.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -353,6 +354,17 @@ inline bool compute_should_capture_with_hold(bool is_above_threshold,
                      && capture_start_time > 0.0
                      && (now - capture_start_time) < static_cast<double>(minimum_playback_seconds);
     return (is_above_threshold || hold_active) && allow_capture;
+}
+
+// Earliest time the watchdog may restart an input found stopped at `now`.
+// Inside quick_death_s of the watchdog's last restart of the input:
+// restarted_at + backoff_s (never earlier than now).  Otherwise: now.
+inline double watchdog_restart_not_before(double now, double restarted_at,
+                                          double quick_death_s, double backoff_s)
+{
+    if (restarted_at > 0.0 && now - restarted_at < quick_death_s)
+        return std::max(now, restarted_at + backoff_s);
+    return now;
 }
 
 // Replay-takeover re-notify. RepeatController::notify_capture_started()

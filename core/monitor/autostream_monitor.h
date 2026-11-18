@@ -4102,6 +4102,10 @@ private:
     // Back-off interval (seconds) before retrying a failed auto-restart.
     static constexpr double RESTART_BACKOFF_SECONDS = 5.0;
 
+    // An input that stops within this long of a watchdog restart is not
+    // restarted again until RESTART_BACKOFF_SECONDS after that restart.
+    static constexpr double kWatchdogQuickDeathSeconds = 5.0;
+
     std::string _socket_path;
 
     // Test-only: set once at construction from the --test-hooks command-line
@@ -4143,6 +4147,11 @@ private:
     // restart attempt; set to now + RESTART_BACKOFF_SECONDS after each
     // failed attempt to prevent a tight retry loop.
     std::array<double, NUM_INPUTS> _restart_after{};
+
+    // Per-input monotonic time of the watchdog's last successful restart (0 =
+    // none), and whether the current deferral has been logged.
+    std::array<double, NUM_INPUTS> _restarted_at{};
+    std::array<bool, NUM_INPUTS>   _quick_death_noted{};
 
     std::atomic<bool> _running{false};
 
