@@ -139,23 +139,25 @@ under the store's lock and nothing else.
 **Change hub.** The core's subscriber callback, the config listener and the
 panel all call `ChangeHub.publish()`, which only records the request and wakes
 the hub thread, so a publisher is never delayed. Requests that arrive before the
-hub thread runs become one sequence step. The state body for a sequence is
-built lazily by the first client that asks and cached, so any number of
-clients cost one serialisation per change. A cached body is served for about
-a second; one asked for after that is built again under the same sequence
-(nobody is woken), so the clock reading in what a client receives is current. The event stream (server-sent
-events) gives each client its own handler thread, and a client that stops
-reading is dropped after one write timeout, leaving the core, the hub and the
-other clients unaffected. With no page open the hub asks for neither outputs
-nor EQ.
+hub thread runs become one sequence step. At each step, and only while a page
+is connected, the hub builds the two state parts once from one core snapshot
+and compares each with the step before, so any number of clients cost one
+serialisation per change, and a change event carries only the parts that moved.
+The event stream (server-sent events) gives each client its own handler thread,
+and a client that stops reading is dropped after one write timeout, leaving the
+core, the hub and the other clients unaffected. With no page open the hub builds
+nothing and asks for neither outputs nor EQ.
 
-**Actions.** A POST to an action route is checked against the action's
-argument spec (only the named fields, each of its type and range) and then maps
-to one core method. Results map to HTTP status codes in the server, not in the
-action table. Two actions mean a person at the dial's own screen, confirming
-presence and shutting the dial down, and are refused with a 403 on the
-development listener. Screen settings go through the management server's own config
-path, and sleep, wake and activity go to the panel.
+**Actions and intents.** A POST to an action route is checked against the
+action's argument spec (only the named fields, each of its type and range) and
+then maps to one core method. Results map to HTTP status codes in the server, not
+in the action table. Two actions mean a person at the dial's own screen,
+confirming presence and shutting the dial down, and are refused with a 403 on
+the development listener. A change to an appliance goes to the intents route
+instead: the body names the appliance and the arguments, the core sends it on
+through the peer library from the handler's own thread, and the answer is the
+appliance's own reply. Screen settings go through the management server's own
+config path, and sleep, wake and activity go to the panel.
 
 **Panel.** `HdPanel` keeps the screen awake or asleep. Asleep, the page draws a
 black shield and the first touch only wakes; where a sysfs backlight exists, or

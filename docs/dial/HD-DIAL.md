@@ -357,6 +357,29 @@ Security notes:
 - The touchscreen itself is served only on the dial's own loopback address
   (`127.0.0.1`, port 7843) and cannot be reached from the network.
 
+### What the page talks to
+
+The page talks only to the dial's own server (`127.0.0.1`, port 7843, or port
+7844 on the development listener). It never calls an appliance itself. On the
+dial's own port every request must name the loopback address in its `Host`
+header, and every POST must carry the header `X-Requested-With: autostream-hd`.
+
+| Route | What it does |
+|---|---|
+| `GET /api/v1/state` | The page's state, built fresh for the request: `{boot, version, time, part_versions, parts}`. `parts` holds two parts. `dial` is what the dial itself knows: the appliance roster, which one is focused, warnings, panel and screen settings, the held artwork and the dial's own pending requests. `focused` is the focused appliance's own readings (session, repeat record, track, inputs, speakers and equaliser) exactly as the appliance reported them, with its id, boot, version, reachability and whether this dial may control it. It is `null` when nothing is focused. `time` is the dial's clock; deadlines in `dial` are readings on it. |
+| `GET /api/v1/events?since=<boot>-<version>` | A server-sent event stream. Each `change` event carries only the parts that changed since the last one, with the id `<boot>-<version>`. A page that is not at the current version of this boot is sent `resync: true` and fetches the state. At most four pages are served at once, and nothing is built while none is connected. |
+| `POST /api/v1/intents/<name>` | A change to the focused appliance, with the body `{"appliance_id": "...", "args": {...}}`. The dial sends it on to the appliance and answers with the appliance's own reply, `{ok, error, version, boot, result, retry_after_s}`, as a 200 even when the appliance refuses it. A bad body is a 400, a name outside the list below is answered `unknown_intent`, and an appliance that takes more than six seconds is a 504 `timeout`. The arguments are never logged, because they can hold a speaker's PIN. |
+| `POST /api/v1/actions/<name>` | Things the dial does itself: `focus`, `volume_set`, `volume_step`, `mute_toggle`, `start_failure_dismiss`, `warning_dismiss`, `dial_restart`, `dial_shutdown` and `presence`. The answer is `{"ok": true}` or `{"ok": false, "error": "..."}` with a 4xx status. |
+| `POST /api/v1/settings`, `POST /api/v1/panel/<wake\|sleep\|activity>`, `GET /api/v1/info` | The pull-down settings, the panel's sleep and wake, and the information sheet. |
+| `GET /api/v1/artwork/<key>`, `GET /api/v1/logo/backdrop` | The held artwork and its blurred backdrop, and the backdrop of the logo. |
+
+The intents the page sends are `outputs.set` (a speaker on, off or its level),
+`output.pin.submit`, `output.eq.set`, `output.eq.reset`, `repeat.arm`,
+`repeat.seek` (play, or restart from the beginning), `repeat.transport` (stop)
+and `outputs.save_default` (the Auto-Start pin on the speakers sheet). Volume
+and mute stay on the dial's own actions, so the dial's rule for which
+appliance a knob turn reaches is the only way to change them.
+
 ### Previewing the page without a dial
 
 `tools/hd_page_preview.py` serves the page from the dial's real HD server, with
@@ -388,10 +411,10 @@ An unknown scenario name or a negative delay is refused when it starts.
 
 The page is live. Sleep and the pull-down settings work, and a setting you
 change stays changed until you stop the preview; nothing is written to disk.
-Pressing play, or back to the start, in the replay row moves to the `replaying`
-scenario, and stop moves back to `playing_artwork`. Every other action is
-accepted and printed, without any PIN, and changes nothing. Stop it with
-Ctrl-C.
+Pressing play, or back to the start, in the replay row sends `repeat.seek` and
+moves to the `replaying` scenario, and stop sends `repeat.transport` and moves
+back to `playing_artwork`. Every other action and intent is accepted and
+printed, without any PIN, and changes nothing. Stop it with Ctrl-C.
 
 ## Troubleshooting
 
