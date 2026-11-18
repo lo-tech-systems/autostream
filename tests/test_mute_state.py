@@ -202,9 +202,10 @@ class TestMuteModel:
         with patch.object(player_service, "stop_and_disable_all", return_value=ActionResult(ok=True)), \
              patch("autostream_output_usage.refresh_now"), \
              patch("autostream_output_usage.usage_for_output", return_value=None):
+            get_authority().set_default_members([("", "Kitchen", 30)], 30)
             get_authority().deselect_all(Origin.SESSION)
             reply = submit(Intent(
-                "outputs.select_default", {"name": "Kitchen", "volume": 30}, Origin.SESSION, "coordinator"))
+                "outputs.select_default", {"key": "name:Kitchen", "volume": 30}, Origin.SESSION, "coordinator"))
         assert reply.ok is True
         assert writes.levels() == [("Kitchen", 30)]
         assert snap().unit("Kitchen").muted is False and snap().unit("Kitchen").volume == 30
@@ -477,7 +478,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
         FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
         get_authority().mute_all(Origin.USER)
         parsed = SimpleNamespace(
-            owntone=SimpleNamespace(output_name="Speaker"),
+            owntone=SimpleNamespace(default_outputs=()),
             webui=SimpleNamespace(hidden_outputs=()),
         )
         rows = webui_home_model.build_output_list(parsed, snap().units)
@@ -486,7 +487,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
     def test_build_output_list_reports_the_actual_level_while_unmuted(self, writes):
         import webui.browser.home_model as models
         parsed = SimpleNamespace(
-            owntone=SimpleNamespace(output_name="Speaker"),
+            owntone=SimpleNamespace(default_outputs=()),
             webui=SimpleNamespace(hidden_outputs=()),
         )
         out = OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=33)
@@ -498,7 +499,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
         FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
         get_authority().mute_all(Origin.USER)
         parsed = SimpleNamespace(
-            owntone=SimpleNamespace(base_url="http://x", output_name="Speaker"),
+            owntone=SimpleNamespace(base_url="http://x", default_outputs=()),
             webui=SimpleNamespace(show_master_volume=True, show_input_detail=False, hidden_outputs=()),
         )
         with patch("autostream_start_buffer_cache.current_ms", return_value=2250), \
@@ -526,7 +527,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
 
         _muted(writes, _output("o1", 40))
         parsed = SimpleNamespace(
-            owntone=SimpleNamespace(output_name=""),
+            owntone=SimpleNamespace(default_outputs=()),
             webui=SimpleNamespace(hidden_outputs=()),
         )
         with patch("webui.common._config_snapshot", return_value=parsed),              patch("webui.common.send_json", side_effect=fake_send_json):
@@ -634,7 +635,8 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
 
     parsed = MagicMock()
     parsed.owntone.base_url = "http://localhost:3689"
-    parsed.owntone.output_name = "autostream"
+    from autostream_config import DefaultOutput
+    parsed.owntone.default_outputs = (DefaultOutput("", "autostream", 20),)
     parsed.owntone.volume_percent = 20
     parsed.webui.show_master_volume = False
     parsed.webui.show_input_detail = show_input_detail

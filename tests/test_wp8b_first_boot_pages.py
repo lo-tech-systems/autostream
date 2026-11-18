@@ -203,7 +203,7 @@ class TestFirstBootContinuePost:
         handler, written = _make_handler()
         handle_first_boot_continue_post(handler, state, auth, "output_name=MyOutput")
         snap = store.snapshot()
-        assert snap.owntone.output_name == "MyOutput"
+        assert [m.name for m in snap.owntone.default_outputs] == ["MyOutput"]
 
     def test_valid_output_redirects_to_appliance(self, tmp_path):
         from webui.browser.first_boot import handle_first_boot_continue_post

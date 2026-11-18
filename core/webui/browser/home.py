@@ -157,7 +157,6 @@ def send_airplay_page(
         return
 
     owntone_base_url = parsed.owntone.base_url
-    default_output_name = parsed.owntone.output_name
     hidden_output_names = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
     show_master_volume = parsed.webui.show_master_volume
     show_input_detail = parsed.webui.show_input_detail

@@ -88,7 +88,7 @@ def send_first_boot_owntone_page(
         snap = None
 
     base_url = snap.owntone.base_url if snap else "http://localhost:3689"
-    current_output = (snap.owntone.output_name or "") if snap else ""
+    current_output = snap.owntone.default_outputs[0].name if snap and snap.owntone.default_outputs else ""
 
     outputs_part = store().snapshot().outputs
     outputs = list(outputs_part.reported_rows()) if outputs_part.connected else []
@@ -350,9 +350,9 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
         )
         return
 
-    # Validate output_name was set in the previous step
+    # Validate a speaker was chosen in the previous step
     snap = _store.snapshot()
-    if not str(snap.owntone.output_name or "").strip():
+    if not snap.owntone.default_outputs:
         send_first_boot_appliance_page(
             handler, state, auth, error="No OwnTone output selected. Please go back and select one."
         )

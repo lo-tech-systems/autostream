@@ -20,7 +20,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from autostream_config import parse_config
+from autostream_config import DefaultOutput, parse_config
 from autostream_state import store
 from autostream_players import ActionResult, OutputInfo
 from fake_store import FakeStore, fake_outputs
@@ -51,15 +51,25 @@ def _units(rows):
     return FakeStore().outputs(list(rows)).outputs.units
 
 
+def _hold_set(members) -> None:
+    """Give the output authority the Auto-Start set the settings hold."""
+    if members:
+        from autostream_state.outputs import get_authority
+        get_authority().set_default_members([(m.id, m.name, m.volume) for m in members], 20)
+
+
 def _parsed(
     output_name: str = "",
+    members: tuple = (),
     hidden_outputs: list | None = None,
     show_master_volume: bool = True,
     show_input_detail: bool = False,
 ) -> SimpleNamespace:
+    members = members or ((DefaultOutput("", output_name, 20),) if output_name else ())
+    _hold_set(members)
     return SimpleNamespace(
         owntone=SimpleNamespace(
-            output_name=output_name,
+            default_outputs=members,
             output_offsets_ms={},
             output_airplay_modes={},
             base_url="http://localhost:3689",
@@ -135,7 +145,9 @@ def _make_config_file(tmp_path: Path, extra: dict | None = None) -> Path:
 
 def _parsed_from(cfg_path: Path):
     """The settings the file at *cfg_path* holds, parsed."""
-    return parse_config(json.loads(Path(cfg_path).read_text(encoding="utf-8")))
+    parsed = parse_config(json.loads(Path(cfg_path).read_text(encoding="utf-8")))
+    _hold_set(parsed.owntone.default_outputs)
+    return parsed
 
 
 def _deep_update(d: dict, u: dict) -> dict:
@@ -204,6 +216,22 @@ class TestBuildOutputList:
         assert outside[0]["name"] == "Zulu" and outside[0]["disabled"] is True
         assert "disabled" not in inside[0]
         assert "disabled" not in outside[1]
+
+    def test_every_member_of_a_two_member_set_is_marked_and_listed_offline(self):
+        members = (DefaultOutput("", "Zulu", 30), DefaultOutput("", "Yankee", 40))
+        parsed = _parsed(members=members)
+        units = _units([_out("1", "Alpha"), _out("2", "Bravo")])
+        listed = webui_home_model.build_output_list(parsed, units, include_offline=True)
+        assert [(o["name"], o["is_default"], o["offline"]) for o in listed] == [
+            ("Yankee", True, True), ("Zulu", True, True), ("Alpha", False, False), ("Bravo", False, False),
+        ]
+
+    def test_hidden_members_are_still_shown(self):
+        members = (DefaultOutput("", "Alpha", 30), DefaultOutput("", "Bravo", 40))
+        parsed = _parsed(members=members, hidden_outputs=["Alpha", "Bravo", "Charlie"])
+        units = _units([_out("1", "Alpha"), _out("2", "Bravo"), _out("3", "Charlie")])
+        listed = webui_home_model.build_output_list(parsed, units)
+        assert [(o["name"], o["is_default"]) for o in listed] == [("Alpha", True), ("Bravo", True)]
 
     def test_only_the_default_is_listed_offline(self):
         from autostream_state.outputs import get_authority
@@ -717,7 +745,8 @@ class TestBuildHomeStateAnnotation:
             self._make_out("2", "Mango"),
         ]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            parsed = _parsed_from(cfg_path)
+            result = webui_home_model.build_home_state(store().snapshot(), parsed)
 
         names = [o["name"] for o in result["outputs"]]
         assert names[0] == "Zulu"

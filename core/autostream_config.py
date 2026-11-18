@@ -461,11 +461,6 @@ class OwntoneConfig:
     # (True) or without (False) the Apple TV. Absent: with.
     include_tv: Mapping[str, bool] = field(default_factory=dict)
 
-    @property
-    def output_name(self) -> str:
-        """The first member's name, "" when the set is empty."""
-        return self.default_outputs[0].name if self.default_outputs else ""
-
 
 # What a Pause pressed on a speaker does.
 DEVICE_PAUSE_IGNORE = "ignore"        # keep playing

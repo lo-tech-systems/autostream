@@ -301,7 +301,7 @@ class TestWp4aStorePersistence:
         with patch("autostream_live_config.update_live_owntone_runtime", return_value=True):
             resp = _post(state, "owntone.output_name", "Deck Speakers")
         assert resp["ok"] is True
-        assert store.snapshot().owntone.output_name == "Deck Speakers"
+        assert [m.name for m in store.snapshot().owntone.default_outputs] == ["Deck Speakers"]
 
     def test_silence_seconds_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))

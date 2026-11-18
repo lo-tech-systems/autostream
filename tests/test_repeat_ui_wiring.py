@@ -395,7 +395,8 @@ _LOCAL_ID = "00000000000000000000"
 def _make_parsed(*, repeat_enabled: bool = True, repeat_codec: str = "auto"):
     parsed = MagicMock()
     parsed.owntone.base_url = "http://localhost:3689"
-    parsed.owntone.output_name = "autostream"
+    from autostream_config import DefaultOutput
+    parsed.owntone.default_outputs = (DefaultOutput("", "autostream", 20),)
     parsed.owntone.volume_percent = 20
     parsed.webui.show_master_volume = True
     parsed.webui.show_input_detail = False

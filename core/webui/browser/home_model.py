@@ -49,7 +49,6 @@ def build_output_list(
     average, the dial's outputs list and detail page) shows the same number
     regardless of the mute.
     """
-    default_output_name = parsed.owntone.output_name
     hidden = {
         str(n).strip().casefold()
         for n in (parsed.webui.hidden_outputs or ())
@@ -59,14 +58,14 @@ def build_output_list(
     result: list[dict] = []
     for unit in units:
         row = unit.reported
-        if row is None and not (include_offline and unit.offline and unit.name == default_output_name):
+        if row is None and not (include_offline and unit.offline and unit.auto_start):
             continue  # the player has no row for it at the moment
         out_id = str(unit.id or "").strip()
         name = str(unit.name or "").strip()
         if not out_id or not name:
             continue
         selected = bool(unit.shown_selected)
-        if name.casefold() in hidden and not selected and name != default_output_name:
+        if name.casefold() in hidden and not selected and not unit.auto_start:
             continue
         vol = max(0, min(100, int(unit.volume)))
         result.append({
@@ -74,7 +73,7 @@ def build_output_list(
             "name": name,
             "selected": selected,
             "volume": vol,
-            "is_default": (name == default_output_name),
+            "is_default": bool(unit.auto_start),
             "needs_auth_key": bool(row is not None and row.needs_auth_key),
             "requires_auth": bool(row is not None and row.requires_auth),
             "pin_pending": bool(row is not None and row.pin_pending),
@@ -85,7 +84,7 @@ def build_output_list(
         if unit.offline and not session_active:
             result[-1]["disabled"] = True
 
-    if default_output_name:
+    if parsed.owntone.default_outputs:
         result.sort(key=lambda o: (0 if o["is_default"] else 1, o["name"].casefold()))
     return result
 

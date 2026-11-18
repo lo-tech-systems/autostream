@@ -503,7 +503,6 @@ class TestParseConfigOwntone:
             c.DefaultOutput("", "Kitchen", 25),
         )
         assert cfg.owntone.default_outputs[1].key == "name:Kitchen"
-        assert cfg.owntone.output_name == "Lounge"
 
     def test_default_outputs_win_over_legacy_name(self):
         cfg = c.parse_config({"owntone": {"output_name": "Old", "default_outputs": [
@@ -526,7 +525,6 @@ class TestParseConfigOwntone:
 
     def test_no_output_is_an_empty_set(self):
         assert c.parse_config({}).owntone.default_outputs == ()
-        assert c.parse_config({}).owntone.output_name == ""
 
     def test_malformed_entries_skipped_and_volume_clamped(self):
         cfg = c.parse_config({"owntone": {"volume_percent": 22, "default_outputs": [

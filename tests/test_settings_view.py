@@ -153,7 +153,7 @@ def _first_boot(ctx, **args):
 def test_first_boot_records_the_chosen_output(ctx, store):
     reply = _first_boot(ctx, step="output", output_name="Speaker A")
     assert reply.ok is True
-    assert store.snapshot().owntone.output_name == "Speaker A"
+    assert [m.name for m in store.snapshot().owntone.default_outputs] == ["Speaker A"]
 
 
 def test_first_boot_finish_records_the_input_the_volume_and_the_fifo(ctx, store):

@@ -255,3 +255,24 @@ class TestEitherOrder:
                 t.join()
             assert authority_members() == members(store)
         self._end_equal(store, tracked)
+
+
+class TestSetupSummary:
+    @staticmethod
+    def _ctx(names, volume=20):
+        from autostream_config import DefaultOutput
+        owntone = SimpleNamespace(
+            default_outputs=tuple(DefaultOutput("", n, volume) for n in names), volume_percent=volume)
+        return SimpleNamespace(parsed=SimpleNamespace(owntone=owntone))
+
+    def test_one_member_reads_as_it_did(self):
+        from webui.browser.setup import cards_playback
+        assert cards_playback.summary_playback(self._ctx(["Lounge"], 30)) == "Lounge · 30%"
+
+    def test_members_are_listed_in_order(self):
+        from webui.browser.setup import cards_playback
+        assert cards_playback.summary_playback(self._ctx(["Lounge", "Kitchen"])) == "Lounge, Kitchen · 20%"
+
+    def test_no_member_says_so(self):
+        from webui.browser.setup import cards_playback
+        assert cards_playback.summary_playback(self._ctx([])).startswith("No speaker selected")

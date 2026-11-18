@@ -52,6 +52,8 @@ def _setup_owntone_more_settings_html(parsed) -> str:
 def _setup_playback_defaults_card_html(parsed) -> str:
     """Playback panel -- "Default Speakers" / "Default Volume" card."""
     owntone_outputs_html = ""
+    member_names = {m.name for m in parsed.owntone.default_outputs}
+    first_member = parsed.owntone.default_outputs[0].name if parsed.owntone.default_outputs else ""
     outputs_part = store().snapshot().outputs
     if outputs_part.connected:
         hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
@@ -59,9 +61,9 @@ def _setup_playback_defaults_card_html(parsed) -> str:
             nm = str(out.name or "")
             if not nm:
                 continue
-            if nm.strip().casefold() in hidden and nm != parsed.owntone.output_name:
+            if nm.strip().casefold() in hidden and nm not in member_names:
                 continue
-            sel = " selected" if nm == parsed.owntone.output_name else ""
+            sel = " selected" if nm == first_member else ""
             owntone_outputs_html += f"<option value='{html.escape(nm)}'{sel}>{html.escape(nm)}</option>"
     playback_defaults_inner_html = f"""
           <label>Default Speakers:
@@ -165,7 +167,7 @@ def _setup_audio_processing_card_html(parsed) -> str:
 
 
 def summary_playback(ctx: context.SetupCtx) -> str:
-    speaker = str(ctx.parsed.owntone.output_name or "No speaker selected")
+    speaker = ", ".join(m.name for m in ctx.parsed.owntone.default_outputs) or "No speaker selected"
     return html.escape(f"{speaker} · {ctx.parsed.owntone.volume_percent}%")
 
 

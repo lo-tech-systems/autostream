@@ -71,7 +71,8 @@ _BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update", "sample_rate")
 def _parsed_config(show_input_detail: bool) -> MagicMock:
     parsed = MagicMock()
     parsed.owntone.base_url = "http://localhost:3689"
-    parsed.owntone.output_name = "autostream"
+    from autostream_config import DefaultOutput
+    parsed.owntone.default_outputs = (DefaultOutput("", "autostream", 20),)
     parsed.owntone.volume_percent = 20
     parsed.webui.show_master_volume = False
     parsed.webui.show_input_detail = show_input_detail

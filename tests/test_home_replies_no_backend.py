@@ -20,6 +20,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_settings import SettingsStore, as_view
+from autostream_state.outputs import get_authority
 from fake_store import FakeStore, fake_levels
 import webui.browser.home_api as webui_home_api
 
@@ -35,6 +36,7 @@ def state(tmp_path):
     state = MagicMock()
     state.config_path = str(path)
     state.settings = as_view(store)
+    get_authority().set_default_members([("", "Speaker B", 20)], 20)
     yield state
     store.close(save=False)
 

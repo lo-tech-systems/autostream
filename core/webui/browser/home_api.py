@@ -67,21 +67,23 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
     outputs = list(part.reported_rows()) if part.connected else []
 
     hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
+    member_names = {m.name for m in parsed.owntone.default_outputs}
+    first_member = parsed.owntone.default_outputs[0].name if parsed.owntone.default_outputs else ""
 
     names = []
     for out in outputs:
         nm = str(out.name or "").strip()
         if not nm:
             continue
-        # Mirror existing behavior: hide hidden outputs unless it is the configured default
-        if nm.casefold() in hidden and nm != parsed.owntone.output_name:
+        # Hide hidden outputs unless the speaker is in the Auto-Start set
+        if nm.casefold() in hidden and nm not in member_names:
             continue
         names.append(nm)
 
     common.send_json(handler, 200, {
         "ok": True,
         "outputs": names,
-        "selected": parsed.owntone.output_name,
+        "selected": first_member,
     })
 
 

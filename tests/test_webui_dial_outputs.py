@@ -35,7 +35,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-from autostream_config import DEFAULT_AIRPLAY_MODE
+from autostream_config import DEFAULT_AIRPLAY_MODE, DefaultOutput
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 from fake_store import FakeStore
@@ -85,10 +85,13 @@ def _parsed(
     output_offsets_ms: dict | None = None,
     output_airplay_modes: dict | None = None,
 ) -> SimpleNamespace:
+    if output_name:
+        from autostream_state.outputs import get_authority
+        get_authority().set_default_members([("", output_name, volume_percent)], volume_percent)
     return SimpleNamespace(
         owntone=SimpleNamespace(
             base_url=BASE_URL,
-            output_name=output_name,
+            default_outputs=((DefaultOutput("", output_name, volume_percent),) if output_name else ()),
             volume_percent=volume_percent,
             output_offsets_ms=output_offsets_ms or {},
             output_airplay_modes=output_airplay_modes or {},

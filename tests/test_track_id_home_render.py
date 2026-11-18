@@ -51,7 +51,8 @@ _REMOTE_ID = "aabbccdd1122334455aa"
 def _make_parsed(*, show_master=False, show_input_detail=False):
     parsed = MagicMock()
     parsed.owntone.base_url = "http://localhost:3689"
-    parsed.owntone.output_name = "autostream"
+    from autostream_config import DefaultOutput
+    parsed.owntone.default_outputs = (DefaultOutput("", "autostream", 20),)
     parsed.owntone.volume_percent = 20
     parsed.webui.show_master_volume = show_master
     parsed.webui.show_input_detail = show_input_detail
