@@ -127,7 +127,7 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     pytest.importorskip("PIL.Image", reason="Pillow not installed")
     from PIL import Image, ImageDraw
 
-    import dial_display as dd
+    import dial_warning_text as dwt
     import dial_display_compositor as dc
     from dial_touch_layout import metrics_for, warning_layout_for
     from dial_warning_text import CLOSE_TEXT, NEXT_TEXT, RESTART_TEXT
@@ -144,7 +144,7 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     tags = ("0.7.0", "0.10.12", "1.10.12")
     update_views = [
         UpdateView(status="in_progress", phase=phase, percent=50)
-        for phase in list(dd.UPDATE_PHASE_TEXT) + ["verify", "never-heard-of-it", ""]
+        for phase in list(dwt.UPDATE_PHASE_TEXT) + ["verify", "never-heard-of-it", ""]
     ]
     result_views = []
     for tag in tags:
@@ -163,15 +163,15 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     result_w = (result.message[2] - result.message[0]) - 2 * metrics.pad
     cell_w = (result.cells[0][2] - result.cells[0][0]) - 2 * metrics.pad
 
-    update = dd._WARNING_BY_ID["update"]
-    update_result = dd._WARNING_BY_ID["update_result"]
-    assert fits(dd.UPDATING_TEXT, readout_font, notice_w)
+    update = dwt._WARNING_BY_ID["update"]
+    update_result = dwt._WARNING_BY_ID["update_result"]
+    assert fits(dwt.UPDATING_TEXT, readout_font, notice_w)
     for view in update_views:
         assert fits(update.title_for(view), readout_font, notice_w), view
         assert fits(update.message_for(view), body_font, notice_w), view
-    for label in set(dd.UPDATE_PHASE_TEXT.values()) | {dd.UPDATE_PHASE_FALLBACK_TEXT}:
+    for label in set(dwt.UPDATE_PHASE_TEXT.values()) | {dwt.UPDATE_PHASE_FALLBACK_TEXT}:
         assert fits(label, body_font, notice_w), label
-    for text in (dd.UPDATED_TEXT, dd.UPDATE_FAILED_TEXT):
+    for text in (dwt.UPDATED_TEXT, dwt.UPDATE_FAILED_TEXT):
         assert fits(text, readout_font, result_w), text
     for view in result_views:
         assert fits(update_result.title_for(view), readout_font, result_w), view

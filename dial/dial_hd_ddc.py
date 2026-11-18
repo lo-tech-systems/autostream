@@ -34,7 +34,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from dial_hd_panel import BACKLIGHT_ROOT, Backlight, BacklightBase, scaled_level
 

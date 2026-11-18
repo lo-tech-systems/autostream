@@ -74,8 +74,8 @@ from dial_display_profiles import (
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
     AUTH_UNAUTHORIZED, DERIVED_EQ_IDS, PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
-    awaiting_title, dots_active, title_fallback,
-    eq_gain, selector_rows,
+    awaiting_title, title_fallback,
+    eq_gain,
 )
 import dial_artwork
 from dial_core import (
@@ -97,16 +97,7 @@ from dial_repeat_store import (
 from dial_info import INFO_LABELS
 from dial_warning_bell import Bell, whole_bell
 from dial_warning_page import Card, WarningsPageState, status_card
-from dial_warning_text import (  # re-exported: the warning table and its text live there
-    UPDATE_FAILED_TEXT,
-    UPDATE_PHASE_FALLBACK_TEXT,
-    UPDATE_PHASE_TEXT,
-    UPDATE_RESULT_SECONDS,
-    UPDATED_TEXT,
-    UPDATING_TEXT,
-    WARNING_DESCRIPTORS,
-    _WARNING_BY_ID,
-)
+from dial_warning_text import WARNING_DESCRIPTORS
 from dial_update_watch import (
     UPDATE_SEEN_PATH,
     UpdateWatcher,

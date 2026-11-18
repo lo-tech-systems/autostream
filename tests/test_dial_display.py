@@ -45,6 +45,7 @@ from autostream_peer_client import PeerReply
 import dial_core
 from dial_core import DialCore
 import dial_display as dd
+import dial_warning_text as dwt
 import dial_display_compositor as dd_compositor
 from dial_core_state import NOWIFI_PROMPT_STREAK, NowPlaying, OutputRow, artwork_key
 from dial_display import (
@@ -9127,7 +9128,7 @@ class TestGenericWarningCapabilities:
                 warnings=WarningManager(WARNING_DESCRIPTORS + (notice,), clock=clock.now),
             )
             for p in (
-                patch.dict(dd._WARNING_BY_ID, {notice.id: notice}),
+                patch.dict(dwt._WARNING_BY_ID, {notice.id: notice}),
                 patch.dict(dd.SCREEN_POLICIES, {notice.screen: dd._status_policy_row(notice)}),
             ):
                 p.start()
@@ -9359,7 +9360,7 @@ class TestUpdateWarnings:
         apply_update_view(display, self._progress(phase="packages", percent=45))
         _fold(display)
         view = self._painted_view(display)
-        assert view.title == dd.UPDATING_TEXT == "Updating..."
+        assert view.title == dwt.UPDATING_TEXT == "Updating..."
         assert view.message == "Upgrading OS"
         assert view.percent == 45
         assert view.buttons == ()
@@ -9394,10 +9395,10 @@ class TestUpdateWarnings:
     def test_update_card_has_no_buttons_and_the_inert_surface(self):
         from dial_touch import _GEOMETRY_FOR_SURFACE
         from dial_touch_layout import GEOMETRY_NONE
-        desc = dd._WARNING_BY_ID["update"]
+        desc = dwt._WARNING_BY_ID["update"]
         assert desc.buttons == ()
         assert desc.interrupting is True and desc.auto_clear_after_s is None
-        assert desc.priority > dd._WARNING_BY_ID["update_result"].priority
+        assert desc.priority > dwt._WARNING_BY_ID["update_result"].priority
         assert _GEOMETRY_FOR_SURFACE[dd.SCREEN_POLICIES["update"].surface[0]] == GEOMETRY_NONE
 
     def test_reboot_phase_switches_to_restarting_without_requesting_reboot(self, rig):
@@ -9435,7 +9436,7 @@ class TestUpdateWarnings:
         view = self._painted_view(display)
         assert (view.title, view.message, view.buttons) == ("Updated", "Version 0.7.0", ("Close",))
         assert view.percent is None
-        display.clock.t += dd.UPDATE_RESULT_SECONDS - 1
+        display.clock.t += dwt.UPDATE_RESULT_SECONDS - 1
         tick_warnings(display)
         assert display.core.warnings.is_active("update_result")
         display.clock.t += 2

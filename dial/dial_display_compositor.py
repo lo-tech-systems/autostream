@@ -129,7 +129,6 @@ from dial_touch_layout import (
     CompactLayout,
     CompactPickerLayout,
     LayoutMetrics,
-    OverlayLayout,
     Rect,
     TouchZone,
     compact_layout_for,
@@ -2907,7 +2906,6 @@ def _body_info_value(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
     draw = ImageDraw.Draw(img)
     _draw_label_centered(draw, layout.label, body.label, _load_font(metrics.font_body))
     font_readout = _load_font(metrics.font_readout)
-    font_body = _load_font(metrics.font_body)
     lines, font = _fit_value_lines(draw, body.line, (metrics.font_readout, metrics.font_body), layout.value)
     if not lines or font is None:
         return

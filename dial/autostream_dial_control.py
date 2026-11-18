@@ -204,7 +204,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ping", help="Check that the service is responding.")
     sub.add_parser("version", help="Print protocol and software versions.")
     sub.add_parser("status", help="Print live dial status.")
-    targets_p = sub.add_parser("targets", help="List discovered playing targets.")
+    sub.add_parser("targets", help="List discovered playing targets.")
 
     nudge_p = sub.add_parser("nudge", help="Queue a volume delta.")
     nudge_dir = nudge_p.add_mutually_exclusive_group(required=True)

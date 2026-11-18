@@ -85,12 +85,6 @@ class TestDataclasses:
         not_frozen = [cls.__name__ for cls in classes if not cls.__dataclass_params__.frozen]
         assert not not_frozen, f"not frozen: {not_frozen}"
 
-    def test_dial_display_reexports_the_moved_types(self):
-        import dial_display
-        assert dial_display.OutputRow is cs.OutputRow
-        assert dial_display.SelectorRow is cs.SelectorRow
-        assert dial_display.PickerRow is cs.PickerRow
-
     def test_module_does_not_import_the_display(self):
         src = (REPO_ROOT / "dial" / "dial_core_state.py").read_text(encoding="utf-8")
         assert "dial_display" not in src
