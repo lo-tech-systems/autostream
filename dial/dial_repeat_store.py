@@ -103,7 +103,7 @@ def _parse_latency_seconds(value) -> float:
 
 
 def parse_repeat_object(obj, now: float) -> "RepeatRecord | None":
-    """Strict parse of the protocol's `repeat` object (autostream_webui_api.
+    """Strict parse of the protocol's `repeat` object (webui/dial/api.py
     _dial_repeat_object()). Any shape violation returns None — treated by
     callers as unavailable, never as a reason to fail the whole status
     fetch. `held` is not stored: it is `state == "hold"` by definition, so a

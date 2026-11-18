@@ -148,7 +148,7 @@ class TestRouteDistinction:
 
     def _proxy_get_sent(self, uuid, conn_body=b'{"ok":true}', conn_status=200):
         """Exercise _proxy_get() with a mocked sighting and connection."""
-        from autostream_webui_dials import _proxy_get
+        from webui.dial.management import _proxy_get
         sent = []
 
         def fake_send_json(handler, code, data):
@@ -161,23 +161,23 @@ class TestRouteDistinction:
         resp.read.return_value = conn_body
         conn.getresponse.return_value = resp
 
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             _proxy_get(MagicMock(), uuid, "/configure")
 
         return sent
 
     # 1. known route + offline UUID → structured HTTP 200
     def test_known_route_offline_uuid_returns_tunneled_200(self):
-        from autostream_webui_dials import _proxy_get
+        from webui.dial.management import _proxy_get
         sent = []
 
         def fake_send_json(h, code, data):
             sent.append((code, data))
 
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=None), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=None), \
              patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             _proxy_get(MagicMock(), "missing-uuid", "/configure")
@@ -188,7 +188,7 @@ class TestRouteDistinction:
 
     # 2. dispatch_dial_management_post with unknown path returns tunneled 404
     def test_management_dispatcher_unknown_path_tunneled_404(self):
-        from autostream_webui_dials import dispatch_dial_management_post
+        from webui.dial.management import dispatch_dial_management_post
         sent = []
 
         def fake_send_json(h, code, data):
@@ -260,7 +260,7 @@ class TestRouteDistinction:
 
     # 5. missing request fields on known routes remain native 400
     def test_authorize_missing_uuid_is_native_400(self):
-        from autostream_webui_dials import handle_dial_authorize_post
+        from webui.dial.management import handle_dial_authorize_post
         sent = []
 
         def fake_send_json(h, code, data):
@@ -274,7 +274,7 @@ class TestRouteDistinction:
 
     # 6. auth/CSRF responses retain native status (400 for missing uuid)
     def test_validation_error_not_tunneled(self):
-        from autostream_webui_dials import handle_dial_revoke_post
+        from webui.dial.management import handle_dial_revoke_post
         sent = []
 
         def fake_send_json(h, code, data):

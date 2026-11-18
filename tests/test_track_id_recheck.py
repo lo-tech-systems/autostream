@@ -26,7 +26,7 @@ import autostream_core as core
 from autostream_artwork import ArtworkImage
 from autostream_nowplaying import NowPlayingMetadata
 from autostream_state import active_track, store, track_digest
-from autostream_webui_api import _dial_track_id_dict
+from webui.dial.api import _dial_track_id_dict
 from track_id.models import (
     STATE_ANALYSING,
     STATE_ERROR,

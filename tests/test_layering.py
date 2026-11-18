@@ -34,7 +34,7 @@ sysutils watcher_client wifi_network
 """.split()
 _L2 = "align announce appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup".split()
 _L3 = """
-appliance_gateway webui_api webui_dials webui_routes
+appliance_gateway webui_api webui_routes
 """.split()
 
 LAYERS: dict[str, str] = {

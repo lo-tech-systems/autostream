@@ -31,6 +31,7 @@ import webui.browser.home as webui_home
 import webui.browser.home_api as webui_home_api
 import webui.browser.equaliser as webui_equaliser
 import webui.repeat as repeat
+import webui.dial.api as webui_dial_api
 
 _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
@@ -507,10 +508,10 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import webui.system.updates as updates
     setattrs(web_common, _config_snapshot=lambda state: cfg)
     setattrs(updates, get_app_version=lambda: FIXED_APP_VERSION)
-    setattrs(api,
+    setattrs(webui_dial_api,
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
-             dial_speaks_v2=lambda dial_id: True,
-             get_live_output_eq_status=lambda: scenario.eq_status)
+             dial_speaks_v2=lambda dial_id: True)
+    setattrs(api, get_live_output_eq_status=lambda: scenario.eq_status)
     import webui.browser.equaliser as web_equaliser
     setattrs(web_equaliser, get_live_output_eq_status=lambda: scenario.eq_status)
     setattrs(models,
@@ -604,7 +605,7 @@ def routes() -> list[Route]:
         Route("status", "GET /api/status", lambda h: webui_home_api.send_status_json(h, state)),
         Route("status", "GET /api/status (no state)", lambda h: webui_home_api.send_status_json(h)),
         Route("status", "POST /api/dial/status",
-              lambda h: api.send_dial_status_post_json(h, state, _dial())),
+              lambda h: webui_dial_api.send_dial_status_post_json(h, state, _dial())),
         Route("status", "GET /api/audio/status",
               lambda h: webui_home_api.send_audio_status_json(h, state)),
         Route("status", "GET /api/playing-status",
@@ -621,32 +622,32 @@ def routes() -> list[Route]:
         Route("outputs", "GET /api/owntone/outputs_state",
               lambda h: webui_home_api.send_owntone_outputs_state_json(h, state)),
         Route("outputs", "POST /api/dial/outputs",
-              lambda h: api.send_dial_outputs_post_json(h, state, _dial())),
+              lambda h: webui_dial_api.send_dial_outputs_post_json(h, state, _dial())),
         Route("volume_mute", "POST /api/dial/volume +5",
-              lambda h: api.send_dial_volume_post_json(h, state, _dial({"delta": 5}))),
+              lambda h: webui_dial_api.send_dial_volume_post_json(h, state, _dial({"delta": 5}))),
         Route("volume_mute", "POST /api/dial/volume -5",
-              lambda h: api.send_dial_volume_post_json(h, state, _dial({"delta": -5}))),
+              lambda h: webui_dial_api.send_dial_volume_post_json(h, state, _dial({"delta": -5}))),
         Route("volume_mute", "POST /api/dial/mute mute",
-              lambda h: api.send_dial_mute_post_json(h, state, _dial({"action": "mute"}))),
+              lambda h: webui_dial_api.send_dial_mute_post_json(h, state, _dial({"action": "mute"}))),
         Route("volume_mute", "POST /api/dial/mute restore",
-              lambda h: api.send_dial_mute_post_json(h, state, _dial({"action": "restore"}))),
+              lambda h: webui_dial_api.send_dial_mute_post_json(h, state, _dial({"action": "restore"}))),
         Route("eq", "GET /api/output_eq/status",
               lambda h: webui_equaliser.send_output_eq_status_json(h)),
         Route("eq", "POST /api/dial/eq",
-              lambda h: api.send_dial_eq_post_json(h, state, _dial())),
+              lambda h: webui_dial_api.send_dial_eq_post_json(h, state, _dial())),
         Route("eq", "GET /api/federation/v1/equaliser/status",
               lambda h: api.send_federation_eq_status_json(h, state)),
         Route("repeat", "POST /api/dial/repeat seek",
-              lambda h: api.send_dial_repeat_post_json(
+              lambda h: webui_dial_api.send_dial_repeat_post_json(
                   h, state, _dial({"action": "seek", "position_seconds": 0}))),
         Route("repeat", "POST /api/dial/repeat/arm",
-              lambda h: api.send_dial_repeat_arm_post_json(h, state, _dial({"armed": True}))),
+              lambda h: webui_dial_api.send_dial_repeat_arm_post_json(h, state, _dial({"armed": True}))),
         Route("repeat", "POST /api/repeat",
               lambda h: repeat.send_repeat_post_json(h, state, json.dumps({"armed": True}))),
         Route("warnings", "POST /api/dial/warnings",
-              lambda h: api.send_dial_warnings_post_json(h, state, _dial())),
+              lambda h: webui_dial_api.send_dial_warnings_post_json(h, state, _dial())),
         Route("warnings", "POST /api/dial/capabilities",
-              lambda h: api.send_dial_capabilities_json(h, state)),
+              lambda h: webui_dial_api.send_dial_capabilities_json(h, state)),
         Route("levels", "GET /api/inputs/levels",
               lambda h: webui_home_api.send_input_levels_json(h, state)),
     ]

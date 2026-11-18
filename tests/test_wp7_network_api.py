@@ -835,7 +835,7 @@ class TestRouteWiring:
             "autostream_dials", "autostream_players",
             "autostream_mdns", "autostream_commissioning",
             "autostream_log_policy",
-            "webui.common", "autostream_webui_dials",
+            "webui.common", "webui.dial.management",
             "webui.browser.about", "webui.browser.equaliser",
             "webui.browser.home", "webui.browser.logs",
             "webui.browser.owntone", "webui.browser.setup.page",
@@ -867,7 +867,7 @@ class TestRouteWiring:
         for attr in ("dispatch_dial_management_post", "handle_dial_configure_get",
                      "handle_dial_pin_recovery_status", "handle_dial_update_post",
                      "handle_dial_update_status"):
-            setattr(sys.modules["autostream_webui_dials"], attr, MagicMock())
+            setattr(sys.modules["webui.dial.management"], attr, MagicMock())
         for attr in ("send_first_boot_owntone_page",):
             setattr(sys.modules["webui.browser.first_boot"], attr, MagicMock())
 

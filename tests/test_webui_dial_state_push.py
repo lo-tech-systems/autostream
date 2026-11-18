@@ -843,7 +843,7 @@ class TestCallSites:
         store's dial hints sent while it ran, as (kind, except_dial) pairs and
         the reply the route sent."""
         import autostream_player_service as ps
-        import autostream_webui_api as api
+        import webui.dial.api as api
         from autostream_players import ActionResult, OutputInfo
         from autostream_state import Origin
         from autostream_state.outputs import get_authority
@@ -862,7 +862,7 @@ class TestCallSites:
                 get_authority().mute_all(Origin.USER)
             calls.clear()
             try:
-                with patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
+                with patch("webui.dial.api.dial_authorization", return_value="authorized"), \
                      patch("webui.common._config_snapshot", return_value=parsed), \
                      patch("webui.common.send_json", side_effect=lambda h, c, b: sent.append(dict(b))):
                     getattr(api, route)(object(), object(), {"dial_id": "dial-1", **body})

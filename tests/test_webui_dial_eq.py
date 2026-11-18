@@ -44,7 +44,8 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
-from autostream_webui_api import send_dial_eq_post_json, send_dial_eq_set_post_json
+from webui.dial.api import send_dial_eq_set_post_json
+from webui.dial.api import send_dial_eq_post_json
 from webui.session_state import WebUIState
 import autostream_monitor_control as monitor_control
 from settings_fixtures import fixed_view
@@ -97,8 +98,8 @@ def _invoke_read(
         return parsed
 
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
     ):
@@ -121,8 +122,8 @@ def _invoke_set(
     apply_mock = MagicMock(return_value=apply_result)
 
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_monitor_control.apply_eq_fields", apply_mock),

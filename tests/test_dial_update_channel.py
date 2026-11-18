@@ -694,8 +694,7 @@ class TestMainDialCardStructural:
 
     def test_proxy_passthrough_no_modification(self):
         """The proxy strips uuid and forwards all other fields — no dials.py changes needed."""
-        source_path = REPO_ROOT / "core" / "autostream_webui_dials.py"
-        source = source_path.read_text(encoding="utf-8")
+        source = _source_text.module_text("webui.dial.management")
         # Proxy strips uuid and forwards everything else verbatim.
         assert 'k != "uuid"' in source
 

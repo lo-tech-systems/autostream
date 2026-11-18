@@ -1,4 +1,4 @@
-"""autostream_webui_dials.py
+"""webui/dial/management.py
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
@@ -384,3 +384,57 @@ def handle_dial_sdcard_health_post(handler, json_obj: dict) -> None:
         return
     body = {k: v for k, v in json_obj.items() if k != "uuid"}
     _proxy_post(handler, uuid, "/sdcard-health", body)
+
+
+# -----------------------------------------------------------------------------
+# Route-table adapters
+# -----------------------------------------------------------------------------
+
+
+
+def _route_post_dial_management(handler, state, body_str):
+    dispatch_dial_management_post(handler, handler._normalized_path(), common._route_post_json_obj(handler))
+
+
+def _route_post_dial_update(handler, state, body_str):
+    path = handler._normalized_path()
+    dial_id = path.rsplit("/", 1)[-1]
+    if not dial_id:
+        handler.send_error(404, "Not found")
+        return
+    handle_dial_update_post(handler, dial_id)
+
+
+def _route_post_dial_screen_settings(handler, state, body_str):
+    json_obj = common._route_post_json_obj(handler)
+    handle_dial_screen_settings_post(handler, json_obj if isinstance(json_obj, dict) else {})
+
+
+def _route_post_dial_sdcard_health(handler, state, body_str):
+    json_obj = common._route_post_json_obj(handler)
+    handle_dial_sdcard_health_post(handler, json_obj if isinstance(json_obj, dict) else {})
+
+
+def _route_get_dial_configure(handler, state):
+    handle_dial_configure_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
+
+
+def _route_get_dial_pin_recovery_status(handler, state):
+    handle_dial_pin_recovery_status(handler, handler._normalized_path().rsplit("/", 1)[-1])
+
+
+def _route_get_dial_update_status(handler, state):
+    handle_dial_update_status(handler, handler._normalized_path().rsplit("/", 1)[-1])
+
+
+def _route_get_dial_screen_settings(handler, state):
+    handle_dial_screen_settings_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
+
+
+def _route_get_dial_screen_image(handler, state):
+    handle_dial_screen_image_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
+
+
+def _route_get_dial_sdcard_health(handler, state):
+    handle_dial_sdcard_health_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
+

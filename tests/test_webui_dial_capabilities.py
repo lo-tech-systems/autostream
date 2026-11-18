@@ -21,7 +21,7 @@ if _core not in sys.path:
 import autostream_auth as auth_mod
 import autostream_webui_routes as routes_mod
 from autostream_dials import DIAL_CAPABILITIES, DIAL_PROTO_VERSION
-from autostream_webui_api import send_dial_capabilities_json
+from webui.dial.api import send_dial_capabilities_json
 
 APPLIANCE_ID = "a1b2c3d4e5f6a7b8c9d0"
 

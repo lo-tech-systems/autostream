@@ -270,7 +270,7 @@ class TestNonObjectJson:
         h = _make_handler("/api/dial/volume", raw)
         with patch("webui.session_state.AUTH", auth), \
              patch("webui.session_state.STATE", MagicMock()), \
-             patch("autostream_webui.send_dial_volume_post_json") as mock_handler:
+             patch("webui.dial.api.send_dial_volume_post_json") as mock_handler:
             h.do_POST()
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
@@ -283,7 +283,7 @@ class TestNonObjectJson:
         h = _make_handler("/api/dial/mute", raw)
         with patch("webui.session_state.AUTH", auth), \
              patch("webui.session_state.STATE", MagicMock()), \
-             patch("autostream_webui.send_dial_mute_post_json") as mock_handler:
+             patch("webui.dial.api.send_dial_mute_post_json") as mock_handler:
             h.do_POST()
         h.send_error.assert_called_once()
         assert h.send_error.call_args[0][0] == 400
@@ -299,7 +299,7 @@ class TestNonObjectJson:
             sent_codes.append(code)
         with patch("webui.session_state.AUTH", auth), \
              patch("webui.session_state.STATE", MagicMock()), \
-             patch("autostream_webui.send_dial_volume_post_json", side_effect=fake_send_json):
+             patch("webui.dial.api.send_dial_volume_post_json", side_effect=fake_send_json):
             h.do_POST()
         h.send_error.assert_not_called()
 

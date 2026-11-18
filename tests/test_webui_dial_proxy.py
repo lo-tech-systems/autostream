@@ -20,27 +20,25 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-from autostream_webui_dials import (
-    _proxy_call,
-    _BadTargetResponse,
-    dispatch_dial_management_post,
-    handle_dial_authorize_post,
-    handle_dial_revoke_post,
-    handle_dial_configure_get,
-    handle_dial_configure_post,
-    handle_dial_screen_settings_get,
-    handle_dial_screen_settings_post,
-    handle_dial_screen_image_get,
-    handle_dial_sdcard_health_get,
-    handle_dial_sdcard_health_post,
-    handle_dial_recovery_arm_post,
-    handle_dial_recovery_disarm_post,
-    _proxy_get,
-    _proxy_post,
-    _proxy_get_bytes,
-    _MAX_PROXY_RESPONSE_BYTES,
-    _MAX_PROXY_IMAGE_BYTES,
-)
+from webui.dial.management import handle_dial_sdcard_health_post
+from webui.dial.management import handle_dial_sdcard_health_get
+from webui.dial.management import handle_dial_screen_image_get
+from webui.dial.management import handle_dial_screen_settings_post
+from webui.dial.management import handle_dial_screen_settings_get
+from webui.dial.management import handle_dial_configure_get
+from webui.dial.management import handle_dial_recovery_disarm_post
+from webui.dial.management import handle_dial_recovery_arm_post
+from webui.dial.management import handle_dial_configure_post
+from webui.dial.management import handle_dial_revoke_post
+from webui.dial.management import handle_dial_authorize_post
+from webui.dial.management import dispatch_dial_management_post
+from webui.dial.management import _proxy_get_bytes
+from webui.dial.management import _proxy_post
+from webui.dial.management import _proxy_get
+from webui.dial.management import _proxy_call
+from webui.dial.management import _BadTargetResponse
+from webui.dial.management import _MAX_PROXY_IMAGE_BYTES
+from webui.dial.management import _MAX_PROXY_RESPONSE_BYTES
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +127,7 @@ def _capture_sent_bytes(fn, *args, **kwargs) -> list:
 
 class TestProxyCallConnectionClosure:
     def _call(self, conn_mock, **kwargs):
-        with patch("autostream_webui_dials.http.client.HTTPConnection",
+        with patch("webui.dial.management.http.client.HTTPConnection",
                    return_value=conn_mock):
             try:
                 return _proxy_call("GET", "10.0.0.1", 7000, "/configure", **kwargs)
@@ -152,7 +150,7 @@ class TestProxyCallConnectionClosure:
     def test_request_oserror_closes_connection(self):
         conn = _make_conn_mock(request_exc=OSError("refused"))
         with pytest.raises(OSError):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
         conn.close.assert_called_once()
@@ -160,7 +158,7 @@ class TestProxyCallConnectionClosure:
     def test_getresponse_oserror_closes_connection(self):
         conn = _make_conn_mock(getresponse_exc=OSError("timeout"))
         with pytest.raises(OSError):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
         conn.close.assert_called_once()
@@ -168,7 +166,7 @@ class TestProxyCallConnectionClosure:
     def test_read_oserror_closes_connection(self):
         conn = _make_conn_mock(read_exc=OSError("broken pipe"))
         with pytest.raises(OSError):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
         conn.close.assert_called_once()
@@ -176,7 +174,7 @@ class TestProxyCallConnectionClosure:
     def test_invalid_json_raises_bad_target_response_and_closes_connection(self):
         conn = _make_conn_mock(resp_body=b"not-json")
         with pytest.raises(_BadTargetResponse):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
         conn.close.assert_called_once()
@@ -196,7 +194,7 @@ class TestProxyCallConnectionClosure:
 
 class TestProxyCallBoundedRead:
     def _call_raw(self, conn_mock):
-        with patch("autostream_webui_dials.http.client.HTTPConnection",
+        with patch("webui.dial.management.http.client.HTTPConnection",
                    return_value=conn_mock):
             return _proxy_call("GET", "10.0.0.1", 7000, "/configure")
 
@@ -219,14 +217,14 @@ class TestProxyCallBoundedRead:
         body = b'{"x":"' + b"a" * (_MAX_PROXY_RESPONSE_BYTES + 10) + b'"}'
         conn = _make_conn_mock(resp_status=200, resp_body=body)
         with pytest.raises(_BadTargetResponse):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
 
     def test_3xx_with_html_body_raises_bad_target_response(self):
         conn = _make_conn_mock(resp_status=301, resp_body=b"<html>redirect</html>")
         with pytest.raises(_BadTargetResponse):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
 
@@ -234,21 +232,21 @@ class TestProxyCallBoundedRead:
         # Even a valid JSON body in a redirect must be rejected before parsing.
         conn = _make_conn_mock(resp_status=302, resp_body=b'{"ok":true}')
         with pytest.raises(_BadTargetResponse):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
 
     def test_non_object_json_root_raises_bad_target_response(self):
         conn = _make_conn_mock(resp_status=200, resp_body=b'[1,2,3]')
         with pytest.raises(_BadTargetResponse):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
 
     def test_json_string_root_raises_bad_target_response(self):
         conn = _make_conn_mock(resp_status=200, resp_body=b'"hello"')
         with pytest.raises(_BadTargetResponse):
-            with patch("autostream_webui_dials.http.client.HTTPConnection",
+            with patch("webui.dial.management.http.client.HTTPConnection",
                        return_value=conn):
                 _proxy_call("GET", "10.0.0.1", 7000, "/configure")
 
@@ -261,7 +259,7 @@ class TestProxyGetContracts:
     def _call_proxy_get(self, uuid: str, conn_mock=None, dial_path="/configure") -> list:
         def run():
             if conn_mock is not None:
-                with patch("autostream_webui_dials.http.client.HTTPConnection",
+                with patch("webui.dial.management.http.client.HTTPConnection",
                            return_value=conn_mock):
                     _proxy_get(MagicMock(), uuid, dial_path)
             else:
@@ -271,7 +269,7 @@ class TestProxyGetContracts:
 
     # 1. unknown registry UUID → transport 200, dial_offline, error_status 404, retryable
     def test_dial_offline_tunneled_200(self):
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+        with patch("webui.dial.management.get_dial_sighting", return_value=None):
             sent = self._call_proxy_get("unknown-uuid")
         code, data = sent[0]
         assert code == 200
@@ -284,7 +282,7 @@ class TestProxyGetContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = MagicMock()
         conn.request.side_effect = OSError("refused")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -297,7 +295,7 @@ class TestProxyGetContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = MagicMock()
         conn.request.side_effect = socket.timeout("timed out")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -308,7 +306,7 @@ class TestProxyGetContracts:
     def test_invalid_json_tunneled_502_bad_response(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b"not-json")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -319,7 +317,7 @@ class TestProxyGetContracts:
     def test_non_object_json_tunneled_502_bad_response(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'[1,2,3]')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -335,7 +333,7 @@ class TestProxyGetContracts:
         assert len(body) == _MAX_PROXY_RESPONSE_BYTES
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=body)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -346,7 +344,7 @@ class TestProxyGetContracts:
         body = b'{"x":"' + b"a" * (_MAX_PROXY_RESPONSE_BYTES + 10) + b'"}'
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=body)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -357,7 +355,7 @@ class TestProxyGetContracts:
     def test_target_400_passes_through_natively(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error":"bad_input"}', status=400)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 400
@@ -367,7 +365,7 @@ class TestProxyGetContracts:
     def test_target_403_passes_through_natively(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error":"wrong_pin"}', status=403)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 403
@@ -377,7 +375,7 @@ class TestProxyGetContracts:
     def test_target_404_with_active_false_tunneled_with_field_preserved(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"active":false}', status=404)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/recovery_status")
         code, data = sent[0]
         assert code == 200
@@ -390,7 +388,7 @@ class TestProxyGetContracts:
     def test_target_429_passes_through_natively(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error":"too_many_attempts"}', status=429)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 429
@@ -400,7 +398,7 @@ class TestProxyGetContracts:
     def test_target_500_passes_through_natively(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error":"save_failed"}', status=500)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 500
@@ -410,7 +408,7 @@ class TestProxyGetContracts:
     def test_get_target_502_tunneled(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error":"upstream_error"}', status=502)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -420,7 +418,7 @@ class TestProxyGetContracts:
     def test_get_target_503_tunneled(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false}', status=503)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -431,7 +429,7 @@ class TestProxyGetContracts:
     def test_get_target_504_tunneled(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false}', status=504)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -442,7 +440,7 @@ class TestProxyGetContracts:
     def test_target_error_status_cannot_spoof(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error_status":200}', status=502)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -452,7 +450,7 @@ class TestProxyGetContracts:
     def test_3xx_html_body_tunneled_502_bad_response(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b"<html>redirect</html>", status=302)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -463,7 +461,7 @@ class TestProxyGetContracts:
     def test_3xx_json_body_still_tunneled_502_bad_response(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":true}', status=301)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -474,7 +472,7 @@ class TestProxyGetContracts:
     def test_success_passes_response_body(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":true,"name":"Test","step_percent":3}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -488,7 +486,7 @@ class TestProxyGetContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(
             body=b'{"ok":true,"pin_set":true,"can_confirm_presence":false}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/configure")
         code, data = sent[0]
         assert code == 200
@@ -499,7 +497,7 @@ class TestProxyGetContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(
             body=b'{"ok":true,"pin_set":false,"can_confirm_presence":true}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/configure")
         code, data = sent[0]
         assert code == 200
@@ -513,7 +511,7 @@ class TestProxyGetContracts:
         conn = _conn_success(
             body=b'{"active":true,"volume_confirmed":false,'
                  b'"can_confirm_presence":true,"recovery_remaining_ms":512000}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/pin_recovery/status")
         code, data = sent[0]
         assert code == 200
@@ -526,7 +524,7 @@ class TestProxyGetContracts:
         conn = _conn_success(
             body=b'{"active":true,"volume_confirmed":false,'
                  b'"can_confirm_presence":false,"recovery_remaining_ms":0}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_get("uuid", conn_mock=conn, dial_path="/pin_recovery/status")
         code, data = sent[0]
         assert code == 200
@@ -538,10 +536,10 @@ class TestProxyGetContracts:
     def test_correct_path_forwarded(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             _proxy_get(MagicMock(), "uuid", "/recovery_status")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/recovery_status"
@@ -558,7 +556,7 @@ class TestProxyGetBytesContracts:
     def _call(self, uuid: str, conn_mock=None, dial_path="/screen/image") -> list:
         def run():
             if conn_mock is not None:
-                with patch("autostream_webui_dials.http.client.HTTPConnection",
+                with patch("webui.dial.management.http.client.HTTPConnection",
                            return_value=conn_mock):
                     _proxy_get_bytes(MagicMock(), uuid, dial_path, accept_type="image/png")
             else:
@@ -567,7 +565,7 @@ class TestProxyGetBytesContracts:
         return _capture_sent_bytes(run)
 
     def test_unknown_uuid_tunneled_dial_offline(self):
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+        with patch("webui.dial.management.get_dial_sighting", return_value=None):
             sent = self._call("unknown-uuid")
         kind, code, data = sent[0]
         assert kind == "json"
@@ -579,7 +577,7 @@ class TestProxyGetBytesContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = MagicMock()
         conn.request.side_effect = OSError("refused")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, data = sent[0]
         assert kind == "json"
@@ -592,7 +590,7 @@ class TestProxyGetBytesContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         png_bytes = _PNG_SIGNATURE + b"the-rest-of-a-fake-encoded-frame"
         conn = _conn_bytes(png_bytes, status=200, content_type="image/png")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, content_type, body, extra_headers = sent[0]
         assert kind == "bytes"
@@ -606,7 +604,7 @@ class TestProxyGetBytesContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_bytes(b'{"ok":false,"error":"no_frame"}', status=404,
                           content_type="application/json")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, data = sent[0]
         assert kind == "json"
@@ -616,7 +614,7 @@ class TestProxyGetBytesContracts:
     def test_3xx_tunneled_dial_bad_response(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_bytes(b"", status=302, content_type="text/html")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, data = sent[0]
         assert kind == "json"
@@ -628,7 +626,7 @@ class TestProxyGetBytesContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         oversized = _PNG_SIGNATURE + b"a" * _MAX_PROXY_IMAGE_BYTES
         conn = _conn_bytes(oversized, status=200, content_type="image/png")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, data = sent[0]
         assert kind == "json"
@@ -639,7 +637,7 @@ class TestProxyGetBytesContracts:
     def test_wrong_content_type_on_200_tunneled_dial_bad_response(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_bytes(b"not an image", status=200, content_type="text/plain")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, data = sent[0]
         assert kind == "json"
@@ -650,7 +648,7 @@ class TestProxyGetBytesContracts:
     def test_malformed_json_on_non_matching_response_tunneled_dial_bad_response(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_bytes(b"not-json", status=500, content_type="application/json")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, data = sent[0]
         assert kind == "json"
@@ -661,7 +659,7 @@ class TestProxyGetBytesContracts:
     def test_connection_closed_on_success(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_bytes(_PNG_SIGNATURE, status=200, content_type="image/png")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             self._call("uuid", conn_mock=conn)
         conn.close.assert_called_once()
 
@@ -673,7 +671,7 @@ class TestProxyGetBytesContracts:
         resp.getheader.return_value = "image/png"
         resp.read.side_effect = OSError("connection closed")
         conn.getresponse.return_value = resp
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call("uuid", conn_mock=conn)
         kind, code, data = sent[0]
         assert data["error"] == "dial_unreachable"
@@ -682,7 +680,7 @@ class TestProxyGetBytesContracts:
     def test_correct_path_and_method_forwarded(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_bytes(_PNG_SIGNATURE, status=200, content_type="image/png")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             self._call("uuid", conn_mock=conn, dial_path="/screen/image")
         method, path = conn.request.call_args[0][:2]
         assert method == "GET"
@@ -698,7 +696,7 @@ class TestProxyPostContracts:
                          dial_path="/configure") -> list:
         def run():
             if conn_mock is not None:
-                with patch("autostream_webui_dials.http.client.HTTPConnection",
+                with patch("webui.dial.management.http.client.HTTPConnection",
                            return_value=conn_mock):
                     _proxy_post(MagicMock(), uuid, dial_path, body_dict)
             else:
@@ -708,7 +706,7 @@ class TestProxyPostContracts:
 
     # 1. unknown UUID → tunneled 404 dial_offline
     def test_dial_offline_tunneled(self):
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+        with patch("webui.dial.management.get_dial_sighting", return_value=None):
             sent = self._call_proxy_post("unknown")
         code, data = sent[0]
         assert code == 200
@@ -720,7 +718,7 @@ class TestProxyPostContracts:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = MagicMock()
         conn.request.side_effect = OSError("timeout")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_post("uuid", body_dict={"x": 1}, conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -731,7 +729,7 @@ class TestProxyPostContracts:
     def test_post_target_502_tunneled(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false}', status=502)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_post("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -741,7 +739,7 @@ class TestProxyPostContracts:
     def test_post_target_503_tunneled(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false}', status=503)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_post("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -751,7 +749,7 @@ class TestProxyPostContracts:
     def test_post_target_504_tunneled(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false}', status=504)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_post("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -764,7 +762,7 @@ class TestProxyPostContracts:
             body=b'{"ok":false,"error":"upstream_error","detail":"some context","error_status":999}',
             status=502,
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting):
             sent = self._call_proxy_post("uuid", conn_mock=conn)
         code, data = sent[0]
         assert code == 200
@@ -775,7 +773,7 @@ class TestProxyPostContracts:
     # 19. GET and POST obey the same contract
     def test_get_and_post_same_contract_for_offline(self):
         """Offline UUID produces the same tunneled error for GET and POST."""
-        from autostream_webui_dials import _proxy_get
+        from webui.dial.management import _proxy_get
         sent_get = _capture_sent(
             lambda: _proxy_get(MagicMock(), "unknown", "/configure"),
         )
@@ -786,11 +784,11 @@ class TestProxyPostContracts:
         # They both go through get_dial_sighting → None path, but
         # the patches need to be active. Let's test with patches.
         def run_get():
-            with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+            with patch("webui.dial.management.get_dial_sighting", return_value=None):
                 _proxy_get(MagicMock(), "unknown", "/configure")
 
         def run_post():
-            with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+            with patch("webui.dial.management.get_dial_sighting", return_value=None):
                 _proxy_post(MagicMock(), "unknown", "/configure", None)
 
         sg = _capture_sent(run_get)
@@ -800,10 +798,10 @@ class TestProxyPostContracts:
     def test_body_forwarded_to_dial(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             _proxy_post(MagicMock(), "uuid", "/configure", {"name": "Test"})
 
         _, call_kwargs = conn.request.call_args
@@ -813,10 +811,10 @@ class TestProxyPostContracts:
     def test_none_body_sends_no_body(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             _proxy_post(MagicMock(), "uuid", "/update", None)
 
         _, call_kwargs = conn.request.call_args
@@ -836,9 +834,9 @@ class TestHandleDialScreenSettings:
                  b'"active":false,"backend":"noop","backend_loaded":false,'
                  b'"showing":"noop","last_error":"","last_error_at":null}}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json") as mock_send, \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_get(MagicMock(), "uuid")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/screen/settings"
@@ -848,7 +846,7 @@ class TestHandleDialScreenSettings:
         assert data["runtime"]["rotate"] is True
 
     def test_get_offline_tunneled(self):
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+        with patch("webui.dial.management.get_dial_sighting", return_value=None):
             sent = _capture_sent(handle_dial_screen_settings_get, MagicMock(), "unknown")
         code, data = sent[0]
         assert code == 200
@@ -863,9 +861,9 @@ class TestHandleDialScreenSettings:
     def test_post_proxies_uuid_stripped_body(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":true,"screen":{"fitted":true,"rotate":true},"runtime":{},"restart_required":false}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_post(
                 MagicMock(),
                 {"uuid": "my-uuid", "current_pin": "1234", "screen": {"fitted": True, "rotate": True}},
@@ -880,8 +878,8 @@ class TestHandleDialScreenSettings:
     def test_post_dial_400_passes_through_natively(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error":"invalid_screen_settings"}', status=400)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             sent = _capture_sent(
                 handle_dial_screen_settings_post,
                 MagicMock(),
@@ -902,9 +900,9 @@ class TestHandleDialScreenSettings:
                  b'"runtime":{"fitted":true,"rotate":false,"active":false,"backend":"noop",'
                  b'"backend_loaded":false,"showing":"noop","last_error":"","last_error_at":null}}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json") as mock_send, \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_get(MagicMock(), "uuid")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/screen/settings"
@@ -924,9 +922,9 @@ class TestHandleDialScreenSettings:
             body=b'{"ok":true,"screen":{"fitted":true,"rotate":true,"screen_type":"tft_1in3","bgr":false},'
                  b'"runtime":{},"restart_required":false}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_post(
                 MagicMock(),
                 {
@@ -953,9 +951,9 @@ class TestHandleDialScreenSettings:
             body=b'{"ok":true,"screen":{"fitted":true,"rotate":false,"surface":"kiosk",'
                  b'"sleep_after_s":900,"brightness":45},"runtime":{"backend":"noop"}}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json") as mock_send, \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_get(MagicMock(), "uuid")
         data = mock_send.call_args[0][2]
         assert data["screen"]["surface"] == "kiosk"
@@ -963,9 +961,9 @@ class TestHandleDialScreenSettings:
         assert data["screen"]["brightness"] == 45
 
         conn = _conn_success(body=b'{"ok":true,"screen":{},"runtime":{}}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_post(
                 MagicMock(),
                 {"uuid": "my-uuid", "screen": {"fitted": True, "sleep_after_s": 60, "brightness": 20}},
@@ -985,9 +983,9 @@ class TestHandleDialScreenSettings:
                  b'"runtime":{"fitted":true,"rotate":false,"active":false,"backend":"noop",'
                  b'"backend_loaded":false,"showing":"noop","last_error":"","last_error_at":null}}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json") as mock_send, \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_get(MagicMock(), "uuid")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/screen/settings"
@@ -1003,9 +1001,9 @@ class TestHandleDialScreenSettings:
             body=b'{"ok":true,"screen":{"fitted":true,"volume_scope":"all","mute_scope":"all"},'
                  b'"runtime":{},"restart_required":false}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_post(
                 MagicMock(),
                 {
@@ -1039,9 +1037,9 @@ class TestHandleDialScreenSettings:
                  b'"runtime":{"fitted":true,"rotate":false,"active":false,"backend":"noop",'
                  b'"backend_loaded":false,"showing":"noop","last_error":"","last_error_at":null}}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json") as mock_send, \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_get(MagicMock(), "uuid")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/screen/settings"
@@ -1063,9 +1061,9 @@ class TestHandleDialScreenSettings:
                  b'"touch_type":"capacitive"},'
                  b'"runtime":{},"restart_required":false}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_post(
                 MagicMock(),
                 {
@@ -1103,9 +1101,9 @@ class TestHandleDialScreenSettings:
                  b'"runtime":{"fitted":true,"rotate":false,"active":false,"backend":"noop",'
                  b'"backend_loaded":false,"showing":"noop","last_error":"","last_error_at":null}}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json") as mock_send, \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_get(MagicMock(), "uuid")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/screen/settings"
@@ -1123,9 +1121,9 @@ class TestHandleDialScreenSettings:
                  b'"bgr":false,"touch_type":"capacitive","always_show_controls":true},'
                  b'"runtime":{},"restart_required":false}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_screen_settings_post(
                 MagicMock(),
                 {
@@ -1163,9 +1161,9 @@ class TestHandleDialSdcardHealth:
                  b'"check":"passed","health_percent":87},"requested":true,'
                  b'"probe":{"running":false,"outcome":"passed","reason":"","finished_at":null}}'
         )
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json") as mock_send, \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_sdcard_health_get(MagicMock(), "uuid")
         called_path = conn.request.call_args[0][1]
         assert called_path == "/sdcard-health"
@@ -1175,7 +1173,7 @@ class TestHandleDialSdcardHealth:
         assert data["state"]["health_percent"] == 87
 
     def test_get_offline_tunneled(self):
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+        with patch("webui.dial.management.get_dial_sighting", return_value=None):
             sent = _capture_sent(handle_dial_sdcard_health_get, MagicMock(), "unknown")
         code, data = sent[0]
         assert code == 200
@@ -1190,9 +1188,9 @@ class TestHandleDialSdcardHealth:
     def test_post_proxies_uuid_stripped_body(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":true,"probe":{"running":true}}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_sdcard_health_post(
                 MagicMock(),
                 {"uuid": "my-uuid", "enabled": True, "method": "auto", "current_pin": "1234"},
@@ -1207,8 +1205,8 @@ class TestHandleDialSdcardHealth:
     def test_post_dial_tool_missing_passes_through_natively(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":false,"error":"tool_missing"}', status=200)
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             sent = _capture_sent(
                 handle_dial_sdcard_health_post,
                 MagicMock(),
@@ -1239,9 +1237,9 @@ class TestHandleDialRecoveryArm:
     def test_forwards_to_recovery_arm_path(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_recovery_arm_post(MagicMock(), {"uuid": "my-uuid"})
         called_path = conn.request.call_args[0][1]
         assert called_path == "/recovery/arm"
@@ -1249,9 +1247,9 @@ class TestHandleDialRecoveryArm:
     def test_no_body_fields_other_than_uuid_forwarded(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_recovery_arm_post(
                 MagicMock(), {"uuid": "my-uuid", "extra": "should-not-forward"})
         _, call_kwargs = conn.request.call_args
@@ -1260,8 +1258,8 @@ class TestHandleDialRecoveryArm:
     def test_success_returns_ok_true(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":true}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {"uuid": "my-uuid"})
         code, data = sent[0]
         assert code == 200
@@ -1271,8 +1269,8 @@ class TestHandleDialRecoveryArm:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = MagicMock()
         conn.request.side_effect = OSError("refused")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {"uuid": "my-uuid"})
         code, data = sent[0]
         assert code == 200
@@ -1281,7 +1279,7 @@ class TestHandleDialRecoveryArm:
         assert data["error_status"] == 502
 
     def test_dial_offline_surfaces_existing_tunneled_error(self):
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+        with patch("webui.dial.management.get_dial_sighting", return_value=None):
             sent = _capture_sent(handle_dial_recovery_arm_post, MagicMock(), {"uuid": "unknown"})
         code, data = sent[0]
         assert code == 200
@@ -1300,9 +1298,9 @@ class TestHandleDialRecoveryDisarm:
     def test_forwards_to_recovery_disarm_path(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             handle_dial_recovery_disarm_post(MagicMock(), {"uuid": "my-uuid"})
         called_path = conn.request.call_args[0][1]
         assert called_path == "/recovery/disarm"
@@ -1310,8 +1308,8 @@ class TestHandleDialRecoveryDisarm:
     def test_success_returns_ok_true(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success(body=b'{"ok":true}')
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             sent = _capture_sent(handle_dial_recovery_disarm_post, MagicMock(), {"uuid": "my-uuid"})
         code, data = sent[0]
         assert code == 200
@@ -1321,8 +1319,8 @@ class TestHandleDialRecoveryDisarm:
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = MagicMock()
         conn.request.side_effect = OSError("refused")
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             sent = _capture_sent(handle_dial_recovery_disarm_post, MagicMock(), {"uuid": "my-uuid"})
         code, data = sent[0]
         assert code == 200
@@ -1335,9 +1333,9 @@ class TestRecoveryArmDisarmDispatcherRouting:
     def test_dispatch_routes_arm(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             dispatch_dial_management_post(
                 MagicMock(), "/api/dial/recovery/arm", {"uuid": "my-uuid"})
         called_path = conn.request.call_args[0][1]
@@ -1346,9 +1344,9 @@ class TestRecoveryArmDisarmDispatcherRouting:
     def test_dispatch_routes_disarm(self):
         sighting = MagicMock(ip="1.2.3.4", port=7842)
         conn = _conn_success()
-        with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
+        with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
              patch("webui.common.send_json"), \
-             patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+             patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
             dispatch_dial_management_post(
                 MagicMock(), "/api/dial/recovery/disarm", {"uuid": "my-uuid"})
         called_path = conn.request.call_args[0][1]

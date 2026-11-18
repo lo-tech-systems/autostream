@@ -35,6 +35,7 @@ from autostream_state.outputs import get_authority
 from fake_store import FakeStore, fake_repeat, fake_session, fake_track
 from settings_fixtures import fixed_view
 import webui.common as webui_common
+import webui.dial.api as webui_dial_api
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -78,16 +79,16 @@ def _reference(code: int, payload: dict):
 
 # Every dial route, with a body that passes its own shape checks.
 _ROUTES = [
-    ("status", api.send_dial_status_post_json, {"dial_id": DIAL_ID}),
-    ("repeat", api.send_dial_repeat_post_json, {"dial_id": DIAL_ID, "action": "stop"}),
-    ("repeat_arm", api.send_dial_repeat_arm_post_json, {"dial_id": DIAL_ID, "armed": True}),
-    ("outputs", api.send_dial_outputs_post_json, {"dial_id": DIAL_ID}),
-    ("outputs_set", api.send_dial_outputs_set_post_json,
+    ("status", webui_dial_api.send_dial_status_post_json, {"dial_id": DIAL_ID}),
+    ("repeat", webui_dial_api.send_dial_repeat_post_json, {"dial_id": DIAL_ID, "action": "stop"}),
+    ("repeat_arm", webui_dial_api.send_dial_repeat_arm_post_json, {"dial_id": DIAL_ID, "armed": True}),
+    ("outputs", webui_dial_api.send_dial_outputs_post_json, {"dial_id": DIAL_ID}),
+    ("outputs_set", webui_dial_api.send_dial_outputs_set_post_json,
      {"dial_id": DIAL_ID, "id": "1", "selected": True}),
-    ("eq", api.send_dial_eq_post_json, {"dial_id": DIAL_ID}),
-    ("eq_set", api.send_dial_eq_set_post_json, {"dial_id": DIAL_ID, "bass_db": 1}),
-    ("volume", api.send_dial_volume_post_json, {"dial_id": DIAL_ID, "delta": 5}),
-    ("mute", api.send_dial_mute_post_json, {"dial_id": DIAL_ID, "action": "mute"}),
+    ("eq", webui_dial_api.send_dial_eq_post_json, {"dial_id": DIAL_ID}),
+    ("eq_set", webui_dial_api.send_dial_eq_set_post_json, {"dial_id": DIAL_ID, "bass_db": 1}),
+    ("volume", webui_dial_api.send_dial_volume_post_json, {"dial_id": DIAL_ID, "delta": 5}),
+    ("mute", webui_dial_api.send_dial_mute_post_json, {"dial_id": DIAL_ID, "action": "mute"}),
 ]
 
 
@@ -98,7 +99,7 @@ def _state() -> WebUIState:
 def _call_refused(fn, body, dial_proto, auth=AUTH_NOT_AUTHORIZED):
     handler = _Capture()
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth),
+        patch("webui.dial.api.dial_authorization", return_value=auth),
         patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
         patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto)),
     ):
@@ -129,31 +130,31 @@ class TestRefusalStyle:
 
 class TestVolumeAndMuteGate:
     def test_volume_unauthorized_v2_is_412_typed(self):
-        code, _, raw = _call_refused(api.send_dial_volume_post_json,
+        code, _, raw = _call_refused(webui_dial_api.send_dial_volume_post_json,
                                      {"dial_id": DIAL_ID, "delta": 5}, "v2")
         assert code == 412
         assert b"dial_not_authorized" in raw and TEST_APPLIANCE_ID.encode() in raw
 
     def test_volume_unauthorized_legacy_is_403(self):
-        code, _, raw = _call_refused(api.send_dial_volume_post_json,
+        code, _, raw = _call_refused(webui_dial_api.send_dial_volume_post_json,
                                      {"dial_id": DIAL_ID, "delta": 5}, "")
         assert (code, raw) == (403, b"{}")
 
     def test_mute_unauthorized_legacy_is_403(self):
-        code, _, raw = _call_refused(api.send_dial_mute_post_json,
+        code, _, raw = _call_refused(webui_dial_api.send_dial_mute_post_json,
                                      {"dial_id": DIAL_ID, "action": "mute"}, "")
         assert (code, raw) == (403, b"{}")
 
     def test_missing_dial_id_stays_403_empty_body(self):
-        for fn, body in ((api.send_dial_volume_post_json, {"delta": 5}),
-                         (api.send_dial_mute_post_json, {"action": "mute"})):
+        for fn, body in ((webui_dial_api.send_dial_volume_post_json, {"delta": 5}),
+                         (webui_dial_api.send_dial_mute_post_json, {"action": "mute"})):
             assert _call_refused(fn, body, "v2") == _reference(403, {})
 
     def test_authorization_is_checked_before_validation(self):
-        code, _, raw = _call_refused(api.send_dial_volume_post_json,
+        code, _, raw = _call_refused(webui_dial_api.send_dial_volume_post_json,
                                      {"dial_id": DIAL_ID, "delta": "x"}, "")
         assert (code, raw) == (403, b"{}")
-        code, _, _ = _call_refused(api.send_dial_mute_post_json,
+        code, _, _ = _call_refused(webui_dial_api.send_dial_mute_post_json,
                                    {"dial_id": DIAL_ID, "action": "bogus"}, "v2")
         assert code == 412
 
@@ -171,7 +172,7 @@ def _success(fn, body, dial_proto):
     get_authority().reset_for_tests()
     FakeStore().outputs(list(outputs.outputs))
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+        patch("webui.dial.api.dial_authorization", return_value=AUTH_AUTHORIZED),
         patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
         patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto)),
         patch("webui.common._config_snapshot", return_value=parsed),

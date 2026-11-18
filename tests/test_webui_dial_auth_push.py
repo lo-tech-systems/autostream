@@ -29,10 +29,8 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 from autostream_dials import DialSighting
-from autostream_webui_dials import (
-    handle_dial_authorize_post,
-    handle_dial_revoke_post,
-)
+from webui.dial.management import handle_dial_revoke_post
+from webui.dial.management import handle_dial_authorize_post
 from autostream_dial_push import _PUSH_RETRY_DELAY_S
 from autostream_dial_push import _PUSH_TIMEOUT_S
 from autostream_dial_push import notify_dial_auth_changed
@@ -176,7 +174,7 @@ class TestCallSites:
         from autostream_state import Origin
         seen = []
         with (
-            patch("autostream_webui_dials.submit", side_effect=_submitted(seen)),
+            patch("webui.dial.management.submit", side_effect=_submitted(seen)),
             patch("webui.common.send_json"),
             patch("autostream_dial_push.write_dial_entry") as write,
             patch("autostream_dial_push.validate_dial_name", return_value=True),

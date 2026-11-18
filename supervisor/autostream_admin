@@ -1775,7 +1775,7 @@ _DIAL_SERVICE       = _AVAHI_SERVICES_DIR / "autostream-dial.service"
 _DIAL_TEMPLATE      = Path("/usr/local/share/autostream/avahi/autostream-dial.service")
 
 # Printable ASCII only (0x20–0x7e); reject ; | which break TXT parsing.
-# NOTE: this definition is deliberately duplicated in autostream_webui_dials.py.
+# NOTE: this definition is deliberately duplicated in webui/dial/management.py.
 # autostream_admin is an extensionless privileged executable outside Python's module path;
 # it cannot be imported. Both copies enforce the same policy independently.
 _SAFE_NAME = _re.compile(r'^[\x20-\x7e]*$')

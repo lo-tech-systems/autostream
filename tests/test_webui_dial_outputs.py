@@ -39,10 +39,8 @@ from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 from fake_store import FakeStore
-from autostream_webui_api import (
-    send_dial_outputs_post_json,
-    send_dial_outputs_set_post_json,
-)
+from webui.dial.api import send_dial_outputs_set_post_json
+from webui.dial.api import send_dial_outputs_post_json
 from webui.session_state import WebUIState
 from settings_fixtures import fixed_view
 
@@ -126,8 +124,8 @@ def _invoke_list(
         return parsed
 
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_output_usage.get_usage_snapshot", return_value=usage_snapshot or {}),
@@ -160,8 +158,8 @@ def _invoke_set(
 
     mode_mock = MagicMock(side_effect=lambda mode: f"backend:{mode}")
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("webui.browser.home_model.submit_output_change", mutation_mock),
@@ -273,7 +271,7 @@ class TestOutputsList:
                 r.pop("is_default", None)
             return rows
 
-        with patch("autostream_webui_api.build_output_list", side_effect=_without_flag):
+        with patch("webui.dial.api.build_output_list", side_effect=_without_flag):
             code, body = _invoke_list(
                 {"dial_id": DIAL_ID},
                 list_result=_ok_list(_output("1", "Bedroom", 40)),
@@ -311,7 +309,7 @@ class TestOutputsList:
                     r.pop(k, None)
             return rows
 
-        with patch("autostream_webui_api.build_output_list", side_effect=_odd):
+        with patch("webui.dial.api.build_output_list", side_effect=_odd):
             code, body = _invoke_list(
                 {"dial_id": DIAL_ID},
                 list_result=_ok_list(*[_output(str(i), f"O{i}", 10) for i in range(4)]),
@@ -494,8 +492,8 @@ class TestOutputsSetValidation:
         state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
         handler = _make_handler()
         with (
-            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
-            patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+            patch("webui.dial.api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("webui.dial.api.dial_speaks_v2", return_value=True),
             patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("webui.common._config_snapshot", return_value=_parsed()),
             patch("autostream_player_service.submit_output_pin") as submit,

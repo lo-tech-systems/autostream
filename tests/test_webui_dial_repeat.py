@@ -31,10 +31,8 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
-from autostream_webui_api import (
-    send_dial_repeat_arm_post_json,
-    send_dial_repeat_post_json,
-)
+from webui.dial.api import send_dial_repeat_arm_post_json
+from webui.dial.api import send_dial_repeat_post_json
 
 DIAL_ID = "test-dial-uuid-1234"
 REQUESTER = f"dial:{DIAL_ID}"
@@ -77,8 +75,8 @@ def _invoke_transport(
     handler = _handler()
     transport_mock = MagicMock(return_value=transport_ack, side_effect=transport_side_effect)
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_monitor_control.send_live_repeat_transport", transport_mock),
         patch("autostream_webui_api.store",
@@ -100,8 +98,8 @@ def _invoke_arm(
     arm_mock = MagicMock(return_value=arm_ack)
     legacy_mock = MagicMock(side_effect=AssertionError("must not call apply_repeat_arm_request"))
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=True),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_monitor_control.set_live_repeat_armed_ack", arm_mock),
         patch("webui.repeat.apply_repeat_arm_request", legacy_mock),

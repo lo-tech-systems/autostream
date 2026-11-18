@@ -54,6 +54,7 @@ from autostream_state import Origin, store
 from autostream_state.outputs import PlayerServiceBackend, get_authority
 import webui.browser.home_model as webui_home_model
 import webui.browser.home_api as webui_home_api
+import webui.dial.api as webui_dial_api
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ def _muted(writes, *outputs):
 
 def _dial(fn, body, parsed=None):
     """Drive a dial route and return what it sent."""
-    import autostream_webui_api as api
+    import webui.dial.api as api
     captured = {}
 
     def fake_send_json(h, code, payload):
@@ -122,7 +123,7 @@ def _dial(fn, body, parsed=None):
         captured["body"] = payload
 
     with patch("webui.common.send_json", side_effect=fake_send_json), \
-         patch("autostream_webui_api.dial_authorization",
+         patch("webui.dial.api.dial_authorization",
                return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
          patch("webui.common._config_snapshot", return_value=parsed or _parsed_config()), \
          patch("autostream_rpi.get_appliance_id", return_value=None):
@@ -270,13 +271,12 @@ class TestDialMute:
         assert self._mute("mute") == {"ok": False, "error": "backend_unavailable"}
 
     def test_config_error(self, writes):
-        import autostream_webui_api as api
         captured = {}
         with patch("webui.common.send_json", side_effect=lambda h, c, b: captured.update(body=b)), \
-             patch("autostream_webui_api.dial_authorization",
+             patch("webui.dial.api.dial_authorization",
                    return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
              patch("webui.common._config_snapshot", side_effect=RuntimeError("boom")):
-            api.send_dial_mute_post_json(_handler(), MagicMock(), {"dial_id": "uid", "action": "mute"})
+            webui_dial_api.send_dial_mute_post_json(_handler(), MagicMock(), {"dial_id": "uid", "action": "mute"})
         assert captured["body"] == {"ok": False, "error": "config_error"}
 
     def test_a_partly_failed_mute_keeps_the_mute_and_says_partial(self, writes):
@@ -351,7 +351,7 @@ class TestVolumeDeltaWhileMuted:
             "ok": False, "error": "invalid_delta"}
 
     def test_the_route_holds_no_volume_lock_of_its_own(self):
-        import autostream_webui_api as api
+        import webui.dial.api as api
         assert not hasattr(api, "_volume_lock")
         assert not hasattr(api, "apply_mute_action")
 
@@ -362,7 +362,6 @@ class TestVolumeDeltaWhileMuted:
 
 class TestStatusMuteAware:
     def _call(self, outputs, muted_before=False):
-        import autostream_webui_api as api
         captured = {}
 
         def fake_send_json(h, code, body):
@@ -370,7 +369,7 @@ class TestStatusMuteAware:
             captured["body"] = body
 
         with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization",
+             patch("webui.dial.api.dial_authorization",
                    return_value=__import__("autostream_dials").AUTH_AUTHORIZED), \
              patch("webui.common._config_snapshot", return_value=_parsed_config()), \
              fake_outputs(outputs), \
@@ -380,7 +379,7 @@ class TestStatusMuteAware:
              fake_track(_disabled_track_id_snapshot()):
             if muted_before:
                 get_authority().mute_all(Origin.USER)
-            api.send_dial_status_post_json(_handler(), MagicMock(), {"dial_id": "uid"})
+            webui_dial_api.send_dial_status_post_json(_handler(), MagicMock(), {"dial_id": "uid"})
         return captured
 
     def test_unmuted_reports_actual_and_false(self, writes):
@@ -518,7 +517,6 @@ class TestBuildOutputListAndHomeStateMuteAware:
         assert home["muted"] is True
 
     def test_owntone_outputs_state_route_carries_muted(self, writes):
-        import autostream_webui_api as api
         captured = {}
 
         def fake_send_json(h, code, body):
@@ -564,7 +562,7 @@ class TestWebUIMuteControlRemoved:
         assert matches == []
 
     def test_send_mute_post_json_handler_is_gone(self):
-        import autostream_webui_api as api
+        import webui.dial.api as api
         assert not hasattr(api, "send_mute_post_json")
 
     def test_dial_mute_route_still_present(self):

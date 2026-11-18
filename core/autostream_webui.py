@@ -50,17 +50,6 @@ from webui import session_state
 from webui.browser import first_boot
 from autostream_webui_api import (
     run_updater,
-    send_dial_capabilities_json,
-    send_dial_eq_post_json,
-    send_dial_eq_set_post_json,
-    send_dial_warnings_post_json,
-    send_dial_mute_post_json,
-    send_dial_outputs_post_json,
-    send_dial_outputs_set_post_json,
-    send_dial_repeat_arm_post_json,
-    send_dial_repeat_post_json,
-    send_dial_status_post_json,
-    send_dial_volume_post_json,
     send_federation_eq_config_json,
     send_federation_eq_reset_json,
     send_federation_eq_status_json,
@@ -94,17 +83,30 @@ from webui.browser.api_settings import _route_get_log_level, _route_post_setting
 from webui.browser.api_owntone import send_owntone_buffered_audio_json, send_owntone_grace_period_json, send_owntone_output_include_tv_json, send_owntone_output_mode_json, send_owntone_output_offset_json, send_owntone_output_visibility_json, send_owntone_start_buffer_json, send_owntone_uncompressed_json, send_owntone_user_agent_json, send_settings_mdns_grace_period_json
 from webui.repeat import send_repeat_post_json
 import autostream_federation
-from autostream_webui_dials import (
-    dispatch_dial_management_post,
-    handle_dial_configure_get,
-    handle_dial_pin_recovery_status,
-    handle_dial_screen_image_get,
-    handle_dial_screen_settings_get,
-    handle_dial_screen_settings_post,
-    handle_dial_sdcard_health_get,
-    handle_dial_sdcard_health_post,
-    handle_dial_update_post,
-    handle_dial_update_status,
+from webui.dial.api import (
+    _route_post_dial_eq,
+    _route_post_dial_eq_set,
+    _route_post_dial_mute,
+    _route_post_dial_outputs,
+    _route_post_dial_outputs_set,
+    _route_post_dial_repeat,
+    _route_post_dial_repeat_arm,
+    _route_post_dial_status,
+    _route_post_dial_volume,
+    _route_post_dial_warnings,
+    send_dial_capabilities_json,
+)
+from webui.dial.management import (
+    _route_get_dial_configure,
+    _route_get_dial_pin_recovery_status,
+    _route_get_dial_screen_image,
+    _route_get_dial_screen_settings,
+    _route_get_dial_sdcard_health,
+    _route_get_dial_update_status,
+    _route_post_dial_management,
+    _route_post_dial_screen_settings,
+    _route_post_dial_sdcard_health,
+    _route_post_dial_update,
 )
 from autostream_webui_routes import (
     dispatch as _route_dispatch,
@@ -328,107 +330,6 @@ def _route_post_federation(handler, state):
     handler._dispatch_federation("POST", handler._normalized_path(), body_str)
 
 
-# --- Dial-device protocol (dial) --------------------------------------------
-
-
-def _route_dial_parse_json_obj(handler, *, reject_non_dict: bool):
-    """Body read + JSON parse for the UUID-auth dial endpoints, reproducing
-    do_POST's former universal body-read (steps 2-3) plus the dial-specific
-    guard that used to run just ahead of the volume/mute/status branches.
-    Returns a dict (parsed object, or {} if the body wasn't a JSON object
-    and rejection wasn't requested), or None if an error response was
-    already sent.
-    """
-    body_bytes = handler._read_post_body_bytes()
-    if body_bytes is None:
-        return None
-    try:
-        body_str = body_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        handler.send_error(400, "Request body is not valid UTF-8")
-        return None
-    content_type = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    json_obj = None
-    if body_str and content_type == "application/json":
-        try:
-            json_obj = json.loads(body_str)
-        except json.JSONDecodeError:
-            handler.send_error(400, "Invalid JSON")
-            return None
-        if reject_non_dict and not isinstance(json_obj, dict):
-            handler.send_error(400, "JSON object required")
-            return None
-    return json_obj if isinstance(json_obj, dict) else {}
-
-
-def _route_post_dial_volume(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_volume_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_mute(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_mute_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_status(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=False)
-    send_dial_status_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_repeat(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_repeat_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_repeat_arm(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_repeat_arm_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_outputs(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_outputs_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_outputs_set(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_outputs_set_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_eq(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_eq_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_eq_set(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_eq_set_post_json(handler, state, json_obj)
-
-
-def _route_post_dial_warnings(handler, state):
-    json_obj = _route_dial_parse_json_obj(handler, reject_non_dict=True)
-    if json_obj is None:
-        return
-    send_dial_warnings_post_json(handler, state, json_obj)
-
-
 # --- Loopback-aware fast paths ----------------------------------------------
 
 
@@ -501,56 +402,6 @@ def _route_post_gateway(handler, state, body_str):
 
 
 # --- Logs download -------------------------------------------------------------
-
-
-# --- Dial management (browser, PIN-gated) --------------------------------------
-
-
-def _route_post_dial_management(handler, state, body_str):
-    dispatch_dial_management_post(handler, handler._normalized_path(), common._route_post_json_obj(handler))
-
-
-def _route_post_dial_update(handler, state, body_str):
-    path = handler._normalized_path()
-    dial_id = path.rsplit("/", 1)[-1]
-    if not dial_id:
-        handler.send_error(404, "Not found")
-        return
-    handle_dial_update_post(handler, dial_id)
-
-
-def _route_post_dial_screen_settings(handler, state, body_str):
-    json_obj = common._route_post_json_obj(handler)
-    handle_dial_screen_settings_post(handler, json_obj if isinstance(json_obj, dict) else {})
-
-
-def _route_post_dial_sdcard_health(handler, state, body_str):
-    json_obj = common._route_post_json_obj(handler)
-    handle_dial_sdcard_health_post(handler, json_obj if isinstance(json_obj, dict) else {})
-
-
-def _route_get_dial_configure(handler, state):
-    handle_dial_configure_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
-
-
-def _route_get_dial_pin_recovery_status(handler, state):
-    handle_dial_pin_recovery_status(handler, handler._normalized_path().rsplit("/", 1)[-1])
-
-
-def _route_get_dial_update_status(handler, state):
-    handle_dial_update_status(handler, handler._normalized_path().rsplit("/", 1)[-1])
-
-
-def _route_get_dial_screen_settings(handler, state):
-    handle_dial_screen_settings_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
-
-
-def _route_get_dial_screen_image(handler, state):
-    handle_dial_screen_image_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
-
-
-def _route_get_dial_sdcard_health(handler, state):
-    handle_dial_sdcard_health_get(handler, handler._normalized_path().rsplit("/", 1)[-1])
 
 
 # send_html() (matching send_json()'s shape) now lives in

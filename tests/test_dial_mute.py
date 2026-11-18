@@ -126,7 +126,7 @@ def _arrange(outputs, remembered=None, writes=None):
 
 def _post(fn, json_obj, parsed=None, authorized=True):
     """Drive a dial route; return what it sent."""
-    import autostream_webui_api as api
+    import webui.dial.api as api
     captured = {}
 
     def fake_send_json(h, code, body):
@@ -134,7 +134,7 @@ def _post(fn, json_obj, parsed=None, authorized=True):
         captured["body"] = body
 
     with patch("webui.common.send_json", side_effect=fake_send_json), \
-         patch("autostream_webui_api.dial_authorization",
+         patch("webui.dial.api.dial_authorization",
                return_value="authorized" if authorized else "not_authorized"), \
          patch("webui.common._config_snapshot", return_value=parsed or _make_parsed_config()):
         getattr(api, fn)(MagicMock(), MagicMock(), json_obj)

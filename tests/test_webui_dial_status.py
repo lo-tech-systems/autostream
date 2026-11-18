@@ -50,10 +50,8 @@ if _core not in sys.path:
 
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE
 from autostream_players import ListOutputsResult, OutputInfo, ActionResult
-from autostream_webui_api import (
-    calculate_master_volume,
-    send_dial_status_post_json,
-)
+from webui.dial.api import send_dial_status_post_json
+from webui.dial.api import calculate_master_volume
 from webui.session_state import WebUIState
 from track_id.models import (
     TrackArtwork,
@@ -178,8 +176,8 @@ def _invoke(
         return parsed
 
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=speaks_v2),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_player_service.update_output", update_mock),
@@ -318,7 +316,7 @@ class TestPlayingField:
         parsed.owntone.base_url = BASE_URL
         _arrange_outputs(_ok_list())
         with (
-            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("webui.dial.api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("webui.common._config_snapshot", return_value=parsed),
             fake_session({"active": True, "source": "replay"}),
@@ -576,7 +574,7 @@ class TestRepeatField:
         code, body, _ = _invoke({"dial_id": DIAL_ID}, repeat_status=block)
         assert code == 200
         with fake_repeat(block):
-            from autostream_webui_api import _dial_repeat_object
+            from webui.dial.api import _dial_repeat_object
             expected = _dial_repeat_object()
         assert body["repeat"] == expected
         assert body["repeat"] == {
@@ -689,7 +687,7 @@ class TestFailurePaths:
         state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
         handler = _make_handler()
         with (
-            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("webui.dial.api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             fake_session({"active": False, "source": None}),
             patch("webui.common._config_snapshot",
@@ -715,7 +713,7 @@ class TestFailurePaths:
         parsed.owntone.base_url = BASE_URL
         _arrange_outputs(_fail_list("refused"))
         with (
-            patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
+            patch("webui.dial.api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_rpi.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             fake_session({"active": False, "source": None}),
             patch("webui.common._config_snapshot", return_value=parsed),
@@ -1028,7 +1026,7 @@ class TestRouterLevelDialStatus:
 
         with patch("webui.session_state.STATE", MagicMock()), \
              patch("webui.session_state.AUTH", MagicMock()), \
-             patch("autostream_webui.send_dial_status_post_json") as mock_fn:
+             patch("webui.dial.api.send_dial_status_post_json") as mock_fn:
             handler.do_POST()
 
         # The router must NOT have short-circuited with send_error(400)
@@ -1045,7 +1043,7 @@ class TestRouterLevelDialStatus:
 
         with patch("webui.session_state.STATE", MagicMock()), \
              patch("webui.session_state.AUTH", MagicMock()), \
-             patch("autostream_webui.send_dial_status_post_json") as mock_fn:
+             patch("webui.dial.api.send_dial_status_post_json") as mock_fn:
             handler.do_POST()
 
         handler.send_error.assert_not_called()
@@ -1060,7 +1058,7 @@ class TestRouterLevelDialStatus:
 
         with patch("webui.session_state.STATE", MagicMock()), \
              patch("webui.session_state.AUTH", MagicMock()), \
-             patch("autostream_webui.send_dial_volume_post_json") as mock_fn:
+             patch("webui.dial.api.send_dial_volume_post_json") as mock_fn:
             handler.do_POST()
 
         handler.send_error.assert_called_once()

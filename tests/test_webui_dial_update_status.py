@@ -16,7 +16,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-from autostream_webui_dials import handle_dial_update_status
+from webui.dial.management import handle_dial_update_status
 
 _STATUS = {
     "state": "failed",
@@ -53,8 +53,8 @@ def test_update_status_proxy_passes_result_fields_through():
     resp.read.return_value = json.dumps(_STATUS).encode()
     conn.getresponse.return_value = resp
     sighting = MagicMock(ip="192.0.2.9", port=7842)
-    with patch("autostream_webui_dials.get_dial_sighting", return_value=sighting), \
-         patch("autostream_webui_dials.http.client.HTTPConnection", return_value=conn):
+    with patch("webui.dial.management.get_dial_sighting", return_value=sighting), \
+         patch("webui.dial.management.http.client.HTTPConnection", return_value=conn):
         sent = _capture(lambda: handle_dial_update_status(MagicMock(), "uuid"))
     code, data = sent[0]
     assert code == 200
@@ -63,7 +63,7 @@ def test_update_status_proxy_passes_result_fields_through():
 
 
 def test_update_status_offline_is_tunneled_dial_offline():
-    with patch("autostream_webui_dials.get_dial_sighting", return_value=None):
+    with patch("webui.dial.management.get_dial_sighting", return_value=None):
         sent = _capture(lambda: handle_dial_update_status(MagicMock(), "uuid"))
     code, data = sent[0]
     assert code == 200

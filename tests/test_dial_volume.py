@@ -27,7 +27,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
-from autostream_webui_api import send_dial_volume_post_json
+from webui.dial.api import send_dial_volume_post_json
 from webui.session_state import WebUIState
 from fake_store import FakeStore
 from settings_fixtures import fixed_view
@@ -98,7 +98,7 @@ def _invoke(
             raise OSError("disk full")
         return parsed
 
-    with patch("autostream_webui_api.dial_authorization", return_value="authorized" if authorized else "not_authorized"), \
+    with patch("webui.dial.api.dial_authorization", return_value="authorized" if authorized else "not_authorized"), \
          patch("webui.common._config_snapshot", side_effect=_cfg_snapshot), \
          patch("autostream_player_service.update_output", update_mock):
         send_dial_volume_post_json(handler, state, json_obj)

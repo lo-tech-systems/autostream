@@ -22,7 +22,7 @@ import autostream_dial_warnings as dw
 import autostream_webui_routes as routes_mod
 from autostream_state import live
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE, DIAL_CAPABILITIES
-from autostream_webui_api import send_dial_warnings_post_json
+from webui.dial.api import send_dial_warnings_post_json
 from webui.session_state import WebUIState
 from settings_fixtures import fixed_view
 
@@ -40,10 +40,10 @@ def _invoke(json_obj, *, auth_state=AUTH_AUTHORIZED, speaks_v2=True, warnings=(S
     handler.wfile = io.BytesIO()
     build = MagicMock(return_value=list(warnings), side_effect=build_error)
     with (
-        patch("autostream_webui_api.dial_authorization", return_value=auth_state),
-        patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
+        patch("webui.dial.api.dial_authorization", return_value=auth_state),
+        patch("webui.dial.api.dial_speaks_v2", return_value=speaks_v2),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
-        patch("autostream_webui_api.current_warnings", build),
+        patch("webui.dial.api.current_warnings", build),
     ):
         send_dial_warnings_post_json(handler, state, json_obj)
     code = handler.send_response.call_args[0][0]
