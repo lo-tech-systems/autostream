@@ -1392,6 +1392,12 @@ class DialDisplay:
             and not self._display_sleeping
         )
 
+    def _pressed_zone(self):
+        """The zone the finger is down on, or None. The touch thread clears
+        _pressed at any moment, so it is read once."""
+        pressed = self._pressed
+        return pressed[0] if pressed is not None else None
+
     def _compact_tier(self) -> bool:
         """True while the resolved content tier is compact — the physically
         tiny 2x2 screens. Plain-arithmetic read, safe from any thread, same
@@ -2278,7 +2284,7 @@ class DialDisplay:
         name = appliance_display_name(now_playing.service_name) if now_playing is not None else ""
         volume = shown_volume(now_playing.service_name) if now_playing is not None else None
         muted = shown_muted(now_playing.service_name) if now_playing is not None else False
-        pressed = self._pressed[0] if self._pressed is not None else None
+        pressed = self._pressed_zone()
         # Belt and braces: dots are meaningful only on the main screen —
         # _repaint_current_locked never reaches this merge for the repeat/
         # selector/picker screens anyway (they bypass _display_locked
@@ -3634,7 +3640,7 @@ class DialDisplay:
         fold is what actually navigates away."""
         detail, state = self._output_detail, self._outputs
         name = appliance_display_name(state.service_name) if state is not None else ""
-        pressed = self._pressed[0] if self._pressed is not None else None
+        pressed = self._pressed_zone()
         row = None
         if detail is not None and state is not None:
             row = next((r for r in self._rows_of(state) if r.id == detail.output_id), None)
@@ -3702,7 +3708,7 @@ class DialDisplay:
             self._screen_request = _policy(self._screen).back_to
             self._overlay_signal.set()
             return
-        zone = self._pressed[0] if self._pressed is not None else None
+        zone = self._pressed_zone()
         view = WarningView(
             title=card.title, message=card.message, buttons=tuple(label for label, _ in card.buttons),
             pressed=CARD_BUTTON_ZONES.index(zone) if zone in CARD_BUTTON_ZONES else None,
@@ -3832,7 +3838,7 @@ class DialDisplay:
         screens can disagree about which appliance is focused for as long
         as it takes the next poll to notice a manual focus change.
         """
-        pressed = self._pressed[0] if self._pressed is not None else None
+        pressed = self._pressed_zone()
         # Feeds the shared top band's third page dot — see
         # OverlayState.eq_pages/_effective_overlay_locked for the identical
         # main-screen computation.
@@ -3973,7 +3979,7 @@ class DialDisplay:
         display-only readout, the same reading the repeat screen's own top
         band shows, addressed at *screen*'s own appliance. Caller holds
         self._lock (called from _display_eq_locked)."""
-        pressed = self._pressed[0] if self._pressed is not None else None
+        pressed = self._pressed_zone()
         if screen is None:
             return EqViewState(name="", bass_db=None, treble_db=None, loaded=False, pressed=pressed)
         name = appliance_display_name(screen.service_name)
