@@ -38,11 +38,12 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_NONE,
-    GEOMETRY_NOWIFI,
+    GEOMETRY_CARD1,
+    GEOMETRY_CARD2,
+    GEOMETRY_CARD3,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
-    GEOMETRY_SDHEALTH,
     HALO_MAX_PX,
     LARGE_MIN_SHORT_SIDE_PX,
     RICH_MIN_SHORT_SIDE_PX,
@@ -50,7 +51,7 @@ from dial_touch_layout import (  # noqa: E402
     SUPERSAMPLE_LARGE,
     TOUCH_MIN_MM,
     TOUCH_SHORT_BELOW_BAND_MM,
-    WARNING_ZONES,
+    CARD_BUTTON_ZONES,
     COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
     CompactPickerLayout,
@@ -72,10 +73,8 @@ from dial_touch_layout import (  # noqa: E402
     list_layout_for,
     list_zone_at,
     metrics_for,
-    nowifi_layout_for,
     output_layout_for,
     repeat_layout_for,
-    sdhealth_layout_for,
     warning_layout_for,
     repeat_zone_at,
     scale_px,
@@ -669,7 +668,7 @@ class TestZoneRectsOrder:
         entries = zone_rects_for(GEOMETRY_IDLE, 160, 128)
         assert [(e.zone, e.index) for e in entries] == [
             (TouchZone.IDLE_WIFI, None),
-            (TouchZone.IDLE_INFO, None),
+            (TouchZone.IDLE_BELL, None),
             (TouchZone.IDLE_REPLAY, None),
         ]
 
@@ -728,7 +727,7 @@ class TestZoneRectsMatchLayoutFields:
         layout = idle_layout_for(width, height)
         entries = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_IDLE, width, height)}
         assert entries[TouchZone.IDLE_WIFI] == layout.wifi
-        assert entries[TouchZone.IDLE_INFO] == layout.info
+        assert entries[TouchZone.IDLE_BELL] == layout.info
         assert entries[TouchZone.IDLE_REPLAY] == layout.replay
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
@@ -874,7 +873,7 @@ class TestInfoGeometry:
 
 class TestIdleZoneAtExhaustive:
     """Every pixel of every profile size, plus a one-pixel ring outside the
-    panel: IDLE_WIFI inside the top-left square, else IDLE_INFO inside the
+    panel: IDLE_WIFI inside the top-left square, else IDLE_BELL inside the
     "i" square (checked first, so the two corner squares win the corners
     they share with IDLE_REPLAY), else IDLE_REPLAY iff the point is
     on-panel and at or below the top band, else None."""
@@ -892,7 +891,7 @@ class TestIdleZoneAtExhaustive:
                 if wx0 <= x < wx1 and wy0 <= y < wy1:
                     expected = TouchZone.IDLE_WIFI
                 elif ix0 <= x < ix1 and iy0 <= y < iy1:
-                    expected = TouchZone.IDLE_INFO
+                    expected = TouchZone.IDLE_BELL
                 elif 0 <= x < width and 0 <= y < height and y >= band_h:
                     expected = TouchZone.IDLE_REPLAY
                 assert idle_zone_at(x, y, width, height) == expected
@@ -934,136 +933,71 @@ class TestIdleWifiZone:
         assert idle.wifi[2] <= idle.info[0]
 
 
-class TestNoWifiLayout:
-    def test_rich_pinned(self):
-        l = nowifi_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
-        assert l.card == (41, 48, 278, 192)
-        assert l.message == (41, 48, 278, 114)
-        assert l.dismiss == (41, 126, 153, 192)
-        assert l.restart == (166, 126, 278, 192)
-        assert (l.divider_x, l.divider_y) == (159, 120)
+class TestWarningLayout:
+    """warning_layout_for(): a card of one, two or three cells under a
+    message row (the whole panel on compact, a centred card elsewhere)."""
 
-    def test_base_pinned(self):
-        l = nowifi_layout_for(160, 128)
-        assert l.card == (21, 25, 139, 102)
-        assert l.message == (21, 25, 139, 60)
-        assert l.dismiss == (21, 67, 77, 102)
-        assert l.restart == (83, 67, 139, 102)
-        assert (l.divider_x, l.divider_y) == (80, 63)
+    def test_rich_two_cells_pinned(self):
+        w = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
+        assert w.card == (41, 48, 278, 192)
+        assert w.message == (41, 48, 278, 114)
+        assert w.cells == ((41, 126, 153, 192), (166, 126, 278, 192))
+        assert (w.divider_xs, w.divider_y) == ((159,), 120)
 
-    def test_compact_is_the_two_by_two(self):
+    def test_base_two_cells_pinned(self):
+        w = warning_layout_for(160, 128, buttons=2)
+        assert w.card == (21, 25, 139, 102)
+        assert w.message == (21, 25, 139, 60)
+        assert w.cells == ((21, 67, 77, 102), (83, 67, 139, 102))
+        assert (w.divider_xs, w.divider_y) == ((80,), 63)
+
+    def test_base_one_cell_spans_the_whole_row(self):
+        w = warning_layout_for(160, 128, buttons=1)
+        assert w.cells == ((21, 67, 139, 102),)
+        assert w.divider_xs == ()
+
+    def test_base_three_cells_pinned(self):
+        w = warning_layout_for(160, 128, buttons=3)
+        assert w.cells == ((21, 67, 56, 102), (62, 67, 97, 102), (104, 67, 139, 102))
+        assert w.divider_xs == (59, 100)
+
+    def test_compact_two_cells_are_the_two_by_two(self):
         for metrics in (_COMPACT_240x240, _COMPACT_128x128):
             c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
-            l = nowifi_layout_for(metrics.width, metrics.height, metrics=metrics)
-            assert l.card == (0, 0, metrics.width, metrics.height)
-            assert (l.message, l.dismiss, l.restart) == (c.top_row, c.bl, c.br)
-            assert (l.divider_x, l.divider_y) == (c.divider_x, c.divider_y)
+            w = warning_layout_for(metrics.width, metrics.height, buttons=2, metrics=metrics)
+            assert w.card == (0, 0, metrics.width, metrics.height)
+            assert (w.message, *w.cells) == (c.top_row, c.bl, c.br)
+            assert (w.divider_xs, w.divider_y) == ((c.divider_x,), c.divider_y)
+
+    def test_compact_one_cell_is_the_two_by_two_with_the_bottom_row_merged(self):
+        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
+            c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+            w = warning_layout_for(metrics.width, metrics.height, buttons=1, metrics=metrics)
+            assert w.cells == ((c.bl[0], c.bl[1], c.br[2], c.br[3]),)
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_cells_inside_card_with_dead_gaps(self, width, height):
-        l = nowifi_layout_for(width, height)
+    @pytest.mark.parametrize("buttons", [1, 2, 3])
+    def test_cells_inside_card_with_dead_gaps(self, width, height, buttons):
+        w = warning_layout_for(width, height, buttons=buttons)
         m = metrics_for(width, height).margin
-        for r in (l.message, l.dismiss, l.restart):
-            assert l.card[0] <= r[0] < r[2] <= l.card[2] and l.card[1] <= r[1] < r[3] <= l.card[3]
-        assert l.dismiss[1] - l.message[3] >= 2 * m
-        assert l.restart[0] - l.dismiss[2] >= 2 * m
-        assert l.message[3] <= l.divider_y < l.dismiss[1]
-        assert l.dismiss[2] <= l.divider_x < l.restart[0]
-
-    def test_nowifi_table_is_dismiss_then_restart(self):
-        entries = zone_rects_for(GEOMETRY_NOWIFI, 160, 128)
-        l = nowifi_layout_for(160, 128)
-        assert entries == (ZoneRect(TouchZone.NOWIFI_DISMISS, l.dismiss), ZoneRect(TouchZone.NOWIFI_RESTART, l.restart))
-
-    def test_none_table_is_empty_everywhere(self):
-        for width, height in PROFILE_SIZES:
-            assert zone_rects_for(GEOMETRY_NONE, width, height) == ()
-            assert hit_test(GEOMETRY_NONE, width // 2, height // 2, width, height) is None
-
-    def test_message_row_is_dead(self):
-        l = nowifi_layout_for(160, 128)
-        cx, cy = (l.message[0] + l.message[2]) // 2, (l.message[1] + l.message[3]) // 2
-        assert hit_test(GEOMETRY_NOWIFI, cx, cy, 160, 128) is None
-
-
-class TestSdHealthLayout:
-    """sdhealth_layout_for(): the No-WiFi card's own rectangle and message
-    row, with the bottom row merged into one Dismiss cell."""
-
-    def test_base_matches_nowifi_card_and_message(self):
-        n = nowifi_layout_for(160, 128)
-        s = sdhealth_layout_for(160, 128)
-        assert s.card == n.card
-        assert s.message == n.message
-        assert s.divider_y == n.divider_y
-
-    def test_base_dismiss_spans_both_nowifi_cells(self):
-        n = nowifi_layout_for(160, 128)
-        s = sdhealth_layout_for(160, 128)
-        assert s.dismiss == (n.dismiss[0], n.dismiss[1], n.restart[2], n.restart[3])
-
-    def test_compact_equals_the_two_by_two_with_bottom_row_merged(self):
-        for metrics in (_COMPACT_240x240, _COMPACT_128x128):
-            n = nowifi_layout_for(metrics.width, metrics.height, metrics=metrics)
-            s = sdhealth_layout_for(metrics.width, metrics.height, metrics=metrics)
-            assert s.card == n.card == (0, 0, metrics.width, metrics.height)
-            assert s.message == n.message
-            assert s.dismiss == (n.dismiss[0], n.dismiss[1], n.restart[2], n.restart[3])
-
-    def test_sdhealth_table_is_one_dismiss_cell(self):
-        entries = zone_rects_for(GEOMETRY_SDHEALTH, 160, 128)
-        s = sdhealth_layout_for(160, 128)
-        assert entries == (ZoneRect(TouchZone.SDHEALTH_DISMISS, s.dismiss),)
-
-    def test_message_row_is_dead(self):
-        s = sdhealth_layout_for(160, 128)
-        cx, cy = (s.message[0] + s.message[2]) // 2, (s.message[1] + s.message[3]) // 2
-        assert hit_test(GEOMETRY_SDHEALTH, cx, cy, 160, 128) is None
-
-    def test_dismiss_cell_hits(self):
-        s = sdhealth_layout_for(160, 128)
-        cx, cy = (s.dismiss[0] + s.dismiss[2]) // 2, (s.dismiss[1] + s.dismiss[3]) // 2
-        entry = hit_test(GEOMETRY_SDHEALTH, cx, cy, 160, 128)
-        assert entry is not None and entry.zone == TouchZone.SDHEALTH_DISMISS
-
-
-class TestWarningLayout:
-    """warning_layout_for(): the No-WiFi table for two cells, the SD
-    health table for one, an even split of the same row for more."""
-
-    def test_two_buttons_matches_nowifi_exactly(self):
-        n = nowifi_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
-        w = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
-        assert w.card == n.card
-        assert w.message == n.message
-        assert w.cells == (n.dismiss, n.restart)
-        assert w.divider_y == n.divider_y
-        assert w.divider_xs == (n.divider_x,)
-
-    def test_one_button_matches_sdhealth_exactly(self):
-        s = sdhealth_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
-        w = warning_layout_for(320, 240, buttons=1, metrics=metrics_for(320, 240, 0.1778))
-        assert w.card == s.card
-        assert w.message == s.message
-        assert w.cells == (s.dismiss,)
-        assert w.divider_xs == ()
+        for r in (w.message, *w.cells):
+            assert w.card[0] <= r[0] < r[2] <= w.card[2] and w.card[1] <= r[1] < r[3] <= w.card[3]
+        assert w.cells[0][1] - w.message[3] >= 2 * m
+        assert w.message[3] <= w.divider_y < w.cells[0][1]
+        for left, right, x in zip(w.cells, w.cells[1:], w.divider_xs):
+            assert right[0] - left[2] >= 2 * m
+            assert left[2] <= x < right[0]
 
     @pytest.mark.parametrize("width,height", [(160, 128), (128, 128), (240, 240), (320, 240)])
     def test_zero_buttons_is_the_whole_card_as_one_message_row(self, width, height):
-        n = nowifi_layout_for(width, height)
         w = warning_layout_for(width, height, buttons=0)
-        assert w.card == n.card
-        assert w.message == n.card
+        assert w.message == w.card
         assert w.cells == ()
         assert w.divider_xs == ()
         assert w.divider_y is None
 
     def test_negative_buttons_is_treated_as_none(self):
         assert warning_layout_for(160, 128, buttons=-1) == warning_layout_for(160, 128, buttons=0)
-
-    def test_one_and_two_buttons_are_unchanged_by_the_zero_form(self):
-        assert warning_layout_for(160, 128, buttons=1).divider_y is not None
-        assert warning_layout_for(160, 128, buttons=2).message != warning_layout_for(160, 128, buttons=2).card
 
     def test_three_buttons_are_ascending_non_overlapping_with_margin_gaps(self):
         metrics = metrics_for(320, 240, 0.1778)
@@ -1080,10 +1014,37 @@ class TestWarningLayout:
             gap = w.cells[i + 1][0] - w.cells[i][2]
             assert gap == 2 * metrics.margin
 
-    def test_warning_zones_is_the_union_of_both_geometries(self):
-        nowifi_zones = {rect.zone for rect in zone_rects_for(GEOMETRY_NOWIFI, 160, 128)}
-        sdhealth_zones = {rect.zone for rect in zone_rects_for(GEOMETRY_SDHEALTH, 160, 128)}
-        assert WARNING_ZONES == nowifi_zones | sdhealth_zones
+
+class TestCardTables:
+    """GEOMETRY_CARD1/2/3: CARD_BUTTON_0.. over the cells, left to right."""
+
+    @pytest.mark.parametrize("geometry,buttons", [(GEOMETRY_CARD1, 1), (GEOMETRY_CARD2, 2), (GEOMETRY_CARD3, 3)])
+    def test_table_is_the_cells_in_order(self, geometry, buttons):
+        w = warning_layout_for(160, 128, buttons=buttons)
+        assert zone_rects_for(geometry, 160, 128) == tuple(
+            ZoneRect(zone, cell) for zone, cell in zip(CARD_BUTTON_ZONES, w.cells))
+
+    def test_none_table_is_empty_everywhere(self):
+        for width, height in PROFILE_SIZES:
+            assert zone_rects_for(GEOMETRY_NONE, width, height) == ()
+            assert hit_test(GEOMETRY_NONE, width // 2, height // 2, width, height) is None
+
+    @pytest.mark.parametrize("geometry,buttons", [(GEOMETRY_CARD1, 1), (GEOMETRY_CARD2, 2), (GEOMETRY_CARD3, 3)])
+    def test_message_row_is_dead(self, geometry, buttons):
+        w = warning_layout_for(160, 128, buttons=buttons)
+        cx, cy = (w.message[0] + w.message[2]) // 2, (w.message[1] + w.message[3]) // 2
+        assert hit_test(geometry, cx, cy, 160, 128) is None
+
+    @pytest.mark.parametrize("geometry,buttons", [(GEOMETRY_CARD1, 1), (GEOMETRY_CARD2, 2), (GEOMETRY_CARD3, 3)])
+    def test_each_cell_hits_its_own_zone(self, geometry, buttons):
+        w = warning_layout_for(160, 128, buttons=buttons)
+        for zone, cell in zip(CARD_BUTTON_ZONES, w.cells):
+            cx, cy = (cell[0] + cell[2]) // 2, (cell[1] + cell[3]) // 2
+            entry = hit_test(geometry, cx, cy, 160, 128)
+            assert entry is not None and entry.zone == zone
+
+    def test_card_zones_are_the_three_card_buttons_in_order(self):
+        assert CARD_BUTTON_ZONES == (TouchZone.CARD_BUTTON_0, TouchZone.CARD_BUTTON_1, TouchZone.CARD_BUTTON_2)
 
 
 # ---------------------------------------------------------------------------
@@ -1208,7 +1169,7 @@ class TestDensityHasNoEffectOnGeometry:
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_zone_rects_for_unaffected(self, size, mm):
-        # GEOMETRY_IDLE is excluded: its IDLE_INFO rect is the one
+        # GEOMETRY_IDLE is excluded: its IDLE_BELL rect is the one
         # deliberate density-dependent exception (see
         # test_idle_layout_for_info_square_is_density_dependent above).
         width, height = size
@@ -2004,7 +1965,7 @@ class TestCompactZoneTables:
         idle = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
         assert entries == (
             ZoneRect(TouchZone.IDLE_WIFI, idle.wifi),
-            ZoneRect(TouchZone.IDLE_INFO, idle.info),
+            ZoneRect(TouchZone.IDLE_BELL, idle.info),
             ZoneRect(TouchZone.IDLE_REPLAY, (0, 0, metrics.width, metrics.height)),
         )
 
@@ -2027,7 +1988,7 @@ class TestCompactZoneTables:
         # compact grid (MAIN, REPEAT, REPEAT_REPLAY) — GEOMETRY_LIST gets its
         # own picker-shaped version below, since it no longer uses the grid's
         # cells directly, and GEOMETRY_IDLE gets its own version further
-        # down (its IDLE_INFO/IDLE_REPLAY entries overlap by design, resolved
+        # down (its IDLE_BELL/IDLE_REPLAY entries overlap by design, resolved
         # by hit_test's first-match order rather than by non-overlap).
         w, h = metrics.width, metrics.height
         entries = zone_rects_for(geometry, w, h, metrics=metrics)
@@ -2058,7 +2019,7 @@ class TestCompactZoneTables:
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240x240, _COMPACT_128x128])
     def test_idle_every_pixel_resolves_info_first_then_replay(self, metrics):
-        # GEOMETRY_IDLE's own version: IDLE_WIFI/IDLE_INFO and IDLE_REPLAY
+        # GEOMETRY_IDLE's own version: IDLE_WIFI/IDLE_BELL and IDLE_REPLAY
         # overlap by design (IDLE_REPLAY is the whole panel on compact), so
         # every pixel inside one of the two corner squares resolves to that
         # square's own zone and every other pixel resolves to IDLE_REPLAY —
@@ -2074,7 +2035,7 @@ class TestCompactZoneTables:
                 if wx0 <= x < wx1 and wy0 <= y < wy1:
                     assert result.zone == TouchZone.IDLE_WIFI
                 elif ix0 <= x < ix1 and iy0 <= y < iy1:
-                    assert result.zone == TouchZone.IDLE_INFO
+                    assert result.zone == TouchZone.IDLE_BELL
                 else:
                     assert result.zone == TouchZone.IDLE_REPLAY
 
@@ -2133,14 +2094,14 @@ class TestCompactIdleGeometry:
         # convenience — see zone_at()/list_zone_at()/repeat_zone_at()); the
         # density-aware hit-test every real caller uses is hit_test() with
         # an explicit metrics, exercised directly here. Every pixel resolves
-        # to IDLE_INFO or IDLE_REPLAY — see
+        # to IDLE_BELL or IDLE_REPLAY — see
         # test_idle_every_pixel_resolves_info_first_then_replay for the
         # exact split.
         for y in range(metrics.height):
             for x in range(metrics.width):
                 hit = hit_test(GEOMETRY_IDLE, x, y, metrics.width, metrics.height, metrics=metrics)
                 assert hit is not None and hit.zone in (
-                    TouchZone.IDLE_WIFI, TouchZone.IDLE_INFO, TouchZone.IDLE_REPLAY,
+                    TouchZone.IDLE_WIFI, TouchZone.IDLE_BELL, TouchZone.IDLE_REPLAY,
                 )
 
 

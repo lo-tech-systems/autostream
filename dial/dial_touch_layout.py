@@ -84,12 +84,13 @@ control of its own), REPEAT_PLAY (the enable layout's arm/disarm row),
 REPEAT_START, REPEAT_STOP, plus ARTWORK (the inter-band strip's remainder,
 taps hide the bands while a replay runs). The IDLE geometry
 (`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_WIFI and
-IDLE_INFO, two small corner squares listed first so they win the corners
+IDLE_BELL, two small corner squares listed first so they win the corners
 they share with IDLE_REPLAY, which covers the whole panel below the top
-band. GEOMETRY_INFO is the info page's own reading of the LIST
-table with every LIST_ROW entry removed (its rows are display-only).
-GEOMETRY_NOWIFI is the No-WiFi page's own table (Dismiss | Restart);
-GEOMETRY_NONE is an empty table (the "Restarting..." screen has nothing
+band; IDLE_BELL is live only while the dial has a warning to show (see the
+bell gate in dial_touch). GEOMETRY_INFO is the info page's own reading of
+the LIST table with every LIST_ROW entry removed (its rows are display-only).
+GEOMETRY_CARD1/2/3 are the warning and status cards' tables, one per button
+count (CARD_BUTTON_0.. left to right); GEOMETRY_NONE is an empty table (the "Restarting..." screen has nothing
 tappable at all). A
 caller never mixes geometries — which one to hit-test against is decided
 elsewhere
@@ -406,14 +407,14 @@ class TouchZone(str, Enum):
     detail surface (plus NAME, reused from the main surface).
     IDLE_REPLAY: the idle-screen surface (the whole panel below the top
     band, when the idle affordance is showing).
-    IDLE_INFO: the idle screen's own small top-right "i" affordance,
-    reachable on every idle dial regardless of whether a replay is held —
-    opens the read-only info list (see IdleLayout.info/GEOMETRY_INFO).
+    IDLE_BELL: the idle screen's own small top-right warning bell, live
+    only while there is a warning to show (see IdleLayout.info); a tap
+    opens the warnings card.
     IDLE_WIFI: the idle screen's own small top-left Wi-Fi status square,
-    the mirror image of IDLE_INFO — a tap opens the No-WiFi page while the
-    link is down (inert while connected; see DialDisplay.open_nowifi).
-    NOWIFI_DISMISS, NOWIFI_RESTART: the No-WiFi page's two cells.
-    SDHEALTH_DISMISS: the SD card warning's one cell.
+    the mirror image of IDLE_BELL — a tap opens the info list (see
+    GEOMETRY_INFO).
+    CARD_BUTTON_0..2: a warning or status card's button cells, left to
+    right; which action each runs is the card's own business.
     ARTWORK: the main surface's inter-band strip (between the top and
     bottom bands); a tap hides the bands for a few seconds.
     EQ_BASS_DOWN, EQ_BASS_UP, EQ_TREBLE_DOWN, EQ_TREBLE_UP: the EQ page's
@@ -434,7 +435,7 @@ class TouchZone(str, Enum):
     REPEAT_START = "repeat_start"
     REPEAT_STOP = "repeat_stop"
     IDLE_REPLAY = "idle_replay"
-    IDLE_INFO = "idle_info"
+    IDLE_BELL = "idle_bell"
     OUTPUTS = "outputs"
     OUTPUT_BACK = "output_back"
     OUTPUT_TOGGLE = "output_toggle"
@@ -446,16 +447,20 @@ class TouchZone(str, Enum):
     EQ_TREBLE_DOWN = "eq_treble_down"
     EQ_TREBLE_UP = "eq_treble_up"
     IDLE_WIFI = "idle_wifi"
-    NOWIFI_DISMISS = "nowifi_dismiss"
-    NOWIFI_RESTART = "nowifi_restart"
-    SDHEALTH_DISMISS = "sdhealth_dismiss"
+    CARD_BUTTON_0 = "card_button_0"
+    CARD_BUTTON_1 = "card_button_1"
+    CARD_BUTTON_2 = "card_button_2"
 
 
 Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 
-# Every zone a warning page can report, across all warning geometries;
-# dial_main routes any of these to the display's warning dispatch.
-WARNING_ZONES = frozenset((TouchZone.NOWIFI_DISMISS, TouchZone.NOWIFI_RESTART, TouchZone.SDHEALTH_DISMISS))
+# The bell zones: live only while the dial has a warning to show (the one
+# bell gate in the touch state machine).
+BELL_ZONES = frozenset((TouchZone.IDLE_BELL,))
+
+# A card's button zones, left to right; dial_main routes any of these to the
+# display's card dispatch, which reads the index as the cell tapped.
+CARD_BUTTON_ZONES = (TouchZone.CARD_BUTTON_0, TouchZone.CARD_BUTTON_1, TouchZone.CARD_BUTTON_2)
 
 
 # Hit-test geometries. These name a geometry, not a screen: the touch layer
@@ -488,21 +493,20 @@ GEOMETRY_INFO_VALUE = "info_value"
 # _eq_available) -- DOTS/NAME/OUTPUTS reused from the main geometry, plus
 # the bass/treble bar steppers.
 GEOMETRY_EQ = "eq"
-# The No-WiFi page's own table: Dismiss and Restart, laid out by
-# nowifi_layout_for() (a centred card off compact, the 2x2's bottom row on
-# it). The message row is display-only and has no entry.
-GEOMETRY_NOWIFI = "nowifi"
-# The SD card warning's own table: one Dismiss cell under the message row,
-# laid out by sdhealth_layout_for() (the No-WiFi card with its bottom row
-# undivided).
-GEOMETRY_SDHEALTH = "sdhealth"
+# A warning or status card's tables, one per button count (1, 2 or 3 cells
+# under the message row), laid out by warning_layout_for() (a centred card
+# off compact, the whole panel on it). The message row is display-only and
+# has no entry.
+GEOMETRY_CARD1 = "card1"
+GEOMETRY_CARD2 = "card2"
+GEOMETRY_CARD3 = "card3"
 # An empty table: the "Restarting..." screen has nothing tappable at all, and
 # a surface mapped here can never arm a zone. Kept as a named geometry (not
 # an absent one) so the surface map never has to fall back to MAIN.
 GEOMETRY_NONE = "none"
 GEOMETRIES = (
     GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
-    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_NOWIFI, GEOMETRY_SDHEALTH, GEOMETRY_NONE,
+    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_CARD1, GEOMETRY_CARD2, GEOMETRY_CARD3, GEOMETRY_NONE,
 )
 
 
@@ -694,7 +698,7 @@ def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
     layout = idle_layout_for(width, height, metrics=metrics)
     return (
         ZoneRect(TouchZone.IDLE_WIFI, layout.wifi),
-        ZoneRect(TouchZone.IDLE_INFO, layout.info),
+        ZoneRect(TouchZone.IDLE_BELL, layout.info),
         ZoneRect(TouchZone.IDLE_REPLAY, layout.replay),
     )
 
@@ -751,22 +755,13 @@ def _eq_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = No
     )
 
 
-def _nowifi_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
-    """GEOMETRY_NOWIFI: the page's two cells, Dismiss then Restart. The
-    message row is display-only. Tier differences live entirely in
-    nowifi_layout_for()."""
-    layout = nowifi_layout_for(width, height, metrics=metrics)
-    return (
-        ZoneRect(TouchZone.NOWIFI_DISMISS, layout.dismiss),
-        ZoneRect(TouchZone.NOWIFI_RESTART, layout.restart),
-    )
-
-
-def _sdhealth_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
-    """GEOMETRY_SDHEALTH: the one Dismiss cell. The message row is
-    display-only."""
-    layout = sdhealth_layout_for(width, height, metrics=metrics)
-    return (ZoneRect(TouchZone.SDHEALTH_DISMISS, layout.dismiss),)
+def _card_zone_rects(buttons: int):
+    """The builder of a card's table for *buttons* cells: CARD_BUTTON_0..
+    left to right. The message row is display-only."""
+    def build(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
+        cells = warning_layout_for(width, height, buttons, metrics=metrics).cells
+        return tuple(ZoneRect(zone, cell) for zone, cell in zip(CARD_BUTTON_ZONES, cells))
+    return build
 
 
 def _none_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
@@ -784,8 +779,9 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_INFO: _info_zone_rects,
     GEOMETRY_INFO_VALUE: _info_value_zone_rects,
     GEOMETRY_EQ: _eq_zone_rects,
-    GEOMETRY_NOWIFI: _nowifi_zone_rects,
-    GEOMETRY_SDHEALTH: _sdhealth_zone_rects,
+    GEOMETRY_CARD1: _card_zone_rects(1),
+    GEOMETRY_CARD2: _card_zone_rects(2),
+    GEOMETRY_CARD3: _card_zone_rects(3),
     GEOMETRY_NONE: _none_zone_rects,
 }
 
@@ -952,11 +948,11 @@ class IdleLayout:
     (reusing the same centre-low rect the main surface's artist line
     occupies — `affordance`), the actuating rect for the whole panel
     below the top band (`replay`, == the IDLE_REPLAY zone, resolved by
-    idle_zone_at()), the small top-right "i" square (`info`, == the
-    IDLE_INFO zone) that opens the read-only info list on every idle dial,
-    and its mirror image top-left (`wifi`, == the IDLE_WIFI zone): the
-    Wi-Fi status glyph, the same side as `info`, tappable while the link
-    is down."""
+    idle_zone_at()), the small top-right square (`info`, == the
+    IDLE_BELL zone) that holds the warning bell and opens the warnings card
+    while the dial has one to show, and its mirror image top-left (`wifi`,
+    == the IDLE_WIFI zone): the Wi-Fi status glyph, the same side as `info`,
+    which opens the info list."""
 
     affordance: Rect
     replay: Rect
@@ -1084,92 +1080,23 @@ def compact_picker_layout_for(
     )
 
 
-# The No-WiFi card's share of the panel off the compact tier. On compact the
-# page is the whole panel (the 2x2 grid), so neither fraction is read there.
-NOWIFI_CARD_WIDTH_FRACTION = 0.74
-NOWIFI_CARD_HEIGHT_FRACTION = 0.60
-
-
-@dataclass(frozen=True)
-class NoWifiLayout:
-    """The No-WiFi page: a card (the whole panel on compact, a centred
-    rectangle elsewhere) split into a full-width message row over two
-    cells — Dismiss left (== NOWIFI_DISMISS), Restart right (==
-    NOWIFI_RESTART) — with the usual 2*margin dead gap between every pair
-    of neighbours. divider_y is the horizontal line between the rows;
-    divider_x is the vertical line between the two cells, drawn in the
-    bottom row only (the message row has no vertical split)."""
-
-    card: Rect
-    message: Rect
-    dismiss: Rect
-    restart: Rect
-    divider_x: int
-    divider_y: int
-
-
-def nowifi_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> NoWifiLayout:
-    """Compute the No-WiFi page geometry for a *width* x *height* panel.
-
-    Compact: exactly the compact 2x2 — message = top_row, dismiss = bl,
-    restart = br, dividers = the grid's own. Every other tier: a card
-    NOWIFI_CARD_WIDTH_FRACTION x NOWIFI_CARD_HEIGHT_FRACTION of the panel,
-    centred, its rows and its bottom-row cells split with the same
-    _split(total, margin, [1, 1]) rule the compact grid uses, offset to the
-    card's origin. metrics=None means metrics_for(width, height)."""
-    if metrics is None:
-        metrics = metrics_for(width, height)
-    m = metrics.margin
-    if metrics.content_tier == CONTENT_COMPACT:
-        c = compact_layout_for(width, height, metrics=metrics)
-        return NoWifiLayout(
-            card=(0, 0, width, height), message=c.top_row, dismiss=c.bl, restart=c.br,
-            divider_x=c.divider_x, divider_y=c.divider_y,
-        )
-    card_w = round(width * NOWIFI_CARD_WIDTH_FRACTION)
-    card_h = round(height * NOWIFI_CARD_HEIGHT_FRACTION)
-    x0 = (width - card_w) // 2
-    y0 = (height - card_h) // 2
-    (r0a, r0b), (r1a, r1b) = _split(card_h, m, [1, 1])
-    (c0a, c0b), (c1a, c1b) = _split(card_w, m, [1, 1])
-    return NoWifiLayout(
-        card=(x0, y0, x0 + card_w, y0 + card_h),
-        message=(x0, y0 + r0a, x0 + card_w, y0 + r0b),
-        dismiss=(x0 + c0a, y0 + r1a, x0 + c0b, y0 + r1b),
-        restart=(x0 + c1a, y0 + r1a, x0 + c1b, y0 + r1b),
-        divider_x=x0 + (c0b + c1a) // 2,
-        divider_y=y0 + (r0b + r1a) // 2,
-    )
-
-
-@dataclass(frozen=True)
-class SdHealthLayout:
-    """The SD card warning: the No-WiFi card's own rectangle and message
-    row, with the bottom row left undivided as one Dismiss cell (there is
-    no second action: a worn card cannot be repaired from here)."""
-
-    card: Rect
-    message: Rect
-    dismiss: Rect
-    divider_y: int
-
-
-def sdhealth_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> SdHealthLayout:
-    """Derived from nowifi_layout_for(): same card, same message row, same
-    horizontal divider; dismiss spans from the No-WiFi Dismiss cell's left
-    edge to its Restart cell's right edge."""
-    n = nowifi_layout_for(width, height, metrics=metrics)
-    dismiss = (n.dismiss[0], n.dismiss[1], n.restart[2], n.restart[3])
-    return SdHealthLayout(card=n.card, message=n.message, dismiss=dismiss, divider_y=n.divider_y)
+# A warning or status card's share of the panel off the compact tier. On
+# compact the card is the whole panel (the 2x2 grid), so neither fraction is
+# read there.
+CARD_WIDTH_FRACTION = 0.74
+CARD_HEIGHT_FRACTION = 0.60
 
 
 @dataclass(frozen=True)
 class WarningLayout:
-    """A warning page with any number of button cells: the No-WiFi card
-    and message row, the bottom row split into `cells` (left to right)
-    with a vertical divider between each neighbouring pair (divider_xs,
-    one fewer than the cells) under the shared horizontal divider. With
-    no cells the message row is the whole card and there is no divider."""
+    """A warning or status card with any number of button cells: a card (the
+    whole panel on compact, a centred rectangle elsewhere) split into a
+    full-width message row over `cells` (left to right), with the usual
+    2*margin dead gap between every pair of neighbours, a horizontal divider
+    under the message row (divider_y) and a vertical divider between each
+    neighbouring pair of cells (divider_xs, one fewer than the cells,
+    drawn in the bottom row only). With no cells the message row is the
+    whole card and there is no divider."""
 
     card: Rect
     message: Rect
@@ -1181,33 +1108,38 @@ class WarningLayout:
 def warning_layout_for(
     width: int, height: int, buttons: int, metrics: "LayoutMetrics | None" = None,
 ) -> WarningLayout:
-    """The warning page geometry for *buttons* cells. Two cells are the
-    No-WiFi table exactly (Dismiss | Restart); one cell is the SD card
-    warning's undivided row exactly; more are the same row split evenly
-    with the usual 2*margin dead gap between neighbours, offset to the
-    card's origin (whole-panel on compact). No buttons is a notice: the
-    message row is the whole card, with no cells, no dividers and no
-    horizontal divider (divider_y is None)."""
-    n = nowifi_layout_for(width, height, metrics=metrics)
-    count = max(0, int(buttons))
-    if count == 0:
-        return WarningLayout(card=n.card, message=n.card, cells=(), divider_y=None, divider_xs=())
-    if count == 2:
-        return WarningLayout(
-            card=n.card, message=n.message, cells=(n.dismiss, n.restart),
-            divider_y=n.divider_y, divider_xs=(n.divider_x,),
-        )
-    if count == 1:
-        s = sdhealth_layout_for(width, height, metrics=metrics)
-        return WarningLayout(card=s.card, message=s.message, cells=(s.dismiss,), divider_y=s.divider_y, divider_xs=())
+    """The card geometry for *buttons* cells. The card is
+    CARD_WIDTH_FRACTION x CARD_HEIGHT_FRACTION of the panel, centred (the
+    whole panel on compact, where it is exactly the 2x2 grid for two
+    cells); its two rows and its bottom-row cells are split with the same
+    _split(total, margin, weights) rule every table here uses, offset to
+    the card's origin. One cell spans the whole bottom row. No buttons is a
+    notice: the message row is the whole card, with no cells, no dividers
+    and no horizontal divider (divider_y is None). metrics=None means
+    metrics_for(width, height)."""
     if metrics is None:
         metrics = metrics_for(width, height)
-    x0, y0, x1, _ = n.card
-    row_y0, row_y1 = n.dismiss[1], n.dismiss[3]
-    bands = _split(x1 - x0, metrics.margin, [1] * count)
-    cells = tuple((x0 + a, row_y0, x0 + b, row_y1) for a, b in bands)
-    divider_xs = tuple(x0 + (bands[i][1] + bands[i + 1][0]) // 2 for i in range(count - 1))
-    return WarningLayout(card=n.card, message=n.message, cells=cells, divider_y=n.divider_y, divider_xs=divider_xs)
+    m = metrics.margin
+    if metrics.content_tier == CONTENT_COMPACT:
+        card_w, card_h = width, height
+    else:
+        card_w = round(width * CARD_WIDTH_FRACTION)
+        card_h = round(height * CARD_HEIGHT_FRACTION)
+    x0 = (width - card_w) // 2
+    y0 = (height - card_h) // 2
+    card: Rect = (x0, y0, x0 + card_w, y0 + card_h)
+    count = max(0, int(buttons))
+    if count == 0:
+        return WarningLayout(card=card, message=card, cells=(), divider_y=None, divider_xs=())
+    (r0a, r0b), (r1a, r1b) = _split(card_h, m, [1, 1])
+    bands = _split(card_w, m, [1] * count)
+    return WarningLayout(
+        card=card,
+        message=(x0, y0 + r0a, x0 + card_w, y0 + r0b),
+        cells=tuple((x0 + a, y0 + r1a, x0 + b, y0 + r1b) for a, b in bands),
+        divider_y=y0 + (r0b + r1a) // 2,
+        divider_xs=tuple(x0 + (bands[i][1] + bands[i + 1][0]) // 2 for i in range(count - 1)),
+    )
 
 
 def _dead_zone_margin(width: int, height: int) -> int:

@@ -30,7 +30,8 @@ from dial_display_image import load_logo  # noqa: E402
 from dial_display_profiles import get_profile, layout_context_for  # noqa: E402
 from dial_touch_layout import CONTENT_COMPACT, list_layout_for, metrics_for  # noqa: E402
 from dial_warning_text import (  # noqa: E402
-    UPDATE_FAILED_TEXT, UPDATE_PHASE_TEXT, UPDATE_RESULT_CLOSE_TEXT, UPDATED_TEXT, UPDATING_TEXT)
+    CLOSE_TEXT, NEXT_TEXT, NOWIFI_MESSAGE_TEXT, RESTART_TEXT, SDHEALTH_BODY_TEXT, SDHEALTH_TITLE_TEXT,
+    UPDATE_FAILED_TEXT, UPDATE_PHASE_TEXT, UPDATED_TEXT, UPDATING_TEXT)
 from music import BY_KEY  # noqa: E402
 
 LOGO = REPO_ROOT / "images" / "autostream-logo-centred-dark.png"
@@ -41,8 +42,8 @@ VARIANTS = {"rich": "ili9341_320x240", "compact": "st7789_240x240"}
 
 # What the Info page reads on a showcase dial.
 INFO_ROWS = (
-    ("Dial name", "Lounge dial"), ("Firmware", "0.7.0"), ("IPv4", "192.168.1.42"),
-    ("WiFi", "HomeNet"), ("Signal", "Strong"), ("Disk free", "21.4 GB"), ("SD health", "96%"),
+    ("WiFi", "HomeNet"), ("Signal", "Strong"), ("IPv4", "192.168.1.42"),
+    ("Dial name", "Lounge dial"), ("Firmware", "0.7.0"), ("Disk free", "21.4 GB"), ("SD health", "96%"),
 )
 
 
@@ -88,10 +89,10 @@ def now_playing(panel, track, volume, muted=False, controls=True, timer=None):
         **panel.kw(), **extra)
 
 
-def idle(panel, replay=False, wifi_bars=3, wifi_style=comp.WIFI_SIGNAL):
+def idle(panel, replay=False, wifi_bars=3, wifi_style=comp.WIFI_SIGNAL, bell=None):
     return panel.compositor.compose_idle(
         panel.logo_base(replay), panel.width, panel.height, wifi_bars=wifi_bars,
-        wifi_style=wifi_style, **panel.kw())
+        wifi_style=wifi_style, bell=bell, **panel.kw())
 
 
 def selector(panel, unauthorised=False):
@@ -172,13 +173,14 @@ def warning(panel, view):
 
 
 def nowifi(panel):
-    return panel.compositor.compose_nowifi(
-        panel.logo_base(), panel.width, panel.height, comp.NoWifiView(), **panel.kw())
+    return warning(panel, comp.WarningView(
+        title=NOWIFI_MESSAGE_TEXT, buttons=(RESTART_TEXT, CLOSE_TEXT), source="This dial"))
 
 
 def sdhealth(panel):
-    return panel.compositor.compose_sdhealth(
-        panel.logo_base(), panel.width, panel.height, comp.SdHealthView(percent=4), **panel.kw())
+    return warning(panel, comp.WarningView(
+        title=SDHEALTH_TITLE_TEXT, message=SDHEALTH_BODY_TEXT.format(percent=4), buttons=(CLOSE_TEXT,),
+        source="This dial"))
 
 
 def updating(panel):
@@ -188,18 +190,21 @@ def updating(panel):
 
 def updated(panel):
     return warning(panel, comp.WarningView(
-        title=UPDATED_TEXT, message="Version 0.7.0", buttons=(UPDATE_RESULT_CLOSE_TEXT,)))
+        title=UPDATED_TEXT, message="Version 0.7.0", buttons=(CLOSE_TEXT,)))
 
 
 def update_failed(panel):
     return warning(panel, comp.WarningView(
-        title=UPDATE_FAILED_TEXT, message="Restored 0.6.0", buttons=(UPDATE_RESULT_CLOSE_TEXT,)))
+        title=UPDATE_FAILED_TEXT, message="Restored 0.6.0", buttons=(CLOSE_TEXT,)))
 
 
-def appliance_warning(panel, notice=False):
+def appliance_warning(panel, paged=False):
+    """An appliance's warning on the warnings card: Close alone, or Next | Close
+    with the entry's place among the bell's entries."""
     return warning(panel, comp.WarningView(
         title="Stylus wear", message="Over 450 hours played",
-        buttons=("OK" if notice else "Dismiss",), source="Turntable"))
+        buttons=(NEXT_TEXT, CLOSE_TEXT) if paged else (CLOSE_TEXT,),
+        source="Turntable · 1 of 2" if paged else "Turntable"))
 
 
 def screens(panel):
@@ -218,8 +223,10 @@ def screens(panel):
         ("no-wifi", nowifi(panel)),
         ("sd-health", sdhealth(panel)),
         ("appliance-warning", appliance_warning(panel)),
-        ("appliance-notice", appliance_warning(panel, notice=True)),
+        ("appliance-warning-paged", appliance_warning(panel, paged=True)),
         ("idle", idle(panel)),
+        ("idle-warnings", idle(panel, bell=comp.BellBadge("warning", 2))),
+        ("idle-critical", idle(panel, bell=comp.BellBadge("critical", 1))),
         ("idle-replay-available", idle(panel, replay=True)),
         ("idle-wifi-connecting", idle(panel, wifi_bars=0, wifi_style=comp.WIFI_GREY)),
         ("idle-wifi-lost", idle(panel, wifi_bars=0, wifi_style=comp.WIFI_RED)),

@@ -15,7 +15,7 @@ then the footer, then rotate/BGR. What differs between screens is
 only the data — a frozen Frame descriptor made of a background choice plus
 a Header/Body/Footer triple — never the drawing order. Each of the public
 entry points (compose(), compose_list(), compose_repeat(), compose_output(),
-compose_idle(), compose_warning(), compose_nowifi(), compose_sdhealth(), compose_restarting()) is a thin adapter that turns its own state snapshot
+compose_idle(), compose_warning(), compose_restarting()) is a thin adapter that turns its own state snapshot
 (OverlayState, ListState, RepeatViewState, OutputViewState, or nothing at
 all) into a Frame and hands it to the pipeline. The outputs list reuses
 compose_list() outright (it is just another row list); only the detail
@@ -115,15 +115,7 @@ from dataclasses import dataclass, field
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
-from dial_warning_text import (
-    NOWIFI_CLOSE_TEXT,
-    NOWIFI_MESSAGE_TEXT,
-    NOWIFI_RESTART_TEXT,
-    SDHEALTH_BODY_TEXT,
-    SDHEALTH_BODY_TEXT_NO_PERCENT,
-    SDHEALTH_CLOSE_TEXT,
-    SDHEALTH_TITLE_TEXT,
-)
+from dial_core_state import SEVERITY_CRITICAL, SEVERITY_WARNING
 from dial_touch_layout import (
     CONTENT_COMPACT,
     FONT_BODY_PX_AT_REFERENCE,
@@ -131,11 +123,9 @@ from dial_touch_layout import (
     GEOMETRY_EQ,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
-    GEOMETRY_NOWIFI,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
-    GEOMETRY_SDHEALTH,
     CompactLayout,
     CompactPickerLayout,
     LayoutMetrics,
@@ -150,10 +140,8 @@ from dial_touch_layout import (
     layout_for,
     list_layout_for,
     metrics_for,
-    nowifi_layout_for,
     repeat_layout_for,
     scale_px,
-    sdhealth_layout_for,
     warning_layout_for,
     zone_rects_for,
 )
@@ -275,10 +263,10 @@ _INVERTED_GLYPH_RGB = (0, 0, 0)
 
 # The idle screen's Wi-Fi glyph while the link is down alternates between
 # all-grey (_DIMMED_GLYPH_RGB) and this alarm red — a clear "something is
-# wrong" that still reads against a dimmed logo and against the white "i".
+# wrong" that still reads against a dimmed logo.
 _ALARM_RGB = (226, 62, 51)
 
-# The No-WiFi card off the compact tier: a flat dark surface, a thin
+# A warning or status card off the compact tier: a flat dark surface, a thin
 # translucent white outline, and a soft dark drop shadow offset down-right —
 # sharp (rectangular) corners throughout, no rounding.
 _CARD_FILL_RGB = (24, 25, 28)
@@ -574,31 +562,11 @@ class InfoValueView:
 
 
 @dataclass(frozen=True)
-class NoWifiView:
-    """Immutable snapshot of what the No-WiFi page should show — nothing
-    but the pressed cell, if any: the page's text is fixed and its
-    geometry comes from nowifi_layout_for()."""
-
-    pressed: "TouchZone | None" = None
-
-
-@dataclass(frozen=True)
-class SdHealthView:
-    """Immutable snapshot of what the SD card warning should show: the
-    remaining-life percent to print (None prints the body line without
-    one) and the pressed cell, if any."""
-
-    percent: "int | None" = None
-    pressed: "TouchZone | None" = None
-
-
-@dataclass(frozen=True)
 class WarningView:
-    """Immutable snapshot of a warning page: the readout-size title, the
-    optional body-size message under it (empty prints the title alone,
-    centred in the whole message row), the button labels left to right,
-    the touch geometry whose cells they sit in (for the press wash), the
-    pressed cell, if any, the optional progress percent (None draws no
+    """Immutable snapshot of a card: the readout-size title, the optional
+    body-size message under it (empty prints the title alone, centred in
+    the whole message row), the button labels left to right, the index of
+    the pressed cell, if any, the optional progress percent (None draws no
     bar; no buttons draws a notice with no cells) and the optional source
     (who the warning is about: a non-empty one is drawn as a small line
     above the title, and the page's text is then fitted to its message row
@@ -607,10 +575,19 @@ class WarningView:
     title: str
     message: str = ""
     buttons: tuple[str, ...] = ()
-    geometry: str = GEOMETRY_SDHEALTH
-    pressed: "TouchZone | None" = None
+    pressed: "int | None" = None
     percent: "int | None" = None
     source: str = ""
+
+
+@dataclass(frozen=True)
+class BellBadge:
+    """The warning bell drawn in a corner: the worst severity among the
+    entries (it picks the colour) and how many there are (the number in
+    the bell)."""
+
+    severity: str
+    count: int
 
 
 @dataclass(frozen=True)
@@ -671,7 +648,7 @@ BODY_REPEAT_ROW = "repeat_row"     # "Repeat Play" label + arm dot
 BODY_TOGGLE_ROW = "toggle_row"     # a label + arm dot for any on/off row (repeat, per-output)
 BODY_REPEAT_LINE = "repeat_line"   # centred "m:ss / m:ss" with halo
 BODY_LIST_ROWS = "list_rows"       # selector/picker rows
-BODY_IDLE_BADGE = "idle_badge"     # the idle screen's own "i" information badge
+BODY_IDLE_BADGE = "idle_badge"     # the idle screen's own corner glyphs: the warning bell and the Wi-Fi status
 # Compact-tier (2x2) bodies — see the module's compact frame builders below.
 BODY_COMPACT_CONTROLS = "compact_controls"  # the playing screen: dots/mute/minus/plus
 BODY_COMPACT_LIST = "compact_list"          # the replay picker's two rows + more/cancel
@@ -745,6 +722,7 @@ class Body:
     treble_db: "int | None" = None  # BODY_EQ_BARS
     wifi_bars: int = 0            # BODY_IDLE_BADGE: lit arcs on the wifi glyph (0..3) under WIFI_SIGNAL; 0 draws it all grey
     wifi_style: str = WIFI_SIGNAL # BODY_IDLE_BADGE: WIFI_SIGNAL / WIFI_GREY / WIFI_RED / WIFI_OFF — see the constants
+    bell: "BellBadge | None" = None  # BODY_IDLE_BADGE: the warning bell, None draws none
     buttons: tuple[str, ...] = ()  # BODY_WARNING: button labels, left to right, one per layout cell
     percent: "int | None" = None   # BODY_WARNING: progress bar under the message (0..100), None for none
     source: str = ""               # BODY_WARNING: small line above the title; non-empty fits the text to the row
@@ -785,7 +763,7 @@ class Frame:
     # A card drawn over the dimmed background before any highlight/wash/
     # pressed rect: drop shadow, flat fill, thin outline. None (the default,
     # byte-identical to before this field existed) draws nothing. The
-    # No-WiFi page off the compact tier is the one user.
+    # warning and status cards off the compact tier are the users.
     card: "Rect | None" = None
     header: Header | None = None
     body: Body = Body()
@@ -1088,15 +1066,16 @@ class DialDisplayCompositor:
     def compose_idle(
         self, base, width: int, height: int, *, rotate: bool, bgr: bool,
         metrics: LayoutMetrics | None = None, wifi_bars: int = 0, wifi_style: str = WIFI_SIGNAL,
+        bell: "BellBadge | None" = None,
     ):
         """Build one display-ready frame for the idle screen: *base* — the
         logo the manager chose (the plain disc, or the replay-available
         arrows-on-disc logo when a held recording can be replayed) — with no
         volume/mute controls overlay, since nothing is playing and there is
-        nothing on this screen to control, plus the small "i" information
-        badge in the top-right corner and the Wi-Fi status glyph in the
-        top-left one (see BODY_IDLE_BADGE) on every idle frame regardless of
-        which logo is showing. wifi_style picks the glyph's look: WIFI_SIGNAL
+        nothing on this screen to control, plus the Wi-Fi status glyph in
+        the top-left corner and, when *bell* is given, the warning bell in
+        the top-right one (see BODY_IDLE_BADGE) on every idle frame
+        regardless of which logo is showing. wifi_style picks the glyph's look: WIFI_SIGNAL
         lights wifi_bars (0..3) arcs, 0 drawing the whole glyph dimmed;
         WIFI_GREY dims every part; WIFI_RED paints every part in alarm red;
         WIFI_OFF draws no glyph at all. The manager passes the current half of
@@ -1109,7 +1088,7 @@ class DialDisplayCompositor:
             return base
         return _compose_frame(
             base, width, height,
-            Frame(BG_BASE, body=Body(BODY_IDLE_BADGE, wifi_bars=wifi_bars, wifi_style=wifi_style)),
+            Frame(BG_BASE, body=Body(BODY_IDLE_BADGE, wifi_bars=wifi_bars, wifi_style=wifi_style, bell=bell)),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -1131,43 +1110,6 @@ class DialDisplayCompositor:
             metrics = metrics_for(width, height)
         return _compose_frame(
             base, width, height, _warning_frame(view, width, height, metrics),
-            rotate=rotate, bgr=bgr, metrics=metrics,
-        )
-
-    def compose_nowifi(
-        self, base, width: int, height: int, view: NoWifiView, *, rotate: bool, bgr: bool,
-        metrics: LayoutMetrics | None = None,
-    ):
-        """The No-WiFi page as a warning frame: the fixed message over
-        Dismiss | Restart. Kept for existing direct callers/tests; the
-        manager paints every warning through compose_warning()."""
-        return self.compose_warning(
-            base, width, height,
-            WarningView(
-                title=NOWIFI_MESSAGE_TEXT, message="",
-                buttons=(NOWIFI_CLOSE_TEXT, NOWIFI_RESTART_TEXT),
-                geometry=GEOMETRY_NOWIFI, pressed=view.pressed,
-            ),
-            rotate=rotate, bgr=bgr, metrics=metrics,
-        )
-
-    def compose_sdhealth(
-        self, base, width: int, height: int, view: SdHealthView, *, rotate: bool, bgr: bool,
-        metrics: LayoutMetrics | None = None,
-    ):
-        """The SD card warning as a warning frame: the fixed title over a
-        body line carrying the percent, and one Close cell. Kept for
-        existing direct callers/tests."""
-        line = (
-            SDHEALTH_BODY_TEXT.format(percent=view.percent)
-            if view.percent is not None else SDHEALTH_BODY_TEXT_NO_PERCENT
-        )
-        return self.compose_warning(
-            base, width, height,
-            WarningView(
-                title=SDHEALTH_TITLE_TEXT, message=line, buttons=(SDHEALTH_CLOSE_TEXT,),
-                geometry=GEOMETRY_SDHEALTH, pressed=view.pressed,
-            ),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -1775,19 +1717,21 @@ GLYPH_MUTE = "mute"                    # params: () or (color,) — the main scr
 GLYPH_SPEAKER = "speaker"              # params: (muted,) — the top band's volume readout icon
 GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
 GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
-GLYPH_INFO = "info"                    # params: () — the idle screen's information badge
+GLYPH_BELL = "bell"                    # params: (severity, count) — the warning bell
 GLYPH_WIFI = "wifi"                    # params: (lit, color) — the idle screen's Wi-Fi status glyph
 
-# Fraction of the idle info zone's own short side the "i" badge's box
-# occupies. The painter's disc is 0.42 of that box, so 0.60 gives a disc of
-# radius 0.25 of the zone — sized to read as one pair with the Wi-Fi glyph in
-# the opposite corner (outer arc radius 0.33 of its zone).
-_INFO_GLYPH_FRACTION = 0.60
+# Fraction of the corner bell zone's own short side the bell's box occupies.
+# Sized to read as one pair with the Wi-Fi glyph in the opposite corner
+# (outer arc radius 0.33 of its zone).
+_BELL_GLYPH_FRACTION = 0.80
 
-# The "i" cut from the information badge's white disc: plain black, for
-# tourist-sign contrast against the disc regardless of what the idle
-# screen's own base image looks like behind it.
-_INFO_GLYPH_CUT_RGB = (0, 0, 0)
+# The bell's fill by the worst severity it holds: the warning orange, the
+# danger red, and the accent blue for an informational entry.
+_BELL_RGB = {
+    SEVERITY_WARNING: (233, 113, 50),
+    SEVERITY_CRITICAL: (220, 53, 69),
+}
+_BELL_INFO_RGB = (82, 152, 216)
 
 
 @functools.lru_cache(maxsize=48)
@@ -2034,29 +1978,28 @@ def _draw_stop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB
     draw.rectangle([cx - half, cy - half, cx + half, cy + half], fill=color)
 
 
-def _draw_info_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
-    """The idle screen's information badge: a filled white disc (radius
-    0.42 of the short side) with a lowercase "i" (a dot above the centre,
-    a stem from just above the centre to just below it) cut out of it in
-    the dark chassis colour — tourist-sign contrast, drawn from shapes
-    rather than a font so it reads identically across every font fallback.
-    Rendered into a (w, h) canvas — see _draw_glyph."""
-    short = min(w, h)
-    cx, cy = w / 2, h / 2
-    r = short * 0.42
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_GLYPH_RGB)
+def _draw_bell_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, severity: str, count: int) -> None:
+    """The warning bell: a filled bell (a dome over a flared rim, a knob on
+    top, a clapper below) in the severity's colour with the number of
+    entries in white across its body (9+ above nine). Drawn from shapes on a
+    24-unit grid fitted to the canvas short side, so it reads identically
+    across every font fallback. Rendered into a (w, h) canvas — see
+    _draw_glyph."""
+    u = min(w, h) / 24
+    ox, oy = (w - 24 * u) / 2, (h - 24 * u) / 2
 
-    dot_r = short * 0.07
-    stem_half_w = short * 0.06
-    stem_top = cy - short * 0.02
-    stem_bottom = cy + short * 0.2
-    dot_cy = cy - short * 0.16
-    draw.ellipse(
-        [cx - dot_r, dot_cy - dot_r, cx + dot_r, dot_cy + dot_r], fill=_INFO_GLYPH_CUT_RGB,
-    )
-    draw.rectangle(
-        [cx - stem_half_w, stem_top, cx + stem_half_w, stem_bottom], fill=_INFO_GLYPH_CUT_RGB,
-    )
+    def pt(x, y):
+        return (ox + x * u, oy + y * u)
+
+    colour = _BELL_RGB.get(severity, _BELL_INFO_RGB)
+    draw.ellipse([*pt(10.4, 1.6), *pt(13.6, 4.8)], fill=colour)
+    draw.ellipse([*pt(5.2, 3.8), *pt(18.8, 17.4)], fill=colour)
+    draw.polygon([pt(5.2, 10.6), pt(18.8, 10.6), pt(18.8, 15.0), pt(21.0, 17.2), pt(21.0, 18.6),
+                  pt(3.0, 18.6), pt(3.0, 17.2), pt(5.2, 15.0)], fill=colour)
+    draw.pieslice([*pt(9.4, 17.2), *pt(14.6, 22.8)], 0, 180, fill=colour)
+    label = str(count) if count < 10 else "9+"
+    box = (*pt(6.0, 6.4), *pt(18.0, 17.0))
+    _draw_label_centered(draw, tuple(round(v) for v in box), label, _load_font(max(6, round(u * 9.5))))
 
 
 def _draw_wifi_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, lit: int, color=_GLYPH_RGB) -> None:
@@ -2102,7 +2045,7 @@ _GLYPH_PAINTERS = {
     GLYPH_SPEAKER: _draw_speaker_tile,
     GLYPH_RESTART: _draw_restart_glyph,
     GLYPH_STOP: _draw_stop_glyph,
-    GLYPH_INFO: _draw_info_glyph,
+    GLYPH_BELL: _draw_bell_glyph,
     GLYPH_WIFI: _draw_wifi_glyph,
 }
 
@@ -2491,17 +2434,22 @@ def _body_none(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
 def _body_idle_badge(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """The idle screen's own corner glyphs, drawn regardless of which base
     image (the plain logo or the replay-available one) is showing
-    underneath — see compose_idle(): the "i" information badge top-right,
-    and the Wi-Fi status glyph top-left as body.wifi_style says. WIFI_SIGNAL
+    underneath — see compose_idle(): the warning bell top-right (only when
+    body.bell is set), and the Wi-Fi status glyph top-left as
+    body.wifi_style says. WIFI_SIGNAL
     lights body.wifi_bars arcs, WIFI_GREY dims every part, WIFI_RED paints
     every part in alarm red, and WIFI_OFF draws no glyph at all — the base
     shows through untouched, so the flash's blank half really is blank (no
     tile is built or cached for it). An unrecognised style is treated as
     WIFI_SIGNAL."""
     layout = idle_layout_for(metrics.width, metrics.height, metrics=metrics)
-    x0, y0, x1, y1 = layout.info
-    side = round(min(x1 - x0, y1 - y0) * _INFO_GLYPH_FRACTION)
-    _draw_glyph(img, _centred_box(layout.info, side), GLYPH_INFO, supersample=metrics.supersample)
+    if body.bell is not None:
+        x0, y0, x1, y1 = layout.info
+        side = round(min(x1 - x0, y1 - y0) * _BELL_GLYPH_FRACTION)
+        _draw_glyph(
+            img, _centred_box(layout.info, side), GLYPH_BELL, body.bell.severity, body.bell.count,
+            supersample=metrics.supersample,
+        )
     style = body.wifi_style
     if style == WIFI_OFF:
         return
@@ -3081,6 +3029,20 @@ def _draw_fitted_warning_text(
         top += size * 1.2
 
 
+def _cell_label_font(draw: ImageDraw.ImageDraw, label: str, width: int, metrics: LayoutMetrics):
+    """The body font, stepped down until *label* fits *width* (a three-button
+    card on a small panel has cells too narrow for "Restart" at body size)."""
+    size = metrics.font_body
+    font = _load_font(size)
+    while size > 6 and font is not None:
+        measured = _text_size(draw, label, font)
+        if measured is None or measured[0] <= width:
+            break
+        size -= 1
+        font = _load_font(size)
+    return font
+
+
 def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """A warning page's content on every tier. With no message the title
     is centred in the whole message row at readout size; with one, the
@@ -3123,7 +3085,7 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     else:
         _draw_label_centered(draw, (mx0, my0, mx1, my1), body.title, readout_font)
     for rect, label in zip(layout.cells, body.buttons):
-        _draw_label_centered(draw, rect, label, body_font)
+        _draw_label_centered(draw, rect, label, _cell_label_font(draw, label, rect[2] - rect[0] - 2 * metrics.pad, metrics))
     if not layout.cells:
         return
     cx0, cy0, cx1, cy1 = layout.card
@@ -3497,16 +3459,6 @@ def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetr
     )
 
 
-def _warning_pressed_rects(
-    geometry: str, pressed: "TouchZone | None", width: int, height: int,
-    metrics: "LayoutMetrics | None" = None,
-) -> tuple[Rect, ...]:
-    """A warning page's pressed-rect lookup against its own geometry: a
-    zone from another geometry washes nothing."""
-    rect = _zone_rect(geometry, pressed, None, width, height, metrics)
-    return (rect,) if rect is not None else ()
-
-
 def _warning_frame(view: WarningView, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     """Dimmed base on every tier; the card only off compact (on compact the
     grid fills the panel and the dimmed base is the whole backdrop, the
@@ -3517,7 +3469,10 @@ def _warning_frame(view: WarningView, width: int, height: int, metrics: LayoutMe
         background=BG_BASE,
         dim_all=True,
         card=None if compact else layout.card,
-        pressed=_warning_pressed_rects(view.geometry, view.pressed, width, height, metrics),
+        pressed=(
+            (layout.cells[view.pressed],)
+            if view.pressed is not None and 0 <= view.pressed < len(layout.cells) else ()
+        ),
         header=None,
         body=Body(
             BODY_WARNING, title=view.title, line=view.message, buttons=view.buttons, percent=view.percent,

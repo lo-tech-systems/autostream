@@ -77,11 +77,10 @@ the selector/picker); "output" maps to GEOMETRY_OUTPUT (the per-output
 detail page); "info" maps to GEOMETRY_INFO (the idle screen's read-only
 info page — the list table with every row entry removed, so a row tap
 lands in no zone); "eq" maps to GEOMETRY_EQ (the EQ page, rich/large only);
-"nowifi" maps to GEOMETRY_NOWIFI (the No-WiFi page's Close/Restart
-cells); "sdhealth" maps to GEOMETRY_SDHEALTH (the SD card warning's one
-Close cell); "update" maps to GEOMETRY_NONE and "update_result",
-"update_dial" and "appliance_warning" to GEOMETRY_SDHEALTH (the update
-result card, the dial's own update warning and an appliance's warning); "restarting" maps to GEOMETRY_NONE (nothing tappable, so no press
+"card1", "card2" and "card3" map to GEOMETRY_CARD1/2/3 (a warning or
+status card with that many button cells: the warnings page picks the one
+for the entry it shows, the update result card is "card1"); "update" maps
+to GEOMETRY_NONE and so does "restarting" (nothing tappable, so no press
 can arm anything while the reboot is pending)
 — all held like the selector. The map is many-to-one on purpose: which surfaces share a geometry is a policy decision (reveal
 timing, what a row tap does), never a geometric one —
@@ -132,11 +131,13 @@ from dial_touch_layout import (
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_NONE,
-    GEOMETRY_NOWIFI,
+    GEOMETRY_CARD1,
+    GEOMETRY_CARD2,
+    GEOMETRY_CARD3,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
-    GEOMETRY_SDHEALTH,
+    BELL_ZONES,
     LayoutMetrics,
     TouchZone,
     hit_test,
@@ -236,27 +237,18 @@ SURFACE_INFO_VALUE = "info_value"
 # other secondary surface; hit-tests use the GEOMETRY_EQ table (DOTS/NAME/
 # OUTPUTS reused from the main geometry, plus the bass/treble bar steppers).
 SURFACE_EQ = "eq"
-# The No-WiFi page: held like every other secondary surface; its geometry
-# (GEOMETRY_NOWIFI) is the two cells, Close and Restart.
-SURFACE_NOWIFI = "nowifi"
+# A warning or status card: held like every other secondary surface; its
+# geometry is the one for its button count (GEOMETRY_CARD1/2/3).
+SURFACE_CARD1 = "card1"
+SURFACE_CARD2 = "card2"
+SURFACE_CARD3 = "card3"
 # The "Restarting..." screen: held (so the touch side treats it as a
 # visible surface, not a reveal-on-touch one) but with an EMPTY geometry —
 # no press anywhere can arm anything until the reboot takes the panel down.
 SURFACE_RESTARTING = "restarting"
-# The SD card warning: held like every other secondary surface; its
-# geometry (GEOMETRY_SDHEALTH) is the one Close cell.
-SURFACE_SDHEALTH = "sdhealth"
-# The software update cards: the progress card has no buttons (empty
-# geometry, so touch does nothing); the result card has the one Close
-# cell, the SD card warning's geometry.
+# The software update progress card has no buttons (empty geometry, so
+# touch does nothing); the result card is a one-button card.
 SURFACE_UPDATE = "update"
-SURFACE_UPDATE_RESULT = "update_result"
-# The dial's own "Update this dial" warning: the one Close cell, the SD card
-# warning's geometry.
-SURFACE_UPDATE_DIAL = "update_dial"
-# An appliance's warning: the one Close cell, the SD card warning's
-# geometry; every appliance warning shares this surface.
-SURFACE_APPLIANCE_WARNING = "appliance_warning"
 
 # Which hit-test geometry each surface uses. Many-to-one on purpose: hidden
 # and held differ only in reveal policy (not geometry); selector and picker
@@ -275,13 +267,11 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_INFO: GEOMETRY_INFO,
     SURFACE_INFO_VALUE: GEOMETRY_INFO_VALUE,
     SURFACE_EQ: GEOMETRY_EQ,
-    SURFACE_NOWIFI: GEOMETRY_NOWIFI,
+    SURFACE_CARD1: GEOMETRY_CARD1,
+    SURFACE_CARD2: GEOMETRY_CARD2,
+    SURFACE_CARD3: GEOMETRY_CARD3,
     SURFACE_RESTARTING: GEOMETRY_NONE,
-    SURFACE_SDHEALTH: GEOMETRY_SDHEALTH,
     SURFACE_UPDATE: GEOMETRY_NONE,
-    SURFACE_UPDATE_RESULT: GEOMETRY_SDHEALTH,
-    SURFACE_UPDATE_DIAL: GEOMETRY_SDHEALTH,
-    SURFACE_APPLIANCE_WARNING: GEOMETRY_SDHEALTH,
 }
 
 # The repeat screen's two surfaces, treated as one set by the repeat-close
@@ -354,6 +344,10 @@ class TouchStateMachine:
         # focused/reporting appliance does not advertise the capability.
         # See set_surface() and _arm().
         self._outputs_active = False
+        # Whether the bell zones (BELL_ZONES) are currently live: the dial
+        # has a warning to show, so a bell is drawn. One gate for every
+        # bell, applied in _arm() like the three above.
+        self._bell_active = False
 
     # -- read-only state, for a compositor/UI to consult -------------------
 
@@ -501,7 +495,7 @@ class TouchStateMachine:
 
     def set_surface(
         self, surface: str, name_active: bool, now: float, dots_active: bool = False,
-        outputs_active: bool = False,
+        outputs_active: bool = False, bell_active: bool = False,
     ) -> list[TouchAction]:
         """External sync from the display: which screen is on the panel
         right now — see the module docstring's SURFACES paragraph.
@@ -529,8 +523,8 @@ class TouchStateMachine:
         use the GEOMETRY_INFO_VALUE table (a single whole-panel LIST_BACK
         entry), held like the selector.
 
-        name_active, dots_active and outputs_active are recorded either
-        way — even on a same-surface call — since any of them can change on
+        name_active, dots_active, outputs_active and bell_active are recorded
+        either way — even on a same-surface call — since any of them can change on
         the main surface alone (see _effective_overlay_locked/OverlayState)
         without the surface itself changing.
 
@@ -546,6 +540,7 @@ class TouchStateMachine:
             self._name_active = name_active
             self._dots_active = dots_active
             self._outputs_active = outputs_active
+            self._bell_active = bell_active
             return []
         was_lit = self._pressed_lit
         self._armed_zone = None
@@ -557,6 +552,7 @@ class TouchStateMachine:
         self._name_active = name_active
         self._dots_active = dots_active
         self._outputs_active = outputs_active
+        self._bell_active = bell_active
         actions: list[TouchAction] = []
         if was_lit:
             actions.append(TouchAction(ACTION_SET_PRESSED_ZONE, None))
@@ -707,14 +703,14 @@ class TouchStateMachine:
         # reach covers below the band lands on whatever is drawn there; a
         # press on the band itself still finds nothing (nothing else
         # overlaps the band). The gates only matter where these zones
-        # appear.
+        # appear. Every bell zone shares the one bell gate.
         skip = frozenset(
             gated for gated, active in (
                 (TouchZone.DOTS, self._dots_active),
                 (TouchZone.NAME, self._name_active),
                 (TouchZone.OUTPUTS, self._outputs_active),
             ) if not active
-        )
+        ) | (frozenset() if self._bell_active else BELL_ZONES)
         hit = hit_test(geometry, x, y, self._width, self._height, metrics=self._metrics, skip=skip)
         zone, index = (hit.zone, hit.index) if hit is not None else (None, None)
         if zone is None:
@@ -858,7 +854,7 @@ class TouchEventSource:
         # predates this feature).
         self._consume_repeat_close_reveal = consume_repeat_close_reveal
         self._last_held: bool | None = None
-        self._last_surface: tuple[str, bool, bool, bool] | None = None
+        self._last_surface: tuple[str, bool, bool, bool, bool] | None = None
         # The profile's UNROTATED axis signs (swap, invert_x, invert_y),
         # kept so a live rotate toggle can re-derive the mapping. None when
         # the caller did not supply them (e.g. tests constructing directly).
@@ -1007,14 +1003,13 @@ class TouchEventSource:
         "held"/"hidden"-only wiring is unaffected by this method's
         existence.
 
-        Accepts a 2-tuple (surface, name_active) — dots_active and
-        outputs_active default to False — a 3-tuple (surface, name_active,
-        dots_active) — outputs_active defaults to False — or the full
-        4-tuple (surface, name_active, dots_active, outputs_active).
-        Either way self._last_surface is kept as a 4-tuple so an
-        outputs_active-only (or dots_active-only) change — main screen
-        chrome appearing/disappearing with no surface or name_active
-        change — still triggers a set_surface() call.
+        Accepts a 2-tuple (surface, name_active) — the other flags default
+        to False — a 3-tuple (surface, name_active, dots_active), a
+        4-tuple adding outputs_active, or the full 5-tuple adding
+        bell_active. Either way self._last_surface is kept as a 5-tuple so
+        a flag-only change — main screen chrome appearing/disappearing
+        with no surface or name_active change — still triggers a
+        set_surface() call.
 
         A transition AWAY from SURFACE_REPEAT additionally consumes the
         display's one-shot repeat-close-reveal flag (see
@@ -1032,26 +1027,18 @@ class TouchEventSource:
         except Exception:
             result = (SURFACE_HIDDEN, False)
         if isinstance(result, tuple):
-            if len(result) >= 4:
-                surface, name_active, dots_active, outputs_active = (
-                    result[0], result[1], result[2], result[3],
-                )
-            elif len(result) == 3:
-                surface, name_active, dots_active = result[0], result[1], result[2]
-                outputs_active = False
-            else:
-                surface, name_active = result
-                dots_active = False
-                outputs_active = False
+            surface, name_active, dots_active, outputs_active, bell_active = (
+                tuple(result) + (False, False, False, False))[:5]
         else:
-            surface, name_active, dots_active, outputs_active = result, False, False, False
-        current = (surface, bool(name_active), bool(dots_active), bool(outputs_active))
+            surface, name_active, dots_active, outputs_active, bell_active = result, False, False, False, False
+        current = (surface, bool(name_active), bool(dots_active), bool(outputs_active), bool(bell_active))
         if current != self._last_surface:
             previous_surface = self._last_surface[0] if self._last_surface is not None else None
             self._last_surface = current
             self._dispatch(self._state_machine.set_surface(
                 surface, bool(name_active), self._clock(),
                 dots_active=bool(dots_active), outputs_active=bool(outputs_active),
+                bell_active=bool(bell_active),
             ))
             if (
                 previous_surface in _REPEAT_SURFACES and surface not in _REPEAT_SURFACES

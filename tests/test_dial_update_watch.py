@@ -130,6 +130,7 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     import dial_display as dd
     import dial_display_compositor as dc
     from dial_touch_layout import metrics_for, warning_layout_for
+    from dial_warning_text import CLOSE_TEXT, NEXT_TEXT, RESTART_TEXT
 
     metrics = metrics_for(width, height, mm_per_px)
     draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
@@ -175,4 +176,9 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     for view in result_views:
         assert fits(update_result.title_for(view), readout_font, result_w), view
         assert fits(update_result.message_for(view), body_font, result_w), view
-    assert fits(dd.UPDATE_RESULT_CLOSE_TEXT, body_font, cell_w)
+    assert fits(CLOSE_TEXT, body_font, cell_w)
+    # Next | Restart | Close: the narrowest card the warnings page shows.
+    three = warning_layout_for(width, height, buttons=3, metrics=metrics)
+    for label, cell in zip((NEXT_TEXT, RESTART_TEXT, CLOSE_TEXT), three.cells):
+        avail = (cell[2] - cell[0]) - 2 * metrics.pad
+        assert fits(label, dc._cell_label_font(draw, label, avail, metrics), avail), label

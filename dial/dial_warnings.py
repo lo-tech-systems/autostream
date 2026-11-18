@@ -1,11 +1,10 @@
 """dial_warnings.py: the dial's on-screen warning framework.
 
 A warning is described once (WarningDescriptor: identity, kind, priority,
-the screen and touch geometry it paints with, its text and its buttons) and
-driven by a source that calls set_active() and clear() on the manager. The
-manager keeps the per-warning runtime state (active, reading, since when)
-and decides which status screen is due (the highest-priority active one) and
-which warning a view would open by itself.
+its text and its buttons) and driven by a source that calls set_active() and
+clear() on the manager. The manager keeps the per-warning runtime state
+(active, reading, since when) and decides which status screen is due (the
+highest-priority active one).
 
 Pure: no hardware, no drawing, no threads of its own. The display manager
 owns one WarningManager and is the only caller that turns "due" into a
@@ -19,12 +18,11 @@ import threading
 import time
 from dataclasses import dataclass
 
-from dial_touch_layout import TouchZone
-
 # Button actions. Close puts a warning card away in the view that shows it
-# (and, for a status card, ends the status); Restart shows the restarting
-# screen and asks for the reboot.
+# (and, for a status card, ends the status); Next steps a warnings card to
+# its next entry; Restart shows the restarting screen and asks for the reboot.
 ACTION_CLOSE = "close"
+ACTION_NEXT = "next"
 ACTION_RESTART = "restart"
 
 # The two kinds of descriptor. A warning is a condition a person may want to
@@ -40,10 +38,8 @@ APPLIANCE_WARNING_PREFIX = "appliance:"
 
 @dataclass(frozen=True)
 class WarningButton:
-    """One tappable cell on a warning page: the touch zone the geometry
-    reports for it, the label the compositor draws in it, and the action
-    the manager runs when it is tapped."""
-    zone: TouchZone
+    """One tappable cell on a card: the label the compositor draws in it and
+    the action a tap runs."""
     label: str
     action: str
 
@@ -54,15 +50,12 @@ class WarningDescriptor:
 
     id: the key sources and the runtime state use.
     kind: KIND_WARNING or KIND_STATUS.
-    priority: higher wins when more than one warning is due at once, and
-      a lower-priority page never opens over a higher one.
-    screen: the screen-policy row name, which is also the touch surface.
-    geometry: the touch geometry the page's cells are laid out with.
+    priority: higher wins when more than one status is due at once.
     title: the readout-size line. message_for(reading) -> the body-size
       line under it, or None for a single centred line. The reading is
       what the source reported when it set the warning active.
     severity_for(reading) -> "info", "warning" or "critical".
-    buttons: left to right, in geometry order.
+    buttons: left to right.
     title_for(reading) -> the readout-size line, replacing `title` when
       set (a page whose heading depends on its reading).
     progress_for(reading) -> a percent 0..100 drawn as a bar under the
@@ -75,13 +68,13 @@ class WarningDescriptor:
       would. None: only the source clears it.
     source_name: who the warning is attributed to (an appliance warning
       carries its appliance's name); "" for the dial's own.
+    screen: the screen-policy row name of a status, which is also its touch
+      surface; "" for a warning (a warning shows on the warnings page).
     A descriptor with no buttons has a touch-inert page.
     """
     id: str
     kind: str
     priority: int
-    screen: str
-    geometry: str
     title: str
     message_for: "object | None"
     severity_for: "object"
@@ -91,12 +84,7 @@ class WarningDescriptor:
     interrupting: bool = False
     auto_clear_after_s: "float | None" = None
     source_name: str = ""
-
-    def button_for(self, zone: TouchZone) -> "WarningButton | None":
-        for button in self.buttons:
-            if button.zone == zone:
-                return button
-        return None
+    screen: str = ""
 
 
 @dataclass
@@ -126,16 +114,6 @@ class WarningManager:
     def descriptors(self) -> tuple[WarningDescriptor, ...]:
         with self._lock:
             return tuple(self._by_id[wid] for wid in self._order)
-
-    def button_owner(self, zone: TouchZone) -> "tuple[WarningDescriptor, WarningButton] | None":
-        """The first registered warning with a button on *zone*."""
-        with self._lock:
-            descs = tuple(self._by_id[wid] for wid in self._order)
-        for desc in descs:
-            button = desc.button_for(zone)
-            if button is not None:
-                return desc, button
-        return None
 
     # ---- run-time registration ------------------------------------------------
 
@@ -228,20 +206,11 @@ class WarningManager:
     def due_status(self) -> "WarningDescriptor | None":
         """The highest-priority active status descriptor, or None. Ties keep
         registry order."""
-        return self._due(KIND_STATUS, ())
-
-    def due_warning(self, closed=()) -> "WarningDescriptor | None":
-        """The highest-priority active warning that is not among the ids in
-        *closed*, or None. Ties keep registry order."""
-        return self._due(KIND_WARNING, closed)
-
-    def _due(self, kind: str, closed) -> "WarningDescriptor | None":
         best: "WarningDescriptor | None" = None
         with self._lock:
             for wid in self._order:
-                if not self._state[wid].active or wid in closed:
-                    continue
                 desc = self._by_id[wid]
-                if desc.kind == kind and (best is None or desc.priority > best.priority):
+                if desc.kind == KIND_STATUS and self._state[wid].active and (
+                        best is None or desc.priority > best.priority):
                     best = desc
         return best

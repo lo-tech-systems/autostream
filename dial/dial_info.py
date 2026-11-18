@@ -11,11 +11,11 @@ every source is read defensively and any failure degrades that one field to
 are ever spawned by one call, each capped at _CMD_TIMEOUT_S, so a hung
 network tool can never leave the gather thread running indefinitely.
 
-Seven fields, in display order: the dial's own name and firmware version
-(passed in by the caller — see dial_main.py's wiring), its IPv4 address, the
-Wi-Fi network it is joined to — or, while it is not joined, the network it
-is configured for — and a coarse signal category (Disconnected while not
-joined), the free space on its root filesystem, and the SD card's remaining
+Seven fields, in display order: the Wi-Fi network the dial is joined to —
+or, while it is not joined, the network it is configured for — a coarse
+signal category (Disconnected while not joined), its IPv4 address, its own
+name and firmware version (passed in by the caller — see dial_main.py's
+wiring), the free space on its root filesystem, and the SD card's remaining
 health (passed in by the caller, see dial_sdhealth.info_value()).
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
@@ -28,7 +28,7 @@ import re
 import socket
 import subprocess
 
-INFO_LABELS = ("Dial name", "Firmware", "IPv4", "WiFi", "Signal", "Disk free", "SD health")
+INFO_LABELS = ("WiFi", "Signal", "IPv4", "Dial name", "Firmware", "Disk free", "SD health")
 
 SIGNAL_WEAK = "Weak"
 SIGNAL_NORMAL = "Normal"
@@ -315,15 +315,10 @@ def gather_dial_info(name: str, version: str, network=None, sd_health=None, uuid
             disk = _disk_free() or _BLANK
         except Exception:
             disk = _BLANK
-        return (
-            (INFO_LABELS[0], (name or "").strip() or (uuid or "").strip() or _BLANK),
-            (INFO_LABELS[1], version or _BLANK),
-            (INFO_LABELS[2], ipv4),
-            (INFO_LABELS[3], wifi[0]),
-            (INFO_LABELS[4], wifi[1]),
-            (INFO_LABELS[5], disk),
-            (INFO_LABELS[6], (sd_health or "").strip() or _BLANK),
-        )
+        return tuple(zip(INFO_LABELS, (
+            wifi[0], wifi[1], ipv4, (name or "").strip() or (uuid or "").strip() or _BLANK,
+            version or _BLANK, disk, (sd_health or "").strip() or _BLANK,
+        )))
     except Exception:
         return tuple((label, _BLANK) for label in INFO_LABELS)
 

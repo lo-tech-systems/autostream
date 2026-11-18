@@ -28,24 +28,22 @@ from dial_touch import (  # noqa: E402
     FIRST_REPEAT_S,
     PRESSED_FLASH_S,
     REPEAT_INTERVAL_S,
-    SURFACE_APPLIANCE_WARNING,
+    SURFACE_CARD1,
+    SURFACE_CARD2,
+    SURFACE_CARD3,
     SURFACE_EQ,
     SURFACE_HELD,
     SURFACE_HIDDEN,
     SURFACE_IDLE,
     SURFACE_INFO,
     SURFACE_INFO_VALUE,
-    SURFACE_NOWIFI,
     SURFACE_OUTPUT,
     SURFACE_OUTPUTS,
     SURFACE_PICKER,
     SURFACE_REPEAT,
     SURFACE_REPEAT_REPLAY,
     SURFACE_RESTARTING,
-    SURFACE_SDHEALTH,
     SURFACE_UPDATE,
-    SURFACE_UPDATE_DIAL,
-    SURFACE_UPDATE_RESULT,
     SURFACE_SELECTOR,
     TouchAction,
     TouchEventSource,
@@ -62,10 +60,11 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO_VALUE,
     GEOMETRY_MAIN,
     GEOMETRY_NONE,
-    GEOMETRY_NOWIFI,
+    GEOMETRY_CARD1,
+    GEOMETRY_CARD2,
+    GEOMETRY_CARD3,
     GEOMETRY_OUTPUT,
     GEOMETRY_REPEAT_REPLAY,
-    GEOMETRY_SDHEALTH,
     TouchZone,
     compact_layout_for,
     compact_picker_layout_for,
@@ -75,10 +74,9 @@ from dial_touch_layout import (  # noqa: E402
     list_layout_for,
     list_zone_at,
     metrics_for,
-    nowifi_layout_for,
     output_layout_for,
     repeat_layout_for,
-    sdhealth_layout_for,
+    warning_layout_for,
     zones_for,
 )
 
@@ -1534,7 +1532,7 @@ REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
 # mute control of its own.
 REPEAT_OUTPUTS_XY = _rect_center(_REPEAT_LAYOUT.volume_cluster)
 IDLE_XY = (WIDTH // 2, HEIGHT - 1)
-IDLE_INFO_XY = _rect_center(idle_layout_for(WIDTH, HEIGHT).info)
+IDLE_BELL_XY = _rect_center(idle_layout_for(WIDTH, HEIGHT).info)
 IDLE_WIFI_XY = _rect_center(idle_layout_for(WIDTH, HEIGHT).wifi)
 
 
@@ -1578,10 +1576,10 @@ class TestNewSurfacesArmImmediately:
         actions = sm.on_filter_event(press_event(IDLE_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
 
-    def test_idle_info_arms_immediately_without_reveal(self):
+    def test_idle_bell_arms_immediately_without_reveal(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        sm.set_surface(SURFACE_IDLE, False, now=0.0)
-        actions = sm.on_filter_event(press_event(IDLE_INFO_XY), now=0.1)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0, bell_active=True)
+        actions = sm.on_filter_event(press_event(IDLE_BELL_XY), now=0.1)
         assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
 
     def test_idle_wifi_arms_immediately_without_reveal(self):
@@ -1756,16 +1754,35 @@ class TestRepeatAndIdleZoneTaps:
         tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
         assert tap.zone == TouchZone.IDLE_REPLAY
 
-    def test_idle_info_tap(self):
-        # The "i" affordance's own zone, top-right of the idle screen —
-        # reachable regardless of whether IDLE_XY (elsewhere on the idle
-        # surface) would resolve to a replay tap.
+    def test_idle_bell_tap(self):
+        # The bell's own zone, top-right of the idle screen — reachable
+        # regardless of whether IDLE_XY (elsewhere on the idle surface)
+        # would resolve to a replay tap.
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        sm.set_surface(SURFACE_IDLE, False, now=0.0)
-        actions = sm.on_filter_event(press_event(IDLE_INFO_XY), now=0.1)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0, bell_active=True)
+        actions = sm.on_filter_event(press_event(IDLE_BELL_XY), now=0.1)
         tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)
-        assert tap.zone == TouchZone.IDLE_INFO
+        assert tap.zone == TouchZone.IDLE_BELL
         assert tap.index is None
+
+    def test_idle_corner_is_not_a_bell_without_one(self):
+        """The one bell gate: with nothing to show the corner is not the bell
+        (the tap falls through to the replay zone beneath it, or to nothing)."""
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_IDLE, False, now=0.0, bell_active=False)
+        actions = sm.on_filter_event(press_event(IDLE_BELL_XY), now=0.1)
+        assert not any(a.kind == ACTION_ZONE_TAP and a.zone == TouchZone.IDLE_BELL for a in actions)
+
+    def test_bell_flag_alone_changes_the_gate(self):
+        """Same surface, same other flags, only bell_active flips: the poll
+        still applies it."""
+        values = iter([(SURFACE_IDLE, False, False, False, False), (SURFACE_IDLE, False, False, False, True)])
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        source = TouchEventSource(FakeDriver(), TouchFilter(WIDTH, HEIGHT), sm, get_touch_surface=lambda: next(values))
+        source._poll_surface()
+        source._poll_surface()
+        actions = sm.on_filter_event(press_event(IDLE_BELL_XY), now=0.1)
+        assert any(a.kind == ACTION_ZONE_TAP and a.zone == TouchZone.IDLE_BELL for a in actions)
 
     def test_repeat_and_idle_taps_are_single_shot_no_repeat(self):
         for surface, xy, zone in (
@@ -2103,19 +2120,33 @@ class TestRepeatSurfacesFormOneSet:
         assert len(reveal_calls) == 1
 
 
-class TestNoWifiAndRestartingSurfaces:
+class TestCardAndRestartingSurfaces:
     def test_surface_map(self):
-        assert _GEOMETRY_FOR_SURFACE[SURFACE_NOWIFI] == GEOMETRY_NOWIFI
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_CARD1] == GEOMETRY_CARD1
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_CARD2] == GEOMETRY_CARD2
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_CARD3] == GEOMETRY_CARD3
         assert _GEOMETRY_FOR_SURFACE[SURFACE_RESTARTING] == GEOMETRY_NONE
 
-    def test_nowifi_cells_arm_as_zone_taps(self):
-        l = nowifi_layout_for(WIDTH, HEIGHT)
-        for rect, zone in ((l.dismiss, TouchZone.NOWIFI_DISMISS), (l.restart, TouchZone.NOWIFI_RESTART)):
+    @pytest.mark.parametrize("surface,buttons", [(SURFACE_CARD1, 1), (SURFACE_CARD2, 2), (SURFACE_CARD3, 3)])
+    def test_card_cells_arm_as_positional_zone_taps(self, surface, buttons):
+        l = warning_layout_for(WIDTH, HEIGHT, buttons=buttons)
+        zones = (TouchZone.CARD_BUTTON_0, TouchZone.CARD_BUTTON_1, TouchZone.CARD_BUTTON_2)
+        for rect, zone in zip(l.cells, zones):
             sm = TouchStateMachine(WIDTH, HEIGHT)
-            sm.set_surface(SURFACE_NOWIFI, False, now=0.0)
+            sm.set_surface(surface, False, now=0.0)
             actions = sm.on_filter_event(press_event(_rect_center(rect)), now=0.1)
             assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
             assert actions[-1].zone == zone
+
+    def test_a_card_has_no_cell_beyond_its_buttons(self):
+        """A one-button card has no second cell for a finger to light: the
+        place CARD_BUTTON_1 would be on a two-button card is a dead gap or
+        the one cell."""
+        l = warning_layout_for(WIDTH, HEIGHT, buttons=2)
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_CARD1, False, now=0.0)
+        actions = sm.on_filter_event(press_event(_rect_center(l.cells[1])), now=0.1)
+        assert actions[-1].zone == TouchZone.CARD_BUTTON_0
 
     def test_restarting_surface_is_held_but_inert(self):
         sm = TouchStateMachine(WIDTH, HEIGHT)
@@ -2125,45 +2156,21 @@ class TestNoWifiAndRestartingSurfaces:
             assert sm.on_filter_event(press_event(xy), now=0.1) == []
             sm.on_filter_event(release_event(), now=0.2)
 
-    def test_a_button_less_warning_surface_mapped_to_none_is_held_but_inert(self):
-        layout = nowifi_layout_for(WIDTH, HEIGHT)
+    def test_a_button_less_card_surface_mapped_to_none_is_held_but_inert(self):
+        layout = warning_layout_for(WIDTH, HEIGHT, buttons=2)
         with patch.dict(_GEOMETRY_FOR_SURFACE, {"notice": GEOMETRY_NONE}):
             sm = TouchStateMachine(WIDTH, HEIGHT)
             sm.set_surface("notice", False, now=0.0)
-            for rect in (layout.message, layout.dismiss, layout.restart):
+            for rect in (layout.message, *layout.cells):
                 assert sm.on_filter_event(press_event(_rect_center(rect)), now=0.1) == []
                 sm.on_filter_event(release_event(), now=0.2)
 
-    def test_sdhealth_surface_map(self):
-        assert _GEOMETRY_FOR_SURFACE[SURFACE_SDHEALTH] == GEOMETRY_SDHEALTH
-
-    def test_update_surfaces_map_to_geometry_none_and_the_close_cell(self):
-        # The progress card has no buttons; the result card and the dial's own
-        # update warning reuse the SD warning's one Close cell.
-        assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE] == GEOMETRY_NONE
-        assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE_RESULT] == GEOMETRY_SDHEALTH
-        assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE_DIAL] == GEOMETRY_SDHEALTH
-
     def test_update_progress_card_is_touch_inert(self):
-        l = sdhealth_layout_for(WIDTH, HEIGHT)
+        l = warning_layout_for(WIDTH, HEIGHT, buttons=1)
         sm = TouchStateMachine(WIDTH, HEIGHT)
         sm.set_surface(SURFACE_UPDATE, False, now=0.0)
-        assert sm.on_filter_event(press_event(_rect_center(l.dismiss)), now=0.1) == []
-
-    def test_update_result_dismiss_cell_arms_as_zone_tap(self):
-        l = sdhealth_layout_for(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-        sm.set_surface(SURFACE_UPDATE_RESULT, False, now=0.0)
-        actions = sm.on_filter_event(press_event(_rect_center(l.dismiss)), now=0.1)
-        assert actions[-1].zone == TouchZone.SDHEALTH_DISMISS
-
-    def test_sdhealth_dismiss_cell_arms_as_zone_tap(self):
-        l = sdhealth_layout_for(WIDTH, HEIGHT)
-        sm = TouchStateMachine(WIDTH, HEIGHT)
-        sm.set_surface(SURFACE_SDHEALTH, False, now=0.0)
-        actions = sm.on_filter_event(press_event(_rect_center(l.dismiss)), now=0.1)
-        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
-        assert actions[-1].zone == TouchZone.SDHEALTH_DISMISS
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE] == GEOMETRY_NONE
+        assert sm.on_filter_event(press_event(_rect_center(l.cells[0])), now=0.1) == []
 
 
 # ---------------------------------------------------------------------------
@@ -2438,7 +2445,7 @@ _CENTRE_XY = _PROBE_XY[0]
 # what an awake press at that point would have done. Each surface gets one
 # probe point inside a zone that acts when awake (a leak would be visible),
 # spread over different zone kinds (volume, mute, list rows and steppers,
-# the output and repeat controls, the dismiss buttons). The two surfaces with
+# the output and repeat controls, the card buttons). The two surfaces with
 # no zones at all are probed at the centre. Both overlay states run for every
 # surface. The idle surface, where the whole panel below the top band opens
 # the replay picker, also runs every probe point (centre, the three control
@@ -2457,11 +2464,9 @@ _ASLEEP_PROBE = {
     SURFACE_INFO: UP_XY,
     SURFACE_INFO_VALUE: _CENTRE_XY,
     SURFACE_EQ: DOWN_XY,
-    SURFACE_NOWIFI: (49, 67),
-    SURFACE_SDHEALTH: (WIDTH // 2, 67),
-    SURFACE_UPDATE_RESULT: (WIDTH // 2, 67),
-    SURFACE_UPDATE_DIAL: (WIDTH // 2, 67),
-    SURFACE_APPLIANCE_WARNING: (WIDTH // 2, 67),
+    SURFACE_CARD1: (WIDTH // 2, 67),
+    SURFACE_CARD2: (49, 67),
+    SURFACE_CARD3: (30, 67),
 }
 _ASLEEP_CASES = [
     pytest.param(surface, xy, id=f"{surface}-{xy[0]}x{xy[1]}")

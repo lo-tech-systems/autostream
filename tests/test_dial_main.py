@@ -1684,7 +1684,8 @@ class TestBuildTouchSourceWiring:
         pytest.param("REPEAT_START", None, "repeat_start_tap", None, id="repeat_start_taps_start"),
         pytest.param("REPEAT_STOP", None, "repeat_stop_tap", None, id="repeat_stop_taps_stop"),
         pytest.param("IDLE_REPLAY", None, "open_picker", None, id="idle_replay_opens_the_picker"),
-        pytest.param("IDLE_INFO", None, "open_info", None, id="idle_info_opens_the_info_page"),
+        pytest.param("IDLE_BELL", None, "open_warnings", None, id="idle_bell_opens_the_warnings_card"),
+        pytest.param("IDLE_WIFI", None, "open_info", None, id="idle_wifi_opens_the_info_page"),
         pytest.param("OUTPUTS", None, "open_outputs", None, id="outputs_opens_the_outputs_list"),
         pytest.param("OUTPUT_BACK", None, "close_list", None, id="output_back_closes_the_list_screen"),
         pytest.param("OUTPUT_TOGGLE", None, "output_toggle_tap", None, id="output_toggle_taps_the_output"),
@@ -1702,18 +1703,18 @@ class TestBuildTouchSourceWiring:
             else:
                 target.assert_called_once_with(*args)
 
-    # The warning buttons are handed to the warning dispatch, zone and all.
+    # The card buttons are handed to the card dispatch, zone and all.
     @pytest.mark.parametrize("zone", [
-        pytest.param("SDHEALTH_DISMISS", id="sdhealth_dismiss_closes_the_warning"),
-        pytest.param("NOWIFI_DISMISS", id="nowifi_dismiss_goes_to_the_warning_dispatch"),
-        pytest.param("NOWIFI_RESTART", id="nowifi_restart_goes_to_the_warning_dispatch"),
+        pytest.param("CARD_BUTTON_0", id="first_card_button"),
+        pytest.param("CARD_BUTTON_1", id="second_card_button"),
+        pytest.param("CARD_BUTTON_2", id="third_card_button"),
     ])
-    def test_on_zone_tap_warning_buttons_go_to_the_warning_dispatch(self, zone):
+    def test_on_zone_tap_card_buttons_go_to_the_card_dispatch(self, zone):
         from dial_touch_layout import TouchZone
 
         with self._built() as (cfg, display, result, captured, *_):
             captured["kwargs"]["on_zone_tap"](TouchZone[zone], None)
-            display.warning_button_tap.assert_called_once_with(TouchZone[zone])
+            display.card_button_tap.assert_called_once_with(TouchZone[zone])
 
     def test_on_zone_tap_confirms_presence(self):
         from dial_touch_layout import TouchZone

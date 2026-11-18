@@ -1,9 +1,8 @@
 """Tests for dial_warnings.py: the dial's on-screen warning framework.
 
-Covers: the two due rules (the status that is due, the warning a view would
-open that it has not closed), reading refresh, clearing an incident,
-button-owner resolution, run-time registration, expiry, and the invariants
-the descriptor table keeps (a warning never interrupts).
+Covers: the due rule (the status that is due), reading refresh, clearing an
+incident, run-time registration, expiry, and the invariants the descriptor
+table keeps (a warning never interrupts).
 """
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
-from dial_touch_layout import TouchZone
 from dial_warning_text import WARNING_DESCRIPTORS
 from dial_warnings import (
     ACTION_CLOSE,
@@ -45,11 +43,11 @@ def _severity(_reading) -> str:
 def _hi() -> WarningDescriptor:
     """A two-button warning: the No-WiFi shape."""
     return WarningDescriptor(
-        id="hi", kind=KIND_WARNING, priority=100, screen="hi", geometry="hi",
+        id="hi", kind=KIND_WARNING, priority=100,
         title="Hi", message_for=None, severity_for=_severity,
         buttons=(
-            WarningButton(TouchZone.NOWIFI_DISMISS, "Close", ACTION_CLOSE),
-            WarningButton(TouchZone.NOWIFI_RESTART, "Restart", ACTION_RESTART),
+            WarningButton("Restart", ACTION_RESTART),
+            WarningButton("Close", ACTION_CLOSE),
         ),
     )
 
@@ -58,15 +56,15 @@ def _lo() -> WarningDescriptor:
     """A one-button warning with a message that reads the reading: the SD
     health shape."""
     return WarningDescriptor(
-        id="lo", kind=KIND_WARNING, priority=50, screen="lo", geometry="lo",
+        id="lo", kind=KIND_WARNING, priority=50,
         title="Lo", message_for=lambda s: f"reading {s}", severity_for=_severity,
-        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Close", ACTION_CLOSE),),
+        buttons=(WarningButton("Close", ACTION_CLOSE),),
     )
 
 
 def _status(wid="st", priority=150) -> WarningDescriptor:
     return WarningDescriptor(
-        id=wid, kind=KIND_STATUS, priority=priority, screen=wid, geometry="none",
+        id=wid, kind=KIND_STATUS, priority=priority, screen=wid,
         title="St", message_for=None, severity_for=_severity, buttons=(),
     )
 
@@ -106,34 +104,6 @@ class TestDueStatus:
         assert m.due_status() is None
 
 
-class TestDueWarning:
-    def test_the_higher_priority_warning_wins(self):
-        m = _manager()
-        m.set_active("lo")
-        assert m.due_warning().id == "lo"
-        m.set_active("hi")
-        assert m.due_warning().id == "hi"
-        m.clear("hi")
-        assert m.due_warning().id == "lo"
-
-    def test_a_status_is_never_a_due_warning(self):
-        m = _manager()
-        m.set_active("st")
-        assert m.due_warning() is None
-
-    def test_a_closed_warning_is_skipped(self):
-        m = _manager()
-        m.set_active("hi")
-        m.set_active("lo")
-        assert m.due_warning(closed={"hi"}).id == "lo"
-        assert m.due_warning(closed={"hi", "lo"}) is None
-
-    def test_a_closed_id_that_is_not_active_is_harmless(self):
-        m = _manager()
-        m.set_active("lo")
-        assert m.due_warning(closed={"hi"}).id == "lo"
-
-
 class TestReading:
     def test_the_reading_refreshes_on_every_set_active(self):
         m = _manager()
@@ -149,31 +119,13 @@ class TestReading:
         assert m.reading("lo") is None
 
 
-class TestButtonResolution:
-    def test_button_owner_resolves_the_first_registered_owner(self):
-        shared = WarningDescriptor(
-            id="lo2", kind=KIND_WARNING, priority=10, screen="lo2", geometry="lo2",
-            title="Lo2", message_for=None, severity_for=_severity,
-            buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Close", ACTION_CLOSE),),
-        )
-        m = WarningManager((_lo(), shared))
-        owner = m.button_owner(TouchZone.SDHEALTH_DISMISS)
-        assert owner is not None
-        assert owner[0].id == "lo"
-
-    def test_descriptor_button_for(self):
-        desc = _hi()
-        assert desc.button_for(TouchZone.NOWIFI_DISMISS).action == ACTION_CLOSE
-        assert desc.button_for(TouchZone.SDHEALTH_DISMISS) is None
-
-
 # ---------------------------------------------------------------------------
 # Generic descriptor fields: defaults, active_since and expired().
 # ---------------------------------------------------------------------------
 
 def _timed(after, wid="t") -> WarningDescriptor:
     return WarningDescriptor(
-        id=wid, kind=KIND_STATUS, priority=10, screen=wid, geometry="none", title="T",
+        id=wid, kind=KIND_STATUS, priority=10, screen=wid, title="T",
         message_for=None, severity_for=_severity, buttons=(), auto_clear_after_s=after,
     )
 
@@ -235,22 +187,19 @@ class TestGenericFields:
 
 def _ns(appliance_id="a1", warning_id="stylus", *, buttons=True):
     return WarningDescriptor(
-        id=f"appliance:{appliance_id}:{warning_id}", kind=KIND_WARNING, priority=10,
-        screen="appliance_warning", geometry="sdhealth", title="T",
+        id=f"appliance:{appliance_id}:{warning_id}", kind=KIND_WARNING, priority=10, title="T",
         message_for=lambda _s: "m", severity_for=_severity,
-        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Close", ACTION_CLOSE),) if buttons else (),
+        buttons=(WarningButton("Close", ACTION_CLOSE),) if buttons else (),
     )
 
 
 class TestRegistration:
-    def test_a_registered_warning_joins_the_registry_and_the_due_rule(self):
+    def test_a_registered_warning_joins_the_registry_and_is_never_a_due_status(self):
         manager = WarningManager([_hi()])
         manager.register(_ns())
         assert [d.id for d in manager.descriptors()] == ["hi", "appliance:a1:stylus"]
         manager.set_active("appliance:a1:stylus")
-        assert manager.due_warning().id == "appliance:a1:stylus"
-        manager.set_active("hi")
-        assert manager.due_warning().id == "hi"
+        assert manager.due_status() is None
 
     def test_re_registering_replaces_the_descriptor_and_keeps_the_state(self):
         manager = WarningManager([])
@@ -267,7 +216,7 @@ class TestRegistration:
         manager.register(_ns())
         manager.set_active("appliance:a1:stylus")
         manager.unregister("appliance:a1:stylus")
-        assert manager.descriptors() == () and manager.due_warning() is None
+        assert manager.descriptors() == () and manager.runtime() == ()
         assert not manager.is_active("appliance:a1:stylus")
 
     def test_a_reading_refresh_on_a_registered_warning_keeps_it_active(self):
@@ -277,7 +226,7 @@ class TestRegistration:
         manager.set_active(key, "warning")
         manager.register(_ns())
         manager.set_active(key, "critical")
-        assert manager.reading(key) == "critical" and manager.due_warning().id == key
+        assert manager.reading(key) == "critical" and manager.is_active(key)
 
     def test_unregistering_an_unknown_id_is_harmless(self):
         manager = WarningManager([_hi()])

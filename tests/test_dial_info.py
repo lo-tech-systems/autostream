@@ -61,11 +61,11 @@ class TestGatherShape:
             rows = gather_dial_info("Kitchen Dial", "1.4.0", sd_health="87% Good")
         assert len(rows) == 7
         assert tuple(label for label, _ in rows) == INFO_LABELS
-        assert rows[0] == ("Dial name", "Kitchen Dial")
-        assert rows[1] == ("Firmware", "1.4.0")
+        assert rows[0] == ("WiFi", "HomeNet")
+        assert rows[1] == ("Signal", SIGNAL_STRONG)
         assert rows[2] == ("IPv4", "192.168.1.20")
-        assert rows[3] == ("WiFi", "HomeNet")
-        assert rows[4] == ("Signal", SIGNAL_STRONG)
+        assert rows[3] == ("Dial name", "Kitchen Dial")
+        assert rows[4] == ("Firmware", "1.4.0")
         assert rows[5] == ("Disk free", "14.2 GB")
         assert rows[6] == ("SD health", "87% Good")
 

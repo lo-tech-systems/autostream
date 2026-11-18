@@ -43,6 +43,7 @@ from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECO
 from dial_mdns import PlayingTarget, RosterEntry
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_sdhealth import SdHealthView, STATUS_VALID
+from dial_touch_layout import CARD_BUTTON_ZONES
 from dial_touch_layout import TouchZone
 from dial_test_support import (
     MONOTONIC_TARGETS, FakeBackend, _FakeClock, attach_bridge, on_eq_result, on_outputs_result,
@@ -267,9 +268,9 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d._tick_repeat_line()
     elif kind == "tick_warnings":
         # The core's warning housekeeping, then the view's own tick that
-        # raises a warning that was due while another page was up.
+        # raises a status that was due while another page was up.
         d._apply_source_effects(d.core.expire_warnings())
-        d._tick_due_warning()
+        d._request_due_status()
     elif kind == "advance":
         ctx.clock.t += step[1]
     elif kind == "enable":
@@ -326,12 +327,15 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # the same shape the worker calls it with after a poll.
         d.core.on_network_view(NetworkView(link=step[1], bars=step[2] if len(step) > 2 else 0, updated_at=ctx.clock.t))
         d._drain_effects()
-    elif kind == "open_nowifi":
-        d.open_nowifi()
-    elif kind == "nowifi_dismiss":
-        d._run_warning_action(dd._WARNING_BY_ID["nowifi"], dd.ACTION_CLOSE)
-    elif kind == "nowifi_restart":
-        d._run_warning_action(dd._WARNING_BY_ID["nowifi"], dd.ACTION_RESTART)
+    elif kind == "bell_tap":
+        d.open_warnings()
+    elif kind in ("card_next", "card_close", "card_restart"):
+        # A tap on the cell of the card on screen that runs this action.
+        action = {"card_next": dd.ACTION_NEXT, "card_close": dd.ACTION_CLOSE, "card_restart": dd.ACTION_RESTART}[kind]
+        bell = d._bell()
+        card = d._warnings_card(bell)[1] if d._screen == "warnings" else d._status_card()
+        cell = next(i for i, (_, a) in enumerate(card.buttons) if a == action)
+        d.card_button_tap(CARD_BUTTON_ZONES[cell])
     elif kind == "tick_wifi_flash":
         d._tick_wifi_flash()
     elif kind == "sd_health_view":
@@ -341,17 +345,12 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         _, status, percent = step
         d.core.on_sd_health_view(SdHealthView(status=status, percent=percent, updated_at=ctx.clock.t))
         d._drain_effects()
-    elif kind == "sdhealth_dismiss":
-        d._run_warning_action(dd._WARNING_BY_ID["sdhealth"], dd.ACTION_CLOSE)
     elif kind == "appliance_warnings":
         # ("appliance_warnings", appliance_id, [(id, severity, title,
         # message), ...]) -- the validated set the appliance's
         # warnings worker hands the core, replacing the appliance's last.
         _, aid, rows = step
         set_appliance_warnings(d, aid, tuple(ApplianceWarning(*row) for row in rows))
-    elif kind == "appliance_tap":
-        # A tap on the one cell of the page showing (Dismiss).
-        d.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
     else:
         raise ValueError(f"unknown scenario step kind: {kind!r}")
 
@@ -415,7 +414,7 @@ def _snapshot(ctx: _Ctx) -> dict:
     # Present only once an appliance has registered a warning, so a scenario
     # that never involves one records exactly the fields it always did.
     appliance_rows = {
-        wid: [active, wid in d._closed_warnings]
+        wid: [active]
         for wid, active, _reading, _since in d.core.warnings.runtime()
         if wid.startswith("appliance:")
     }
@@ -464,12 +463,14 @@ def _snapshot(ctx: _Ctx) -> dict:
         "network": None if network is None else {
             "link": network.link, "bars": network.bars,
             "down_streak": d.core.wifi_down_streak(),
-            "closed": "nowifi" in d._closed_warnings,
             "ever_connected": core_snap.wifi_ever_connected,
         },
-        "nowifi_open": d._warning_screen is not None and d._warning_screen.warning_id == "nowifi",
+        "warnings_page": (
+            None if d._warnings_page is None
+            else [d._warnings_page.key, d._warnings_page.shown, len(d._warnings_page.keys)]
+        ),
+        "bell": [d._bell().count, d._bell().severity],
         "restarting_open": d._restarting is not None,
-        "sdhealth_open": d._warning_screen is not None and d._warning_screen.warning_id == "sdhealth",
         "pressed": pressed_repr,
         "now_playing": now_playing_repr,
         "reporting_appliance_id": core_snap.focus.reporting_id,
@@ -479,7 +480,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "focus_pending": core_snap.focus.pending is not None,
         "display_sleeping": d._display_sleeping,
         "idle_started": d._idle_started_at is not None,
-        "touch_surface": [surface[0], surface[1], surface[2], surface[3]],
+        "touch_surface": list(surface),
         "persistent_overlay_shown": d.persistent_overlay_shown(),
         "repeat_close_reveal": d.consume_repeat_close_reveal(),
         "frame_count": len(frames),
@@ -1486,9 +1487,10 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("poll",),
     ])
 
-    # ---- Wi-Fi link state machine: the idle icon and the No-WiFi page ----
+    # ---- Wi-Fi link state machine: the idle icon and the No-WiFi warning,
+    # reached from the bell and never opening by itself ----
 
-    add("nowifi_streak_of_three_opens_then_connected_closes", [
+    add("nowifi_streak_of_three_shows_the_bell_then_connected_clears_it", [
         ("targets", []),
         ("poll",),
         ("network", LINK_CONNECTED, 3),
@@ -1503,7 +1505,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("nowifi_dismiss_suppresses_until_connected", [
+    add("nowifi_bell_tap_opens_the_card_and_close_keeps_the_bell", [
         ("targets", []),
         ("poll",),
         ("network", LINK_CONNECTED, 3),
@@ -1511,16 +1513,26 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("repaint",),
-        ("nowifi_dismiss",),
+        ("bell_tap",),
         ("repaint",),
+        ("card_close",),
+        ("repaint",),
+        ("bell_tap",),
+        ("repaint",),
+    ])
+
+    add("nowifi_connected_closes_an_open_card", [
+        ("targets", []),
+        ("poll",),
+        ("network", LINK_CONNECTED, 3),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("repaint",),
-        ("network", LINK_CONNECTED, 2),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
+        ("bell_tap",),
+        ("repaint",),
+        ("network", LINK_CONNECTED, 3),
+        ("repaint",),
         ("repaint",),
     ])
 
@@ -1544,20 +1556,6 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("network", LINK_IGNORED),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
-        ("repaint",),
-    ])
-
-    add("nowifi_icon_tap_reopens_after_dismiss", [
-        ("targets", []),
-        ("poll",),
-        ("network", LINK_CONNECTED, 3),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
-        ("repaint",),
-        ("nowifi_dismiss",),
-        ("repaint",),
-        ("open_nowifi",),
         ("repaint",),
     ])
 
@@ -1586,7 +1584,9 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("repaint",),
-        ("nowifi_restart",),
+        ("bell_tap",),
+        ("repaint",),
+        ("card_restart",),
         ("repaint",),
         ("advance", dd.RESTARTING_TIMEOUT_SECONDS + 1),
         ("check_timeout",),
@@ -1605,7 +1605,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("nowifi_sleep_pops_the_page", [
+    add("nowifi_card_is_popped_by_sleep_and_stays_away_on_wake", [
         ("targets", []),
         ("poll",),
         ("network", LINK_CONNECTED, 3),
@@ -1613,11 +1613,15 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("repaint",),
+        ("bell_tap",),
+        ("repaint",),
         ("sleep_locked",),
+        ("repaint",),
+        ("notify_touch_activity",),
         ("repaint",),
     ])
 
-    add("nowifi_never_connected_flashes_but_never_prompts", [
+    add("nowifi_never_connected_flashes_but_has_no_bell", [
         ("targets", []),
         ("poll",),
         ("repaint",),
@@ -1627,7 +1631,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
-        ("repaint",),                      # still main: no auto-prompt before a first connection
+        ("repaint",),                      # no warning before a first connection
         ("tick_wifi_flash",),
         ("advance", 0.5),
         ("repaint",),
@@ -1636,24 +1640,13 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
-        ("repaint",),                      # now a loss: the page opens
+        ("repaint",),                      # now a loss: the bell appears
     ])
 
-    add("nowifi_never_connected_icon_tap_opens_the_page", [
-        ("targets", []),
-        ("poll",),
-        ("network", LINK_DOWN),
-        ("repaint",),
-        ("open_nowifi",),
-        ("repaint",),
-        ("nowifi_dismiss",),
-        ("repaint",),
-    ])
+    # ---- SD card health warning: on the bell, cleared by a recovered
+    # reading, the card closed by Close or its own timeout ----
 
-    # ---- SD card health warning: opened by the health reader, closed by
-    # Dismiss/timeout/a recovered reading; never opens over the No-WiFi page.
-
-    add("sdhealth_low_opens_then_recovered_closes", [
+    add("sdhealth_low_shows_the_bell_then_recovered_clears_it", [
         ("targets", []),
         ("poll",),
         ("sd_health_view", STATUS_VALID, 15),
@@ -1662,18 +1655,18 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("sdhealth_dismiss_suppresses_until_recovered", [
+    add("sdhealth_card_close_is_not_remembered", [
         ("targets", []),
         ("poll",),
         ("sd_health_view", STATUS_VALID, 15),
         ("repaint",),
-        ("sdhealth_dismiss",),
+        ("bell_tap",),
+        ("repaint",),
+        ("card_close",),
         ("repaint",),
         ("sd_health_view", STATUS_VALID, 14),
         ("repaint",),
-        ("sd_health_view", STATUS_VALID, 26),
-        ("repaint",),
-        ("sd_health_view", STATUS_VALID, 10),
+        ("bell_tap",),
         ("repaint",),
     ])
 
@@ -1688,52 +1681,24 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("sdhealth_never_opens_over_the_nowifi_page", [
-        ("targets", []),
-        ("poll",),
-        ("network", LINK_CONNECTED, 3),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
-        ("repaint",),
-        ("sd_health_view", STATUS_VALID, 10),
-        ("repaint",),
-        ("nowifi_dismiss",),
-        ("repaint",),
-        ("sd_health_view", STATUS_VALID, 9),
-        ("repaint",),
-    ])
-
-    add("sdhealth_has_no_timeout", [
+    add("sdhealth_card_times_out_like_the_info_page", [
         ("targets", []),
         ("poll",),
         ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("bell_tap",),
         ("repaint",),
         ("advance", 3600.0),
         ("check_timeout",),
         ("repaint",),
     ])
 
-    # ---- Warning re-show: wake and the once-a-second tick ----
-
-    add("sdhealth_sleep_then_wake_reshows", [
+    add("sdhealth_card_is_popped_by_sleep_and_stays_away_on_wake", [
         ("targets", []),
         ("poll",),
         ("sd_health_view", STATUS_VALID, 15),
         ("repaint",),
-        ("sleep_locked",),
-        ("repaint",),
-        ("notify_touch_activity",),
-        ("repaint",),
-    ])
-
-    add("nowifi_sleep_then_wake_reshows", [
-        ("targets", []),
-        ("poll",),
-        ("network", LINK_CONNECTED, 3),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
-        ("network", LINK_DOWN),
+        ("bell_tap",),
         ("repaint",),
         ("sleep_locked",),
         ("repaint",),
@@ -1741,20 +1706,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("sdhealth_close_then_wake_stays_closed", [
-        ("targets", []),
-        ("poll",),
-        ("sd_health_view", STATUS_VALID, 15),
-        ("repaint",),
-        ("sdhealth_dismiss",),
-        ("repaint",),
-        ("sleep_locked",),
-        ("repaint",),
-        ("notify_touch_activity",),
-        ("repaint",),
-    ])
-
-    add("sdhealth_pending_behind_info_shows_on_tick_after_close", [
+    add("sdhealth_behind_info_shows_the_bell_after_close", [
         ("targets", []),
         ("poll",),
         ("open_info",),
@@ -1767,35 +1719,33 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("warnings_nowifi_outranks_sdhealth_when_both_pending", [
+    add("warnings_card_pages_nowifi_then_sdhealth_and_wraps", [
         ("targets", []),
         ("poll",),
         ("network", LINK_CONNECTED, 3),
-        ("open_info",),
-        ("repaint",),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("network", LINK_DOWN),
         ("sd_health_view", STATUS_VALID, 10),
         ("repaint",),
-        ("close_list",),
+        ("bell_tap",),
+        ("repaint",),               # No WiFi: Next | Restart | Close
+        ("card_next",),
+        ("repaint",),               # microSD Health: Next | Close
+        ("card_next",),
+        ("repaint",),               # wraps to No WiFi
+        ("card_close",),
         ("repaint",),
-        ("tick_warnings",),
-        ("repaint",),               # nowifi wins on priority
-        ("nowifi_dismiss",),
-        ("repaint",),
-        ("tick_warnings",),
-        ("repaint",),               # sdhealth follows once nowifi is dismissed
     ])
 
-    # An appliance's warnings page below every warning of the dial's own:
-    # the SD card warning shows first, then the critical stylus warning,
-    # then the belt warning. Time alone brings none of them back; a new
-    # incident of one shows again.
+    # An appliance's warnings sit on the one bell after the dial's own:
+    # the SD card first, then the critical stylus warning, then the belt
+    # warning, paged with Next. Time alone changes nothing; a warning the
+    # appliance stops reporting leaves the card.
     aid = _aid("aw1")
     lounge = _idle_row("Lounge", aid)
     stylus = ("stylus_in1", "critical", "Technics stylus", "Needs changing now.")
-    add("appliance_warning_pages_below_sdhealth", [
+    add("appliance_warnings_page_on_the_bell_after_sdhealth", [
         ("roster", [lounge]),
         ("poll",),
         ("repaint",),
@@ -1804,28 +1754,21 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
             ("belt_in1", "warning", "Drive belt", "Service due soon."),
         ]),
         ("sd_health_view", STATUS_VALID, 12),
-        ("repaint",),               # sdhealth first
-        ("sdhealth_dismiss",),
+        ("repaint",),               # the bell counts all three
+        ("bell_tap",),
+        ("repaint",),               # most severe first: the stylus
+        ("card_next",),
         ("repaint",),
-        ("tick_warnings",),
-        ("repaint",),               # then the most severe appliance warning
-        ("appliance_tap",),
+        ("card_next",),
         ("repaint",),
-        ("tick_warnings",),
-        ("repaint",),               # the next one follows the Close
-        ("appliance_tap",),
-        ("repaint",),
-        ("tick_warnings",),
-        ("repaint",),               # nothing left
         ("advance", 86401.0),
         ("tick_warnings",),
-        ("repaint",),               # nothing comes back with time
+        ("repaint",),
+        ("appliance_warnings", aid, [("belt_in1", "warning", "Drive belt", "Service due soon.")]),
+        ("repaint",),               # the open card moves on from a warning that went
         ("appliance_warnings", aid, []),
-        ("tick_warnings",),
-        ("appliance_warnings", aid, [stylus]),
-        ("tick_warnings",),
-        ("repaint",),               # a new incident shows again
-        ("appliance_tap",),
+        ("sd_health_view", STATUS_VALID, 40),
+        ("repaint",),               # nothing left: the card closes
         ("repaint",),
     ])
 
@@ -1943,11 +1886,12 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
         {"cfg": cfg3, "backend": fb3},
     ))
 
-    # The No-WiFi page on compact (the full-screen 2x2, no card): a streak
-    # of three down polls opens it, Dismiss returns to idle.
+    # The No-WiFi card on compact (the full-screen 2x2, no card): a streak
+    # of three down polls shows the bell, a tap opens the card, Close
+    # returns to idle.
     cfg4, fb4 = _compact_display_args()
     scenarios.append((
-        "compact_nowifi_page_and_dismiss",
+        "compact_nowifi_card_and_close",
         [
             ("targets", []),
             ("poll",),
@@ -1956,25 +1900,30 @@ def _compact_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("network", LINK_DOWN),
             ("network", LINK_DOWN),
             ("network", LINK_DOWN),
-            ("repaint",),  # opens the No-WiFi page, full-screen 2x2
-            ("nowifi_dismiss",),
+            ("repaint",),  # idle with the bell
+            ("bell_tap",),
+            ("repaint",),  # the No-WiFi card, full-screen 2x2
+            ("card_close",),
             ("repaint",),  # back to idle; icon keeps flashing
         ],
         {"cfg": cfg4, "backend": fb4},
     ))
 
     # The SD card warning on compact (the full-screen card, no vertical
-    # divider): a low reading opens it, Dismiss returns to idle.
+    # divider): a low reading shows the bell, a tap opens it, Close returns
+    # to idle.
     cfg5, fb5 = _compact_display_args()
     scenarios.append((
-        "compact_sdhealth_warning_and_dismiss",
+        "compact_sdhealth_card_and_close",
         [
             ("targets", []),
             ("poll",),
             ("repaint",),  # touch_surface == "idle"
             ("sd_health_view", STATUS_VALID, 12),
-            ("repaint",),  # opens the SD warning, full-screen card
-            ("sdhealth_dismiss",),
+            ("repaint",),  # idle with the bell
+            ("bell_tap",),
+            ("repaint",),  # the SD card, full-screen card
+            ("card_close",),
             ("repaint",),  # back to idle
         ],
         {"cfg": cfg5, "backend": fb5},
@@ -2044,13 +1993,13 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
         {"cfg": cfg2, "backend": fb2},
     ))
 
-    # The No-WiFi page on the rich tier (a centred card): a streak of three
-    # down polls opens it, Restart shows "Restarting..." and asks for the
-    # reboot, then that screen times out back to main when the (mocked)
+    # The No-WiFi card on the rich tier (a centred card): a streak of three
+    # down polls shows the bell, a tap opens the card, Restart shows
+    # "Restarting..." and asks for the reboot, then that screen times out back to main when the (mocked)
     # reboot request never actually brings the box down.
     cfg3, fb3 = _rich_display_args()
     scenarios.append((
-        "rich_nowifi_page_and_restart",
+        "rich_nowifi_card_and_restart",
         [
             ("targets", []),
             ("poll",),
@@ -2059,8 +2008,10 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
             ("network", LINK_DOWN),
             ("network", LINK_DOWN),
             ("network", LINK_DOWN),
-            ("repaint",),  # opens the No-WiFi page, centred card
-            ("nowifi_restart",),
+            ("repaint",),  # idle with the bell
+            ("bell_tap",),
+            ("repaint",),  # the No-WiFi card, centred
+            ("card_restart",),
             ("repaint",),  # "Restarting..."
             ("advance", dd.RESTARTING_TIMEOUT_SECONDS + 1),
             ("check_timeout",),
@@ -2070,17 +2021,19 @@ def _rich_scenarios() -> list[tuple[str, list[tuple], dict]]:
     ))
 
     # The SD card warning on the rich tier (a centred card): a low reading
-    # opens it, Dismiss returns to main.
+    # shows the bell, a tap opens it, Close returns to main.
     cfg4, fb4 = _rich_display_args()
     scenarios.append((
-        "rich_sdhealth_warning_and_dismiss",
+        "rich_sdhealth_card_and_close",
         [
             ("targets", []),
             ("poll",),
             ("repaint",),  # touch_surface == "idle"
             ("sd_health_view", STATUS_VALID, 12),
-            ("repaint",),  # opens the SD warning, centred card
-            ("sdhealth_dismiss",),
+            ("repaint",),  # idle with the bell
+            ("bell_tap",),
+            ("repaint",),  # the SD card, centred
+            ("card_close",),
             ("repaint",),  # back to idle
         ],
         {"cfg": cfg4, "backend": fb4},

@@ -632,23 +632,23 @@ def on_eq_result(display, kind, appliance_id, status, body, request=None) -> Non
 
 def warning_active(display, warning_id, severity=None) -> None:
     """A source reports its condition present: the core records it and the
-    view requests the page when it is due."""
+    view requests the page when it is a status that is due."""
     change = display.core.warning_active(warning_id, severity)
-    display._request_due_warning(wake=change.began)
+    display._request_due_status(wake=change.began)
 
 
 def warning_cleared(display, warning_id) -> None:
     """A source reports its condition gone: the core ends the incident and
     the view closes the page."""
     display.core.warning_cleared(warning_id)
-    display._close_warning_request(warning_id)
+    display._close_status_request(warning_id)
 
 
 def tick_warnings(display) -> None:
     """The core's warning housekeeping run by hand, then the view's own tick
-    that raises a warning that was due while another page was up."""
+    that raises a status that was due while another page was up."""
     display._apply_source_effects(display.core.expire_warnings())
-    display._tick_due_warning()
+    display._request_due_status()
 
 
 def tick_update_watch(display) -> None:
@@ -704,20 +704,18 @@ def set_eq_optimistic(display, value) -> None:
     display.core.set_eq_override(pairs, expires_at)
 
 
-def close_warning(display, warning_id) -> None:
-    """Put a warning's card away in the view, as a Close does."""
-    display._closed_warnings = display._closed_warnings | {warning_id}
+def tap_card(display, cell) -> None:
+    """A tap on button *cell* of the card on screen, as the touch thread
+    delivers it."""
+    from dial_touch_layout import CARD_BUTTON_ZONES
+    display.card_button_tap(CARD_BUTTON_ZONES[cell])
 
 
-def is_closed(display, warning_id) -> bool:
-    return warning_id in display._closed_warnings
-
-
-def run_warning_action(display, warning_id, action) -> None:
-    """Run a warning page's button action (Close or Restart) as a tap on
-    its cell does."""
-    import dial_display as dd
-    display._run_warning_action(dd._WARNING_BY_ID[warning_id], action)
+def open_warnings_page(display) -> None:
+    """A tap on the bell, folded into the screen."""
+    display.open_warnings()
+    with display._lock:
+        display._repaint_current_locked()
 
 
 # ---------------------------------------------------------------------------

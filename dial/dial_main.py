@@ -425,7 +425,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     from dial_touch_controllers import get_controller
     from dial_touch_drivers import open_driver
     from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
-    from dial_touch_layout import TouchZone, WARNING_ZONES
+    from dial_touch_layout import CARD_BUTTON_ZONES, TouchZone
 
     # Any deliberate contact with the screen proves physical presence — the
     # reveal-then-arm scheme (see dial_touch.py) means a first touch may only
@@ -552,10 +552,10 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         # show — closing back to main also reveals the main screen's volume
         # overlay on return — see display.cycle_pages()); REPEAT_* act on
         # the repeat screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own
-        # bars; IDLE_REPLAY opens the replay picker; IDLE_INFO opens the
-        # idle screen's read-only info page; IDLE_WIFI opens the No-WiFi
-        # page while the link is down; any warning cell (WARNING_ZONES)
-        # goes to the display's warning dispatch; OUTPUTS
+        # bars; IDLE_REPLAY opens the replay picker; IDLE_BELL opens the
+        # warnings card; IDLE_WIFI opens the idle screen's read-only info
+        # page; any card button (CARD_BUTTON_ZONES) goes to the display's
+        # card dispatch; OUTPUTS
         # opens the outputs list; OUTPUT_* act on the per-output detail
         # page; ARTWORK hides the main screen's own bands for a few
         # seconds — see dial_touch.py's SURFACES paragraph for how a press
@@ -590,12 +590,12 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
             display.repeat_stop_tap()
         elif zone == TouchZone.IDLE_REPLAY:
             display.open_picker()
-        elif zone == TouchZone.IDLE_INFO:
-            display.open_info()
+        elif zone == TouchZone.IDLE_BELL:
+            display.open_warnings()
         elif zone == TouchZone.IDLE_WIFI:
-            display.open_nowifi()
-        elif zone in WARNING_ZONES:
-            display.warning_button_tap(zone)
+            display.open_info()
+        elif zone in CARD_BUTTON_ZONES:
+            display.card_button_tap(zone)
         elif zone == TouchZone.OUTPUTS:
             display.open_outputs()
         elif zone == TouchZone.OUTPUT_BACK:
@@ -887,7 +887,7 @@ def main() -> None:
     # The Wi-Fi link poller: its own thread, one loopback read of the local
     # watcher every 15 s (see dial_network.py's module docstring). Feeds the
     # core, which carries the link for the idle screen's status glyph and
-    # the No-WiFi page. The SD card health reader rides the same thread
+    # the No-WiFi warning. The SD card health reader rides the same thread
     # through on_tick, reading its files at most every ten minutes (see
     # dial_sdhealth.py).
     dial_sdhealth.start(on_view=core.on_sd_health_view)

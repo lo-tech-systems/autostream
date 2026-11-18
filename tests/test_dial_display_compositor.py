@@ -64,7 +64,7 @@ from dial_display_compositor import (  # noqa: E402
     Frame,
     GLYPH_CHEVRON,
     GLYPH_CROSS,
-    GLYPH_INFO,
+    GLYPH_BELL,
     GLYPH_MUTE,
     GLYPH_SPEAKER,
     GLYPH_PAGE_DOTS,
@@ -77,15 +77,14 @@ from dial_display_compositor import (  # noqa: E402
     InfoValueView,
     ListState,
     NOT_AUTHORISED_TEXT,
-    NoWifiView,
     OutputViewState,
     PLAY_GLYPH,
     OverlayState,
     RepeatViewState,
     RESTARTING_TEXT,
-    SdHealthView,
     STARTING_TEXT,
     WarningView,
+    BellBadge,
     WIFI_GREY,
     WIFI_OFF,
     WIFI_RED,
@@ -98,7 +97,8 @@ from dial_display_compositor import (  # noqa: E402
     _GLYPH_PAINTERS,
     _GLYPH_RGB,
     _GLYPH_SUPERSAMPLE,
-    _INFO_GLYPH_FRACTION,
+    _BELL_GLYPH_FRACTION,
+    _BELL_RGB,
     _INVERTED_GLYPH_RGB,
     _LIST_BG_RGB,
     OVERLAY_DIM_FACTOR,
@@ -143,10 +143,8 @@ from dial_touch_layout import (  # noqa: E402
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_NONE,
-    GEOMETRY_NOWIFI,
     GEOMETRY_REPEAT,
     GEOMETRY_REPEAT_REPLAY,
-    GEOMETRY_SDHEALTH,
     COMPACT_PICKER_LEFT_FRACTION,
     CompactLayout,
     CompactPickerLayout,
@@ -159,9 +157,7 @@ from dial_touch_layout import (  # noqa: E402
     layout_for,
     list_layout_for,
     metrics_for,
-    nowifi_layout_for,
     repeat_layout_for,
-    sdhealth_layout_for,
     warning_layout_for,
     zone_rects_for,
     zones_for,
@@ -459,25 +455,14 @@ class TestStatelessness:
         second = compositor.compose_info_value(240, 240, view, rotate=False, bgr=False)
         assert list(first.getdata()) == list(second.getdata())
 
-    def test_compose_nowifi_holds_no_attributes_that_change_between_calls(self, compositor):
+    def test_compose_restarting_and_idle_hold_no_attributes_that_change_between_calls(self, compositor):
         before = dict(vars(compositor))
         base = Image.new("RGB", (160, 128), (32, 32, 32))
-        compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=False, bgr=False)
-        compositor.compose_nowifi(None, 240, 240, NoWifiView(pressed=TouchZone.NOWIFI_RESTART),
-                                  rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973))
         compositor.compose_restarting(160, 128, rotate=False, bgr=False)
         compositor.compose_starting(160, 128, rotate=False, bgr=False)
         compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_bars=2, wifi_style=WIFI_RED)
         compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, wifi_style=WIFI_OFF)
-        after = dict(vars(compositor))
-        assert before == after == {}
-
-    def test_compose_sdhealth_holds_no_attributes_that_change_between_calls(self, compositor):
-        before = dict(vars(compositor))
-        base = Image.new("RGB", (160, 128), (32, 32, 32))
-        compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=12), rotate=False, bgr=False)
-        compositor.compose_sdhealth(None, 240, 240, SdHealthView(pressed=TouchZone.SDHEALTH_DISMISS),
-                                    rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973))
+        compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, bell=BellBadge("critical", 3))
         after = dict(vars(compositor))
         assert before == after == {}
 
@@ -486,18 +471,17 @@ class TestStatelessness:
         base = Image.new("RGB", (160, 128), (32, 32, 32))
         compositor.compose_warning(
             base, 160, 128,
-            WarningView(title="One", buttons=("Dismiss",), geometry=GEOMETRY_SDHEALTH),
+            WarningView(title="One", buttons=("Close",)),
             rotate=False, bgr=False,
         )
         compositor.compose_warning(
             None, 240, 240,
-            WarningView(title="Two", buttons=("Dismiss", "Restart"), geometry=GEOMETRY_NOWIFI,
-                        pressed=TouchZone.NOWIFI_RESTART),
+            WarningView(title="Two", buttons=("Close", "Restart"), pressed=1),
             rotate=True, bgr=True, metrics=metrics_for(240, 240, 0.0973),
         )
         compositor.compose_warning(
             base, 320, 240,
-            WarningView(title="Three", message="detail", buttons=("A", "B", "C"), geometry=GEOMETRY_NOWIFI),
+            WarningView(title="Three", message="detail", buttons=("A", "B", "C")),
             rotate=False, bgr=False, metrics=metrics_for(320, 240, 0.1778),
         )
         after = dict(vars(compositor))
@@ -1914,16 +1898,16 @@ class TestComposeIdle:
         yield
         _reset_font_cache()
 
-    def _logo(self):
-        return Image.new("RGB", (160, 128), (32, 32, 32))
+    def _logo(self, size=(160, 128)):
+        return Image.new("RGB", size, (32, 32, 32))
 
-    def test_renders_the_base_plus_the_info_badge_only(self, compositor):
-        # Every idle frame now carries the "i" badge and the Wi-Fi glyph
-        # (both show on the plain logo too, not only the replay-available
-        # one), so the only pixels that ever differ from the plain base are
+    def test_renders_the_base_plus_the_wifi_glyph_and_the_bell_only(self, compositor):
+        # Every idle frame carries the Wi-Fi glyph (on the plain logo too,
+        # not only the replay-available one) and, with a bell given, the
+        # bell, so the only pixels that ever differ from the plain base are
         # the ones inside one of their two boxes.
         base = self._logo()
-        result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, bell=BellBadge("warning", 2))
         idle = idle_layout_for(160, 128)
         info, wifi = idle.info, idle.wifi
         for y in range(128):
@@ -1934,11 +1918,42 @@ class TestComposeIdle:
                     continue
                 assert result.getpixel((x, y)) == base.getpixel((x, y))
 
-    def test_info_badge_drawn_inside_its_own_box(self, compositor):
+    def test_the_bell_is_drawn_inside_its_own_box_only_when_given(self, compositor):
         base = self._logo()
-        result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
         info = idle_layout_for(160, 128).info
-        assert list(result.crop(info).getdata()) != list(base.crop(info).getdata())
+        plain = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        belled = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, bell=BellBadge("warning", 2))
+        assert list(plain.crop(info).getdata()) == list(base.crop(info).getdata())
+        assert list(belled.crop(info).getdata()) != list(base.crop(info).getdata())
+
+    def test_no_bell_is_byte_identical_to_the_frame_without_the_argument(self, compositor):
+        base = self._logo()
+        a = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False, bell=None)
+        b = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
+        assert a.tobytes() == b.tobytes()
+
+    @pytest.mark.parametrize("severity", sorted(_BELL_RGB))
+    def test_the_bell_takes_its_severity_colour(self, compositor, severity):
+        metrics = metrics_for(320, 240, 0.1778)
+        frame = compositor.compose_idle(
+            self._logo((320, 240)), 320, 240, rotate=False, bgr=False, metrics=metrics,
+            bell=BellBadge(severity, 1),
+        )
+        x0, y0, x1, y1 = idle_layout_for(320, 240, metrics=metrics).info
+        side = round(min(x1 - x0, y1 - y0) * _BELL_GLYPH_FRACTION)
+        bx0, by0, _, _ = _centred_box((x0, y0, x1, y1), side)
+        # Inside the bell's body, left of the number, on the dome's straight side.
+        px = frame.getpixel((bx0 + round(side * 7.4 / 24), by0 + round(side * 13.5 / 24)))
+        assert all(abs(a - b) <= 6 for a, b in zip(px, _BELL_RGB[severity]))
+
+    def test_the_bell_carries_its_number_in_white(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        info = idle_layout_for(320, 240, metrics=metrics).info
+        base = self._logo((320, 240))
+        one = compositor.compose_idle(base, 320, 240, rotate=False, bgr=False, metrics=metrics, bell=BellBadge("warning", 1))
+        two = compositor.compose_idle(base, 320, 240, rotate=False, bgr=False, metrics=metrics, bell=BellBadge("warning", 2))
+        assert list(one.crop(info).getdata()) != list(two.crop(info).getdata())
+        assert any(px[0] > 245 and px[1] > 245 and px[2] > 245 for px in one.crop(info).getdata())
 
     def test_wifi_glyph_drawn_inside_its_own_box(self, compositor):
         base = self._logo()
@@ -2098,7 +2113,7 @@ class TestComposeIdleWifi:
         # Nothing at all in the wifi box: the base shows through untouched.
         assert list(off.crop(wifi).getdata()) == list(base.crop(wifi).getdata())
         assert list(grey.crop(wifi).getdata()) != list(base.crop(wifi).getdata())
-        # And the rest of the frame (info badge included) is byte-identical.
+        # And the rest of the frame (the bell included) is byte-identical.
         for y in range(128):
             for x in range(160):
                 if wifi[0] <= x < wifi[2] and wifi[1] <= y < wifi[3]:
@@ -2118,33 +2133,38 @@ class TestComposeIdleWifi:
         assert list(a.getdata()) == list(b.getdata())
 
     def test_off_style_builds_no_wifi_tile(self, compositor):
-        # Off means the painter is never invoked: only the "i" badge's tile
-        # is built (one lru miss), nothing is cached for the wifi corner.
+        # Off means the painter is never invoked: with no bell either no tile
+        # is built at all, and with one only the bell's (one lru miss).
         _reset_render_caches()
         compositor.compose_idle(self._logo(), 160, 128, rotate=False, bgr=False, wifi_style=WIFI_OFF)
+        assert _glyph_tile.cache_info().misses == 0
+        compositor.compose_idle(
+            self._logo(), 160, 128, rotate=False, bgr=False, wifi_style=WIFI_OFF, bell=BellBadge("info", 1))
         assert _glyph_tile.cache_info().misses == 1
 
-    def test_info_badge_disc_radius_is_a_quarter_of_the_zone(self, compositor):
-        # 0.42 * _INFO_GLYPH_FRACTION == 0.25 (to within a pixel at 320x240).
-        assert abs(0.42 * _INFO_GLYPH_FRACTION - 0.25) < 0.01
+    def test_the_bell_fills_most_of_its_zone_and_stays_inside_it(self, compositor):
         metrics = metrics_for(320, 240, 0.1778)
-        frame = compositor.compose_idle(self._logo((320, 240)), 320, 240, rotate=False, bgr=False, metrics=metrics)
+        base = self._logo((320, 240))
+        frame = compositor.compose_idle(
+            base, 320, 240, rotate=False, bgr=False, metrics=metrics, bell=BellBadge("warning", 1))
         x0, y0, x1, y1 = idle_layout_for(320, 240, metrics=metrics).info
-        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-        # The disc's own top edge sits ~11 px above the centre on a 45 px
-        # zone (box 27 px, disc radius 0.42 * 27 = 11.3): 9 px up is inside
-        # the disc and clear of the "i" dot, 14 px up is outside the box.
-        assert frame.getpixel((cx, cy - 9))[0] > 200
-        assert frame.getpixel((cx, cy - 14)) == (32, 32, 32)
+        diff = [
+            (x, y) for y in range(y0, y1) for x in range(x0, x1)
+            if frame.getpixel((x, y)) != base.getpixel((x, y))
+        ]
+        xs, ys = [p[0] for p in diff], [p[1] for p in diff]
+        side = min(x1 - x0, y1 - y0)
+        assert max(ys) - min(ys) >= 0.6 * side and max(xs) - min(xs) >= 0.6 * side
 
 
 # ---------------------------------------------------------------------------
-# compose_nowifi — the No-WiFi page: dimmed base, card off compact,
-# crosshair, press wash.
+# A two-button card (the No WiFi shape): dimmed base, card off compact,
+# crosshair, press wash by cell index.
 # ---------------------------------------------------------------------------
 
-class TestComposeNoWifi:
-    """compose_nowifi(): dimmed base, card off compact, crosshair, press wash."""
+class TestComposeCard:
+    """compose_warning() with two buttons: dimmed base, card off compact,
+    crosshair, press wash."""
 
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
@@ -2155,27 +2175,24 @@ class TestComposeNoWifi:
     def _base(self, size):
         return Image.new("RGB", size, (200, 200, 200))
 
-    def test_rich_card_geometry_is_pinned(self):
-        layout = nowifi_layout_for(320, 240, metrics=metrics_for(320, 240, 0.1778))
-        assert layout.card == (41, 48, 278, 192)
-        assert layout.message == (41, 48, 278, 114)
-        assert layout.dismiss == (41, 126, 153, 192)
-        assert layout.restart == (166, 126, 278, 192)
-        assert (layout.divider_x, layout.divider_y) == (159, 120)
+    def _view(self, **kw):
+        return WarningView(title="No WiFi", buttons=("Restart", "Close"), **kw)
+
+    def _frame(self, compositor, size, view, mm=None, base=True, **kw):
+        metrics = metrics_for(*size, mm) if mm is not None else None
+        return compositor.compose_warning(
+            self._base(size) if base else None, size[0], size[1], view,
+            rotate=kw.get("rotate", False), bgr=kw.get("bgr", False), metrics=metrics)
 
     def test_backdrop_outside_the_card_is_dimmed_base(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        frame = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
-                                          rotate=False, bgr=False, metrics=metrics)
+        frame = self._frame(compositor, (320, 240), self._view(), 0.1778)
         dimmed = round(200 * OVERLAY_DIM_FACTOR)
         for xy in ((2, 2), (317, 2), (2, 237), (20, 120)):
             assert frame.getpixel(xy) == (dimmed, dimmed, dimmed)
 
     def test_card_fill_outline_and_shadow(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        frame = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
-                                          rotate=False, bgr=False, metrics=metrics)
-        card = nowifi_layout_for(320, 240, metrics=metrics).card
+        frame = self._frame(compositor, (320, 240), self._view(), 0.1778)
+        card = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778)).card
         # An interior point away from text/dividers is the flat fill.
         assert frame.getpixel((card[0] + 6, card[1] + 6)) == _CARD_FILL_RGB
         # The outline is a thin translucent white edge on the card's own
@@ -2189,192 +2206,78 @@ class TestComposeNoWifi:
         assert frame.getpixel((card[2] + 1, card[3] - 20))[0] < dimmed
 
     def test_crosshair_horizontal_full_card_width_vertical_bottom_row_only(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        frame = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
-                                          rotate=False, bgr=False, metrics=metrics)
-        l = nowifi_layout_for(320, 240, metrics=metrics)
-        for x in (l.card[0] + 1, l.divider_x, l.card[2] - 2):
+        frame = self._frame(compositor, (320, 240), self._view(), 0.1778)
+        l = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
+        (divider_x,) = l.divider_xs
+        for x in (l.card[0] + 1, divider_x, l.card[2] - 2):
             assert frame.getpixel((x, l.divider_y)) == (255, 255, 255)
-        assert frame.getpixel((l.divider_x, l.dismiss[1] + 5)) == (255, 255, 255)
-        assert frame.getpixel((l.divider_x, l.card[3] - 2)) == (255, 255, 255)
+        assert frame.getpixel((divider_x, l.cells[0][1] + 5)) == (255, 255, 255)
+        assert frame.getpixel((divider_x, l.card[3] - 2)) == (255, 255, 255)
         # No vertical line through the message row (just inside the card fill,
         # clear of the text: sample near the row's top-left).
-        assert frame.getpixel((l.divider_x, l.message[1] + 4)) == _CARD_FILL_RGB
+        assert frame.getpixel((divider_x, l.message[1] + 4)) == _CARD_FILL_RGB
 
-    def test_pressed_dismiss_washes_only_its_cell(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        plain = compositor.compose_nowifi(self._base((320, 240)), 320, 240, NoWifiView(),
-                                          rotate=False, bgr=False, metrics=metrics)
-        pressed = compositor.compose_nowifi(self._base((320, 240)), 320, 240,
-                                            NoWifiView(pressed=TouchZone.NOWIFI_DISMISS),
-                                            rotate=False, bgr=False, metrics=metrics)
-        l = nowifi_layout_for(320, 240, metrics=metrics)
-        p_in = pressed.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3))
-        assert p_in[0] > _CARD_FILL_RGB[0]                 # washed brighter than the fill
-        assert plain.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3)) == _CARD_FILL_RGB
-        assert pressed.getpixel((l.restart[0] + 3, l.restart[1] + 3)) == _CARD_FILL_RGB
+    def test_pressed_cell_washes_only_itself(self, compositor):
+        plain = self._frame(compositor, (320, 240), self._view(), 0.1778)
+        pressed = self._frame(compositor, (320, 240), self._view(pressed=0), 0.1778)
+        l = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
+        first, second = l.cells
+        assert pressed.getpixel((first[0] + 3, first[1] + 3))[0] > _CARD_FILL_RGB[0]
+        assert plain.getpixel((first[0] + 3, first[1] + 3)) == _CARD_FILL_RGB
+        assert pressed.getpixel((second[0] + 3, second[1] + 3)) == _CARD_FILL_RGB
         assert list(pressed.crop(l.message).getdata()) == list(plain.crop(l.message).getdata())
 
-    def test_stale_zone_washes_nothing(self, compositor):
-        a = compositor.compose_nowifi(self._base((160, 128)), 160, 128, NoWifiView(), rotate=False, bgr=False)
-        b = compositor.compose_nowifi(self._base((160, 128)), 160, 128, NoWifiView(pressed=TouchZone.MUTE),
-                                      rotate=False, bgr=False)
+    @pytest.mark.parametrize("stale", [2, 7, -1])
+    def test_a_cell_the_card_does_not_have_washes_nothing(self, compositor, stale):
+        a = self._frame(compositor, (160, 128), self._view())
+        b = self._frame(compositor, (160, 128), self._view(pressed=stale))
         assert list(a.getdata()) == list(b.getdata())
 
     def test_none_base_falls_back_to_chassis(self, compositor):
-        frame = compositor.compose_nowifi(None, 160, 128, NoWifiView(), rotate=False, bgr=False)
+        frame = self._frame(compositor, (160, 128), self._view(), base=False)
         dimmed = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
         assert frame.getpixel((1, 1)) == dimmed
 
     def test_compact_is_full_screen_two_by_two_no_card(self, compositor):
-        metrics = metrics_for(240, 240, 0.0973)
-        frame = compositor.compose_nowifi(self._base((240, 240)), 240, 240, NoWifiView(),
-                                          rotate=False, bgr=False, metrics=metrics)
+        frame = self._frame(compositor, (240, 240), self._view(), 0.0973)
         dimmed = round(200 * OVERLAY_DIM_FACTOR)
         assert frame.getpixel((2, 2)) == (dimmed, dimmed, dimmed)       # no card fill on compact
-        l = nowifi_layout_for(240, 240, metrics=metrics)
-        assert (l.dismiss, l.restart, l.divider_x, l.divider_y) == ((0, 126, 114, 240), (126, 126, 240, 240), 120, 120)
+        l = warning_layout_for(240, 240, buttons=2, metrics=metrics_for(240, 240, 0.0973))
+        assert (l.cells, l.divider_xs, l.divider_y) == (((0, 126, 114, 240), (126, 126, 240, 240)), (120,), 120)
         assert frame.getpixel((5, 120)) == (255, 255, 255)              # horizontal, full width
         assert frame.getpixel((120, 200)) == (255, 255, 255)            # vertical, bottom row
         assert frame.getpixel((120, 8)) == (dimmed, dimmed, dimmed)     # none in the top row
 
-    def test_compact_pressed_restart_washes_its_cell(self, compositor):
-        metrics = metrics_for(240, 240, 0.0973)
-        plain = compositor.compose_nowifi(self._base((240, 240)), 240, 240, NoWifiView(),
-                                          rotate=False, bgr=False, metrics=metrics)
-        pressed = compositor.compose_nowifi(self._base((240, 240)), 240, 240,
-                                            NoWifiView(pressed=TouchZone.NOWIFI_RESTART),
-                                            rotate=False, bgr=False, metrics=metrics)
+    def test_compact_pressed_second_cell_washes_its_cell(self, compositor):
+        plain = self._frame(compositor, (240, 240), self._view(), 0.0973)
+        pressed = self._frame(compositor, (240, 240), self._view(pressed=1), 0.0973)
         assert pressed.getpixel((130, 130))[0] > plain.getpixel((130, 130))[0]
         assert pressed.getpixel((5, 130)) == plain.getpixel((5, 130))
 
+    def test_one_cell_spans_the_whole_row_with_no_vertical_line(self, compositor):
+        view = WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Close",))
+        frame = self._frame(compositor, (320, 240), view, 0.1778)
+        l = warning_layout_for(320, 240, buttons=1, metrics=metrics_for(320, 240, 0.1778))
+        assert l.divider_xs == ()
+        for x in range(l.cells[0][0] + 4, l.cells[0][2] - 4, 7):
+            assert frame.getpixel((x, l.cells[0][3] - 6)) == _CARD_FILL_RGB
+
     def test_rotate_and_bgr_applied(self, compositor):
-        base = self._base((160, 128))
-        plain = compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=False, bgr=False)
-        rotated = compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=True, bgr=False)
+        plain = self._frame(compositor, (160, 128), self._view())
+        rotated = self._frame(compositor, (160, 128), self._view(), rotate=True)
         assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
-        swapped = compositor.compose_nowifi(base, 160, 128, NoWifiView(), rotate=False, bgr=True)
+        swapped = self._frame(compositor, (160, 128), self._view(), bgr=True)
         assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
 
     def test_never_raises_without_a_font(self, compositor):
         with patch("dial_display_compositor._load_font", return_value=None):
-            frame = compositor.compose_nowifi(self._base((160, 128)), 160, 128, NoWifiView(),
-                                              rotate=False, bgr=False)
+            frame = self._frame(compositor, (160, 128), self._view())
         assert frame.size == (160, 128)
 
 
 # ---------------------------------------------------------------------------
-# compose_sdhealth — the SD card warning: the No-WiFi page's own dressing,
-# a fixed title/body over one Dismiss cell, no vertical divider.
-# ---------------------------------------------------------------------------
-
-class TestComposeSdHealth:
-    """compose_sdhealth(): dimmed base, card off compact, one Dismiss cell,
-    press wash, no vertical divider (mirrors TestComposeNoWifi)."""
-
-    @pytest.fixture(autouse=True)
-    def _reset_cache(self):
-        _reset_font_cache()
-        yield
-        _reset_font_cache()
-
-    def _base(self, size):
-        return Image.new("RGB", size, (200, 200, 200))
-
-    def test_backdrop_outside_the_card_is_dimmed_base(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        frame = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
-                                            rotate=False, bgr=False, metrics=metrics)
-        dimmed = round(200 * OVERLAY_DIM_FACTOR)
-        for xy in ((2, 2), (317, 2), (2, 237), (20, 120)):
-            assert frame.getpixel(xy) == (dimmed, dimmed, dimmed)
-
-    def test_card_fill_present_off_compact(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        frame = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
-                                            rotate=False, bgr=False, metrics=metrics)
-        card = sdhealth_layout_for(320, 240, metrics=metrics).card
-        assert frame.getpixel((card[0] + 6, card[1] + 6)) == _CARD_FILL_RGB
-
-    def test_compact_is_full_screen_no_card(self, compositor):
-        metrics = metrics_for(240, 240, 0.0973)
-        frame = compositor.compose_sdhealth(self._base((240, 240)), 240, 240, SdHealthView(percent=15),
-                                            rotate=False, bgr=False, metrics=metrics)
-        dimmed = round(200 * OVERLAY_DIM_FACTOR)
-        assert frame.getpixel((2, 2)) == (dimmed, dimmed, dimmed)   # no card fill on compact
-
-    def test_no_vertical_divider(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        frame = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
-                                            rotate=False, bgr=False, metrics=metrics)
-        l = sdhealth_layout_for(320, 240, metrics=metrics)
-        # The horizontal divider spans the card; no vertical line exists at
-        # any x through the dismiss row (unlike No-WiFi's two-cell split).
-        assert frame.getpixel((l.card[0] + 1, l.divider_y)) == (255, 255, 255)
-        mid_x = (l.dismiss[0] + l.dismiss[2]) // 2
-        assert frame.getpixel((mid_x, l.dismiss[1] + 2)) != (255, 255, 255)
-
-    def test_pressed_dismiss_washes_its_cell(self, compositor):
-        metrics = metrics_for(320, 240, 0.1778)
-        plain = compositor.compose_sdhealth(self._base((320, 240)), 320, 240, SdHealthView(percent=15),
-                                            rotate=False, bgr=False, metrics=metrics)
-        pressed = compositor.compose_sdhealth(
-            self._base((320, 240)), 320, 240,
-            SdHealthView(percent=15, pressed=TouchZone.SDHEALTH_DISMISS),
-            rotate=False, bgr=False, metrics=metrics,
-        )
-        l = sdhealth_layout_for(320, 240, metrics=metrics)
-        p_in = pressed.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3))
-        assert p_in[0] > _CARD_FILL_RGB[0]
-        assert plain.getpixel((l.dismiss[0] + 3, l.dismiss[1] + 3)) == _CARD_FILL_RGB
-
-    def test_foreign_pressed_zone_washes_nothing(self, compositor):
-        a = compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=15),
-                                        rotate=False, bgr=False)
-        b = compositor.compose_sdhealth(self._base((160, 128)), 160, 128,
-                                        SdHealthView(percent=15, pressed=TouchZone.MUTE),
-                                        rotate=False, bgr=False)
-        assert list(a.getdata()) == list(b.getdata())
-
-    def test_none_base_falls_back_to_chassis(self, compositor):
-        frame = compositor.compose_sdhealth(None, 160, 128, SdHealthView(percent=15), rotate=False, bgr=False)
-        dimmed = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
-        assert frame.getpixel((1, 1)) == dimmed
-
-    def test_rotate_and_bgr_applied_last(self, compositor):
-        base = self._base((160, 128))
-        plain = compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=15), rotate=False, bgr=False)
-        rotated = compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=15), rotate=True, bgr=False)
-        assert list(rotated.getdata()) == list(plain.transpose(Image.ROTATE_180).getdata())
-        swapped = compositor.compose_sdhealth(base, 160, 128, SdHealthView(percent=15), rotate=False, bgr=True)
-        assert list(swapped.getdata()) == list(Image.merge("RGB", plain.split()[::-1]).getdata())
-
-    def test_percent_none_uses_the_no_percent_line(self, compositor):
-        with patch("dial_display_compositor._draw_label_centered") as mock_draw:
-            compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=None),
-                                        rotate=False, bgr=False)
-        texts = [call.args[2] for call in mock_draw.call_args_list]
-        assert "Replace Soon" in texts
-        assert not any("%:" in t for t in texts)
-
-    def test_percent_fills_the_body_line(self, compositor):
-        with patch("dial_display_compositor._draw_label_centered") as mock_draw:
-            compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=12),
-                                        rotate=False, bgr=False)
-        texts = [call.args[2] for call in mock_draw.call_args_list]
-        assert "12%: Replace Soon" in texts
-
-    def test_never_raises_without_a_font(self, compositor):
-        with patch("dial_display_compositor._load_font", return_value=None):
-            frame = compositor.compose_sdhealth(self._base((160, 128)), 160, 128, SdHealthView(percent=15),
-                                                rotate=False, bgr=False)
-        assert frame.size == (160, 128)
-
-
-# ---------------------------------------------------------------------------
-# compose_warning: the generic warning page compose_nowifi/compose_sdhealth
-# are now thin adapters over. Byte-identity of the adapters against the
-# generic call is the guard that the generalisation changed no pixel.
+# compose_warning: the generic card: any number of buttons, an optional
+# progress bar and source line.
 # ---------------------------------------------------------------------------
 
 class TestComposeWarning:
@@ -2387,45 +2290,11 @@ class TestComposeWarning:
     def _base(self, size):
         return Image.new("RGB", size, (200, 200, 200))
 
-    @pytest.mark.parametrize("width,height,mm_per_px", [
-        (160, 128, None), (320, 240, 0.1778), (240, 240, 0.0973),
-    ])
-    @pytest.mark.parametrize("pressed", [None, TouchZone.NOWIFI_DISMISS, TouchZone.NOWIFI_RESTART])
-    def test_nowifi_adapter_is_byte_identical_to_the_generic_call(self, compositor, width, height, mm_per_px, pressed):
-        metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else None
-        base = self._base((width, height))
-        adapter = compositor.compose_nowifi(base, width, height, NoWifiView(pressed=pressed),
-                                            rotate=False, bgr=False, metrics=metrics)
-        generic = compositor.compose_warning(
-            base, width, height,
-            WarningView(title="No WiFi", message="", buttons=("Close", "Restart"),
-                        geometry=GEOMETRY_NOWIFI, pressed=pressed),
-            rotate=False, bgr=False, metrics=metrics,
-        )
-        assert list(adapter.getdata()) == list(generic.getdata())
-
-    @pytest.mark.parametrize("width,height,mm_per_px", [
-        (160, 128, None), (320, 240, 0.1778), (240, 240, 0.0973),
-    ])
-    @pytest.mark.parametrize("pressed", [None, TouchZone.SDHEALTH_DISMISS])
-    def test_sdhealth_adapter_is_byte_identical_to_the_generic_call(self, compositor, width, height, mm_per_px, pressed):
-        metrics = metrics_for(width, height, mm_per_px) if mm_per_px is not None else None
-        base = self._base((width, height))
-        adapter = compositor.compose_sdhealth(base, width, height, SdHealthView(percent=15, pressed=pressed),
-                                              rotate=False, bgr=False, metrics=metrics)
-        generic = compositor.compose_warning(
-            base, width, height,
-            WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Close",),
-                        geometry=GEOMETRY_SDHEALTH, pressed=pressed),
-            rotate=False, bgr=False, metrics=metrics,
-        )
-        assert list(adapter.getdata()) == list(generic.getdata())
-
     def test_three_buttons_draw_two_vertical_dividers(self, compositor):
         metrics = metrics_for(320, 240, 0.1778)
         frame = compositor.compose_warning(
             self._base((320, 240)), 320, 240,
-            WarningView(title="Three", buttons=("A", "B", "C"), geometry=GEOMETRY_NOWIFI),
+            WarningView(title="Three", buttons=("A", "B", "C")),
             rotate=False, bgr=False, metrics=metrics,
         )
         layout = warning_layout_for(320, 240, buttons=3, metrics=metrics)
@@ -2437,7 +2306,7 @@ class TestComposeWarning:
         with patch("dial_display_compositor._load_font", return_value=None):
             frame = compositor.compose_warning(
                 self._base((160, 128)), 160, 128,
-                WarningView(title="Hi", buttons=("Dismiss",), geometry=GEOMETRY_SDHEALTH),
+                WarningView(title="Hi", buttons=("Close",)),
                 rotate=False, bgr=False,
             )
         assert frame.size == (160, 128)
@@ -2726,9 +2595,9 @@ class TestMetricsByteEquivalence:
         assert a.tobytes() == b.tobytes()
 
     @pytest.mark.parametrize("size,mm", _METRICS_EQUIVALENCE_CASES)
-    def test_compose_idle_unaffected_outside_the_info_badge(self, compositor, size, mm):
+    def test_compose_idle_unaffected_outside_the_corner_boxes(self, compositor, size, mm):
         # The idle frame's one deliberate density-dependent pixel region is
-        # the "i" badge's own box (its side is 8mm by construction wherever
+        # the corner boxes (their side is 8mm by construction wherever
         # density is known — see dial_touch_layout.IdleLayout.info); every
         # other pixel stays exactly as before regardless of density.
         width, height = size
@@ -2940,28 +2809,39 @@ def _render_cache_corpus(width, height, metrics=None):
         lambda c: c.compose_idle(logo, width, height, rotate=False, bgr=False, metrics=metrics, wifi_style=WIFI_OFF),
     ))
     cases.append((
-        "nowifi",
-        lambda c: c.compose_nowifi(
-            logo, width, height, NoWifiView(), rotate=False, bgr=False, metrics=metrics,
+        "idle_bell",
+        lambda c: c.compose_idle(
+            logo, width, height, rotate=False, bgr=False, metrics=metrics, bell=BellBadge("critical", 12),
         ),
     ))
     cases.append((
-        "nowifi_pressed",
-        lambda c: c.compose_nowifi(
-            logo, width, height, NoWifiView(pressed=TouchZone.NOWIFI_DISMISS),
+        "warning_two",
+        lambda c: c.compose_warning(
+            logo, width, height, WarningView(title="No WiFi", buttons=("Restart", "Close")),
             rotate=False, bgr=False, metrics=metrics,
         ),
     ))
     cases.append((
-        "sdhealth",
-        lambda c: c.compose_sdhealth(
-            logo, width, height, SdHealthView(percent=15), rotate=False, bgr=False, metrics=metrics,
+        "warning_two_pressed",
+        lambda c: c.compose_warning(
+            logo, width, height, WarningView(title="No WiFi", buttons=("Restart", "Close"), pressed=0),
+            rotate=False, bgr=False, metrics=metrics,
         ),
     ))
     cases.append((
-        "sdhealth_pressed",
-        lambda c: c.compose_sdhealth(
-            logo, width, height, SdHealthView(percent=15, pressed=TouchZone.SDHEALTH_DISMISS),
+        "warning_one",
+        lambda c: c.compose_warning(
+            logo, width, height,
+            WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Close",)),
+            rotate=False, bgr=False, metrics=metrics,
+        ),
+    ))
+    cases.append((
+        "warning_three_paged",
+        lambda c: c.compose_warning(
+            logo, width, height,
+            WarningView(title="Stylus wear", message="Over 450 hours", buttons=("Next", "Restart", "Close"),
+                        source="Turntable \u00b7 1 of 2", pressed=2),
             rotate=False, bgr=False, metrics=metrics,
         ),
     ))
@@ -3104,7 +2984,7 @@ class TestPlayGlyphTile:
 
         assert set(_GLYPH_PAINTERS) == {
             GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_PAGE_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
-            GLYPH_SPEAKER, GLYPH_RESTART, GLYPH_STOP, GLYPH_INFO, GLYPH_WIFI,
+            GLYPH_SPEAKER, GLYPH_RESTART, GLYPH_STOP, GLYPH_BELL, GLYPH_WIFI,
         }
 
     def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):
@@ -3117,10 +2997,10 @@ class TestPlayGlyphTile:
             assert pixels[corner][3] == 0
 
 
-class TestInfoGlyph:
-    """GLYPH_INFO: a filled white disc with a dark "i" (dot + stem) cut
-    from it, symmetric about the vertical centre — the idle screen's own
-    information badge."""
+class TestBellGlyph:
+    """GLYPH_BELL: a filled bell in the severity's colour with the number of
+    entries in white, symmetric about the vertical centre outside the
+    number."""
 
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
@@ -3129,50 +3009,51 @@ class TestInfoGlyph:
         _reset_render_caches()
 
     def test_registered_painter(self):
-        assert GLYPH_INFO in _GLYPH_PAINTERS
+        assert GLYPH_BELL in _GLYPH_PAINTERS
 
-    def test_disc_is_opaque_white_with_transparent_corners(self):
+    @pytest.mark.parametrize("severity", sorted(_BELL_RGB))
+    def test_the_body_is_opaque_in_the_severity_colour_with_transparent_corners(self, severity):
         w, h = 60, 60
-        tile = _glyph_tile(GLYPH_INFO, (), w, h, 4)
+        tile = _glyph_tile(GLYPH_BELL, (severity, 1), w, h, 4)
         assert tile.size == (w, h)
         assert tile.mode == "RGBA"
         pixels = tile.load()
         for corner in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
             assert pixels[corner][3] == 0
-        # A point on the disc, away from the "i", is opaque white.
-        edge_of_disc = pixels[w // 2, 2]
-        assert edge_of_disc[3] > 0
-        assert edge_of_disc[:3] == (255, 255, 255)
+        body = pixels[round(w * 7.4 / 24), round(h * 13.5 / 24)]
+        assert body[3] == 255 and body[:3] == _BELL_RGB[severity]
 
-    def test_dot_and_stem_are_dark_inside_the_white_disc(self):
-        w, h = 60, 60
-        tile = _glyph_tile(GLYPH_INFO, (), w, h, 4)
-        pixels = tile.load()
-        cx, cy = w // 2, h // 2
-        # The dot sits above the centre, the stem below it — both cut in a
-        # dark colour, distinct from the disc's own white.
-        dot_pixel = pixels[cx, cy - round(h * 0.16)]
-        stem_pixel = pixels[cx, cy + round(h * 0.15)]
-        assert dot_pixel[:3] != (255, 255, 255)
-        assert stem_pixel[:3] != (255, 255, 255)
+    def test_an_informational_bell_takes_the_accent_colour(self):
+        tile = _glyph_tile(GLYPH_BELL, ("info", 1), 60, 60, 4)
+        body = tile.load()[round(60 * 7.4 / 24), round(60 * 13.5 / 24)]
+        assert body[:3] not in set(_BELL_RGB.values()) and body[3] == 255
 
-    def test_symmetric_about_the_vertical_centre(self):
+    def test_the_number_is_white_inside_the_body(self):
+        tile = _glyph_tile(GLYPH_BELL, ("warning", 8), 60, 60, 4)
+        assert any(px[:3] == (255, 255, 255) and px[3] == 255 for px in tile.getdata())
+
+    def test_a_count_above_nine_is_drawn_as_nine_plus(self):
+        assert _glyph_tile(GLYPH_BELL, ("warning", 10), 60, 60, 4).tobytes() == \
+            _glyph_tile(GLYPH_BELL, ("warning", 99), 60, 60, 4).tobytes()
+        assert _glyph_tile(GLYPH_BELL, ("warning", 9), 60, 60, 4).tobytes() != \
+            _glyph_tile(GLYPH_BELL, ("warning", 10), 60, 60, 4).tobytes()
+
+    def test_symmetric_about_the_vertical_centre_outside_the_number(self):
         w, h = 61, 61
-        tile = _glyph_tile(GLYPH_INFO, (), w, h, 4)
+        tile = _glyph_tile(GLYPH_BELL, ("warning", 1), w, h, 4)
         pixels = tile.load()
-        for y in range(0, h, 5):
-            for dx in range(0, w // 2, 5):
-                left = pixels[dx, y]
-                right = pixels[w - 1 - dx, y]
-                assert left == right
+        # Rows above and below the number's box (6.4..17.0 of 24).
+        for y in list(range(0, round(h * 6 / 24), 3)) + list(range(round(h * 17.5 / 24), h, 3)):
+            for dx in range(0, w // 2, 4):
+                assert abs(pixels[dx, y][3] - pixels[w - 1 - dx, y][3]) <= 8
 
-    def test_one_tile_per_size_in_the_cache(self):
+    def test_one_tile_per_size_and_params_in_the_cache(self):
         _glyph_tile.cache_clear()
-        _glyph_tile(GLYPH_INFO, (), 30, 30, 4)
-        _glyph_tile(GLYPH_INFO, (), 30, 30, 4)
+        _glyph_tile(GLYPH_BELL, ("warning", 2), 30, 30, 4)
+        _glyph_tile(GLYPH_BELL, ("warning", 2), 30, 30, 4)
+        _glyph_tile(GLYPH_BELL, ("critical", 2), 30, 30, 4)
         info = _glyph_tile.cache_info()
-        assert info.hits == 1
-        assert info.misses == 1
+        assert (info.hits, info.misses) == (1, 2)
 
 
 class TestRailFooterRendering:
@@ -6414,7 +6295,9 @@ def _reference_body_warning(img, metrics, body):
     else:
         dcm._draw_label_centered(draw, layout.message, body.title, readout_font)
     for rect, label in zip(layout.cells, body.buttons):
-        dcm._draw_label_centered(draw, rect, label, body_font)
+        # A label too wide for its cell steps down in size (see _cell_label_font).
+        font = dcm._cell_label_font(draw, label, rect[2] - rect[0] - 2 * metrics.pad, metrics)
+        dcm._draw_label_centered(draw, rect, label, font)
     w = metrics.divider_w
     cx0, cy0, cx1, cy1 = layout.card
     draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=dcm._DIVIDER_RGB, width=w)
@@ -6436,7 +6319,7 @@ class TestWarningGenericBody:
 
     @pytest.mark.parametrize("width,height", sorted(_WARNING_MM_PER_PX))
     @pytest.mark.parametrize("pressed", [False, True])
-    def test_existing_nowifi_and_sd_frames_match_the_pre_change_renderer(self, compositor, width, height, pressed):
+    def test_existing_warning_frames_match_the_reference_renderer(self, compositor, width, height, pressed):
         import dial_display_compositor as dcm
         from dial_display import WARNING_DESCRIPTORS
         mm = _WARNING_MM_PER_PX[(width, height)]
@@ -6446,11 +6329,10 @@ class TestWarningGenericBody:
             # Every shipped row leaves the generic fields at their defaults.
             assert desc.title_for is None and desc.progress_for is None
             severity = 15 if desc.message_for is not None else None
-            zone = desc.buttons[-1].zone if pressed else None
             view = WarningView(
                 title=desc.title,
                 message=desc.message_for(severity) if desc.message_for is not None else "",
-                buttons=tuple(b.label for b in desc.buttons), geometry=desc.geometry, pressed=zone,
+                buttons=tuple(b.label for b in desc.buttons), pressed=len(desc.buttons) - 1 if pressed else None,
             )
             current = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
             with patch.dict(dcm._BODY_RENDERERS, {dcm.BODY_WARNING: _reference_body_warning}):
@@ -6473,15 +6355,15 @@ class TestWarningGenericBody:
         zone = (my1 - my0) // 4
         bar_cy = my1 - zone // 2
         x0, x1 = mx0 + metrics.pad, mx1 - metrics.pad
-        plain = self._compose(compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE), mm_per_px)
+        plain = self._compose(compositor, width, height, WarningView(title="Up"), mm_per_px)
         half = self._compose(
-            compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=50), mm_per_px,
+            compositor, width, height, WarningView(title="Up", percent=50), mm_per_px,
         )
         full = self._compose(
-            compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=100), mm_per_px,
+            compositor, width, height, WarningView(title="Up", percent=100), mm_per_px,
         )
         empty = self._compose(
-            compositor, width, height, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=0), mm_per_px,
+            compositor, width, height, WarningView(title="Up", percent=0), mm_per_px,
         )
         mid = (x0 + x1) // 2
         left, right = x0 + 2, x1 - 3
@@ -6497,15 +6379,15 @@ class TestWarningGenericBody:
         assert half.getpixel((x0 - 2, bar_cy)) == plain.getpixel((x0 - 2, bar_cy))
 
     def test_progress_percent_is_clamped(self, compositor):
-        over = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=250))
-        full = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=100))
-        under = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=-5))
-        empty = self._compose(compositor, 160, 128, WarningView(title="Up", geometry=GEOMETRY_NONE, percent=0))
+        over = self._compose(compositor, 160, 128, WarningView(title="Up", percent=250))
+        full = self._compose(compositor, 160, 128, WarningView(title="Up", percent=100))
+        under = self._compose(compositor, 160, 128, WarningView(title="Up", percent=-5))
+        empty = self._compose(compositor, 160, 128, WarningView(title="Up", percent=0))
         assert list(over.getdata()) == list(full.getdata())
         assert list(under.getdata()) == list(empty.getdata())
 
     def test_progress_bar_moves_the_message_line_up(self, compositor):
-        view = dict(title="Updating...", message="Downloading", geometry=GEOMETRY_NONE)
+        view = dict(title="Updating...", message="Downloading")
         with_bar = self._compose(compositor, 320, 240, WarningView(percent=40, **view), 0.1778)
         without = self._compose(compositor, 320, 240, WarningView(**view), 0.1778)
         layout = warning_layout_for(320, 240, buttons=0, metrics=metrics_for(320, 240, 0.1778))
@@ -6528,19 +6410,19 @@ class TestWarningGenericBody:
         layout = warning_layout_for(width, height, buttons=0, metrics=metrics)
         frame = self._compose(
             compositor, width, height,
-            WarningView(title="Updating...", message="", buttons=(), geometry=GEOMETRY_NONE), mm_per_px,
+            WarningView(title="Updating...", message="", buttons=()), mm_per_px,
         )
         cx0, cy0, cx1, cy1 = layout.card
-        # Probe the places the old divider and cell split would sit.
-        n = nowifi_layout_for(width, height, metrics=metrics)
+        # Probe the places a two-button card's divider and cell split would sit.
+        two = warning_layout_for(width, height, buttons=2, metrics=metrics)
         for x in list(range(cx0 + 1, cx0 + 8)) + list(range(cx1 - 9, cx1 - 1)):
-            assert frame.getpixel((x, n.divider_y)) != (255, 255, 255)
-        assert frame.getpixel((n.divider_x, n.dismiss[3] - 4)) != (255, 255, 255)
+            assert frame.getpixel((x, two.divider_y)) != (255, 255, 255)
+        assert frame.getpixel((two.divider_xs[0], two.cells[0][3] - 4)) != (255, 255, 255)
 
     def test_no_buttons_with_a_font_failure_still_returns_a_frame(self, compositor):
         with patch("dial_display_compositor._load_font", return_value=None):
             frame = self._compose(
-                compositor, 160, 128, WarningView(title="Hi", geometry=GEOMETRY_NONE, percent=30),
+                compositor, 160, 128, WarningView(title="Hi", percent=30),
             )
         assert frame.size == (160, 128)
 
@@ -6576,7 +6458,7 @@ def _fit_plan(tier, source, title, message):
     width, height, mm = _APPLIANCE_TIERS[tier]
     metrics = metrics_for(width, height, mm)
     rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
-    body = Body(BODY_WARNING, title=title, line=message, buttons=("Dismiss",), source=source)
+    body = Body(BODY_WARNING, title=title, line=message, buttons=("Close",), source=source)
     draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
     return draw, rect, metrics, _plan_warning_text(draw, rect, body, metrics)
 
@@ -6643,7 +6525,7 @@ class TestApplianceWarningText:
         width, height, mm = _APPLIANCE_TIERS[tier]
         metrics = metrics_for(width, height, mm)
         rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
-        view = WarningView(title=texts[1], message=texts[2], buttons=("Dismiss",), source=texts[0])
+        view = WarningView(title=texts[1], message=texts[2], buttons=("Close",), source=texts[0])
         base = Image.new("RGB", (width, height), (0, 0, 0))
         with_text = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
         with patch.object(dcm, "_plan_warning_text", return_value=[]):
@@ -6663,7 +6545,7 @@ class TestApplianceWarningText:
     def test_the_source_changes_the_frame_and_no_source_leaves_it_as_before(self, compositor, tier):
         width, height, mm = _APPLIANCE_TIERS[tier]
         metrics = metrics_for(width, height, mm)
-        view = WarningView(title="Power supply", buttons=("Dismiss",))
+        view = WarningView(title="Power supply", buttons=("Close",))
         base = Image.new("RGB", (width, height), (0, 0, 0))
         plain = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
         sourced = compositor.compose_warning(
@@ -6675,7 +6557,7 @@ class TestApplianceWarningText:
     def test_a_font_failure_draws_no_text_and_still_returns_a_frame(self, compositor):
         with patch("dial_display_compositor._load_font", return_value=None):
             frame = compositor.compose_warning(
-                None, 160, 128, WarningView(title="Hi", buttons=("Dismiss",), source="Lounge"),
+                None, 160, 128, WarningView(title="Hi", buttons=("Close",), source="Lounge"),
                 rotate=False, bgr=False,
             )
         assert frame.size == (160, 128)
