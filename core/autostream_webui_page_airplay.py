@@ -400,6 +400,7 @@ def send_airplay_page(
         + static.script_tag("page/home_cards.js")
         + static.script_tag("page/appliance_selector.js")
         + static.script_tag("page/info_modal.js")
+        + static.script_tag("page/start_failure.js")
         + static.script_tag("page/home.js")
     )
     _body_prefix = """
@@ -653,6 +654,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         + static.script_tag("page/home_cards.js")
         + static.script_tag("page/appliance_selector.js")
         + static.script_tag("page/info_modal.js")
+        + static.script_tag("page/start_failure.js")
         + static.script_tag("page/remote_home.js")
     )
 

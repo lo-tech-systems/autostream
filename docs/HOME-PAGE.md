@@ -66,6 +66,9 @@ dialog asks you to wait a few seconds. If an HD dial asked for the speaker, the 
 the keypad and this page waits for it. On an appliance running an older version the code is
 accepted but the speaker stays off; switch it on again and it plays.
 
+If a speaker does not start, a **Could not start** dialog names it and gives the likely
+reason. Another appliance's Home page shows the same dialog for a speaker on that appliance.
+
 ### "In Use by \<name\>"
 
 If another autostream appliance on the network is actively streaming to an output you have not selected

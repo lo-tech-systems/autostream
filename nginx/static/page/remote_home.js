@@ -9,6 +9,7 @@ window.__POLL_URL = pageData.poll_url;
 function renderHomeState(data){
   renderNowPlayingCard(data);
   updateRepeatButton(data);
+  try{maybeShowStartFailure(data.start_failure,{storageKey:'autostream.startFailureSeen:'+window.__REMOTE_AID,ownRequester:null});}catch(e){}
   var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
   if(Array.isArray(data.outputs)){
     var outputs=data.outputs;
