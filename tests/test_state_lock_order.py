@@ -522,7 +522,8 @@ def test_the_settings_cache_parses_outside_its_lock(tracked_singleton, tmp_path,
 def _watch_authority_calls(a, monkeypatch, held):
     """Record what the calling thread holds at the entry of each authority
     call the policy makes."""
-    for name in ("mute", "mute_all", "unmute", "unmute_joined", "deselect", "deselect_all", "unit_marks"):
+    for name in ("mute", "mute_all", "unmute", "unmute_joined", "deselect", "deselect_all", "deselect_others",
+                 "hold", "resume", "unit_marks"):
         real = getattr(a, name)
 
         def watched(*args, _real=real, _name=name, **kwargs):
@@ -553,7 +554,9 @@ def test_a_receiver_pause_and_play_break_no_rule(authority, monkeypatch, scope):
     a.step(now=200.0)
     a.note_session(False)
     a.step(now=201.0)
-    assert {name for name, _ in held} >= {"mute" if scope == "output" else "mute_all" if scope == "all" else "deselect_all"}
+    # These rows cannot be held, so the speaker is muted instead
+    assert {name for name, _ in held} >= {"hold", "mute"} | (
+        {"mute_all"} if scope == "all" else {"deselect_others"} if scope == "off_all" else set())
     assert all(h == frozenset() for _, h in held)
     assert lockcheck.ORDER_VIOLATIONS == []
     assert lockcheck.ACQUIRED_UNDER_STORE == []

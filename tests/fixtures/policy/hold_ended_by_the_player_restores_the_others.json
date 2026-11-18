@@ -1,0 +1,126 @@
+{
+ "outputs": [
+  {
+   "id": "1001",
+   "name": "Speaker A",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 40,
+   "session": {
+    "state": "streaming",
+    "failure": "none",
+    "holdable": true
+   },
+   "has_homepods": false
+  },
+  {
+   "id": "1002",
+   "name": "Speaker B",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 30,
+   "session": {
+    "state": "streaming",
+    "failure": "none",
+    "holdable": true
+   },
+   "has_homepods": false
+  }
+ ],
+ "settings": {
+  "device_pause_scope": "all"
+ },
+ "session": true,
+ "steps": [
+  {
+   "at": 0,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "paus",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  },
+  {
+   "at": 10,
+   "outputs": [
+    {
+     "id": "1001",
+     "name": "Speaker A",
+     "type": "AirPlay 2",
+     "selected": true,
+     "volume": 40,
+     "session": {
+      "state": "streaming",
+      "failure": "none",
+      "holdable": true
+     },
+     "has_homepods": false
+    },
+    {
+     "id": "1002",
+     "name": "Speaker B",
+     "type": "AirPlay 2",
+     "selected": true,
+     "volume": 0,
+     "session": {
+      "state": "streaming",
+      "failure": "none",
+      "holdable": true
+     },
+     "has_homepods": false
+    }
+   ]
+  }
+ ],
+ "expect": {
+  "writes": [
+   [
+    "set_output_hold",
+    "1001",
+    true
+   ],
+   [
+    "update_output",
+    "1002",
+    {
+     "volume_percent": 0
+    }
+   ],
+   [
+    "update_output",
+    "1002",
+    {
+     "volume_percent": 30
+    }
+   ]
+  ],
+  "units": {
+   "1001": {
+    "selected": true,
+    "muted": false,
+    "volume": 40,
+    "held": false
+   },
+   "1002": {
+    "selected": true,
+    "muted": false,
+    "volume": 30,
+    "held": false
+   }
+  },
+  "silence_chosen": false,
+  "paused": [],
+  "log": [
+   "receiver pause from Speaker A (1001): Speaker A held; Speaker B muted",
+   "hold of Speaker A ended by the player: Speaker B restored"
+  ]
+ }
+}

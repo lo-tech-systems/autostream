@@ -18,15 +18,16 @@ from webui.browser.setup import context
 
 
 _DEVICE_PAUSE_OPTIONS = (
-    ("output", "Mute that speaker"),
-    ("all", "Mute all playing speakers"),
-    ("off_all", "Turn off all speakers"),
+    ("output", "Only that speaker pauses"),
+    ("all", "Mute the other speakers too"),
+    ("off_all", "Turn the other speakers off too"),
 )
 _DEVICE_PAUSE_HELP = (
-    "Applies to Pause on a HomePod or on an Apple TV remote. Play on the same "
-    "speaker undoes the mute. A stereo pair, or an Apple TV with its HomePods, "
-    "counts as one speaker. \"Turn off all speakers\" keeps them off until you "
-    "turn one on again."
+    "Applies to Pause on a HomePod or on an Apple TV remote. That speaker always "
+    "pauses, and Play on it starts it again and unmutes the others. Switching it "
+    "off and on again also starts it. A stereo pair, or an Apple TV with its "
+    "HomePods, counts as one speaker. Speakers turned off stay off until you turn "
+    "them on again."
 )
 _DEVICE_PAUSE_NEEDS_VERSION = (
     "Needs owntone-mini 1.6 or above. The connected player handles Pause on its own."
@@ -74,21 +75,17 @@ def _device_pause_row_html(parsed, outputs_part) -> str:
         for value, label in _DEVICE_PAUSE_OPTIONS
     )
     off_text = html.escape(
-        "Speakers that Pause muted are turned off if Pause lasts longer than "
+        "A paused speaker, and any speakers its Pause muted, are turned off if Pause lasts longer than "
         + _pause_off_duration_text(parsed.outputs.pause_off_seconds) + "."
     )
     if unavailable:
         help_html = html.escape(unavailable)
     else:
-        shown = " " + off_text if scope in ("output", "all") else ""
-        help_html = (
-            html.escape(_DEVICE_PAUSE_HELP)
-            + f'<span id="device_pause_off_note" data-text="{off_text}">{shown}</span>'
-        )
+        help_html = html.escape(_DEVICE_PAUSE_HELP) + f'<span id="device_pause_off_note"> {off_text}</span>'
     return f"""
           <div class="setup-customise-row" style="margin-top:0.75rem;">
             <label style="margin:0;flex:1;">When Pause is pressed on a speaker
-              <select id="device_pause_scope"{' disabled' if unavailable else ''} onchange="var n=document.getElementById('device_pause_off_note'); if(n) n.textContent = (this.value === 'output' || this.value === 'all') ? ' ' + n.getAttribute('data-text') : ''; settingsSaveField('outputs.device_pause_scope', this.value);">
+              <select id="device_pause_scope"{' disabled' if unavailable else ''} onchange="settingsSaveField('outputs.device_pause_scope', this.value);">
                 {options}
               </select>
             </label>

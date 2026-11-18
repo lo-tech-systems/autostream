@@ -8,7 +8,8 @@
    "volume": 40,
    "session": {
     "state": "streaming",
-    "failure": "none"
+    "failure": "none",
+    "holdable": true
    },
    "has_homepods": false
   },
@@ -20,7 +21,8 @@
    "volume": 30,
    "session": {
     "state": "streaming",
-    "failure": "none"
+    "failure": "none",
+    "holdable": true
    },
    "has_homepods": false
   }
@@ -98,11 +100,9 @@
  "expect": {
   "writes": [
    [
-    "update_output",
+    "set_output_hold",
     "1001",
-    {
-     "volume_percent": 0
-    }
+    true
    ],
    [
     "update_output",
@@ -112,11 +112,33 @@
     }
    ],
    [
+    "set_output_hold",
+    "1002",
+    true
+   ],
+   [
+    "update_output",
+    "1001",
+    {
+     "volume_percent": 0
+    }
+   ],
+   [
+    "set_output_hold",
+    "1002",
+    false
+   ],
+   [
     "update_output",
     "1001",
     {
      "volume_percent": 40
     }
+   ],
+   [
+    "set_output_hold",
+    "1001",
+    false
    ],
    [
     "update_output",
@@ -130,21 +152,23 @@
    "1001": {
     "selected": true,
     "muted": false,
-    "volume": 40
+    "volume": 40,
+    "held": false
    },
    "1002": {
     "selected": true,
     "muted": false,
-    "volume": 30
+    "volume": 30,
+    "held": false
    }
   },
   "silence_chosen": false,
   "paused": [],
   "log": [
-   "receiver pause from Speaker A (1001): Speaker A, Speaker B muted",
-   "receiver pause from Speaker B (1002): nothing muted",
-   "receiver play from Speaker B: nothing restored",
-   "receiver play from Speaker A: Speaker A, Speaker B restored"
+   "receiver pause from Speaker A (1001): Speaker A held; Speaker B muted",
+   "receiver pause from Speaker B (1002): Speaker B held; Speaker A muted",
+   "receiver play from Speaker B: hold ended, Speaker A restored",
+   "receiver play from Speaker A: hold ended, Speaker B restored"
   ]
  }
 }

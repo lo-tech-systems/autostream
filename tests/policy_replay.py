@@ -16,7 +16,8 @@ do. A scenario is a JSON file in tests/fixtures/policy:
 Step keys: "line" (an event channel message, parsed as production does and
 delivered to the authority), "outputs" (replace the player's rows),
 "user" ([intent name, arguments], submitted as the user), "session" (false
-ends the session), "tick" (a worker step with nothing new). Every step runs a
+ends the session), "tick" (a worker step with nothing new). A row whose
+session has "holdable": true is held when asked; any other is refused. Every step runs a
 worker step at its time and then a read of the player. Times are seconds from
 the start.
 """
@@ -34,6 +35,7 @@ import autostream_runtime as runtime
 from autostream_backend_events import parse_event
 from autostream_intents.table import Intent, submit
 from autostream_owntone_mini import OwnToneMiniBackend
+from autostream_players import ActionResult
 from autostream_settings import SettingsStore
 from autostream_state import Origin, store
 from autostream_state.outputs import get_authority
@@ -81,6 +83,9 @@ class PlayerModel(FakeBackend):
                 continue
             if "enabled" in fields:
                 r["selected"] = bool(fields["enabled"])
+                if not fields["enabled"] and isinstance(r.get("session"), dict):
+                    # Switching a speaker off ends its session, and its hold
+                    r["session"] = dict(r["session"], held=False)
             if fields.get("volume_percent") is not None:
                 r["volume"] = fields["volume_percent"]
         self.rows = _rows(self.raw)
@@ -92,6 +97,20 @@ class PlayerModel(FakeBackend):
         self.rows = _rows(self.raw)
         return result
 
+    def set_output_hold(self, output_id, held, timeout):
+        """A row whose session says it can be held is held; any other is
+        refused, as the player refuses it."""
+        self._record("set_output_hold", output_id, held, timeout=timeout)
+        for r in self.raw:
+            if r["id"] != output_id:
+                continue
+            session = r.get("session")
+            if not (isinstance(session, dict) and session.get("holdable")):
+                return ActionResult(ok=False, error="not holdable", error_code="not_holdable")
+            r["session"] = dict(session, held=bool(held))
+        self.rows = _rows(self.raw)
+        return ActionResult(ok=True)
+
 
 def _writes(fb: FakeBackend) -> list:
     out = []
@@ -101,6 +120,8 @@ def _writes(fb: FakeBackend) -> list:
             out.append([name, args[0], fields])
         elif name == "set_selected_outputs":
             out.append([name, list(args[0])])
+        elif name == "set_output_hold":
+            out.append([name, args[0], args[1]])
         else:
             out.append([name])
     return out
@@ -165,7 +186,7 @@ def replay(name: str, tmp_path, monkeypatch) -> SimpleNamespace:
         scenario=scenario,
         writes=_writes(fb),
         units={
-            u.id: {"selected": u.selected, "muted": u.muted, "volume": u.volume}
+            u.id: {"selected": u.selected, "muted": u.muted, "volume": u.volume, "held": u.held}
             for u in snap.units
         },
         silence_chosen=snap.silence_chosen,
@@ -182,6 +203,10 @@ def matches(expected: list, actual: list) -> bool:
     for want, got in zip(expected, actual):
         if want[:2] != got[:2]:
             return False
-        if len(want) > 2 and any(got[2].get(k) != v for k, v in want[2].items()):
-            return False
+        if len(want) > 2:
+            if isinstance(want[2], dict):
+                if any(got[2].get(k) != v for k, v in want[2].items()):
+                    return False
+            elif want[2:] != got[2:]:
+                return False
     return True

@@ -1410,8 +1410,8 @@ class OutputAuthority:
         return Applied(version=store().snapshot().version, outcome=batch.future)
 
     def note_session(self, active: bool) -> None:
-        """Session edges. A session end clears the user's "silence" choice and
-        the retry back-offs of speakers that failed to start."""
+        """Session edges. A session end clears the user's "silence" choice,
+        the retry back-offs of speakers that failed to start, and every hold."""
         self._touched = True
         with self._lock:
             self._session_active = bool(active)
@@ -1423,9 +1423,15 @@ class OutputAuthority:
                     u.group_hold_backoff = RETRY_MIN_S
                     u.retry_n = 0
                     u.retry_at = None
-                    u.desired.held = False
+                    if u.desired.held:
+                        # The player is told too, or it would hold the
+                        # speaker into the next session
+                        u.desired.held = False
+                        u.hold_write_at = self._clock()
+                        self._enqueue(_Write("hold", u.id, u.desired_seq, {}, []))
             pending = self._publish_locked(Origin.SESSION, None)
         pending.notify()
+        self._after_intent()
 
     def device_volume_seen(self, unit_id: str, *, single: bool = True) -> None:
         """A volume was set on the speaker itself: a mute on it ends at once

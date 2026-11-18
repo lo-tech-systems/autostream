@@ -689,10 +689,11 @@ class TestPlaybackPanelCardSplit:
 # ---------------------------------------------------------------------------
 
 class TestDevicePauseChoice:
-    LABELS = ("Mute that speaker", "Mute all playing speakers", "Turn off all speakers")
+    LABELS = ("Only that speaker pauses", "Mute the other speakers too", "Turn the other speakers off too")
     HELP = (
-        "Applies to Pause on a HomePod or on an Apple TV remote. Play on the same speaker "
-        "undoes the mute. A stereo pair, or an Apple TV with its HomePods, counts as one speaker."
+        "Applies to Pause on a HomePod or on an Apple TV remote. That speaker always pauses, "
+        "and Play on it starts it again and unmutes the others. Switching it off and on again "
+        "also starts it. A stereo pair, or an Apple TV with its HomePods, counts as one speaker."
     )
 
     @staticmethod
@@ -764,15 +765,11 @@ class TestDevicePauseChoice:
                 "Pause on a speaker does nothing until it is.") in html.replace("&#x27;", "'")
         assert "Needs owntone-mini 1.6" not in html
 
-    @pytest.mark.parametrize("scope", ["off_all"])
-    def test_the_timeout_sentence_is_absent_when_nothing_is_left_to_time(self, scope):
-        assert self._note(self._card(scope)).endswith(">")
-        assert "Pause lasts longer" not in self._note(self._card(scope)).split(">", 1)[1]
-
-    @pytest.mark.parametrize("scope", ["output", "all"])
-    def test_the_timeout_sentence_is_shown_for_the_two_mute_choices(self, scope):
+    @pytest.mark.parametrize("scope", ["output", "all", "off_all"])
+    def test_the_timeout_sentence_is_shown_for_every_choice(self, scope):
         shown = self._note(self._card(scope)).split(">", 1)[1]
-        assert shown == " Speakers that Pause muted are turned off if Pause lasts longer than 5 minutes."
+        assert shown == (" A paused speaker, and any speakers its Pause muted, are turned off "
+                         "if Pause lasts longer than 5 minutes.")
 
     @pytest.mark.parametrize("seconds,words", [
         (30, "30 seconds"), (45, "45 seconds"), (60, "1 minute"), (120, "2 minutes"),
@@ -781,10 +778,9 @@ class TestDevicePauseChoice:
     def test_the_timeout_is_said_as_people_say_it(self, seconds, words):
         assert f"longer than {words}." in self._note(self._card("all", seconds))
 
-    def test_changing_the_choice_shows_or_hides_the_sentence(self):
+    def test_changing_the_choice_only_saves_it(self):
         sel = self._select(self._card())
-        assert "(this.value === 'output' || this.value === 'all') ? ' ' +" in sel
-        assert "getAttribute('data-text')" in sel
+        assert "device_pause_off_note" not in sel
 
     def test_the_card_text_is_latin_1(self):
         self._card("all").encode("latin-1")

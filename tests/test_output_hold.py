@@ -104,13 +104,14 @@ class TestWhatEndsAHold:
         w.a.select("1", Origin.USER)
         assert not snap().unit("1").held
 
-    def test_the_session_end_ends_it(self, w):
+    def test_the_session_end_ends_it_on_the_player_too(self, w):
         merge(w, [playing(1)])
         w.a.note_session(True)
         w.a.hold("1", Origin.DEVICE)
         w.a.note_session(False)
         w.a.step(now=w.t[0])
         assert not snap().unit("1").held
+        assert [c[1] for c in hold_calls(w)] == [("1", True), ("1", False)]
 
     def test_a_restart_of_the_speaker_ends_it(self, w):
         merge(w, [playing(1)])

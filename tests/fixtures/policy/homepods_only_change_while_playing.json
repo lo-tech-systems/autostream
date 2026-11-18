@@ -6,22 +6,61 @@
    "type": "AirPlay 2",
    "selected": true,
    "volume": 40,
-   "session": {"state": "streaming", "failure": "none"},
+   "session": {
+    "state": "streaming",
+    "failure": "none",
+    "holdable": true
+   },
    "has_homepods": true
   }
  ],
- "owntone": {"include_tv": {"1020": false}},
+ "owntone": {
+  "include_tv": {
+   "1020": false
+  }
+ },
  "session": true,
  "steps": [
-  {"at": 1, "user": ["backend.setting.set", {"setting": "output_include_tv", "value": true, "output_id": "1020"}]}
+  {
+   "at": 1,
+   "user": [
+    "backend.setting.set",
+    {
+     "setting": "output_include_tv",
+     "value": true,
+     "output_id": "1020"
+    }
+   ]
+  }
  ],
  "expect": {
   "writes": [
-   ["update_output", "1020", {"enabled": false}],
-   ["update_output", "1020", {"enabled": true, "include_tv": true}]
+   [
+    "update_output",
+    "1020",
+    {
+     "enabled": false
+    }
+   ],
+   [
+    "update_output",
+    "1020",
+    {
+     "enabled": true,
+     "volume_percent": 40,
+     "offset_ms": null,
+     "mode": null,
+     "include_tv": true
+    }
+   ]
   ],
   "units": {
-   "1020": {"selected": true, "muted": false, "volume": 40}
+   "1020": {
+    "selected": true,
+    "muted": false,
+    "volume": 40,
+    "held": false
+   }
   },
   "silence_chosen": false,
   "paused": [],

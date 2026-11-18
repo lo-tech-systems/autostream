@@ -8,7 +8,8 @@
    "volume": 40,
    "session": {
     "state": "streaming",
-    "failure": "none"
+    "failure": "none",
+    "holdable": true
    },
    "has_homepods": false
   },
@@ -20,7 +21,8 @@
    "volume": 30,
    "session": {
     "state": "streaming",
-    "failure": "none"
+    "failure": "none",
+    "holdable": true
    },
    "has_homepods": false
   }
@@ -53,12 +55,14 @@
    "1001": {
     "selected": true,
     "muted": false,
-    "volume": 40
+    "volume": 40,
+    "held": false
    },
    "1002": {
     "selected": true,
     "muted": false,
-    "volume": 30
+    "volume": 30,
+    "held": false
    }
   },
   "silence_chosen": false,

@@ -8,7 +8,8 @@
    "volume": 40,
    "session": {
     "state": "streaming",
-    "failure": "none"
+    "failure": "none",
+    "holdable": true
    },
    "has_homepods": false
   },
@@ -20,7 +21,8 @@
    "volume": 30,
    "session": {
     "state": "streaming",
-    "failure": "none"
+    "failure": "none",
+    "holdable": true
    },
    "has_homepods": false
   }
@@ -76,11 +78,9 @@
  "expect": {
   "writes": [
    [
-    "update_output",
+    "set_output_hold",
     "1001",
-    {
-     "volume_percent": 0
-    }
+    true
    ],
    [
     "update_output",
@@ -88,25 +88,39 @@
     {
      "volume_percent": 0
     }
+   ],
+   [
+    "update_output",
+    "1001",
+    {
+     "volume_percent": 0
+    }
+   ],
+   [
+    "set_output_hold",
+    "1001",
+    false
    ]
   ],
   "units": {
    "1001": {
     "selected": true,
     "muted": true,
-    "volume": 40
+    "volume": 40,
+    "held": false
    },
    "1002": {
     "selected": true,
     "muted": true,
-    "volume": 30
+    "volume": 30,
+    "held": false
    }
   },
   "silence_chosen": false,
   "paused": [],
   "log": [
-   "receiver pause from Speaker A (1001): Speaker A, Speaker B muted",
-   "receiver play from Speaker A: nothing restored"
+   "receiver pause from Speaker A (1001): Speaker A held; Speaker B muted",
+   "receiver play from Speaker A: hold ended, nothing restored"
   ]
  }
 }

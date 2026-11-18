@@ -127,18 +127,20 @@
    "1001": {
     "selected": true,
     "muted": false,
-    "volume": 60
+    "volume": 60,
+    "held": false
    },
    "1002": {
     "selected": true,
     "muted": false,
-    "volume": 60
+    "volume": 60,
+    "held": false
    }
   },
   "silence_chosen": false,
   "paused": [],
   "log": [
-   "receiver pause from Speaker A (1001): Speaker A, Speaker B muted",
+   "receiver pause from Speaker A (1001): Speaker A muted (it cannot be held); Speaker B muted",
    "receiver play from Speaker A: nothing restored"
   ]
  }

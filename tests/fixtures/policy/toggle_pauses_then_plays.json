@@ -1,0 +1,118 @@
+{
+ "outputs": [
+  {
+   "id": "1001",
+   "name": "Speaker A",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 40,
+   "session": {
+    "state": "streaming",
+    "failure": "none",
+    "holdable": true
+   },
+   "has_homepods": false
+  },
+  {
+   "id": "1002",
+   "name": "Speaker B",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 30,
+   "session": {
+    "state": "streaming",
+    "failure": "none",
+    "holdable": true
+   },
+   "has_homepods": false
+  }
+ ],
+ "settings": {
+  "device_pause_scope": "all"
+ },
+ "session": true,
+ "steps": [
+  {
+   "at": 0,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "plps",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  },
+  {
+   "at": 20,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "plps",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  }
+ ],
+ "expect": {
+  "writes": [
+   [
+    "set_output_hold",
+    "1001",
+    true
+   ],
+   [
+    "update_output",
+    "1002",
+    {
+     "volume_percent": 0
+    }
+   ],
+   [
+    "set_output_hold",
+    "1001",
+    false
+   ],
+   [
+    "update_output",
+    "1002",
+    {
+     "volume_percent": 30
+    }
+   ]
+  ],
+  "units": {
+   "1001": {
+    "selected": true,
+    "muted": false,
+    "volume": 40,
+    "held": false
+   },
+   "1002": {
+    "selected": true,
+    "muted": false,
+    "volume": 30,
+    "held": false
+   }
+  },
+  "silence_chosen": false,
+  "paused": [],
+  "log": [
+   "receiver toggle from Speaker A: taken as pause",
+   "receiver pause from Speaker A (1001): Speaker A held; Speaker B muted",
+   "receiver toggle from Speaker A: taken as play",
+   "receiver play from Speaker A: hold ended, Speaker B restored"
+  ]
+ }
+}
