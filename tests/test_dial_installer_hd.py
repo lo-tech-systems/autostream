@@ -224,6 +224,17 @@ class TestDdcAccess:
         assert "i2c" not in body
 
 
+class TestSharedModules:
+    @pytest.mark.parametrize("name", ["state_stream", "state_view", "texts", "pending"])
+    def test_each_shared_module_goes_to_the_hd_shared_directory(self, name):
+        body = _function_body(HELPERS.read_text(encoding="utf-8"), "install_code_tree")
+        assert f'"$DEPLOY/nginx/static/shared/{name}.js" "${{dest}}/hd/shared/{name}.js"' in body
+
+    def test_the_directory_is_made_before_the_files_are_installed(self):
+        body = _function_body(HELPERS.read_text(encoding="utf-8"), "install_code_tree")
+        assert body.index('mkdir -p "${dest}/hd/shared"') < body.index("hd/shared/state_stream.js")
+
+
 class TestThemeStylesheet:
     def test_theme_css_goes_to_the_hd_directory_on_every_install(self):
         body = _function_body(HELPERS.read_text(encoding="utf-8"), "install_code_tree")

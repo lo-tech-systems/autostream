@@ -218,6 +218,26 @@ class TestStaticFiles:
         assert response.status == 200
         assert data == (hs.REPO_ROOT / "nginx" / "static" / "theme.css").read_bytes()
 
+    @pytest.mark.parametrize("name", ["state_stream", "state_view", "texts", "pending"])
+    def test_a_shared_module_falls_back_to_the_repository_copy(self, server, static_root, name):
+        assert not (static_root / "shared").exists()
+        response, data = request(server, "GET", f"/static/shared/{name}.js")
+        assert response.status == 200
+        assert response.getheader("Content-Type") == "text/javascript; charset=utf-8"
+        assert data == (hs.REPO_ROOT / "nginx" / "static" / "shared" / f"{name}.js").read_bytes()
+
+    def test_an_installed_shared_module_is_served_in_preference(self, server, static_root):
+        (static_root / "shared").mkdir()
+        (static_root / "shared" / "texts.js").write_bytes(b"export const t = 1;")
+        assert request(server, "GET", "/static/shared/texts.js")[1] == b"export const t = 1;"
+
+    @pytest.mark.parametrize("path", [
+        "/static/shared/", "/static/shared/other.js", "/static/shared/../hd.js", "/static/shared/%2e%2e/hd.js",
+        "/static/state_view.js",
+    ])
+    def test_shared_names_outside_the_table_are_not_found(self, server, path):
+        assert request(server, "GET", path)[0].status == 404
+
     def test_the_logo_is_served_as_a_png(self, server):
         response, data = request(server, "GET", "/static/logo.png")
         assert response.status == 200
@@ -244,7 +264,7 @@ class TestStaticFiles:
         root = hds.HD_STATIC_ROOT
         index = (root / "index.html").read_text(encoding="utf-8")
         for name in hds.STATIC_FILES:
-            if name not in ("theme.css", "logo.png"):
+            if name not in ("theme.css", "logo.png") and not name.startswith("shared/"):
                 assert (root / name).is_file()
         for name in ("hd.css", "hd.js"):
             assert f"/static/{name}" in index
@@ -253,6 +273,7 @@ class TestStaticFiles:
         root = hds.HD_STATIC_ROOT
         source = "\n".join(p.read_text(encoding="utf-8") for p in sorted(root.glob("hd*.js")))
         imported = re.findall(r'from "\./([a-z-]+\.js)"', source)
+        imported += re.findall(r'from "/static/(shared/[a-z_]+\.js)"', source)
         assert imported
         for name in imported:
             assert name in hds.STATIC_FILES

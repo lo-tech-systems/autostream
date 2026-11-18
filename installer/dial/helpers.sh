@@ -1737,6 +1737,13 @@ install_code_tree() {
     # beside the page files, so it travels with the staged code set.
     mkdir -p "${dest}/hd"
     install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/nginx/static/theme.css" "${dest}/hd/theme.css"
+    # The page's shared modules are the browser's own files, served from
+    # hd/shared/ at the same import path.
+    mkdir -p "${dest}/hd/shared"
+    install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/nginx/static/shared/state_stream.js" "${dest}/hd/shared/state_stream.js"
+    install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/nginx/static/shared/state_view.js" "${dest}/hd/shared/state_view.js"
+    install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/nginx/static/shared/texts.js" "${dest}/hd/shared/texts.js"
+    install -m 0644 ${own[@]+"${own[@]}"} "$DEPLOY/nginx/static/shared/pending.js" "${dest}/hd/shared/pending.js"
     install -m 0755 ${own[@]+"${own[@]}"} "$DEPLOY/platform/wifi_watcher.py" \
         "${dest}/autostream_wifi_watcher"
     sed -i 's/\r$//' "${dest}/autostream_wifi_watcher"

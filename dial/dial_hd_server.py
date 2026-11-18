@@ -84,6 +84,7 @@ ARTWORK_CACHE_CONTROL = "private, max-age=86400, immutable"
 HD_STATIC_ROOT = Path(__file__).resolve().parent / "hd"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 THEME_FALLBACK_PATH = _REPO_ROOT / "nginx" / "static" / "theme.css"
+SHARED_FALLBACK_DIR = _REPO_ROOT / "nginx" / "static" / "shared"
 LOGO_PATH = Path("/opt/autostream/images/autostream-logo-centred-dark.png")
 LOGO_FALLBACK_PATH = _REPO_ROOT / "images" / "autostream-logo-centred-dark.png"
 
@@ -121,6 +122,10 @@ STATIC_FILES = {
     "login.js": _JS,
     "theme.css": _CSS,
     "logo.png": _PNG,
+    "shared/state_stream.js": _JS,
+    "shared/state_view.js": _JS,
+    "shared/texts.js": _JS,
+    "shared/pending.js": _JS,
 }
 
 # The first bytes of an image, and its type.
@@ -535,6 +540,13 @@ class HdServer:
             return None
         if name == "logo.png":
             for candidate in (LOGO_PATH, LOGO_FALLBACK_PATH):
+                if candidate.is_file():
+                    return candidate
+            return None
+        if name.startswith("shared/") and name in STATIC_FILES:
+            # Installed beside the page; in the repository they are the
+            # browser's own copies.
+            for candidate in (self._static_root / name, SHARED_FALLBACK_DIR / name[len("shared/"):]):
                 if candidate.is_file():
                     return candidate
             return None

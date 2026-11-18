@@ -173,6 +173,12 @@ class TestActionTable:
         assert response.status == 409
         assert "token" not in json.loads(data)
 
+    def test_the_loopback_intents_are_a_subset_of_the_exposed_ones(self):
+        import autostream_protocol
+        assert set(hda.HD_INTENTS) <= set(autostream_protocol.EXPOSED_INTENTS)
+        assert len(set(hda.HD_INTENTS)) == len(hda.HD_INTENTS) == 8
+        assert not {"volume.set", "volume.step", "mute.set"} & set(hda.HD_INTENTS)
+
     def test_the_table_names_exactly_the_documented_actions(self):
         assert set(hda.ACTIONS) == {
             "focus", "output", "eq", "eq_reset", "replay_start", "replay_restart",

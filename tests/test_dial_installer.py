@@ -1543,4 +1543,7 @@ class TestHdPageDeployment:
             assert (dest / "hd" / path.name).read_bytes() == path.read_bytes()
         assert (dest / "hd" / "theme.css").read_bytes() == (
             REPO_ROOT / "nginx" / "static" / "theme.css").read_bytes()
+        for name in ("state_stream", "state_view", "texts", "pending"):
+            assert (dest / "hd" / "shared" / f"{name}.js").read_bytes() == (
+                REPO_ROOT / "nginx" / "static" / "shared" / f"{name}.js").read_bytes()
         assert (dest / "dial_hd_server.py").is_file()

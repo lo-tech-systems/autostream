@@ -18,6 +18,14 @@ from dial_warnings import ACTION_RESTART
 
 ACTION_NAME_RE = re.compile(r"^[a-z_]{1,32}$")
 ID_MAX = 128
+
+# The appliance intents the loopback forwards, a subset of the protocol's
+# exposed intents. Volume and mute stay on the dial's own actions, so the core's
+# scope policy and volume lane are the only path for them.
+HD_INTENTS = (
+    "outputs.set", "output.pin.submit", "output.eq.set", "output.eq.reset",
+    "repeat.arm", "repeat.seek", "repeat.transport", "outputs.save_default",
+)
 GAINS_MAX_BANDS = 16
 BAND_ID_RE = re.compile(r"^[a-z0-9_]{1,16}$")
 
