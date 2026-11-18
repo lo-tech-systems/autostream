@@ -153,6 +153,7 @@ class TestRows:
     def test_the_table_names_every_row(self):
         assert set(table.ROWS) == {
             "outputs.set", "output.pin.submit", "outputs.select_default", "outputs.want_default",
+            "outputs.save_default",
             "outputs.deselect_all", "volume.step", "volume.set", "mute.set",
             "repeat.arm", "repeat.transport", "repeat.seek", "input.eq.set",
             "output.eq.set", "output.eq.reset",
@@ -256,7 +257,7 @@ class TestRows:
 
 
 EXPOSED_PLAYBACK = {
-    "outputs.set", "output.pin.submit", "outputs.want_default", "volume.step", "volume.set",
+    "outputs.set", "output.pin.submit", "outputs.want_default", "outputs.save_default", "volume.step", "volume.set",
     "mute.set", "output.eq.set", "output.eq.reset", "repeat.arm", "repeat.transport", "repeat.seek",
 }
 

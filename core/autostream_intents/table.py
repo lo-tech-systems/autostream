@@ -164,6 +164,7 @@ def _build_rows() -> dict:
             {Origin.USER},
             **_PLAY,
         ),
+        _row("outputs.save_default", {}, (), {Origin.USER}, **_PLAY),
         _row("outputs.deselect_all", {}, (), {Origin.SESSION, Origin.USER, Origin.POLICY}),
         _row("receiver.pause", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),
         _row("receiver.play", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),

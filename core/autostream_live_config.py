@@ -41,6 +41,7 @@ from autostream_config import (
     BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
+    DEFAULT_OUTPUTS_MAX,
     FIFO_PATH,
     DEVICE_PAUSE_SCOPE_DEFAULT,
     DEVICE_PAUSE_SCOPES,
@@ -609,28 +610,98 @@ def _validate_silence_seconds(value: object) -> int:
     return v
 
 
+class _NamedOutput(str):
+    """A speaker name that carries the id of the unit it names ("" when no
+    unit has it), found before the store is touched."""
+
+    unit_id: str = ""
+
+
+def _unit_id_for_name(name: str) -> str:
+    part = store().snapshot().outputs
+    for u in part.units:
+        if u.name == name and part.placeholder_member(u.id) is None:
+            return u.id
+    return ""
+
+
 def _validate_output_name(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("Value must be a string")
     v = value.strip()
     if not v:
         raise ValueError("Value must be a non-empty string")
-    return v
+    named = _NamedOutput(v)
+    named.unit_id = _unit_id_for_name(v)
+    return named
 
 
-def _live_owntone_name(state: object, value: object) -> bool:
-    settings = writable_store(getattr(state, "settings", None))
-    if settings is None:
-        return False
-    snap = settings.snapshot()
-    return bool(update_live_owntone_runtime(
-        output_offsets_ms=snap.owntone.output_offsets_ms,
-        output_airplay_modes=snap.owntone.output_airplay_modes,
-        settings=settings,
-    ))
+_DEFAULT_OUTPUT_NAME_MAX = 256
+_DEFAULT_OUTPUT_ID_MAX = 64
 
 
-def _live_owntone_volume(state: object, value: object) -> bool:
+def _validate_default_outputs(value: object) -> list[dict]:
+    """The Auto-Start set as written to the config: a non-empty list of
+    {id, name, volume}, no member repeated."""
+    if not isinstance(value, list):
+        raise ValueError("Value must be a list")
+    members: list[dict] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise ValueError("Each speaker must be an object")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > _DEFAULT_OUTPUT_NAME_MAX:
+            raise ValueError("Each speaker needs a name")
+        uid = entry.get("id", "")
+        uid = uid.strip() if isinstance(uid, str) else ""
+        if len(uid) > _DEFAULT_OUTPUT_ID_MAX:
+            raise ValueError("A speaker id is too long")
+        member = {"id": uid, "name": name.strip(), "volume": _validate_volume_percent(entry.get("volume"))}
+        key = uid or "name:" + member["name"]
+        if key in seen:
+            continue
+        seen.add(key)
+        members.append(member)
+    if not members:
+        raise ValueError("At least one speaker is needed")
+    if len(members) > DEFAULT_OUTPUTS_MAX:
+        raise ValueError(f"At most {DEFAULT_OUTPUTS_MAX} speakers")
+    return members
+
+
+def _mutate_default_outputs(raw: dict, section: str, key: str, value: object) -> None:
+    """FieldSpec.mutate for owntone.default_outputs: the set replaces the
+    legacy single name."""
+    owntone = raw.setdefault("owntone", {})
+    owntone["default_outputs"] = value
+    owntone.pop("output_name", None)
+
+
+def _mutate_output_name(raw: dict, section: str, key: str, value: object) -> None:
+    """FieldSpec.mutate for owntone.output_name (kept for the Setup select):
+    one member at the start volume."""
+    owntone = raw.setdefault("owntone", {})
+    volume = int(owntone.get("volume_percent", 20) or 20)
+    _mutate_default_outputs(
+        raw, section, key,
+        [{"id": getattr(value, "unit_id", ""), "name": str(value), "volume": volume}],
+    )
+
+
+def _mutate_volume_percent(raw: dict, section: str, key: str, value: object) -> None:
+    """FieldSpec.mutate for owntone.volume_percent: a one-member set keeps one
+    speaker and one volume, so its level follows."""
+    owntone = raw.setdefault("owntone", {})
+    owntone["volume_percent"] = value
+    listed = owntone.get("default_outputs")
+    if isinstance(listed, list) and len(listed) == 1 and isinstance(listed[0], dict):
+        listed[0]["volume"] = value
+
+
+def _live_owntone_set(state: object, value: object) -> bool:
+    """Live effect of the Auto-Start set, its compat name and the start
+    volume: the authority takes what the store holds."""
     settings = writable_store(getattr(state, "settings", None))
     if settings is None:
         return False
@@ -915,10 +986,12 @@ def _mutate_input_type(raw: dict, section: str, key: str, value: object) -> None
 # Rows of the settings schema whose change has a live effect. The validators
 # and live functions are the ones above; the schema table carries them for the
 # settings routes and the Setup form.
+register_field("owntone.default_outputs", "owntone", "default_outputs", _validate_default_outputs,
+               live=_live_owntone_set, mutate=_mutate_default_outputs, live_class=LiveClass.LIVE)
 register_field("owntone.output_name", "owntone", "output_name", _validate_output_name,
-               live=_live_owntone_name, live_class=LiveClass.LIVE)
+               live=_live_owntone_set, mutate=_mutate_output_name, live_class=LiveClass.LIVE)
 register_field("owntone.volume_percent", "owntone", "volume_percent", _validate_volume_percent,
-               live=_live_owntone_volume, live_class=LiveClass.LIVE)
+               live=_live_owntone_set, mutate=_mutate_volume_percent, live_class=LiveClass.LIVE)
 register_field("general.silence_seconds", "general", "silence_seconds", _validate_silence_seconds,
                live=_live_silence, live_class=LiveClass.LIVE)
 register_field("general.audio_path", "general", "audio_path", _validate_audio_path,
@@ -1127,8 +1200,11 @@ def _first_boot_commit(intent: Intent, wait: float) -> Outcome:
         if not output_name:
             return Outcome(ok=False, error="invalid_args")
 
+        named = _NamedOutput(str(output_name))
+        named.unit_id = _unit_id_for_name(named)
+
         def _mutator(raw: dict) -> None:
-            raw.setdefault("owntone", {}).update({"output_name": output_name})
+            _mutate_output_name(raw, "owntone", "output_name", named)
     else:
         skip_input1 = bool(args.get("skip_input1"))
         capture_device = args.get("capture_device")
@@ -1147,7 +1223,7 @@ def _first_boot_commit(intent: Intent, wait: float) -> Outcome:
                 raw.setdefault("audio1", {})["capture_device"] = capture_device
                 raw.setdefault("audio1", {})["enabled"] = True
                 set_input_type(raw, 1, input_type)
-            raw.setdefault("owntone", {})["volume_percent"] = volume_percent
+            _mutate_volume_percent(raw, "owntone", "volume_percent", volume_percent)
             # Fixed appliance path, not something first boot can choose
             raw.setdefault("general", {})["fifo_path"] = FIFO_PATH
     try:
@@ -1338,6 +1414,39 @@ def bind_settings_store(settings: Optional[SettingsStore]) -> None:
         _output_settings_store = settings
         _output_settings = _UNBOUND_OUTPUT_SETTINGS
         _output_settings_touched = True
+
+
+def _bound_store() -> Optional[SettingsStore]:
+    """The settings store bootstrap bound, for a handler whose caller passes
+    none in its context."""
+    with _output_settings_lock:
+        return _output_settings_store
+
+
+def _save_default(intent: Intent, wait: float) -> Outcome:
+    """Make the speakers playing now the Auto-Start set, each at its level."""
+    settings = _bound_store()
+    if settings is None:
+        return Outcome(ok=False, error="settings_unavailable", result={"ok": False, "error": "settings_unavailable"})
+    picked = [u for u in store().snapshot().outputs.units if u.shown_selected and not u.offline]
+    if not picked:
+        return Outcome(ok=False, error="nothing_selected", result={"ok": False, "error": "nothing_selected"})
+    start = get_authority().start_volume()
+    members = [{"id": u.id, "name": u.name, "volume": u.volume or start} for u in picked]
+
+    def _mutator(raw: dict) -> None:
+        _mutate_default_outputs(raw, "owntone", "default_outputs", members)
+
+    try:
+        settings.update(_mutator)
+    except Exception:
+        logging.exception("outputs.save_default: store update failed")
+        return Outcome(ok=False, error="settings_unavailable", result={"ok": False, "error": "settings_unavailable"})
+    _push_default_set(settings)
+    return Outcome(ok=True, result={"ok": True, "members": members})
+
+
+bind("outputs.save_default", _save_default, owner=_OWNER)
 
 
 def output_settings() -> OutputSettings:

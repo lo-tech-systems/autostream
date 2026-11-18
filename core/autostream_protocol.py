@@ -22,7 +22,7 @@ PROTOCOL = 4
 # The intents a client may send to POST /api/v1/intents/<name>. Any other name
 # is answered unknown_intent.
 EXPOSED_INTENTS = (
-    "outputs.set", "output.pin.submit", "outputs.want_default",
+    "outputs.set", "output.pin.submit", "outputs.want_default", "outputs.save_default",
     "volume.step", "volume.set", "mute.set",
     "output.eq.set", "output.eq.reset",
     "repeat.arm", "repeat.transport", "repeat.seek",
