@@ -1409,7 +1409,7 @@ def lounge_warning_while_on_kitchen():
         appliances=(kitchen, base.snapshot.appliances[0]),
         focus=FocusState(None, KITCHEN, None, KITCHEN, "Kitchen", None, False),
         now_playing=NowPlaying("Kitchen", "Joni Mitchell", "Blue", 35, album="Blue"),
-        volume_readout=("Kitchen", 35), artwork=None,
+        artwork=None,
     )
     return base.with_snapshot(**changes)
 

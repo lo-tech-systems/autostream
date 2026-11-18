@@ -117,7 +117,7 @@ def _snapshot(appliances, manual=None, reporting=None) -> cs.CoreSnapshot:
         now_playing=None, artwork=None, idle_affordance=False, outputs=None, eq=None,
         outputs_available=False, eq_available=False, warnings=(), due_status_id=None,
         network=None, wifi_ever_connected=False, sd_health=None, update=None,
-        transport=None, volume_readout=(None, None),
+        transport=None,
         dial=cs.DialInfo("d", "0", "u", "", 0, (), "current", "current"),
     )
 

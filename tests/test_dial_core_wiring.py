@@ -90,35 +90,26 @@ class TestDialInfo:
 
 
 class TestReadoutChanged:
-    def test_the_readout_is_published_for_the_reporting_service(self):
+    def test_a_new_reading_is_published_and_queues_one_repaint(self):
         core = _core()
-        core.set_field_for_tests("now_playing", NowPlaying("Kitchen", "", "", 40))
-        with patch("dial_core.shown_volume", return_value=42) as shown:
-            core.readout_changed()
-        shown.assert_called_once_with("Kitchen")
-        assert core.snapshot().volume_readout == ("Kitchen", 42)
-
-    def test_with_nothing_reported_the_readout_is_empty(self):
-        core = _core()
-        core.set_field_for_tests("source_service_name", "Kitchen")
+        seq = core.snapshot().seq
         core.readout_changed()
-        assert core.snapshot().volume_readout == (None, None)
+        assert core.snapshot().seq == seq + 1
+        assert core.take_effects() == [SourceEffects()]
 
-    def test_a_mute_change_publishes_the_readout_and_queues_no_repaint(self):
+    def test_a_mute_change_publishes_and_queues_no_repaint(self):
         core = _core()
         core.set_field_for_tests("now_playing", NowPlaying("Kitchen", "", "", 40))
         seen = []
         core.subscribe(lambda: seen.append(len(core._effects)))
         seq = core.snapshot().seq
-        with patch("dial_core.shown_volume", return_value=42):
-            core.mute_changed()
+        core.mute_changed()
         assert core.snapshot().seq == seq + 1
-        assert core.snapshot().volume_readout == ("Kitchen", 42)
         assert seen == [0]
 
     def test_a_mute_change_never_raises_into_the_worker(self):
         core = _core()
-        with patch("dial_core.shown_volume", side_effect=RuntimeError("store")):
+        with patch.object(core, "_publish", side_effect=RuntimeError("store")):
             core.mute_changed()
             core.readout_changed()
 
@@ -133,7 +124,7 @@ class TestReadoutChanged:
 
     def test_a_failure_never_reaches_the_worker(self):
         core = _core()
-        with patch("dial_core.shown_volume", side_effect=RuntimeError("boom")):
+        with patch.object(core, "_publish", side_effect=RuntimeError("boom")):
             core.readout_changed()
 
 

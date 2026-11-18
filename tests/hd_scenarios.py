@@ -146,7 +146,7 @@ def base(**overrides) -> CoreSnapshot:
         network=NetworkView(link=LINK_CONNECTED, bars=3, ssid="HomeNet", signal="Strong"),
         wifi_ever_connected=True,
         sd_health=SdHealthView(status=STATUS_VALID, percent=84),
-        update=None, transport=None, volume_readout=(None, None), dial=DIAL,
+        update=None, transport=None, dial=DIAL,
         dots_active=False, visible_playing=(), ticks=12, tick=None, auth_promotions=0,
     )
     values.update(overrides)
@@ -166,7 +166,7 @@ def _playing(artwork=True, **overrides) -> CoreSnapshot:
             "Lounge", "Dire Straits", "Tunnel of Love", 42, album="Making Movies",
             artwork_url=ARTWORK_URL if artwork else "",
         ),
-        artwork=held, volume_readout=("Lounge", 42), visible_playing=(LOUNGE,),
+        artwork=held, visible_playing=(LOUNGE,),
         outputs=OutputsState(LOUNGE, rows(), True, NOW - 1), outputs_available=True,
         eq=EqState(LOUNGE, 2, SIX_BANDS + DERIVED_BANDS, True, (), 0.0), eq_available=True,
     )
@@ -226,10 +226,10 @@ def _units(held) -> list:
     } for row in held.rows]
 
 
-def focused_peer(snapshot: CoreSnapshot, muted=None, *, boot=PEER_BOOT, version=PEER_VERSION, **parts):
+def focused_peer(snapshot: CoreSnapshot, muted=None, *, level=None, boot=PEER_BOOT, version=PEER_VERSION, **parts):
     """The focused appliance's PeerSnapshot for *snapshot*, made from the same
     readings the snapshot holds; None with no focus. *parts* replace or add
-    whole parts."""
+    whole parts. *level* is the master volume shown, else the appliance's own."""
     appliance_id = snapshot.focused_id()
     a = snapshot.appliance(appliance_id)
     if a is None:
@@ -253,9 +253,9 @@ def focused_peer(snapshot: CoreSnapshot, muted=None, *, boot=PEER_BOOT, version=
             units = _units(outputs)
             on = {u["id"] for u in units if u["selected"]}
             saved = {u["id"] for u in units if u["auto_start"]}
-            level = snapshot.volume_readout[1] if snapshot.volume_readout[1] is not None else a.master_volume
             held["outputs"] = {
-                "connected": True, "master_volume": level, "muted_all": bool(muted if muted is not None else a.muted),
+                "connected": True, "master_volume": a.master_volume if level is None else level,
+                "muted_all": bool(muted if muted is not None else a.muted),
                 "units": units, "default_matches": bool(on) and on == saved,
             }
         eq = snapshot.eq
@@ -287,9 +287,11 @@ class Scenario:
     now: float = NOW
     # The focused appliance's PeerSnapshot (or None), else DERIVED.
     peer: object = DERIVED
+    # The master volume the derived peer shows, else the focused appliance's own.
+    level: int | None = None
 
     def __post_init__(self) -> None:
-        peer = focused_peer(self.snapshot, self.muted) if self.peer == DERIVED else self.peer
+        peer = focused_peer(self.snapshot, self.muted, level=self.level) if self.peer == DERIVED else self.peer
         object.__setattr__(self, "snapshot", dataclasses.replace(self.snapshot, focused_peer=peer))
 
     def state(self) -> dict:
@@ -310,12 +312,16 @@ class Scenario:
         peer = overrides.pop("focused_peer", self.peer)
         return dataclasses.replace(self, snapshot=dataclasses.replace(self.snapshot, **overrides), peer=peer)
 
+    def with_level(self, level: int) -> "Scenario":
+        """This scenario with the master volume its derived peer shows set to *level*."""
+        return dataclasses.replace(self, level=level)
+
     def with_peer(self, **changes) -> "Scenario":
         """This scenario with its derived peer changed: *changes* are
         focused_peer's keywords (boot, version, whole parts) or PeerSnapshot
         fields."""
         fields = {k: changes.pop(k) for k in list(changes) if k in PeerSnapshot.__dataclass_fields__ and k not in ("boot", "version")}
-        peer = focused_peer(self.snapshot, self.muted, **changes)
+        peer = focused_peer(self.snapshot, self.muted, level=self.level, **changes)
         return dataclasses.replace(self, peer=dataclasses.replace(peer, **fields))
 
 
@@ -380,7 +386,7 @@ def _build() -> dict:
         ),
         focus=_focus(reporting=KITCHEN, service="Kitchen"),
         now_playing=NowPlaying("Kitchen", "Joni Mitchell", "Blue", 35, album="Blue"),
-        artwork=None, volume_readout=("Kitchen", 35), visible_playing=(KITCHEN, LOUNGE),
+        artwork=None, visible_playing=(KITCHEN, LOUNGE),
         outputs=OutputsState(KITCHEN, rows(), True, NOW - 1),
         eq=EqState(KITCHEN, 1, DERIVED_BANDS, True, (), 0.0),
     )))
@@ -388,7 +394,7 @@ def _build() -> dict:
         outputs=OutputsState(LOUNGE, rows(in_use=True), True, NOW - 1),
     )))
     add(Scenario("unreachable", _playing(
-        appliances=(appliance(playing=True, status_error="timeout"),), artwork=None,
+        appliances=(appliance(playing=True, status_error="timeout", master_volume=42),), artwork=None,
     ), muted=None))
     add(Scenario("unauthorized", base(
         appliances=(appliance(), appliance(KITCHEN, "Kitchen", auth=AUTH_UNAUTHORIZED)),

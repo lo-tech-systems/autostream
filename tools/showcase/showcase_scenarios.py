@@ -100,7 +100,7 @@ def playing(track: Track, *, volume=42, muted=False, rows=None, repeat=None,
         now_playing=NowPlaying(track.appliance, track.artist, track.title, volume, album=track.album,
                                artwork_url=url if artwork else ""),
         artwork=held if artwork else None,
-        volume_readout=(track.appliance, volume), visible_playing=(ident,),
+        visible_playing=(ident,),
         outputs=OutputsState(ident, rows or speakers(), True, NOW - 1), outputs_available=True,
         eq=EqState(ident, 2, bands, True, (), 0.0), eq_available=True,
     )

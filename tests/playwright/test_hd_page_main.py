@@ -374,7 +374,7 @@ class TestVolume:
         open_page(page, hd)
         page.locator("#vol-plus").click()
         expect(page.locator("#master")).to_have_value("42")
-        hd.show(scenario("playing_artwork", volume_readout=("Lounge", 44)))
+        hd.show(scenario("playing_artwork").with_level(44))
         expect(page.locator("#master")).to_have_value("44")
 
     def test_real_drag_ends_near_the_target(self, page, hd):
@@ -398,7 +398,7 @@ class TestVolume:
         page.clock.install()
         open_page(page, hd)
         drag_input(page, "#master", [], final=77)
-        hd.show(scenario("playing_artwork", volume_readout=("Lounge", 77)))
+        hd.show(scenario("playing_artwork").with_level(77))
         page.wait_for_function(
             "fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.focused.parts.outputs.master_volume === 77)")
         page.wait_for_timeout(300)
@@ -898,7 +898,7 @@ class TestListCues:
         before = page.evaluate(
             "['appliances-list', 'speakers-list'].map(i => document.getElementById(i).scrollTop)")
         assert before[0] > 0 and before[1] > 0
-        hd.show(crowded(8, 6).with_snapshot(volume_readout=("Lounge", 61)))
+        hd.show(crowded(8, 6).with_level(61))
         page.wait_for_timeout(500)
         assert page.evaluate(
             "['appliances-list', 'speakers-list'].map(i => document.getElementById(i).scrollTop)") == before

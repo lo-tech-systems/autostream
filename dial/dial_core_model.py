@@ -45,7 +45,6 @@ class PublishedState:
     transport: object | None = None
     outputs_request: object | None = None   # the latest output request, as `transport` is the latest replay one
     power: object = POWER_IDLE              # a PowerState
-    volume_readout: tuple = (None, None)
     dots_active: bool = False
     visible_playing: tuple = ()     # ids of the playing appliances this dial may use, as of the last fold
     ticks: int = 0                  # folds completed

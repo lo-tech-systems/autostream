@@ -156,7 +156,9 @@ class Rig:
     def volume(self) -> dict:
         """The level and the shown mute flag of the appliance reported from."""
         snapshot = self.core.snapshot()
-        service, level = snapshot.volume_readout
+        playing = snapshot.now_playing
+        service = playing.service_name if playing is not None else None
+        level = dv.shown_volume(service) if service else None
         return {"appliance_id": snapshot.focus.reporting_id, "level": level,
                 "muted": dv.shown_muted(service) if service else None}
 
@@ -211,12 +213,12 @@ class TestStateFollowsTheReportingAppliance:
         rig.poll()
         rig.core.volume_step(1)
         rig.run_worker()
-        assert rig.core.snapshot().volume_readout == ("Kitchen", 16)
+        assert dv.shown_volume("Kitchen") == 16
 
         appliances.muted["Lounge"] = True
         appliances.targets[:] = [LOUNGE]
         rig.poll()
-        assert rig.core.snapshot().volume_readout == ("Lounge", 31)
+        assert dv.shown_volume("Lounge") == 31
         assert rig.volume() == {"appliance_id": LOUNGE.appliance_id, "level": 31, "muted": True}
 
     def test_nothing_playing_clears_the_readout(self):
@@ -225,7 +227,6 @@ class TestStateFollowsTheReportingAppliance:
         assert rig.volume()["level"] == 40
         rig.appliances.targets.clear()
         rig.poll()
-        assert rig.core.snapshot().volume_readout == (None, None)
         assert rig.volume() == {"appliance_id": None, "level": None, "muted": None}
 
 

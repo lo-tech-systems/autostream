@@ -1047,7 +1047,7 @@ class DialCore:
 
     # ==== 5. Self-info and volume entries =====================================
     # Owns: `_name_source`, `_volume_scope`, `_mute_scope`, `_address_source`, `_address_at`; the state's
-    # `dial` and `volume_readout` (the fold writes the readout too).
+    # `dial`.
     # Threads: wiring at start-up, the core thread (refresh), the volume worker (`readout_changed`,
     # `mute_changed`), and the encoder, button, touch and HD threads (steps and toggles).
 
@@ -1122,24 +1122,13 @@ class DialCore:
         if fields:
             self._publish(lambda state: self._replace_dial(state, **fields))
 
-    def _readout_now(self) -> tuple:
-        """(service, shown volume) for the appliance the dial reports from,
-        as the volume worker's store has it at this moment. The service is
-        the one the fold records its volume and mute observations under.
-        Plain reads; never called with the core lock held."""
-        playing = self._state.now_playing
-        service = playing.service_name if playing is not None else None
-        return (service, shown_volume(service))
-
     def readout_changed(self) -> None:
-        """The volume worker has a new reading for the readout: publish it
-        with the service it belongs to, and queue a repaint for a view. Safe
-        from the worker thread; never raises into it."""
+        """The volume worker has a new reading for the readout: publish, so
+        whoever builds from the snapshot reads the store again, and queue a
+        repaint for a view. Safe from the worker thread; never raises into
+        it."""
         try:
-            readout = self._readout_now()
-
             def mutate(state: CoreState) -> None:
-                state.volume_readout = readout
                 self._effects.append(SourceEffects())
                 del self._effects[:-EFFECTS_BACKLOG_MAX]
             self._publish(mutate)
@@ -1154,10 +1143,8 @@ class DialCore:
         for a view, which reads the store whenever it paints. Safe from the
         worker thread; never raises into it."""
         try:
-            readout = self._readout_now()
-
             def mutate(state: CoreState) -> None:
-                state.volume_readout = readout
+                """Records nothing: the publish alone makes readers rebuild."""
             self._publish(mutate)
         except Exception:
             logging.debug("dial core: mute_changed raised", exc_info=True)
@@ -1413,9 +1400,6 @@ class DialCore:
         focus_read = self._state.focus
         choice, hold, now_playing = decide(focus_read)
         self._observe(choice, snaps, now)
-        shown = self._state.now_playing if hold else now_playing
-        service = shown.service_name if shown is not None else None
-        readout = (service, shown_volume(service))
         effects: list = []
         lines: list = []
 
@@ -1455,7 +1439,6 @@ class DialCore:
                 and e.repeat.state == "hold" for e in roster
             )
             self._settle_locked(state)
-            state.volume_readout = readout
             state.appliances = self._derive_appliances_locked(state)
             self._sync_warnings_locked(state)
             state.tick = tick

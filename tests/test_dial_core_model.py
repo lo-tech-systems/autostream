@@ -61,7 +61,7 @@ class TestNewState:
             now_playing=None, artwork=None, idle_affordance=False, outputs=None, eq=None,
             outputs_available=False, eq_available=False, warnings=(), due_status_id=None,
             network=None, wifi_ever_connected=False, sd_health=None, update=None,
-            transport=None, volume_readout=(None, None), dial=dial, dots_active=False,
+            transport=None, dial=dial, dots_active=False,
             visible_playing=(), ticks=0, tick=None, auth_promotions=0, outputs_request=None,
             power=POWER_IDLE, start_failure=None, focused_peer=None,
         )

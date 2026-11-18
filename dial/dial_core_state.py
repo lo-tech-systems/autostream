@@ -492,7 +492,6 @@ class CoreSnapshot:
     sd_health: SdHealthView | None
     update: UpdateView | None
     transport: TransportRequest | None  # the latest replay/arm request and its outcome
-    volume_readout: tuple[str | None, int | None]  # (service_name, shown_volume)
     dial: DialInfo                      # this dial: name, version, address, inputs present
     dots_active: bool = False           # the page dots are tappable for the focused/reporting appliance
     visible_playing: tuple[str, ...] = ()   # ids of the playing appliances this dial may use (not refused, identified)
