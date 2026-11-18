@@ -39,6 +39,7 @@ from track_id.models import (
     waiting_snapshot,
 )
 import autostream_runtime as runtime
+import autostream_session as session
 
 
 # ---------------------------------------------------------------------------
@@ -2152,10 +2153,10 @@ class TestReplaySeekRearm:
     @pytest.fixture(autouse=True)
     def _isolate_caches(self):
         core._set_repeat_status(None)
-        core._set_session_state(False, None)
+        session.publish(False, None)
         yield
         core._set_repeat_status(None)
-        core._set_session_state(False, None)
+        session.publish(False, None)
 
     @staticmethod
     def _armed_origin(lead_in=10, snapshot=15, **monitor_kw):
@@ -2563,7 +2564,7 @@ class TestReplayEndTeardown:
         src = inspect.getsource(core.run_autostream)
         teardown = src.index("_teardown_identification_after_replay_end(")
         assert teardown > src.index("_dispatch_session_event(")
-        assert teardown > src.index("_set_session_state(")
+        assert teardown > src.index("autostream_session.publish(")
         assert teardown > src.index("announce.sync_playing_announcement(")
 
     def test_teardown_takes_the_ti_state_lock(self):

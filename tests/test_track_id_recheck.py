@@ -87,7 +87,6 @@ class _Rig:
         self.client = _make_client()
         self.pending: list = []
         monkeypatch.setattr(runtime, "all_monitors", [mon])
-        monkeypatch.setattr(core, "get_session_state", lambda: {})
         monkeypatch.setattr(
             runtime._task_pool, "submit",
             lambda key, fn, *args, **kwargs: self.pending.append((fn, args)) or True,

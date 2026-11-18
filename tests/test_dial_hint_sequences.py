@@ -205,7 +205,6 @@ class Driver:
             core, "get_active_track_identification_snapshot", lambda: self._track)
         # The ack path reads and rewrites the coordinator's own caches.
         monkeypatch.setattr(core, "_repeat_status", None)
-        monkeypatch.setattr(core, "_session_state", {"active": False, "source": None})
         self.watches = (
             dp.ChangeWatch("repeat", lambda: autostream_state.repeat_digest(core.get_repeat_status())),
             dp.ChangeWatch("track", lambda: autostream_state.track_digest(

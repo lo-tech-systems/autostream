@@ -543,6 +543,8 @@ import autostream_monitor_client as monitor_client
 import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
 import autostream_announce as announce
+import autostream_session as session
+from fake_store import fake_session
 
 
 def _fake_connected(client):
@@ -892,12 +894,12 @@ class TestUpdateLiveInputType:
 
     def test_swaps_a_default_bundle_and_requests_republish(self):
         mon = _make_monitor(input_index=0)
-        core.consume_nowplaying_republish()
+        session.consume_nowplaying_republish()
         mon._current_nowplaying = mon._default_nowplaying_metadata()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(self._acking_client())):
             core.update_live_input_type(0, "cd", -60.0)
         assert mon._current_nowplaying.title == "CD"
-        assert core.consume_nowplaying_republish() is True
+        assert session.consume_nowplaying_republish() is True
 
     def test_invalid_threshold_returns_false_and_changes_nothing(self):
         mon = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)
@@ -949,7 +951,7 @@ class TestUpdateLiveInputType:
 
 class TestGetSessionSourceInputIndex:
     def _index(self, state, repeat_status=None):
-        with patch.object(core, "get_session_state", return_value=state), \
+        with fake_session(state), \
              patch.object(core, "get_repeat_status", return_value=repeat_status):
             return core.get_session_source_input_index()
 
@@ -1314,17 +1316,17 @@ class TestSyncPlayingAnnouncement:
 
     def test_reconciliation_reads_session_state_not_capture_flags(self):
         # A replay session (no monitor capturing) must still re-announce:
-        # the reconcile tick derives its predicate from get_session_state().
-        core._set_session_state(True, "replay")
+        # the reconcile tick derives its predicate from the session part.
+        session.publish(True, "replay")
         try:
             with patch.object(announce, "write_avahi_playing_service", return_value=True) as mock_write:
                 announce.sync_playing_announcement(
-                    core.get_session_state()["active"], "v1"
+                    autostream_state.store().snapshot().session.active, "v1"
                 )
             mock_write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
             assert announce._playing_announced is True
         finally:
-            core._set_session_state(False, None)
+            session.publish(False, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1350,13 +1352,13 @@ class TestReplayAckAnnouncement:
     def setup_method(self):
         announce._playing_announced = False
         announce._playing_version = "v1"
-        core._set_session_state(False, None)
+        session.publish(False, None)
 
     def teardown_method(self):
         announce._playing_announced = False
         announce._playing_version = None
         core._set_repeat_status(None)
-        core._set_session_state(False, None)
+        session.publish(False, None)
 
     def _ack_from_hold(self, command="repeat_seek", state="replaying",
                        replaying=False):
@@ -1420,14 +1422,14 @@ class TestReplayAckAnnouncement:
     def test_worker_reads_the_session_state_when_it_runs(self):
         # A stop that lands before the pooled task runs must not leave the
         # service announced.
-        core._set_session_state(False, None)
+        session.publish(False, None)
         with patch.object(announce, "write_avahi_playing_service") as write:
             core._announce_playing_if_active("v1")
         write.assert_not_called()
         assert announce._playing_announced is False
 
     def test_worker_announces_while_the_session_is_active(self):
-        core._set_session_state(True, "replay")
+        session.publish(True, "replay")
         with patch.object(announce, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
              patch.object(announce, "write_avahi_playing_service",
                           return_value=True) as write:

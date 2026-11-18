@@ -158,7 +158,7 @@ def _hermetic_playing_announcement(monkeypatch):
         return
     monkeypatch.setattr(announce, "write_avahi_playing_service", lambda version, appliance_id=None: True)
     monkeypatch.setattr(announce, "remove_avahi_playing_service", lambda: True)
-    monkeypatch.setattr(announce, "_start_playing_reconciliation", lambda version, session_active=None: None)
+    monkeypatch.setattr(announce, "_start_playing_reconciliation", lambda version: None)
     announce.reset_for_tests()
     yield
     announce.reset_for_tests()
@@ -382,3 +382,12 @@ def fake_store():
     """Put parts into the process state store without their owners."""
     from fake_store import FakeStore
     return FakeStore()
+
+
+@pytest.fixture(autouse=True)
+def _reset_session_requests():
+    """Forget a pending now-playing republish request after each test."""
+    yield
+    m = _mod("autostream_session")
+    if m is not None:
+        m.reset_for_tests()

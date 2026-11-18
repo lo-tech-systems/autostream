@@ -412,6 +412,7 @@ from track_id.models import waiting_snapshot as _waiting_snapshot
 from track_id.models import TrackIdentificationSnapshot as _TISnapshot
 from track_id.models import STATE_IDENTIFIED as _STATE_IDENTIFIED
 import autostream_runtime as runtime
+import autostream_session as session
 
 
 def _mk_monitor(**overrides) -> _AudioMonitor:
@@ -487,11 +488,11 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         capturing_mon._ti_snapshot = capturing_snap
         runtime._track_id_service = MagicMock()
 
-        _core_mod._set_session_state(False, None)  # source unknown/absent -- fallback path
+        session.publish(False, None)  # source unknown/absent -- fallback path
         try:
             result = _core_mod.get_active_track_identification_snapshot()
         finally:
-            _core_mod._set_session_state(False, None)
+            session.publish(False, None)
         assert result is capturing_snap
 
     def test_session_source_replay_wins_over_a_capturing_monitor(self):
@@ -522,11 +523,11 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         capturing_mon._ti_snapshot = capturing_snap
         runtime._track_id_service = MagicMock()
 
-        _core_mod._set_session_state(True, "replay")
+        session.publish(True, "replay")
         try:
             result = _core_mod.get_active_track_identification_snapshot()
         finally:
-            _core_mod._set_session_state(False, None)
+            session.publish(False, None)
         assert result is replay_snap
 
     def test_session_source_names_live_input_wins_over_other_capturing_input(self):
@@ -552,11 +553,11 @@ class TestGetActiveTrackIdentificationSnapshotDuringReplay:
         mon2._ti_snapshot = input2_snap
         runtime._track_id_service = MagicMock()
 
-        _core_mod._set_session_state(True, "input2")
+        session.publish(True, "input2")
         try:
             result = _core_mod.get_active_track_identification_snapshot()
         finally:
-            _core_mod._set_session_state(False, None)
+            session.publish(False, None)
         assert result is input2_snap
 
     def test_waiting_snapshot_when_service_enabled_but_nothing_actively_sourcing(self):

@@ -9,6 +9,7 @@ part, so a test of a reader arranges exactly the parts it reads.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import sys
 from pathlib import Path
@@ -91,3 +92,11 @@ class FakeStore:
 
     def settings(self, generation: int):
         return self._put("settings", state.SettingsPart(generation))
+
+
+def fake_session(value: dict):
+    """Put a {"active", "source"} session into the store and return a context
+    manager that does nothing, so it can stand in a ``with`` statement where a
+    test used to patch a session getter."""
+    FakeStore().session(value["active"], value.get("source"))
+    return contextlib.nullcontext()

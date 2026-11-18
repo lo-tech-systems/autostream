@@ -32,7 +32,7 @@ owntone owntone_mini pin_pairing playback_stats player_service players rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliances dial_push dial_warnings log_policy output_usage".split()
+_L2 = "align announce appliances dial_push dial_warnings log_policy output_usage session".split()
 _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
@@ -331,16 +331,14 @@ def l2_cycle(edges) -> list[str] | None:
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_align', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_appliance_gateway', 'autostream_core', 'get_live_output_eq_status'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'any_monitor_capturing'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'clear_user_silence_latch'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_active_track_identification_snapshot'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_monitor_levels_dbfs'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_repeat_status'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'get_session_state'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'note_user_output_action'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'request_nowplaying_republish'),
+    ('C', 'autostream_appliance_models', 'autostream_session', 'request_nowplaying_republish'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'sample_rate_warning_text'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_auto_trim'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_eq'),
@@ -351,7 +349,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_dial_warnings', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'any_monitor_capturing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'apply_track_id_config_live_from_parsed'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_active_track_identification_snapshot'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_live_output_eq_status'),
@@ -359,7 +356,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_api', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_repeat_status'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_session_source_input_index'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'get_session_state'),
     ('A', 'autostream_webui_api', 'autostream_core', 'input_rate_texts'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_bearing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_belt'),

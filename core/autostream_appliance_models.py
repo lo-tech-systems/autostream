@@ -24,16 +24,13 @@ from autostream_config import (
     save_config,
 )
 from autostream_core import (
-    any_monitor_capturing,
     clear_user_silence_latch,
     get_active_track_identification_snapshot,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
     get_repeat_status,
-    get_session_state,
     note_user_output_action,
-    request_nowplaying_republish,
     sample_rate_warning_text,
     set_live_output_auto_trim,
     set_live_output_eq,
@@ -42,6 +39,8 @@ from autostream_core import (
 )
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_dial_push import notify_state_changed
+from autostream_session import request_nowplaying_republish
+from autostream_state import store
 from autostream_player_service import (
     config_airplay_mode_to_backend,
     get_setting,
@@ -258,6 +257,7 @@ def build_home_state(
     Returns a dict with keys: ok, appliance, preferences, playback, input_levels,
     warnings, outputs, vu_delay_ms.
     """
+    snap = store().snapshot()
     try:
         parsed = parse_config(locked_load_config(config_path))
     except Exception as e:
@@ -277,7 +277,7 @@ def build_home_state(
             "muted": mute_state.is_muted(),
             "vu_delay_ms": SETTING_START_BUFFER_MS_DEFAULT,
             "track_identification": disabled_snapshot().to_public_dict(),
-            **_session_and_repeat_fields(),
+            **_session_and_repeat_fields(snap),
         }
 
     try:
@@ -360,7 +360,7 @@ def build_home_state(
         "muted": mute_state.is_muted(),
         "vu_delay_ms": int(vu_delay_ms),
         "track_identification": ti_dict,
-        **_session_and_repeat_fields(),
+        **_session_and_repeat_fields(snap),
     }
 
 
@@ -374,21 +374,17 @@ def _dial_update_banner_text() -> str:
         return ""
 
 
-def _session_and_repeat_fields() -> dict:
+def _session_and_repeat_fields(snap) -> dict:
     """Return the "session" (always present) and "repeat" (present only when
     the daemon has reported one) fields for build_home_state()'s dict.
 
     Sourced identically to send_status_json (autostream_webui_api.py): the
-    session cache falls back to any_monitor_capturing() if unavailable, and
-    the repeat block is passed through verbatim when present -- omitted
-    entirely (not a KeyError) when the daemon has never reported one, so an
-    older backend degrades by absence rather than by error.
+    session comes from the caller's snapshot, and the repeat block is passed
+    through verbatim when present -- omitted entirely (not a KeyError) when
+    the daemon has never reported one, so an older backend degrades by
+    absence rather than by error.
     """
-    try:
-        session_state = get_session_state()
-    except Exception:
-        session_state = {"active": any_monitor_capturing(), "source": None}
-    fields: dict = {"session": session_state}
+    fields: dict = {"session": snap.session.as_dict()}
     try:
         repeat_status = get_repeat_status()
     except Exception:

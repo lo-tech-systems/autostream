@@ -67,15 +67,20 @@ from autostream_core import (
     _session_nowplaying_start,
     _SessionTracker,
     _set_repeat_status,
-    _set_session_state,
     _start_session_owntone,
     get_repeat_status,
-    get_session_state,
     send_live_repeat_transport,
     set_live_repeat_armed,
     set_live_repeat_armed_ack,
     set_live_repeat_enabled,
 )
+from autostream_session import publish as _set_session_state
+import autostream_state
+
+
+def get_session_state() -> dict:
+    return autostream_state.store().snapshot().session.as_dict()
+
 from autostream_monitor_client import MonitorClient
 import autostream_runtime as runtime
 
@@ -599,8 +604,7 @@ class TestP4StatusPassthrough:
         try:
             responses: list = []
             h = _handler(responses)
-            with patch("autostream_webui_api.get_playback_snapshot") as gp, \
-                 patch("autostream_webui_api.any_monitor_capturing", return_value=False):
+            with patch("autostream_webui_api.get_playback_snapshot") as gp:
                 gp.return_value.to_public_dict.return_value = {}
                 gp.return_value.stylus_banner_text = ""
                 gp.return_value.belt_banner_text = ""

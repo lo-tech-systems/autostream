@@ -28,6 +28,7 @@ if _core not in sys.path:
 import autostream_webui_api as api_mod
 import autostream_auth as auth_mod
 import autostream_watcher_client as watcher_client
+from fake_store import fake_session
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +448,7 @@ class TestSendPlayingStatusJson:
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api.get_session_state",
-                   return_value={"active": True, "source": "input1"}), \
+        with fake_session({"active": True, "source": "input1"}), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
@@ -462,9 +462,7 @@ class TestSendPlayingStatusJson:
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api.get_session_state",
-                   return_value={"active": True, "source": "replay"}), \
-             patch("autostream_webui_api.any_monitor_capturing", return_value=False), \
+        with fake_session({"active": True, "source": "replay"}), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
@@ -474,26 +472,11 @@ class TestSendPlayingStatusJson:
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api.get_session_state",
-                   return_value={"active": False, "source": None}), \
+        with fake_session({"active": False, "source": None}), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 
         assert sent[0][1]["playing"] is False
-
-    def test_session_failure_falls_back_to_capture_flag(self, tmp_path):
-        """If the session cache is unavailable, the raw capture flag still
-        answers rather than reporting uncertainty."""
-        h = _make_handler()
-        sent = []
-
-        with patch("autostream_webui_api.get_session_state", side_effect=RuntimeError("oops")), \
-             patch("autostream_webui_api.any_monitor_capturing", return_value=True), \
-             patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
-            api_mod.send_playing_status_json(h)
-
-        assert sent[0][1]["ok"] is True
-        assert sent[0][1]["playing"] is True
 
     def test_exception_returns_explicit_uncertainty(self, tmp_path):
         """Monitor-query failure returns explicit uncertainty (ok:false), never
@@ -501,8 +484,7 @@ class TestSendPlayingStatusJson:
         h = _make_handler()
         sent = []
 
-        with patch("autostream_webui_api.get_session_state", side_effect=RuntimeError("oops")), \
-             patch("autostream_webui_api.any_monitor_capturing", side_effect=RuntimeError("oops")), \
+        with patch("autostream_webui_api._session_playing", side_effect=RuntimeError("oops")), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))):
             api_mod.send_playing_status_json(h)
 

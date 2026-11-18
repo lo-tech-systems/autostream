@@ -61,6 +61,9 @@ from track_id.models import (
     disabled_snapshot,
     waiting_snapshot,
 )
+import autostream_session as session
+import autostream_state
+from fake_store import fake_session
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -163,8 +166,7 @@ def _invoke(
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
         patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_webui_api.update_output", update_mock),
-        patch("autostream_webui_api.get_session_state",
-              return_value=session_state if session_state is not None
+        fake_session(session_state if session_state is not None
               else {"active": playing, "source": "input1" if playing else None}),
         patch("autostream_webui_api.get_repeat_status", return_value=repeat_status),
         patch("autostream_core.get_active_track_identification_snapshot",
@@ -305,9 +307,7 @@ class TestPlayingField:
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
             patch("autostream_webui_api.list_outputs", return_value=_ok_list()),
-            patch("autostream_webui_api.get_session_state",
-                  return_value={"active": True, "source": "replay"}),
-            patch("autostream_webui_api.any_monitor_capturing", return_value=False),
+            fake_session({"active": True, "source": "replay"}),
             patch("autostream_webui_api.get_repeat_status", return_value=None),
             patch("autostream_core.get_active_track_identification_snapshot",
                   return_value=disabled_snapshot()),
@@ -322,7 +322,7 @@ class TestPlayingField:
         import autostream_core as core
         core._set_repeat_status(_daemon_block(
             recording={"active": False, "seconds": 42.0, "origin_input": 1}))
-        core._set_session_state(False, None)
+        session.publish(False, None)
         try:
             core.apply_repeat_ack({
                 "ok": True, "command": "repeat_seek", "state": "replaying",
@@ -330,12 +330,12 @@ class TestPlayingField:
             })
             code, body, _ = _invoke(
                 {"dial_id": DIAL_ID},
-                session_state=core.get_session_state(),
+                session_state=autostream_state.store().snapshot().session.as_dict(),
                 repeat_status=core.get_repeat_status(),
             )
         finally:
             core._set_repeat_status(None)
-            core._set_session_state(False, None)
+            session.publish(False, None)
         assert body["playing"] is True
 
     def test_playing_independent_of_outputs(self):
@@ -604,7 +604,7 @@ class TestRepeatField:
         import autostream_core as core
         core._set_repeat_status(_daemon_block(
             recording={"active": False, "seconds": 42.0, "origin_input": 1}))
-        core._set_session_state(False, None)
+        session.publish(False, None)
         try:
             core.apply_repeat_ack({
                 "ok": True, "command": "repeat_seek", "state": "replaying",
@@ -614,7 +614,7 @@ class TestRepeatField:
                 {"dial_id": DIAL_ID}, repeat_status=core.get_repeat_status())
         finally:
             core._set_repeat_status(None)
-            core._set_session_state(False, None)
+            session.publish(False, None)
         assert code == 200
         assert body["repeat"]["state"] == "replaying"
         assert body["repeat"]["held"] is False
@@ -635,8 +635,7 @@ class TestFailurePaths:
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
-            patch("autostream_webui_api.get_session_state",
-                  return_value={"active": False, "source": None}),
+            fake_session({"active": False, "source": None}),
             patch("autostream_webui_api._config_snapshot",
                   side_effect=OSError("disk full")),
         ):
@@ -661,8 +660,7 @@ class TestFailurePaths:
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
             patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
-            patch("autostream_webui_api.get_session_state",
-                  return_value={"active": False, "source": None}),
+            fake_session({"active": False, "source": None}),
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
             patch("autostream_webui_api.list_outputs",
                   side_effect=ConnectionRefusedError("refused")),

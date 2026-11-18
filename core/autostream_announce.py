@@ -15,8 +15,9 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
+import autostream_state
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import remove_avahi_playing_service, write_avahi_playing_service
 
@@ -65,25 +66,26 @@ def sync_playing_announcement(active: bool, version: str) -> None:
                 _playing_announced = False
 
 
-def _start_playing_reconciliation(version: str, session_active: Callable[[], bool]) -> None:
+def _start_playing_reconciliation(version: str) -> None:
     """Start a daemon thread that periodically re-syncs the playing announcement.
 
     Recovers from transient admin failures by re-driving the idempotent sync
-    from the current session state each tick.
+    from the session part of the state snapshot each tick.
     """
     def _reconcile() -> None:
         while True:
             time.sleep(60)
-            sync_playing_announcement(session_active(), version)
+            sync_playing_announcement(
+                autostream_state.store().snapshot().session.active, version)
 
     threading.Thread(target=_reconcile, daemon=True, name="playing-reconcile").start()
 
 
-def start_reconciliation_once(version: str, session_active: Callable[[], bool]) -> None:
+def start_reconciliation_once(version: str) -> None:
     """Start the reconciliation thread unless this process already has one."""
     global _reconcile_started
     if not _reconcile_started:
-        _start_playing_reconciliation(version, session_active)
+        _start_playing_reconciliation(version)
         _reconcile_started = True
 
 

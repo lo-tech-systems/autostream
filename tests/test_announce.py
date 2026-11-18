@@ -16,6 +16,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_announce as announce
+import autostream_state
 
 # The suite replaces this with a no-op for every test; the thread test wants the real one.
 _REAL_START = announce._start_playing_reconciliation
@@ -69,13 +70,14 @@ def test_a_failed_write_is_retried_by_the_next_sync(avahi):
 
 def test_the_reconciliation_thread_is_started_once():
     with patch.object(announce, "_start_playing_reconciliation") as start:
-        announce.start_reconciliation_once("v1", lambda: False)
-        announce.start_reconciliation_once("v1", lambda: False)
+        announce.start_reconciliation_once("v1")
+        announce.start_reconciliation_once("v1")
     start.assert_called_once()
     assert announce._reconcile_started is True
 
 
-def test_the_reconciliation_resyncs_from_the_session_it_is_given(avahi):
+def test_the_reconciliation_resyncs_from_the_session_part(avahi):
+    autostream_state.store().publish_for_tests("session", autostream_state.SessionPart(True, "input1"))
     ticks = []
 
     def fake_sleep(seconds):
@@ -86,7 +88,7 @@ def test_the_reconciliation_resyncs_from_the_session_it_is_given(avahi):
     thread = MagicMock()
     with patch.object(announce.threading, "Thread", thread), \
          patch.object(announce.time, "sleep", fake_sleep):
-        _REAL_START("v1", lambda: True)
+        _REAL_START("v1")
         body = thread.call_args.kwargs["target"]
         with pytest.raises(SystemExit):
             body()

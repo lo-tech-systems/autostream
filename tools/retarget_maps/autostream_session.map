@@ -1,0 +1,3 @@
+# The session cache and the now-playing republish request moved into autostream_session.
+autostream_core._set_session_state -> autostream_session.publish  alias=session
+autostream_core.consume_nowplaying_republish -> autostream_session.consume_nowplaying_republish  alias=session

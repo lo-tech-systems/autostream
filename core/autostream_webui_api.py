@@ -108,13 +108,11 @@ from autostream_runtime import request_config_reload
 from autostream_state import store
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
-    any_monitor_capturing,
     apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
     get_repeat_status,
-    get_session_state,
     input_rate_texts,
     sample_rate_warning_text,
     reset_input_belt,
@@ -443,14 +441,9 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     # Unified playback-session state: the authoritative
     # "playing" signal is session.active, not a raw is_capturing check,
     # so replay (daemon-side, no input is "capturing") correctly reports as
-    # playing. Falls back to any_monitor_capturing() only if the session
-    # cache is unavailable for some reason -- keeps this endpoint's existing
-    # never-raise contract.
-    try:
-        session_state = get_session_state()
-    except Exception:
-        session_state = {"active": any_monitor_capturing(), "source": None}
-    is_playing = bool(session_state.get("active"))
+    # playing.
+    session_state = snap.session.as_dict()
+    is_playing = snap.session.active
     response = {
         "playing": is_playing,
         "status_text": _status_text_for_home(is_playing, input_levels),
@@ -848,13 +841,9 @@ def _session_playing() -> bool:
 
     The outward-facing "is this appliance playing" answer for neighbours,
     dials, and local automation: reads the unified session state so repeat
-    replay counts, falling back to the raw capture flag only if the session
-    cache is unavailable.
+    replay counts.
     """
-    try:
-        return bool(get_session_state()["active"])
-    except Exception:
-        return any_monitor_capturing()
+    return bool(store().snapshot().session.active)
 
 
 def send_audio_status_json(handler, state: WebUIState) -> None:

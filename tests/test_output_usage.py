@@ -19,6 +19,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_output_usage as ou
+from fake_store import fake_session
 
 
 # ---------------------------------------------------------------------------
@@ -1049,8 +1050,7 @@ class TestAudioStatusPlayingFromSession:
             )
         with patch("autostream_webui_api._config_snapshot", return_value=parsed), \
              patch("autostream_webui_api.list_outputs", return_value=result), \
-             patch("autostream_webui_api.get_session_state", return_value=session_state), \
-             patch("autostream_webui_api.any_monitor_capturing", return_value=False):
+             fake_session(session_state):
             api_mod.send_audio_status_json(handler, state)
         return _json.loads(handler.wfile.getvalue())
 

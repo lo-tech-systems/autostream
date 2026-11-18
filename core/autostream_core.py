@@ -33,6 +33,7 @@ import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
 import autostream_runtime as runtime
+import autostream_session
 import autostream_state
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
@@ -116,12 +117,10 @@ from autostream_sysutils import (
 # that folding it into a group below would blur its meaning):
 #   (_monitors_lock and _track_id_request_gate are in autostream_runtime;
 #    the Avahi "playing" announcement lock is in autostream_announce)
-#   _nowplaying_republish_lock                -- one-shot republish-request flag
+#   (the now-playing republish-request lock is in autostream_session)
 #
-# "Session/output-arbitration state" group -- all three read together by the
+# "Output-arbitration state" group -- both read together by the
 # zero-output-watchdog-equivalent logic (_reconcile_owntone_outputs_if_wiped):
-#   _session_state_lock                       -- {active, source} session
-#                                                 summary for API reads
 #   _last_user_output_action_lock             -- last user-output-toggle
 #                                                 timestamp (selfheal input)
 #   _user_silence_latch_lock                  -- deliberate-silence flag
@@ -219,9 +218,9 @@ def get_active_track_identification_snapshot():
     """Return track identification state for the monitor actively sourcing audio.
 
     Prefers the coordinator's own session tracker over "any capturing
-    monitor": _session_state["source"] (set each poll cycle by
-    _set_session_state(), from the same _SessionTracker.update() call that
-    drives _dispatch_session_event()) names the input that is genuinely the
+    monitor": the session part's source (published each poll cycle by
+    autostream_session.publish(), from the same _SessionTracker.update() call
+    that drives _dispatch_session_event()) names the input that is genuinely the
     session's audible source -- "input1"/"input2" for a live source or
     "replay" for the replay-origin input. Without this, a probation
     transient's brief capturing flicker on a second input could hijack the
@@ -241,7 +240,7 @@ def get_active_track_identification_snapshot():
     replay, only the surfaced snapshot was wrong. That fallback scan checks
     capturing first so a live capture on another input takes priority over a
     concurrently-replaying recording when the session source is not yet
-    known (e.g. very first poll cycle before _session_state is populated).
+    known (e.g. very first poll cycle before the session is published).
     Returns a waiting snapshot when the service is configured but nothing is
     actively sourcing, or a disabled snapshot when the service itself is
     off. Never blocks.
@@ -249,7 +248,7 @@ def get_active_track_identification_snapshot():
     with runtime._monitors_lock:
         monitors = list(runtime.all_monitors)
 
-    source = get_session_state().get("source")
+    source = autostream_state.store().snapshot().session.source
     if source == "replay":
         for m in monitors:
             if m._replay_origin:
@@ -336,28 +335,6 @@ def get_repeat_status() -> Optional[dict]:
         return _repeat_status
 
 
-# ── Unified playback-session state cache ─────────────────────────────────────
-# Cached each poll cycle by the coordinator's single _SessionTracker call site
-# so /api/status can expose "session" alongside the existing "repeat"
-# passthrough, without a second daemon round trip. Same cache pattern as
-# _repeat_status above.
-
-_session_state_lock = threading.Lock()
-_session_state: dict = {"active": False, "source": None}
-
-
-def _set_session_state(active: bool, source: Optional[str]) -> None:
-    global _session_state
-    with _session_state_lock:
-        _session_state = {"active": bool(active), "source": source}
-
-
-def get_session_state() -> dict:
-    """Return the most recently computed {"active", "source"} session state."""
-    with _session_state_lock:
-        return dict(_session_state)
-
-
 def get_session_source_input_index() -> Optional[int]:
     """The input number behind the current session, or None when idle.
 
@@ -365,7 +342,7 @@ def get_session_source_input_index() -> Optional[int]:
     the replaying recording came from, as the track identification snapshot
     and the now-playing source are resolved.
     """
-    source = get_session_state().get("source")
+    source = autostream_state.store().snapshot().session.source
     if source is None:
         return None
     if source == "replay":
@@ -419,35 +396,6 @@ def _get_last_user_output_action_at() -> float:
 
 _user_silence_latch_lock = threading.Lock()
 _user_silence_latch: bool = False
-
-
-# ── Now-playing republish request ────────────────────────────────────────────
-# Set when an output is newly enabled (apply_output_mutation) or when the
-# OwnTone recovery path has just re-applied outputs after a backend restart
-# (_maybe_retry_owntone): in both cases the receiver-side backend only knows
-# the bare queue defaults until the next natural metadata push, so the
-# coordinator poll loop consumes this flag once per request and re-sends the
-# active session's current now-playing bundle. Same lock discipline as the
-# user-silence latch above (web/request threads set, coordinator consumes).
-
-_nowplaying_republish_lock = threading.Lock()
-_nowplaying_republish_pending: bool = False
-
-
-def request_nowplaying_republish() -> None:
-    """Ask the coordinator to re-send the current now-playing metadata."""
-    global _nowplaying_republish_pending
-    with _nowplaying_republish_lock:
-        _nowplaying_republish_pending = True
-
-
-def consume_nowplaying_republish() -> bool:
-    """Return-and-clear the pending republish request (coordinator loop)."""
-    global _nowplaying_republish_pending
-    with _nowplaying_republish_lock:
-        pending = _nowplaying_republish_pending
-        _nowplaying_republish_pending = False
-        return pending
 
 
 def set_user_silence_latch() -> None:
@@ -615,7 +563,8 @@ def _announce_playing_if_active(version: str) -> None:
     stop landing inside the window between this read and the write is
     corrected by the coordinator's next tick or the periodic reconciliation.
     """
-    announce.sync_playing_announcement(get_session_state()["active"], version)
+    announce.sync_playing_announcement(
+        autostream_state.store().snapshot().session.active, version)
 
 
 def _announce_replay_playing() -> None:
@@ -671,11 +620,11 @@ def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
             _repeat_status, ack)
         _set_repeat_status_locked(new_status)
 
-    if ack["state"] == "replaying" and not get_session_state()["active"]:
-        # fading_out is already an active session from the coordinator's
-        # view; hold/idle are left to its session_ended path so the OwnTone
-        # stop and now-playing end are not skipped.
-        _set_session_state(True, "replay")
+    if ack["state"] == "replaying":
+        # No-op when a session is already active (fading_out is one from the
+        # coordinator's view; hold/idle are left to its session_ended path so
+        # the OwnTone stop and now-playing end are not skipped).
+        autostream_session.note_replay_started()
 
     notify_state_changed("repeat")
 
@@ -1070,7 +1019,7 @@ def update_live_input_type(
         target._current_nowplaying = replace(
             target._default_nowplaying_metadata(), artwork=cur.artwork
         )
-    request_nowplaying_republish()
+    autostream_session.request_nowplaying_republish()
 
     return _push_input_config_with_retry(target, socket_path=socket_path)
 
@@ -1264,9 +1213,9 @@ def _session_nowplaying_start(monitor: Optional["AudioMonitor"]) -> None:
 def _republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_active: bool) -> None:
     """Re-send the active session's current now-playing bundle mid-session.
 
-    Consumed-flag counterpart of request_nowplaying_republish(): fired when a
-    newly enabled output (or a freshly restarted backend) knows only the
-    queue defaults. artwork is deliberately None -- publish_refresh()'s
+    Consumed-flag counterpart of autostream_session.request_nowplaying_republish():
+    fired when a newly enabled output (or a freshly restarted backend) knows
+    only the queue defaults. artwork is deliberately None -- publish_refresh()'s
     "no news" value -- so the publisher re-sends whatever artwork it
     currently holds (placeholder or identified cover) rather than treating
     the republish as an artwork change. Dropped silently when no session is
@@ -1967,7 +1916,7 @@ class _SelfHeal:
             # loss: the backend's queue holds only its startup defaults, so
             # the on-screen now-playing would show those until the next
             # natural push. Have the poll loop re-send the current bundle.
-            request_nowplaying_republish()
+            autostream_session.request_nowplaying_republish()
             return
 
         monitor._owntone_recovery_log.fail(now)
@@ -4879,8 +4828,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
             len(monitors),
         )
 
-        announce.start_reconciliation_once(
-            version, session_active=lambda: get_session_state()["active"])
+        announce.start_reconciliation_once(version)
 
         _start_output_usage_poller(cfg)
 
@@ -5091,7 +5039,9 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     session_event, session_prev_monitor, session_new_monitor,
                     cfg.owntone.base_url, new_source=session_source,
                 )
-                _set_session_state(session_source is not None, session_source)
+                autostream_session.publish(
+                    session_source is not None, session_source,
+                    edge=session_event is not None)
 
                 # The LAN "playing" announcement is a consumer of the session
                 # state (so repeat replay counts, not just live capture); the
@@ -5121,9 +5071,9 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 )
                 # A newly enabled output or a just-recovered backend has
                 # requested the current now-playing bundle be re-sent (see
-                # request_nowplaying_republish()); consume at most one
-                # request per cycle.
-                if consume_nowplaying_republish():
+                # autostream_session.request_nowplaying_republish()); consume
+                # at most one request per cycle.
+                if autostream_session.consume_nowplaying_republish():
                     _republish_current_nowplaying(
                         session_new_monitor, session_source is not None,
                     )

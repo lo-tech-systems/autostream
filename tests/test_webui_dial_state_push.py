@@ -36,6 +36,7 @@ import autostream_dial_push as dp
 import autostream_webui_dials as wd
 from autostream_dials import DialSighting
 import autostream_state as state
+import autostream_session as session
 
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
 PATH = "/state-changed"
@@ -878,10 +879,10 @@ class TestRepeatAndLoopCallSites:
                 core._repeat_status_lock.release()
             seen.append((kinds, kw, free,
                          core.get_repeat_status()["replay"]["active"],
-                         core.get_session_state()["active"]))
+                         state.store().snapshot().session.active))
 
         core._set_repeat_status(self._block() if cached else None)
-        core._set_session_state(False, None)
+        session.publish(False, None)
         try:
             with patch("autostream_core._rearm_replay_identification"), \
                  patch("autostream_core._announce_replay_playing"), \
@@ -889,7 +890,7 @@ class TestRepeatAndLoopCallSites:
                 result = core.apply_repeat_ack(ack)
         finally:
             core._set_repeat_status(None)
-            core._set_session_state(False, None)
+            session.publish(False, None)
         return result, n, seen
 
     def test_a_repeat_ack_hints_repeat_after_the_state_is_written(self):

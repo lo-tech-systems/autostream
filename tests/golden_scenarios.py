@@ -447,6 +447,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     fake.monitor(monitor_build="golden", log_level="info",
                  connected=scenario.monitor_connected, last_seen_at=1000.0)
     fake.health(**scenario.selfheal)
+    fake.session(scenario.session.get("active"), scenario.session.get("source"))
     sample_rate_text = "Sample rate: 44.1 kHz"
     rate_note = core.RATE_MATCHING_NOTE_DEFAULT
 
@@ -464,7 +465,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
             monkeypatch.setattr(module, name, value)
 
     shared = dict(
-        get_session_state=lambda: dict(scenario.session),
         get_repeat_status=lambda: scenario.repeat,
         get_playback_snapshot=lambda: scenario.playback,
         get_monitor_levels_dbfs=lambda: [dict(lv) for lv in levels],
@@ -473,7 +473,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
         get_appliance_id=lambda: APPLIANCE_ID,
         get_app_version=lambda: FIXED_APP_VERSION,
         _dial_update_banner_text=lambda: "",
-        any_monitor_capturing=lambda: bool(scenario.session.get("active")),
     )
     setattrs(api, **shared,
              input_rate_texts=input_rate_texts,
