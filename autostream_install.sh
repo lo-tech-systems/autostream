@@ -96,6 +96,8 @@ source "${INSTALLER_LIB}/hardware.sh"
 source "${INSTALLER_LIB}/bluetooth.sh"
 # shellcheck source=installer/lib/handover.sh
 source "${INSTALLER_LIB}/handover.sh"
+# shellcheck source=installer/lib/deploy_manifest.sh
+source "${INSTALLER_LIB}/deploy_manifest.sh"
 
 #############################################
 # Globals
@@ -1224,6 +1226,10 @@ configure_phase() {
   info "Configuring nginx"
   cp -a "${AUTOSTREAM_DIR}/nginx"  "${INSTALL_DIR}/"
   cp -a "${AUTOSTREAM_DIR}/images" "${INSTALL_DIR}/"
+  # Both trees are in place: drop what the previous release shipped and this
+  # one does not, then record what this one ships.
+  deploy_manifest_prune "${INSTALL_DIR}" "${AUTOSTREAM_DIR}"
+  deploy_manifest_write "${INSTALL_DIR}" "${AUTOSTREAM_DIR}"
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/autostream-nginx.conf"          /etc/nginx/sites-available/autostream-nginx.conf
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/autostream-nginxd.conf"         /etc/nginx/conf.d/autostream-nginxd.conf
   install -m 0644 -o root -g root "${AUTOSTREAM_DIR}/system/nginx/99-autostream-access-log.conf"  /etc/nginx/conf.d/99-autostream-access-log.conf
