@@ -3255,6 +3255,24 @@ class TestOutputStateEvents:
         send(ew, "1", "streaming", selected=True, at_s=4.0)
         assert snap().unit("1").availability == "ok" and snap().start_failure is None
 
+    def test_stopping_straight_back_to_connecting(self, aw):
+        ew = aw
+        ew.a.note_session(True)
+        put(ew, [group_row(1, "streaming", selected=True), group_row(2)])
+        ew.a.deselect("1", Origin.USER)
+        send(ew, "1", "stopping", selected=False, at_s=0.1)
+        assert snap().unit("1").stopping is True
+        ew.a.select("1", Origin.USER, volume=30)
+        # Selected again before the stop ended: the player starts it without a stopped
+        send(ew, "1", "connecting", selected=True, at_s=0.2)
+        u = snap().unit("1")
+        assert u.selected is True and u.connecting is True and u.stopping is False
+        assert u.availability == "starting"
+        send(ew, "1", "streaming", selected=True, at_s=0.9)
+        u = snap().unit("1")
+        assert u.availability == "ok" and u.connecting is False and snap().start_failure is None
+        assert len(selects(ew)) == 1
+
     def test_lost_starts_the_midsession_retry(self, aw):
         ew = aw
         ew.a.note_session(True)

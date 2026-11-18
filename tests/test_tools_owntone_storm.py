@@ -950,9 +950,10 @@ def test_the_transition_table_rejects_streaming_after_stopped(tmp_path):
     assert storm.illegal_transitions(["streaming", "stopped", "streaming"]) == [
         "streaming after stopped without connecting"]
     assert storm.illegal_transitions(["stopped", "connected"]) == ["connected after stopped without connecting"]
-    assert storm.illegal_transitions(["streaming", "stopping", "connecting", "stopped"]) == [
-        "connecting while stopping, before stopped"]
+    # Selected again while stopping: back to connecting without stopped
+    assert storm.illegal_transitions(["streaming", "stopping", "connecting", "streaming"]) == []
     assert storm.illegal_transitions(["streaming", "stopping", "failed"]) == ["failed while stopping, before stopped"]
+    assert storm.illegal_transitions(["stopping", "connecting", "failed"]) == []
     # A start that fails and is tried again, and a probe while nothing plays
     assert storm.illegal_transitions(["connecting", "failed", "connecting", "streaming"]) == []
     assert storm.illegal_transitions(["connecting", "stopped", "connecting", "connected", "streaming"]) == []

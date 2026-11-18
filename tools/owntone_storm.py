@@ -120,7 +120,8 @@ Scenarios:
 When the daemon sends output_state events, every scenario also checks the
 event stream: each speaker's own phases (member_state) must not go from
 stopped to connected or streaming without connecting between, nor from
-stopping to connecting or failed without stopped between; every event
+stopping to failed without stopped between (a speaker selected again while
+stopping may go straight back to connecting); every event
 carries member_state; each member of --pair sends its own events; and each
 accepted select of a speaker that was not already live shows connecting
 within a second of its answer.
@@ -400,19 +401,19 @@ def pause_after_anchor(sequence, members: int) -> tuple:
 def illegal_transitions(states) -> list:
     """What is wrong with one speaker's own phases, in the order reported:
     connected or streaming straight after stopped (a start always shows
-    connecting first), and a stop that ends otherwise than stopped (no
-    connecting or failed while stopping)."""
+    connecting first), and a stop that fails before it ends. A speaker
+    selected again while stopping may go straight back to connecting."""
     problems = []
     stopped = stopping = False
     for state in states:
         if state in ("connected", "streaming") and stopped:
             problems.append(f"{state} after stopped without connecting")
-        if stopping and state in ("connecting", "failed"):
+        if stopping and state == "failed":
             problems.append(f"{state} while stopping, before stopped")
         if state == "stopped":
             stopped, stopping = True, False
         elif state == "connecting":
-            stopped = False
+            stopped = stopping = False
         elif state == "stopping":
             stopping = True
         elif state == "failed":
