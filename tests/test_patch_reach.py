@@ -407,7 +407,6 @@ def findings(core_dir: Path, tests_dir: Path) -> set[tuple[str, int, str, str]]:
 # ---------------------------------------------------------------------------
 
 PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
-    ('golden_scenarios.py', 2, 'autostream_player_service', 'update_output'),
     ('playwright/test_dial_card_surface.py', 1, 'autostream_webui_page_setup', 'suggested_silence_threshold_dbfs'),
     ('playwright/test_ui_flows.py', 1, 'autostream_webui_page_setup', 'suggested_silence_threshold_dbfs'),
     ('test_appliance_models.py', 1, 'autostream_output_usage', 'annotate_outputs'),
@@ -430,7 +429,6 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_dial_registry.py', 2, 'autostream_sysutils', 'atomic_write_file'),
     ('test_dial_warnings_provider.py', 2, 'autostream_system_stats', '_read_get_throttled_value'),
     ('test_federation_api.py', 1, 'autostream_webui_common', '_config_snapshot'),
-    ('test_federation_api.py', 2, 'autostream_player_service', 'update_output'),
     ('test_federation_api.py', 2, 'autostream_webui_common', '_config_snapshot'),
     ('test_monitor_daemon_recovery_log.py', 1, 'autostream_log_policy', 'apply_startup_log_level'),
     ('test_monitor_daemon_recovery_log.py', 2, 'autostream_log_policy', 'apply_startup_log_level'),
@@ -474,7 +472,6 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_webui_post_handlers.py', 1, 'autostream_webui_post_handlers', 'build_top_banner_html'),
     ('test_webui_post_handlers.py', 2, 'autostream_appliance_models', 'submit_output_change'),
     ('test_webui_post_handlers.py', 2, 'autostream_appliances', 'reconcile_appliance_announcement'),
-    ('test_webui_post_handlers.py', 2, 'autostream_player_service', 'update_output'),
     ('test_webui_post_handlers.py', 2, 'autostream_webui_common', 'get_app_version'),
     ('test_wp2_log_level_api.py', 1, 'autostream_log_policy', 'get_log_level_state'),
     ('test_wp2_log_level_api.py', 2, 'autostream_log_policy', 'get_log_level_state'),

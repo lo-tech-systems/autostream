@@ -1,6 +1,8 @@
 """Tests for dial volume fan-out and partial target failures.
 
-Covers send_dial_volume_post_json in autostream_webui_api:
+Covers send_dial_volume_post_json in autostream_webui_api, over the output
+authority (the speakers are arranged in its snapshot; its writes go to a
+patched player service):
 1. Authorization guards (missing/empty/unauthorized dial_id).
 2. Delta validation (None, float, bool, str).
 3. Config load failure → config_error.
@@ -27,6 +29,7 @@ if _core not in sys.path:
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 from autostream_webui_api import send_dial_volume_post_json
 from autostream_webui_state import WebUIState
+from fake_store import FakeStore
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -83,6 +86,11 @@ def _invoke(
 
     parsed = MagicMock()
     parsed.owntone.base_url = BASE_URL
+    parsed.owntone.volume_percent = 20
+    if list_result.ok:
+        FakeStore().outputs(list(list_result.outputs))
+    else:
+        FakeStore().outputs_unreachable()
 
     def _cfg_snapshot(state):
         if config_error:
@@ -91,8 +99,7 @@ def _invoke(
 
     with patch("autostream_webui_api.dial_authorization", return_value="authorized" if authorized else "not_authorized"), \
          patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot), \
-         patch("autostream_webui_api.list_outputs", return_value=list_result), \
-         patch("autostream_webui_api.update_output", update_mock):
+         patch("autostream_player_service.update_output", update_mock):
         send_dial_volume_post_json(handler, state, json_obj)
 
     code, body = _response(handler)

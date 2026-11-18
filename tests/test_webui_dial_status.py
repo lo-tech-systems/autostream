@@ -173,7 +173,7 @@ def _invoke(
         patch("autostream_webui_api.dial_speaks_v2", return_value=speaks_v2),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api._config_snapshot", side_effect=_cfg_snapshot),
-        patch("autostream_webui_api.update_output", update_mock),
+        patch("autostream_player_service.update_output", update_mock),
         fake_session(session_state if session_state is not None
               else {"active": playing,
                     "source": f"input{source_input or 1}" if playing else None}),

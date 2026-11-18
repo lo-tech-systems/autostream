@@ -18,12 +18,11 @@ from __future__ import annotations
 
 import logging
 
-import autostream_mute_state as mute_state
 import autostream_output_usage as output_usage
 import autostream_pin_pairing as pairing
 from autostream_intents.table import Intent, Outcome, bind
 from autostream_state import Origin, store
-from autostream_state.outputs import WriteOutcome, get_authority, wait_outcome
+from autostream_state.outputs import WriteOutcome, get_authority, set_pin_claim_handler, wait_outcome
 
 _OWNER = "autostream_output_intents"
 _DEFAULT_VOLUME = 50
@@ -59,21 +58,16 @@ def _enable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
     cause = Origin.USER if user else Origin.SYSTEM
     authority = get_authority()
 
-    if already_on and user and mute_state.is_muted():
-        # A deliberate volume change on a speaker while muted is the unmute:
-        # it sounds at the level just chosen, not the remembered one.
-        mute_state.end_mute()
-    elif already_on and mute_state.remember_level(out_id, volume):
-        # Not the user (the coordinator): the level it returns to moves, the
-        # speaker stays silent.
-        return {"ok": True, "id": out_id}
-
+    # The authority holds the mute: a deliberate volume change on a muted
+    # speaker is its unmute (it sounds at the level just chosen); any other
+    # caller only moves the level it returns to; a speaker that joins a muted
+    # selection comes on silent.
     if already_on:
         applied = authority.set_volume(out_id, volume, cause, requester=intent.requester)
     else:
         applied = authority.select(
             out_id, cause, volume=volume, offset_ms=args.get("offset_ms"),
-            mode=args.get("mode"), requester=intent.requester,
+            mode=args.get("mode"), requester=intent.requester, claimant=intent.context,
         )
     if applied.refused is not None:
         return {"ok": False, "id": out_id, "error": applied.refused}
@@ -96,16 +90,6 @@ def _enable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
             return {"ok": False, "id": out_id, "error": "encoder_capacity"}
         return {"ok": False, "id": out_id, "error": outcome.error, "pin_invalid": False}
 
-    if not already_on and mute_state.remember_level(out_id, volume):
-        # It joined a muted appliance: it sounds only when the mute ends, at
-        # the level just asked for.
-        silenced = authority.set_volume(out_id, 0, Origin.SYSTEM, requester=intent.requester)
-        quiet = _first(wait_outcome(silenced, wait))
-        if not quiet.ok:
-            logging.warning(
-                "outputs.set: could not silence newly-enabled output %s under mute: %s",
-                out_id, quiet.error,
-            )
     return {"ok": True, "id": out_id}
 
 
@@ -117,7 +101,6 @@ def _disable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
     outcome = _first(wait_outcome(applied, wait))
     if not outcome.ok:
         return _failure(out_id, outcome)
-    mute_state.forget_output(out_id)
     return {"ok": True, "id": out_id}
 
 
@@ -203,7 +186,94 @@ def _select_default(intent: Intent, wait: float) -> Outcome:
     return Outcome(ok=True)
 
 
+def _step_levels(intent: Intent, wait: float, applied) -> dict:
+    """The reply body of a volume step or a restore from mute."""
+    outcomes = wait_outcome(applied, wait) if applied.outcome is not None else ()
+    master = applied.master
+    if applied.restored:
+        body: dict = {"ok": True, "muted": False}
+    elif applied.muted:
+        return {"ok": True, "volume": master, "muted": True}
+    else:
+        body = {"ok": True, "volume": master, "muted": False}
+    if any(o.pending for o in outcomes):
+        return {"ok": True, "volume": master, "muted": store().snapshot().outputs.muted_all}
+    failed = sum(1 for o in outcomes if not o.ok)
+    for o in outcomes:
+        if not o.ok:
+            logging.warning("volume.step: update_output: %s", o.error)
+    if outcomes and failed == len(outcomes):
+        body = {"ok": False, "error": "all_outputs_failed"}
+        if applied.restored:
+            body["volume"] = None
+        return body
+    if failed:
+        if applied.restored:
+            body["partial"] = True
+        else:
+            body = {"ok": True, "volume": master, "partial": True, "muted": False}
+    if applied.restored:
+        body["volume"] = master
+    return body
+
+
+def _refusal(applied) -> dict:
+    return {"ok": False, "error": "backend_unavailable" if applied.refused == "not_connected" else applied.refused}
+
+
+def _volume_step(intent: Intent, wait: float) -> Outcome:
+    """Move the volume of every selected speaker together. While muted, a
+    step down changes nothing and a step up is a plain restore."""
+    args = intent.args
+    applied = get_authority().step_volume(
+        args["delta"], Origin.USER, default_level=args["default_level"], requester=intent.requester,
+    )
+    result = _refusal(applied) if applied.refused is not None else _step_levels(intent, wait, applied)
+    return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
+
+
+def _mute_set(intent: Intent, wait: float) -> Outcome:
+    """Mute every selected speaker, or restore them to their remembered
+    levels. Both are idempotent."""
+    args = intent.args
+    authority = get_authority()
+    if args["action"] == "mute":
+        applied = authority.mute_all(Origin.USER, requester=intent.requester)
+        muted = True
+    else:
+        applied = authority.unmute_all(
+            Origin.USER, default_level=args["default_level"], requester=intent.requester,
+        )
+        muted = False
+    if applied.refused is not None:
+        result = _refusal(applied)
+    else:
+        outcomes = wait_outcome(applied, wait) if applied.outcome is not None else ()
+        failed = 0
+        for o in outcomes:
+            if not o.ok:
+                failed += 1
+                logging.warning("mute.set: update_output: %s", o.error)
+        if any(o.pending for o in outcomes):
+            result = {"ok": True, "muted": store().snapshot().outputs.muted_all}
+        elif outcomes and failed == len(outcomes):
+            result = {"ok": False, "error": "all_outputs_failed"}
+        elif failed:
+            result = {"ok": True, "muted": muted, "partial": True}
+        else:
+            result = {"ok": True, "muted": muted}
+    return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
+
+
+def _claim_late_pin(unit_id: str, claimant: str) -> None:
+    pairing.claim(unit_id, claimant)
+
+
+set_pin_claim_handler(_claim_late_pin)
+
 bind("outputs.set", _outputs_set, owner=_OWNER)
 bind("output.pin.submit", _output_pin_submit, owner=_OWNER)
 bind("outputs.select_default", _select_default, owner=_OWNER)
 bind("outputs.deselect_all", _deselect_all, owner=_OWNER)
+bind("volume.step", _volume_step, owner=_OWNER)
+bind("mute.set", _mute_set, owner=_OWNER)

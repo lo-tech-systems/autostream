@@ -161,6 +161,7 @@ class StartFailure:
     name: str                               # display name at the time of the failure
     reason: str                             # "pin_required" | "encoder_capacity" | "refused" | "failed" | "timed_out"
     at: float                               # wall clock; not in the digest
+    requester: Optional[str] = None         # who asked for the start ("webui", "dial:<id>", "peer"); None: the coordinator
     # With the store's boot id, (boot, seq) names one failure for ever: a
     # client that keeps the last seq it showed shows nothing twice, including
     # across its own reloads, and resets on a new boot.

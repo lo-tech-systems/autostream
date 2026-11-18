@@ -387,7 +387,7 @@ class TestOutputOffset:
         with patch("autostream_webui_api.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_capabilities", return_value=caps), \
              patch("autostream_player_service.supports_live_offset", return_value=True), \
-             patch("autostream_webui_api.update_output") as m_update:
+             patch("autostream_player_service.update_output") as m_update:
             m_update.return_value = ActionResult(ok=True)
             send_owntone_output_offset_json(handler, state, body)
         assert sent["body"]["ok"] is True
@@ -411,7 +411,7 @@ class TestOutputOffset:
         with patch("autostream_webui_api.update_live_owntone_runtime"), \
              patch("autostream_player_service.get_capabilities", return_value=caps), \
              patch("autostream_player_service.supports_live_offset", return_value=False), \
-             patch("autostream_webui_api.update_output") as m_update:
+             patch("autostream_player_service.update_output") as m_update:
             send_owntone_output_offset_json(handler, state, body)
         assert sent["body"]["ok"] is True
         assert sent["body"]["applied_live"] is False

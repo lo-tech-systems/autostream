@@ -13,7 +13,6 @@ import math
 import time
 from typing import Optional
 
-import autostream_mute_state as mute_state
 import autostream_pin_pairing as pairing
 from autostream_config import (
     CONFIG_IO_LOCK,
@@ -104,9 +103,9 @@ def build_output_list(parsed, units) -> list[dict]:
     is_default, needs_auth_key, requires_auth, pin_pending, pin_claim
     (the requester currently entering a PIN for the output, or "").
 
-    "volume" is the INTENDED level (autostream_mute_state.intended_level):
-    while the appliance is muted this is the level the output will return to
-    on restore, not its actual (silenced) OwnTone volume -- so every consumer
+    "volume" is the INTENDED level (the unit's own volume in the snapshot):
+    while the output is muted this is the level it will return to on
+    restore, not its actual (silenced) OwnTone volume -- so every consumer
     of this list (the WebUI's per-output sliders and client-side master
     average, the dial's outputs list and detail page) shows the same number
     regardless of the mute.
@@ -135,7 +134,7 @@ def build_output_list(parsed, units) -> list[dict]:
             "id": out_id,
             "name": name,
             "selected": selected,
-            "volume": mute_state.intended_level(out_id, vol),
+            "volume": vol,
             "is_default": (name == default_output_name),
             "needs_auth_key": bool(row.needs_auth_key),
             "requires_auth": bool(row.requires_auth),
@@ -187,7 +186,7 @@ def build_home_state(
                 "stylus": "", "belt": "", "bearing": "", "dial_update": "", "sample_rate": "",
             },
             "outputs": [],
-            "muted": mute_state.is_muted(),
+            "muted": snap.outputs.muted_all,
             "vu_delay_ms": SETTING_START_BUFFER_MS_DEFAULT,
             "track_identification": disabled_snapshot().to_public_dict(),
             **_session_and_repeat_fields(snap),
@@ -247,7 +246,7 @@ def build_home_state(
             "sample_rate": snap.inputs.sample_rate_warning_text,
         },
         "outputs": outputs,
-        "muted": mute_state.is_muted(),
+        "muted": snap.outputs.muted_all,
         "vu_delay_ms": int(vu_delay_ms),
         "track_identification": ti_dict,
         **_session_and_repeat_fields(snap),

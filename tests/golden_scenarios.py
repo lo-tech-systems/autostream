@@ -380,10 +380,6 @@ class FakeMonitorClient:
             "armed": bool(armed)}
 
 
-def _quiet(*_a, **_k) -> None:
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
@@ -411,7 +407,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_appliance_models as models
     import autostream_monitor_client as monitor_client
     import autostream_federation as federation
-    import autostream_mute_state as mute_state
     import autostream_player_service as player_service
     import autostream_repeat
     import autostream_state as state
@@ -420,22 +415,14 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_webui_api as api
     import autostream_webui_page_airplay as airplay
     from autostream_dials import AUTH_AUTHORIZED
-    from autostream_players import ActionResult, ListOutputsResult
+    from autostream_players import ActionResult
     from autostream_state.outputs import get_authority
     from fake_store import FakeStore, fake_track
 
     rec = Recorder()
     cfg = parsed_config()
-    mute_state.reset_for_tests()
     # Each case starts from an authority that has adopted nothing.
     get_authority().reset_for_tests()
-    if scenario.muted_levels:
-        mute_state.begin_mute(dict(scenario.muted_levels))
-
-    def list_outputs(base_url, timeout=None):
-        if scenario.outputs is None:
-            return ListOutputsResult(ok=False, error="connection refused")
-        return ListOutputsResult(ok=True, outputs=tuple(scenario.outputs))
 
     def get_setting(base_url, key, timeout=None):
         if scenario.setting_raises:
@@ -451,6 +438,8 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     # The readers take the output list from the authority's snapshot.
     if scenario.outputs is None:
         fake.outputs_unreachable()
+    elif scenario.muted_levels:
+        _begin_mute(scenario, fake, monkeypatch)
     else:
         fake.outputs(list(scenario.outputs))
     fake.monitor(monitor_build="golden", log_level="info",
@@ -482,7 +471,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
             monkeypatch.setattr(module, name, value)
 
     shared = dict(
-        list_outputs=list_outputs,
         get_appliance_id=lambda: APPLIANCE_ID,
         get_app_version=lambda: FIXED_APP_VERSION,
         _dial_update_banner_text=lambda: "",
@@ -491,9 +479,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True,
              _config_snapshot=lambda state: cfg,
-             get_live_output_eq_status=lambda: scenario.eq_status,
-             update_output=update_output,
-             notify_state_changed=_quiet)
+             get_live_output_eq_status=lambda: scenario.eq_status)
     setattrs(models, **{k: v for k, v in shared.items() if k not in ("get_app_version", "list_outputs")},
              get_app_version=lambda: FIXED_APP_VERSION,
              get_setting=get_setting,
@@ -528,6 +514,24 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     # The output authority makes its writes here; the case records them.
     monkeypatch.setattr(player_service, "update_output", update_output)
     return rec
+
+
+def _begin_mute(scenario: Scenario, fake, monkeypatch) -> None:
+    """Mute the scenario's selected outputs through the authority, so that each
+    remembers the level in muted_levels. The rows are first read at those
+    levels, and read again at the scenario's own once the mute is held."""
+    import dataclasses
+    import autostream_player_service as player_service
+    from autostream_players import ActionResult
+    from autostream_state import Origin
+    from autostream_state.outputs import get_authority
+    monkeypatch.setattr(player_service, "update_output", lambda *a, **k: ActionResult(ok=True))
+    fake.outputs([
+        dataclasses.replace(r, volume_percent=scenario.muted_levels.get(r.id, r.volume_percent))
+        for r in scenario.outputs
+    ])
+    get_authority().mute_all(Origin.USER)
+    fake.outputs(list(scenario.outputs))
 
 
 def _parse_without_hardware_probe(data: dict, state: Optional[dict] = None):
@@ -653,8 +657,6 @@ def run_case(route: Route, scenario: Scenario, monkeypatch) -> dict:
     if rec.unpatched:
         raise AssertionError(
             f"{case_key(route, scenario)}: unpatched backend calls {rec.unpatched}")
-    import autostream_mute_state as mute_state
-    mute_state.reset_for_tests()
     body = handler.body()
     return {
         "status": handler.status,

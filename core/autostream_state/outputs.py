@@ -16,6 +16,10 @@ Threads (started mode, which production uses):
   outputs-events     the event source (owned and described in
                      autostream_backend_events); it only enqueues.
 
+A speaker's mute (the level it returns to) is part of the desired state and
+lives in the memory of the process only; the end of a session clears every
+mute.
+
 Without threads (tests, and before start()), an intent runs its write on the
 calling thread once the desired change has been published, and reads happen
 when step() or merge_for_tests() is called.
@@ -85,6 +89,16 @@ _threads_allowed = True
 # A write that has nothing to send yet and waits for a later read.
 _HOLD = object()
 
+# Called as fn(unit_id, claimant) when a speaker asks for a PIN after the
+# request that switched it on has stopped waiting. The module that owns PIN
+# pairing installs it; the authority only knows there may be one.
+_pin_claim_handler: Optional[Callable[[str, str], None]] = None
+
+
+def set_pin_claim_handler(fn: Optional[Callable[[str, str], None]]) -> None:
+    global _pin_claim_handler
+    _pin_claim_handler = fn
+
 
 # ---------------------------------------------------------------------------
 # Results
@@ -103,6 +117,9 @@ class Applied:
     version: int                                       # store version with the desired change
     outcome: Optional["concurrent.futures.Future"]     # one WriteOutcome per write; None: no write
     refused: Optional[str] = None                      # "unknown_output", "not_connected", "no_active_outputs"
+    master: Optional[int] = None                       # volume and mute intents: the master level the request leaves
+    muted: Optional[bool] = None                       # volume and mute intents: whether the selection is muted after it
+    restored: bool = False                             # a volume step that was a restore from mute
 
 
 def wait_outcome(applied: Applied, wait: float) -> tuple:
@@ -118,6 +135,10 @@ def wait_outcome(applied: Applied, wait: float) -> tuple:
     try:
         return future.result(timeout=max(0.0, wait))
     except concurrent.futures.TimeoutError:
+        abandon = getattr(future, "abandon", None)
+        if abandon is not None and not abandon():
+            # The outcome landed between the timeout and now.
+            return future.result(timeout=0)
         expected = getattr(future, "expected", 1)
         LOG.debug("Output write still pending after %.1fs; replying as pending", wait)
         return tuple(WriteOutcome(ok=True, pending=True) for _ in range(expected))
@@ -214,6 +235,7 @@ class UnitState:
     attempt: bool = False             # a start made by the authority has not yet shown its result
     after_boot: bool = False          # the player restarted since this unit last matched
     diff_since: dict = field(default_factory=dict)
+    requester: Optional[str] = None   # who asked for the current attempt
 
 
 class _OwnedLock:
@@ -259,17 +281,31 @@ class _Batch:
         self.future.expected = count  # type: ignore[attr-defined]
         self._results: list = [None] * count
         self._left = count
+        self._abandoned = False
         self._lock = threading.Lock()  # a leaf
+        self.future.abandon = self.abandon  # type: ignore[attr-defined]
 
-    def done(self, index: int, outcome: WriteOutcome) -> None:
+    def abandon(self) -> bool:
+        """The caller stops waiting. False when every outcome is already in."""
+        with self._lock:
+            if self._left == 0:
+                return False
+            self._abandoned = True
+            return True
+
+    def done(self, index: int, outcome: WriteOutcome) -> bool:
+        """Record one outcome. True when the caller had already stopped
+        waiting for this batch."""
         with self._lock:
             if self._results[index] is not None:
-                return
+                return False
             self._results[index] = outcome
             self._left -= 1
             finished = self._left == 0
+            gone = self._abandoned
         if finished:
             self.future.set_result(tuple(self._results))
+        return gone
 
 
 @dataclass
@@ -279,6 +315,8 @@ class _Write:
     seq: int                          # the unit's desired_seq when the write was queued
     params: dict
     sinks: list                       # (batch, index) pairs waiting for the outcome
+    requester: Optional[str] = None   # who asked, as the intent named them
+    claimant: Optional[str] = None    # the identity that can enter a PIN for the speaker
 
 
 class _Effects:
@@ -494,6 +532,18 @@ class OutputAuthority:
             return all(u.desired.muted for u in selected)
         return self._mute_held
 
+    def _master_locked(self) -> Optional[int]:
+        """The level the selected speakers stand at, as a dial shows it: the
+        mean of their intended levels, rounded up."""
+        levels = [
+            _clamp(u.desired.remembered_level if u.desired.muted and u.desired.remembered_level is not None
+                   else u.desired.volume)
+            for u in self._selected_locked()
+        ]
+        if not levels:
+            return None
+        return -(-sum(levels) // len(levels))
+
     def _build_part_locked(self) -> OutputsPart:
         views = []
         for u in self._ordered_units_locked():
@@ -552,10 +602,10 @@ class OutputAuthority:
             self._wq.append(w)
             self._wq_cond.notify()
 
-    def _finish_intent(self, pending, future) -> Applied:
+    def _finish_intent(self, pending, future, **extra) -> Applied:
         pending.notify()
         self._after_intent()
-        return Applied(version=pending.version, outcome=future)
+        return Applied(version=pending.version, outcome=future, **extra)
 
     def _after_intent(self) -> None:
         """Without threads, run the queued writes here, with no lock held."""
@@ -564,7 +614,7 @@ class OutputAuthority:
 
     def select(self, unit_id: str, cause: Origin, *, volume: Optional[int] = None,
                offset_ms: Optional[int] = None, mode: Optional[str] = None,
-               requester: Optional[str] = None) -> Applied:
+               requester: Optional[str] = None, claimant: Optional[str] = None) -> Applied:
         self._touched = True
         now = self._clock()
         vol = None if volume is None else _clamp(volume)
@@ -589,12 +639,13 @@ class OutputAuthority:
             u.retry_at = None
             u.retry_backoff = RETRY_MIN_S
             u.diff_since.clear()
+            u.requester = requester
             self._stamp(u, cause, now)
             batch = _Batch(1)
             self._enqueue(_Write(
                 "select", unit_id, u.desired_seq,
                 {"volume": vol, "offset_ms": offset_ms, "mode": mode, "cause": cause},
-                [(batch, 0)],
+                [(batch, 0)], requester=requester, claimant=claimant,
             ))
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, batch.future)
@@ -715,15 +766,22 @@ class OutputAuthority:
             selected = self._selected_locked()
             if not selected:
                 return self._refused("no_active_outputs")
+            restored = False
             if self._muted_all_locked():
                 if delta <= 0:
                     # Nothing is lower than silent; stay muted.
-                    return Applied(version=store().snapshot().version, outcome=None)
+                    return Applied(
+                        version=store().snapshot().version, outcome=None,
+                        master=self._master_locked(), muted=True,
+                    )
                 changed = self._unmute_all_locked(cause, default_level, now)
+                restored = True
+                master = self._master_locked()
             else:
                 audible = [u for u in selected if not u.desired.muted]
                 current = round(sum(u.desired.volume for u in audible) / len(audible))
                 new_master = _clamp(current + int(delta))
+                master = new_master
                 changed = []
                 for u in audible:
                     d = u.desired
@@ -734,7 +792,7 @@ class OutputAuthority:
                         changed.append(u)
             future = self._queue_volume_writes_locked(changed)
             pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, future)
+        return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
 
     def mute_all(self, cause: Origin, *, requester: Optional[str] = None) -> Applied:
         self._touched = True
@@ -758,8 +816,9 @@ class OutputAuthority:
                     changed.append(u)
             self._mute_held = True
             future = self._queue_volume_writes_locked(changed)
+            master = self._master_locked()
             pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, future)
+        return self._finish_intent(pending, future, master=master, muted=True)
 
     def unmute_all(self, cause: Origin, *, default_level: int,
                    requester: Optional[str] = None) -> Applied:
@@ -772,8 +831,9 @@ class OutputAuthority:
                 return self._refused("no_active_outputs")
             changed = self._unmute_all_locked(cause, default_level, now)
             future = self._queue_volume_writes_locked(changed)
+            master = self._master_locked()
             pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, future)
+        return self._finish_intent(pending, future, master=master, muted=False)
 
     def mute(self, unit_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
         self._touched = True
@@ -865,6 +925,7 @@ class OutputAuthority:
                 return
             d.muted = False
             d.remembered_level = None
+            self._mute_held = False
             if u.reported is not None:
                 d.volume = u.reported.volume_percent
             self._stamp(u, Origin.DEVICE, now)
@@ -1086,6 +1147,7 @@ class OutputAuthority:
             pending = self._publish_locked(Origin.BACKEND, None)
         pending.notify()
         fx.run()
+        self._after_intent()
 
     def _row_state(self, row: OutputInfo) -> str:
         """The start state the row reports for the unit: the session's, or the
@@ -1115,11 +1177,12 @@ class OutputAuthority:
                 avail = "failed"
         return avail
 
-    def _start_failure_locked(self, u: UnitState, reason: str) -> None:
+    def _start_failure_locked(self, u: UnitState, reason: str, requester: Optional[str] = None) -> None:
         self._failure_seq += 1
         name = u.reported.name if u.reported is not None else u.name
         self._start_failure = StartFailure(
             seq=self._failure_seq, unit_id=u.id, name=name, reason=reason, at=self._wall(),
+            requester=requester if requester is not None else u.requester,
         )
 
     def _revert_locked(self, u: UnitState, now: float) -> None:
@@ -1264,6 +1327,7 @@ class OutputAuthority:
             # speaker; without device events nothing else can be told apart.
             d.muted = False
             d.remembered_level = None
+            self._mute_held = False
         d.volume = r.volume_percent
         d.cause = Origin.DEVICE if now - u.device_volume_at < DEVICE_VOLUME_MARK_S else Origin.BACKEND
         d.changed_at = now
@@ -1298,6 +1362,7 @@ class OutputAuthority:
     def _queue_reapply_select_locked(self, u: UnitState) -> None:
         u.attempt = True
         u.retry_allowed = True
+        u.requester = None
         batch = _Batch(1)
         self._enqueue(_Write(
             "select", u.id, u.desired_seq,
@@ -1376,7 +1441,7 @@ class OutputAuthority:
                 continue
             if d.muted and r.volume_percent > 0 and d.selected:
                 recent = now - u.device_volume_at < DEVICE_VOLUME_MARK_S
-                if recent:
+                if recent or busy:
                     continue
                 if self._delivers_device_events:
                     if self._due(u, "mute", now):
@@ -1453,8 +1518,24 @@ class OutputAuthority:
         finish()
 
     def _complete(self, w: _Write, outcome: WriteOutcome) -> None:
+        gone = False
         for batch, index in w.sinks:
-            batch.done(index, outcome)
+            gone = batch.done(index, outcome) or gone
+        if gone and w.kind == "select" and outcome.error_code == "pin_required":
+            self._late_pin(w)
+
+    def _late_pin(self, w: _Write) -> None:
+        """The speaker asked for a PIN after the request that switched it on
+        stopped waiting, so that request's reply could not carry the prompt:
+        give the pairing to whoever can enter the PIN. The speaker deselects
+        itself while it waits for one, so nothing is sent to it."""
+        handler = _pin_claim_handler
+        if handler is None or not w.claimant or w.unit_id is None:
+            return
+        try:
+            handler(w.unit_id, w.claimant)
+        except Exception:
+            LOG.exception("PIN claim for %s failed", w.unit_id)
 
     def _apply_one(self, w: _Write):
         now = self._clock()
@@ -1584,7 +1665,7 @@ class OutputAuthority:
                     u.availability = "password"
                 if not stale:
                     self._revert_locked(u, now)
-                self._start_failure_locked(u, reason)
+                self._start_failure_locked(u, reason, w.requester)
             return WriteOutcome(ok=False, error_code=code, error=r.message)
         if code == "timeout":
             # The player is still starting it: its command queue is busy, not down.
@@ -1603,7 +1684,7 @@ class OutputAuthority:
         if u is not None and not stale:
             if not u.retry_allowed:
                 self._revert_locked(u, now)
-                self._start_failure_locked(u, "refused")
+                self._start_failure_locked(u, "refused", w.requester)
             elif self._supports_group_fields and self._session_active:
                 if not u.failure_reported:
                     u.failure_reported = True

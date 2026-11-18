@@ -1414,3 +1414,58 @@ class TestRealThreads:
         live.fb.rows = [row(1, selected=True, volume_percent=55), row(2)]
         live.a.on_outputs_changed()
         assert wait_for(lambda: snap().unit("1").volume == 55)
+
+
+# ---------------------------------------------------------------------------
+# Who asked and a request that outlives its wait
+# ---------------------------------------------------------------------------
+
+class TestRequesterOnFailure:
+    def test_a_failed_start_names_who_asked(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("pin_required")]
+        w.a.select("1", Origin.USER, requester="dial:abc")
+        assert snap().start_failure.requester == "dial:abc"
+
+    def test_a_refusal_the_player_gives_later_still_names_who_asked(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("http_error")]
+        w.a.select("1", Origin.USER, requester="webui")
+        assert snap().start_failure.reason == "refused"
+        assert snap().start_failure.requester == "webui"
+
+    def test_a_start_the_coordinator_retries_has_no_asker(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("encoder_capacity")]
+        w.a.select("1", Origin.SESSION)
+        assert snap().start_failure.requester is None
+
+    def test_a_pin_request_answered_inside_the_wait_is_not_claimed_by_the_authority(self, w, monkeypatch):
+        claims = []
+        monkeypatch.setattr(outputs, "_pin_claim_handler", lambda uid, who: claims.append((uid, who)))
+        merge(w, [row(1)])
+        w.fb.results = [error("pin_required")]
+        applied = w.a.select("1", Origin.USER, requester="dial:abc", claimant="dial:abc")
+        # The caller answered inside its wait: the reply carries the prompt, nothing is claimed here.
+        assert wait_outcome(applied, 1.0)[0].error_code == "pin_required"
+        assert claims == []
+
+    def test_no_handler_installed_is_not_an_error(self, w, monkeypatch):
+        monkeypatch.setattr(outputs, "_pin_claim_handler", None)
+        merge(w, [row(1)])
+        w.fb.results = [error("pin_required")]
+        w.a.select("1", Origin.USER, requester="dial:abc", claimant="dial:abc")
+        assert snap().start_failure.reason == "pin_required"
+
+
+class TestVolumeStepResult:
+    def test_the_applied_result_carries_the_master_and_the_mute(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=60)])
+        stepped = w.a.step_volume(10, Origin.USER, default_level=50)
+        assert (stepped.master, stepped.muted, stepped.restored) == (60, False, False)
+        muted = w.a.mute_all(Origin.USER)
+        assert (muted.master, muted.muted) == (60, True)
+        down = w.a.step_volume(-5, Origin.USER, default_level=50)
+        assert down.outcome is None and (down.master, down.muted) == (60, True)
+        up = w.a.step_volume(5, Origin.USER, default_level=50)
+        assert (up.restored, up.muted, up.master) == (True, False, 60)

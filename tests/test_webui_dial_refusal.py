@@ -31,6 +31,7 @@ from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 import autostream_webui_api as api
 from autostream_webui_state import WebUIState
 from track_id.models import disabled_snapshot
+from autostream_state.outputs import get_authority
 from fake_store import FakeStore, fake_repeat, fake_session, fake_track
 
 DIAL_ID = "test-dial-uuid-1234"
@@ -163,16 +164,16 @@ def _success(fn, body, dial_proto):
     ))
     parsed = MagicMock()
     parsed.owntone.base_url = BASE_URL
+    parsed.owntone.volume_percent = 20
+    # Each call starts from the same speakers, whatever the last one changed.
+    get_authority().reset_for_tests()
     FakeStore().outputs(list(outputs.outputs))
     with (
         patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
         patch("autostream_webui_api.get_appliance_id", return_value=TEST_APPLIANCE_ID),
         patch("autostream_dials.get_dial_sighting", return_value=_sighting(dial_proto)),
         patch("autostream_webui_api._config_snapshot", return_value=parsed),
-        patch("autostream_webui_api.list_outputs", return_value=outputs),
-        patch("autostream_webui_api.update_output", return_value=ActionResult(ok=True)),
-        patch("autostream_webui_api.apply_mute_action",
-              return_value=(200, {"ok": True, "muted": True})),
+        patch("autostream_player_service.update_output", return_value=ActionResult(ok=True)),
         fake_session({"active": True, "source": "input1"}),
         fake_repeat(None),
         fake_track(disabled_snapshot()),

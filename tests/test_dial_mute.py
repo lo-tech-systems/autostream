@@ -2,7 +2,8 @@
 
 Covers:
 - POST /api/dial/mute host endpoint: auth, explicit action validation,
-  snapshot management, partial failures, all-failed, and restore-with-default.
+  the remembered levels, partial failures, all-failed, and
+  restore-with-default.
 - dial_volume.py typed event queue: coalescing (collapse-to-last for mute
   runs), mute event ordering.
 - enqueue_mute() enqueueing.
@@ -32,14 +33,17 @@ for _p in (_core, _dial):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import autostream_mute_state as mute_state
+import autostream_player_service as player_service
+from autostream_players import ActionResult, OutputInfo
+from autostream_state import Origin, store
+from autostream_state.outputs import get_authority
+from fake_store import FakeStore
 
 
-def _snapshot() -> dict:
-    """Test-only introspection of what the mute state module currently
-    remembers, mirroring the old dict-based ``api._mute_snapshot`` this
-    test file used to poke directly."""
-    return dict(mute_state._remembered)
+def _remembered() -> dict:
+    """Test-only introspection of the levels the authority would restore
+    (the volume of each muted speaker)."""
+    return {u.id: u.volume for u in store().snapshot().outputs.units if u.muted}
 
 
 # ---------------------------------------------------------------------------
@@ -47,26 +51,12 @@ def _snapshot() -> dict:
 # ---------------------------------------------------------------------------
 
 def _make_output(oid: str, volume: int, selected: bool = True):
-    o = SimpleNamespace()
-    o.id = oid
-    o.volume_percent = volume
-    o.selected = selected
-    return o
-
-
-def _make_list_result(outputs, ok=True):
-    r = SimpleNamespace()
-    r.ok = ok
-    r.outputs = outputs
-    r.message = "" if ok else "err"
-    return r
+    return OutputInfo(id=oid, name=oid, selected=selected, volume_percent=volume)
 
 
 def _make_update_result(ok=True):
-    r = SimpleNamespace()
-    r.ok = ok
-    r.error = "" if ok else "connection refused"
-    return r
+    return ActionResult(
+        ok=ok, error="" if ok else "connection refused", error_code="" if ok else "request_failed")
 
 
 def _make_parsed_config(base_url="http://localhost:3689", volume_percent=20):
@@ -102,6 +92,55 @@ class _FakeHandler:
         return io.BytesIO()
 
 
+@pytest.fixture
+def writes(monkeypatch):
+    """The player service: records every write as (id, volume) in call order
+    and answers from `results` (default: ok)."""
+    rec = SimpleNamespace(calls=[], results=[])
+
+    def update_output(base_url, out_id, **kwargs):
+        rec.calls.append((out_id, kwargs.get("volume_percent")))
+        return rec.results.pop(0) if rec.results else _make_update_result(True)
+
+    monkeypatch.setattr(player_service, "update_output", update_output)
+    return rec
+
+
+def _arrange(outputs, remembered=None, writes=None):
+    """Adopt *outputs*, then (when *remembered* is given) mute them so that
+    each speaker remembers its level in *remembered* and reads as silent."""
+    store_ = FakeStore()
+    if not remembered:
+        store_.outputs(list(outputs))
+        return
+    store_.outputs([
+        OutputInfo(id=o.id, name=o.name, selected=o.selected,
+                   volume_percent=remembered.get(o.id, o.volume_percent))
+        for o in outputs
+    ])
+    get_authority().mute_all(Origin.USER)
+    store_.outputs(list(outputs))
+    if writes is not None:
+        writes.calls.clear()
+
+
+def _post(fn, json_obj, parsed=None, authorized=True):
+    """Drive a dial route; return what it sent."""
+    import autostream_webui_api as api
+    captured = {}
+
+    def fake_send_json(h, code, body):
+        captured["code"] = code
+        captured["body"] = body
+
+    with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
+         patch("autostream_webui_api.dial_authorization",
+               return_value="authorized" if authorized else "not_authorized"), \
+         patch("autostream_webui_api._config_snapshot", return_value=parsed or _make_parsed_config()):
+        getattr(api, fn)(MagicMock(), MagicMock(), json_obj)
+    return captured
+
+
 # ---------------------------------------------------------------------------
 # Host API: POST /api/dial/mute
 # ---------------------------------------------------------------------------
@@ -114,21 +153,7 @@ class TestDialMuteAuth:
     """
 
     def _call(self, json_obj, authorized=True):
-        from autostream_webui_api import send_dial_mute_post_json
-        import autostream_webui_api as api
-        mute_state.reset_for_tests()
-
-        handler = MagicMock()
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized" if authorized else "not_authorized"):
-            send_dial_mute_post_json(handler, MagicMock(), json_obj)
-        return captured
+        return _post("send_dial_mute_post_json", json_obj, authorized=authorized)
 
     def test_missing_dial_id_returns_403(self):
         result = self._call({"action": "mute"})
@@ -160,21 +185,7 @@ class TestDialMuteActionValidation:
     and this check runs only after dial_id/authorization have passed."""
 
     def _call(self, json_obj):
-        import autostream_webui_api as api
-        mute_state.reset_for_tests()
-
-        from autostream_webui_api import send_dial_mute_post_json
-
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"):
-            send_dial_mute_post_json(MagicMock(), MagicMock(), json_obj)
-        return captured
+        return _post("send_dial_mute_post_json", json_obj)
 
     def test_missing_action_returns_400(self):
         result = self._call({"dial_id": "uid"})
@@ -200,45 +211,24 @@ class TestDialMuteActionValidation:
 class TestDialMuteBackend:
     """Backend availability / no-output cases."""
 
-    def _call_with_mocks(self, list_result, update_ok=True, default_vol=20, action="mute"):
-        import autostream_webui_api as api
-        mute_state.reset_for_tests()
+    def _call_with_mocks(self, action="mute"):
+        return _post("send_dial_mute_post_json", {"dial_id": "valid-uuid", "action": action})
 
-        from autostream_webui_api import send_dial_mute_post_json
-
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        parsed = _make_parsed_config(volume_percent=default_vol)
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs", return_value=list_result), \
-             patch("autostream_webui_api.update_output", return_value=_make_update_result(update_ok)):
-            send_dial_mute_post_json(
-                MagicMock(), MagicMock(), {"dial_id": "valid-uuid", "action": action}
-            )
-
-        return captured, _snapshot()
-
-    def test_backend_unavailable_returns_ok_false(self):
-        result, _ = self._call_with_mocks(_make_list_result([], ok=False))
+    def test_backend_unavailable_returns_ok_false(self, writes):
+        FakeStore().outputs_unreachable()
+        result = self._call_with_mocks()
         assert result["body"]["ok"] is False
         assert result["body"]["error"] == "backend_unavailable"
 
-    def test_no_active_outputs_returns_ok_false(self):
-        outputs = [_make_output("o1", 50, selected=False)]
-        result, _ = self._call_with_mocks(_make_list_result(outputs))
+    def test_no_active_outputs_returns_ok_false(self, writes):
+        _arrange([_make_output("o1", 50, selected=False)])
+        result = self._call_with_mocks()
         assert result["body"]["ok"] is False
         assert result["body"]["error"] == "no_active_outputs"
 
 
 class TestDialMuteAction:
-    """Explicit action execution and snapshot management.
+    """Explicit action execution and the remembered levels.
 
     The action always comes from the request body -- there is no local
     inference from output volumes any more, so every test here drives the
@@ -246,329 +236,168 @@ class TestDialMuteAction:
     """
 
     def _call(self, outputs, action, initial_snapshot=None,
-              update_results=None, default_vol=20):
-        import autostream_webui_api as api
-        mute_state.reset_for_tests()
-        if initial_snapshot:
-            mute_state.begin_mute(initial_snapshot)
-
-        from autostream_webui_api import send_dial_mute_post_json
-
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        parsed = _make_parsed_config(volume_percent=default_vol)
-
-        # update_results: list of results in call order, or single bool
-        update_iter = (
-            iter(update_results) if update_results is not None
-            else iter([_make_update_result(True)] * 99)
+              update_results=None, default_vol=20, writes=None):
+        _arrange(outputs, initial_snapshot, writes)
+        if update_results is not None and writes is not None:
+            writes.results.extend(update_results)
+        captured = _post(
+            "send_dial_mute_post_json", {"dial_id": "valid-uuid", "action": action},
+            parsed=_make_parsed_config(volume_percent=default_vol),
         )
+        return captured, _remembered()
 
-        def fake_update(*args, **kwargs):
-            return next(update_iter)
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs",
-                   return_value=_make_list_result(outputs)), \
-             patch("autostream_webui_api.update_output", side_effect=fake_update):
-            send_dial_mute_post_json(
-                MagicMock(), MagicMock(), {"dial_id": "valid-uuid", "action": action}
-            )
-
-        import autostream_webui_api as api2
-        return captured, _snapshot()
-
-    def test_mute_when_audible_output_present(self):
-        outputs = [_make_output("o1", 50)]
-        result, snapshot = self._call(outputs, "mute")
+    def test_mute_when_audible_output_present(self, writes):
+        result, snapshot = self._call([_make_output("o1", 50)], "mute", writes=writes)
         assert result["body"]["ok"] is True
         assert result["body"]["muted"] is True
-        assert "o1" in snapshot
         assert snapshot["o1"] == 50
 
-    def test_mute_snapshots_all_audible_outputs(self):
+    def test_mute_remembers_all_audible_outputs(self, writes):
         outputs = [_make_output("o1", 30), _make_output("o2", 80)]
-        result, snapshot = self._call(outputs, "mute")
+        result, snapshot = self._call(outputs, "mute", writes=writes)
         assert snapshot == {"o1": 30, "o2": 80}
         assert result["body"]["muted"] is True
 
-    def test_mute_does_not_overwrite_existing_snapshot_entry(self):
+    def test_mute_does_not_overwrite_an_existing_remembered_level(self, writes):
         outputs = [_make_output("o1", 0), _make_output("o2", 60)]
         result, snapshot = self._call(
-            outputs, "mute", initial_snapshot={"o1": 45}
+            outputs, "mute", initial_snapshot={"o1": 45}, writes=writes
         )
         # o1 is already at zero (previously muted); o2 is still audible
         assert snapshot["o1"] == 45  # must not be overwritten
         assert snapshot["o2"] == 60
         assert result["body"]["muted"] is True
 
-    def test_mute_when_already_silent_is_idempotent_noop(self):
+    def test_mute_when_already_silent_is_idempotent_noop(self, writes):
         """Explicit "mute" on an appliance whose selected outputs are all
-        already at zero is a no-op -- not an error, and nothing is written
-        to the snapshot for outputs that were never touched."""
+        already at zero is a no-op -- not an error, and no write is made."""
         outputs = [_make_output("o1", 0), _make_output("o2", 0)]
-        result, snapshot = self._call(outputs, "mute")
+        result, snapshot = self._call(outputs, "mute", writes=writes)
         assert result["body"] == {"ok": True, "muted": True}
-        assert snapshot == {}
+        assert writes.calls == []
 
-    def test_restore_when_all_outputs_at_zero(self):
+    def test_restore_when_all_outputs_at_zero(self, writes):
         outputs = [_make_output("o1", 0), _make_output("o2", 0)]
         result, snapshot = self._call(
-            outputs, "restore", initial_snapshot={"o1": 30, "o2": 80}
+            outputs, "restore", initial_snapshot={"o1": 30, "o2": 80}, writes=writes
         )
         assert result["body"]["ok"] is True
         assert result["body"]["muted"] is False
-        assert snapshot == {}  # snapshot cleared on full success
+        assert snapshot == {}  # nothing left muted on full success
 
-    def test_restore_when_already_audible_is_idempotent_noop(self):
+    def test_restore_when_already_audible_is_idempotent_noop(self, writes):
         """Explicit "restore" on an appliance whose selected outputs are all
         already non-zero is a no-op -- it must not be reinterpreted as a
         mute just because every output happens to be audible."""
         outputs = [_make_output("o1", 45), _make_output("o2", 60)]
-        result, snapshot = self._call(outputs, "restore")
+        result, snapshot = self._call(outputs, "restore", writes=writes)
         assert result["body"] == {"ok": True, "muted": False}
         assert snapshot == {}
+        assert writes.calls == []
 
-    def test_explicit_restore_obeyed_even_though_stale_inference_would_mute(self):
+    def test_explicit_restore_obeyed_even_though_stale_inference_would_mute(self, writes):
         """Mixed volumes -- the deleted any(volume>0) inference would have
         picked "mute" here since o2 is audible. The explicit "restore"
-        request must be obeyed instead: o1 (zero, no snapshot) rises to the
-        default, o2 (already non-zero, no snapshot) is left alone as
-        already-restored."""
+        request must be obeyed instead: o1 (zero, nothing remembered) rises
+        to the default, o2 (already non-zero) is left alone."""
         outputs = [_make_output("o1", 0), _make_output("o2", 50)]
-        result, snapshot = self._call(outputs, "restore", default_vol=35)
+        result, snapshot = self._call(outputs, "restore", default_vol=35, writes=writes)
         assert result["body"]["ok"] is True
         assert result["body"]["muted"] is False
+        assert writes.calls == [("o1", 35)]
 
-    def test_restore_uses_snapshot_volume(self):
-        outputs = [_make_output("o1", 0)]
-        update_calls = []
+    def test_restore_uses_the_remembered_volume(self, writes):
+        self._call([_make_output("o1", 0)], "restore", initial_snapshot={"o1": 70}, writes=writes)
+        assert writes.calls == [("o1", 70)]
 
-        import autostream_webui_api as api
-        mute_state.reset_for_tests()
-        mute_state.begin_mute({"o1": 70})
-
-        from autostream_webui_api import send_dial_mute_post_json
-
-        def fake_update(base_url, oid, volume_percent, timeout):
-            update_calls.append((oid, volume_percent))
-            return _make_update_result(True)
-
-        parsed = _make_parsed_config(volume_percent=20)
-
-        with patch("autostream_webui_api.send_json"), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs",
-                   return_value=_make_list_result(outputs)), \
-             patch("autostream_webui_api.update_output", side_effect=fake_update):
-            send_dial_mute_post_json(
-                MagicMock(), MagicMock(), {"dial_id": "uid", "action": "restore"}
-            )
-
-        assert update_calls == [("o1", 70)]
-
-    def test_restore_uses_default_vol_when_no_snapshot(self):
-        """Zero-volume outputs not in the snapshot are restored to the configured default.
-
-        Covers both post-restart (snapshot lost) and a new output selected while muted.
-        In both cases the output is at 0 with no snapshot entry — the configured default
-        volume is the only sensible restore target.
-        """
-        outputs = [_make_output("o1", 0)]
-        update_calls = []
-
-        import autostream_webui_api as api
-        mute_state.reset_for_tests()
-
-        from autostream_webui_api import send_dial_mute_post_json
-
-        def fake_update(base_url, oid, volume_percent, timeout):
-            update_calls.append((oid, volume_percent))
-            return _make_update_result(True)
-
-        parsed = _make_parsed_config(volume_percent=35)
-
-        with patch("autostream_webui_api.send_json"), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs",
-                   return_value=_make_list_result(outputs)), \
-             patch("autostream_webui_api.update_output", side_effect=fake_update):
-            send_dial_mute_post_json(
-                MagicMock(), MagicMock(), {"dial_id": "uid", "action": "restore"}
-            )
-
-        assert update_calls == [("o1", 35)]
+    def test_restore_uses_default_vol_when_nothing_is_remembered(self, writes):
+        """A silent output nothing is remembered for (one selected while
+        muted, or whose mute was lost) is restored to the configured default,
+        the only sensible target."""
+        self._call([_make_output("o1", 0)], "restore", default_vol=35, writes=writes)
+        assert writes.calls == [("o1", 35)]
 
 
 class TestDialMuteFailures:
     """Partial and all-failed error paths."""
 
-    def _call(self, outputs, action, update_ok_sequence, initial_snapshot=None):
-        import autostream_webui_api as api
-        mute_state.reset_for_tests()
-        if initial_snapshot:
-            mute_state.begin_mute(initial_snapshot)
+    def _call(self, outputs, action, update_ok_sequence, initial_snapshot=None, writes=None):
+        _arrange(outputs, initial_snapshot, writes)
+        writes.results.extend(_make_update_result(ok) for ok in update_ok_sequence)
+        captured = _post("send_dial_mute_post_json", {"dial_id": "uid", "action": action})
+        return captured, _remembered()
 
-        from autostream_webui_api import send_dial_mute_post_json
-
-        captured = {}
-
-        def fake_send_json(h, code, body):
-            captured["code"] = code
-            captured["body"] = body
-
-        parsed = _make_parsed_config()
-        ok_iter = iter(update_ok_sequence)
-
-        def fake_update(*args, **kwargs):
-            return _make_update_result(next(ok_iter))
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs",
-                   return_value=_make_list_result(outputs)), \
-             patch("autostream_webui_api.update_output", side_effect=fake_update):
-            send_dial_mute_post_json(
-                MagicMock(), MagicMock(), {"dial_id": "uid", "action": action}
-            )
-
-        import autostream_webui_api as api2
-        return captured, _snapshot()
-
-    def test_mute_all_fail_returns_all_outputs_failed(self):
+    def test_mute_all_fail_returns_all_outputs_failed(self, writes):
         outputs = [_make_output("o1", 50), _make_output("o2", 30)]
-        result, snapshot = self._call(outputs, "mute", [False, False])
+        result, snapshot = self._call(outputs, "mute", [False, False], writes=writes)
         assert result["body"]["ok"] is False
         assert result["body"]["error"] == "all_outputs_failed"
 
-    def test_mute_partial_fail_returns_partial(self):
+    def test_mute_partial_fail_returns_partial(self, writes):
         outputs = [_make_output("o1", 50), _make_output("o2", 30)]
-        result, snapshot = self._call(outputs, "mute", [True, False])
+        result, snapshot = self._call(outputs, "mute", [True, False], writes=writes)
         assert result["body"]["ok"] is True
         assert result["body"]["muted"] is True
         assert result["body"].get("partial") is True
 
-    def test_restore_all_fail_returns_all_outputs_failed(self):
+    def test_restore_all_fail_returns_all_outputs_failed(self, writes):
         outputs = [_make_output("o1", 0), _make_output("o2", 0)]
         result, snapshot = self._call(
             outputs, "restore", [False, False],
-            initial_snapshot={"o1": 50, "o2": 30},
+            initial_snapshot={"o1": 50, "o2": 30}, writes=writes,
         )
         assert result["body"]["ok"] is False
         assert result["body"]["error"] == "all_outputs_failed"
 
-    def test_restore_partial_fail_clears_the_remembered_levels_anyway(self):
-        """The mute state module forgets every remembered level as soon as a
-        restore is attempted, regardless of which individual writes then
-        succeed or fail (autostream_mute_state.end_mute() -- there is no
-        persisted history to fall back on for a later retry). This is a
-        deliberate simplification versus the old dict-snapshot behaviour,
-        which kept a failed output's entry around for a future retry to
-        pick up."""
+    def test_restore_partial_fail_forgets_the_remembered_levels_anyway(self, writes):
+        """The authority forgets every remembered level as soon as a restore
+        is attempted, whichever individual writes then succeed or fail: the
+        next read adopts what the speaker really has."""
         outputs = [_make_output("o1", 0), _make_output("o2", 0)]
         result, snapshot = self._call(
             outputs, "restore", [True, False],
-            initial_snapshot={"o1": 50, "o2": 30},
+            initial_snapshot={"o1": 50, "o2": 30}, writes=writes,
         )
         assert result["body"]["ok"] is True
         assert result["body"]["muted"] is False
         assert result["body"].get("partial") is True
         assert snapshot == {}
 
-    def test_restore_retry_after_partial_failure_falls_back_to_default(self):
+    def test_restore_retry_after_partial_failure_falls_back_to_default(self, writes):
         """A second restore call after a partial failure has nothing
-        remembered for the output that failed (see the test above), so it
-        falls back to the configured default volume for it -- the same
-        three-way rule an unremembered zero-volume output always gets, not
-        the value that failed to apply the first time."""
-        from autostream_webui_api import send_dial_mute_post_json
-
-        mute_state.reset_for_tests()
-
-        # o1 was restored successfully by an earlier request and is now
-        # non-zero; o2's write failed and it is still at 0, with nothing
-        # remembered for it any more (the state module already forgot it).
-        outputs = [_make_output("o1", 50), _make_output("o2", 0)]
-        update_calls = []
-
-        def fake_update(base_url, output_id, volume_percent, timeout):
-            update_calls.append((output_id, volume_percent))
-            return _make_update_result(True)
-
-        captured = {}
-        parsed = _make_parsed_config(volume_percent=35)
-
-        def fake_send_json(h, code, body):
-            captured.update({"code": code, "body": body})
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs",
-                   return_value=_make_list_result(outputs)), \
-             patch("autostream_webui_api.update_output", side_effect=fake_update):
-            send_dial_mute_post_json(
-                MagicMock(), MagicMock(), {"dial_id": "uid", "action": "restore"}
-            )
-
-        assert update_calls == [("o2", 35)], (
+        remembered for the output that failed, so it falls back to the
+        configured default for it -- the same rule an unremembered silent
+        output always gets."""
+        # o1 was restored by an earlier request; o2's write failed and it is
+        # still at 0 with nothing remembered for it any more.
+        _arrange([_make_output("o1", 50), _make_output("o2", 0)])
+        captured = _post(
+            "send_dial_mute_post_json", {"dial_id": "uid", "action": "restore"},
+            parsed=_make_parsed_config(volume_percent=35),
+        )
+        assert writes.calls == [("o2", 35)], (
             f"Retry must only restore o2 (o1 is already non-zero), to the "
-            f"configured default since nothing is remembered for it any "
-            f"more; got {update_calls}"
+            f"configured default; got {writes.calls}"
         )
         assert captured["body"]["ok"] is True
         assert captured["body"].get("muted") is False
 
-    def test_restore_restores_zero_output_added_while_muted(self):
-        """An output selected at zero while muted must be restored to default_vol on unmute.
-
-        o1 and o2 were muted (in snapshot).  o3 was selected while everything was muted
-        (so its volume is 0 but it has no snapshot entry).  On restore, o3 must be
-        set to the configured default volume, not left at 0.
-        """
-        import autostream_webui_api as api
-        from autostream_webui_api import send_dial_mute_post_json
-
-        mute_state.reset_for_tests()
-        mute_state.begin_mute({"o1": 50, "o2": 30})
-
+    def test_restore_restores_zero_output_added_while_muted(self, writes):
+        """An output selected at zero while muted must be restored to the
+        default on unmute: o1 and o2 were muted (remembered); o3 was selected
+        while everything was muted and has no remembered level."""
         outputs = [_make_output("o1", 0), _make_output("o2", 0), _make_output("o3", 0)]
-        update_calls = []
-
-        def fake_update(base_url, output_id, volume_percent, timeout):
-            update_calls.append((output_id, volume_percent))
-            return _make_update_result(True)
-
-        captured = {}
-        parsed = _make_parsed_config(volume_percent=35)
-
-        def fake_send_json(h, code, body):
-            captured.update({"code": code, "body": body})
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs",
-                   return_value=_make_list_result(outputs)), \
-             patch("autostream_webui_api.update_output", side_effect=fake_update):
-            send_dial_mute_post_json(
-                MagicMock(), MagicMock(), {"dial_id": "uid", "action": "restore"}
-            )
-
-        ids_called = [id_ for id_, _ in update_calls]
-        assert "o1" in ids_called, "o1 must be restored to its snapshot volume"
-        assert "o2" in ids_called, "o2 must be restored to its snapshot volume"
-        assert "o3" in ids_called, "o3 (zero, not in snapshot) must be restored to default_vol"
-        assert ("o3", 35) in update_calls, f"o3 must use default_vol=35; got {update_calls}"
+        _arrange(outputs[:2], {"o1": 50, "o2": 30}, writes)
+        FakeStore().outputs(outputs)
+        captured = _post(
+            "send_dial_mute_post_json", {"dial_id": "uid", "action": "restore"},
+            parsed=_make_parsed_config(volume_percent=35),
+        )
+        ids_called = [id_ for id_, _ in writes.calls]
+        assert "o1" in ids_called, "o1 must be restored to its remembered volume"
+        assert "o2" in ids_called, "o2 must be restored to its remembered volume"
+        assert "o3" in ids_called, "o3 (zero, not remembered) must be restored to default_vol"
+        assert ("o3", 35) in writes.calls, f"o3 must use default_vol=35; got {writes.calls}"
         assert captured["body"]["ok"] is True
         assert captured["body"].get("muted") is False
 
@@ -576,80 +405,41 @@ class TestDialMuteFailures:
 class TestDialVolumeAndMuteEndToEnd:
     """Integration coverage across the two host endpoints together: a
     volume-up press while muted is a restore (not a raw delta apply -- see
-    apply_mute_action/send_dial_volume_post_json), and an explicit
-    mute/restore cycle with no intervening volume press still round-trips
-    the exact pre-mute level. Drives the real handlers end to end rather
-    than calling autostream_mute_state directly, so a wiring mistake
-    between the two endpoints would show up here."""
+    send_dial_volume_post_json), and an explicit mute/restore cycle with no
+    intervening volume press still round-trips the exact pre-mute level.
+    Drives the real handlers end to end, so a wiring mistake between the two
+    endpoints would show up here."""
 
-    def _run(self, live, actions):
+    def _run(self, live, actions, writes):
         """Run a sequence of ("mute", <action>) / ("delta", n) steps against
-        a shared mutable `live` dict of {output_id: output}, using the real
-        send_dial_mute_post_json / send_dial_volume_post_json handlers with
-        list_outputs/update_output faked against `live`.
-
-        ("mute", <action>) drives send_dial_mute_post_json with an explicit
-        "mute" or "restore" action; ("delta", n) drives send_dial_volume_post_json.
+        the speakers in *live* ({output_id: volume}), using the real
+        send_dial_mute_post_json / send_dial_volume_post_json handlers.
 
         Returns a list of per-action step dicts (one per action, in order):
         {"response": <captured send_json body>,
-         "volumes": {output_id: volume_percent, ...} (post-action live state),
-         "snapshot": {...} (post-action copy of _mute_snapshot)}
-        so callers can assert on state *after each individual action*, not
-        just the final state once the whole sequence has run.
+         "volumes": {output_id: level at the speaker (the last write)},
+         "snapshot": {output_id: level a restore brings back}}
+        so callers can assert on state *after each individual action*.
         """
-        import autostream_webui_api as api
-        from autostream_webui_api import (
-            send_dial_mute_post_json,
-            send_dial_volume_post_json,
-        )
-
-        mute_state.reset_for_tests()
-
-        def fake_list_outputs(base_url, timeout=None):
-            return _make_list_result(list(live.values()))
-
-        def fake_update(base_url, output_id, volume_percent, timeout):
-            live[output_id].volume_percent = volume_percent
-            return _make_update_result(True)
-
-        parsed = _make_parsed_config(volume_percent=20)
+        _arrange([_make_output(oid, vol) for oid, vol in live.items()])
         steps = []
-
-        def fake_send_json(h, code, body):
-            steps.append({
-                "response": body,
-                "volumes": {oid: o.volume_percent for oid, o in live.items()},
-                "snapshot": _snapshot(),
-            })
-
-        with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
-             patch("autostream_webui_api.dial_authorization", return_value="authorized"), \
-             patch("autostream_webui_api._config_snapshot", return_value=parsed), \
-             patch("autostream_webui_api.list_outputs", side_effect=fake_list_outputs), \
-             patch("autostream_webui_api.update_output", side_effect=fake_update):
-            for step in actions:
-                if step[0] == "mute":
-                    send_dial_mute_post_json(
-                        MagicMock(), MagicMock(), {"dial_id": "uid", "action": step[1]}
-                    )
-                else:
-                    send_dial_volume_post_json(
-                        MagicMock(), MagicMock(), {"dial_id": "uid", "delta": step[1]}
-                    )
-
+        at_speaker = dict(live)
+        for step in actions:
+            before = len(writes.calls)
+            if step[0] == "mute":
+                body = _post("send_dial_mute_post_json", {"dial_id": "uid", "action": step[1]})["body"]
+            else:
+                body = _post("send_dial_volume_post_json", {"dial_id": "uid", "delta": step[1]})["body"]
+            for oid, level in writes.calls[before:]:
+                at_speaker[oid] = level
+            steps.append({"response": body, "volumes": dict(at_speaker), "snapshot": _remembered()})
         return steps
 
-    def test_volume_up_press_while_muted_restores_with_no_step(self):
+    def test_volume_up_press_while_muted_restores_with_no_step(self, writes):
         """mute (40->0, remembers {o1:40}) -> a volume-up delta while muted
         is a plain restore, not a raw delta apply: o1 returns to exactly 40,
         not 40+2, and the appliance reports unmuted."""
-        live = {"o1": _make_output("o1", 40)}
-
-        steps = self._run(live, [
-            ("mute", "mute"),
-            ("delta", 2),
-        ])
+        steps = self._run({"o1": 40}, [("mute", "mute"), ("delta", 2)], writes)
 
         assert steps[0]["response"]["muted"] is True
         assert steps[0]["volumes"]["o1"] == 0
@@ -661,30 +451,19 @@ class TestDialVolumeAndMuteEndToEnd:
         assert steps[1]["volumes"]["o1"] == 40
         assert steps[1]["snapshot"] == {}
 
-    def test_volume_down_press_while_muted_is_a_pure_noop(self):
+    def test_volume_down_press_while_muted_is_a_pure_noop(self, writes):
         """A volume-down delta while muted writes nothing and stays muted,
         still reporting the level the output will return to."""
-        live = {"o1": _make_output("o1", 40)}
-
-        steps = self._run(live, [
-            ("mute", "mute"),
-            ("delta", -2),
-        ])
+        steps = self._run({"o1": 40}, [("mute", "mute"), ("delta", -2)], writes)
 
         assert steps[1]["response"] == {"ok": True, "volume": 40, "muted": True}
         assert steps[1]["volumes"]["o1"] == 0  # untouched -- still silent
         assert steps[1]["snapshot"] == {"o1": 40}
 
-    def test_plain_mute_then_restore_still_restores_original_volume(self):
-        """Sanity check that the fix above has not broken the feature the
-        snapshot exists for: with no intervening volume delta, mute then
-        restore must still restore the exact pre-mute volume."""
-        live = {"o1": _make_output("o1", 65)}
-
-        steps = self._run(live, [
-            ("mute", "mute"),
-            ("mute", "restore"),
-        ])
+    def test_plain_mute_then_restore_still_restores_original_volume(self, writes):
+        """With no intervening volume delta, mute then restore must restore
+        the exact pre-mute volume."""
+        steps = self._run({"o1": 65}, [("mute", "mute"), ("mute", "restore")], writes)
 
         assert steps[0]["response"]["muted"] is True
         assert steps[0]["volumes"]["o1"] == 0

@@ -1,7 +1,7 @@
 """tests/test_output_intents.py
 
 The output handlers of the intent table: switching a speaker on and off,
-changing its volume, and the PIN path. A speaker is arranged through the
+changing its volume, the PIN path, volume steps and mute. A speaker is arranged through the
 authority's snapshot; the player's answers come from a patched player service,
 and the authority (without threads) writes inline, so the reply is complete
 when the call returns. The real-thread cases use the started_authority fixture
@@ -23,7 +23,6 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_appliance_models as models
-import autostream_mute_state as mute_state
 import autostream_output_intents as intents_mod
 import autostream_pin_pairing as pairing
 import autostream_runtime as runtime
@@ -85,10 +84,15 @@ def on(**extra):
 
 @pytest.fixture(autouse=True)
 def _fresh():
-    mute_state.reset_for_tests()
     pairing.reset_for_tests() if hasattr(pairing, "reset_for_tests") else None
     yield
-    mute_state.reset_for_tests()
+
+
+def hold_mute(player):
+    """Mute every selected speaker through the authority; the writes it makes
+    are not what the test is about."""
+    get_authority().mute_all(Origin.USER)
+    player.calls.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -233,33 +237,27 @@ class TestVolume:
         assert snap().unit(ID).volume == 45
 
     def test_a_user_level_change_while_muted_ends_the_mute_and_sounds(self, player):
-        arrange(row(ID, "Kitchen", selected=True, volume_percent=0))
-        mute_state.begin_mute({ID: 30})
+        arrange(row(ID, "Kitchen", selected=True, volume_percent=30))
+        hold_mute(player)
         change(on(volume=45))
-        assert mute_state.is_muted() is False
+        assert snap().muted_all is False and snap().unit(ID).muted is False
         assert player.calls[0][2]["volume_percent"] == 45
 
     def test_a_coordinator_level_change_while_muted_is_remembered_and_not_written(self, player):
-        arrange(row(ID, "Kitchen", selected=True, volume_percent=0))
-        mute_state.begin_mute({ID: 30})
+        arrange(row(ID, "Kitchen", selected=True, volume_percent=30))
+        hold_mute(player)
         r = change(on(volume=45), requester="coordinator", origin=Origin.SYSTEM)
         assert r == {"ok": True, "id": ID}
         assert player.calls == []
-        assert mute_state.intended_level(ID, 0) == 45
+        assert snap().unit(ID).muted is True and snap().unit(ID).volume == 45
 
-    def test_a_speaker_switched_on_while_muted_starts_then_is_silenced_and_remembered(self, player):
-        arrange()
-        mute_state.begin_mute({})
+    def test_a_speaker_switched_on_while_muted_starts_silent_and_remembers_its_level(self, player):
+        arrange(row("7", "Other", selected=True, volume_percent=25), row(ID, "Kitchen"))
+        hold_mute(player)
         assert change(on(volume=40)) == {"ok": True, "id": ID}
-        assert [c[2].get("volume_percent") for c in player.calls] == [40, 0]
-        assert mute_state.intended_level(ID, 0) == 40
-
-    def test_a_silencing_write_that_fails_is_logged_and_the_request_still_succeeds(self, player, caplog):
-        arrange()
-        mute_state.begin_mute({})
-        player.answers.extend([ok(), err("http_error", "nope")])
-        assert change(on(volume=40)) == {"ok": True, "id": ID}
-        assert "could not silence" in caplog.text
+        assert [c[2].get("volume_percent") for c in player.calls] == [0]
+        assert snap().unit(ID).muted is True and snap().unit(ID).volume == 40
+        assert snap().muted_all is True
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +267,11 @@ class TestVolume:
 class TestDisable:
     def test_it_writes_the_deselect_and_forgets_the_remembered_level(self, player):
         arrange(row(ID, "Kitchen", selected=True, volume_percent=20))
-        mute_state.begin_mute({ID: 30})
+        hold_mute(player)
         assert change({"id": ID, "selected": False}) == {"ok": True, "id": ID}
         assert player.calls == [("update_output", ID, dict(enabled=False, timeout=3.0))]
         assert snap().unit(ID).selected is False
-        assert mute_state.intended_level(ID, 7) == 7
+        assert snap().unit(ID).muted is False
 
     def test_a_failure_carries_the_player_s_text(self, player):
         arrange(row(ID, "Kitchen", selected=True))
@@ -453,6 +451,204 @@ class TestSlowPlayer:
         time.sleep(0.1)
         levels = [c[2].get("volume_percent") for c in fb.calls]
         assert levels == [11, 29]
+
+
+# ---------------------------------------------------------------------------
+# A PIN request that arrives after the wait
+# ---------------------------------------------------------------------------
+
+def _wait_for(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class TestLatePin:
+    def _stalled_select(self, a, fb, *, context):
+        """Start a select that the player answers after the caller stopped
+        waiting; return once the reply ("pending", ok) has been sent."""
+        fb.rows = [row(ID, "Kitchen")]
+        a.start(fb)
+        # The worker's first read must finish its merge before the select, or
+        # it could land after the refusal and show the speaker as available.
+        assert _wait_for(lambda: not a._dirty)
+        with a._lock:
+            pass
+        a.merge_for_tests(fb.rows, boot="b0")
+        fb.gate = threading.Event()
+        fb.results.append(err("pin_required", "needs a PIN"))
+        reply = submit(
+            Intent("outputs.set", {"id": ID, "selected": True, "volume": 30}, Origin.USER, "dial:abc",
+                   context=context),
+            wait=0.05,
+        )
+        assert reply.ok is True and reply.result == {"ok": True, "id": ID}
+        return reply
+
+    def test_a_late_pin_request_claims_the_pairing_for_the_asker_and_is_published(self, started_authority):
+        a = started_authority
+        fb = FakeBackend(a)
+        self._stalled_select(a, fb, context="dial:abc")
+        assert pairing.holder(ID) == ""
+        fb.gate.set()
+        assert _wait_for(lambda: snap().start_failure is not None)
+        assert _wait_for(lambda: pairing.holder(ID) == "dial:abc")
+        failure = snap().start_failure
+        assert failure.reason == "pin_required" and failure.requester == "dial:abc"
+        assert failure.unit_id == ID
+        assert snap().unit(ID).selected is False and snap().unit(ID).availability == "password"
+
+    def test_a_late_pin_request_sends_no_deselect(self, started_authority):
+        a = started_authority
+        fb = FakeBackend(a)
+        self._stalled_select(a, fb, context="dial:abc")
+        fb.gate.set()
+        assert _wait_for(lambda: pairing.holder(ID) == "dial:abc")
+        time.sleep(0.1)
+        # The speaker deselects itself while it waits for the PIN.
+        assert [kw.get("enabled") for _i, kw in fb.updates()] == [True]
+
+    def test_a_late_pin_request_from_a_caller_that_cannot_enter_a_pin_claims_nothing(self, started_authority):
+        a = started_authority
+        fb = FakeBackend(a)
+        self._stalled_select(a, fb, context=None)
+        fb.gate.set()
+        assert _wait_for(lambda: snap().start_failure is not None)
+        time.sleep(0.1)
+        assert pairing.holder(ID) == ""
+        assert snap().start_failure.requester == "dial:abc"
+
+    def test_a_pin_request_inside_the_wait_is_claimed_once_and_in_the_reply(self, player):
+        arrange()
+        player.answers.append(err("pin_required", "needs a PIN"))
+        r = change(on(name="Kitchen"), requester="dial:abc", pin_requester="dial:abc")
+        assert r["pin_required"] is True and r["id"] == ID
+        assert pairing.holder(ID) == "dial:abc"
+        assert snap().start_failure.requester == "dial:abc"
+
+    def test_the_state_package_does_not_import_the_pairing_module(self):
+        import ast
+        from pathlib import Path as P
+        for path in (P(intents_mod.__file__).parent / "autostream_state").glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            names = {
+                n.names[0].name if isinstance(n, ast.Import) else (n.module or "")
+                for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+            }
+            assert "autostream_pin_pairing" not in names, path
+
+
+# ---------------------------------------------------------------------------
+# Volume steps and mute as intents
+# ---------------------------------------------------------------------------
+
+def _step(delta, *, default_level=20, wait=None):
+    return submit(
+        Intent("volume.step", {"delta": delta, "default_level": default_level}, Origin.USER, "dial:abc"),
+        wait=wait,
+    )
+
+
+def _mute(action, *, default_level=20, wait=None):
+    return submit(
+        Intent("mute.set", {"action": action, "default_level": default_level}, Origin.USER, "dial:abc"),
+        wait=wait,
+    )
+
+
+class TestVolumeStepAndMute:
+    def test_a_step_down_while_muted_changes_nothing_and_reports_the_intended_master(self, player):
+        arrange(row("1", "A", selected=True, volume_percent=40), row("2", "B", selected=True, volume_percent=20))
+        assert _mute("mute").result == {"ok": True, "muted": True}
+        player.calls.clear()
+        assert _step(-5).result == {"ok": True, "volume": 30, "muted": True}
+        assert player.calls == []
+
+    def test_a_step_up_while_muted_is_a_plain_restore(self, player):
+        arrange(row("1", "A", selected=True, volume_percent=40))
+        _mute("mute")
+        player.calls.clear()
+        assert _step(9).result == {"ok": True, "muted": False, "volume": 40}
+        assert [c[2]["volume_percent"] for c in player.calls] == [40]
+
+    def test_a_step_from_silence_lifts_every_speaker_to_the_step(self, player):
+        arrange(row("1", "A", selected=True, volume_percent=0), row("2", "B", selected=True, volume_percent=0))
+        assert _step(6).result == {"ok": True, "volume": 6, "muted": False}
+        assert [c[2]["volume_percent"] for c in player.calls] == [6, 6]
+
+    def test_a_step_scales_each_speaker_in_proportion(self, player):
+        arrange(row("1", "A", selected=True, volume_percent=60), row("2", "B", selected=True, volume_percent=40))
+        assert _step(10).result == {"ok": True, "volume": 60, "muted": False}
+        assert sorted((c[1], c[2]["volume_percent"]) for c in player.calls) == [("1", 72), ("2", 48)]
+
+    def test_a_step_with_one_failed_write_is_partial_and_with_all_failed_is_an_error(self, player):
+        arrange(row("1", "A", selected=True, volume_percent=50), row("2", "B", selected=True, volume_percent=50))
+        player.answers.extend([ok(), err("http_error", "x")])
+        assert _step(10).result == {"ok": True, "volume": 60, "partial": True, "muted": False}
+        player.answers.extend([err("http_error", "x"), err("http_error", "x")])
+        assert _step(10).result == {"ok": False, "error": "all_outputs_failed"}
+
+    def test_a_step_or_a_mute_with_nothing_selected_or_no_player_is_refused(self, player):
+        arrange(row("1", "A"))
+        assert _step(5).result == {"ok": False, "error": "no_active_outputs"}
+        assert _mute("mute").result == {"ok": False, "error": "no_active_outputs"}
+        FakeStore().outputs_unreachable()
+        assert _step(5).result == {"ok": False, "error": "backend_unavailable"}
+        assert _mute("restore").result == {"ok": False, "error": "backend_unavailable"}
+
+    def test_a_mute_is_idempotent_and_reports_a_partial_failure(self, player):
+        arrange(row("1", "A", selected=True, volume_percent=50), row("2", "B", selected=True, volume_percent=50))
+        player.answers.extend([ok(), err("http_error", "x")])
+        assert _mute("mute").result == {"ok": True, "muted": True, "partial": True}
+        player.calls.clear()
+        assert _mute("mute").result == {"ok": True, "muted": True}
+        assert player.calls == []
+
+    def test_only_a_user_may_ask_for_a_step_or_a_mute(self, player):
+        arrange(row("1", "A", selected=True, volume_percent=50))
+        for name, args in (("volume.step", {"delta": 1, "default_level": 20}),
+                           ("mute.set", {"action": "mute", "default_level": 20})):
+            reply = submit(Intent(name, args, Origin.SESSION, "coordinator"))
+            assert reply.ok is False and reply.error == "origin_not_allowed"
+
+    def test_an_expired_wait_replies_from_the_desired_state(self, started_authority):
+        a = started_authority
+        fb = FakeBackend(a)
+        fb.rows = [row("1", "A", selected=True, volume_percent=40), row("2", "B", selected=True, volume_percent=20)]
+        a.start(fb)
+        a.merge_for_tests(fb.rows, boot="b0")
+        fb.gate = threading.Event()
+        try:
+            reply = _step(10, wait=0.05)
+            assert reply.result == {"ok": True, "volume": 40, "muted": False}
+            reply = _mute("mute", wait=0.05)
+            assert reply.result == {"ok": True, "muted": True}
+        finally:
+            fb.gate.set()
+
+    def test_knob_turns_during_a_blocked_write_become_one_write_per_speaker(self, started_authority):
+        a = started_authority
+        fb = FakeBackend(a)
+        fb.rows = [row("1", "A", selected=True, volume_percent=10), row("2", "B", selected=True, volume_percent=10)]
+        a.start(fb)
+        a.merge_for_tests(fb.rows, boot="b0")
+        fb.gate = threading.Event()
+        blocker = threading.Thread(target=lambda: a.set_volume("1", 11, Origin.USER), daemon=True)
+        blocker.start()
+        assert fb.entered.wait(5)
+        for _ in range(8):
+            _step(2, wait=0.01)
+        fb.gate.set()
+        assert _wait_for(lambda: len(fb.calls) >= 3)
+        time.sleep(0.1)
+        by_unit = {}
+        for unit_id, kw in fb.updates():
+            by_unit.setdefault(unit_id, []).append(kw.get("volume_percent"))
+        assert by_unit["1"][0] == 11 and by_unit["1"][-1] == snap().unit("1").volume
+        assert len(by_unit["2"]) == 1 and by_unit["2"][0] == snap().unit("2").volume
 
 
 # ---------------------------------------------------------------------------

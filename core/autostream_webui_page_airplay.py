@@ -23,7 +23,6 @@ from autostream_player_service import get_setting
 from autostream_state import active_track, store
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_config import input_type_label, normalize_input_type
-from autostream_mute_state import is_muted as _appliance_is_muted
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname, reboot_system
 from autostream_webui_components import output_card_html, slider_html
@@ -704,7 +703,7 @@ def send_airplay_page(
     _vu_html = f'<div class="np-level" id="np-level">{_vu_meter_html}</div>'
     _np_card_cls = "" if _np_is_playing else " np-ready"
     _np_hdr_text = "Now Playing" if _np_is_playing else "Ready"
-    if _np_is_playing and _appliance_is_muted():
+    if _np_is_playing and snap.outputs.muted_all:
         # The WebUI has no dedicated unmute control any more: moving the
         # volume slider is the only way out of a mute, so the header text
         # is what tells the user the appliance is currently muted.
