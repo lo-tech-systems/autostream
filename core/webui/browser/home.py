@@ -9,20 +9,17 @@ Renderer for the main AirPlay control page (/).
 from __future__ import annotations
 
 import html
-import json
 import logging
 
 from typing import Optional
 
 from autostream_appliances import get_all_appliances
-from autostream_state import store
 from autostream_state.live import get_setting
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 import autostream_rpi as rpi
 from autostream_sysutils import get_system_hostname, reboot_system
 from webui.components import slider_html
-from webui.protocol import hub as hub_module
-from webui.protocol.state import state_json
+from webui.protocol.state import state_for_page
 from webui import static
 from webui.assets import (
     A2HS_PROMPT_HTML,
@@ -90,18 +87,6 @@ def _build_appliances_for_selector() -> list:
             "equaliser_path": f"/a/{s.id}/equaliser",
         })
     return result
-
-
-def _state_for_island() -> dict:
-    """The state body the page starts from: the hub's cached one, else one
-    built from the store (no hub yet)."""
-    hub = hub_module.current()
-    if hub is not None:
-        try:
-            return json.loads(hub.state_body())
-        except Exception:
-            logging.warning("home: the hub's state body is unreadable", exc_info=True)
-    return state_json(store().snapshot(), clients=0)
 
 
 _PIN_ICON = (
@@ -231,7 +216,7 @@ def send_airplay_page(
     ) + static.script_tag("page/csrf_recovery.js")
 
     _island = static.page_data_island({
-        "state": _state_for_island(),
+        "state": state_for_page(),
         "csrf": csrf_token,
         "prefs": {
             "show_master_volume": bool(show_master_volume),

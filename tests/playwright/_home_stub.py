@@ -169,6 +169,17 @@ def _fake_handler() -> tuple[MagicMock, list]:
     return handler, chunks
 
 
+def load_parts(parts: dict | None = None) -> None:
+    """Start a fresh stream whose state is ``base_parts()`` with each key of
+    *parts* replacing that part."""
+    reset_stream()
+    with _STREAM_LOCK:
+        PARTS.clear()
+        PARTS.update(copy.deepcopy(base_parts(**(parts or {}))))
+        PART_VERSIONS.clear()
+        PART_VERSIONS.update({n: STREAM["version"] for n in PARTS})
+
+
 def render_home(
     *,
     parts: dict | None = None,
@@ -182,12 +193,7 @@ def render_home(
     sys.path.insert(0, str(REPO_ROOT / "core"))
     from webui.browser.home import send_airplay_page  # noqa: PLC0415
 
-    reset_stream()
-    with _STREAM_LOCK:
-        PARTS.clear()
-        PARTS.update(copy.deepcopy(base_parts(**(parts or {}))))
-        PART_VERSIONS.clear()
-        PART_VERSIONS.update({n: STREAM["version"] for n in PARTS})
+    load_parts(parts)
     handler, chunks = _fake_handler()
     auth = MagicMock()
     auth.get_csrf_token.return_value = "t"
@@ -200,7 +206,7 @@ def render_home(
             patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
             patch("webui.browser.home.get_all_appliances", return_value=[]),
             patch("webui.browser.home.get_system_hostname", return_value="autostream"),
-            patch("webui.browser.home._state_for_island", return_value=state_body()),
+            patch("webui.browser.home.state_for_page", return_value=state_body()),
             patch("webui.browser.home.get_setting", return_value=MagicMock(ok=True, value="2250")),
             patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
         ):

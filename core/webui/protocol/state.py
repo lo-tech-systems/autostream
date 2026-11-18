@@ -9,6 +9,7 @@ change.
 Contents:
   - send_state_json  -- GET /api/v1/state
   - state_json       -- the snapshot as plain JSON types
+  - state_for_page   -- the state a page starts from
 """
 
 from __future__ import annotations
@@ -16,13 +17,14 @@ from __future__ import annotations
 import dataclasses
 import enum
 import json
+import logging
 import math
 import time
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 from autostream_protocol import PROTOCOL
-from autostream_state import PART_NAMES, OutputUnitView
+from autostream_state import PART_NAMES, OutputUnitView, store
 from webui import common
 from webui.protocol import hub as hub_module
 
@@ -78,6 +80,18 @@ def state_json(snap, *, clients: int, parts=None) -> dict:
         "part_versions": {str(k): v for k, v in snap.part_versions.items()},
         "parts": {name: _jsonable(getattr(snap, name)) for name in names},
     }
+
+
+def state_for_page() -> dict:
+    """The state body a page starts from: the hub cached one, else one built
+    from the store (no hub yet)."""
+    hub = hub_module.current()
+    if hub is not None:
+        try:
+            return json.loads(hub.state_body())
+        except Exception:
+            logging.warning("state: the hub state body is unreadable", exc_info=True)
+    return state_json(store().snapshot(), clients=0)
 
 
 def _requested_parts(path: str) -> Optional[tuple]:

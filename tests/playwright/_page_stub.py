@@ -122,8 +122,11 @@ def _render_remote_home(**fakes) -> bytes:
     return _home_stub.render_remote_home(**fakes)
 
 
-def _render_equaliser(*, eq_fs: int = 96000, **_fakes) -> bytes:
+def _render_equaliser(*, eq_fs: int = 96000, parts: dict | None = None, **_fakes) -> bytes:
+    import _home_stub  # noqa: PLC0415
     from webui.browser.equaliser import send_equaliser_page  # noqa: PLC0415
+
+    _home_stub.load_parts(parts)
 
     handler, chunks = _handler("/equaliser")
     with tempfile.TemporaryDirectory() as tmp:
@@ -134,6 +137,7 @@ def _render_equaliser(*, eq_fs: int = 96000, **_fakes) -> bytes:
                 patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID),
                 patch("webui.browser.equaliser.get_all_appliances", return_value=[]),
                 patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"),
+                patch("webui.browser.equaliser.state_for_page", return_value=_home_stub.state_body()),
             ):
                 stack.enter_context(p)
             send_equaliser_page(handler, state)

@@ -94,12 +94,12 @@ _REMOTE_HOME_KEYS = {
     "selector_current_id", "output_url", "repeat_url", "outputs_empty_tolerance_ms",
     "pin_prompt_fallback", "control_other_appliances",
 }
-_EQ_KEYS = {"local_id", "selector_current_page", "poll_url", "eq_bands", "eq_fs", "curve"}
+_EQ_KEYS = {"local_id", "selector_current_page", "eq_bands", "eq_fs", "curve"}
 ISLAND_KEYS = {
     "home": _HOME_KEYS,
     "remote_home": _REMOTE_HOME_KEYS | {"remote_aid", "remote_hostname", "poll_url"},
-    "equaliser": _EQ_KEYS,
-    "remote_equaliser": _EQ_KEYS | {"save_url", "reset_url", "status_url", "remote_aid", "remote_hostname"},
+    "equaliser": _EQ_KEYS | {"state"},
+    "remote_equaliser": _EQ_KEYS | {"poll_url", "save_url", "reset_url", "status_url", "remote_aid", "remote_hostname"},
     "about": {"license_text"},
     "align": set(),
     "service": set(),

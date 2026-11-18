@@ -9,9 +9,10 @@ Responsibilities:
   - Render the shared output Equaliser page: output gain, auto-trim toggle,
     live trim readout, and six parametric EQ band sliders.
   - No PIN required; /equaliser is in the auth allowlist.
-  - Settings are saved automatically via POST /api/output_eq/config (AJAX).
-  - Full EQ state (all bands, gain, auto-trim) is polled every 3 s (10 s in
-    degraded mode) via GET /api/appliances/<local_id>/equaliser.
+  - Settings are saved automatically as output.eq.set and output.eq.reset
+    intents.
+  - The sliders follow the eq part of the state stream, so a change from any
+    client shows at once; the page starts from the state in its data island.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from autostream_eq_bands import OUTPUT_PEQ_BANDS
 import autostream_rpi as rpi
 from autostream_sysutils import get_system_hostname
 from webui import static
+from webui.protocol.state import state_for_page
 from webui.common import (
     build_appliance_selector_html,
     build_page_html,
@@ -221,8 +223,7 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
             "<div class='eq-band'>"
             f"<span class='eq-band-freq'>{label}</span>"
             f"<input type='range' class='eq-band-slider' min='-12' max='12' step='1'"
-            f" id='{key}' value='{val:.0f}'"
-            f" oninput=\"syncOutputPeq('{key}', this.value)\">"
+            f" id='{key}' value='{val:.0f}'>"
             f"<span class='eq-band-val' id='{key}_val'>{sign}{val:.0f} dB</span>"
             "</div>"
         )
@@ -230,7 +231,7 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
         "<div class='eq-section'>"
         "<div class='eq-section-header'>"
         "<span></span>"
-        "<button class='pill-btn small' id='eq-flat-btn' onclick='resetEq()'>Flat</button>"
+        "<button class='pill-btn small' id='eq-flat-btn'>Flat</button>"
         "</div>"
         + _eq_curve_html()
         + "<div class='eq-bands-wrap'>"
@@ -258,8 +259,7 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
         f"{trim_status_html}"
         "</div>"
         "<label class='output-toggle' style='flex-shrink:0;margin-top:2px;'>"
-        f"<input type='checkbox' id='output_auto_trim'{checked}"
-        " onchange='setOutputAutoTrim(this.checked)'>"
+        f"<input type='checkbox' id='output_auto_trim'{checked}>"
         "<span class='switch'></span>"
         "</label>"
         "</div>"
@@ -268,7 +268,7 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
         f"<span class='eq-gain-value' id='output_gain_db_val'>{gain_sign}{gain_db:.1f} dB</span>"
         "</div>"
         f"<input type='range' min='-12' max='12' step='0.5' id='output_gain_db'"
-        f" value='{gain_db:.1f}' oninput=\"syncOutputGain(this.value)\">"
+        f" value='{gain_db:.1f}'>"
         "<div class='eq-gain-ticks'>"
         "<span>-12 dB</span><span>0 dB</span><span>+12 dB</span>"
         "</div>"
@@ -328,7 +328,7 @@ def send_equaliser_page(
     _head_extra = static.page_data_island({
         "local_id": _local_id,
         "selector_current_page": "equaliser",
-        "poll_url": f"/api/appliances/{_local_id}/equaliser",
+        "state": state_for_page(),
         "eq_bands": _eq_bands_data(),
         "eq_fs": _curve_fs(),
         "curve": _curve_data(),
@@ -338,8 +338,7 @@ def send_equaliser_page(
         f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
         f"{card_html}"
         + static.script_tag("page/equaliser_curve.js")
-        + static.script_tag("page/equaliser.js")
-        + static.script_tag("page/appliance_selector.js")
+        + static.module_tag("page/equaliser.js")
     )
 
     page = build_page_html(

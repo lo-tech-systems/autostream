@@ -564,7 +564,7 @@ class TestSetup:
 
 
 # ---------------------------------------------------------------------------
-# Line ceilings of the shared and Home modules
+# Line ceilings of the shared, Home and Equaliser modules
 # ---------------------------------------------------------------------------
 
 STATIC = stub.REPO_ROOT / "nginx" / "static"
@@ -584,6 +584,7 @@ CEILINGS = {
     "page/home/home_warnings.js": 80,
     "page/home/home_autostart.js": 45,
     "page/selector_menu.js": 55,
+    "page/equaliser.js": 120,
 }
 
 
