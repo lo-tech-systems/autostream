@@ -3903,9 +3903,9 @@ class DialDisplay:
         live source is playing. Caller holds self._lock (called from
         _display_repeat_locked).
 
-        muted/volume feed the top band's display-only readout — the same
-        reading the main screen's overlay shows (dial_volume.shown_muted()/
-        shown_volume()), addressed at *screen*'s own appliance rather than
+        volume feeds the top band's display-only readout — the same
+        reading the main screen's overlay shows (dial_volume.shown_volume()),
+        addressed at *screen*'s own appliance rather than
         whatever the main overlay would currently show, since the two
         screens can disagree about which appliance is focused for as long
         as it takes the next poll to notice a manual focus change.
@@ -3922,20 +3922,19 @@ class DialDisplay:
                 eq_pages=eq_pages,
             )
         name = appliance_display_name(screen.service_name)
-        muted = shown_muted(screen.service_name)
         volume = shown_volume(screen.service_name)
         rec = self._repeat_record(screen.appliance_id)
         if rec is None or not rec.available:
             return RepeatViewState(
                 name=name, layout="enable", armed=False, line="",
                 start_enabled=False, stop_enabled=False, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
+                volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state in ("recording", "pending", "idle"):
             return RepeatViewState(
                 name=name, layout="enable", armed=rec.armed, line="",
                 start_enabled=False, stop_enabled=False, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
+                volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state == "hold":
             # Already reads 0:00 — there is nothing running yet for the
@@ -3944,7 +3943,7 @@ class DialDisplay:
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=False, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
+                volume=volume, pressed=pressed, eq_pages=eq_pages,
             )
         if rec.state == "replaying":
             # The counter reads the record's latency behind the true
@@ -3960,7 +3959,7 @@ class DialDisplay:
             return RepeatViewState(
                 name=name, layout="replaying", armed=rec.armed, line=line,
                 start_enabled=True, stop_enabled=True, stop_pressed=False,
-                muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
+                volume=volume, pressed=pressed, eq_pages=eq_pages,
                 counter_second=second,
             )
         # fading_out: the line freezes at the last observed position (no
@@ -3971,7 +3970,7 @@ class DialDisplay:
         return RepeatViewState(
             name=name, layout="replaying", armed=rec.armed, line=line,
             start_enabled=False, stop_enabled=True, stop_pressed=True,
-            muted=muted, volume=volume, pressed=pressed, eq_pages=eq_pages,
+            volume=volume, pressed=pressed, eq_pages=eq_pages,
         )
 
     def _display_repeat_locked(self) -> None:
@@ -4048,7 +4047,7 @@ class DialDisplay:
         """Build the compositor's EqViewState from *screen* — reads
         bass/treble through the optimistic override (see _shown_eq()) so a
         just-tapped stepper moves on the same frame as the tap, before the
-        worker's reconciling fetch lands. muted/volume feed the top band's
+        worker's reconciling fetch lands. volume feeds the top band's
         display-only readout, the same reading the repeat screen's own top
         band shows, addressed at *screen*'s own appliance. Caller holds
         self._lock (called from _display_eq_locked)."""
@@ -4056,7 +4055,6 @@ class DialDisplay:
         if screen is None:
             return EqViewState(name="", bass_db=None, treble_db=None, loaded=False, pressed=pressed)
         name = appliance_display_name(screen.service_name)
-        muted = shown_muted(screen.service_name)
         volume = shown_volume(screen.service_name)
         held = _held_eq(self._core.snapshot(), screen)
         return EqViewState(
@@ -4064,7 +4062,7 @@ class DialDisplay:
             bass_db=self._shown_eq(screen, "bass"),
             treble_db=self._shown_eq(screen, "treble"),
             loaded=held is not None and _eq_loaded(held),
-            muted=muted, volume=volume, pressed=pressed,
+            volume=volume, pressed=pressed,
         )
 
     def _display_eq_locked(self) -> None:

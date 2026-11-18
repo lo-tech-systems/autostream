@@ -118,8 +118,6 @@ from dial_display_image import transform_artwork_for_panel
 from dial_core_state import SEVERITY_CRITICAL, SEVERITY_WARNING
 from dial_touch_layout import (
     CONTENT_COMPACT,
-    FONT_BODY_PX_AT_REFERENCE,
-    FONT_READOUT_PX_AT_REFERENCE,
     GEOMETRY_EQ,
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
@@ -142,7 +140,6 @@ from dial_touch_layout import (
     list_layout_for,
     metrics_for,
     repeat_layout_for,
-    scale_px,
     warning_layout_for,
     zone_rects_for,
 )
@@ -201,14 +198,6 @@ _DIVIDER_RGB = (255, 255, 255)
 # DejaVu Sans, installed by the dial installer via fonts-dejavu-core (see
 # installer/dial/helpers.sh install_image_packages()).
 DEJAVU_SANS_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-
-# Text/padding/divider/halo sizes, all read from LayoutMetrics — one scale
-# rule (dial_touch_layout.scale_px), computed once per compose. These two
-# are kept as module constants (aliases of the layout module's reference
-# tuples) purely because tests import them by name; every other reference
-# size lives only in dial_touch_layout now.
-_ARTIST_FONT_PX_AT_REFERENCE = FONT_BODY_PX_AT_REFERENCE[0]
-_VOLUME_FONT_PX_AT_REFERENCE = FONT_READOUT_PX_AT_REFERENCE[0]
 
 _HALO_RGBA = (0, 0, 0, 255)
 
@@ -455,7 +444,7 @@ class RepeatViewState:
 
     Both layouts share the same top band the main screen's now-playing
     overlay uses (dots, name, mute/volume readout — see _draw_top_band_
-    content()); `name`, `muted` and `volume` feed that shared piece, drawn
+    content()); `name` and `volume` feed that shared piece, drawn
     without the main screen's halo (there is no arbitrary album art behind
     it in the enable layout, and the replaying layout's own base image is
     already dimmed there — see compose_repeat()'s `base` argument).
@@ -467,8 +456,8 @@ class RepeatViewState:
     armed: whether the daemon will auto-start a replay on its own — read by
         the enable layout's row marker (a hollow dot when False, solid when
         True). Meaningful in either layout, but only drawn in "enable".
-    muted, volume: the top band's mute/volume readout — display-only on
-        this screen (no touch zone), mirroring OverlayState.muted/volume.
+    volume: the top band's volume readout — display-only on this screen
+        (no touch zone), mirroring OverlayState.volume.
     line: the centre text for the "replaying" layout ("0:00 / 3:12" style);
         ignored (nothing drawn) in "enable".
     start_enabled, stop_enabled: whether the Restart/Stop label is drawn at
@@ -495,7 +484,6 @@ class RepeatViewState:
     start_enabled: bool
     stop_enabled: bool
     stop_pressed: bool
-    muted: bool | None = None
     volume: int | None = None
     pressed: "TouchZone | None" = None
     eq_pages: bool = False
@@ -549,9 +537,9 @@ class EqViewState:
     loaded: whether the first fetch has landed for this screen's appliance
         — kept alongside bass_db/treble_db rather than inferred from them
         being non-None, since a fetch can legitimately land on 0 for both.
-    muted, volume: the top band's mute/volume readout — display-only on
-        this page (no touch zone; the encoder still steps volume), mirroring
-        RepeatViewState.muted/volume.
+    volume: the top band's volume readout — display-only on this page (no
+        touch zone; the encoder still steps volume), mirroring
+        RepeatViewState.volume.
     pressed: the TouchZone currently being pressed, or None. Mirrors
         OverlayState.pressed/RepeatViewState.pressed.
     """
@@ -560,7 +548,6 @@ class EqViewState:
     bass_db: "int | None"
     treble_db: "int | None"
     loaded: bool
-    muted: "bool | None" = None
     volume: "int | None" = None
     pressed: "TouchZone | None" = None
     bell: "BellBadge | None" = None
@@ -651,7 +638,6 @@ BG_CHASSIS = "chassis"    # flat _LIST_BG_RGB fill, no caller image involved
 # bands, dispatched through _BODY_RENDERERS.
 BODY_NONE = "none"
 BODY_NOW_PLAYING = "now_playing"   # title + artist lines with halo
-BODY_REPEAT_ROW = "repeat_row"     # "Repeat Play" label + arm dot
 BODY_TOGGLE_ROW = "toggle_row"     # a label + arm dot for any on/off row (repeat, per-output)
 BODY_REPEAT_LINE = "repeat_line"   # centred "m:ss / m:ss" with halo
 BODY_LIST_ROWS = "list_rows"       # selector/picker rows
@@ -687,9 +673,8 @@ class Header:
     """The top band's content: appliance name, mute/volume readout, and the
     optional pager dots that switch between the main and repeat screens.
     dots_filled=None omits the dots entirely; 0 fills the left dot, 1 the
-    right one. muted is carried for compatibility but no longer selects a
-    slashed readout anywhere -- mute has one home, the main screen's own
-    footer glyph and wash. back=True draws a left chevron into the dots
+    right one. The readout speaker is never slashed: mute has one home, the
+    main screen's own footer glyph and wash. back=True draws a left chevron into the dots
     rect instead (the per-output detail page's own back control), taking
     priority over dots_filled. dots_count (2, the default, or 3) selects
     which pager-dots glyph is drawn -- two dots for an appliance with no EQ
@@ -699,7 +684,6 @@ class Header:
 
     name: str = ""
     volume: int | None = None
-    muted: bool | None = None
     dots_filled: int | None = None
     dots_count: int = 2
     back: bool = False
@@ -715,8 +699,8 @@ class Body:
     kind: str = BODY_NONE
     title: str = ""        # BODY_NOW_PLAYING; also BODY_COMPACT_LIST's own title-band text (empty -> "Replay")
     artist: str = ""       # BODY_NOW_PLAYING
-    armed: bool = False    # BODY_REPEAT_ROW / BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE
-    label: str = ""        # BODY_REPEAT_ROW / BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE — the row's own text
+    armed: bool = False    # BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE
+    label: str = ""        # BODY_TOGGLE_ROW / BODY_COMPACT_TOGGLE — the row's own text
     line: str = ""         # BODY_REPEAT_LINE / BODY_COMPACT_REPLAY
     rows: tuple = ()       # BODY_LIST_ROWS / BODY_COMPACT_LIST — same row tuples ListState.rows carries
     album: str = ""        # BODY_NOW_PLAYING — drawn only where the layout has an album rect
@@ -1176,18 +1160,6 @@ def format_mmss(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-# Test-facing shims: the compositor used to compute these itself; now every
-# size-dependent number comes from a LayoutMetrics (dial_touch_layout), and
-# these two names delegate to it so the existing imports keep working.
-_scaled_px = scale_px
-
-
-def _pad_px(width: int, height: int) -> int:
-    """Padding (px) between a band's edge and the text/glyph drawn inside
-    it — metrics_for(width, height).pad."""
-    return metrics_for(width, height).pad
-
-
 @functools.lru_cache(maxsize=16)
 def _load_font(size: int):
     """Load DejaVu Sans at *size*, falling back in order: the system TTF,
@@ -1246,7 +1218,6 @@ def _draw_top_band_content(
     name_text: str,
     volume_cluster_rect,
     volume: int | None,
-    muted: bool | None,
     metrics: LayoutMetrics,
     dots_count: int = 2,
 ) -> None:
@@ -1265,16 +1236,14 @@ def _draw_top_band_content(
     dots_count selects the two-dot glyph (any value other than 3) or the
     three-dot page glyph (exactly 3) — see Header.dots_count.
 
-    *muted* is accepted for the caller's convenience but never reaches the
-    readout glyph: the header speaker is never slashed on any screen — mute
-    has one home, the main screen's own footer glyph and wash (see
-    FOOTER_VOLUME_MUTE). The unmuted variant is always drawn here.
+    The header speaker is never slashed on any screen — mute has one home,
+    the main screen's own footer glyph and wash (see FOOTER_VOLUME_MUTE).
     """
     name_font = _load_font(metrics.font_body)
     volume_font = _load_font(metrics.font_readout)
 
     draw = ImageDraw.Draw(frame)
-    _draw_volume_cluster(frame, volume_cluster_rect, volume, None, volume_font, metrics)
+    _draw_volume_cluster(frame, volume_cluster_rect, volume, volume_font, metrics)
     pad = metrics.pad
     _draw_label(draw, name_rect, name_text, name_font, pad)
     if dots_rect is not None and dots_filled is not None:
@@ -1590,7 +1559,6 @@ def _draw_volume_cluster(
     frame: Image.Image,
     rect: tuple[int, int, int, int],
     volume: int | None,
-    muted: bool | None,
     font,
     metrics: LayoutMetrics,
 ) -> None:
@@ -1625,7 +1593,7 @@ def _draw_volume_cluster(
                 x_icon = x_text - gap - icon
 
     icon_box = (x_icon, cy - icon // 2, x_icon + icon, cy - icon // 2 + icon)
-    _draw_glyph(frame, icon_box, GLYPH_SPEAKER, bool(muted), supersample=metrics.supersample)
+    _draw_glyph(frame, icon_box, GLYPH_SPEAKER, supersample=metrics.supersample)
 
 
 def _draw_text_with_halo(
@@ -1722,7 +1690,7 @@ GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
 GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
 GLYPH_MUTE = "mute"                    # params: () or (color,) — the main screen's footer mute cell
-GLYPH_SPEAKER = "speaker"              # params: (muted,) — the top band's volume readout icon
+GLYPH_SPEAKER = "speaker"              # no params — the top band's volume readout icon
 GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
 GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
 GLYPH_BELL = "bell"                    # params: (severity, count) — the warning bell
@@ -1942,10 +1910,10 @@ def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB
     _draw_speaker_glyph(draw, box, muted=True, color=color)
 
 
-def _draw_speaker_tile(draw: ImageDraw.ImageDraw, w: int, h: int, muted: bool) -> None:
+def _draw_speaker_tile(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     """The top band's volume readout icon: _draw_speaker_glyph() filling a
     (w, h) canvas — see _draw_glyph."""
-    _draw_speaker_glyph(draw, (0, 0, w, h), muted)
+    _draw_speaker_glyph(draw, (0, 0, w, h), False)
 
 
 def _draw_restart_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
@@ -2434,7 +2402,7 @@ def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetric
         dots_count=header.dots_count,
         name_rect=name_rect, name_text=header.name,
         volume_cluster_rect=layout.volume_cluster,
-        volume=header.volume, muted=header.muted,
+        volume=header.volume,
         metrics=metrics,
     )
     if header.bell is not None:
@@ -3126,7 +3094,6 @@ def _body_centred_label(img: Image.Image, metrics: LayoutMetrics, body: Body) ->
 _BODY_RENDERERS = {
     BODY_NONE: _body_none,
     BODY_NOW_PLAYING: _body_now_playing,
-    BODY_REPEAT_ROW: _body_toggle_row,
     BODY_TOGGLE_ROW: _body_toggle_row,
     BODY_REPEAT_LINE: _body_repeat_line,
     BODY_LIST_ROWS: _body_list_rows,
@@ -3396,7 +3363,7 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: 
         # disappears over a dimmed footer band under a white glyph.
         washes=((layout.footer_mute, _MUTE_WASH_ALPHA),) if overlay.muted else (),
         header=Header(
-            name=overlay.name, volume=overlay.volume, muted=overlay.muted,
+            name=overlay.name, volume=overlay.volume,
             dots_filled=0 if overlay.dots else None,
             dots_count=3 if overlay.eq_pages else 2, bell=overlay.bell,
         ),
@@ -3464,7 +3431,7 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
             left_enabled=state.start_enabled, right_enabled=state.stop_enabled,
         )
     else:
-        body = Body(BODY_REPEAT_ROW, armed=state.armed, label="Repeat Play")
+        body = Body(BODY_TOGGLE_ROW, armed=state.armed, label="Repeat Play")
         footer = Footer(FOOTER_NONE)
     return Frame(
         background=BG_BASE if replaying else BG_CHASSIS,
@@ -3472,7 +3439,7 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
         dim_bottom=replaying,
         pressed=_repeat_pressed_rects(state, width, height, metrics),
         header=Header(
-            name=state.name, volume=state.volume, muted=state.muted, dots_filled=1,
+            name=state.name, volume=state.volume, dots_filled=1,
             dots_count=3 if state.eq_pages else 2, bell=state.bell,
         ),
         body=body,
@@ -3497,7 +3464,7 @@ def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetr
         dim_top=True,
         pressed=_eq_pressed_rects(state.pressed, width, height, metrics),
         header=Header(
-            name=state.name, volume=state.volume, muted=state.muted, dots_filled=2, dots_count=3,
+            name=state.name, volume=state.volume, dots_filled=2, dots_count=3,
             bell=state.bell,
         ),
         body=Body(BODY_EQ_BARS, bass_db=state.bass_db, treble_db=state.treble_db),
@@ -3550,7 +3517,7 @@ def _output_frame(state: "OutputViewState", width: int, height: int, metrics: La
         dim_bottom=True,
         pressed=_output_pressed_rects(state.pressed, state.selected, width, height, metrics),
         header=Header(
-            name=state.name, volume=state.level, muted=None, dots_filled=None, back=True,
+            name=state.name, volume=state.level, dots_filled=None, back=True,
         ),
         body=Body(BODY_TOGGLE_ROW, armed=state.selected, label=state.output_name),
         footer=Footer(FOOTER_VOLUME, left_enabled=state.selected, right_enabled=state.selected),

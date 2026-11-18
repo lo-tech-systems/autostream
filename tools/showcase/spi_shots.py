@@ -129,14 +129,14 @@ def output_detail(panel, selected=True):
 
 
 def equaliser(panel):
-    view = comp.EqViewState(name="Turntable", bass_db=2, treble_db=3, loaded=True, muted=False, volume=36)
+    view = comp.EqViewState(name="Turntable", bass_db=2, treble_db=3, loaded=True, volume=36)
     return panel.compositor.compose_eq(panel.width, panel.height, view, **panel.kw())
 
 
 def repeat_enable(panel, armed=True):
     view = comp.RepeatViewState(
         name="Turntable", layout="enable", armed=armed, line="", start_enabled=False,
-        stop_enabled=False, stop_pressed=False, muted=False, volume=36, eq_pages=not panel.compact)
+        stop_enabled=False, stop_pressed=False, volume=36, eq_pages=not panel.compact)
     return panel.compositor.compose_repeat(
         panel.width, panel.height, view, base=panel.artwork_base(BY_KEY["folk"]), **panel.kw())
 
@@ -144,7 +144,7 @@ def repeat_enable(panel, armed=True):
 def repeat_replaying(panel):
     view = comp.RepeatViewState(
         name="Turntable", layout="replaying", armed=True, line="2:00 / 18:20", start_enabled=True,
-        stop_enabled=True, stop_pressed=False, muted=False, volume=36, eq_pages=not panel.compact,
+        stop_enabled=True, stop_pressed=False, volume=36, eq_pages=not panel.compact,
         counter_second=120)
     return panel.compositor.compose_repeat(
         panel.width, panel.height, view, base=panel.artwork_base(BY_KEY["folk"]), **panel.kw())

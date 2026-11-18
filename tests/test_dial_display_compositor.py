@@ -31,8 +31,6 @@ for _p in (_DIAL, _CORE):
         sys.path.insert(0, _p)
 
 from dial_display_compositor import (  # noqa: E402
-    _ARTIST_FONT_PX_AT_REFERENCE,
-    _VOLUME_FONT_PX_AT_REFERENCE,
     BG_BASE,
     BG_CHASSIS,
     BODY_COMPACT_CONTROLS,
@@ -47,7 +45,6 @@ from dial_display_compositor import (  # noqa: E402
     BODY_NONE,
     BODY_NOW_PLAYING,
     BODY_REPEAT_LINE,
-    BODY_REPEAT_ROW,
     BODY_TOGGLE_ROW,
     BODY_WARNING,
     DEFAULT_MARK,
@@ -121,12 +118,10 @@ from dial_display_compositor import (  # noqa: E402
     _halo_layer,
     _load_font,
     _now_playing_frame,
-    _pad_px,
     _repeat_frame,
     _reset_font_cache,
     _reset_render_caches,
     _reveal_layers,
-    _scaled_px,
     _text_size,
     _truncate_to_width,
     _zone_rect,
@@ -137,7 +132,9 @@ from dial_touch_layout import (  # noqa: E402
     CONTENT_COMPACT,
     CONTENT_LARGE,
     FONT_BODY_MAX_PX,
+    FONT_BODY_PX_AT_REFERENCE,
     FONT_READOUT_MAX_PX,
+    FONT_READOUT_PX_AT_REFERENCE,
     GEOMETRY_EQ,
     GEOMETRY_INFO,
     GEOMETRY_LIST,
@@ -160,6 +157,7 @@ from dial_touch_layout import (  # noqa: E402
     list_layout_for,
     metrics_for,
     repeat_layout_for,
+    scale_px,
     warning_layout_for,
     zone_rects_for,
     zones_for,
@@ -928,8 +926,8 @@ class TestOverlayText:
     def test_scaled_px_matches_reference_sizes(self, size, expected):
         width, height = size
         expected_artist, expected_volume = expected
-        assert _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8) == expected_artist
-        assert _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9) == expected_volume
+        assert scale_px(FONT_BODY_PX_AT_REFERENCE[0], width, height, 8) == expected_artist
+        assert scale_px(FONT_READOUT_PX_AT_REFERENCE[0], width, height, 9) == expected_volume
 
 
 class TestOverlayName:
@@ -1526,7 +1524,7 @@ def _repeat_state(**overrides) -> RepeatViewState:
     base = dict(
         name="Kitchen", layout="enable", armed=False, line="",
         start_enabled=False, stop_enabled=False, stop_pressed=False,
-        muted=None, volume=None, pressed=None,
+        volume=None, pressed=None,
     )
     base.update(overrides)
     return RepeatViewState(**base)
@@ -1535,7 +1533,7 @@ def _repeat_state(**overrides) -> RepeatViewState:
 def _repeat_dot_rect(layout, width=160, height=128):
     """The enable layout's "Repeat Play" row dot marker rect — mirrors the
     geometry _body_repeat_row() itself computes."""
-    pad = _pad_px(width, height)
+    pad = metrics_for(width, height).pad
     row = layout.row
     dot_box = row[3] - row[1]
     return (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
@@ -1679,17 +1677,6 @@ class TestComposeRepeatTopBand:
         with_volume = compositor.compose_repeat(160, 128, _repeat_state(volume=42), rotate=False, bgr=False)
         assert list(blank.crop(layout.volume_cluster).getdata()) != list(
             with_volume.crop(layout.volume_cluster).getdata()
-        )
-
-    def test_header_readout_unslashed_regardless_of_muted(self, compositor):
-        """The header glyph is never slashed on any screen, the repeat
-        screen's display-only readout included -- mute has one home, the
-        footer's own glyph and wash (see the main-screen footer tests)."""
-        layout = repeat_layout_for(160, 128)
-        unmuted = compositor.compose_repeat(160, 128, _repeat_state(muted=False), rotate=False, bgr=False)
-        muted = compositor.compose_repeat(160, 128, _repeat_state(muted=True), rotate=False, bgr=False)
-        assert list(unmuted.crop(layout.volume_cluster).getdata()) == list(
-            muted.crop(layout.volume_cluster).getdata()
         )
 
     def test_name_pressed_highlight(self, compositor):
@@ -2580,7 +2567,7 @@ class TestOverlayDots:
 
 class TestComposeFramePipeline:
     def test_every_body_kind_has_a_renderer(self):
-        for kind in (BODY_NONE, BODY_NOW_PLAYING, BODY_REPEAT_ROW, BODY_REPEAT_LINE, BODY_LIST_ROWS):
+        for kind in (BODY_NONE, BODY_NOW_PLAYING, BODY_TOGGLE_ROW, BODY_REPEAT_LINE, BODY_LIST_ROWS):
             assert kind in _BODY_RENDERERS
 
     def test_every_footer_kind_has_a_renderer(self):
@@ -2782,22 +2769,6 @@ class TestMetricsByteEquivalence:
         assert list(with_album.getdata()) == list(without_album.getdata())
 
 
-class TestShimsEqualMetricsFields:
-    """_pad_px and _scaled_px are test-facing shims now delegating to
-    dial_touch_layout — check they still agree with the metrics fields they
-    stand in for, at every profile size."""
-
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_pad_px_equals_metrics_pad(self, width, height):
-        assert _pad_px(width, height) == metrics_for(width, height).pad
-
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_scaled_px_equals_metrics_font_body(self, width, height):
-        m = metrics_for(width, height)
-        assert _scaled_px(_ARTIST_FONT_PX_AT_REFERENCE, width, height, 8) == m.font_body
-        assert _scaled_px(_VOLUME_FONT_PX_AT_REFERENCE, width, height, 9) == m.font_readout
-
-
 # ---------------------------------------------------------------------------
 # Glyph-tile and halo-layer caches — both are memoised pure functions (the
 # same footing as _load_font), so a cold render (empty cache), a warm render
@@ -2813,7 +2784,7 @@ def _repeat_state_for_cache_tests(**overrides) -> RepeatViewState:
     base = dict(
         name="Kitchen", layout="enable", armed=False, line="",
         start_enabled=False, stop_enabled=False, stop_pressed=False,
-        muted=None, volume=None, pressed=None,
+        volume=None, pressed=None,
     )
     base.update(overrides)
     return RepeatViewState(**base)
@@ -4106,7 +4077,7 @@ class TestComposeOutput:
 
     def test_dot_filled_iff_selected(self, compositor):
         layout = repeat_layout_for(160, 128)
-        pad = _pad_px(160, 128)
+        pad = metrics_for(160, 128).pad
         row = layout.row
         dot_box = row[3] - row[1]
         dot_rect = (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
@@ -4217,30 +4188,17 @@ class TestComposeOutput:
 
 
 # ---------------------------------------------------------------------------
-# BODY_TOGGLE_ROW / BODY_REPEAT_ROW: the shared renderer, byte-identical
-# for the repeat screen.
+# BODY_TOGGLE_ROW: the repeat screen's row.
 # ---------------------------------------------------------------------------
 
-class TestBodyToggleRowByteIdentity:
-    def test_repeat_row_and_toggle_row_render_identically_for_the_same_label(self):
-        img_a = Image.new("RGB", (160, 128), (16, 16, 16))
-        img_b = Image.new("RGB", (160, 128), (16, 16, 16))
-        metrics = metrics_for(160, 128)
-        _BODY_RENDERERS[BODY_REPEAT_ROW](
-            img_a, metrics, Body(BODY_REPEAT_ROW, armed=True, label="Repeat Play"),
-        )
-        _BODY_RENDERERS[BODY_TOGGLE_ROW](
-            img_b, metrics, Body(BODY_TOGGLE_ROW, armed=True, label="Repeat Play"),
-        )
-        assert list(img_a.getdata()) == list(img_b.getdata())
-
+class TestRepeatScreenToggleRow:
     def test_repeat_screen_still_draws_repeat_play_label(self):
         """Regression guard: _repeat_frame must still pass the literal
         label, not an empty one, now that the renderer reads body.label
         instead of a hardcoded string."""
         from dial_display_compositor import _repeat_frame
         frame = _repeat_frame(_repeat_state(layout="enable", armed=False), 160, 128, metrics_for(160, 128))
-        assert frame.body.kind == BODY_REPEAT_ROW
+        assert frame.body.kind == BODY_TOGGLE_ROW
         assert frame.body.label == "Repeat Play"
 
 
@@ -5416,7 +5374,7 @@ class TestHeaderDotsCount:
 def _eq_state(**overrides) -> "EqViewState":
     base = dict(
         name="Kitchen", bass_db=0, treble_db=0, loaded=True,
-        muted=None, volume=None, pressed=None,
+        volume=None, pressed=None,
     )
     base.update(overrides)
     return EqViewState(**base)
@@ -6026,7 +5984,7 @@ def _replaying_state(**overrides) -> RepeatViewState:
     base = dict(
         name="Kitchen", layout="replaying", armed=False, line="0:42 / 3:12",
         start_enabled=True, stop_enabled=True, stop_pressed=False,
-        muted=None, volume=40, pressed=None,
+        volume=40, pressed=None,
     )
     base.update(overrides)
     return RepeatViewState(**base)

@@ -5812,15 +5812,12 @@ class TestRepeatViewTopBandAndBaseImage:
             display._repaint_current_locked()
         return display, appliance_id
 
-    def test_muted_and_volume_fed_from_the_repeat_screens_own_appliance(self):
+    def test_volume_fed_from_the_repeat_screens_own_appliance(self):
         display, aid = self._opened(state="idle")
-        with patch("dial_display.shown_muted", return_value=True) as mock_shown_muted, \
-             patch("dial_display.shown_volume", return_value=37) as mock_shown_volume:
+        with patch("dial_display.shown_volume", return_value=37) as mock_shown_volume:
             with display._lock:
                 view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
-        assert view.muted is True
         assert view.volume == 37
-        mock_shown_muted.assert_called_once_with("Kitchen")
         mock_shown_volume.assert_called_once_with("Kitchen")
 
     def test_base_image_passed_through_to_compose_repeat(self):

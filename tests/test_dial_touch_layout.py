@@ -1258,14 +1258,6 @@ class TestScalePxConsolidation:
         assert scale_px(3, width, height, 1) == _dead_zone_margin(width, height)
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_scale_px_matches_compositor_scaled_px(self, width, height):
-        pytest.importorskip("PIL.Image", reason="Pillow not installed")
-        from dial_display_compositor import _scaled_px
-
-        for ref, floor in [(13, 8), (15, 9), (4, 2), (3, 2), (2, 1)]:
-            assert scale_px(ref, width, height, floor) == _scaled_px(ref, width, height, floor)
-
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_scale_px_matches_image_blur_radius(self, width, height):
         pytest.importorskip("PIL.Image", reason="Pillow not installed")
         from dial_display_image import _blur_radius_for
