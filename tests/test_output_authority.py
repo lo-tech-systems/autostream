@@ -233,6 +233,87 @@ class TestReading:
     def test_start_makes_no_call_to_the_player(self, w):
         assert w.fb.calls == [] and w.fb.reads == 0 and w.fb.channel_calls == 0
 
+    def test_three_failed_reads_keep_every_card_and_read_not_connected(self, w):
+        merge(w, [group_row(1, "streaming", selected=True, volume_percent=40),
+                  group_row(2, "stopped", volume_percent=25),
+                  group_row(3, "failed")])
+        before = snap()
+        desired = {uid: dataclasses.replace(u.desired) for uid, u in w.a._units.items()}
+        w.fb.list_result = ListOutputsResult(ok=False, error="busy", error_code="timeout")
+        w.a.on_outputs_changed()
+        for t in (0, 0.5, 1.5):
+            w.a.step(now=T0 + t)
+        after = snap()
+        assert w.fb.reads == 3
+        assert after.connected is False
+        assert [u.id for u in after.units] == ["1", "2", "3"]
+        assert after.units == before.units
+        assert {uid: u.desired for uid, u in w.a._units.items()} == desired
+        assert w.fb.calls == []
+
+    def test_a_kept_owntone_mini_adapter_keeps_session_fields(self, monkeypatch):
+        # Drives reads through the production backend and the player
+        # service's detection: the probe that fails while the player is busy
+        # keeps the adapter it last detected, so the rows read once the
+        # player answers again still carry sessions.
+        import autostream_player_service as ps
+        import autostream_players as players
+
+        class SessionAdapter:
+            reads = 0
+
+            def __init__(self, base_url="", timeout=3.0):
+                self.base_url = base_url
+
+            @classmethod
+            def backend_id_cls(cls):
+                return "test_session_adapter"
+
+            @property
+            def backend_id(self):
+                return self.backend_id_cls()
+
+            def list_outputs(self):
+                SessionAdapter.reads += 1
+                return ListOutputsResult(ok=True, outputs=(
+                    group_row(1, "streaming", selected=True, volume_percent=40),
+                    group_row(2, "stopped")))
+
+        players.REGISTRY.register(SessionAdapter)
+        player_up = [True]
+
+        def detect(base_url, timeout=3.0):
+            if not player_up[0]:
+                return None, (players.DetectionResult(False, SessionAdapter.backend_id_cls(), "timeout"),)
+            return SessionAdapter(base_url), (players.DetectionResult(True, SessionAdapter.backend_id_cls(),
+                                                                      version="1.0"),)
+
+        monkeypatch.setattr(ps, "detect_backend", detect)
+        monkeypatch.setattr(ps, "event_channel_info", lambda base_url: EventChannelInfo(kind="poll", reachable=True))
+        a = get_authority()
+        clock = [T0]
+        monkeypatch.setattr(a, "_clock", lambda: clock[0])
+        a.start(PlayerServiceBackend("http://player.test:3689"))
+        a.on_outputs_changed()
+        a.step(now=T0)
+        assert snap().unit("1").availability == "ok"
+
+        # The cached detection runs out while the player is too busy to
+        # answer the probe; its speaker list answers on the next read.
+        key = ps._normalize_base_url("http://player.test:3689")
+        entry = ps._DETECTION_CACHE[key]
+        ps._DETECTION_CACHE[key] = (entry[0] - ps._DETECTION_CACHE_SECONDS - 1,) + tuple(entry[1:])
+        player_up[0] = False
+        a.on_outputs_changed()
+        a.step(now=T0 + 1)
+        assert ps.resolve_backend("http://player.test:3689").backend_id == SessionAdapter.backend_id_cls()
+        assert SessionAdapter.reads == 2
+        p = snap()
+        assert p.connected is True
+        assert p.unit("1").availability == "ok" and p.unit("1").selected
+        assert p.unit("2").availability == "ok"
+        assert all(u.availability != "starting" for u in p.units)
+
 
 class TestBootChange:
     def test_a_new_boot_keeps_desired_and_units_without_a_row(self, w):
