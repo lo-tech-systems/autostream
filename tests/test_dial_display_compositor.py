@@ -160,8 +160,8 @@ from dial_touch_layout import (  # noqa: E402
     scale_px,
     warning_layout_for,
     zone_rects_for,
-    zones_for,
 )
+from dial_zone_helpers import zones_for  # noqa: E402
 
 # The profile sizes from dial_display_profiles.DISPLAY_PROFILES, and their
 # confirmed mm_per_px (see the profiles module's design notes) — mirrors

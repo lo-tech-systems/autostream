@@ -487,16 +487,16 @@ class TouchStateMachine:
 
         SURFACE_HIDDEN: main screen, reveal on touch (held=False).
         SURFACE_HELD: main screen with controls held visible (held=True).
-        SURFACE_SELECTOR: the appliance list; hit-tests use list_zone_at,
+        SURFACE_SELECTOR: the appliance list; hit-tests use the LIST geometry,
         presses arm immediately (held=True in effect), and there is no
         dismiss clock to disable beyond what held already disables.
-        SURFACE_PICKER: the replay picker — same list_zone_at hit-test
+        SURFACE_PICKER: the replay picker — same LIST hit-test
         and held behaviour as SURFACE_SELECTOR.
-        SURFACE_REPEAT: the repeat screen; hit-tests use repeat_zone_at,
+        SURFACE_REPEAT: the repeat screen; hit-tests use the REPEAT geometry,
         held like the selector.
-        SURFACE_IDLE: the idle screen; hit-tests use idle_zone_at, held
+        SURFACE_IDLE: the idle screen; hit-tests use the IDLE geometry, held
         like the selector.
-        SURFACE_OUTPUTS: the outputs list; same list_zone_at hit-test and
+        SURFACE_OUTPUTS: the outputs list; same LIST hit-test and
         held behaviour as SURFACE_SELECTOR/SURFACE_PICKER.
         SURFACE_OUTPUT: the per-output detail page; hit-tests use the
         GEOMETRY_OUTPUT table, held like the selector.

@@ -26,7 +26,8 @@ from dial_touch_filter import (  # noqa: E402
     TouchEventType,
     TouchFilter,
 )
-from dial_touch_layout import TouchZone, zones_for  # noqa: E402
+from dial_touch_layout import TouchZone  # noqa: E402
+from dial_zone_helpers import zones_for  # noqa: E402
 
 WIDTH, HEIGHT = 160, 128  # WIDE layout: MUTE | DOWN | UP thirds
 Z_THRESHOLD = 100

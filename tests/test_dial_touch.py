@@ -72,14 +72,13 @@ from dial_touch_layout import (  # noqa: E402
     idle_layout_for,
     layout_for,
     list_layout_for,
-    list_zone_at,
     metrics_for,
     output_layout_for,
     repeat_layout_for,
     band_bell_rect,
     warning_layout_for,
-    zones_for,
 )
+from dial_zone_helpers import list_zone_at, zones_for  # noqa: E402
 
 WIDTH, HEIGHT = 160, 128
 _ZONES = zones_for(WIDTH, HEIGHT)

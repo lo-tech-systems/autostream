@@ -23,7 +23,7 @@ COORDINATE SPACE: every function here works in COMPOSE-space — the same
 rotate/BGR transforms in DialDisplayCompositor.compose() are applied. A
 caller that receives raw touch coordinates from a rotated physical panel
 must map them into compose-space (undo the rotation) before calling
-zone_at(). This module knows nothing about rotation, panel drivers, or
+hit_test(). This module knows nothing about rotation, panel drivers, or
 physical mounting.
 
 LAYOUT SELECTION: one band layout, used at every panel size — the layout is
@@ -67,7 +67,7 @@ down into the strip below the band, and the list rail's controls reach left
 towards the rows, by 1/TOUCH_REACH_BAND_DIVISOR of a band either way. Only
 hit_test() reads the reach; the wash stays on the drawn rect.
 
-The MAIN geometry (`zone_at`/`zones_for`/`layout_for`) is the now-playing
+The MAIN geometry (`layout_for`, `zone_rects_for`) is the now-playing
 screen: DOTS, NAME, OUTPUTS, MUTE, DOWN, UP, plus ARTWORK (the inter-band
 strip, taps hide the bands) and the non-actuating artist and title labels.
 DOTS is carved from the left of the NAME zone (whose x0 therefore starts
@@ -90,17 +90,17 @@ corner square: (125, 3, 157, 35) at the 160x128 reference, (269, 6, 314, 51)
 at 320x240 / 0.1778 mm per px. ARTWORK_BELL is the one entry of
 GEOMETRY_ARTWORK_BELL, hit-tested alone while the artwork rests with no
 controls drawn. The LIST geometry
-(`list_zone_at`/`list_layout_for`) is the appliance list (also reused,
+(`list_layout_for`) is the appliance list (also reused,
 unchanged, for the replay picker): LIST_ROW (one per visible row),
 LIST_BACK, LIST_DOWN and LIST_UP. The REPEAT geometry
-(`repeat_zone_at`/`repeat_layout_for`) is the repeat screen: DOTS (reused,
+(`repeat_layout_for`) is the repeat screen: DOTS (reused,
 pops back to main and reveals the main screen's volume overlay), NAME
 (reused, opens the appliance selector), OUTPUTS (the volume readout, opens
 the outputs list like the main screen — the repeat screen has no mute
 control of its own), REPEAT_PLAY (the enable layout's arm/disarm row),
 REPEAT_START, REPEAT_STOP, plus ARTWORK (the inter-band strip's remainder,
 taps hide the bands while a replay runs). The IDLE geometry
-(`idle_zone_at`/`idle_layout_for`) is the idle screen: IDLE_WIFI and
+(`idle_layout_for`) is the idle screen: IDLE_WIFI and
 IDLE_BELL, two small corner squares listed first so they win the corners
 they share with IDLE_REPLAY, which covers the whole panel below the top
 band; IDLE_BELL is live only while the dial has a warning to show (see the
@@ -535,10 +535,6 @@ GEOMETRY_ARTWORK_BELL = "artwork_bell"
 # a surface mapped here can never arm a zone. Kept as a named geometry (not
 # an absent one) so the surface map never has to fall back to MAIN.
 GEOMETRY_NONE = "none"
-GEOMETRIES = (
-    GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
-    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_CARD1, GEOMETRY_CARD2, GEOMETRY_CARD3, GEOMETRY_ARTWORK_BELL, GEOMETRY_NONE,
-)
 
 
 @dataclass(frozen=True)
@@ -877,7 +873,7 @@ class OverlayLayout:
     """Full overlay geometry for one panel size — the single source of truth
     for both where the compositor dims/draws and where the touch zones sit.
     `dots`, `name`, `volume_cluster`, `down` and `up` are exactly the
-    DOTS/NAME/MUTE/DOWN/UP zone rectangles zones_for() returns; `artist`,
+    DOTS/NAME/MUTE/DOWN/UP zone rectangles the MAIN geometry holds; `artist`,
     `title`, `album` and the two band rectangles have no corresponding
     TouchZone because they never actuate. `album` is only populated on the
     content tier with room for it; elsewhere it is None and the renderer
@@ -911,8 +907,8 @@ class RepeatLayout:
     `volume_cluster` are the identical rectangles OverlayLayout uses (same
     geometry as the main screen's top band): the dots and the name label
     stay tappable here (== the DOTS/NAME zones); the volume cluster opens
-    the outputs list, same as main (== the OUTPUTS zone — see
-    repeat_zone_at()). `row` is the full-width middle row used by the
+    the outputs list, same as main (== the OUTPUTS zone in
+    the REPEAT geometry). `row` is the full-width middle row used by the
     enable layout's "Repeat Play" toggle (== the REPEAT_PLAY zone); `line`
     shares that same rectangle for the replaying layout's centred
     "m:ss / m:ss" position text — only one of the two layouts is ever on
@@ -1014,8 +1010,8 @@ class IdleLayout:
     """Idle-screen geometry: a single non-actuating affordance line
     (reusing the same centre-low rect the main surface's artist line
     occupies — `affordance`), the actuating rect for the whole panel
-    below the top band (`replay`, == the IDLE_REPLAY zone, resolved by
-    idle_zone_at()), the small top-right square (`info`, == the
+    below the top band (`replay`, == the IDLE_REPLAY zone in
+    the IDLE geometry), the small top-right square (`info`, == the
     IDLE_BELL zone) that holds the warning bell and opens the warnings card
     while the dial has one to show, and its mirror image top-left (`wifi`,
     == the IDLE_WIFI zone): the Wi-Fi status glyph, the same side as `info`,
@@ -1036,7 +1032,7 @@ class ListLayout:
 
     On the base tier the list's navigation lives in a bottom bar, split
     three ways: `back`, `down` and `up` are exactly the LIST_BACK/LIST_DOWN/
-    LIST_UP zone rectangles list_zone_at() resolves to, and `bar` is the
+    LIST_UP zone rectangles of the LIST geometry, and `bar` is the
     undivided band they live in. On a wider panel the navigation instead
     moves to a right-hand rail running the full height, so the rows can use
     the freed-up width: `bar`/`back`/`down`/`up` are then None, and `rail`/
@@ -1209,21 +1205,6 @@ def warning_layout_for(
     )
 
 
-def _dead_zone_margin(width: int, height: int) -> int:
-    """Dead-zone margin in pixels, scaled from the 160x128 reference by the
-    panel's short side (min(width, height)) — the same scaling axis used by
-    dial_display_image._blur_radius_for, for the same reason: it keeps the
-    band's apparent physical size consistent whether the panel is "wide"
-    (160x128, 320x240) or "tall-ish" (128x128, 240x240) shaped. Returns
-    exactly 3 at 160x128, by construction. Floored at 1px so degenerately
-    tiny panels never lose their dead zones entirely.
-
-    A thin test-facing shim over metrics_for(width, height).margin — kept
-    under its historical name since tests import it directly.
-    """
-    return metrics_for(width, height).margin
-
-
 def _split(total: int, margin: int, weights: list[int]) -> list[tuple[int, int]]:
     """Partition [0, total) into len(weights) active bands separated by
     len(weights)-1 dead-zone gaps of width 2*margin, sized proportionally to
@@ -1344,27 +1325,6 @@ def layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) 
     )
 
 
-def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
-    """Return the ACTIVE (tappable) rectangle for each of the main-surface
-    zones, already shrunk by the dead-zone margins, in compose-space.
-
-    Rectangles are (x0, y0, x1, y1) with x1/y1 exclusive (Python slice /
-    range convention), so a point p is inside iff x0 <= p.x < x1 and
-    y0 <= p.y < y1. A view over the MAIN geometry's zone-rect table (see
-    zone_rects_for) — same five keys in the same insertion order as before
-    the table existed.
-    """
-    return {entry.zone: entry.rect for entry in zone_rects_for(GEOMETRY_MAIN, width, height) if entry.zone not in BELL_ZONES}
-
-
-def zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
-    """Return the main-surface zone containing compose-space point (x, y),
-    or None if the point falls in a dead zone or outside the panel
-    entirely."""
-    hit = hit_test(GEOMETRY_MAIN, x, y, width, height, skip=BELL_ZONES)
-    return hit.zone if hit is not None else None
-
-
 def list_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListLayout:
     """Compute the full selector-screen geometry for a *width* x *height*
     panel.
@@ -1419,15 +1379,6 @@ def list_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = N
     )
 
 
-def list_zone_at(x: int, y: int, width: int, height: int) -> tuple[TouchZone, int | None] | None:
-    """Return (zone, row_index) for the selector surface at compose-space
-    point (x, y): (LIST_ROW, i) inside row i, (LIST_BACK/LIST_DOWN/LIST_UP,
-    None) inside the bottom bar, or None in a dead zone or outside the
-    panel. row_index is only ever set for LIST_ROW."""
-    hit = hit_test(GEOMETRY_LIST, x, y, width, height)
-    return (hit.zone, hit.index) if hit is not None else None
-
-
 def repeat_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> RepeatLayout:
     """Compute the repeat-screen geometry for a *width* x *height* panel.
     `row` is a full-width strip of height 2*band_h (64px at the reference
@@ -1457,19 +1408,6 @@ def repeat_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" =
         bottom_band=layout.bottom_band,
         artwork=layout.artwork,
     )
-
-
-def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
-    """Hit-test the repeat screen's surface: DOTS first (pops back to
-    main), then NAME (opens the appliance selector), then OUTPUTS (the
-    volume readout, opens the outputs list, same as the main screen), then
-    the middle row (REPEAT_PLAY), then START, then STOP, else None (a dead
-    zone). State-agnostic like every other hit-test here — the display
-    decides whether a hit means anything in the CURRENT layout (REPEAT_PLAY
-    is drawn only in the enable layout, START/STOP only in the replaying
-    layout; see dial_display_compositor.compose_repeat)."""
-    hit = hit_test(GEOMETRY_REPEAT, x, y, width, height, skip=BELL_ZONES)
-    return hit.zone if hit is not None else None
 
 
 @dataclass(frozen=True)
@@ -1556,11 +1494,3 @@ def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = N
     if metrics.content_tier == CONTENT_COMPACT:
         return IdleLayout(affordance=layout.artist, replay=(0, 0, width, height), info=info, wifi=wifi)
     return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height), info=info, wifi=wifi)
-
-
-def idle_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
-    """Return IDLE_REPLAY for any point below the top band, else None. The
-    top band is excluded so an accidental brush up there — where the name
-    and volume cluster live on the main surface — does nothing on it."""
-    hit = hit_test(GEOMETRY_IDLE, x, y, width, height)
-    return hit.zone if hit is not None else None

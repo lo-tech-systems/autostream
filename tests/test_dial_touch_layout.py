@@ -31,7 +31,6 @@ from dial_touch_layout import (  # noqa: E402
     FONT_BODY_MAX_PX,
     FONT_READOUT_MAX_PX,
     BELL_ZONES,
-    GEOMETRIES,
     GEOMETRY_ARTWORK_BELL,
     GEOMETRY_EQ,
     GEOMETRY_IDLE,
@@ -63,7 +62,6 @@ from dial_touch_layout import (  # noqa: E402
     TouchZone,
     WarningLayout,
     ZoneRect,
-    _dead_zone_margin,
     band_bell_rect,
     compact_layout_for,
     dots_bell_rect,
@@ -71,21 +69,18 @@ from dial_touch_layout import (  # noqa: E402
     eq_layout_for,
     hit_test,
     idle_layout_for,
-    idle_zone_at,
     info_value_layout_for,
     layout_for,
     list_layout_for,
-    list_zone_at,
     metrics_for,
     output_layout_for,
     repeat_layout_for,
     warning_layout_for,
-    repeat_zone_at,
     scale_px,
-    zone_at,
     zone_rects_for,
-    zones_for,
+    _GEOMETRY_BUILDERS,
 )
+from dial_zone_helpers import idle_zone_at, list_zone_at, repeat_zone_at, zone_at, zones_for  # noqa: E402
 
 # The distinct profile sizes from dial_display_profiles.DISPLAY_PROFILES.
 # Two profiles (st7789_320x240, ili9341_320x240) share 320x240; the layout
@@ -96,6 +91,8 @@ PROFILE_SIZES = [
     (240, 240),  # st7789_240x240
     (320, 240),  # st7789_320x240, ili9341_320x240
 ]
+
+GEOMETRIES = tuple(_GEOMETRY_BUILDERS)
 
 ALL_ZONES = {
     TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
@@ -181,9 +178,9 @@ class TestZoneAt:
         assert zone_at(1000, 1000, 160, 128) is None
 
     def test_dead_zone_margin_is_positive_and_scales(self):
-        assert _dead_zone_margin(160, 128) == 3
-        assert _dead_zone_margin(128, 128) == 3
-        assert _dead_zone_margin(240, 240) > 3
+        assert metrics_for(160, 128).margin == 3
+        assert metrics_for(128, 128).margin == 3
+        assert metrics_for(240, 240).margin > 3
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_tap_in_name_area_hits_name_and_middle_hits_artwork(self, width, height):
@@ -265,7 +262,7 @@ class TestBandLayout:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_name_and_mute_are_separated_by_two_margins(self, width, height):
         layout = layout_for(width, height)
-        margin = _dead_zone_margin(width, height)
+        margin = metrics_for(width, height).margin
         gap = layout.volume_cluster[0] - layout.name[2]
         assert gap == 2 * margin
 
@@ -339,7 +336,7 @@ class TestListLayout:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_bar_splits_into_three_with_dead_gaps(self, width, height):
         layout = list_layout_for(width, height)
-        margin = _dead_zone_margin(width, height)
+        margin = metrics_for(width, height).margin
         # The first gap (back -> down) never absorbs the remainder, so it is
         # always exactly 2*margin; the last gap (down -> up) may be wider by
         # the leftover pixel(s) — see _split's REMAINDER POLICY.
@@ -401,14 +398,14 @@ class TestDotsZone:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_dots_sits_left_of_name_with_a_two_margin_gap(self, width, height):
         layout = layout_for(width, height)
-        margin = _dead_zone_margin(width, height)
+        margin = metrics_for(width, height).margin
         gap = layout.name[0] - layout.dots[2]
         assert gap == 2 * margin
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_dots_starts_at_the_left_margin(self, width, height):
         layout = layout_for(width, height)
-        margin = _dead_zone_margin(width, height)
+        margin = metrics_for(width, height).margin
         assert layout.dots[0] == margin
 
     def test_dots_centre_hits_dots_zone(self):
@@ -440,7 +437,7 @@ class TestRepeatSurface:
         repeat = repeat_layout_for(width, height)
         x0, y0, x1, y1 = repeat.row
         band_h = height // 4
-        margin = _dead_zone_margin(width, height)
+        margin = metrics_for(width, height).margin
         assert (y1 - y0) == 2 * band_h
         assert x0 == margin
         assert x1 == width - margin
@@ -1255,7 +1252,7 @@ class TestScalePxConsolidation:
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_scale_px_matches_dead_zone_margin(self, width, height):
-        assert scale_px(3, width, height, 1) == _dead_zone_margin(width, height)
+        assert scale_px(3, width, height, 1) == metrics_for(width, height).margin
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_scale_px_matches_image_blur_radius(self, width, height):
