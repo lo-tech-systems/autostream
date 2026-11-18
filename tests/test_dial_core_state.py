@@ -14,6 +14,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import dial_core_focus as cf  # noqa: E402
 import dial_core_state as cs  # noqa: E402
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN  # noqa: E402
 from dial_mdns import PlayingTarget  # noqa: E402
@@ -81,7 +82,7 @@ class TestDataclasses:
             cs.NowPlaying, cs.OutputRow, cs.SelectorRow, cs.PickerRow, cs.ApplianceState,
             cs.FocusState, cs.Artwork, cs.OutputsState, cs.EqBand, cs.EqState,
             cs.WarningState, cs.TransportRequest, cs.DialInfo, cs.CoreSnapshot,
-            cs.FocusResolution, cs.Selection,
+            cf.FocusResolution, cf.Selection,
         )
         not_frozen = [cls.__name__ for cls in classes if not cls.__dataclass_params__.frozen]
         assert not not_frozen, f"not frozen: {not_frozen}"
@@ -150,10 +151,10 @@ class TestVisibleTargets:
         unknown = _target("Unknown", auth=AUTH_UNKNOWN)
         refused = _target("Refused", auth=AUTH_UNAUTHORIZED)
         anon = _target("Anon", appliance_id="")
-        assert cs.visible_targets([keep, refused, anon, unknown]) == [keep, unknown]
+        assert cf.visible_targets([keep, refused, anon, unknown]) == [keep, unknown]
 
     def test_empty(self):
-        assert cs.visible_targets([]) == []
+        assert cf.visible_targets([]) == []
 
 
 # ---- resolve_focus -------------------------------------------------------
@@ -166,14 +167,14 @@ def _auth_of(state):
 class TestResolveFocus:
     def test_no_focus(self):
         a = _target("A")
-        res = cs.resolve_focus(None, None, [_entry("A", playing=True)], [a], set(), 0.0,
+        res = cf.resolve_focus(None, None, [_entry("A", playing=True)], [a], set(), 0.0,
                                _auth_of(AUTH_UNKNOWN))
-        assert res == cs.FocusResolution(None, None, None, None, None, None)
+        assert res == cf.FocusResolution(None, None, None, None, None, None)
 
     def test_focus_on_playing_target(self):
         a = _target("A")
         e = _entry("A", playing=True)
-        res = cs.resolve_focus(a.appliance_id, None, [e], [a], set(), 0.0, _auth_of(AUTH_UNKNOWN))
+        res = cf.resolve_focus(a.appliance_id, None, [e], [a], set(), 0.0, _auth_of(AUTH_UNKNOWN))
         assert res.manual_id == a.appliance_id
         assert res.focus_entry is e and res.focus_target is a
         assert res.idle_focus is None and res.clear_reason is None
@@ -181,25 +182,25 @@ class TestResolveFocus:
     def test_idle_focus_kept_while_something_else_plays(self):
         b = _target("B")
         idle = _entry("Idle")
-        res = cs.resolve_focus(idle.appliance_id, None, [idle, _entry("B", playing=True)], [b],
+        res = cf.resolve_focus(idle.appliance_id, None, [idle, _entry("B", playing=True)], [b],
                                set(), 0.0, _auth_of(AUTH_UNKNOWN))
         assert res.focus_entry is idle and res.focus_target is None
         assert res.idle_focus is idle and res.clear_reason is None
         assert res.manual_id == idle.appliance_id
 
     def test_gone_from_roster_clears(self):
-        res = cs.resolve_focus("x" * 20, None, [_entry("A")], [], set(), 0.0, _auth_of(AUTH_UNKNOWN))
+        res = cf.resolve_focus("x" * 20, None, [_entry("A")], [], set(), 0.0, _auth_of(AUTH_UNKNOWN))
         assert res.clear_reason == "appliance gone or unauthorized"
         assert res.manual_id is None and res.focus_entry is None and res.idle_focus is None
 
     def test_unauthorized_roster_entry_clears(self):
         e = _entry("A", auth=AUTH_UNAUTHORIZED)
-        res = cs.resolve_focus(e.appliance_id, None, [e], [], set(), 0.0, _auth_of(AUTH_UNAUTHORIZED))
+        res = cf.resolve_focus(e.appliance_id, None, [e], [], set(), 0.0, _auth_of(AUTH_UNAUTHORIZED))
         assert res.clear_reason == "appliance gone or unauthorized"
 
     def test_stopped_focus_clears(self):
         e = _entry("A")
-        res = cs.resolve_focus(e.appliance_id, None, [e], [], {e.appliance_id}, 0.0,
+        res = cf.resolve_focus(e.appliance_id, None, [e], [], {e.appliance_id}, 0.0,
                                _auth_of(AUTH_UNKNOWN))
         assert res.clear_reason == "appliance stopped playing"
         assert res.manual_id is None and res.focus_entry is None and res.idle_focus is None
@@ -208,33 +209,33 @@ class TestResolveFocus:
         # Present in the visible set this tick, so it did not stop.
         a = _target("A")
         e = _entry("A", playing=True)
-        res = cs.resolve_focus(a.appliance_id, None, [e], [a], {a.appliance_id}, 0.0,
+        res = cf.resolve_focus(a.appliance_id, None, [e], [a], {a.appliance_id}, 0.0,
                                _auth_of(AUTH_UNKNOWN))
         assert res.clear_reason is None and res.focus_target is a
 
     def test_pending_grace_keeps_unrostered_focus(self):
         pending = ("p" * 20, "Pend", 10.0)
-        res = cs.resolve_focus("p" * 20, pending, [], [], set(), 5.0, _auth_of(AUTH_UNKNOWN))
+        res = cf.resolve_focus("p" * 20, pending, [], [], set(), 5.0, _auth_of(AUTH_UNKNOWN))
         assert res.clear_reason is None
         assert res.manual_id == "p" * 20 and res.pending == pending
         assert res.focus_entry is None and res.idle_focus is None
 
     def test_pending_grace_not_for_confirmed_unauthorized(self):
         pending = ("p" * 20, "Pend", 10.0)
-        res = cs.resolve_focus("p" * 20, pending, [], [], set(), 5.0, _auth_of(AUTH_UNAUTHORIZED))
+        res = cf.resolve_focus("p" * 20, pending, [], [], set(), 5.0, _auth_of(AUTH_UNAUTHORIZED))
         assert res.clear_reason == "appliance gone or unauthorized"
         assert res.pending is None
 
     def test_pending_expired(self):
         pending = ("p" * 20, "Pend", 10.0)
-        res = cs.resolve_focus("p" * 20, pending, [], [], set(), 10.0, _auth_of(AUTH_UNKNOWN))
+        res = cf.resolve_focus("p" * 20, pending, [], [], set(), 10.0, _auth_of(AUTH_UNKNOWN))
         assert res.pending is None
         assert res.clear_reason == "appliance gone or unauthorized"
 
     def test_pending_for_a_different_focus_is_dropped(self):
         e = _entry("A")
         pending = ("p" * 20, "Pend", 100.0)
-        res = cs.resolve_focus(e.appliance_id, pending, [e], [], set(), 1.0, _auth_of(AUTH_UNKNOWN))
+        res = cf.resolve_focus(e.appliance_id, pending, [e], [], set(), 1.0, _auth_of(AUTH_UNKNOWN))
         assert res.pending is None and res.clear_reason is None
         assert res.idle_focus is e
 
@@ -242,13 +243,13 @@ class TestResolveFocus:
         a = _target("A")
         e = _entry("A", playing=True)
         pending = (a.appliance_id, "A", 100.0)
-        res = cs.resolve_focus(a.appliance_id, pending, [e], [a], set(), 1.0, _auth_of(AUTH_UNKNOWN))
+        res = cf.resolve_focus(a.appliance_id, pending, [e], [a], set(), 1.0, _auth_of(AUTH_UNKNOWN))
         assert res.pending is None and res.focus_target is a and res.clear_reason is None
 
     def test_pending_kept_while_rostered_but_idle(self):
         e = _entry("A")
         pending = (e.appliance_id, "A", 100.0)
-        res = cs.resolve_focus(e.appliance_id, pending, [e], [], set(), 1.0, _auth_of(AUTH_UNKNOWN))
+        res = cf.resolve_focus(e.appliance_id, pending, [e], [], set(), 1.0, _auth_of(AUTH_UNKNOWN))
         assert res.pending == pending and res.idle_focus is e
 
     def test_auth_state_only_read_for_the_grace_check(self):
@@ -259,7 +260,7 @@ class TestResolveFocus:
             return AUTH_UNKNOWN
 
         e = _entry("A")
-        cs.resolve_focus(e.appliance_id, None, [e], [], set(), 0.0, auth_state)
+        cf.resolve_focus(e.appliance_id, None, [e], [], set(), 0.0, auth_state)
         assert calls == []
 
 
@@ -269,37 +270,37 @@ class TestResolveFocus:
 class TestChoosePin:
     def test_focus_target_wins(self):
         a, b = _target("A"), _target("B")
-        pin, bound = cs.choose_pin(a, b.appliance_id, [a, b])
+        pin, bound = cf.choose_pin(a, b.appliance_id, [a, b])
         assert pin is a and bound == b.appliance_id
 
     def test_bound_target_pins_when_no_focus(self):
         a, b = _target("A"), _target("B")
-        pin, bound = cs.choose_pin(None, b.appliance_id, [a, b])
+        pin, bound = cf.choose_pin(None, b.appliance_id, [a, b])
         assert pin is b and bound == b.appliance_id
 
     def test_bound_target_gone_is_released(self):
         a = _target("A")
-        pin, bound = cs.choose_pin(None, "gone" + "0" * 16, [a])
+        pin, bound = cf.choose_pin(None, "gone" + "0" * 16, [a])
         assert pin is None and bound is None
 
     def test_nothing_bound(self):
         a = _target("A")
-        assert cs.choose_pin(None, None, [a]) == (None, None)
+        assert cf.choose_pin(None, None, [a]) == (None, None)
 
     def test_no_lookup_when_caller_passes_no_binding(self):
         a = _target("A")
-        assert cs.choose_pin(None, None, []) == (None, None)
+        assert cf.choose_pin(None, None, []) == (None, None)
 
 
 class TestWalkOrder:
     def test_unpinned_is_unchanged(self):
         vis = [_target("A"), _target("B")]
-        assert cs.walk_order(None, vis) is vis
+        assert cf.walk_order(None, vis) is vis
 
     def test_pin_goes_first_rest_keep_order(self):
         a, b, c = _target("A"), _target("B"), _target("C")
-        assert cs.walk_order(c, [a, b, c]) == [c, a, b]
-        assert cs.walk_order(a, [a, b, c]) == [a, b, c]
+        assert cf.walk_order(c, [a, b, c]) == [c, a, b]
+        assert cf.walk_order(a, [a, b, c]) == [a, b, c]
 
 
 # ---- the walk ------------------------------------------------------------
@@ -308,120 +309,120 @@ class TestWalkOrder:
 class TestWalkStep:
     def test_unpinned_artwork_stops_the_walk(self):
         t = _target("A")
-        sel, fb = cs.walk_step(t, _track(), False, None)
-        assert sel == cs.Selection("https://provider.example/a.jpg", "A", "A", "T", "L")
+        sel, fb = cf.walk_step(t, _track(), False, None)
+        assert sel == cf.Selection("https://provider.example/a.jpg", "A", "A", "T", "L")
         assert fb is None
 
     def test_unpinned_status_error_skips(self):
         t = _target("A")
-        assert cs.walk_step(t, None, False, None) == (None, None)
+        assert cf.walk_step(t, None, False, None) == (None, None)
 
     def test_unpinned_not_identified_continues(self):
         t = _target("A")
-        assert cs.walk_step(t, {"track_id": {"state": "searching"}}, False, None) == (None, None)
-        assert cs.walk_step(t, {}, False, None) == (None, None)
+        assert cf.walk_step(t, {"track_id": {"state": "searching"}}, False, None) == (None, None)
+        assert cf.walk_step(t, {}, False, None) == (None, None)
 
     def test_unpinned_identified_without_art_sets_fallback_once(self):
         a, b = _target("A"), _target("B")
-        sel, fb = cs.walk_step(a, _track(artwork=None), False, None)
+        sel, fb = cf.walk_step(a, _track(artwork=None), False, None)
         assert sel is None and fb[0] == "A"
-        sel, fb2 = cs.walk_step(b, _track(artwork=None, title="Other"), False, fb)
+        sel, fb2 = cf.walk_step(b, _track(artwork=None, title="Other"), False, fb)
         assert sel is None and fb2 is fb
 
     def test_pinned_with_artwork(self):
         t = _target("A")
-        sel, _ = cs.walk_step(t, _track(), True, None)
+        sel, _ = cf.walk_step(t, _track(), True, None)
         assert sel.url == "https://provider.example/a.jpg" and sel.service == "A"
 
     def test_pinned_identified_without_art_still_shows_text(self):
         t = _target("A")
-        sel, _ = cs.walk_step(t, _track(artwork=None), True, None)
-        assert sel == cs.Selection(None, "A", "A", "T", "L")
+        sel, _ = cf.walk_step(t, _track(artwork=None), True, None)
+        assert sel == cf.Selection(None, "A", "A", "T", "L")
 
     def test_pinned_empty_artwork_url_is_none(self):
         t = _target("A")
-        sel, _ = cs.walk_step(t, _track(artwork=""), True, None)
+        sel, _ = cf.walk_step(t, _track(artwork=""), True, None)
         assert sel.url is None and sel.title == "T"
 
     def test_pinned_not_identified_keeps_service_only(self):
         t = _target("A")
-        sel, _ = cs.walk_step(t, {"track_id": {"state": "searching"}}, True, None)
-        assert sel == cs.Selection(service="A")
+        sel, _ = cf.walk_step(t, {"track_id": {"state": "searching"}}, True, None)
+        assert sel == cf.Selection(service="A")
 
     def test_pinned_with_status_error_keeps_selected_service(self):
         t = _target("A")
-        sel, _ = cs.walk_step(t, None, True, None)
-        assert sel == cs.Selection(service="A")
+        sel, _ = cf.walk_step(t, None, True, None)
+        assert sel == cf.Selection(service="A")
 
     def test_missing_text_fields_default_empty(self):
         t = _target("A")
         rec = {"track_id": {"state": "identified", "artwork_url": "u"}}
-        sel, _ = cs.walk_step(t, rec, False, None)
+        sel, _ = cf.walk_step(t, rec, False, None)
         assert (sel.artist, sel.title, sel.album) == ("", "", "")
 
 
 class TestWalkFallback:
     def test_none(self):
-        assert cs.walk_fallback(None) == cs.Selection()
+        assert cf.walk_fallback(None) == cf.Selection()
 
     def test_first_identified_without_art(self):
         fb = ("A", {"artist": "X", "title": "Y", "album": "Z"})
-        assert cs.walk_fallback(fb) == cs.Selection(None, "A", "X", "Y", "Z")
+        assert cf.walk_fallback(fb) == cf.Selection(None, "A", "X", "Y", "Z")
 
 
 class TestSelectFromRecords:
     def test_artwork_beats_earlier_text_only(self):
         a, b = _target("A"), _target("B")
         recs = {"A": _track(artwork=None), "B": _track(artwork="u2", title="B title")}
-        sel = cs.select_from_records([a, b], recs, None)
+        sel = cf.select_from_records([a, b], recs, None)
         assert sel.service == "B" and sel.url == "u2" and sel.title == "B title"
 
     def test_text_only_fallback_when_no_artwork_anywhere(self):
         a, b = _target("A"), _target("B")
         recs = {"A": {"track_id": {"state": "searching"}}, "B": _track(artwork=None)}
-        sel = cs.select_from_records([a, b], recs, None)
-        assert sel == cs.Selection(None, "B", "A", "T", "L")
+        sel = cf.select_from_records([a, b], recs, None)
+        assert sel == cf.Selection(None, "B", "A", "T", "L")
 
     def test_nothing_identified(self):
         a = _target("A")
-        assert cs.select_from_records([a], {"A": {}}, None) == cs.Selection()
+        assert cf.select_from_records([a], {"A": {}}, None) == cf.Selection()
 
     def test_empty_walk(self):
-        assert cs.select_from_records([], {}, None) == cs.Selection()
+        assert cf.select_from_records([], {}, None) == cf.Selection()
 
     def test_pinned_target_stops_the_walk(self):
         a, b = _target("A"), _target("B")
         recs = {"A": {}, "B": _track()}
-        sel = cs.select_from_records(cs.walk_order(a, [a, b]), recs, a)
-        assert sel == cs.Selection(service="A")
+        sel = cf.select_from_records(cf.walk_order(a, [a, b]), recs, a)
+        assert sel == cf.Selection(service="A")
 
     def test_pinned_with_status_error_keeps_selected_service(self):
         a, b = _target("A"), _target("B")
-        sel = cs.select_from_records([a, b], {"B": _track()}, a)
-        assert sel == cs.Selection(service="A")
+        sel = cf.select_from_records([a, b], {"B": _track()}, a)
+        assert sel == cf.Selection(service="A")
 
     def test_unpinned_status_error_skipped_to_next(self):
         a, b = _target("A"), _target("B")
-        sel = cs.select_from_records([a, b], {"B": _track()}, None)
+        sel = cf.select_from_records([a, b], {"B": _track()}, None)
         assert sel.service == "B"
 
     def test_unauthorized_skipped(self):
         a = _target("A", auth=AUTH_UNAUTHORIZED)
         b = _target("B")
-        sel = cs.select_from_records([a, b], {"A": _track(), "B": _track(artwork="ub")}, None)
+        sel = cf.select_from_records([a, b], {"A": _track(), "B": _track(artwork="ub")}, None)
         assert sel.service == "B" and sel.url == "ub"
 
     def test_unsupported_target_skipped_when_unpinned(self):
         a = _target("A", dial_status=False)
         b = _target("B")
-        sel = cs.select_from_records([a, b], {"B": _track()}, None)
+        sel = cf.select_from_records([a, b], {"B": _track()}, None)
         assert sel.service == "B"
 
     def test_unsupported_pinned_target_selected_by_name(self):
         a = _target("A", dial_status=False)
         b = _target("B")
-        sel = cs.select_from_records([a, b], {"B": _track()}, a)
-        assert sel == cs.Selection(service="A")
+        sel = cf.select_from_records([a, b], {"B": _track()}, a)
+        assert sel == cf.Selection(service="A")
 
     def test_matches_stepwise_walk(self):
         targets = [_target("A"), _target("B"), _target("C")]
@@ -429,12 +430,12 @@ class TestSelectFromRecords:
         fb = None
         out = None
         for t in targets:
-            out, fb = cs.walk_step(t, recs.get(t.service_name), False, fb)
+            out, fb = cf.walk_step(t, recs.get(t.service_name), False, fb)
             if out is not None:
                 break
         else:
-            out = cs.walk_fallback(fb)
-        assert out == cs.select_from_records(targets, recs, None)
+            out = cf.walk_fallback(fb)
+        assert out == cf.select_from_records(targets, recs, None)
 
 
 # ---- reporting_for -------------------------------------------------------
@@ -443,19 +444,19 @@ class TestSelectFromRecords:
 class TestReportingFor:
     def test_idle_focus_wins(self):
         idle = _entry("Idle")
-        assert cs.reporting_for(idle, [_target("A")], "A") is idle
+        assert cf.reporting_for(idle, [_target("A")], "A") is idle
 
     def test_selected_service_among_visible(self):
         a, b = _target("A"), _target("B")
-        assert cs.reporting_for(None, [a, b], "B") is b
+        assert cf.reporting_for(None, [a, b], "B") is b
 
     def test_falls_back_to_first_visible(self):
         a, b = _target("A"), _target("B")
-        assert cs.reporting_for(None, [a, b], None) is a
-        assert cs.reporting_for(None, [a, b], "missing") is a
+        assert cf.reporting_for(None, [a, b], None) is a
+        assert cf.reporting_for(None, [a, b], "missing") is a
 
     def test_none_when_nothing_visible(self):
-        assert cs.reporting_for(None, [], None) is None
+        assert cf.reporting_for(None, [], None) is None
 
 
 # ---- rows ---------------------------------------------------------------

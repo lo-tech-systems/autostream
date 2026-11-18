@@ -25,7 +25,7 @@ an appliance's stream or its mute/volume response explicitly said.
 
 Volume and mute each address either a single "reporting-from" target — the
 display's chosen artwork source when it has one, else the oldest playing
-target (see select_volume_target()) — or, under broadcast scope "all", every
+target (see dial_core_focus.select_volume_target()) — or, under broadcast scope "all", every
 playing appliance at once: a dial with no screen (or too small a one to
 select an appliance) cannot choose which appliance a twist or a push
 addresses, so it addresses all of them. Volume's "all" fans the same delta
@@ -345,28 +345,6 @@ def forget_mute_states_except(service_names) -> None:
             for name in list(store.keys()):
                 if name not in keep:
                     del store[name]
-
-
-# ---------------------------------------------------------------------------
-# Single-target selection (see the module docstring's "reporting-from
-# target" paragraph). Pure and lock-free: no I/O, no module state touched —
-# the display and the volume worker's resolvers both call this so
-# they can never disagree about who the reporting-from target is.
-# ---------------------------------------------------------------------------
-
-def select_volume_target(targets: list, preferred_service_name: str | None):
-    """Pick the single target volume/mute should address.
-
-    targets is the display-ordered list (oldest playing first). Returns
-    the entry whose service_name equals preferred_service_name when
-    present, else targets[0], else None. Pure and lock-free so the
-    display and the worker's resolver call the same function and
-    cannot disagree about who the reporting-from target is."""
-    if preferred_service_name is not None:
-        for t in targets:
-            if t.service_name == preferred_service_name:
-                return t
-    return targets[0] if targets else None
 
 
 def start_volume_worker(

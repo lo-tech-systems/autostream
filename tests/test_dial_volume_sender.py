@@ -17,6 +17,7 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
+import dial_core_focus as cf
 import dial_volume as dv
 from dial_mdns import PlayingTarget
 
@@ -373,31 +374,32 @@ class TestWorkerMuteDispatch:
 
 # ---------------------------------------------------------------------------
 # select_volume_target(): pure single-target selection — no I/O, no lock,
-# no module state. Both dial_display's poll and the worker's resolvers call
-# this so they can never disagree about who the reporting-from target is.
+# no module state. The focus rule's reporting_for and dial_main's volume-target
+# resolver both call this so they can never disagree about who the
+# reporting-from target is.
 # ---------------------------------------------------------------------------
 
 class TestSelectVolumeTarget:
     def test_preferred_present_is_returned_even_when_not_first(self):
         older = _target(ip="7.0.0.1", service_name="older")
         newer = _target(ip="7.0.0.2", service_name="newer")
-        assert dv.select_volume_target([older, newer], "newer") is newer
+        assert cf.select_volume_target([older, newer], "newer") is newer
 
     def test_preferred_absent_falls_back_to_first(self):
         older = _target(ip="7.0.0.1", service_name="older")
         newer = _target(ip="7.0.0.2", service_name="newer")
-        assert dv.select_volume_target([older, newer], "vanished") is older
+        assert cf.select_volume_target([older, newer], "vanished") is older
 
     def test_none_preferred_falls_back_to_first(self):
         older = _target(ip="7.0.0.1", service_name="older")
         newer = _target(ip="7.0.0.2", service_name="newer")
-        assert dv.select_volume_target([older, newer], None) is older
+        assert cf.select_volume_target([older, newer], None) is older
 
     def test_empty_list_with_preferred_returns_none(self):
-        assert dv.select_volume_target([], "anything") is None
+        assert cf.select_volume_target([], "anything") is None
 
     def test_empty_list_with_no_preferred_returns_none(self):
-        assert dv.select_volume_target([], None) is None
+        assert cf.select_volume_target([], None) is None
 
 
 # ---------------------------------------------------------------------------

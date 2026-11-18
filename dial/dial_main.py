@@ -50,7 +50,8 @@ import autostream_logging as log_setup
 from autostream_peer_client import PeerClient, PeerPool
 from autostream_peer_registry import PeerRegistry
 from autostream_sysutils import log_lifecycle
-from dial_volume import select_volume_target, start_volume_worker
+from dial_core_focus import select_volume_target
+from dial_volume import start_volume_worker
 
 
 # The dial's log file lives on the SD card. Warnings and errors are what a

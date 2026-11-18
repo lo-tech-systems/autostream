@@ -7,10 +7,10 @@ track is identified, else the one that started playing first. The pending
 focus (a replay started from the picker) and the accepted-replay bridge are
 small transformations of FocusState kept here beside it.
 
-The rule is the one the dial has always used. It is built from the pure
-helpers in dial_core_state (resolve_focus, choose_pin, walk_order,
-select_from_records, reporting_for); this module only feeds them from the
-appliances' held state.
+The rule is the one the dial has always used. The helpers it is built from
+(resolve_focus, choose_pin, walk_order, select_from_records, reporting_for)
+sit in this module too; choose_focus only feeds them from the appliances' held
+state.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -18,16 +18,230 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
-from dial_core_state import (
-    AUTH_UNAUTHORIZED, AUTH_UNKNOWN, FocusState, Selection, choose_pin, reporting_for,
-    resolve_focus, select_from_records, visible_targets, walk_order,
-)
+from dial_core_state import AUTH_UNAUTHORIZED, AUTH_UNKNOWN, FocusState
 
 # How long a picker-started replay's focus is held while its appliance has not
 # yet shown the session.
 FOCUS_PENDING_GRACE_S = 3.0
+
+
+# ---- focus resolution and the walk ---------------------------------------------
+
+
+def visible_targets(targets: Iterable) -> list:
+    """The targets this dial may act on: not confirmed unauthorized, and
+    carrying an identity (an unresolved legacy or identity-less appliance
+    cannot be addressed or tracked)."""
+    return [t for t in targets if t.auth != AUTH_UNAUTHORIZED and t.appliance_id]
+
+
+@dataclass(frozen=True)
+class FocusResolution:
+    manual_id: str | None       # the manual focus after this tick's resolution
+    pending: tuple[str, str, float] | None
+    focus_entry: object | None  # the roster entry, playing or idle
+    focus_target: object | None  # the playing-set entry, when playing
+    idle_focus: object | None   # a rostered focus with nothing playing under it
+    clear_reason: str | None    # set when the focus must be cleared (the caller applies it)
+
+
+def resolve_focus(
+    prev_manual: str | None,
+    prev_pending: tuple[str, str, float] | None,
+    roster: list,
+    visible: list,
+    stopped_ids: Iterable[str],
+    now: float,
+    auth_state: Callable[[str], str],
+) -> FocusResolution:
+    """Resolve the manual focus for this tick. A focus is cleared when the
+    appliance is no longer rostered at all (or is confirmed unauthorized),
+    or when it was playing last tick and has just stopped. A focus resting
+    on an idle appliance is otherwise kept even while something else plays.
+    A pending (picker-started replay) grace keeps a not-yet-rostered focus
+    until it expires or the appliance is sighted. *auth_state* maps an
+    appliance id to its authorisation state; it is read only for the grace
+    check."""
+    focus_id = prev_manual
+    pending = prev_pending
+    if pending is not None and (pending[0] != focus_id or now >= pending[2]):
+        pending = None
+    focus_entry = None
+    focus_target = None
+    clear_reason = None
+    if focus_id is not None:
+        focus_entry = next(
+            (r for r in roster if r.appliance_id == focus_id and r.auth != AUTH_UNAUTHORIZED),
+            None,
+        )
+        focus_target = next(
+            (t for t in visible if t.appliance_id == focus_id),
+            None,
+        )
+        if focus_entry is None:
+            if pending is not None and auth_state(focus_id) != AUTH_UNAUTHORIZED:
+                pass  # grace: keep the focus, appliance not rostered yet
+            else:
+                clear_reason = "appliance gone or unauthorized"
+                focus_entry = focus_target = None
+        elif focus_target is None and focus_id in stopped_ids:
+            clear_reason = "appliance stopped playing"
+            focus_entry = None
+        elif focus_target is not None and pending is not None:
+            pending = None  # sighted: converts to a normal focus
+    if clear_reason is not None:
+        focus_id = None
+        pending = None
+    idle_focus = focus_entry if (focus_entry is not None and focus_target is None) else None
+    return FocusResolution(focus_id, pending, focus_entry, focus_target, idle_focus, clear_reason)
+
+
+def choose_pin(focus_target, bound_id: str | None, visible: list):
+    """(pin_target, bound_id) for the walk. With a focus target, it is the
+    pin. Without, the appliance the screen was already bound to is pinned
+    while it is still in the visible playing set; a binding whose
+    appliance has gone is released (the returned bound_id is None). A
+    caller with a manual focus set but no focus target passes bound_id
+    None, so nothing is looked up and nothing is released."""
+    bound_target = None
+    if bound_id is not None:
+        bound_target = next((t for t in visible if t.appliance_id == bound_id), None)
+        if bound_target is None:
+            bound_id = None
+    pin_target = focus_target if focus_target is not None else bound_target
+    return pin_target, bound_id
+
+
+def walk_order(pin_target, visible: list) -> list:
+    """The order the status walk visits targets: the pin first, then the
+    rest in their own order; unchanged when nothing is pinned."""
+    if pin_target is None:
+        return visible
+    return [pin_target] + [t for t in visible if t is not pin_target]
+
+
+@dataclass(frozen=True)
+class Selection:
+    """What the walk selected: the artwork URL (None = none), the source
+    service, and the track's artist, title and album."""
+    url: str | None = None
+    service: str | None = None
+    artist: str = ""
+    title: str = ""
+    album: str = ""
+
+
+def _identified(track_id) -> bool:
+    return bool(track_id) and track_id.get("state") == "identified"
+
+
+def walk_step(target, record: dict | None, is_pin: bool, fallback):
+    """One target's contribution to the walk, given its fetched *record*
+    (None for a status error or a target not fetched). Returns
+    (selection, fallback): a Selection when the walk stops at this target,
+    else None; *fallback* carries the first target identified without
+    artwork, (service_name, track_id) or None, and is returned updated.
+
+    A pinned target always ends the walk and is shown whether or not its
+    status could be read (an errored one keeps its service name), with its
+    identified track's text even when it has no artwork. An unpinned target
+    ends the walk only with identified artwork; a status error skips it."""
+    if is_pin:
+        if record is None:
+            return Selection(service=target.service_name), fallback
+        track_id = record.get("track_id")
+        if _identified(track_id):
+            return Selection(
+                url=track_id.get("artwork_url") or None,
+                service=target.service_name,
+                artist=track_id.get("artist", ""),
+                title=track_id.get("title", ""),
+                album=track_id.get("album", ""),
+            ), fallback
+        return Selection(service=target.service_name), fallback
+    if record is None:
+        return None, fallback
+    track_id = record.get("track_id")
+    if _identified(track_id) and track_id.get("artwork_url"):
+        return Selection(
+            url=track_id["artwork_url"],
+            service=target.service_name,
+            artist=track_id.get("artist", ""),
+            title=track_id.get("title", ""),
+            album=track_id.get("album", ""),
+        ), fallback
+    if _identified(track_id) and fallback is None:
+        fallback = (target.service_name, track_id)
+    return None, fallback
+
+
+def walk_fallback(fallback) -> Selection:
+    """The selection when the walk ran out of targets without a stop: the
+    first target identified without artwork (title and artist over the
+    logo), else nothing."""
+    if fallback is None:
+        return Selection()
+    service, track_id = fallback
+    return Selection(
+        service=service,
+        artist=track_id.get("artist", ""),
+        title=track_id.get("title", ""),
+        album=track_id.get("album", ""),
+    )
+
+
+def select_from_records(ordered: list, records: dict, pin_target) -> Selection:
+    """The whole walk's decision over already-fetched *records* (service
+    name -> status record, absent for an errored or unfetched target).
+    Unauthorized targets are skipped; a pinned target without status
+    support is selected by name alone."""
+    fallback = None
+    for target in ordered:
+        is_pin = pin_target is not None and target is pin_target
+        if target.auth == AUTH_UNAUTHORIZED:
+            continue
+        if not target.dial_status:
+            if is_pin:
+                return Selection(service=target.service_name)
+            continue
+        selection, fallback = walk_step(target, records.get(target.service_name), is_pin, fallback)
+        if selection is not None:
+            return selection
+    return walk_fallback(fallback)
+
+
+def reporting_for(idle_focus, visible: list, selected_service: str | None):
+    """The reporting-from target: the idle focus when one is pinned; else
+    the identified (or focused) source, else the oldest playing
+    controllable target. Only visible targets are offered, matching the
+    volume resolver's own filter."""
+    if idle_focus is not None:
+        return idle_focus
+    return select_volume_target(visible, selected_service)
+
+
+# ---------------------------------------------------------------------------
+# Single-target selection (see the module docstring's "reporting-from
+# target" paragraph). Pure and lock-free: no I/O, no module state touched —
+# the focus rule's reporting_for and dial_main's volume-target resolver both
+# call this so they can never disagree about who the reporting-from target is.
+# ---------------------------------------------------------------------------
+
+def select_volume_target(targets: list, preferred_service_name: str | None):
+    """Pick the single target volume/mute should address.
+
+    targets is the display-ordered list (oldest playing first). Returns
+    the entry whose service_name equals preferred_service_name when
+    present, else targets[0], else None. Pure and lock-free so the
+    display and the worker's resolver call the same function and
+    cannot disagree about who the reporting-from target is."""
+    if preferred_service_name is not None:
+        for t in targets:
+            if t.service_name == preferred_service_name:
+                return t
+    return targets[0] if targets else None
 
 
 @dataclass(frozen=True)
