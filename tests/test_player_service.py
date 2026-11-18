@@ -214,6 +214,35 @@ class TestEnsureAudioFifo:
 # stop_and_disable_all
 # ---------------------------------------------------------------------------
 
+class TestLogPipeSourceReady:
+    """The start-up and reconnect check that the player has indexed the pipe."""
+
+    @staticmethod
+    def _check(result, **kwargs):
+        import autostream_startup as startup
+        with patch.object(startup, "ensure_pipe_source_ready", return_value=result):
+            startup.log_pipe_source_ready("http://player:3689", **kwargs)
+
+    def test_a_player_without_pipe_inspection_counts_as_ready_and_warns_of_nothing(self, caplog):
+        unsupported = ap.ActionResult(ok=False, error="not supported", error_code="unsupported")
+        with caplog.at_level("DEBUG"):
+            self._check(unsupported)
+            self._check(unsupported, after_reconnect=True)
+        assert [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")] == []
+
+    @pytest.mark.parametrize("after_reconnect", [False, True])
+    def test_a_player_that_has_not_indexed_it_yet_still_warns(self, caplog, after_reconnect):
+        with caplog.at_level("WARNING"):
+            self._check(ap.ActionResult(ok=False, error="not indexed", error_code="not_ready"),
+                        after_reconnect=after_reconnect)
+        assert [r.levelname for r in caplog.records] == ["WARNING"]
+
+    def test_a_ready_player_is_logged_as_ready(self, caplog):
+        with caplog.at_level("INFO"):
+            self._check(ap.ActionResult(ok=True))
+        assert any("indexed and ready" in r.getMessage() for r in caplog.records)
+
+
 class TestStopAndDisableAll:
     def setup_method(self):
         _clear_cache()

@@ -606,6 +606,9 @@ def log_pipe_source_ready(base_url: str, *, after_reconnect: bool = False) -> No
     pipe_ready_result = ensure_pipe_source_ready(base_url, timeout=3)
     if pipe_ready_result.ok:
         logging.info("OwnTone pipe source is indexed and ready%s.", suffix)
+    elif pipe_ready_result.error_code == "unsupported":
+        # A player that cannot inspect its pipe source has nothing to wait for.
+        logging.debug("The playback backend does not report whether its pipe source is indexed%s.", suffix)
     elif after_reconnect:
         logging.warning(
             "OwnTone pipe source is not indexed yet after reconnect; "
