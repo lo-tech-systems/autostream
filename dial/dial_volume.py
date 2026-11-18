@@ -551,23 +551,19 @@ def _fan_out(targets: list, delta: int) -> bool:
     Targets are already deduplicated by mDNS service name.
     """
     clamped: list[bool] = []
-    threads = [
-        threading.Thread(target=_send_one, args=(t, delta, clamped))
-        for t in targets
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=0.6)
+    _send_all(_send_one, targets, delta, clamped)
     return bool(clamped)
 
 
 def _fan_out_mute(targets: list, muted: bool) -> None:
     """Send the absolute mute/restore action to all targets concurrently."""
-    threads = [
-        threading.Thread(target=_send_one_mute, args=(t, muted))
-        for t in targets
-    ]
+    _send_all(_send_one_mute, targets, muted)
+
+
+def _send_all(send, targets: list, *args) -> None:
+    """Run send(target, *args) for every target on its own thread and wait
+    for them, none for longer than 0.6 s."""
+    threads = [threading.Thread(target=send, args=(t, *args)) for t in targets]
     for t in threads:
         t.start()
     for t in threads:
@@ -691,19 +687,20 @@ def _send_one_mute(target, muted: bool) -> None:
         _notify_mute_changed()
 
 
-def _log_volume_failure(ip: str, fmt: str, *args) -> None:
+def _log_failure(kind: str, ip: str, fmt: str, *args) -> None:
+    """Count a failed send to *ip* and log it: a warning at most once a
+    minute per kind and address, otherwise at debug."""
     n = _fail_counts.get(ip, 0) + 1
     _fail_counts[ip] = n
-    if log_setup.log_every(("volume", ip), 60.0):
-        logging.warning("volume step %s: " + fmt + " (failure #%d)", ip, *args, n)
+    if log_setup.log_every((kind, ip), 60.0):
+        logging.warning("%s %s: " + fmt + " (failure #%d)", kind, ip, *args, n)
     else:
-        logging.debug("volume step %s: " + fmt, ip, *args)
+        logging.debug("%s %s: " + fmt, kind, ip, *args)
+
+
+def _log_volume_failure(ip: str, fmt: str, *args) -> None:
+    _log_failure("volume step", ip, fmt, *args)
 
 
 def _log_mute_failure(ip: str, fmt: str, *args) -> None:
-    n = _fail_counts.get(ip, 0) + 1
-    _fail_counts[ip] = n
-    if log_setup.log_every(("mute", ip), 60.0):
-        logging.warning("mute %s: " + fmt + " (failure #%d)", ip, *args, n)
-    else:
-        logging.debug("mute %s: " + fmt, ip, *args)
+    _log_failure("mute", ip, fmt, *args)
