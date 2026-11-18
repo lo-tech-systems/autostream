@@ -2793,7 +2793,6 @@ class AudioMonitor:
 
         # --- OwnTone retry state ---
         self._owntone_last_attempt: float = 0.0
-        self._owntone_last_log: float = 0.0
         self._owntone_enabled_ok: bool = False
         self._owntone_recovery_log = runtime.RecoveryLog("OwnTone output-enable")
         self._capture_start_no_output_retry_at: float = 0.0
@@ -3841,11 +3840,16 @@ class AudioMonitor:
         )
 
     def _throttled_owntone_log(self, now: float, level: int, msg: str, *args) -> None:
-        """Log OwnTone-related failures with a long throttle to avoid SD churn."""
-        if (now - self._owntone_last_log) < self.OWNTONE_LOG_THROTTLE_SECONDS:
-            return
-        self._owntone_last_log = now
-        logging.log(level, msg, *args)
+        """Log OwnTone-related failures with a long throttle to avoid SD churn.
+
+        Each message has its own timer per input, so one failure repeating
+        does not hide a different one."""
+        if log_setup.log_every(
+            ("owntone", self.input_index, msg),
+            self.OWNTONE_LOG_THROTTLE_SECONDS,
+            now=now,
+        ):
+            logging.log(level, msg, *args)
 
     def _get_owntone_outputs(self):
         """Return OwnTone outputs list, or None if API is unavailable."""

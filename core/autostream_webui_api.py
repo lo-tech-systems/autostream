@@ -48,6 +48,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 import autostream_mute_state as mute_state
+import autostream_logging as log_setup
 import autostream_start_buffer_cache as start_buffer_cache
 import autostream_watcher_client as watcher_client
 
@@ -865,7 +866,7 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
     Returns a fresh snapshot of currently selected OwnTone output names and
     playing state.  Both exceptions and result.ok == False increment the
     failure counter; it only resets on a true success.  WARNING on the 1st
-    and every 10th failure; DEBUG between.
+    failure and then at most once a minute; DEBUG between.
     """
     global _audio_status_fail_count
     playing = _session_playing()
@@ -881,7 +882,7 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
     except Exception as e:
         _audio_status_fail_count += 1
         n = _audio_status_fail_count
-        if n == 1 or n % 10 == 0:
+        if log_setup.log_every(("audio_status", "list_outputs"), 60.0):
             logging.warning("audio/status: list_outputs failed (call #%d): %s", n, e)
         else:
             logging.debug("audio/status: list_outputs failed: %s", e)
@@ -891,7 +892,7 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
     if not result.ok:
         _audio_status_fail_count += 1
         n = _audio_status_fail_count
-        if n == 1 or n % 10 == 0:
+        if log_setup.log_every(("audio_status", "list_outputs"), 60.0):
             logging.warning("audio/status: list_outputs not ok (call #%d): %s",
                             n, result.message)
         else:

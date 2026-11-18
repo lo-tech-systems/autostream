@@ -1722,13 +1722,26 @@ class TestIngestRateStatus:
 
     def test_the_owntone_throttle_timer_does_not_silence_the_warning(self, caplog):
         mon = _make_monitor(input_index=1)
-        mon._owntone_last_log = 1000.0
+        mon._throttled_owntone_log(1000.0, logging.WARNING, "OwnTone output-enable failed")
+        caplog.clear()
         with caplog.at_level(logging.DEBUG), \
              patch("autostream_core.time.time", return_value=1000.0):
             mon._ingest_status(
                 {"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100}
             )
         assert [r.levelno for r in _rate_records(caplog)] == [logging.WARNING]
+
+    def test_one_owntone_message_does_not_suppress_another(self, caplog):
+        mon = _make_monitor(input_index=1)
+        window = mon.OWNTONE_LOG_THROTTLE_SECONDS
+        with caplog.at_level(logging.DEBUG):
+            mon._throttled_owntone_log(1000.0, logging.WARNING, "first failure")
+            mon._throttled_owntone_log(1000.0, logging.WARNING, "second failure")
+            mon._throttled_owntone_log(1001.0, logging.WARNING, "first failure")
+            mon._throttled_owntone_log(1000.0 + window, logging.WARNING, "first failure")
+        assert [r.getMessage() for r in caplog.records] == [
+            "first failure", "second failure", "first failure",
+        ]
 
     def test_each_input_has_its_own_warning_timer(self, caplog):
         first = _make_monitor(input_index=1)
