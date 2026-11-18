@@ -112,8 +112,17 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
     return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
+def _store_in_test_mode() -> None:
+    # The page renders below run once per module, before the per-test store
+    # reset, and arrange the parts they render through the test-only writer.
+    import autostream_state
+
+    autostream_state.store().reset_for_tests()
+
+
 @pytest.fixture(scope="module")
 def home_html() -> str:
+    _store_in_test_mode()
     return _render_airplay_page(repeat_enabled=True)
 
 
@@ -680,6 +689,7 @@ def _render_remote_home_page() -> str:
 
 @pytest.fixture(scope="module")
 def remote_home_html() -> str:
+    _store_in_test_mode()
     return _render_remote_home_page()
 
 
