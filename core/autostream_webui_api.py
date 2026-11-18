@@ -105,14 +105,13 @@ from autostream_dials import (
 )
 from autostream_dial_push import notify_state_changed
 from autostream_runtime import request_config_reload
+from autostream_state import store
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
     any_monitor_capturing,
     apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
-    get_monitor_runtime_info,
-    get_owntone_selfheal_state,
     get_playback_snapshot,
     get_repeat_status,
     get_session_state,
@@ -414,6 +413,7 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
 # -----------------------------------------------------------------------------
 
 def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
+    snap = store().snapshot()
     if state is not None:
         home = build_home_state(state.config_path)
         input_levels = home.get("input_levels", [])
@@ -483,10 +483,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     # Reconcile/watchdog counters, always present (coordinator-owned
     # state, not a daemon-optional block like "repeat") -- lets the Web UI or
     # support tooling see that self-healing fired without grepping logs.
-    try:
-        response["owntone_selfheal"] = get_owntone_selfheal_state()
-    except Exception:
-        pass
+    response["owntone_selfheal"] = snap.health.as_json()
     send_json(handler, 200, response)
 
 
@@ -507,7 +504,7 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
             enabled = {1: bool(parsed.audio1_enabled), 2: bool(parsed.audio2_enabled)}
         except Exception:
             logging.debug("input levels: config snapshot unavailable", exc_info=True)
-    connected = bool(get_monitor_runtime_info().connected)
+    connected = bool(store().snapshot().monitor.connected)
     try:
         by_index = {lv.get("index"): lv for lv in get_monitor_levels_dbfs()}
     except Exception:

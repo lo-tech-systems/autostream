@@ -1,6 +1,7 @@
 """Tests for /api/about/system collector and About page rendering."""
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import threading
@@ -16,6 +17,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_player_service as _ps
+import autostream_state as _state
 from autostream_sysutils import StaticSystemFacts
 import autostream_webui_page_about as _about
 
@@ -31,13 +33,18 @@ def _mock_handler():
 
 
 def _monitor_info(build="1.0", connected=True):
-    from autostream_core import MonitorRuntimeInfo
-    return MonitorRuntimeInfo(
+    return _state.MonitorRuntimeInfo(
         monitor_build=build,
         log_level="info",
         connected=connected,
         last_seen_at=1000.0,
     )
+
+
+@pytest.fixture(autouse=True)
+def _monitor_published():
+    """The monitor part the About page reads: build 1.0, connected."""
+    _state.store().publish_for_tests("monitor", _monitor_info())
 
 
 def _owntone_info(version="28.12", connected=True, backend_id="owntone"):
@@ -113,9 +120,9 @@ def _collect_with_mocks(
         r.returncode = systemctl_returncode
         return r
 
+    _state.store().publish_for_tests("monitor", monitor_info)
     with patch("autostream_webui_page_about.get_app_version", return_value=autostream_version), \
          patch("autostream_webui_page_about._get_wifi_watcher_version", return_value=wifi_watcher_version), \
-         patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=monitor_info), \
          patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=owntone_info), \
          patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=vibra_info), \
          patch("autostream_webui_page_about.get_playback_snapshot", return_value=playback_snap), \
@@ -486,7 +493,6 @@ class TestMissingDiskAndSd:
 
     def test_cpu_temperature_read_failure_does_not_sink_payload(self):
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -520,7 +526,6 @@ class TestMissingDiskAndSd:
         """A raising collector helper must degrade only its own field, mirroring
         how a None cpu_temperature_c never sets ok=false."""
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -537,7 +542,6 @@ class TestMissingDiskAndSd:
 
     def test_memory_failure_does_not_sink_payload(self):
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -792,7 +796,6 @@ class TestSystemctlCommandSecurity:
             return r
 
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -831,7 +834,6 @@ class TestSystemctlCommandSecurity:
             return r
 
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -854,7 +856,6 @@ class TestPartialFailureDegradation:
 
     def test_cpu_failure_does_not_set_ok_false(self):
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -871,7 +872,6 @@ class TestPartialFailureDegradation:
 
     def test_disk_failure_does_not_set_ok_false(self):
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -902,7 +902,6 @@ class TestCollectorNoIO:
     def test_does_not_call_resolve_backend(self):
         with patch("autostream_player_service.resolve_backend") as mock_rb, \
              patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -924,7 +923,6 @@ class TestCollectorNoIO:
             return _owntone_info()
 
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", side_effect=fake_owntone), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -948,9 +946,8 @@ class TestCollectorNoIO:
 class TestSnapshotReadsAreMemoryOnly:
 
     def test_monitor_read_is_not_live_io(self):
-        mock_monitor = MagicMock(return_value=_monitor_info())
-        with patch("autostream_webui_page_about.get_monitor_runtime_info", mock_monitor), \
-             patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
+        _state.store().publish_for_tests("monitor", _monitor_info(build="9.9"))
+        with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -961,8 +958,8 @@ class TestSnapshotReadsAreMemoryOnly:
              patch("autostream_webui_page_about.sdcard_health_display", return_value=None), \
              patch("autostream_webui_page_about.subprocess.run",
                    return_value=MagicMock(stdout="", returncode=0)):
-            _about._collect_system_info()
-        mock_monitor.assert_called_once()
+            result = _about._collect_system_info()
+        assert "9.9" in result["builds"]["monitor"]
 
 
 # ---------------------------------------------------------------------------
@@ -1160,7 +1157,6 @@ class TestSendJsonHeaders:
         handler.send_header.side_effect = lambda k, v: sent_headers.update({k: v})
 
         with patch("autostream_webui_page_about.get_app_version", return_value="1.0"), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info", return_value=_monitor_info()), \
              patch("autostream_webui_page_about.get_owntone_runtime_info", return_value=_owntone_info()), \
              patch("autostream_webui_page_about.get_vibra_runtime_info", return_value=_vibra_info()), \
              patch("autostream_webui_page_about.get_playback_snapshot", return_value=_playback_snap()), \
@@ -1413,7 +1409,7 @@ class TestAboutPageNoLiveData:
              patch("autostream_webui_page_about._config_snapshot", return_value=None), \
              patch("autostream_webui_page_about.load_license_text", return_value=""), \
              patch("autostream_webui_page_about.render_license_md", return_value=""), \
-             patch("autostream_webui_page_about.get_monitor_runtime_info") as m_mon, \
+             patch("autostream_webui_page_about.store") as m_mon, \
              patch("autostream_webui_page_about.get_playback_snapshot") as m_play, \
              patch("autostream_webui_page_about.get_cpu_temperature_c") as m_cpu, \
              patch("autostream_webui_page_about.get_owntone_runtime_info") as m_owntone, \
@@ -1494,8 +1490,6 @@ class TestSnapshotExceptionIsolation:
                 (boom if raise_at == "app_version" else "1.0"),
             "autostream_webui_page_about._get_wifi_watcher_version":
                 (boom if raise_at == "wifi_watcher" else "1.0.0"),
-            "autostream_webui_page_about.get_monitor_runtime_info":
-                (boom if raise_at == "monitor" else _monitor_info()),
             "autostream_webui_page_about.get_owntone_runtime_info":
                 (boom if raise_at == "owntone" else _owntone_info()),
             "autostream_webui_page_about.get_vibra_runtime_info":
@@ -1510,6 +1504,8 @@ class TestSnapshotExceptionIsolation:
                 ctx[target] = patch(target, side_effect=val)
             else:
                 ctx[target] = patch(target, return_value=val)
+        ctx["monitor"] = (patch("autostream_webui_page_about.store", side_effect=boom)
+                          if raise_at == "monitor" else contextlib.nullcontext())
 
         with patch("autostream_webui_page_about.get_cpu_temperature_c", return_value=None), \
              patch("autostream_webui_page_about.get_cpu_busy_percent", return_value=None), \
@@ -1520,7 +1516,7 @@ class TestSnapshotExceptionIsolation:
                    return_value=MagicMock(stdout="", returncode=0)):
             with ctx["autostream_webui_page_about.get_app_version"], \
                  ctx["autostream_webui_page_about._get_wifi_watcher_version"], \
-                 ctx["autostream_webui_page_about.get_monitor_runtime_info"], \
+                 ctx["monitor"], \
                  ctx["autostream_webui_page_about.get_owntone_runtime_info"], \
                  ctx["autostream_webui_page_about.get_vibra_runtime_info"], \
                  ctx["autostream_webui_page_about.get_playback_snapshot"]:

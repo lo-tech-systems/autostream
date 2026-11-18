@@ -32,9 +32,10 @@ from autostream_bluetooth_client import (
     bluetooth_installed,
     bluetooth_services_enabled,
 )
-from autostream_core import get_monitor_runtime_info, get_playback_snapshot
+from autostream_core import get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_busy_percent, get_cpu_temperature_c
+from autostream_state import store
 from autostream_sysutils import (
     fmt_bytes,
     get_effective_memory_info,
@@ -522,7 +523,7 @@ def _collect_system_info() -> dict:
 
     # 2. Monitor build — read in-memory snapshot, no protocol I/O
     try:
-        monitor_info = get_monitor_runtime_info()
+        monitor_info = store().snapshot().monitor
         monitor_build = _build_text(monitor_info.monitor_build, monitor_info.connected)
     except Exception:
         monitor_build = "unknown"

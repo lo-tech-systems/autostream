@@ -166,8 +166,13 @@ def _dynamic_import_target(node: ast.Call) -> str | None:
     return None
 
 
-def scan_file(importer: str, rel: str, tree: ast.AST, packages: dict[str, set[str]]):
-    """Return the import edges of one parsed file and the lines of its `.claim(` calls."""
+def scan_file(importer: str, rel: str, tree: ast.AST, packages: dict[str, set[str]],
+              exported: dict[str, frozenset[str]] | None = None):
+    """Return the import edges of one parsed file and the lines of its `.claim(` calls.
+
+    A name a package lists in its ``__all__`` is that package's own public name
+    even when a submodule has the same name (``from pkg import store``)."""
+    exported = exported or {}
     edges: list[Edge] = []
     claims: list[int] = []
     for node in ast.walk(tree):
@@ -180,7 +185,8 @@ def scan_file(importer: str, rel: str, tree: ast.AST, packages: dict[str, set[st
             mod = node.module or ""
             for alias in node.names:
                 top = mod.split(".")[0]
-                if mod == top and alias.name in packages.get(top, ()):
+                if (mod == top and alias.name in packages.get(top, ())
+                        and alias.name not in exported.get(top, ())):
                     edges.append(Edge(importer, rel, f"{mod}.{alias.name}", "*", node.lineno))
                 else:
                     edges.append(Edge(importer, rel, mod, alias.name, node.lineno))
@@ -198,13 +204,14 @@ def scan(root: Path):
     """Return (module names, edges, claim sites as (importer, path, line))."""
     files = module_files(root)
     packages = {name: _package_modules(root, name) for name in files if (root / name).is_dir()}
+    exported = {name: _all_names(root, name) for name in packages}
     edges: list[Edge] = []
     claims: list[tuple[str, str, int]] = []
     for importer, paths in files.items():
         for path in paths:
             rel = path.relative_to(root).as_posix()
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            file_edges, file_claims = scan_file(importer, rel, tree, packages)
+            file_edges, file_claims = scan_file(importer, rel, tree, packages, exported)
             for e in file_edges:
                 if e.module.split(".")[0] == importer:
                     continue  # a package importing itself
@@ -349,8 +356,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_api', 'autostream_core', 'get_active_track_identification_snapshot'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_monitor_levels_dbfs'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'get_monitor_runtime_info'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'get_owntone_selfheal_state'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_repeat_status'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_session_source_input_index'),
@@ -375,7 +380,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_api', 'autostream_core', 'update_live_silence_seconds'),
     ('A', 'autostream_webui_api', 'autostream_core', 'update_live_silence_threshold_dbfs'),
     ('A', 'autostream_webui_api', 'autostream_core', 'update_playback_input_config'),
-    ('A', 'autostream_webui_page_about', 'autostream_core', 'get_monitor_runtime_info'),
     ('A', 'autostream_webui_page_about', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_webui_page_airplay', 'autostream_core', 'format_khz'),
     ('A', 'autostream_webui_page_airplay', 'autostream_core', 'get_active_track_identification_snapshot'),
@@ -662,6 +666,16 @@ def test_package_submodule_from_import_resolves_to_the_submodule(tmp_path):
         "pkg/__init__.py": "", "pkg/models.py": "",
     })
     rules = _rules({"web": "L3", "pkg": "L0"}, allowed={"pkg.models": frozenset({"*"})})
+    assert violations(tmp_path, rules) == set()
+
+
+def test_a_name_in_a_packages_all_is_not_taken_for_its_submodule(tmp_path):
+    _write(tmp_path, {
+        "web.py": "from autostream_state import store\n",
+        "autostream_state/__init__.py": "from .store import store\n__all__ = ['store']\n",
+        "autostream_state/store.py": "",
+    })
+    rules = _rules({"web": "L3", "autostream_state": "L1a"})
     assert violations(tmp_path, rules) == set()
 
 

@@ -46,15 +46,19 @@ from autostream_core import (
     _reconcile_owntone_outputs_if_wiped,
     _SelfHeal,
     clear_user_silence_latch,
-    get_owntone_selfheal_state,
     note_user_output_action,
     set_user_silence_latch,
     user_silence_latch_active,
 )
 import autostream_runtime as runtime
+import autostream_state
 
 
 BASE_URL = "http://localhost:3689"
+
+
+def _selfheal_state() -> dict:
+    return autostream_state.store().snapshot().health.as_json()
 
 
 def _make_monitor(**overrides) -> AudioMonitor:
@@ -439,7 +443,7 @@ class TestReconcileWiring:
         assert fired_any is True
         assert mon._owntone_enabled_ok is False
         assert mon._owntone_last_attempt == 0.0
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["reconcile_fired_count"] == 1
 
     def test_no_session_does_not_touch_monitor_state(self):
@@ -474,7 +478,7 @@ class TestReconcileWiring:
                 _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
 
         assert mon._owntone_enabled_ok is True
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["reconcile_fired_count"] == 0
 
     def test_device_initiated_pause_flag_prevents_rearm(self):
@@ -492,7 +496,7 @@ class TestReconcileWiring:
                 _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
 
         assert mon._owntone_enabled_ok is True
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["reconcile_fired_count"] == 0
 
     def test_awaiting_pin_flag_prevents_rearm(self):
@@ -510,7 +514,7 @@ class TestReconcileWiring:
                 _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
 
         assert mon._owntone_enabled_ok is True
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["reconcile_fired_count"] == 0
 
     def test_no_paused_flag_still_rearms_as_today(self):
@@ -532,7 +536,7 @@ class TestReconcileWiring:
                     fired_any = True
 
         assert fired_any is True
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["reconcile_fired_count"] == 1
 
     def test_user_silence_latch_set_prevents_rearm(self):
@@ -549,7 +553,7 @@ class TestReconcileWiring:
                 _reconcile_owntone_outputs_if_wiped(tracker, mon, True, now + i)
 
         assert mon._owntone_enabled_ok is True
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["reconcile_fired_count"] == 0
 
     def test_user_silence_latch_cleared_rearms_as_today(self):
@@ -571,7 +575,7 @@ class TestReconcileWiring:
                     fired_any = True
 
         assert fired_any is True
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["reconcile_fired_count"] == 1
 
 
@@ -840,7 +844,7 @@ class TestMaybeRunOwntoneHangWatchdogWiring:
             _maybe_run_owntone_hang_watchdog(wd, status, True, BASE_URL, 1000.0)
 
         mock_admin.assert_called_once_with(["restart-owntone"], timeout=20.0)
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["watchdog_restart_count"] == 1
         assert state["watchdog_armed"] is True
 
@@ -849,7 +853,7 @@ class TestMaybeRunOwntoneHangWatchdogWiring:
         with patch("autostream_core.run_admin_cmd") as mock_admin:
             _maybe_run_owntone_hang_watchdog(wd, {}, True, BASE_URL, 1000.0)
         mock_admin.assert_not_called()
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["watchdog_armed"] is False
 
     def test_no_session_no_restart(self):
@@ -913,7 +917,7 @@ class TestSelfHealComposition:
         assert mon._owntone_enabled_ok is False
         assert mon._owntone_last_attempt == 0.0
 
-        state = get_owntone_selfheal_state()
+        state = _selfheal_state()
         assert state["watchdog_restart_count"] == 1
         assert state["reconcile_fired_count"] == 1
 
@@ -930,7 +934,7 @@ class TestSelfHealComposition:
                 _reconcile_owntone_outputs_if_wiped(reconcile, mon, True, now + i)
 
         assert mon._owntone_enabled_ok is True
-        assert get_owntone_selfheal_state()["reconcile_fired_count"] == 0
+        assert _selfheal_state()["reconcile_fired_count"] == 0
 
 
 # ── _RecoveryLog: "first success after failure" recovery WARNING ───────────

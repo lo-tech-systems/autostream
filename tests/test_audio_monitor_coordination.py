@@ -26,6 +26,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_core as core
+import autostream_state
 from autostream_core import AudioMonitor
 from autostream_monitor_client import MonitorClient
 from autostream_nowplaying import NowPlayingMetadata
@@ -1968,11 +1969,10 @@ class TestRateMatchingNoteText:
 class TestSampleRateText:
     @pytest.fixture(autouse=True)
     def _connected(self):
-        info = core.MonitorRuntimeInfo(
-            monitor_build="test", log_level="info", connected=True, last_seen_at=0.0,
-        )
-        with patch.object(core, "get_monitor_runtime_info", return_value=info):
-            yield
+        autostream_state.store().publish_for_tests(
+            "monitor", autostream_state.MonitorRuntimeInfo(
+                monitor_build="test", log_level="info", connected=True, last_seen_at=0.0))
+        yield
 
     @staticmethod
     def _running(index=1, **fields):
@@ -2029,11 +2029,10 @@ class TestSampleRateText:
 
     def test_a_disconnected_monitor_is_not_running(self):
         self._running()
-        info = core.MonitorRuntimeInfo(
-            monitor_build="test", log_level="info", connected=False, last_seen_at=0.0,
-        )
-        with patch.object(core, "get_monitor_runtime_info", return_value=info):
-            assert core.sample_rate_text(1) == "Sample rate: not running"
+        autostream_state.store().publish_for_tests(
+            "monitor", autostream_state.MonitorRuntimeInfo(
+                monitor_build="test", log_level="info", connected=False, last_seen_at=0.0))
+        assert core.sample_rate_text(1) == "Sample rate: not running"
 
     def test_an_older_monitor_with_a_detected_rate_gives_the_rate_alone(self):
         mon = _make_monitor(input_index=1)

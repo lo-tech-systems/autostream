@@ -131,12 +131,8 @@ from autostream_sysutils import (
 #
 # "Monitor-runtime read-cache" group -- daemon-status-derived caches consumed
 # by the Web UI's /api/status, not coordinator-internal arbitration state:
-#   _monitor_runtime_info_lock                -- MonitorRuntimeInfo (daemon
-#                                                 connection/build/level)
 #   _repeat_status_lock                       -- last-polled repeat-feature
 #                                                 status dict
-#   _owntone_selfheal_state_lock              -- selfheal fire-count/
-#                                                 last-fired diagnostics
 #
 # Class-level (not module-level, listed here for completeness):
 #   MonitorClient._lock                       -- serializes daemon-socket
@@ -331,23 +327,7 @@ def _start_playing_reconciliation(version: str) -> None:
     threading.Thread(target=_reconcile, daemon=True, name="playing-reconcile").start()
 
 
-@dataclass(frozen=True)
-class MonitorRuntimeInfo:
-    """Latest top-level runtime metadata reported by autostream_monitor."""
-
-    monitor_build: str
-    log_level: str
-    connected: bool
-    last_seen_at: float
-
-
-_monitor_runtime_info_lock = threading.Lock()
-_monitor_runtime_info = MonitorRuntimeInfo(
-    monitor_build="unknown",
-    log_level="unknown",
-    connected=False,
-    last_seen_at=0.0,
-)
+_monitor_writer = autostream_state.store().claim("monitor", "autostream_core")
 
 
 def _set_monitor_runtime_info(
@@ -357,34 +337,27 @@ def _set_monitor_runtime_info(
     connected: Optional[bool] = None,
     last_seen_at: Optional[float] = None,
 ) -> None:
-    """Update the cached autostream_monitor runtime metadata."""
-    global _monitor_runtime_info
-    with _monitor_runtime_info_lock:
-        cur = _monitor_runtime_info
-        _monitor_runtime_info = MonitorRuntimeInfo(
-            monitor_build=(
-                str(monitor_build).strip()
-                if monitor_build is not None
-                else cur.monitor_build
-            ) or "unknown",
-            log_level=(
-                str(log_level).strip()
-                if log_level is not None
-                else cur.log_level
-            ) or "unknown",
-            connected=bool(cur.connected if connected is None else connected),
-            last_seen_at=(
-                cur.last_seen_at
-                if last_seen_at is None
-                else float(last_seen_at)
-            ),
-        )
-
-
-def get_monitor_runtime_info() -> MonitorRuntimeInfo:
-    """Return the latest cached top-level runtime metadata from the monitor."""
-    with _monitor_runtime_info_lock:
-        return _monitor_runtime_info
+    """Update the published autostream_monitor runtime metadata. Called from
+    the coordinator thread only."""
+    cur = autostream_state.store().snapshot().monitor
+    _monitor_writer.publish(autostream_state.MonitorRuntimeInfo(
+        monitor_build=(
+            str(monitor_build).strip()
+            if monitor_build is not None
+            else cur.monitor_build
+        ) or "unknown",
+        log_level=(
+            str(log_level).strip()
+            if log_level is not None
+            else cur.log_level
+        ) or "unknown",
+        connected=bool(cur.connected if connected is None else connected),
+        last_seen_at=(
+            cur.last_seen_at
+            if last_seen_at is None
+            else float(last_seen_at)
+        ),
+    )).notify()
 
 
 # ── Repeat status cache ───────────────────────────────────────────
@@ -562,39 +535,11 @@ def user_silence_latch_active() -> bool:
 # authoritative for coordinator decisions (that state lives on the tracker
 # instances themselves, which are coordinator-thread-only).
 
-_owntone_selfheal_state_lock = threading.Lock()
-_owntone_selfheal_state: dict = {
-    "reconcile_fired_count": 0,
-    "reconcile_last_fired_at": 0.0,
-    "watchdog_armed": False,
-    "watchdog_restart_count": 0,
-    "watchdog_last_restart_at": 0.0,
-}
+_health_writer = autostream_state.store().claim("health", "autostream_core")
 
 
 def _set_owntone_selfheal_state(**fields) -> None:
-    global _owntone_selfheal_state
-    with _owntone_selfheal_state_lock:
-        _owntone_selfheal_state = {**_owntone_selfheal_state, **fields}
-
-
-def get_owntone_selfheal_state() -> dict:
-    """Return the latest reconcile/watchdog counters for /api/status passthrough.
-
-    JSON boundary rule: the watchdog's internal "never restarted" sentinel is
-    float("-inf") (rate limit vacuously satisfied), but -Infinity is NOT
-    valid JSON -- Python's json.dumps emits it anyway (allow_nan defaults to
-    True) and Python's json.loads accepts it back, while every browser's
-    strict JSON.parse rejects the whole payload. Non-finite timestamps are
-    therefore mapped to None here, at the boundary; internal state keeps the
-    -inf sentinel.
-    """
-    with _owntone_selfheal_state_lock:
-        state = dict(_owntone_selfheal_state)
-    ts = state.get("watchdog_last_restart_at")
-    if isinstance(ts, float) and not math.isfinite(ts):
-        state["watchdog_last_restart_at"] = None
-    return state
+    _health_writer.update(lambda cur: replace(cur, **fields)).notify()
 
 
 def _replay_origin_input(repeat_status: Optional[dict]) -> Optional[int]:
@@ -1756,9 +1701,9 @@ def _reconcile_owntone_outputs_if_wiped(
         tracker.ZERO_POLL_THRESHOLD,
         monitor.input_index if monitor is not None else "?",
     )
-    state = get_owntone_selfheal_state()
+    health = autostream_state.store().snapshot().health
     _set_owntone_selfheal_state(
-        reconcile_fired_count=int(state.get("reconcile_fired_count", 0)) + 1,
+        reconcile_fired_count=int(health.reconcile_fired_count) + 1,
         reconcile_last_fired_at=now,
     )
     if monitor is not None:
@@ -2257,7 +2202,7 @@ def input_rate_texts(input_index: int) -> tuple[str, str]:
     the input's monitor, so they cannot disagree with each other."""
     with runtime._monitors_lock:
         mon = next((m for m in runtime.all_monitors if m.input_index == input_index), None)
-    connected = bool(get_monitor_runtime_info().connected)
+    connected = bool(autostream_state.store().snapshot().monitor.connected)
     return _rate_matching_note_for(mon), _sample_rate_text_for(mon, connected)
 
 

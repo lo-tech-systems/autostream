@@ -420,6 +420,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_webui_page_airplay as airplay
     from autostream_dials import AUTH_AUTHORIZED
     from autostream_players import ActionResult, ListOutputsResult
+    from fake_store import FakeStore
 
     rec = Recorder()
     cfg = parsed_config()
@@ -442,9 +443,10 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
         return ActionResult(ok=True)
 
     levels = [dict(lv) for lv in scenario.levels]
-    runtime = core.MonitorRuntimeInfo(
-        monitor_build="golden", log_level="info",
-        connected=scenario.monitor_connected, last_seen_at=1000.0)
+    fake = FakeStore()
+    fake.monitor(monitor_build="golden", log_level="info",
+                 connected=scenario.monitor_connected, last_seen_at=1000.0)
+    fake.health(**scenario.selfheal)
     sample_rate_text = "Sample rate: 44.1 kHz"
     rate_note = core.RATE_MATCHING_NOTE_DEFAULT
 
@@ -473,7 +475,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
         _dial_update_banner_text=lambda: "",
         any_monitor_capturing=lambda: bool(scenario.session.get("active")),
     )
-    setattrs(api, **shared, get_monitor_runtime_info=lambda: runtime,
+    setattrs(api, **shared,
              input_rate_texts=input_rate_texts,
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True,
@@ -509,8 +511,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_active_track_identification_snapshot=lambda: scenario.track,
              get_session_source_input_index=lambda: scenario.source_input,
              get_playback_snapshot=lambda: scenario.playback,
-             apply_repeat_ack=lambda ack: ack,
-             _owntone_selfheal_state=dict(scenario.selfheal))
+             apply_repeat_ack=lambda ack: ack)
     setattrs(monitor_client, _connected_monitor=connected_monitor)
     setattrs(start_buffer_cache, current_ms=lambda base_url=None: START_BUFFER_MS)
     setattrs(system_stats, _read_get_throttled_value=lambda: scenario.throttled)

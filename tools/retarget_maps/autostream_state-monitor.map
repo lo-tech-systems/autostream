@@ -1,0 +1,2 @@
+# The monitor runtime type moved into the state parts.
+autostream_core.MonitorRuntimeInfo -> autostream_state.MonitorRuntimeInfo  alias=state

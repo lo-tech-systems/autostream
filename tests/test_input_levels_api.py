@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
@@ -18,6 +19,7 @@ if _core not in sys.path:
 
 from autostream_webui_api import send_input_levels_json
 from autostream_webui_state import WebUIState
+import autostream_state as _state
 
 
 def _make_handler() -> MagicMock:
@@ -63,12 +65,11 @@ def _call(levels=None, connected=True, config=None, levels_error=None, config_er
         if config_error is not None
         else patch("autostream_webui_api._config_snapshot", return_value=config)
     )
+    _state.store().publish_for_tests(
+        "monitor", _state.MonitorRuntimeInfo(connected=connected))
     with levels_patch, config_patch, patch(
         "autostream_webui_api.input_rate_texts",
         side_effect=lambda index: (note(index), rate(index)),
-    ), patch(
-        "autostream_webui_api.get_monitor_runtime_info",
-        return_value=MagicMock(connected=connected),
     ):
         send_input_levels_json(handler, state)
     return _response(handler)
@@ -121,13 +122,13 @@ def test_input_without_a_running_monitor_gets_empty_rate_fields_and_the_note():
 def test_a_non_breaking_space_in_the_text_survives_the_json_reply():
     handler = _make_handler()
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    _state.store().publish_for_tests(
+        "monitor", _state.MonitorRuntimeInfo(connected=True))
     with patch("autostream_webui_api.get_monitor_levels_dbfs", return_value=[_level(1, -40.0)]), \
          patch("autostream_webui_api._config_snapshot",
                return_value=MagicMock(audio1_enabled=True, audio2_enabled=False)), \
          patch("autostream_webui_api.input_rate_texts",
-               side_effect=lambda index: ("note", "Sample rate: 48 kHz")), \
-         patch("autostream_webui_api.get_monitor_runtime_info",
-               return_value=MagicMock(connected=True)):
+               side_effect=lambda index: ("note", "Sample rate: 48 kHz")):
         send_input_levels_json(handler, state)
     raw = handler.wfile.getvalue().decode("ascii")
     assert "&nbsp;" not in raw
