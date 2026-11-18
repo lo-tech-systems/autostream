@@ -563,7 +563,7 @@ def main() -> None:
         peer_registry.stop()
         display.stop()
         control_server.stop()
-        http_server._server.shutdown()
+        http_server.stop()
 
 
 if __name__ == '__main__':

@@ -79,6 +79,8 @@ def management_server(pin: str = "", **kwargs):
 
 
 def close_management_server(server) -> None:
+    # The server was never started, so stop() would block waiting for a serve
+    # loop that does not exist; only the listening socket needs closing.
     server._server.server_close()
 
 

@@ -84,7 +84,6 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=Tru
     mock_led.set_playing.side_effect = lambda: loop_body_ran.set()
     mock_led.set_idle.side_effect = lambda: loop_body_ran.set()
     mock_http = MagicMock()
-    mock_http._server = MagicMock()
     mock_control = MagicMock()
 
     # Capture the shutdown event that main() creates.
@@ -172,7 +171,6 @@ class TestOptionalGpioSetup:
         import dial_main as dm
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
         mock_encoder_setup = MagicMock(return_value="encoder-handle")
         mock_button_setup = MagicMock(return_value="button-handle")
@@ -308,7 +306,6 @@ class TestSignalHandlers:
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
              patch("dial_main.signal.signal", side_effect=_capture_signal), \
              patch("threading.Event", _CapEvent):
-            mock_http_cls.return_value._server = MagicMock()
             mock_ctrl_cls.return_value = MagicMock()
 
             def _fire_signal():
@@ -354,7 +351,6 @@ class TestSignalHandlers:
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
              patch("dial_main.signal.signal", side_effect=_capture_signal), \
              patch("threading.Event", _CapEvent):
-            mock_http_cls.return_value._server = MagicMock()
             mock_ctrl_cls.return_value = MagicMock()
 
             def _fire_signal():
@@ -384,8 +380,7 @@ class TestDialFinalCleanup:
         order = []
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
-        mock_http._server.shutdown.side_effect = lambda: order.append("http")
+        mock_http.stop.side_effect = lambda: order.append("http")
         mock_control = MagicMock()
         mock_control.stop.side_effect = lambda: order.append("control")
 
@@ -411,7 +406,7 @@ class TestDialFinalCleanup:
 
         assert "browser" in order, "the peer registry must be stopped in finally"
         assert "control" in order, "control_server.stop() must be called in finally"
-        assert "http" in order, "http_server.shutdown() must be called in finally"
+        assert "http" in order, "http_server.stop() must be called in finally"
         assert order.index("browser") < order.index("control"), (
             "browser must be stopped before control server"
         )
@@ -426,7 +421,6 @@ class TestDialFinalCleanup:
         registry.return_value.stop.side_effect = lambda: browser_stopped.append(True)
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
 
         class _ExplodingEvent(threading.Event):
@@ -467,7 +461,6 @@ class TestDialFinalCleanup:
         mock_led.set_idle.side_effect = lambda: led_calls.append("idle")
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
 
         class _ImmediateShutdownEvent(threading.Event):
@@ -500,7 +493,6 @@ class TestDialFinalCleanup:
         cfg = _make_cfg()
         cfg.display = MagicMock(fitted=False, screen_size_inches=None)
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
 
         class _QuickEvent(threading.Event):
@@ -545,7 +537,6 @@ class TestDialFinalCleanup:
 
         cfg = _make_cfg()
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
 
         class _QuickEvent(threading.Event):
@@ -594,7 +585,6 @@ class TestDialFinalCleanup:
         cfg.display.fitted = True
         cfg.display.poll_interval_s = 3
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
         started = []
 
@@ -634,7 +624,6 @@ class TestDialFinalCleanup:
 
         cfg = _make_cfg()
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
         mock_control.start.side_effect = OSError("socket bind failed")
 
@@ -671,7 +660,6 @@ class TestRunningMarkerLifecycle:
 
         cfg = _make_cfg()
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
 
         class _QuickEvent(threading.Event):
@@ -727,7 +715,6 @@ class TestRunningMarkerLifecycle:
 
         cfg = _make_cfg()
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
 
         class _QuickEvent(threading.Event):
@@ -907,7 +894,6 @@ class TestRecoveryArmingDecision:
             sync_marker.write_text("")
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
 
         class _QuickEvent(threading.Event):
@@ -1176,7 +1162,6 @@ class TestTouchConstruction:
         cfg = _make_cfg()
         cfg.display = cfg_display
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
         if build_mock is None:
             build_mock = MagicMock(return_value=MagicMock())
@@ -1322,7 +1307,6 @@ class TestTouchConstruction:
         cfg.sw_gpio = 23
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
         mock_encoder_setup = MagicMock(return_value="encoder-handle")
         mock_button_setup = MagicMock(return_value="button-handle")
@@ -1374,7 +1358,6 @@ class TestTouchConstruction:
         cfg = _make_cfg()
         cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_control = MagicMock()
         build_mock = MagicMock()
 
@@ -2382,7 +2365,6 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
                 return True
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_http.effective_mute_scope = effective_mute_scope
 
         with patch("dial_main._configure_logging"), \
@@ -2499,7 +2481,6 @@ class TestInfoProviderWiring:
             return instance
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_http.get_runtime_status.return_value = {"name": "Kitchen Dial"}
         captured["http"] = mock_http
 
@@ -2602,7 +2583,6 @@ class TestBootSplashWiring:
             return inst
 
         mock_http = MagicMock()
-        mock_http._server = MagicMock()
         mock_http.get_runtime_status.return_value = {"name": "Dial"}
 
         def http_ctor(*a, **k):

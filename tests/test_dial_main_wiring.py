@@ -55,7 +55,6 @@ def _run_core_wiring(fitted=True, display_import_fails=False, screen_type=None, 
     mock_panel_class = MagicMock(return_value=mock_panel)
     mock_backlight = MagicMock()
     mock_http = MagicMock()
-    mock_http._server = MagicMock()
     mock_http.get_runtime_status.return_value = {"name": "Kitchen Dial"}
     mock_http.effective_mute_scope = "current"
     mock_http.effective_volume_scope = "current"

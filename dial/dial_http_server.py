@@ -145,6 +145,11 @@ class DialHTTPServer:
         ).start()
         logging.info("HTTP server listening on port %d", self._cfg.port)
 
+    def stop(self) -> None:
+        """Stop serving. Returns once the serve loop has exited, so call it
+        only on a started server."""
+        self._server.shutdown()
+
     @property
     def step_percent(self) -> int:
         with self._cfg_lock:
