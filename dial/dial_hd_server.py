@@ -82,7 +82,6 @@ PANEL_ACTIONS = ("wake", "sleep", "activity")
 LOCAL_ONLY_ACTIONS = frozenset({"presence", "dial_shutdown"})
 SETTINGS_KEYS = ("brightness", "sleep_after_s")
 
-ARTWORK_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 # The artwork route: the key, then optionally the variant served for it.
 ARTWORK_REST_RE = re.compile(r"^([0-9a-f]{16})(?:/(backdrop))?$")
 ARTWORK_CACHE_CONTROL = "private, max-age=86400, immutable"

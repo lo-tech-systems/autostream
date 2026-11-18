@@ -221,9 +221,6 @@ def wifi_status() -> "tuple[str, str]":
     return (ssid, signal_category_from_dbm(dbm))
 
 
-_wifi_status = wifi_status  # name kept for existing callers and tests
-
-
 def _configured_connection() -> "str | None":
     """The committed Wi-Fi profile's uuid (preferred) or name, from the
     network state file, else the legacy name-only file; None when the dial

@@ -150,14 +150,6 @@ class DialDisplayConfig:
     # HD surface only: power an HDMI panel down while asleep (see above).
     panel_power_off: bool = False
 
-    @property
-    def effective_volume_scope(self) -> str:
-        return effective_scope(self, self.volume_scope)
-
-    @property
-    def effective_mute_scope(self) -> str:
-        return effective_scope(self, self.mute_scope)
-
 
 def effective_scope(display: "DialDisplayConfig", stored: str) -> str:
     """The scope a dial actually acts on: *stored* while a screen is fitted,

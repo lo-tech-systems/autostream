@@ -280,9 +280,8 @@ class _HeadlessDisplay(NoOpDisplayStatusProvider):
     watch keep running. The core is built, started and stopped by the
     caller."""
 
-    def __init__(self, core, display_config) -> None:
+    def __init__(self, display_config) -> None:
         super().__init__()
-        self.core = core
         self.update_config(display_config)
 
 
@@ -382,19 +381,19 @@ def _build_display(cfg, core):
     Pillow/display-stack import failure (e.g. an incomplete apt install)
     degrades to the same stand-in rather than taking the service down."""
     if get_profile_or_default(cfg.display.screen_type).surface == "kiosk":
-        return _HeadlessDisplay(core, cfg.display)
+        return _HeadlessDisplay(cfg.display)
     try:
         from dial_display import create_dial_display
         return create_dial_display(cfg, core)
     except ImportError as e:
         logging.warning("dial display: display stack unavailable (%s) — display disabled", e)
-        return _HeadlessDisplay(core, cfg.display)
+        return _HeadlessDisplay(cfg.display)
 
 
-def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, core=None):
+def _build_touch_source(cfg, display, core, confirm_presence=None, step_percent=None):
     """Construct and wire a TouchEventSource for cfg.display against the
     already-built *display* manager and *core* (volume and mute go to the
-    core; the display's own core is used when none is given).
+    core).
 
     Every import here is deferred to inside this function, exactly like
     dial_display.create_dial_display() is deferred inside main() — in
@@ -436,8 +435,6 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     # overlay_live()). Together they cover every contact. confirm_presence is
     # optional so callers/tests that don't care about recovery can omit it.
     _confirm_presence = confirm_presence or (lambda: None)
-    if core is None:
-        core = display.core
 
     controller = get_controller(cfg.display.touch_type)
     profile = get_profile(cfg.display.screen_type)

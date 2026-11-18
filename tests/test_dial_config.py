@@ -502,15 +502,6 @@ class TestEffectiveScope:
         assert dc.effective_scope(d, d.volume_scope) == "all"
         assert dc.effective_scope(d, d.mute_scope) == "all"
 
-    def test_dataclass_properties_agree_with_the_function(self):
-        fitted = DialDisplayConfig(fitted=True, volume_scope="all", mute_scope="current")
-        assert fitted.effective_volume_scope == dc.effective_scope(fitted, fitted.volume_scope)
-        assert fitted.effective_mute_scope == dc.effective_scope(fitted, fitted.mute_scope)
-
-        unfitted = DialDisplayConfig(fitted=False, volume_scope="current", mute_scope="all")
-        assert unfitted.effective_volume_scope == "all"
-        assert unfitted.effective_mute_scope == "all"
-
 
 # ---------------------------------------------------------------------------
 # save_config: chmod 0600 before data

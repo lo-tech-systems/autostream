@@ -614,7 +614,7 @@ class TestDialFinalCleanup:
 
         def _start(core):
             real_start(core)
-            started.append(core._thread)
+            started.append(core)
 
         with patch("dial_main._configure_logging"),              patch("dial_main.load_config", return_value=cfg),              patch("dial_main._reconcile_update_timer"),              patch("dial_main._announce_self"),              patch("dial_main.DialLED"),              patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls,              patch("dial_main.start_volume_worker"),              patch("dial_main.PeerRegistry"),              patch("dial_main.start_network_worker"),              patch("dial_main.DialControlServer", return_value=mock_control),              patch.object(DialCore, "start", _start),              patch("threading.Event", _QuickEvent),              patch("builtins.__import__", side_effect=_fake_import):
             dm.main()
@@ -622,11 +622,11 @@ class TestDialFinalCleanup:
         _, kwargs = mock_http_cls.call_args
         display = kwargs["display_status_provider"]
         assert isinstance(display, dm._HeadlessDisplay)
-        assert display.core.snapshot().polling is True
-        assert len(started) == 1 and not started[0].is_alive()
+        assert started[0].snapshot().polling is True
+        assert len(started) == 1 and not started[0]._thread.is_alive()
         # The appliances stay held whatever the fitted flag says.
         display.update_config(type("Cfg", (), {"fitted": False})())
-        assert display.core.snapshot().polling is True
+        assert started[0].snapshot().polling is True
 
     def test_fatal_exception_propagates(self):
         """A non-shutdown exception from control_server.start() propagates out."""
@@ -1782,7 +1782,7 @@ class TestBuildTouchSourceLayoutWiring:
              patch("dial_touch_filter.TouchFilter", side_effect=fake_touch_filter), \
              patch("dial_touch.TouchStateMachine", side_effect=fake_state_machine), \
              patch("dial_touch.TouchEventSource"):
-            dm._build_touch_source(cfg, display)
+            dm._build_touch_source(cfg, display, core=MagicMock())
         return captured
 
     def test_large_layout_size_builds_at_logical_with_physical_scaling(self):
@@ -2980,7 +2980,7 @@ class TestAsleepTouchWiring:
         with patch("dial_touch_drivers.open_driver"), \
              patch("dial_touch.TouchEventSource"), \
              patch("dial_touch.TouchStateMachine") as sm_cls:
-            dm._build_touch_source(cfg, display)
+            dm._build_touch_source(cfg, display, core=MagicMock())
         assert sm_cls.call_args.kwargs["is_asleep"] is display.is_sleeping
 
     def test_on_wake_notifies_activity_and_confirms_presence_only(self):

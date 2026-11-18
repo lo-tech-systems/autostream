@@ -41,10 +41,8 @@ STRING_MAX = 200
 # Where the page fetches the held artwork from, by key.
 ARTWORK_PATH = "/api/v1/artwork/"
 
-# The blurred backdrop of the held artwork hangs off the artwork's own path;
-# the logo has a fixed one for when nothing is held.
+# The blurred backdrop of the held artwork hangs off the artwork's own path.
 BACKDROP_SUFFIX = "/backdrop"
-LOGO_BACKDROP_PATH = "/api/v1/logo/backdrop"
 
 # The panel values shown before the panel service has said anything.
 DEFAULT_BRIGHTNESS = 80

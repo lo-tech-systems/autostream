@@ -713,11 +713,6 @@ class TestBackdrop:
         response, data = request(bserver, "GET", "/api/v1/artwork/backdrop")
         assert (response.status, error_of(data)) == (400, "bad_artwork_key")
 
-    def test_the_two_key_patterns_agree(self):
-        for rest in ("0123456789abcdef", "0123456789ABCDEF", "short", "", "../state",
-                     "0123456789abcdef0", "0123456789abcdeg"):
-            assert bool(hds.ARTWORK_KEY_RE.match(rest)) == bool(hds.ARTWORK_REST_RE.match(rest))
-
     def test_concurrent_requests_cost_one_render_and_block_nothing(self, make_server, core):
         release = threading.Event()
         entered = threading.Event()

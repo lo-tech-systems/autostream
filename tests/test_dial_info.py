@@ -24,7 +24,6 @@ from dial_info import (  # noqa: E402
     SIGNAL_WEAK,
     _BLANK,
     _ipv4,
-    _wifi_status,
     configured_ssid,
     gather_dial_info,
     signal_category_from_dbm,
@@ -167,13 +166,13 @@ class TestWifiStatus:
         # "Office:Net"; the inactive row above it must be ignored.
         stdout = "no:Neighbour:40\nyes:Office\\:Net:72\n"
         with patch("dial_info._run", return_value=_completed(stdout=stdout)) as run:
-            assert _wifi_status() == ("Office:Net", SIGNAL_STRONG)
+            assert wifi_status() == ("Office:Net", SIGNAL_STRONG)
         run.assert_called_once()
 
     def test_nmcli_percent_maps_to_category(self):
         stdout = "yes:HomeNet:50\n"
         with patch("dial_info._run", return_value=_completed(stdout=stdout)):
-            assert _wifi_status() == ("HomeNet", SIGNAL_NORMAL)
+            assert wifi_status() == ("HomeNet", SIGNAL_NORMAL)
 
     def test_nmcli_missing_falls_back_to_proc_wireless_and_iwgetid(self):
         wireless_data = (
@@ -187,12 +186,12 @@ class TestWifiStatus:
                 _completed(stdout="wlan0\n"),  # iwgetid
             ]
             with patch("builtins.open", mock_open(read_data=wireless_data)):
-                assert _wifi_status() == ("wlan0", SIGNAL_NORMAL)
+                assert wifi_status() == ("wlan0", SIGNAL_NORMAL)
 
     def test_both_wifi_sources_missing_returns_dash_pair(self):
         with patch("dial_info._run", return_value=None):
             with patch("builtins.open", side_effect=OSError("no such file")):
-                assert _wifi_status() == (_BLANK, _BLANK)
+                assert wifi_status() == (_BLANK, _BLANK)
 
     def test_proc_wireless_present_but_iwgetid_missing_uses_dash_ssid(self):
         wireless_data = (
@@ -203,7 +202,7 @@ class TestWifiStatus:
         with patch("dial_info._run") as run:
             run.side_effect = [None, None]  # nmcli, then iwgetid
             with patch("builtins.open", mock_open(read_data=wireless_data)):
-                assert _wifi_status() == (_BLANK, SIGNAL_WEAK)
+                assert wifi_status() == (_BLANK, SIGNAL_WEAK)
 
     def test_positive_wireless_level_is_treated_as_unknown(self):
         # A driver reporting raw link-quality units (positive) instead of
@@ -215,7 +214,7 @@ class TestWifiStatus:
         )
         with patch("dial_info._run", return_value=None):
             with patch("builtins.open", mock_open(read_data=wireless_data)):
-                assert _wifi_status() == (_BLANK, _BLANK)
+                assert wifi_status() == (_BLANK, _BLANK)
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +277,7 @@ class TestSubprocessTimeout:
             side_effect=subprocess.TimeoutExpired(cmd="nmcli", timeout=2.0),
         ):
             with patch("builtins.open", side_effect=OSError("no such file")):
-                assert _wifi_status() == (_BLANK, _BLANK)
+                assert wifi_status() == (_BLANK, _BLANK)
 
     def test_ip_command_timeout_never_raises(self):
         with patch("dial_info.socket.socket", side_effect=OSError("no route")):
@@ -412,6 +411,3 @@ class TestConfiguredSsid:
             assert configured_ssid() is None
         with patch("builtins.open", mock_open(read_data=self.STATE)), patch("dial_info._run", return_value=None):
             assert configured_ssid() is None
-
-    def test_public_wifi_status_is_the_old_private_name(self):
-        assert wifi_status is _wifi_status

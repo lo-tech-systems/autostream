@@ -597,9 +597,9 @@ def test_every_hd_page_module_has_a_ceiling():
 
 # The dial's Python modules behind the HD page -> the most non-blank lines each may have.
 HD_PY_CEILINGS = {
-    "dial_hd_state.py": 340,
+    "dial_hd_state.py": 338,
     "dial_hd_actions.py": 145,
-    "dial_hd_server.py": 940,
+    "dial_hd_server.py": 939,
     "dial_hd_events.py": 285,
 }
 
