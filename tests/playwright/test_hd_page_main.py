@@ -172,7 +172,8 @@ class TestStates:
         expect(rows(page).first.locator(".state")).to_have_text("Idle")
         expect(page.locator("#master")).to_be_disabled()
         expect(page.locator("#mute")).to_be_disabled()
-        expect(page.locator("#master-num")).to_have_text("--")
+        expect(page.locator("#vol-minus")).to_be_disabled()
+        expect(page.locator("#vol-plus")).to_be_disabled()
         assert cards(page).count() == 0
         expect(page.locator("#eq-open")).to_be_hidden()
 
@@ -328,10 +329,41 @@ class TestVolume:
         assert sent[-1] == ("volume_set", {"appliance_id": LOUNGE, "level": 60})
         assert len(sent) == 3
 
-    def test_number_follows_the_thumb_at_once(self, page, hd):
+    def test_the_row_is_mute_minus_slider_plus(self, page, hd):
         open_page(page, hd)
-        drag_input(page, "#master", [64])
-        expect(page.locator("#master-num")).to_have_text("64")
+        assert page.locator("#master-num").count() == 0
+        xs = [page.locator(s).bounding_box() for s in ("#mute", "#vol-minus", "#master", "#vol-plus")]
+        assert all(a["x"] + a["width"] <= b["x"] for a, b in zip(xs, xs[1:]))
+        assert xs[0]["width"] == xs[1]["width"] == xs[3]["width"] == xs[0]["height"]
+        expect(page.locator("#vol-minus")).to_have_attribute("aria-label", "Volume down")
+        expect(page.locator("#vol-plus")).to_have_attribute("aria-label", "Volume up")
+
+    def test_minus_and_plus_each_send_one_step_in_their_direction(self, page, hd):
+        sent = watch_actions(page)
+        open_page(page, hd)
+        page.locator("#vol-minus").click()
+        page.locator("#vol-plus").click()
+        page.wait_for_timeout(200)
+        assert sent == [("volume_step", {"appliance_id": LOUNGE, "direction": -1}),
+                        ("volume_step", {"appliance_id": LOUNGE, "direction": 1})]
+
+    def test_a_held_press_is_one_step(self, page, hd):
+        sent = watch_actions(page)
+        open_page(page, hd)
+        x, y = (lambda b: (b["x"] + b["width"] / 2, b["y"] + b["height"] / 2))(page.locator("#vol-plus").bounding_box())
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.wait_for_timeout(700)
+        page.mouse.up()
+        page.wait_for_timeout(150)
+        assert sent == [("volume_step", {"appliance_id": LOUNGE, "direction": 1})]
+
+    def test_the_new_level_comes_from_the_state(self, page, hd):
+        open_page(page, hd)
+        page.locator("#vol-plus").click()
+        expect(page.locator("#master")).to_have_value("42")
+        hd.show(scenario("playing_artwork", volume_readout=("Lounge", 44)))
+        expect(page.locator("#master")).to_have_value("44")
 
     def test_real_drag_ends_near_the_target(self, page, hd):
         # How many requests a real drag sends depends on how fast the
@@ -359,15 +391,15 @@ class TestVolume:
             "fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.focused.parts.outputs.master_volume === 77)")
         page.wait_for_timeout(300)
         page.clock.run_for(2500)
-        expect(page.locator("#master-num")).to_have_text("77")
+        expect(page.locator("#master")).to_have_value("77")
 
     def test_unconfirmed_it_rolls_back(self, page, hd):
         page.clock.install()
         open_page(page, hd)
         drag_input(page, "#master", [], final=77)
-        expect(page.locator("#master-num")).to_have_text("77")
+        expect(page.locator("#master")).to_have_value("77")
         page.clock.run_for(2500)
-        expect(page.locator("#master-num")).to_have_text("42")
+        expect(page.locator("#master")).to_have_value("42")
         assert page.evaluate("document.getElementById('master').value") == "42"
 
     def test_refusal_rolls_back_and_toasts(self, page, hd):
@@ -377,7 +409,7 @@ class TestVolume:
         open_page(page, hd)
         drag_input(page, "#master", [], final=88)
         expect(page.locator("#toast")).to_have_text("Not possible right now.")
-        expect(page.locator("#master-num")).to_have_text("42")
+        expect(page.locator("#master")).to_have_value("42")
 
 
 class TestMute:
@@ -435,8 +467,6 @@ class TestMute:
             expect(page.locator("#mute")).to_have_attribute("aria-pressed", "true" if muted else "false")
             if muted:
                 expect(page.locator("#volume-row")).to_have_class(re.compile("muted"))
-                assert "line-through" in page.evaluate(
-                    "getComputedStyle(document.getElementById('master-num')).textDecorationLine")
             else:
                 expect(page.locator("#volume-row")).not_to_have_class(re.compile("muted"))
 
@@ -671,8 +701,8 @@ class TestLayout:
                         h('appliances-region'), h('speakers-region'), h('left')];
             }""")
         assert info[:3] == ["visible", "auto", "auto"]
-        assert abs(info[3] - info[5] / 3) <= 2
-        assert abs(info[4] - info[5] * 2 / 3) <= 2
+        assert abs(info[3] - info[5] * 196 / 466) <= 2
+        assert abs(info[4] - info[5] * 270 / 466) <= 2
         page.evaluate("document.getElementById('speakers-list').scrollTop = 120")
         assert page.evaluate("document.getElementById('speakers-list').scrollTop") > 0
         assert page.evaluate("document.getElementById('appliances-list').scrollTop") == 0
@@ -746,22 +776,59 @@ class TestListCues:
             for i in range(3))
         for row in (first, second):
             assert row["top"] >= region["top"] and row["bottom"] <= region["bottom"]
-        # The third card starts in the band the list shares with the speakers label.
+        # The third card starts below the second and is cut off by the end of the list.
         shown = box(page, "#appliances-list")
-        assert region["bottom"] <= third["top"] < shown["bottom"] < third["bottom"]
+        assert second["bottom"] < third["top"] < shown["bottom"] < third["bottom"]
+        assert shown["bottom"] - third["top"] >= 20
         expect(page.locator("#appliances-list")).to_have_class(re.compile(r"\bmore-below\b"))
+
+    def test_the_speakers_region_shows_two_cards_and_a_peek_at_800x480(self, page, hd):
+        hd.show(crowded(2, 6))
+        open_page(page, hd, (800, 480))
+        expect(cards(page)).to_have_count(6)
+        shown = box(page, "#speakers-list")
+        spans = [
+            page.evaluate(
+                "(i) => { const r = document.querySelectorAll('#speakers .output-card')[i]"
+                ".getBoundingClientRect(); return {top: r.top, bottom: r.bottom}; }", i)
+            for i in range(3)]
+        assert spans[1]["bottom"] <= shown["bottom"]
+        assert spans[1]["bottom"] < spans[2]["top"] < shown["bottom"] < spans[2]["bottom"]
+        assert shown["bottom"] - spans[2]["top"] >= 20
+        expect(page.locator("#speakers-list")).to_have_class(re.compile(r"\bmore-below\b"))
+
+    def test_the_left_column_starts_8px_from_the_top_and_runs_6px_lower(self, page, hd):
+        open_page(page, hd, (800, 480))
+        left = box(page, "#left")
+        assert abs(left["top"] - 8) <= 1
+        assert abs(left["bottom"] - (480 - 12 + 6)) <= 1
+
+    @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
+    def test_the_header_buttons_are_44px_and_clear_the_cards_below_them(self, page, hd, size):
+        open_page(page, hd, size)
+        expect(page.locator("#autostart-pin")).to_be_visible()
+        for button, region in (("#dial-bell", "#appliances-list"), ("#autostart-pin", "#speakers-list")):
+            b = page.locator(button).bounding_box()
+            assert abs(b["width"] - 44) <= 0.5 and abs(b["height"] - 44) <= 0.5
+            assert page.evaluate(
+                "(s) => getComputedStyle(document.querySelector(s)).borderTopLeftRadius", button) == "12px"
+            assert b["y"] + b["height"] <= box(page, region)["top"]
+        label = page.locator("#speakers-label").bounding_box()
+        assert label["height"] == 50
+        assert page.locator("#autostart-pin").bounding_box()["x"] >= label["x"] + label["width"] - 50
 
     def test_the_speakers_label_overlaps_the_last_visible_card_and_lets_taps_through(self, page, hd):
         hd.show(crowded(3, 2))
         open_page(page, hd, (800, 480))
         expect(rows(page)).to_have_count(3)
         label = box(page, "#speakers-label")
+        shown = box(page, "#appliances-list")
         third = page.evaluate(
             "(() => { const r = document.querySelectorAll('#appliances .appliance')[2]"
             ".getBoundingClientRect(); return {top: r.top, bottom: r.bottom, x: r.left + 40}; })()")
         assert third["top"] < label["bottom"] and third["bottom"] > label["top"]
         sent = watch_actions(page)
-        y = (max(third["top"], label["top"]) + min(third["bottom"], label["bottom"])) / 2
+        y = (max(third["top"], label["top"]) + min(third["bottom"], shown["bottom"])) / 2
         page.mouse.click(third["x"], y)
         page.wait_for_timeout(200)
         assert [(name, body["appliance_id"]) for name, body in sent] == [("focus", LIST_IDS[2])]

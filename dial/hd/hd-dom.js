@@ -71,7 +71,7 @@ export const els = {
     replay: $("replay-row"),
     art: $("art"), artPrev: $("art-prev"), backdrop: $("backdrop"), backdropPrev: $("backdrop-prev"),
     artZone: $("art-zone"), title: $("title"), sub: $("sub"), eq: $("eq-open"), mute: $("mute"),
-    master: $("master"), masterNum: $("master-num"), volumeRow: $("volume-row"),
+    master: $("master"), volMinus: $("vol-minus"), volPlus: $("vol-plus"), volumeRow: $("volume-row"),
     offline: $("offline"), toast: $("toast"),
     handle: $("handle"), scrim: $("scrim"), sheet: $("sheet"),
     brightness: $("brightness"), brightnessNum: $("brightness-num"), sleepAfter: $("sleep-after"),

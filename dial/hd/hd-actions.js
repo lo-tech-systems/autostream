@@ -56,6 +56,12 @@ function onMute() {
     hooks.render();
     post("mute_toggle", { appliance_id: focusId() }, ["mute"]);
 }
+
+// One configured step down or up; the dial applies the step, so the page holds
+// nothing and the new level comes back in the state.
+function onVolumeStep(direction) {
+    if (ui.vm && ui.vm.volume.enabled) { post("volume_step", { appliance_id: focusId(), direction: direction }); }
+}
 export function onArm(armed) {
     holdForReply("arm", armed);
     hooks.render();
@@ -185,6 +191,8 @@ els.master.addEventListener("input", () => onMasterLevel(Number(els.master.value
 els.master.addEventListener("change", () => onMasterLevel(Number(els.master.value), true));
 trackDrag(els.master, () => "master");
 els.mute.addEventListener("click", onMute);
+els.volMinus.addEventListener("click", () => onVolumeStep(-1));
+els.volPlus.addEventListener("click", () => onVolumeStep(1));
 
 els.eq.addEventListener("click", () => setEqOpen(true));
 els.autostart.addEventListener("click", () => {

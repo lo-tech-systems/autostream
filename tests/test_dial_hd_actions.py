@@ -118,7 +118,8 @@ VALID = [
     ("volume_set", {"appliance_id": L, "level": 55}, "volume_set", (55, L), {}),
     ("volume_set", {"appliance_id": L, "level": 0}, "volume_set", (0, L), {}),
     ("volume_set", {"appliance_id": L, "level": 100}, "volume_set", (100, L), {}),
-    ("volume_step", {"appliance_id": L, "delta": -3}, "volume_step", (-3, L), {}),
+    ("volume_step", {"appliance_id": L, "direction": -1}, "volume_step", (-2, L), {}),
+    ("volume_step", {"appliance_id": L, "direction": 1}, "volume_step", (2, L), {}),
     ("mute_toggle", {"appliance_id": L}, "mute_toggle", (L,), {}),
     ("status_close", {"status_id": "update_result"}, "close_status", ("update_result",), {}),
     ("start_failure_dismiss", {"key": L + ":boot-a:3"}, "dismiss_start_failure", (L + ":boot-a:3",), {}),
@@ -179,9 +180,13 @@ class TestActionTable:
         ("volume_set", {"appliance_id": L, "level": 50.0}, "level"),
         ("volume_set", {"appliance_id": L, "level": None}, "level"),
         ("volume_set", {"appliance_id": L, "level": 10 ** 30}, "level"),
-        ("volume_step", {"appliance_id": L, "delta": 101}, "delta"),
-        ("volume_step", {"appliance_id": L, "delta": -101}, "delta"),
-        ("volume_step", {"delta": 1}, "appliance_id"),
+        ("volume_step", {"appliance_id": L, "direction": 0}, "direction"),
+        ("volume_step", {"appliance_id": L, "direction": 2}, "direction"),
+        ("volume_step", {"appliance_id": L, "direction": "up"}, "direction"),
+        ("volume_step", {"appliance_id": L, "direction": True}, "direction"),
+        ("volume_step", {"appliance_id": L, "delta": 1}, "field"),
+        ("volume_step", {"appliance_id": L}, "direction"),
+        ("volume_step", {"direction": 1}, "appliance_id"),
         ("mute_toggle", {}, "appliance_id"),
         ("status_close", {}, "status_id"),
         ("status_close", {"status_id": 4}, "status_id"),
@@ -497,6 +502,26 @@ class TestDialShutdown:
     def test_takes_no_arguments(self, server, core):
         response, data = act(server, "dial_shutdown", {"now": True})
         assert response.status == 400
+        assert core.calls == []
+
+
+class TestVolumeStep:
+    def test_the_step_is_the_configured_one_in_the_pressed_direction(self, server, core, management):
+        management._cfg.step_percent = 5
+        act(server, "volume_step", {"appliance_id": L, "direction": 1})
+        act(server, "volume_step", {"appliance_id": L, "direction": -1})
+        assert core.calls == [("volume_step", (5, L), {}), ("volume_step", (-5, L), {})]
+
+    def test_a_press_confirms_presence_like_the_knob(self, make_server, management):
+        calls = []
+        management.confirm_volume = lambda: calls.append(1)
+        act(make_server(), "volume_step", {"appliance_id": L, "direction": 1})
+        assert calls == [1]
+
+    def test_without_a_management_server_it_is_409_and_calls_nothing(self, make_server, core):
+        response, data = act(make_server(http_server=None), "volume_step", {"appliance_id": L, "direction": 1})
+        assert response.status == 409
+        assert error_of(data) == "wrong_state"
         assert core.calls == []
 
 

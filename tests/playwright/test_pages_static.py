@@ -575,7 +575,8 @@ HD_CEILINGS = {
     "hd-eq.js": 135,
     "hd-derive.js": 300,
     "hd-requests.js": 130,
-    "hd-actions.js": 315,
+    # Volume minus and plus: their handler and bindings.
+    "hd-actions.js": 318,
     # The dial bell button's paint call and its import.
     "hd-paint.js": 426,
     # The warning bells: the dial bell's button, each row bell's count and the

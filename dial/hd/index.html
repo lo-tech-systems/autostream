@@ -14,7 +14,7 @@
 <div class="left" id="left">
 <section class="region" id="appliances-region">
 <div class="section-label">Appliances</div>
-<button type="button" class="dial-bell" id="dial-bell" aria-label="Dial warnings"></button>
+<button type="button" class="head-btn dial-bell" id="dial-bell" aria-label="Dial warnings"></button>
 <div class="list" id="appliances-list">
 <div class="appliances" id="appliances"></div>
 <div class="empty-note" id="appliances-note" hidden></div>
@@ -22,7 +22,7 @@
 </section>
 <section class="region" id="speakers-region">
 <div class="section-label" id="speakers-label">Speakers</div>
-<button type="button" class="pin-btn" id="autostart-pin" aria-label="Auto-Start these speakers" aria-pressed="false" hidden><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M15 4.5V9c0 1.7 1.3 3 3 3v1.5H6V12c1.7 0 3-1.3 3-3V4.5H8V3h8v1.5z"/><path d="M12 13.5V21"/></svg></button>
+<button type="button" class="head-btn pin-btn" id="autostart-pin" aria-label="Auto-Start these speakers" aria-pressed="false" hidden><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M15 4.5V9c0 1.7 1.3 3 3 3v1.5H6V12c1.7 0 3-1.3 3-3V4.5H8V3h8v1.5z"/><path d="M12 13.5V21"/></svg></button>
 <div class="list" id="speakers-list">
 <div class="speakers" id="speakers"></div>
 <div class="empty-note" id="speakers-note" hidden></div>
@@ -52,8 +52,13 @@
 <button type="button" class="icon-btn" id="mute" aria-pressed="false" aria-label="Mute">
 <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"><path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/><path class="mute-waves" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/><path class="mute-slash" d="M3 3l18 18"/></svg>
 </button>
+<button type="button" class="icon-btn" id="vol-minus" aria-label="Volume down" disabled>
+<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+</button>
 <input class="hslider" type="range" min="0" max="100" value="0" id="master" aria-label="Master volume" disabled>
-<div class="vol-num" id="master-num"></div>
+<button type="button" class="icon-btn" id="vol-plus" aria-label="Volume up" disabled>
+<svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg>
+</button>
 </div>
 </div>
 </div>

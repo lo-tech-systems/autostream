@@ -62,6 +62,13 @@ def integer(low: int, high: int):
     return check
 
 
+def direction(value):
+    """-1 (down) or 1 (up): a step's sign, never its size."""
+    if not _is_int(value) or value not in (-1, 1):
+        raise ValueError
+    return value
+
+
 # ---- the table ---------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -99,6 +106,15 @@ def _presence(ctx: Context, args: dict) -> ActionResult:
     return ActionResult(True)
 
 
+def _volume_step(ctx: Context, args: dict) -> ActionResult:
+    """One configured step of master volume up or down, as the knob and the
+    small screen's touch volume take it, and a press counts as presence."""
+    if ctx.http_server is None:
+        return ActionResult(False, "wrong_state")
+    ctx.http_server.confirm_volume()
+    return ctx.core.volume_step(args["direction"] * ctx.http_server.step_percent, args["appliance_id"])
+
+
 ACTIONS: "dict[str, tuple[dict, Callable[[Context, dict], ActionResult]]]" = {
     "focus": (
         {"appliance_id": opt_text},
@@ -109,8 +125,8 @@ ACTIONS: "dict[str, tuple[dict, Callable[[Context, dict], ActionResult]]]" = {
         lambda c, a: c.core.volume_set(a["level"], a["appliance_id"]),
     ),
     "volume_step": (
-        {"appliance_id": text, "delta": integer(-100, 100)},
-        lambda c, a: c.core.volume_step(a["delta"], a["appliance_id"]),
+        {"appliance_id": text, "direction": direction},
+        _volume_step,
     ),
     "mute_toggle": (
         {"appliance_id": text},

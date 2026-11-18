@@ -447,13 +447,12 @@ export function paint(vm) {
     els.volumeRow.classList.toggle("muted", v.muted);
     els.mute.setAttribute("aria-pressed", v.muted ? "true" : "false");
     els.mute.setAttribute("aria-label", v.muted ? "Unmute" : "Mute");
-    els.mute.disabled = !v.enabled;
+    els.mute.disabled = els.volMinus.disabled = els.volPlus.disabled = !v.enabled;
     if (dragging.has("master")) {
         els.master.disabled = !v.enabled;
     } else {
         setLevel(els.master, v.level === null ? 0 : v.level, v.enabled);
     }
-    setText(els.masterNum, v.level === null ? "--" : String(v.level));
 
     paintSheet(vm);
     paintEq(vm);

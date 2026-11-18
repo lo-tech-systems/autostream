@@ -36,15 +36,16 @@ body.hd {
    so a card cut off at the edge shows through the bar and reads as more to
    scroll. The bars and the column's foot let touches through. */
 .left {
-    --label-h: 26px; --divider-h: 14px; --fade: 28px;
+    --label-h: 50px; --divider-h: 14px; --fade: 28px;
     min-width: 0; min-height: 0; position: relative;
-    display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 2fr);
+    display: grid; grid-template-rows: minmax(0, 196fr) minmax(0, 270fr);
+    margin-top: calc(8px - var(--top-inset)); margin-bottom: -6px;
 }
 .region { position: relative; min-height: 0; pointer-events: none; }
 .region .section-label {
     position: absolute; left: 0; right: 0; top: 0; height: var(--label-h); z-index: 1;
     display: flex; align-items: center; pointer-events: none;
-    background: linear-gradient(var(--color-bg) 55%, transparent);
+    background: linear-gradient(var(--color-bg) 30%, transparent);
 }
 .region .list {
     position: absolute; left: 0; right: 0; top: var(--label-h); bottom: calc(-1 * var(--divider-h));
@@ -61,25 +62,26 @@ body.hd {
 .region .list.more-above { --fade-top: var(--fade); }
 .region .list.more-below { --fade-bottom: var(--fade); }
 #speakers-region .list { bottom: 0; }
-/* The Auto-Start pin at the right of the speakers label, filled when the
-   speakers on are the saved set, and the dial bell at the right of the
-   appliances label. */
-.region .section-label { padding-right: 52px; }
-.pin-btn, .dial-bell {
-    position: absolute; top: 0; right: 2px; z-index: 2; width: 44px; height: var(--label-h);
-    display: grid; place-items: center; padding: 0; border-radius: 999px; cursor: pointer; pointer-events: auto;
+/* The buttons at the right of a region's header (above the pull-down handle,
+   which runs over the left column's top): the dial bell over the
+   appliances and the Auto-Start pin over the speakers (filled when the
+   speakers on are the saved set). */
+.region .section-label { padding-right: 56px; }
+.head-btn {
+    position: absolute; top: 0; right: 2px; z-index: 4; width: 44px; height: 44px;
+    display: grid; place-items: center; padding: 0; border-radius: 12px; cursor: pointer; pointer-events: auto;
     border: 1px solid var(--color-border-card); background: var(--color-surface-raised); color: var(--color-text);
 }
-.dial-bell svg { width: 20px; height: 20px; display: block; }
+.head-btn[hidden] { display: none; }
+.dial-bell svg { width: 26px; height: 26px; display: block; }
 .dial-bell:not(.filled) svg path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
 .dial-bell .warn-count {
     position: absolute; inset: 0; display: grid; place-items: center; padding-top: 1px;
-    color: #fff; font-size: 0.6em; font-weight: 800;
+    color: #fff; font-size: 0.78em; font-weight: 800;
 }
 .dial-bell.sev-info { color: var(--color-accent); }
 .dial-bell.sev-warning { color: var(--color-warning-highlight); }
 .dial-bell.sev-critical { color: var(--color-status-danger); }
-.pin-btn[hidden] { display: none; }
 .pin-btn.is-set { border-color: var(--color-accent); background: var(--color-surface-selected); color: var(--color-accent); }
 .pin-btn.is-set svg { fill: currentColor; }
 .left::after {
@@ -216,9 +218,7 @@ input.hslider:disabled { opacity: 0.4; cursor: default; }
 .icon-btn[aria-pressed="true"] .mute-waves { display: none; }
 /* A replay button held down until the appliance has answered */
 .icon-btn[aria-busy="true"] { background: var(--color-surface-selected); border-color: var(--color-accent); }
-.volume-row { flex: none; display: grid; grid-template-columns: var(--row-h) 1fr 2.2em; align-items: center; gap: 12px; }
-.vol-num { font-size: 1.47em; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-text-strong); }
-.volume-row.muted .vol-num { color: var(--color-text-dim); text-decoration: line-through; }
+.volume-row { flex: none; display: grid; grid-template-columns: var(--row-h) var(--row-h) 1fr var(--row-h); align-items: center; gap: 12px; }
 
 /* Connection bar and refusal toast */
 .offline-bar {
