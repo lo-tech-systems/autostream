@@ -157,14 +157,6 @@ class TestFocus:
         snap = rig.fold()
         assert snap.focus.manual_id is None and snap.now_playing is None
 
-    def test_a_focus_change_is_told_to_the_focus_subscribers(self, rig):
-        calls = []
-        rig.core.subscribe_focus(lambda: calls.append(1))
-        rig.add("Kitchen", peer("Kitchen", playing=True))
-        rig.fold()
-        rig.fold()
-        assert calls == [1]
-
     def test_the_idle_hold_keeps_what_is_shown(self, rig):
         rig.add("Kitchen", peer("Kitchen", playing=True))
         rig.fold()
@@ -206,7 +198,6 @@ class TestFocused:
         client = rig.add("Kitchen", peer("Kitchen", playing=True))
         snap = rig.fold()
         assert snap.focused_peer is client.snap
-        assert rig.core.focused_client() is client
 
     def test_no_focus_has_no_focused_peer(self, rig):
         rig.add("Kitchen")

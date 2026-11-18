@@ -304,7 +304,6 @@ class TestCoreActionsStayInMemory:
                 patch("dial_core.enqueue_mute_all"):
             _tick(core)
             core.set_focus(None)
-            core.clear_focus("test")
             core.set_field("source_service_name", "Kitchen")
             core.volume_step(1)
             core.mute_toggle()
@@ -313,7 +312,6 @@ class TestCoreActionsStayInMemory:
             core.set_repeat_armed("a" * 20, True)
             core.step_output_volume("a" * 20, "o", 1)
             core.step_eq("a" * 20, "b", 1)
-            core.set_eq("a" * 20, {})
             core.warning_active("nowifi")
             core.warning_cleared("nowifi")
             core.close_status("update_result")

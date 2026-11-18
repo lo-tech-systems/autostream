@@ -74,10 +74,6 @@ class TestIntents:
         with pytest.raises(ValueError):
             rq.eq_set({"mid": 1})
 
-    def test_reset(self):
-        i = rq.eq_reset()
-        assert (i.kind, i.name, dict(i.args)) == ("eq_reset", "output.eq.reset", {})
-
     def test_replay_rows(self):
         assert (rq.replay_seek().kind, rq.replay_seek().name, dict(rq.replay_seek().args)) == (
             "seek", "repeat.seek", {"position": 0})
@@ -394,18 +390,11 @@ class TestCoreIntents:
 
     def test_an_eq_band_and_a_step(self, rig):
         client = kitchen(rig)
-        rig.core.set_eq(K, {"peq3": 2})
+        rig.core.step_eq(K, "peq3", 2)
         rig.core.step_eq(K, "peq1", -1)
         calls = sent(rig, client, 2)
         assert calls[0][1:3] == ("output.eq.set", {"fields": [["peq3_db", 2.0]]})
         assert calls[1][1:3] == ("output.eq.set", {"fields": [["peq1_db", -1.0]]})
-
-    def test_an_eq_reset_is_one_intent(self, rig):
-        client = kitchen(rig)
-        rig.core.reset_eq(K)
-        assert sent(rig, client)[0][1:3] == ("output.eq.reset", {})
-        pairs, _ = rig.core.eq_override()
-        assert pairs and all(gain == 0 for _, gain in pairs)
 
     @pytest.mark.parametrize("method, expected", [
         ("start_replay", ("repeat.seek", {"position": 0})),
@@ -454,7 +443,7 @@ class TestLocalRefusals:
     def test_a_protocol_mismatch_has_no_capability(self, rig):
         client = rig.add("Kitchen", peer("Kitchen", protocol_ok=False, protocol=5))
         rig.fold()
-        assert rig.core.set_eq(K, {"bass": 1}).reason == "no_capability"
+        assert rig.core.step_eq(K, "bass", 1).reason == "no_capability"
         assert client.sent() == []
 
     def test_a_replay_with_no_record(self, rig):

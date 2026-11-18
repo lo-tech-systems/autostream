@@ -4297,9 +4297,9 @@ class TestFocusClearClosesPolicyScreens:
             display._screen = name
             if policy.state_attr is not None:
                 setattr(display, policy.state_attr, sentinel)
-        display._core.clear_focus("test")
+        display.core.set_focus(None)
         display._close_screens_for_cleared_focus()
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
         if policy.closes_on_focus_clear:
             assert display._screen == "main"
             if policy.state_attr is not None:
@@ -4316,7 +4316,7 @@ class TestFocusClearClosesPolicyScreens:
         with display._lock:
             display._screen = "outputs"
         display._poll_once()
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "main"
 
 
@@ -4636,7 +4636,7 @@ class TestSelectorUnauthorizedRows:
         display.selector_pick(1)  # the unauthorised row
         with display._lock:
             display._repaint_current_locked()
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "info_value"
         assert display._info_value.hint == (
             dd_compositor.NOT_AUTHORISED_TEXT, "Allow this dial in Lounge's web UI (Setup, Dials)",
@@ -4660,7 +4660,7 @@ class TestSelectorUnauthorizedRows:
             display._repaint_current_locked()
         assert display._screen == "selector"
         assert display._selector.page == 1
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
 
     def test_pick_on_authorized_row_still_sets_focus_and_closes(self):
         display = self._display()
@@ -4670,7 +4670,7 @@ class TestSelectorUnauthorizedRows:
         display.selector_pick(0)
         with display._lock:
             display._repaint_current_locked()
-        assert display.core.manual_focus_id() == "0" * 20
+        assert display.core.snapshot().focus.manual_id == "0" * 20
         assert display._screen == "main"
 
     @pytest.mark.parametrize("width,height,mm_per_px", _HINT_TIERS)
@@ -4715,7 +4715,7 @@ class TestSelectorPickAndPage:
     def test_pick_sets_focus_and_closes(self):
         display, fb, gt, targets = self._opened_display(count=1)
         display.selector_pick(0)
-        assert display.core.manual_focus_id() == "0" * 20
+        assert display.core.snapshot().focus.manual_id == "0" * 20
         with display._lock:
             display._repaint_current_locked()
         assert display._screen == "main"
@@ -4723,7 +4723,7 @@ class TestSelectorPickAndPage:
     def test_stale_index_closes_without_setting_focus(self):
         display, fb, gt, targets = self._opened_display(count=1)
         display.selector_pick(5)  # out of range for a single row
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
         with display._lock:
             display._repaint_current_locked()
         assert display._screen == "main"
@@ -4756,7 +4756,7 @@ class TestSelectorPickAndPage:
 
         display.selector_pick(0)  # row 0 of PAGE 1, not row 0 overall
         expected_id = targets[rows_per_page].appliance_id
-        assert display.core.manual_focus_id() == expected_id
+        assert display.core.snapshot().focus.manual_id == expected_id
 
 
 class TestListPagingMatchesPaintedRows:
@@ -4797,7 +4797,7 @@ class TestListPagingMatchesPaintedRows:
     def test_fourth_row_is_pickable_not_a_miss(self):
         display, fb, gt, targets = self._rich_opened(count=5)
         display.selector_pick(3)  # the fourth row of page 0
-        assert display.core.manual_focus_id() == "3" * 20
+        assert display.core.snapshot().focus.manual_id == "3" * 20
 
     def test_second_page_starts_after_a_full_first_page(self):
         display, fb, gt, targets = self._rich_opened(count=6)
@@ -4806,7 +4806,7 @@ class TestListPagingMatchesPaintedRows:
             display._repaint_current_locked()
         assert display._selector.page == 1
         display.selector_pick(0)  # row 0 of PAGE 1 == the sixth target overall
-        assert display.core.manual_focus_id() == "5" * 20
+        assert display.core.snapshot().focus.manual_id == "5" * 20
 
 
 # ---------------------------------------------------------------------------
@@ -5757,7 +5757,7 @@ class TestRepeatScreenComposePath:
 
         gt.return_value = []  # the appliance leaves the roster entirely
         display._poll_once()
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "main"
 
     def test_closes_on_mid_tick_unauthorized_clear(self):
@@ -5781,7 +5781,7 @@ class TestRepeatScreenComposePath:
         with patch("dial_test_support.fetch_target_status", side_effect=fake_fetch):
             display._poll_once()
 
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "main"
 
     def test_sleep_pops_repeat_screen(self):
@@ -6736,7 +6736,7 @@ class TestPickerPick:
         assert target.appliance_id == "a" * 20
         assert action == "seek"
         assert position == 0.0
-        assert display.core.manual_focus_id() == "a" * 20
+        assert display.core.snapshot().focus.manual_id == "a" * 20
         assert display.core.snapshot().focus.pending is not None
 
     def test_pick_closes_the_picker(self):
@@ -6752,7 +6752,7 @@ class TestPickerPick:
         with patch("dial_core.DialCore._send") as mock_transport:
             display.picker_pick(5)
         mock_transport.assert_not_called()
-        assert display.core.manual_focus_id() is None
+        assert display.core.snapshot().focus.manual_id is None
         with display._lock:
             display._repaint_current_locked()
         assert display._screen == "main"
@@ -8166,7 +8166,7 @@ class TestCompactPickerPick:
         assert target.appliance_id == "b" * 20
         assert action == "seek"
         assert position == 0.0
-        assert display.core.manual_focus_id() == "b" * 20
+        assert display.core.snapshot().focus.manual_id == "b" * 20
 
 
 # ---------------------------------------------------------------------------
@@ -8751,7 +8751,7 @@ class TestNoWifiStateMachine:
         on_network_view(display, _view(LINK_DOWN))
         on_network_view(display, _view(LINK_DOWN))
         on_network_view(display, _view(LINK_UNKNOWN))
-        assert display.core.wifi_down_streak() == 2
+        assert display.core._state.wifi_down_streak == 2
         assert not display.core.warnings.is_active("nowifi")
         on_network_view(display, _view(LINK_DOWN))
         assert display.core.warnings.is_active("nowifi")

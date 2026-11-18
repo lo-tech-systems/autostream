@@ -336,9 +336,9 @@ class TestFocusActions:
     def test_set_focus_and_clear(self):
         core = _core()
         core.set_focus(AID)
-        assert core.manual_focus_id() == AID
+        assert core.snapshot().focus.manual_id == AID
         core.set_focus(None)
-        assert core.manual_focus_id() is None
+        assert core.snapshot().focus.manual_id is None
 
     def test_pending_pins_the_focus_and_marks_the_grace(self):
         core = _core()
@@ -347,22 +347,11 @@ class TestFocusActions:
         assert focus.manual_id == AID
         assert focus.pending == (AID, "Kitchen", 12.5)
 
-    def test_clear_focus_drops_manual_and_pending_in_one_publish(self, caplog):
-        core = _core()
-        core.set_focus_pending(AID, "Kitchen", 12.5)
-        seq = core.snapshot().seq
-        with caplog.at_level("INFO"):
-            core.clear_focus("test reason")
-        focus = core.snapshot().focus
-        assert focus.manual_id is None and focus.pending is None
-        assert core.snapshot().seq == seq + 1
-        assert "manual focus cleared (test reason)" in caplog.text
-
     def test_drop_pending_focus_for_the_pending_appliance(self):
         core = _core()
         core.set_focus_pending(AID, "Kitchen", 12.5)
         assert core.drop_pending_focus(BID) is False
-        assert core.manual_focus_id() == AID
+        assert core.snapshot().focus.manual_id == AID
         assert core.drop_pending_focus(AID) is True
         focus = core.snapshot().focus
         assert focus.manual_id is None and focus.pending is None
@@ -371,7 +360,7 @@ class TestFocusActions:
         core = _core()
         core.set_focus(AID)
         assert core.drop_pending_focus(AID) is False
-        assert core.manual_focus_id() == AID
+        assert core.snapshot().focus.manual_id == AID
 
     def test_accept_replay_needs_the_dial_to_follow_that_appliance(self):
         core = _core()
@@ -418,7 +407,7 @@ class TestDisplayDelegates:
         display._core.set_focus_pending(AID, "Kitchen", 9.0)
         assert display.core.snapshot().focus.manual_id == AID
         assert display.core.snapshot().focus.pending == (AID, "Kitchen", 9.0)
-        assert display.core.manual_focus_id() == AID
+        assert display.core.snapshot().focus.manual_id == AID
 
     def test_availability_and_now_playing_attributes(self):
         display = self._display()
@@ -671,7 +660,7 @@ class TestNetworkSource:
         for _ in range(NOWIFI_PROMPT_STREAK + 3):
             effects = core.on_network_view(_net(LINK_DOWN))
             assert effects.changes == ()
-        assert core.wifi_down_streak() == NOWIFI_PROMPT_STREAK + 3
+        assert core._state.wifi_down_streak == NOWIFI_PROMPT_STREAK + 3
         assert core.snapshot().due_status_id is None
 
     def test_a_loss_after_connecting_activates_at_the_streak(self):
@@ -692,7 +681,7 @@ class TestNetworkSource:
         for _ in range(NOWIFI_PROMPT_STREAK):
             core.on_network_view(_net(LINK_DOWN))
         core.on_network_view(_net(LINK_IGNORED))
-        assert core.wifi_down_streak() == 0
+        assert core._state.wifi_down_streak == 0
         assert core.snapshot().wifi_ever_connected is True
         assert manager.is_active("nowifi")
 
@@ -702,7 +691,7 @@ class TestNetworkSource:
         core.on_network_view(_net(LINK_DOWN))
         effects = core.on_network_view(_net(LINK_UNKNOWN))
         assert effects.changes == ()
-        assert core.wifi_down_streak() == 1
+        assert core._state.wifi_down_streak == 1
         assert core.snapshot().network == _net(LINK_UNKNOWN)
         assert core.snapshot().wifi_ever_connected is True
         core.on_network_view(_net(LINK_DOWN))
@@ -726,12 +715,12 @@ class TestSdHealthSource:
         effects = core.on_sd_health_view(_sd(1))
         (change,) = effects.changes
         assert (change.warning_id, change.active, change.began) == ("sdhealth", True, True)
-        assert core.sd_low() is True
+        assert core._state.sd_low is True
         assert _row(core, "sdhealth").reading == 1
         assert core.snapshot().sd_health == _sd(1)
         effects = core.on_sd_health_view(_sd(100))
         assert effects.changes[0].active is False
-        assert core.sd_low() is False and core.snapshot().due_status_id is None
+        assert core._state.sd_low is False and core.snapshot().due_status_id is None
 
     def test_a_reading_without_a_percent_ends_the_incident(self):
         core, manager, _ = _warning_core()

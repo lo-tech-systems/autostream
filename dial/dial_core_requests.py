@@ -103,10 +103,6 @@ def eq_set(gains: Mapping[str, float]) -> Intent:
     return Intent("eq_set", "output.eq.set", {"fields": [[name, value] for name, value in eq_fields(gains)]})
 
 
-def eq_reset() -> Intent:
-    return Intent("eq_reset", "output.eq.reset", {})
-
-
 def replay_seek() -> Intent:
     """Start the held recording, or restart a running replay, from the beginning."""
     return Intent("seek", "repeat.seek", {"position": 0})

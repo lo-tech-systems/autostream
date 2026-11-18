@@ -407,7 +407,6 @@ class DialCore:
         self._artwork_url: str | None = None           # the URL whose artwork is held or being fetched
         self._repeat_fetch_at: dict[str, float] = {}
         self._failures_read: set[str] = set()          # appliances whose start failure has been read once
-        self._focus_subscribers: dict[int, Callable[[], None]] = {}
         self._sync_warnings_locked(self._state)
         self._snapshot = self._build_snapshot_locked()
 
@@ -536,9 +535,6 @@ class DialCore:
 
     # ---- focus -------------------------------------------------------------
 
-    def manual_focus_id(self) -> str | None:
-        return self._state.focus.manual_id
-
     def set_focus(self, appliance_id: str | None) -> ActionResult:
         """Pin the display to *appliance_id*, or clear it back to auto-pick
         with None, and wake the core so the switch lands at once. Never
@@ -563,15 +559,6 @@ class DialCore:
                 pending=(appliance_id, service_name, expires_at),
             )
         self._publish(mutate)
-
-    def clear_focus(self, reason: str) -> None:
-        """Drop the manual focus and any pending grace."""
-        def mutate(state: _CoreState) -> "bool | None":
-            if state.focus.manual_id is None and state.focus.pending is None:
-                return False
-            state.focus = dataclasses.replace(state.focus, manual_id=None, pending=None)
-        self._publish(mutate)
-        logging.info("dial display: manual focus cleared (%s)", reason)
 
     def drop_pending_focus(self, appliance_id: str) -> bool:
         """Clear the manual and pending focus when the pending focus is for
@@ -602,13 +589,6 @@ class DialCore:
             changed.append(True)
         self._publish(wrapped)
         return bool(changed)
-
-    def _replace_focus_if(self, name: str, expected, value) -> bool:
-        def mutate(state: _CoreState) -> "bool | None":
-            if getattr(state.focus, name) is not expected or expected is value:
-                return False
-            state.focus = dataclasses.replace(state.focus, **{name: value})
-        return self._changed(mutate)
 
     # ---- outputs and EQ ----------------------------------------------------
 
@@ -735,12 +715,14 @@ class DialCore:
             appliance_id, output_id, selected=True, volume=max(0, min(100, shown + delta)),
         )
 
-    def set_eq(self, appliance_id: str, gains: dict) -> ActionResult:
-        """Set EQ bands by id. The values show at once, the other bands
-        keeping what they show now, for EQ_OPTIMISTIC_WINDOW_S; only the
-        bands given are sent. Refused for an unknown appliance, one without the capability
-        or that has refused this dial, when no EQ state is held for it, and
-        for a band id the capability does not have."""
+    def step_eq(self, appliance_id: str, band_id: str, delta: int) -> ActionResult:
+        """Set a band to the gain shown plus *delta*, clamped to the band's
+        range (a band not yet read starts from zero within the standard
+        range). The new value shows at once, the other bands keeping what
+        they show now, for EQ_OPTIMISTIC_WINDOW_S; only this band is sent.
+        Refused for an unknown appliance, one without the capability or that
+        has refused this dial, when no EQ state is held for it, and for a
+        band id the capability does not have."""
         refusal = self._refusal(appliance_id, "dial_eq")
         if refusal is not None:
             return refusal
@@ -748,53 +730,22 @@ class DialCore:
         if held is not None and held.appliance_id != appliance_id:
             held = None
         band_ids = _eq_band_ids(held)
-        if not gains or any(band_id not in band_ids for band_id in gains):
-            return ActionResult(False, "no_capability")
-        if held is None:
-            return ActionResult(False, "not_polling")
-        now = self._clock()
-        pairs = []
-        for band_id in band_ids:
-            value = gains[band_id] if band_id in gains else self._eq_shown(band_id, now)
-            if value is not None:
-                pairs.append((band_id, value))
-        self.set_eq_override(tuple(pairs), now + EQ_OPTIMISTIC_WINDOW_S)
-        self._send(appliance_id, rq.eq_set(dict(gains)), now)
-        return ActionResult(True)
-
-    def step_eq(self, appliance_id: str, band_id: str, delta: int) -> ActionResult:
-        """Set a band to the gain shown plus *delta*, clamped to the band's
-        range (a band not yet read starts from zero within the standard
-        range)."""
-        refusal = self._refusal(appliance_id, "dial_eq")
-        if refusal is not None:
-            return refusal
-        held = self._snapshot.eq
-        if held is not None and held.appliance_id != appliance_id:
-            held = None
-        if band_id not in _eq_band_ids(held):
+        if band_id not in band_ids:
             return ActionResult(False, "no_capability")
         if held is None:
             return ActionResult(False, "not_polling")
         band = next((b for b in held.bands if b.id == band_id), None)
         low, high = (band.min_db, band.max_db) if band is not None else (-EQ_LIMIT_DB, EQ_LIMIT_DB)
-        shown = self._eq_shown(band_id, self._clock())
-        return self.set_eq(
-            appliance_id, {band_id: max(low, min(high, (0 if shown is None else shown) + delta))},
-        )
-
-    def reset_eq(self, appliance_id: str) -> ActionResult:
-        """Set every band of the appliance's EQ to zero in one reset request;
-        every band shows zero meanwhile. Refused as set_eq refuses."""
-        refusal = self._refusal(appliance_id, "dial_eq")
-        if refusal is not None:
-            return refusal
-        held = self._snapshot.eq
-        if held is None or held.appliance_id != appliance_id:
-            return ActionResult(False, "not_polling")
         now = self._clock()
-        self.set_eq_override(tuple((b.id, 0) for b in held.bands), now + EQ_OPTIMISTIC_WINDOW_S)
-        self._send(appliance_id, rq.eq_reset(), now)
+        shown = self._eq_shown(band_id, now)
+        target = max(low, min(high, (0 if shown is None else shown) + delta))
+        pairs = []
+        for other_id in band_ids:
+            value = target if other_id == band_id else self._eq_shown(other_id, now)
+            if value is not None:
+                pairs.append((other_id, value))
+        self.set_eq_override(tuple(pairs), now + EQ_OPTIMISTIC_WINDOW_S)
+        self._send(appliance_id, rq.eq_set({band_id: target}), now)
         return ActionResult(True)
 
     # ---- transport -----------------------------------------------------------
@@ -999,12 +950,6 @@ class DialCore:
                 return False
             state.power = PowerState("failed", self._clock())
         self._changed(mutate)
-
-    def wifi_down_streak(self) -> int:
-        return self._state.wifi_down_streak
-
-    def sd_low(self) -> bool:
-        return self._state.sd_low
 
     def on_network_view(self, view) -> SourceEffects:
         """Fold a network reading. Connected: the streak resets, the
@@ -1595,26 +1540,6 @@ class DialCore:
         None. A reference read, no lock."""
         return self._state.peers.get(appliance_id)
 
-    def focused_client(self):
-        """The PeerClient of the appliance the dial follows (the manual focus,
-        else the reporting appliance), for writes; None when there is none."""
-        focused = self._snapshot.focused_id()
-        return self.pool.get(focused) if self.pool is not None and focused else None
-
-    def subscribe_focus(self, callback: Callable[[], None]) -> int:
-        """Register a zero-argument callback, called on the core thread when
-        the focused appliance changes. Returns a handle for
-        `unsubscribe_focus`. Like `subscribe`, it must only signal."""
-        with self._lock:
-            handle = self._next_handle
-            self._next_handle += 1
-            self._focus_subscribers[handle] = callback
-        return handle
-
-    def unsubscribe_focus(self, handle: int) -> None:
-        with self._lock:
-            self._focus_subscribers.pop(handle, None)
-
     # -- sending --
 
     def _send(self, appliance_id: str, intent: rq.Intent, token: float) -> None:
@@ -1832,14 +1757,12 @@ class DialCore:
         readout = (service, shown_volume(service))
         effects: list = []
         lines: list = []
-        focus_moved: list = []
 
         def mutate(state: _CoreState) -> None:
             nonlocal choice, hold, now_playing
             if state.focus is not focus_read:
                 # A tap moved the focus since it was read: decide again from it.
                 choice, hold, now_playing = decide(state.focus)
-            before = state.focus.manual_id or state.focus.reporting_id
             tick = TickContext(
                 state.focus.reporting_id, state.now_playing, state.idle_affordance,
                 choice.clear_reason is not None, choice.idle_focus is not None,
@@ -1876,8 +1799,6 @@ class DialCore:
             self._sync_warnings_locked(state)
             state.tick = tick
             state.ticks += 1
-            if (state.focus.manual_id or state.focus.reporting_id) != before:
-                focus_moved.append(True)
         snapshot = self._publish(mutate)
 
         self._prev_playing_ids = (
@@ -1890,14 +1811,6 @@ class DialCore:
             self._queue_effects(effect)
         if not hold:
             self._follow_artwork(choice.selection.url if choice.visible else None)
-        if focus_moved:
-            with self._lock:
-                callbacks = tuple(self._focus_subscribers.values())
-            for callback in callbacks:
-                try:
-                    callback()
-                except Exception:
-                    logging.debug("dial core: focus subscriber raised", exc_info=True)
         return snapshot
 
     def _read_start_failures(self, snaps: dict) -> dict:

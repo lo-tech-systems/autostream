@@ -462,7 +462,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "eq_available": core_snap.eq_available,
         "network": None if network is None else {
             "link": network.link, "bars": network.bars,
-            "down_streak": d.core.wifi_down_streak(),
+            "down_streak": d.core._state.wifi_down_streak,
             "ever_connected": core_snap.wifi_ever_connected,
         },
         "warnings_page": (
