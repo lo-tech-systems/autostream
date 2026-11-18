@@ -218,7 +218,7 @@ class TestKioskSurfaceWiring:
 
     def test_a_kiosk_dial_starts_no_touch_source(self):
         import dial_main as dm
-        with patch.object(dm, "_build_touch_source") as build:
+        with patch.object(dm, "build_touch_source") as build:
             _run_core_wiring(fitted=True, screen_type="hd_kiosk")
         build.assert_not_called()
 

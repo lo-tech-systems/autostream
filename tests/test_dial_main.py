@@ -1197,7 +1197,7 @@ class TestTouchConstruction:
             patch("dial_main.start_network_worker"),
             patch("dial_main.DialControlServer", return_value=mock_control),
             patch("threading.Event", _QuickEvent),
-            patch("dial_main._build_touch_source", build_mock),
+            patch("dial_main.build_touch_source", build_mock),
         ]
         for p in patches:
             p.start()
@@ -1354,7 +1354,7 @@ class TestTouchConstruction:
              patch("dial_main.start_network_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
-             patch("dial_main._build_touch_source", side_effect=RuntimeError("boom")), \
+             patch("dial_main.build_touch_source", side_effect=RuntimeError("boom")), \
              patch("builtins.__import__", side_effect=_fake_import), \
              caplog.at_level("WARNING"):
             dm.main()  # must not raise
@@ -1400,7 +1400,7 @@ class TestTouchConstruction:
              patch("dial_main.start_network_worker"), \
              patch("dial_main.DialControlServer", return_value=mock_control), \
              patch("threading.Event", _QuickEvent), \
-             patch("dial_main._build_touch_source", build_mock), \
+             patch("dial_main.build_touch_source", build_mock), \
              patch("builtins.__import__", side_effect=_fake_import):
             dm.main()  # must not raise
 
@@ -1408,18 +1408,18 @@ class TestTouchConstruction:
 
 
 class TestBuildTouchSourceWiring:
-    """Direct tests of dial_main._build_touch_source()'s callback wiring,
+    """Direct tests of dial_touch_wiring.build_touch_source()'s callback wiring,
     with the hardware-touching pieces (open_driver, TouchEventSource's
     background thread) faked out."""
 
     @contextmanager
     def _built(self, confirm_presence=None, step_percent=None):
-        """Construct via dial_main._build_touch_source() with the mocks
+        """Construct via dial_touch_wiring.build_touch_source() with the mocks
         still active, yielding everything a test needs — the volume and
         mute calls are recorded on a mock core (its volume_step and
         mute_toggle), and the patches must still be in effect when a test
         actually invokes a captured callback."""
-        import dial_main as dm
+        import dial_touch_wiring
         from dial_config import DialDisplayConfig
 
         cfg = MagicMock()
@@ -1441,7 +1441,7 @@ class TestBuildTouchSourceWiring:
 
         with patch("dial_touch_drivers.open_driver") as mock_open, \
              patch("dial_touch_source.TouchEventSource", side_effect=fake_touch_event_source):
-            result = dm._build_touch_source(
+            result = dial_touch_wiring.build_touch_source(
                 cfg, display, confirm_presence=confirm_presence, step_percent=step_percent,
                 core=core,
             )
@@ -1756,14 +1756,14 @@ class TestBuildTouchSourceWiring:
 
 
 # ---------------------------------------------------------------------------
-# _build_touch_source() building the filter/state machine at the configured
+# build_touch_source() building the filter/state machine at the configured
 # layout size — layout_context_for(cfg.display) is the single source both
 # are built from.
 # ---------------------------------------------------------------------------
 
 class TestBuildTouchSourceLayoutWiring:
     def _built_with_layout(self, screen_type, screen_size_inches, layout_size):
-        import dial_main as dm
+        import dial_touch_wiring
         from dial_config import DialDisplayConfig
 
         cfg = MagicMock()
@@ -1791,7 +1791,7 @@ class TestBuildTouchSourceLayoutWiring:
              patch("dial_touch_filter.TouchFilter", side_effect=fake_touch_filter), \
              patch("dial_touch.TouchStateMachine", side_effect=fake_state_machine), \
              patch("dial_touch_source.TouchEventSource"):
-            dm._build_touch_source(cfg, display, core=MagicMock())
+            dial_touch_wiring.build_touch_source(cfg, display, core=MagicMock())
         return captured
 
     def test_large_layout_size_builds_at_logical_with_physical_scaling(self):
@@ -2341,7 +2341,7 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
             led_gpio=None,
             pin="",
         )
-        # touch_type stays "xpt2046" (and _build_touch_source is exercised)
+        # touch_type stays "xpt2046" (and build_touch_source is exercised)
         # even for the fitted=False run below: main() only skips
         # constructing touch when fitted is False, so that run's assertions
         # exercise the physical button entry point alone, which is fine --
@@ -2742,7 +2742,7 @@ class TestPresenceConfirmationWiring:
             patch("dial_recovery._TIMESYNC_MARKER_PATH", sync_marker),
         ]
         if build_mock is not None:
-            patches.append(patch("dial_main._build_touch_source", build_mock))
+            patches.append(patch("dial_main.build_touch_source", build_mock))
         for p in patches:
             p.start()
         try:
@@ -2844,7 +2844,7 @@ class TestPresenceConfirmationWiring:
 
     def test_touch_contact_confirms(self, tmp_path):
         """main() must wire confirm_presence=http_server.confirm_volume into
-        _build_touch_source — invoking it must confirm the real recovery
+        build_touch_source — invoking it must confirm the real recovery
         window, exactly like the encoder/button paths above."""
         from dial_config import DialDisplayConfig
 
@@ -2985,7 +2985,7 @@ class TestAsleepTouchWiring:
     dial_touch.TouchStateMachine._on_press)."""
 
     def test_state_machine_gets_the_displays_lock_free_sleep_predicate(self):
-        import dial_main as dm
+        import dial_touch_wiring
         from dial_config import DialDisplayConfig
 
         cfg = MagicMock()
@@ -2994,7 +2994,7 @@ class TestAsleepTouchWiring:
         with patch("dial_touch_drivers.open_driver"), \
              patch("dial_touch_source.TouchEventSource"), \
              patch("dial_touch.TouchStateMachine") as sm_cls:
-            dm._build_touch_source(cfg, display, core=MagicMock())
+            dial_touch_wiring.build_touch_source(cfg, display, core=MagicMock())
         assert sm_cls.call_args.kwargs["is_asleep"] is display.is_sleeping
 
     def test_on_wake_notifies_activity_and_confirms_presence_only(self):

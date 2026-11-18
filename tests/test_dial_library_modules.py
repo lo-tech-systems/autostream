@@ -31,6 +31,7 @@ ALLOWED = {
     "dial_appliance_warnings": {"dial_mdns", "dial_values"},
     "dial_hd_session": set(),
     "dial_recovery": {"dial_config"},
+    "dial_touch_wiring": {"dial_touch_layout"},
     "dial_hd_static": set(),
 }
 

@@ -225,7 +225,7 @@ class TouchStateMachine:
         self._width = width
         self._height = height
         # Set at construction from the profile/layout size in force at
-        # startup (see dial_main._build_touch_source) — None means
+        # startup (see dial_touch_wiring.build_touch_source) — None means
         # metrics_for(width, height), today's density-unaware hit-testing.
         # A live geometry change replaces all three together — see
         # set_geometry() below.
