@@ -37,7 +37,7 @@ def _target(name, ip, playing_since) -> PlayingTarget:
     return PlayingTarget(
         ip=ip, port=80, name=name, dial_api=True, audio_status=True, dial_status=True,
         service_name=name, playing_since=playing_since,
-        appliance_id=(name.encode().hex() + "0" * 20)[:20], auth="unknown", dial_proto_version=3,
+        appliance_id=(name.encode().hex() + "0" * 20)[:20], auth="unknown",
     )
 
 
@@ -392,10 +392,10 @@ class TestWorkerReportsMuteChanges:
         started = []
         with patch("dial_volume.threading.Thread") as thread, \
                 patch.object(dv, "_on_mute_changed", None), patch.object(dv, "_on_readout_changed", None), \
-                patch.object(dv, "_cfg", None), patch.object(dv, "_targets_fn", None), \
+                patch.object(dv, "_targets_fn", None), \
                 patch.object(dv, "_led_ref", None), patch.object(dv, "_mute_targets_fn", None):
             dv.start_volume_worker(
-                SimpleNamespace(uuid=DIAL_ID), lambda: [], None, on_mute_changed=lambda: started.append(1))
+                lambda: [], None, on_mute_changed=lambda: started.append(1))
             dv._notify_mute_changed()
             assert thread.called
         assert started == [1]

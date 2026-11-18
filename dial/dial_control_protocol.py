@@ -31,12 +31,3 @@ CONTROL_CLIENT_CONNECT_TIMEOUT = 2.0
 
 # Response timeout used by the CLI (seconds).
 CONTROL_CLIENT_RESPONSE_TIMEOUT = 3.0
-
-# Per-target HTTP request timeout for enrichment (seconds).
-TARGET_STATUS_TIMEOUT = 1.0
-
-# Overall enrichment deadline (seconds).
-TARGET_STATUS_DEADLINE = 1.5
-
-# Maximum bytes accepted from a target status HTTP response.
-TARGET_STATUS_MAX_BYTES = 65536

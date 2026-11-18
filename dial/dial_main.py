@@ -877,7 +877,7 @@ def main() -> None:
         core, scope_fn=lambda: http_server.effective_volume_scope,
     )
     start_volume_worker(
-        cfg, volume_targets_fn, led,
+        volume_targets_fn, led,
         mute_targets_fn=_build_mute_targets_fn(http_server, volume_targets_fn),
         on_readout_changed=core.readout_changed,
         on_mute_changed=core.mute_changed,

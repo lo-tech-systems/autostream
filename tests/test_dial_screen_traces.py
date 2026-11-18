@@ -40,13 +40,13 @@ from dial_config import DialDisplayConfig
 from dial_core_focus import FOCUS_PENDING_GRACE_S
 from dial_core_state import ApplianceWarning, eq_gain
 from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS
-from dial_mdns import PlayingTarget, RosterEntry
+from dial_mdns import PlayingTarget
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_sdhealth import SdHealthView, STATUS_VALID
 from dial_touch_layout import CARD_BUTTON_ZONES
 from dial_touch_layout import TouchZone
 from dial_test_support import (
-    MONOTONIC_TARGETS, FakeBackend, _FakeClock, attach_bridge, on_eq_result, on_outputs_result,
+    MONOTONIC_TARGETS, FakeBackend, RosterEntry, _FakeClock, attach_bridge, on_eq_result, on_outputs_result,
     seed_repeat, set_appliance_warnings, set_roster,
 )
 from dial_warnings import WarningManager

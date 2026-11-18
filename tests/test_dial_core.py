@@ -238,7 +238,7 @@ class TestThreadSafety:
 # ---------------------------------------------------------------------------
 
 from dial_core_state import AUTH_AUTHORIZED  # noqa: E402
-from dial_mdns import RosterEntry  # noqa: E402
+from dial_test_support import RosterEntry  # noqa: E402
 from dial_repeat_store import RepeatRecord  # noqa: E402
 
 AID = "a" * 20

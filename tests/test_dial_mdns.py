@@ -62,17 +62,11 @@ class TestTargets:
         assert t.service_name == t.name == "autostream on Kitchen"
         assert (t.playing_since, t.auth) == (7.0, "unknown")
         assert t.dial_api and t.dial_status and t.dial_outputs and t.dial_eq
-        assert t.dial_proto_version == PROTOCOL
 
     def test_an_appliance_on_another_protocol_is_not_marked_capable(self):
         dm.attach(registry("Kitchen", proto=PROTOCOL + 1), {aid("Kitchen"): view(playing=True)}.get)
         (t,) = dm.get_display_targets()
         assert not (t.dial_status or t.dial_outputs or t.dial_eq)
-        assert t.dial_proto_version == PROTOCOL + 1
-
-    def test_an_appliance_with_no_protocol_reads_as_zero(self):
-        dm.attach(registry("Kitchen", proto=None), {aid("Kitchen"): view(playing=True)}.get)
-        assert dm.get_display_targets()[0].dial_proto_version == 0
 
     def test_the_display_order_is_oldest_playing_first_with_stable_tie_breaks(self):
         r = registry("Lounge", "Kitchen", "Study")

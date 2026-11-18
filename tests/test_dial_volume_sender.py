@@ -161,7 +161,6 @@ class TestFanOut:
 class TestQueueCoalescing:
     def setup_method(self):
         _clear_state()
-        dv._cfg = MagicMock(uuid="test-uuid")
 
     def test_burst_coalesced_to_one_fan_out_call(self):
         """Multiple enqueue_delta calls before the worker runs should produce
@@ -327,7 +326,6 @@ class TestEnqueueMuteAbsoluteAction:
 class TestWorkerMuteDispatch:
     def setup_method(self):
         _clear_state()
-        dv._cfg = MagicMock(uuid="test-uuid")
 
     def test_mute_batch_item_dispatches_via_fan_out_mute(self):
         fan_out_mute_calls = []
@@ -414,7 +412,6 @@ class TestSelectVolumeTarget:
 class TestWorkerTargetResolution:
     def setup_method(self):
         _clear_state()
-        dv._cfg = MagicMock(uuid="test-uuid")
 
     def _dispatch(self, batch):
         """Reproduce _worker()'s per-event resolution branch for *batch*

@@ -25,8 +25,29 @@ import dial_peer_view
 from dial_config import DialDisplayConfig
 from dial_display import WARNING_DESCRIPTORS, DialDisplay
 from dial_display_profiles import DEFAULT_PROFILE_KEY
-from dial_mdns import PlayingTarget, RosterEntry
+from dial_mdns import PlayingTarget
 from dial_warnings import WarningManager
+
+
+@dataclasses.dataclass(frozen=True)
+class RosterEntry:
+    """One appliance row with the fields the core's state helpers read."""
+    appliance_id:   str
+    service_name:   str
+    name:           str
+    ip:             str
+    port:           int
+    playing:        bool
+    repeat_capable: bool
+    dial_api:       bool = True
+    audio_status:   bool = False
+    dial_status:    bool = True
+    dial_outputs:   bool = False
+    dial_eq:        bool = False
+    auth:           str = "unknown"
+    dial_proto_version: int = 0
+    dial_eq_version: int = 0
+    version: str = ""      # the advertised software version, "" when none is known
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,7 +87,7 @@ TEST_LOGO_PATH = str(REPO_ROOT / "images" / "autostream-logo-centred-dark.png")
 def _target(
     name="Kitchen", ip="192.168.1.10", port=80,
     dial_status=True, appliance_id=None, auth="unknown",
-    service_name=None, playing_since=100.0, dial_proto_version=0,
+    service_name=None, playing_since=100.0,
 ) -> PlayingTarget:
     # Identified by default (a name-derived id): an identity-less target
     # (appliance_id="") is never acted on, so it has to be asked for.
@@ -78,7 +99,7 @@ def _target(
         service_name=service_name or name,
         playing_since=playing_since,
         appliance_id=appliance_id,
-        auth=auth, dial_proto_version=dial_proto_version,
+        auth=auth,
     )
 
 

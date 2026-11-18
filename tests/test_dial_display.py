@@ -4580,7 +4580,7 @@ _HINT_TIERS = [
 
 
 class TestSelectorUnauthorizedRows:
-    def _display(self, proto=0, authorized_count=1):
+    def _display(self, authorized_count=1):
         targets = [
             _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
                     auth="authorized", playing_since=float(i))
@@ -4588,7 +4588,7 @@ class TestSelectorUnauthorizedRows:
         ]
         targets.append(_target(
             name="Lounge", service_name="Lounge", appliance_id="9" * 20, ip="192.168.1.99",
-            auth="unauthorized", dial_proto_version=proto, playing_since=50.0,
+            auth="unauthorized", playing_since=50.0,
         ))
         targets.append(_target(
             name="Maybe", service_name="Maybe", appliance_id="8" * 20, ip="192.168.1.98", auth="unknown",
@@ -6699,7 +6699,7 @@ class TestReplayPickerRows:
 
 class TestPickerPick:
     def _opened_with_row(self, aid="a" * 20):
-        from dial_mdns import RosterEntry
+        from dial_test_support import RosterEntry
         display, fb, gt = make_display(targets=[])
         display.enable()
         row = RosterEntry(
@@ -7006,7 +7006,7 @@ class TestPickerSurvivesIdle:
 
 class TestIdleAffordanceRepaintSignal:
     def _roster_row(self, aid, auth="authorized", repeat_capable=True):
-        from dial_mdns import RosterEntry
+        from dial_test_support import RosterEntry
         return RosterEntry(
             appliance_id=aid, service_name="Kitchen", name="Kitchen", ip="10.0.0.9", port=8080,
             playing=False, repeat_capable=repeat_capable, auth=auth,
@@ -8126,7 +8126,7 @@ class TestCompactDisplayListLockedPassesBase:
 
 class TestCompactPickerPick:
     def test_pick_index_one_starts_the_second_rows_replay(self):
-        from dial_mdns import RosterEntry
+        from dial_test_support import RosterEntry
         display, fb, gt = _make_compact_display(targets=[])
         display.enable()
         rows = [

@@ -49,45 +49,7 @@ class PlayingTarget:
     playing_since:      float = 0.0
     appliance_id:       str   = ""
     auth:               str   = _AUTH_UNKNOWN
-    dial_proto_version: int   = 0
     dial_eq_version:    int   = 0
-
-    @property
-    def typed_refusals(self) -> bool:
-        return self.dial_proto_version >= 2
-
-    @property
-    def status_reports_mute(self) -> bool:
-        return self.dial_proto_version >= 2
-
-
-# One appliance row with the fields the core's state helpers read.
-@dataclass(frozen=True)
-class RosterEntry:
-    appliance_id:   str
-    service_name:   str
-    name:           str
-    ip:             str
-    port:           int
-    playing:        bool
-    repeat_capable: bool
-    dial_api:       bool = True
-    audio_status:   bool = False
-    dial_status:    bool = True
-    dial_outputs:   bool = False
-    dial_eq:        bool = False
-    auth:           str = _AUTH_UNKNOWN
-    dial_proto_version: int = 0
-    dial_eq_version: int = 0
-    version: str = ""      # the advertised software version, "" when none is known
-
-    @property
-    def typed_refusals(self) -> bool:
-        return self.dial_proto_version >= 2
-
-    @property
-    def status_reports_mute(self) -> bool:
-        return self.dial_proto_version >= 2
 
 
 _registry = None
@@ -127,7 +89,6 @@ def _target(sighting, view) -> PlayingTarget:
         playing_since=float(getattr(view, "playing_since", 0.0) or 0.0),
         appliance_id=sighting.id,
         auth=getattr(view, "auth", _AUTH_UNKNOWN),
-        dial_proto_version=sighting.proto or 0,
         dial_eq_version=2 if current else 0,
     )
 

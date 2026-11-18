@@ -454,8 +454,6 @@ class TestVolumeWorkerNoTargets:
 
         # Set module globals directly (as start_volume_worker does)
         dv._targets_fn = lambda: []   # empty — no playing targets
-        dv._cfg = MagicMock()
-        dv._cfg.uuid = "test-uuid"
         dv._led_ref = None
 
         fresh_queue: queue.SimpleQueue = queue.SimpleQueue()
@@ -471,7 +469,7 @@ class TestVolumeWorkerNoTargets:
             targets = dv._targets_fn()
             # Worker should not call _fan_out when targets is empty
             if targets:
-                dv._fan_out(targets, dv._cfg.uuid, delta)
+                dv._fan_out(targets, delta)
 
         assert fan_out_calls == [], (
             "Worker must not call _fan_out when no playing targets are available"
@@ -487,8 +485,6 @@ class TestVolumeWorkerNoTargets:
         fan_out_calls: list = []
 
         dv._targets_fn = lambda: [Target]
-        dv._cfg = MagicMock()
-        dv._cfg.uuid = "test-uuid"
 
         fresh_queue: queue.SimpleQueue = queue.SimpleQueue()
         fresh_queue.put(3)
@@ -497,7 +493,7 @@ class TestVolumeWorkerNoTargets:
             delta = fresh_queue.get()
             targets = dv._targets_fn()
             if targets:
-                dv._fan_out(targets, dv._cfg.uuid, delta)
+                dv._fan_out(targets, delta)
 
         assert len(fan_out_calls) == 1
 
@@ -536,12 +532,10 @@ class TestEndToEndEventFlow:
         mock_led = MagicMock()
         dv._led_ref = mock_led
         dv._targets_fn = lambda: [MagicMock()]
-        dv._cfg = MagicMock()
-        dv._cfg.uuid = "uuid"
 
         with patch.object(dv, "_fan_out", return_value=True):
             targets = dv._targets_fn()
-            clamped = dv._fan_out(targets, dv._cfg.uuid, 10)
+            clamped = dv._fan_out(targets, 10)
             if clamped and dv._led_ref:
                 dv._led_ref.flash_clamped()
 
@@ -553,11 +547,10 @@ class TestEndToEndEventFlow:
         mock_led = MagicMock()
         dv._led_ref = mock_led
         dv._targets_fn = lambda: [MagicMock()]
-        dv._cfg = MagicMock()
 
         with patch.object(dv, "_fan_out", return_value=False):
             targets = dv._targets_fn()
-            clamped = dv._fan_out(targets, dv._cfg.uuid, 5)
+            clamped = dv._fan_out(targets, 5)
             if clamped and dv._led_ref:
                 dv._led_ref.flash_clamped()
 

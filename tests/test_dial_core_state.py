@@ -16,7 +16,8 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 
 import dial_core_state as cs  # noqa: E402
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN  # noqa: E402
-from dial_mdns import PlayingTarget, RosterEntry  # noqa: E402
+from dial_mdns import PlayingTarget  # noqa: E402
+from dial_test_support import RosterEntry  # noqa: E402
 from dial_repeat_store import RepeatRecord  # noqa: E402
 
 

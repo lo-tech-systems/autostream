@@ -17,7 +17,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core"), str(REPO_ROOT / "te
 import dial_core_state as cs
 import dial_mdns
 from autostream_protocol import PROTOCOL
-from dial_mdns import RosterEntry
+from dial_test_support import RosterEntry
 from dial_pool_support import Rig, aid, peer
 from dial_warning_text import appliance_warning_key
 

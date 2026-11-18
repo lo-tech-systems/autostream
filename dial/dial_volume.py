@@ -112,7 +112,6 @@ _QUIET_REFUSALS = frozenset({
 _Event = Union[Tuple[str, int], Tuple[str, bool]]
 _queue: queue.SimpleQueue[_Event] = queue.SimpleQueue()
 
-_cfg        = None
 _targets_fn = None
 _led_ref    = None
 # Resolvers for mute and the readout-changed and mute-changed callbacks — all
@@ -377,7 +376,7 @@ def select_volume_target(targets: list, preferred_service_name: str | None):
 
 
 def start_volume_worker(
-    cfg, targets_fn, led, *, mute_targets_fn=None, on_readout_changed=None, on_mute_changed=None,
+    targets_fn, led, *, mute_targets_fn=None, on_readout_changed=None, on_mute_changed=None,
     client_for=None,
 ) -> None:
     """Store shared state and start the background worker thread.
@@ -397,10 +396,10 @@ def start_volume_worker(
     client_for maps an appliance id to the PeerClient that sends to it (the
     pool's get); an appliance with none is not sent to.
     """
-    global _cfg, _targets_fn, _led_ref, _mute_targets_fn, _on_readout_changed, _on_mute_changed
+    global _targets_fn, _led_ref, _mute_targets_fn, _on_readout_changed, _on_mute_changed
     global _client_for
     _client_for = client_for
-    _cfg, _targets_fn, _led_ref = cfg, targets_fn, led
+    _targets_fn, _led_ref = targets_fn, led
     _mute_targets_fn = mute_targets_fn
     _on_readout_changed = on_readout_changed
     _on_mute_changed = on_mute_changed
