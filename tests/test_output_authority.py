@@ -767,6 +767,26 @@ class TestOutcomes:
         assert snap().start_failure.reason == "failed"
         assert w.a._units["1"].retry_at is not None
 
+    def test_a_coordinator_start_that_fails_is_retried_and_is_not_a_pin_request(self, w):
+        merge(w, [group_row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("start_failed", "Output failed to start")]
+        out = w.a.select("1", Origin.SESSION, volume=30).outcome.result()[0]
+        assert out.ok is False and out.error_code == "start_failed"
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "failed"
+        assert w.a._units["1"].retry_at is not None
+
+    def test_a_user_start_that_fails_is_reverted_with_the_refused_notice(self, w):
+        merge(w, [group_row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("start_failed", "Output failed to start")]
+        w.a.select("1", Origin.USER, volume=30, requester="webui").outcome.result()
+        u = snap().unit("1")
+        assert u.selected is False and u.availability != "password"
+        sf = snap().start_failure
+        assert (sf.reason, sf.requester, sf.unit_id) == ("refused", "webui", "1")
+
     def test_a_coordinator_select_that_fails_reverts_outside_a_session(self, w):
         merge(w, [group_row(1)])
         w.fb.results = [error("http_error")]

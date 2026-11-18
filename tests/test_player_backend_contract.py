@@ -326,6 +326,51 @@ class TestGetJsonErrorHandling:
 # _put_output_fields: pin_required / pin_invalid / not_found
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("backend_cls", [OwnToneBackend, OwnToneMiniBackend])
+class TestRefusedEnableReason:
+    """A 400 on an enable is a PIN request only when the speaker needs pairing."""
+
+    @staticmethod
+    def _refuse(backend_cls, body, row_json=None, row_status=200):
+        b = backend_cls(base_url="http://localhost:3689")
+        put = _resp(status=400, json_data=body, content=b"{}" if body is None else b"body")
+        put.text = "refused"
+        row = _resp(status=row_status, json_data=row_json)
+        with patch("autostream_players._session.put", return_value=put), \
+                patch("autostream_players._session.get", return_value=row) as get:
+            result = b.set_output_enabled("abc", True)
+        return result, get
+
+    def test_a_pin_required_body_is_a_pin_request_without_reading_the_row(self, backend_cls):
+        result, get = self._refuse(backend_cls, {"error": "pin_required"})
+        assert result.ok is False and result.error_code == "pin_required"
+        get.assert_not_called()
+
+    def test_a_start_failed_body_is_a_failed_start_without_reading_the_row(self, backend_cls):
+        result, get = self._refuse(backend_cls, {"error": "start_failed"},
+                                   row_json={"id": "abc", "needs_auth_key": True})
+        assert result.ok is False and result.error_code == "start_failed"
+        get.assert_not_called()
+
+    @pytest.mark.parametrize("flag", ["needs_auth_key", "requires_auth"])
+    def test_a_bare_400_on_a_row_that_needs_pairing_is_a_pin_request(self, backend_cls, flag):
+        result, _ = self._refuse(backend_cls, None, row_json={"id": "abc", flag: True})
+        assert result.error_code == "pin_required"
+
+    def test_a_bare_400_on_a_row_that_does_not_need_pairing_is_a_failed_start(self, backend_cls):
+        result, _ = self._refuse(backend_cls, None, row_json={"id": "abc", "selected": False})
+        assert result.ok is False and result.error_code == "start_failed"
+
+    def test_a_bare_400_with_no_readable_row_is_a_failed_start(self, backend_cls):
+        result, _ = self._refuse(backend_cls, None, row_status=404)
+        assert result.error_code == "start_failed"
+
+    def test_an_unrelated_body_is_decided_by_the_row(self, backend_cls):
+        result, _ = self._refuse(backend_cls, {"error": "other"},
+                                 row_json={"id": "abc", "needs_auth_key": True})
+        assert result.error_code == "pin_required"
+
+
 class TestPutOutputFields:
     def _b(self):
         return OwnToneBackend(base_url="http://localhost:3689")
@@ -342,7 +387,9 @@ class TestPutOutputFields:
         b = self._b()
         r = _resp(status=400, content=b"pin required")
         r.text = "pin required"
-        with patch("autostream_players._session.put", return_value=r):
+        row = _resp(json_data={"id": "abc", "needs_auth_key": True})
+        with patch("autostream_players._session.put", return_value=r), \
+                patch("autostream_players._session.get", return_value=row):
             result = b._put_output_fields("abc", {"selected": True},
                                           allow_pin_required=True)
         assert result.ok is False

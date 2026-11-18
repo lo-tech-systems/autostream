@@ -750,6 +750,41 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
             return None, resp, "Unexpected JSON payload shape"
         return None, resp, ""
 
+    def _refused_enable_result(
+        self,
+        out_id: str,
+        body: Optional[dict[str, Any]],
+        resp: requests.Response,
+    ) -> ActionResult:
+        """Say why a 400 refused an enable: a PIN request or a failed start.
+
+        A backend that names the reason in the body is believed. Otherwise
+        the output's own row decides: only a speaker that says it needs
+        pairing is asking for a PIN.
+        """
+        detail = (resp.text or "").strip()
+        reason = str((body or {}).get("error") or "").strip()
+        if reason not in ("pin_required", "start_failed"):
+            row = self.get_output(out_id)
+            needs_pin = bool(
+                row.ok and row.output is not None
+                and (row.output.needs_auth_key or row.output.requires_auth)
+            )
+            reason = "pin_required" if needs_pin else "start_failed"
+        if reason == "pin_required":
+            return ActionResult(
+                ok=False,
+                error="Output requires PIN authorization",
+                error_code="pin_required",
+                detail=detail,
+            )
+        return ActionResult(
+            ok=False,
+            error="Output failed to start",
+            error_code="start_failed",
+            detail=detail,
+        )
+
     def _put_output_fields(
         self,
         output_id: str,
@@ -779,12 +814,7 @@ class OwnToneHttpBackendBase(PlayerBackend, ABC):
                     detail=(resp.text or "").strip(),
                 )
             if allow_pin_required:
-                return ActionResult(
-                    ok=False,
-                    error="Output requires PIN authorization",
-                    error_code="pin_required",
-                    detail=(resp.text or "").strip(),
-                )
+                return self._refused_enable_result(out_id, response_payload, resp)
         if resp is not None and resp.status_code == 409:
             conflict = _conflict_code(response_payload)
             if conflict:
