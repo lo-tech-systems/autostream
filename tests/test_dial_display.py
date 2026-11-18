@@ -59,6 +59,7 @@ import dial_repeat_store
 from dial_core import DialCore
 import dial_display as dd
 import dial_display_controls as ddc
+import dial_display_repeat_line as ddr
 import dial_display_state as dds
 import dial_warning_text as dwt
 import dial_display_compositor as dd_compositor
@@ -3672,14 +3673,14 @@ class TestReplayReveal:
             _repaint(display)
             display._tick_controls_reveal()
             bare = self._bare(display, fb, base)
-            painted = display._repeat_painted_second
+            painted = display._repeat_line.painted_second
             for step in (1.0, 2.0):
                 clock.t = 1000.6 + step
                 display._overlay_signal.clear()
                 display._tick_repeat_line()
                 assert display._overlay_signal.is_set()
                 _repaint(display)
-                assert display._repeat_painted_second == painted + int(step)
+                assert display._repeat_line.painted_second == painted + int(step)
                 assert display._next_repaint_deadline() > clock.t
                 assert _pixels(fb.displayed[-1]) == _pixels(bare)
 
@@ -5956,7 +5957,7 @@ class TestRepeatLineInterpolation:
         display.enable()
         self._open_repeat_screen_directly(display, aid)
         self._seed_replaying(aid, position_seconds=5.0, observed_at=1000.0)
-        display._repeat_painted_second = 3
+        display._repeat_line.painted_second = 3
         # shown(now) = position + elapsed - DEFAULT_LATENCY_S
         #            = 5.0 + 1.002 - 2.0 = 4.002 -- just past the 4.0 boundary.
         display._overlay_signal.clear()
@@ -5970,7 +5971,7 @@ class TestRepeatLineInterpolation:
         display.enable()
         self._open_repeat_screen_directly(display, aid)
         self._seed_replaying(aid, position_seconds=5.0, observed_at=1000.0)
-        display._repeat_painted_second = 4
+        display._repeat_line.painted_second = 4
         # shown(now) = 5.0 + 1.5 - 2.0 = 4.5 -- mid-second, 4 already painted, not due.
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1001.5):
@@ -6020,7 +6021,7 @@ class TestNextRepaintDeadline:
         # elapsed - DEFAULT_LATENCY_S, with elapsed fixed at 1.0.
         position = shown + dial_repeat_store.DEFAULT_LATENCY_S - 1.0
         self._seed(aid, position_seconds=position, observed_at=1000.0)
-        display._repeat_painted_second = math.floor(shown)
+        display._repeat_line.painted_second = math.floor(shown)
         now = 1001.0
         with patch("dial_display.time.monotonic", return_value=now):
             deadline = display._next_repaint_deadline()
@@ -6056,7 +6057,7 @@ class TestNextRepaintDeadline:
         display = self._opened(aid)
         # shown(1000.0) == 2.0 exactly -> repeat deadline is 1000.0 + 1.0 + 0.005.
         self._seed(aid, position_seconds=2.0 + dial_repeat_store.DEFAULT_LATENCY_S, observed_at=1000.0)
-        display._repeat_painted_second = 2
+        display._repeat_line.painted_second = 2
         display._controls.hidden_until = 1000.3
         with patch("dial_display.time.monotonic", return_value=1000.0):
             deadline = display._next_repaint_deadline()
@@ -6116,8 +6117,8 @@ class TestRepeatCounterFloors:
             position_seconds=1.0, duration_seconds=30.0, observed_at=1000.0,
             latency_seconds=3.5,
         )
-        assert dd._repeat_counter_value(rec, 1000.0) == pytest.approx(-2.5)
-        assert dd._repeat_counter_value(rec, 1005.0) == pytest.approx(2.5)
+        assert dial_repeat_store.heard_position(rec, 1000.0) == pytest.approx(-2.5)
+        assert dial_repeat_store.heard_position(rec, 1005.0) == pytest.approx(2.5)
 
 
 class TestRepeatCounterPaintedReference:
@@ -6158,7 +6159,7 @@ class TestRepeatCounterPaintedReference:
     def _paint(self, display):
         with display._lock:
             display._repaint_current_locked()
-        return display._repeat_painted_second
+        return display._repeat_line.painted_second
 
     def _line(self, display, clock):
         with display._lock:
@@ -6267,13 +6268,13 @@ class TestRepeatCounterPaintedReference:
             self._seed(position=5.0, observed_at=1000.0)
             assert self._paint(display) == 3
             clock.t = 1000.05
-            self._resync(clock, -(dd.REPEAT_COUNTER_HOLD_S - 0.05))   # just inside the hold window
+            self._resync(clock, -(ddr.REPEAT_COUNTER_HOLD_S - 0.05))   # just inside the hold window
             t_hold = clock.t
             # Counter 2.1 held at 3; 4 is owed at value 4.0, i.e. 1.9 s on.
             # Run to just short of that so the loop exits on that paint.
             painted = self._run(display, clock, 1.9)
         assert painted == [4]
-        assert clock.t - t_hold <= 1.0 + dd.REPEAT_COUNTER_HOLD_S + 0.01
+        assert clock.t - t_hold <= 1.0 + ddr.REPEAT_COUNTER_HOLD_S + 0.01
 
     def test_restart_re_anchors_to_zero(self):
         # A restart reaches the screen as the record the appliance reports
@@ -6357,12 +6358,12 @@ class TestRepeatCounterPaintedReference:
                 _repeat_obj(state="replaying", armed=True,
                             replay={"active": True, "position_seconds": 4.5, "duration_seconds": 30.0}),
             )
-            display._repeat_painted_second = 3
+            display._repeat_line.painted_second = 3
             display.cycle_pages()
             with display._lock:
                 display._repaint_current_locked()
         assert display._screen == "repeat"
-        assert display._repeat_painted_second == 2
+        assert display._repeat_line.painted_second == 2
 
     def test_leaving_replaying_resets_and_a_return_re_anchors(self):
         display = self._opened()
@@ -6392,12 +6393,12 @@ class TestRepeatCounterPaintedReference:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             self._seed(position=5.0, observed_at=1000.0)
-            display._repeat_painted_second = 3
+            display._repeat_line.painted_second = 3
             clock.t = 1000.1
             self._resync(clock, -0.4)
             view_line = self._line(display, clock)
         assert view_line.startswith("0:03 / ")
-        assert display._repeat_painted_second == 3
+        assert display._repeat_line.painted_second == 3
 
     # -- the deadline ---------------------------------------------------------
 
@@ -8988,15 +8989,15 @@ class TestReplayTimer:
         display.core.set_field_for_tests("manual_id", self.AID)
         now = time.monotonic()
         seed_repeat(self.AID, _repeat_obj(state=state, **repeat))
-        display._arm_replay_timer(self.AID)
+        display._repeat_line.arm(self.AID, time.monotonic())
         return display, fb
 
     def test_picker_pick_arms_the_timer(self):
         display, fb, gt = TestPickerPick()._opened_with_row(aid=self.AID)
         with patch("dial_core.DialCore._send"):
             display.picker_pick(0)
-        assert display._replay_timer_id == self.AID
-        assert display._replay_timer_shown_at == 0.0
+        assert display._repeat_line.timer_id == self.AID
+        assert display._repeat_line.timer_shown_at == 0.0
 
     def test_shows_the_held_position_at_full_opacity(self):
         display, fb = self._display(recording_seconds=12.0)
@@ -9004,26 +9005,26 @@ class TestReplayTimer:
         with display._lock:
             timer = display._replay_timer_locked(now)
         assert timer == ("0:00 / 0:12", 1.0, None)
-        assert display._replay_timer_shown_at == now
+        assert display._repeat_line.timer_shown_at == now
 
     def test_fades_after_the_show_window_then_ends(self):
         display, fb = self._display()
         now = time.monotonic()
-        display._replay_timer_shown_at = now - dd.REPLAY_TIMER_SHOW_S - dd.REPLAY_TIMER_FADE_S / 2
+        display._repeat_line.timer_shown_at = now - ddr.REPLAY_TIMER_SHOW_S - ddr.REPLAY_TIMER_FADE_S / 2
         with display._lock:
             text, alpha, _ = display._replay_timer_locked(now)
         assert alpha == pytest.approx(0.5)
-        display._replay_timer_shown_at = now - dd.REPLAY_TIMER_SHOW_S - dd.REPLAY_TIMER_FADE_S
+        display._repeat_line.timer_shown_at = now - ddr.REPLAY_TIMER_SHOW_S - ddr.REPLAY_TIMER_FADE_S
         with display._lock:
             assert display._replay_timer_locked(now) is None
-        assert display._replay_timer_id is None
+        assert display._repeat_line.timer_id is None
 
     def test_not_drawn_for_another_shown_appliance(self):
         display, fb = self._display()
         display.core.set_field_for_tests("manual_id", "b" * 20)
         with display._lock:
             assert display._replay_timer_locked(time.monotonic()) is None
-        assert display._replay_timer_id == self.AID
+        assert display._repeat_line.timer_id == self.AID
 
     def test_not_drawn_on_the_compact_tier(self):
         display, fb = self._display()
@@ -9034,16 +9035,16 @@ class TestReplayTimer:
     def test_dropped_when_nothing_shows_within_the_arm_window(self):
         display, fb = self._display(state="recording")
         now = time.monotonic()
-        display._replay_timer_armed_at = now - dd.REPLAY_TIMER_ARM_S
+        display._repeat_line.timer_armed_at = now - ddr.REPLAY_TIMER_ARM_S
         with display._lock:
             assert display._replay_timer_locked(now) is None
-        assert display._replay_timer_id is None
+        assert display._repeat_line.timer_id is None
 
     def test_a_rejected_seek_drops_it(self):
         display, fb = self._display()
         display.core.begin_transport(self.AID, "seek")
         on_repeat_result(display, "transport", self.AID, 412, {"ok": False, "error": "no_recording"})
-        assert display._replay_timer_id is None
+        assert display._repeat_line.timer_id is None
 
     def test_main_paint_draws_it(self):
         display, fb = self._display(recording_seconds=12.0)
@@ -9058,22 +9059,22 @@ class TestReplayTimer:
         display, fb = self._display()
         now = time.monotonic()
         assert display._replay_timer_deadline(now) == pytest.approx(now + 0.25)
-        display._replay_timer_shown_at = now
-        assert display._replay_timer_deadline(now) == pytest.approx(now + dd.REPLAY_TIMER_SHOW_S + 0.005)
+        display._repeat_line.timer_shown_at = now
+        assert display._replay_timer_deadline(now) == pytest.approx(now + ddr.REPLAY_TIMER_SHOW_S + 0.005)
 
     def test_deadline_is_floored_after_its_own_signal(self):
         display, fb = self._display()
         now = time.monotonic()
-        display._replay_timer_shown_at = now - dd.REPLAY_TIMER_SHOW_S - 0.1
-        display._replay_timer_signal_at = now
-        assert display._replay_timer_deadline(now) >= now + dd.REPLAY_TIMER_FADE_GAP_S
+        display._repeat_line.timer_shown_at = now - ddr.REPLAY_TIMER_SHOW_S - 0.1
+        display._repeat_line.timer_signal_at = now
+        assert display._replay_timer_deadline(now) >= now + ddr.REPLAY_TIMER_FADE_GAP_S
 
     def test_deadline_drops_a_timer_whose_replay_ended(self):
         display, fb = self._display()
-        display._replay_timer_shown_at = time.monotonic()
+        display._repeat_line.timer_shown_at = time.monotonic()
         seed_repeat(self.AID, None)
         display._replay_timer_deadline(time.monotonic())
-        assert display._replay_timer_id is None
+        assert display._repeat_line.timer_id is None
 
     def test_no_deadline_off_the_main_page(self):
         display, fb = self._display()
@@ -9779,14 +9780,14 @@ class TestTapsCallTheCoreActions:
         with self._core_action(display, "start_replay") as action:
             display.picker_pick(0)
         action.assert_called_once_with("a" * 20)
-        assert display._replay_timer_id == "a" * 20
+        assert display._repeat_line.timer_id == "a" * 20
 
     def test_picker_pick_drops_the_timer_when_the_core_refuses(self):
         from dial_core_state import ActionResult
         display, fb, gt = TestPickerPick()._opened_with_row(aid="a" * 20)
         with self._core_action(display, "start_replay", ActionResult(False, "wrong_state")):
             display.picker_pick(0)
-        assert display._replay_timer_id is None
+        assert display._repeat_line.timer_id is None
 
     def test_picker_pick_with_a_stale_index_calls_nothing(self):
         display, fb, gt = TestPickerPick()._opened_with_row()
@@ -9879,14 +9880,14 @@ class TestRepeatResultsHandedStraightToTheCore:
     def test_a_rejected_replay_drops_the_replay_timer(self):
         aid = "9" * 20
         display, fb, gt = make_display(targets=[])
-        display._arm_replay_timer(aid)
+        display._repeat_line.arm(aid, time.monotonic())
         display._overlay_signal.clear()
         display._core._wake.clear()
 
         display._core._fold_reply(aid, "seek", 0.0, PeerReply(False, "fading_out", None, None, {}, None))
-        assert display._replay_timer_id == aid
+        assert display._repeat_line.timer_id == aid
         display._apply_pending_snapshot()
-        assert display._replay_timer_id is None
+        assert display._repeat_line.timer_id is None
         assert display._overlay_signal.is_set()
         assert display._core._wake.is_set()
 

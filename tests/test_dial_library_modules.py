@@ -30,6 +30,7 @@ ALLOWED = {
     "dial_display_views": {"dial_touch_layout"},
     "dial_display_state": {"dial_display_views", "dial_eq_model", "dial_info", "dial_touch_layout", "dial_values"},
     "dial_display_controls": set(),
+    "dial_display_repeat_line": {"dial_display_views", "dial_repeat_store"},
     "dial_appliance_warnings": {"dial_mdns", "dial_values"},
     "dial_hd_session": set(),
     "dial_recovery": {"dial_config"},
@@ -82,6 +83,7 @@ DISPLAY_LAYER_IMPORTS = {
     "dial_display_views": {"dial_display_palette"},
     "dial_display_state": {"dial_display_views"},
     "dial_display_controls": set(),
+    "dial_display_repeat_line": {"dial_display_views"},
     "dial_display_draw": {"dial_display_palette", "dial_display_views"},
     "dial_display_reveal": {"dial_display_views", "dial_display_draw"},
     "dial_display_render": {"dial_display_palette", "dial_display_views", "dial_display_draw"},
@@ -101,7 +103,7 @@ def test_the_display_layers_import_only_downwards(name):
 
 # The display's collaborators hold fields and arithmetic only: the display
 # reads the clock, passes `now` in and takes its own lock around them.
-COLLABORATORS = ["dial_display_controls"]
+COLLABORATORS = ["dial_display_controls", "dial_display_repeat_line"]
 
 
 @pytest.mark.parametrize("name", COLLABORATORS)
