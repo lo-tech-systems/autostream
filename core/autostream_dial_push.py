@@ -410,7 +410,9 @@ class StateHints:
     pieces (the speaker list, the volumes, the mutes) with their values at the
     previous comparison, the first being the baseline; each that moved is sent
     as "outputs", "volume" or "mute", in that order, after the session and
-    tags and before the repeat and track. A Change that touched the equaliser
+    tags and before the repeat and track. A new failed speaker start sends
+    "outputs" to every dial, the one that asked included, even when the speaker
+    list did not change. A Change that touched the equaliser
     part sends "eq" when the output bands moved, compared the same way; the
     gains, the auto-trim and the input equalisers are not shown on a dial."""
 
@@ -434,8 +436,13 @@ class StateHints:
                 self._send(tag, except_dial)
         if "outputs" in change.parts:
             outputs = _state_store().snapshot().outputs
+            failure = outputs.start_failure.seq if outputs.start_failure is not None else 0
+            failed = self._moved("start_failure", lambda: failure)
+            listed = self._moved("outputs", lambda: outputs_list_digest(outputs))
+            if listed or failed:
+                # A failed start is news to the dial that asked, too.
+                self._send("outputs", None if failed else except_dial)
             for kind, digest in (
-                ("outputs", outputs_list_digest),
                 ("volume", outputs_volume_digest),
                 ("mute", outputs_mute_digest),
             ):

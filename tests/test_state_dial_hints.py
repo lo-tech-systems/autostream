@@ -263,7 +263,8 @@ class OutputRig:
 
         self.rig = rig
         self.authority = get_authority()
-        self.authority.start(FakeBackend(self.authority))
+        self.backend = FakeBackend(self.authority)
+        self.authority.start(self.backend)
         self.row = row
         rig.fake.outputs([row("1", "Speaker A"), row("2", "Speaker B")])
         self.mark = 0
@@ -321,3 +322,68 @@ def test_a_mute_alone_hints_only_the_mute(outputs):
 def test_a_browser_s_change_excludes_nobody(outputs):
     outputs.authority.select("2", state.Origin.USER, volume=10, requester="webui")
     assert outputs.calls and {except_dial for _, except_dial in outputs.calls} == {None}
+
+
+# ---------------------------------------------------------------------------
+# A failed speaker start
+# ---------------------------------------------------------------------------
+
+def test_a_failed_start_that_moves_no_unit_hints_every_dial_the_list_only(outputs):
+    outputs.forget()
+    outputs.authority.record_start_failure_for_tests("1", "failed", requester="dial:abc-1")
+    assert outputs.calls == [(("outputs",), None)]
+
+
+def test_a_dial_s_own_refused_start_hints_every_dial_once(outputs):
+    from output_fakes import error
+    outputs.backend.results = [error("http_error", "bad request")]
+    outputs.forget()
+    outputs.authority.select("1", state.Origin.USER, volume=30, requester="dial:abc-1").outcome.result(1)
+    told_everyone = [c for c in outputs.calls if c[0] == ("outputs",) and c[1] is None]
+    assert len(told_everyone) == 1
+
+
+def test_a_failure_that_also_moves_the_volume_hints_the_list_then_the_volume(outputs):
+    outputs.rig.fake.outputs([outputs.row("1", "Speaker A", selected=True, volume_percent=20),
+                              outputs.row("2", "Speaker B")])
+    outputs.forget()
+    batch = state.store().batch()
+    try:
+        outputs.authority.set_volume("1", 45, state.Origin.USER)
+        outputs.authority.record_start_failure_for_tests("2", "failed")
+    finally:
+        batch.close()
+    order = [kinds for kinds, _ in outputs.calls]
+    assert ("outputs",) in order and ("volume",) in order
+    assert order.index(("outputs",)) < order.index(("volume",))
+
+
+def test_a_failure_already_held_at_the_first_reading_is_the_baseline(monkeypatch):
+    state.store().reset_for_tests()
+    coalescer = MagicMock()
+    monkeypatch.setattr(dp, "_coalescer", coalescer)
+    FakeStore().outputs([FakeStore.output_row("1", "Speaker A")],
+                        start_failure={"unit_id": "1", "reason": "failed"})
+    dp.install_state_hints(state.store())
+    from autostream_state.outputs import get_authority
+    get_authority().merge_for_tests([FakeStore.output_row("1", "Speaker A")], connected=True)
+    assert coalescer.notify.call_args_list == []
+
+
+def test_failures_inside_one_window_give_one_outputs_hint(outputs, monkeypatch):
+    now = [1000.0]
+    scheduled = []
+    emissions = []
+    monkeypatch.setattr(dp, "_coalescer", dp.StateChangeCoalescer(
+        lambda kinds, except_dials: emissions.append((sorted(kinds), sorted(except_dials))),
+        clock=lambda: now[0], schedule=lambda delay, fn: scheduled.append((now[0] + delay, fn))))
+    outputs.authority.record_start_failure_for_tests("1", "failed", requester="dial:abc-1")
+    assert emissions == [(["outputs"], [])]
+    now[0] += 0.1
+    outputs.authority.record_start_failure_for_tests("2", "timed_out", requester="webui")
+    outputs.authority.record_start_failure_for_tests("1", "refused", requester="dial:abc-1")
+    assert len(emissions) == 1
+    now[0] += 0.3
+    for _due, fn in scheduled:
+        fn()
+    assert emissions == [(["outputs"], []), (["outputs"], [])]
