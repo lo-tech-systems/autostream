@@ -21,8 +21,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from _source_text import page_with_static
-
 from _source_text import page_data, page_with_static, static_text
 from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
@@ -31,22 +29,15 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-try:
-    _REMOTE_HOME_SCRIPT = static_text("page/remote_home.js")
-    from autostream_webui_page_equaliser import _EQUALISER_JS, _REMOTE_EQUALISER_SCRIPT
-    _HAS_SCRIPTS = True
-except ImportError:
-    _HAS_SCRIPTS = False
-    _EQUALISER_JS = ""
-
-_skip = pytest.mark.skipif(not _HAS_SCRIPTS, reason="page scripts unavailable")
+_REMOTE_HOME_SCRIPT = static_text("page/remote_home.js")
+_EQUALISER_JS = static_text("page/equaliser.js")
+_REMOTE_EQUALISER_SCRIPT = static_text("page/remote_equaliser.js")
 
 
 # ---------------------------------------------------------------------------
 # Remote Home — visibility resume fix
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteHomeVisibilityResume:
     def test_sets_polling_true_before_poll_on_resume(self):
         """visibilitychange must set __remotePolling=true before pollHomeState()."""
@@ -71,7 +62,6 @@ class TestRemoteHomeVisibilityResume:
 # Remote Home — output shape fingerprint
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteHomeOutputShape:
     def test_shape_helper_function_declared(self):
         assert '_outputsShape' in _REMOTE_HOME_SCRIPT
@@ -261,7 +251,6 @@ def local_home_html() -> str:
     return _render_local_home_html()
 
 
-@_skip
 class TestOutputsEmptyToleranceConstant:
     def test_tolerance_constant_defined_in_python(self):
         from autostream_webui_page_airplay import OUTPUTS_EMPTY_TOLERANCE_SECONDS
@@ -310,7 +299,6 @@ class TestOutputsEmptyToleranceConstant:
         assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS = pageData.outputs_empty_tolerance_ms;" in remote_home_html
 
 
-@_skip
 class TestLocalHomeOutputsEmptyDebounce:
     def test_old_count_mechanism_removed(self, local_home_html):
         assert "__OUTPUTS_EMPTY_COUNT" not in local_home_html
@@ -349,7 +337,6 @@ class TestLocalHomeOutputsEmptyDebounce:
 # Remote Equaliser — full-state polling
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteEqualiserFullPolling:
     def test_poll_full_eq_state_function_exists(self):
         assert '_pollFullEqState' in _REMOTE_EQUALISER_SCRIPT
@@ -396,7 +383,6 @@ class TestRemoteEqualiserFullPolling:
 # Remote Equaliser — renderEqFromState update path
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteEqualiserRenderUpdate:
     def test_update_path_for_existing_band_sliders(self):
         """renderEqFromState must have an else branch that updates existing sliders."""
@@ -475,7 +461,6 @@ class TestRemoteEqualiserRenderUpdate:
 # Remote Equaliser — pending-field guard (_eqPendingFields)
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteEqualiserPendingFields:
     def test_pending_fields_declared(self):
         assert '_eqPendingFields=new Set()' in _REMOTE_EQUALISER_SCRIPT
@@ -521,7 +506,6 @@ class TestRemoteEqualiserPendingFields:
 # Remote Equaliser — visibility resume
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteEqualiserVisibilityResume:
     def test_visibility_resume_calls_poll_full_eq_state(self):
         """visibilitychange resume must call _pollFullEqState for immediate refresh."""
@@ -553,7 +537,6 @@ class TestRemoteEqualiserVisibilityResume:
 # Remote Equaliser — degraded polling mode
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteEqualiserDegradedMode:
     def test_degraded_vars_declared(self):
         assert '_EQ_DEGRADED_POLL_MS=10000' in _REMOTE_EQUALISER_SCRIPT
@@ -612,7 +595,6 @@ class TestRemoteEqualiserDegradedMode:
 # Remote Equaliser — initial-load retry
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestRemoteEqualiserInitialLoadRetry:
     def _load_fn(self):
         src = _REMOTE_EQUALISER_SCRIPT
@@ -673,7 +655,6 @@ class TestRemoteEqualiserInitialLoadRetry:
 # Local Equaliser — full-state polling
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestLocalEqualiserFullPolling:
     def test_poll_full_eq_state_function_exists(self):
         """_EQUALISER_JS must define _pollFullEqState."""
@@ -732,7 +713,6 @@ class TestLocalEqualiserFullPolling:
 # Local Equaliser — _updateEqFromPoll update path
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestLocalEqualiserUpdateFromPoll:
     def _fn_body(self) -> str:
         src = _EQUALISER_JS
@@ -782,7 +762,6 @@ class TestLocalEqualiserUpdateFromPoll:
 # Local Equaliser — pending-field guard (_eqPendingFields)
 # ---------------------------------------------------------------------------
 
-@_skip
 class TestLocalEqualiserPendingFields:
     def _save_fn(self) -> str:
         src = _EQUALISER_JS

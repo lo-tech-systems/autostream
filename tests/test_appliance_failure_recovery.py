@@ -113,7 +113,7 @@ def _render_remote_equaliser(aid: str = _REMOTE_ID) -> str:
          patch("autostream_webui_page_equaliser.get_all_appliances", return_value=[]), \
          patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound"):
         send_remote_equaliser_page(handler, state, aid)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 # ---------------------------------------------------------------------------

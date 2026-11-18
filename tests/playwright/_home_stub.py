@@ -8,7 +8,8 @@ while its dict is non-empty, so a test that leaves one empty sees the plain
 ``{"ok": true}`` reply every other ``/api/*`` path gets. The module-level
 containers are shared by every importer and are mutated in place, never
 rebound. ``START_FAILURE``, when non-empty, is added to the outputs reply as its
-``start_failure`` field.
+``start_failure`` field. ``PATHS`` lists the path of every ``/api/*`` GET the
+server has answered.
 """
 from __future__ import annotations
 
@@ -37,6 +38,7 @@ STATUS_POLLS: list = []
 REMOTE_HOME: dict = {}
 REMOTE_HOME_POLLS: list = []
 START_FAILURE: dict = {}
+PATHS: list = []
 
 _BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update", "sample_rate")
 
@@ -165,6 +167,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
+        if path.startswith("/api/"):
+            PATHS.append(path)
         if self.path.startswith("/static/"):
             _page_stub.serve_static(self, self.path)
         elif self.path.startswith("/api/owntone/outputs_state"):

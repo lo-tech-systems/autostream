@@ -26,8 +26,8 @@ _INLINE = re.compile(r"<script\b([^>]*)>(.*?)</script>", re.DOTALL | re.IGNORECA
 MAX_INLINE = {
     "home": 1,
     "remote_home": 1,
-    "equaliser": 2,
-    "remote_equaliser": 4,
+    "equaliser": 0,
+    "remote_equaliser": 1,
     "about": 2,
     "align": 2,
     "service": 1,
@@ -43,9 +43,23 @@ MAX_INLINE = {
 SETUP_INLINE = 12
 
 # Pages whose scripts are all files: nothing inline but the token bootstrap.
-EXTRACTED = ("home", "remote_home")
+EXTRACTED = ("home", "remote_home", "equaliser", "remote_equaliser")
 
 _BOOTSTRAP = "window.__CSRF='t';"
+# The local equaliser reads its token from a hidden field, so it carries no inline script.
+EXPECTED_INLINE = {
+    "home": [_BOOTSTRAP],
+    "remote_home": [_BOOTSTRAP],
+    "equaliser": [],
+    "remote_equaliser": [_BOOTSTRAP],
+}
+# The page's own scripts; the island must come before the first of them.
+FIRST_FILES = {
+    "home": ("home_cards.js",),
+    "remote_home": ("home_cards.js",),
+    "equaliser": ("equaliser_curve.js", "equaliser.js"),
+    "remote_equaliser": ("remote_equaliser.js", "equaliser_curve.js"),
+}
 
 # Island keys each extracted page may carry, and the route that serves it.
 _HOME_KEYS = {
@@ -53,13 +67,18 @@ _HOME_KEYS = {
     "selector_current_id", "output_url", "repeat_url", "outputs_empty_tolerance_ms",
     "pin_prompt_fallback", "control_other_appliances",
 }
+_EQ_KEYS = {"local_id", "selector_current_page", "poll_url", "eq_bands", "eq_fs", "curve"}
 ISLAND_KEYS = {
     "home": _HOME_KEYS,
     "remote_home": _HOME_KEYS | {"remote_aid", "remote_hostname", "poll_url"},
+    "equaliser": _EQ_KEYS,
+    "remote_equaliser": _EQ_KEYS | {"save_url", "reset_url", "status_url", "remote_aid", "remote_hostname"},
 }
 PAGE_PATH = {
     "home": "/",
     "remote_home": "/a/" + _page_stub.REMOTE_APPLIANCE_ID + "/",
+    "equaliser": "/equaliser",
+    "remote_equaliser": "/a/" + _page_stub.REMOTE_APPLIANCE_ID + "/equaliser",
 }
 
 
@@ -93,15 +112,15 @@ def test_setup_carries_no_more_inline_scripts_than_its_limit():
 
 
 @pytest.mark.parametrize("page", EXTRACTED)
-def test_an_extracted_page_carries_only_the_token_bootstrap(page):
-    assert _inline_scripts(_render(page)) == [_BOOTSTRAP]
+def test_an_extracted_page_carries_nothing_inline_but_its_token(page):
+    assert _inline_scripts(_render(page)) == EXPECTED_INLINE[page]
 
 
 @pytest.mark.parametrize("page", EXTRACTED)
 def test_the_island_comes_before_the_first_page_script(page):
     html = _render(page)
     island = html.index('id="page-data"')
-    first = html.index("/static/page/home_cards.js")
+    first = min(html.index(f"/static/page/{name}") for name in FIRST_FILES[page])
     assert island < first
     assert html.count('id="page-data"') == 1
 
@@ -158,3 +177,17 @@ def test_an_island_value_cannot_end_its_script_element():
     assert text.count("</script>") == 1
     body = re.search(r">(\{.*\})</script>", text).group(1)
     assert json.loads(body) == {"name": "</script><b>&"}
+
+
+@pytest.mark.parametrize("page", ("equaliser", "remote_equaliser"))
+def test_the_equaliser_island_holds_the_curve_geometry_and_the_bands(page):
+    import autostream_webui_page_equaliser as eq  # noqa: PLC0415
+    from autostream_eq_bands import OUTPUT_PEQ_BANDS  # noqa: PLC0415
+    island = _source_text.page_data(_render(page))
+    assert island["curve"] == {
+        "w": eq._CURVE_W, "h": eq._CURVE_H, "f_min": eq._CURVE_F_MIN, "f_max": eq._CURVE_F_MAX,
+        "db_range": eq._CURVE_DB_RANGE, "pad_y": eq._CURVE_PAD_Y, "n_pts": eq._CURVE_N_PTS}
+    assert [b["key"] for b in island["eq_bands"]] == [b["key"] for b in OUTPUT_PEQ_BANDS]
+    assert all(set(b) == {"key", "type", "freq_hz", "q", "label"} for b in island["eq_bands"])
+    assert isinstance(island["eq_fs"], int) and island["eq_fs"] > 0
+    assert island["selector_current_page"] == "equaliser"

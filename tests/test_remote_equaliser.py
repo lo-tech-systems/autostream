@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from _source_text import linked_static, static_text
+from _source_text import linked_static, page_data, page_with_static, static_text
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -208,7 +208,7 @@ class TestRemoteEqualiserPageContent:
              patch("autostream_webui_page_equaliser.get_system_hostname", return_value="bound-host"):
             send_remote_equaliser_page(handler, state, aid)
 
-        return b"".join(written_chunks).decode("utf-8", errors="replace")
+        return page_with_static(b"".join(written_chunks).decode("utf-8", errors="replace"))
 
     def test_page_returns_html(self):
         html = self._render()
@@ -301,19 +301,16 @@ class TestRemoteEqualiserPageContent:
 
     def test_remote_eq_band_slider_handler_survives_python_string_escaping(self):
         """The browser-facing script must contain escaped quotes in generated slider handlers."""
-        # Read the runtime value of the script constant, not its source text.
-        import autostream_webui_page_equaliser as _eq_mod
-        script = _eq_mod._REMOTE_EQUALISER_SCRIPT
+        script = static_text("page/remote_equaliser.js")
 
-        assert script is not None
+        assert script
         assert "syncOutputPeq(\\''+key+'\\',this.value)" in script
         assert "syncOutputPeq(''+key+'',this.value)" not in script
 
     def test_remote_script_enables_flat_button(self):
-        import autostream_webui_page_equaliser as _eq_mod
-        script = _eq_mod._REMOTE_EQUALISER_SCRIPT
+        script = static_text("page/remote_equaliser.js")
 
-        assert script is not None
+        assert script
         assert "getElementById('eq-flat-btn')" in script
         assert "getElementById('eq-reset-btn')" not in script
 
@@ -407,8 +404,9 @@ class TestEqualiserCurveSampleRate:
             send_equaliser_page(handler, state)
 
         html = b"".join(written_chunks).decode("utf-8", errors="replace")
-        assert "var _EQ_FS        = 96000;" in html
-        assert "var _EQ_FS        = 44100;" not in html
+        assert page_data(html)["eq_fs"] == 96000
+        assert "page/equaliser_curve.js" in linked_static(html)
+        assert "var _EQ_FS        = pageData.eq_fs;" in static_text("page/equaliser_curve.js")
 
     def test_remote_page_js_embeds_live_output_rate(self):
         from autostream_webui_page_equaliser import send_remote_equaliser_page
@@ -434,7 +432,8 @@ class TestEqualiserCurveSampleRate:
             send_remote_equaliser_page(handler, state, _REMOTE_ID)
 
         html = b"".join(written_chunks).decode("utf-8", errors="replace")
-        assert "var _EQ_FS        = 44100;" in html
+        assert page_data(html)["eq_fs"] == 44100
+        assert "page/equaliser_curve.js" in linked_static(html)
 
     def test_page_falls_back_to_48000_when_monitor_unreachable(self):
         from autostream_webui_page_equaliser import send_equaliser_page, _CURVE_FS_FALLBACK
@@ -465,6 +464,6 @@ class TestEqualiserCurveSampleRate:
             send_equaliser_page(handler, state)
 
         html = b"".join(written_chunks).decode("utf-8", errors="replace")
-        assert f"var _EQ_FS        = {_CURVE_FS_FALLBACK};" in html
+        assert page_data(html)["eq_fs"] == _CURVE_FS_FALLBACK
         assert "page/appliance_selector.css" in linked_static(html)
         assert "nav-tab-disabled" in static_text("page/appliance_selector.css")

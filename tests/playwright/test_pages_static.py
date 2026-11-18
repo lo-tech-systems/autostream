@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 import _home_stub as stub
+import _page_stub
 from _home_stub import render_home, render_remote_home, start_server
 
 try:
@@ -44,6 +45,8 @@ def _clean_stub():
     stub.POLLS.clear()
     stub.REMOTE_HOME.clear()
     stub.REMOTE_HOME_POLLS.clear()
+    stub.POSTS.clear()
+    stub.PATHS.clear()
 
 
 def _wait_for(page: "Page", done, what: str) -> None:
@@ -83,5 +86,44 @@ class TestHome:
             assert page.evaluate("window.__POLL_URL") == (
                 f"/api/appliances/{stub.REMOTE_APPLIANCE_ID}/home")
             assert page.evaluate("window.__REMOTE_AID") == stub.REMOTE_APPLIANCE_ID
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestEqualiser:
+    def test_loads_with_no_error_and_draws_the_curve(self, page: "Page"):
+        server, base = start_server(_page_stub.render("equaliser"))
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            assert page.locator("#eq-curve-path").get_attribute("d").startswith("M")
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_moving_a_band_slider_redraws_the_curve_and_posts_once(self, page: "Page"):
+        server, base = start_server(_page_stub.render("equaliser"))
+        try:
+            page.goto(f"{base}/")
+            before = page.locator("#eq-curve-path").get_attribute("d")
+            stub.POSTS.clear()
+            page.evaluate(
+                "var s = document.getElementById('peq3_db'); s.value = '6';"
+                " s.dispatchEvent(new Event('input', {bubbles: true}));")
+            assert page.locator("#eq-curve-path").get_attribute("d") != before
+            _wait_for(page, lambda: stub.POSTS, "the equaliser save")
+            page.wait_for_timeout(1000)
+            assert len(stub.POSTS) == 1
+        finally:
+            server.shutdown()
+
+    def test_the_remote_page_polls_its_state_url(self, page: "Page"):
+        server, base = start_server(_page_stub.render("remote_equaliser"))
+        try:
+            page.goto(f"{base}/")
+            poll = f"/api/appliances/{stub.REMOTE_APPLIANCE_ID}/equaliser"
+            _wait_for(page, lambda: poll in stub.PATHS, "the remote equaliser poll")
+            assert page.evaluate("window.__POLL_URL") == poll
         finally:
             server.shutdown()
