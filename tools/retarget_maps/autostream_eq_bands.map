@@ -1,0 +1,4 @@
+# Names that moved from the coordinator into autostream_eq_bands.
+autostream_core.OUTPUT_PEQ_BANDS -> autostream_eq_bands.OUTPUT_PEQ_BANDS  alias=eq_bands
+autostream_core.build_monitor_eq_bands -> autostream_eq_bands.build_monitor_eq_bands  alias=eq_bands
+autostream_core.build_output_eq_bands -> autostream_eq_bands.build_output_eq_bands  alias=eq_bands

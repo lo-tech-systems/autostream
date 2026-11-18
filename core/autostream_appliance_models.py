@@ -24,7 +24,6 @@ from autostream_config import (
     save_config,
 )
 from autostream_core import (
-    OUTPUT_PEQ_BANDS,
     any_monitor_capturing,
     clear_user_silence_latch,
     get_active_track_identification_snapshot,
@@ -41,6 +40,7 @@ from autostream_core import (
     set_live_output_gain,
     set_user_silence_latch,
 )
+from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_dial_push import notify_state_changed
 from autostream_player_service import (
     config_airplay_mode_to_backend,

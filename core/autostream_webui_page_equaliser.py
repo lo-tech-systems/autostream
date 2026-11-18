@@ -22,7 +22,8 @@ import math
 from typing import Optional
 
 from autostream_appliances import get_all_appliances
-from autostream_core import OUTPUT_PEQ_BANDS, get_live_monitor_output_rate
+from autostream_core import get_live_monitor_output_rate
+from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
 from autostream_webui_assets import APPLIANCE_SELECTOR_CSS, REFRESH_APPLIANCE_SELECTOR_SCRIPT

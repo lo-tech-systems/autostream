@@ -26,10 +26,11 @@ ORDER = ["L0", "L1a", "L1b", "L2", "L3", "L4"]
 
 _L0 = """
 align_tone appliance_identity artwork auth bluetooth_client bluetooth_facts
-bluetooth_presentation commissioning config debounce dial_gpio dials federation
-licensing mdns monitor_client mute_state nowplaying owntone owntone_mini
-pin_pairing playback_stats player_service players rpi runtime runtime_state
-settings settings_schema start_buffer_cache system_stats sysutils wifi_network
+bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
+federation licensing mdns monitor_client mute_state nowplaying owntone
+owntone_mini pin_pairing playback_stats player_service players rpi runtime
+runtime_state settings settings_schema start_buffer_cache system_stats sysutils
+wifi_network
 """.split()
 _L2 = "align appliances dial_push dial_warnings log_policy output_usage".split()
 _L3 = """
@@ -321,7 +322,6 @@ def l2_cycle(edges) -> list[str] | None:
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_align', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_appliance_gateway', 'autostream_core', 'get_live_output_eq_status'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'OUTPUT_PEQ_BANDS'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'any_monitor_capturing'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'clear_user_silence_latch'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_active_track_identification_snapshot'),
@@ -384,7 +384,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_page_airplay', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_webui_page_airplay', 'autostream_core', 'sample_rate_mismatch_input'),
     ('A', 'autostream_webui_page_airplay', 'autostream_core', 'sample_rate_warning_text'),
-    ('A', 'autostream_webui_page_equaliser', 'autostream_core', 'OUTPUT_PEQ_BANDS'),
     ('A', 'autostream_webui_page_equaliser', 'autostream_core', 'get_live_monitor_output_rate'),
     ('A', 'autostream_webui_page_first_boot', 'autostream_core', 'update_playback_input_config'),
     ('A', 'autostream_webui_page_service', 'autostream_core', 'get_playback_snapshot'),
@@ -403,6 +402,7 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('C', 'autostream_appliance_gateway', 'autostream_player_service', 'config_airplay_mode_to_backend'),
     ('C', 'autostream_appliance_models', 'autostream_config', 'load_config'),
     ('C', 'autostream_appliance_models', 'autostream_dial_push', 'notify_state_changed'),
+    ('C', 'autostream_appliance_models', 'autostream_eq_bands', 'OUTPUT_PEQ_BANDS'),
     ('C', 'autostream_appliance_models', 'autostream_mute_state', '*'),
     ('C', 'autostream_appliance_models', 'autostream_output_usage', 'annotate_outputs'),
     ('C', 'autostream_appliance_models', 'autostream_output_usage', 'usage_for_output'),
@@ -463,6 +463,7 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('C', 'autostream_webui_page_airplay', 'autostream_players', 'SETTING_START_BUFFER_MS_DEFAULT'),
     ('C', 'autostream_webui_page_align', 'autostream_player_service', '*'),
     ('C', 'autostream_webui_page_align', 'autostream_player_service', 'get_capabilities'),
+    ('C', 'autostream_webui_page_equaliser', 'autostream_eq_bands', 'OUTPUT_PEQ_BANDS'),
     ('C', 'autostream_webui_page_first_boot', 'autostream_player_service', 'list_outputs'),
     ('C', 'autostream_webui_page_first_boot', 'autostream_player_service', 'output_supported_config_modes'),
     ('C', 'autostream_webui_page_first_boot', 'autostream_runtime', 'request_config_reload'),

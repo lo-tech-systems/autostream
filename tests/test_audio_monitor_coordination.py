@@ -482,52 +482,52 @@ class TestAllMonitors:
 
 class TestBuildMonitorEqBands:
     def test_returns_three_bands(self):
-        bands = core.build_monitor_eq_bands(1.0, -2.0, 3.0)
+        bands = eq_bands.build_monitor_eq_bands(1.0, -2.0, 3.0)
         assert len(bands) == 3
 
     def test_gain_values_forwarded(self):
-        bands = core.build_monitor_eq_bands(1.5, -2.5, 3.5)
+        bands = eq_bands.build_monitor_eq_bands(1.5, -2.5, 3.5)
         assert bands[0]["gain_db"] == pytest.approx(1.5)
         assert bands[1]["gain_db"] == pytest.approx(-2.5)
         assert bands[2]["gain_db"] == pytest.approx(3.5)
 
     def test_band_types_correct(self):
-        bands = core.build_monitor_eq_bands(0.0, 0.0, 0.0)
+        bands = eq_bands.build_monitor_eq_bands(0.0, 0.0, 0.0)
         assert bands[0]["type"] == "peak"        # 40 Hz
         assert bands[1]["type"] == "low_shelf"   # 100 Hz
         assert bands[2]["type"] == "high_shelf"  # 8 kHz
 
     def test_frequencies_correct(self):
-        bands = core.build_monitor_eq_bands(0.0, 0.0, 0.0)
+        bands = eq_bands.build_monitor_eq_bands(0.0, 0.0, 0.0)
         assert bands[0]["freq_hz"] == pytest.approx(40.0)
         assert bands[1]["freq_hz"] == pytest.approx(100.0)
         assert bands[2]["freq_hz"] == pytest.approx(8000.0)
 
     def test_converts_to_float(self):
-        bands = core.build_monitor_eq_bands(1, -2, 3)
+        bands = eq_bands.build_monitor_eq_bands(1, -2, 3)
         for b in bands:
             assert isinstance(b["gain_db"], float)
 
 
 class TestBuildOutputEqBands:
     def test_returns_six_bands(self):
-        bands = core.build_output_eq_bands(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+        bands = eq_bands.build_output_eq_bands(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
         assert len(bands) == 6
 
     def test_gain_values_forwarded(self):
         vals = [1.0, -1.0, 2.0, -2.0, 3.0, -3.0]
-        bands = core.build_output_eq_bands(*vals)
+        bands = eq_bands.build_output_eq_bands(*vals)
         for b, v in zip(bands, vals):
             assert b["gain_db"] == pytest.approx(v)
 
     def test_band_types_from_output_peq_table(self):
-        bands = core.build_output_eq_bands(0, 0, 0, 0, 0, 0)
+        bands = eq_bands.build_output_eq_bands(0, 0, 0, 0, 0, 0)
         assert bands[0]["type"] == "low_shelf"   # peq1
         assert bands[-1]["type"] == "high_shelf" # peq6
 
     def test_freq_hz_matches_output_peq_table(self):
-        bands = core.build_output_eq_bands(0, 0, 0, 0, 0, 0)
-        expected_freqs = [b["freq_hz"] for b in core.OUTPUT_PEQ_BANDS]
+        bands = eq_bands.build_output_eq_bands(0, 0, 0, 0, 0, 0)
+        expected_freqs = [b["freq_hz"] for b in eq_bands.OUTPUT_PEQ_BANDS]
         for b, freq in zip(bands, expected_freqs):
             assert b["freq_hz"] == pytest.approx(freq)
 
@@ -539,6 +539,7 @@ class TestBuildOutputEqBands:
 from contextlib import contextmanager as _contextmanager
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
+import autostream_eq_bands as eq_bands
 
 
 def _fake_connected(client):

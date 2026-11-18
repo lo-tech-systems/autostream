@@ -168,7 +168,7 @@ class TestEqMappingHelpers:
 
 class TestBandHelpers:
     def test_dial_eq_bands_follows_the_band_table(self):
-        from autostream_core import OUTPUT_PEQ_BANDS
+        from autostream_eq_bands import OUTPUT_PEQ_BANDS
         bands = models.dial_eq_bands(_oeq(peq3=1.25))
         assert [b["id"] for b in bands] == [b["key"][:-3] for b in OUTPUT_PEQ_BANDS]
         assert bands[2]["gain_db"] == 1.25

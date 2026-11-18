@@ -320,7 +320,7 @@ class TestRemoteEqualiserPageContent:
         assert "getElementById('eq-reset-btn')" not in script
 
     def test_local_equaliser_cards_match_flat_button_layout(self):
-        from autostream_core import OUTPUT_PEQ_BANDS
+        from autostream_eq_bands import OUTPUT_PEQ_BANDS
         from autostream_webui_page_equaliser import _eq_cards_html
 
         values = {band["key"]: 0.0 for band in OUTPUT_PEQ_BANDS}
