@@ -10,9 +10,8 @@ then applied here without a restart where the field allows it.
 The routes and the Setup form reach this module through intents: saving,
 reloading and applying settings, the advertisement and automatic-update
 switches, and the coordinator reload are rows bound at the bottom of the
-file. The coordinator's own functions (publishing the inputs, the playback
-tracker's input configuration, the track identification service) are reached
-through one set of hooks that the coordinator binds at import.
+file. The coordinator's track identification functions are reached through
+one set of hooks that the coordinator binds at import.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -26,6 +25,7 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Callable, Mapping, Optional
 
+import autostream_input_status as input_status
 import autostream_monitor_client as monitor_client
 import autostream_monitor_control as monitor_control
 import autostream_playback_tracking as playback_tracking
@@ -105,7 +105,6 @@ class CoordinatorHooks:
     """The coordinator functions this module calls. The coordinator owns them
     and binds them once, at import; this module never imports the coordinator."""
 
-    publish_inputs: Callable[[], None]
     apply_track_id_config_live: Callable[[str], None]
     apply_track_id_config_live_from_parsed: Callable[[object], None]
 
@@ -579,7 +578,7 @@ def update_live_input_type(
             target._default_nowplaying_metadata(), artwork=cur.artwork
         )
     runtime.request_nowplaying_republish()
-    _hooks().publish_inputs()
+    input_status.publish_inputs()
 
     return _push_input_config_with_retry(target, socket_path=socket_path)
 
@@ -607,7 +606,7 @@ def update_live_dynamic_rate_matching(
     target.dynamic_rate_matching = bool(enabled)
     # The Setup note follows the switch at once, whether or not the push
     # succeeds.
-    _hooks().publish_inputs()
+    input_status.publish_inputs()
     return _push_input_config_with_retry(target, socket_path=socket_path)
 
 

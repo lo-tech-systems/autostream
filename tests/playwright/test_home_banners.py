@@ -15,7 +15,7 @@ import _home_stub as stub
 from _home_stub import render_home, render_remote_home, start_server
 
 sys.path.insert(0, str(stub.REPO_ROOT / "core"))
-from autostream_core import SAMPLE_RATE_MISMATCH_BANNER_TEXT  # noqa: E402
+from autostream_input_status import SAMPLE_RATE_MISMATCH_BANNER_TEXT  # noqa: E402
 
 try:
     from playwright.sync_api import Page, expect  # type: ignore[attr-defined]

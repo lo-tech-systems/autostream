@@ -45,11 +45,12 @@ import autostream_state
 def _active_track():
     """Publish the inputs and the identification service flag from the
     running monitors, then read the active track from the snapshot."""
-    core._publish_inputs()
+    input_status.publish_inputs()
     core._publish_track_service(runtime._track_id_service is not None)
     return autostream_state.active_track(autostream_state.store().snapshot())
 import autostream_session as session
 import autostream_repeat as repeat
+import autostream_input_status as input_status
 
 
 # ---------------------------------------------------------------------------

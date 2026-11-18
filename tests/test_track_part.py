@@ -27,6 +27,7 @@ from track_id.models import (
     TrackIdentificationSnapshot,
     disabled_snapshot,
 )
+import autostream_input_status as input_status
 
 
 def make_monitor(index=1, **overrides) -> AudioMonitor:
@@ -155,11 +156,11 @@ def test_the_active_track_follows_the_part_and_the_inputs():
     mon.is_capturing = True
     with mon._ti_locked():
         mon._set_ti_snapshot(identified())
-    core._publish_inputs()
+    input_status.publish_inputs()
     core._publish_track_service(True)
     assert state.active_track(state.store().snapshot()).title == "Blue in Green"
     mon.is_capturing = False
-    core._publish_inputs()
+    input_status.publish_inputs()
     assert state.active_track(state.store().snapshot()).state == STATE_WAITING
     core._publish_track_service(False)
     assert state.active_track(state.store().snapshot()).state == STATE_DISABLED

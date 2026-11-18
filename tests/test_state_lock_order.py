@@ -42,6 +42,7 @@ from output_fakes import FakeBackend, FakeSource, group_row, row
 from autostream_state import SessionPart, SettingsPart
 from autostream_state.store import StateStore
 import autostream_playback_tracking as playback_tracking
+import autostream_input_status as input_status
 
 
 @pytest.fixture
@@ -163,12 +164,12 @@ def test_the_repeat_overlay_lock_is_released_before_subscribers_run(tracked_sing
 def test_the_inputs_publish_lock_is_released_before_subscribers_run(tracked_singleton, monkeypatch):
     import autostream_core as core
 
-    monkeypatch.setattr(core, "_inputs_publish_lock", lockcheck.TrackedLock("inputs"))
+    monkeypatch.setattr(input_status, "_inputs_publish_lock", lockcheck.TrackedLock("inputs"))
     monkeypatch.setattr(core.runtime, "_monitors_lock", lockcheck.TrackedLock("monitors"))
     seen = []
     tracked_singleton.subscribe(lambda change: seen.append(lockcheck.held()))
     core._set_monitor_runtime_info(connected=True)
-    core._publish_inputs()
+    input_status.publish_inputs()
     assert seen and all(held == frozenset() for held in seen)
     assert lockcheck.ACQUIRED_UNDER_STORE == []
     assert tracked_singleton.lock_violations == []

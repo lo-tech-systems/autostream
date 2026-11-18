@@ -26,7 +26,7 @@ if _CORE not in sys.path:
 
 from fake_store import FakeStore, fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_track
 import autostream_appliance_models as models
-from autostream_core import SAMPLE_RATE_MISMATCH_BANNER_TEXT
+from autostream_input_status import SAMPLE_RATE_MISMATCH_BANNER_TEXT
 from autostream_webui_api import send_status_json
 from autostream_webui_page_airplay import send_airplay_page
 

@@ -549,11 +549,12 @@ from fake_store import fake_repeat, fake_session
 import autostream_repeat as repeat
 import autostream_live_config as live_config
 import autostream_state as state
+import autostream_input_status as input_status
 
 
 def _inputs():
     """Publish the inputs part from the running monitors and return it."""
-    core._publish_inputs()
+    input_status.publish_inputs()
     return autostream_state.store().snapshot().inputs
 
 
@@ -1769,7 +1770,7 @@ class TestSampleRateBanner:
         mon = _make_monitor(input_index=1)
         mon.rate_mismatch_hz = 44100
         assert _inputs().sample_rate_warning_text == self._TEXT
-        assert _inputs().sample_rate_warning_text == core.SAMPLE_RATE_MISMATCH_BANNER_TEXT
+        assert _inputs().sample_rate_warning_text == input_status.SAMPLE_RATE_MISMATCH_BANNER_TEXT
         assert _inputs().sample_rate_mismatch_input == 1
 
     def test_no_reported_mismatch_gives_no_text_whatever_the_local_flag(self):
@@ -1812,7 +1813,7 @@ class TestRateMatchingNoteText:
 
     def test_flag_on_with_an_older_monitor_says_it_needs_updating(self):
         _make_monitor(input_index=1, dynamic_rate_matching=True)
-        assert _inputs().rate_texts(1)[0] == core.RATE_MATCHING_NOTE_MONITOR_OLD
+        assert _inputs().rate_texts(1)[0] == input_status.RATE_MATCHING_NOTE_MONITOR_OLD
 
     def test_flag_on_with_a_supporting_monitor_gives_the_default(self):
         mon = _make_monitor(input_index=1, dynamic_rate_matching=True)
@@ -1857,7 +1858,7 @@ class TestRateMatchingNoteText:
         assert _inputs().rate_texts(2)[0] == autostream_state.RATE_MATCHING_NOTE_DEFAULT
 
         second._ingest_status({"started": True, "negotiated_hz": 48000, "rate_mismatch_hz": 44100})
-        assert _inputs().sample_rate_warning_text == core.SAMPLE_RATE_MISMATCH_BANNER_TEXT
+        assert _inputs().sample_rate_warning_text == input_status.SAMPLE_RATE_MISMATCH_BANNER_TEXT
         assert _inputs().sample_rate_mismatch_input == 2
         assert _inputs().rate_texts(1)[0] == autostream_state.RATE_MATCHING_NOTE_DEFAULT
         assert _inputs().rate_texts(2)[0] == (

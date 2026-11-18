@@ -1,0 +1,9 @@
+# The inputs part's builders moved out of the coordinator.
+autostream_core._publish_inputs -> autostream_input_status.publish_inputs  alias=input_status
+autostream_core._build_inputs_part -> autostream_input_status._build_inputs_part  alias=input_status
+autostream_core._inputs_publish_lock -> autostream_input_status._inputs_publish_lock  alias=input_status
+autostream_core._inputs_writer -> autostream_input_status._inputs_writer  alias=input_status
+autostream_core._rate_matching_note_for -> autostream_input_status._rate_matching_note_for  alias=input_status
+autostream_core._sample_rate_text_for -> autostream_input_status._sample_rate_text_for  alias=input_status
+autostream_core.SAMPLE_RATE_MISMATCH_BANNER_TEXT -> autostream_input_status.SAMPLE_RATE_MISMATCH_BANNER_TEXT  alias=input_status
+autostream_core.RATE_MATCHING_NOTE_MONITOR_OLD -> autostream_input_status.RATE_MATCHING_NOTE_MONITOR_OLD  alias=input_status

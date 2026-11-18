@@ -42,6 +42,7 @@ from track_id.models import (
 
 from test_track_id_core import _active_monitor, _make_client, _make_service
 import autostream_runtime as runtime
+import autostream_input_status as input_status
 
 
 ART_URL = "https://art.example/kind-of-blue.jpg"
@@ -101,7 +102,7 @@ class _Rig:
         fn(*args)
 
     def publish(self) -> None:
-        core._publish_inputs()
+        input_status.publish_inputs()
         core._publish_track_service(runtime._track_id_service is not None)
 
     def snapshot(self):
