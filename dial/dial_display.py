@@ -162,8 +162,8 @@ _PAGE_ORDER = ("main", "repeat", "eq")
 
 # The idle screen's offline flash: the Wi-Fi glyph alternates grey/red,
 # switching every half period (a 1 Hz cycle). The repaint loop schedules
-# itself onto these boundaries — see _next_repaint_deadline()/
-# the wifi_flash timer; nothing else in the process ticks for it.
+# itself onto these boundaries (the wifi_flash timer); nothing else ticks
+# for it.
 WIFI_FLASH_HALF_PERIOD_S = 0.5
 
 # The "Restarting..." screen is meant to end when the reboot takes the panel
@@ -180,13 +180,13 @@ _HIDDEN_OVERLAY = OverlayState()
 #
 # One policy row per screen, read by the manager wherever the screen showing
 # decides what happens: what the touch side is told, how it is painted,
-# whether and when it times out, what the poll does to it when nothing
-# plays, and what a close hands back to. Adding a screen is adding a row
+# whether and when it times out, what a fold that finds nothing playing does
+# to it, and what a close hands back to. Adding a screen is adding a row
 # here plus its own opener and painter; nothing else in the manager should
 # need to name screens.
 # ---------------------------------------------------------------------------
 
-# How the poll reacts to a screen when it finds nothing playing.
+# How a fold that finds nothing playing treats a screen.
 IDLE_KEEP = "keep"                       # the screen stays; its own timeout closes it
 IDLE_KEEP_WITH_FOCUS = "keep_with_focus" # kept only while an idle focus gives it something to show
 
@@ -299,8 +299,7 @@ class _Timer(NamedTuple):
 # Rich/large artist-row fallback text (see _effective_overlay_locked): shown
 # in the artist line's own slot when the tier draws one but the focus is idle
 # or pending, so there is no real artist to put there. Compact draws no
-# artist row at all, and base keeps its own row unchanged, so the constant is
-# never read there.
+# artist row and base keeps its own, so the constant is never read there.
 IDLE_ARTIST_TEXT = "Idle"
 
 
@@ -346,74 +345,43 @@ class DialDisplay:
         backend_factory=NoOpBackend,
         backend_factory_builder=None,
     ) -> None:
-        self._lock = threading.Lock()
-        self._config = config
-        # The logical size frames are composed/hit-tested in, the physical
-        # size they are resampled to, and the density per LOGICAL pixel —
-        # one LayoutContext per config object (see dial_display_profiles.
-        # layout_context_for()), written only under self._lock (here and in
-        # update_config). No touch-thread access.
-        self._layout = layout_context_for(config)
-        # Physical pixel pitch (mm/px) per LOGICAL pixel, kept as its own
-        # attribute since it predates self._layout and is what tests and
-        # _layout_metrics() read directly — always equal to self._layout.
-        # mm_per_px.
-        self._mm_per_px = self._layout.mm_per_px
-        self._logo_path = logo_path
-        self._replay_logo_path = replay_logo_path
-        self._backend_factory = backend_factory
-        # Optional screen_type -> zero-arg-backend-factory resolver, used to
-        # rebuild self._backend_factory on a live screen_type swap. Left as
-        # an injected callable (rather than importing a concrete backend
-        # module here) so this facade stays free of hardware-specific
-        # coupling; create_dial_display() supplies the real profile-driven
-        # resolver, and tests that never swap can leave this unset.
-        self._backend_factory_builder = backend_factory_builder
-        # Pixel work (artwork fit, rotate, BGR) lives entirely in the
-        # compositor; this manager does I/O (fetch, decode, load_logo) and
-        # hands finished/raw bases to it. The compositor is stateless — one
-        # shared instance is safe.
-        self._compositor = DialDisplayCompositor()
-
-        self._backend: DisplayBackend | None = None
-        self._backend_name = "noop"
-        # Profile key of the backend actually open right now ("" when none).
-        # Distinct from self._config.screen_type, which is what was REQUESTED.
-        self._active_screen_type = ""
-        self._backend_open = False
-        self._backend_loaded = False
-        self._showing = "noop"
-        self._last_error = ""
-        self._last_error_at: float | None = None
-
-        # Artwork identity dedupe state — only the current rendered image is
-        # kept in memory; nothing persists across restart.
-        self._source_artwork_key = ""
-        self._current_rendered_image = None
-
-        # The frame most recently pushed to the panel (post-compose,
-        # post-resample, post-rotate/BGR) — retained for on-demand
-        # screenshotting only. Never mutated after a push (a later push
-        # assigns a new object), so holding the reference costs nothing.
-        # Cleared whenever the panel no longer shows it (disable/sleep/
-        # clear/backend swap). See latest_frame_png().
-        self._last_frame: Image.Image | None = None
-        # The panel frame's own bytes, viewed as words for the change-region
-        # planner (see dial_display_windows), keyed by identity to the very
-        # frame object self._last_frame holds: (frame, words) or None. A
-        # cache, never authority: whenever the pair no longer names
-        # self._last_frame the view is rebuilt from that frame, so the
-        # places that drop self._last_frame need not know this exists.
-        self._panel_words = None
-
-        # Idle/sleep state — set while the display has shown the logo with no
-        # playing targets on the network; cleared on any activity or disable.
-        self._idle_started_at: float | None = None
-        self._display_sleeping = False
-
-        self._log_limiter = dial_artwork.RateLimitedLogger()
-
-        # ---- Touch overlay plumbing -----------------------------------
+        # FIELD TABLE. "Plain read" is a read with no lock: one reference or number,
+        # atomic under the GIL, so a stale value costs at most one extra tick.
+        #
+        #   _lock                        the one lock; it may enclose a backend push.
+        #   _config, _layout, _mm_per_px written under _lock (here, update_config on the
+        #                                HTTP thread); plain reads from any thread.
+        #   _backend*, _active_screen_type, _showing, _last_error*, _last_frame,
+        #   _panel_words                 under _lock (repaint and HTTP threads);
+        #                                _backend_open and _showing are also plain reads.
+        #   _source_artwork_key, _current_rendered_image, _current_base_image
+        #                                under _lock (repaint thread; HTTP via update_config).
+        #   _idle_started_at, _display_sleeping
+        #                                under _lock; _display_sleeping is also a plain
+        #                                read (touch thread, core thread).
+        #   _noncomposited_generation    bumped under _lock; plain read by the touch thread.
+        #   _overlay_snapshot            written by set_overlay() under the leaf lock;
+        #                                plain read.
+        #   _overlay_signal              any thread.
+        #   _core, _subscription, _repaint_thread, _repaint_stop_event
+        #                                lifecycle: set by start() and stop().
+        #   _applied, _tick_shown_level  repaint thread, under _apply_lock.
+        #   _touch_activity_pending, _screen_request, _page_request, _pressed,
+        #   _repeat_close_reveal, _info_value_index, _info_value_hint(_over),
+        #   _output_open_id, _warnings_next, _info_gather_seq
+        #                                requests: plain writes from the touch thread.
+        #                                The repaint thread folds or clears them under _lock.
+        #   _screen and every state attribute (_selector, _picker, _info, _info_value,
+        #   _repeat_screen, _outputs, _eq, _output_detail, _restarting,
+        #   _warning_screen, _warnings_page), _info_value_return, _outputs_return,
+        #   _repeat_layout_shown
+        #                                written under _lock: the repaint thread, the idle
+        #                                tick, and the HTTP thread (update_config). The
+        #                                touch entries and touch_surface() read them plain.
+        #   _controls, _repeat_line      collaborators; their modules' tables say who
+        #                                writes what.
+        #   _get_info_rows               set once at startup by set_info_provider().
+        #   _timers                      built below; run by the repaint thread.
         #
         # LOCK ORDER (binding): self._lock may enclose the SPI/backend push
         # (see _display_locked). self._overlay_snapshot_lock is a small LEAF
@@ -427,16 +395,65 @@ class DialDisplay:
         # This is what keeps touch cadence off self._lock: set_overlay() is
         # the only thing the touch thread ever calls into here, and it never
         # touches self._lock — the touch thread never takes self._lock.
+        self._lock = threading.Lock()
+        self._config = config
+        # Logical (compose) size, physical size and density per logical pixel:
+        # one LayoutContext per config object (dial_display_profiles.layout_context_for()).
+        self._layout = layout_context_for(config)
+        # Physical pixel pitch per logical pixel, always self._layout.mm_per_px;
+        # kept as its own attribute because tests and _layout_metrics() read it.
+        self._mm_per_px = self._layout.mm_per_px
+        self._logo_path = logo_path
+        self._replay_logo_path = replay_logo_path
+        self._backend_factory = backend_factory
+        # Optional screen_type -> backend-factory resolver for a live screen_type
+        # swap. Injected, so this module imports no concrete backend; tests that
+        # never swap leave it unset.
+        self._backend_factory_builder = backend_factory_builder
+        # Pixel work lives in the compositor, which is stateless: one shared
+        # instance is safe. This manager does the I/O (fetch, decode, load_logo).
+        self._compositor = DialDisplayCompositor()
+
+        self._backend: DisplayBackend | None = None
+        self._backend_name = "noop"
+        # Profile key of the backend open now ("" when none); self._config.screen_type
+        # is what was requested.
+        self._active_screen_type = ""
+        self._backend_open = False
+        self._backend_loaded = False
+        self._showing = "noop"
+        self._last_error = ""
+        self._last_error_at: float | None = None
+
+        # Artwork identity dedupe: only the current rendered image is kept.
+        self._source_artwork_key = ""
+        self._current_rendered_image = None
+
+        # The frame last pushed to the panel (post-compose, resample, rotate, BGR),
+        # kept for screenshots. Never mutated after a push; cleared whenever the
+        # panel no longer shows it (disable, sleep, clear, backend swap).
+        self._last_frame: Image.Image | None = None
+        # The panel frame's bytes as words for the change-region planner, keyed by
+        # identity to self._last_frame: (frame, words) or None. A cache, never
+        # authority: when the pair no longer names self._last_frame the view is
+        # rebuilt, so the places that drop self._last_frame need not know of it.
+        self._panel_words = None
+
+        # Set while the logo shows with nothing playing; cleared on activity or disable.
+        self._idle_started_at: float | None = None
+        self._display_sleeping = False
+
+        self._log_limiter = dial_artwork.RateLimitedLogger()
+
         self._overlay_snapshot_lock = threading.Lock()
         self._overlay_snapshot = OverlayState()
         self._overlay_signal = _Signal()
-        # (service, volume, muted) as shown at the end of the last tick
-        # with something playing; see _apply_playing_tick.
+        # (service, volume, muted) shown at the end of the last playing tick.
         self._tick_shown_level: tuple = (None, None, False)
-        # The appliance model, which folds the appliances on its own thread
-        # and publishes snapshots. While started, this view subscribes and its
-        # repaint thread folds each new snapshot into the screen (see
-        # _apply_snapshot). The caller builds, starts and stops the core.
+        # The appliance model: it folds the appliances on its own thread and
+        # publishes snapshots. While started, this view subscribes and its repaint
+        # thread folds each into the screen (_apply_snapshot). The caller builds,
+        # starts and stops the core.
         self._core = core
         self._core.set_io(CoreIO(
             on_artwork_error=self._record_error, log_limiter=self._log_limiter,
@@ -444,181 +461,103 @@ class DialDisplay:
         self._core.set_eq_veto(self._compact_tier)
         self._core.set_idle_hold(self._holds_idle_state)
         self._subscription: int | None = None
-        # The last snapshot folded into the screen, and the lock that keeps
-        # two threads from folding at once (the repaint thread; a test
-        # driving the core by hand).
+        # The last snapshot folded into the screen, and the lock that keeps two
+        # threads (the repaint thread; a test driving the core) from folding at once.
         self._applied = self._core.snapshot()
         self._apply_lock = threading.Lock()
-        # Set by notify_touch_activity() (touch thread, lock-free); consumed
-        # by the repaint thread under self._lock.
         self._touch_activity_pending = False
         self._repaint_thread: threading.Thread | None = None
         self._repaint_stop_event = threading.Event()
-        # The last base image handed to _display_locked (pre-overlay,
-        # pre-rotate/BGR) — logo or panel-fitted artwork. The repaint thread
-        # recomposes THIS against the newest overlay snapshot when only the
-        # overlay changed, so a poll-driven frame is never required just to
-        # show/update/hide the overlay.
+        # The last base image handed to _display_locked (pre-overlay, pre-rotate/BGR):
+        # logo or panel-fitted artwork. The repaint thread recomposes it against the
+        # newest overlay snapshot when only the overlay changed.
         self._current_base_image = None
 
-        # Everything about the appliances (now-playing, artwork source,
-        # focus, roster, page-dots gate, idle affordance, outputs, EQ, link,
-        # warnings, update watch) lives in the core. The repaint thread
-        # reads its newest snapshot at compose time and the touch/worker
-        # threads read it lock-free.
-        # Non-composited-state notification (screen cleared or asleep) for
-        # the touch side to observe — see _mark_noncomposited_locked().
+        # See _mark_noncomposited_locked().
         self._noncomposited_generation = 0
 
         # The controls windows and the reveal slide (dial_display_controls).
-        # The touch thread blind-assigns the two windows' deadlines; the
-        # repaint thread clears each lock-free when it lapses; the slide's
-        # fields change only under self._lock, on the repaint thread and,
-        # through update_config, the HTTP thread. The deadline scheduling and
-        # the overlay gates read all of it lock-free.
         self._controls = ControlsReveal()
 
-        # ---- Selector, repeat and picker screen state -------------------
-        # self._screen is written under self._lock — usually by the repaint
-        # thread (_apply_screen_requests_locked()/_close_secondary_locked()),
-        # occasionally by the HTTP thread (update_config) and by the idle
-        # tick (_apply_idle_tick, _sleep_locked) — and read lock-free elsewhere (a plain str read is
-        # atomic) — same discipline as the other lock-free-read fields above.
-        # "main": the now-playing screen. "selector": the appliance list.
-        # "repeat": the repeat screen. "picker": the replay picker.
-        # "warnings": the card paged from the bell. "update"/"update_result":
-        # status pages (see WARNING_DESCRIPTORS).
-        # "restarting": the reboot screen.
+        # ---- Screen state ------------------------------------------------
+        # "main" is the now-playing screen; the other names are the keys of
+        # SCREEN_POLICIES.
         self._screen = "main"
-        # Last-built rows, refreshed every poll tick regardless of whether
-        # the selector is actually open (_refresh_list_rows) so opening
-        # it never waits on a poll; published under self._lock. None until
-        # the first poll runs.
+        # Last-built rows, refreshed every fold whether or not the list is open
+        # (_refresh_list_rows), so opening it never waits. None until the first fold.
         self._selector: ListScreenState | None = None
-        # The repeat screen's own state — built once when it opens (see
-        # ApplianceScreenState); None while the main/selector/picker screen is
-        # showing. Written by the repeat thread under self._lock, read
-        # lock-free by the touch thread's repeat_toggle_tap()/repeat_start_
-        # tap()/repeat_stop_tap() entries.
+        # Built once when the repeat screen opens; None while another screen shows.
         self._repeat_screen: ApplianceScreenState | None = None
-        # Plain str written by _display_repeat_locked from the RepeatViewState
-        # it just built ("enable" or "replaying") — read lock-free by
-        # touch_surface() (with at most one repaint's staleness, the same
-        # discipline _check_secondary_timeout's own lock-free reads
-        # document) to decide whether the compact tier's own repeat_replay
-        # surface applies. Never written or read by any other tier's own
-        # touch_surface() branch.
+        # "enable" or "replaying", stamped by _display_repeat_locked from the view
+        # it just built; touch_surface() reads it for the compact tier's replay surface.
         self._repeat_layout_shown: str = "enable"
         # The replaying counter's painted-second reference and the main page's
-        # replay timer line (dial_display_repeat_line). The touch thread
-        # writes the timer's arm (picker_pick); the repaint thread clears it
-        # lock-free when it lapses or a replay is refused; the painters
-        # commit the rest under self._lock. The deadline scheduling and the
-        # repeat tick read all of it lock-free.
+        # replay timer line (dial_display_repeat_line).
         self._repeat_line = RepeatLine()
-        # The replay picker's own rows/paging — refreshed every poll tick
-        # regardless of whether it is open, mirroring self._selector.
+        # The replay picker's rows and paging, refreshed like self._selector.
         self._picker: ListScreenState | None = None
-        # The info page's own state — written under self._lock by its
-        # opener (_open_info_locked) and by _gather_info's fold-in (its own
-        # short-lived daemon thread: one assignment under the lock, no I/O
-        # while held).
+        # The info page's state: written by its opener (_open_info_locked) and by
+        # _gather_info's fold-in (a short-lived daemon thread; one assignment under
+        # the lock, no I/O while held).
         self._info: InfoState | None = None
-        # Bumped by open_info() (touch thread, no lock — a plain int write)
-        # each time the page (re)opens; a landing gather compares its own
-        # captured value against this one and drops its result if they no
-        # longer match (the page closed and reopened, or closed outright).
+        # Bumped by open_info() each time the page (re)opens; a landing gather
+        # drops its result if its captured value no longer matches.
         self._info_gather_seq = 0
-        # The compact info page's own drill-in state — same write/read
-        # discipline as self._info, kept alongside it (not cleared when the
-        # value view opens: the view is the list's child and reads its rows
-        # from self._info at every paint — see _display_info_value_locked).
+        # The compact info page's drill-in state, kept beside self._info (not cleared
+        # when the value view opens: the view reads its rows from self._info).
         self._info_value: InfoValueState | None = None
-        # Touch-thread plain write: the row a LIST_ROW tap on the compact
-        # info list chose, consumed by the value view's opener — the
-        # self._output_open_id shape.
+        # The row a LIST_ROW tap on the compact info list chose, consumed by the
+        # value view's opener.
         self._info_value_index: int | None = None
-        # Touch-thread plain write: the (label, text) hint a tap on an
-        # unauthorised selector row asks the value view to show, consumed
-        # by the view's opener like self._info_value_index.
+        # The (label, text) hint a tap on an unauthorised row asks the value view
+        # to show, consumed by the opener like self._info_value_index.
         self._info_value_hint: tuple[str, str] | None = None
-        # The screens the pending hint may open over, set with each hint
-        # that wants more than the default; reset by _open_info_value_locked.
+        # The screens the pending hint may open over; reset by _open_info_value_locked.
         self._info_value_hint_over: tuple[str, ...] = _HINT_OVER_DEFAULT
         # The screen a hint view returns to: the one it opened over.
-        # Written only by _open_info_value_locked.
         self._info_value_return: str = "selector"
         # Zero-arg callable -> tuple[InfoRow, ...], wired by set_info_provider()
-        # at startup (dial_main.py, after the HTTP server exists). None
-        # (e.g. a NoOpDisplayStatusProvider stand-in, or before wiring runs)
-        # means _gather_info() falls back to the placeholder rows.
+        # after the HTTP server exists. None: _gather_info() uses the placeholders.
         self._get_info_rows = None
-        # The outputs list screen's own state (appliance, page, clock) —
-        # written under self._lock by its opener and by the snapshot fold's
-        # page clamp; read lock-free by the touch thread's outputs_row_tap()/
-        # output_toggle_tap()/output_volume_tap() entries, mirroring
-        # self._repeat_screen's discipline. Its rows are the core's, less
-        # the outputs another appliance has taken, read at use.
+        # The outputs list's state (appliance, page, clock). Its rows are the
+        # core's, less the outputs another appliance has taken, read at use.
         self._outputs: ApplianceScreenState | None = None
-        # The EQ page's own state (appliance, clock) — same discipline; its
-        # bands are the core's.
+        # The EQ page's state (appliance, clock); its bands are the core's.
         self._eq: "ApplianceScreenState | None" = None
 
-        # The per-output detail page's own state — same write/read
-        # discipline as self._outputs.
+        # The per-output detail page's state.
         self._output_detail: OutputDetailState | None = None
-        # Touch-thread plain write: the row a LIST_ROW tap on the outputs
-        # list chose, consumed by the detail page's opener.
+        # The row a LIST_ROW tap on the outputs list chose, consumed by the
+        # detail page's opener.
         self._output_open_id: str | None = None
-        # The restarting screen's own state, same write/read discipline as
-        # self._info (opener under self._lock, cleared by
-        # _close_secondary_locked via the policy table).
+        # The restarting screen's state.
         self._restarting: "RestartingState | None" = None
-        # The status page on screen, if any (the one state attribute every
-        # status row in the policy table shares).
+        # The status page on screen, if any (shared by every status row).
         self._warning_screen: "WarningScreenState | None" = None
-        # The warnings card on screen, if any, and a Next tap the touch
-        # thread has made that the repaint thread has not yet folded in.
+        # The warnings card on screen, if any, and a Next tap the touch thread
+        # made that the repaint thread has not yet folded in.
         self._warnings_page: "WarningsPageState | None" = None
         self._warnings_next = False
-        # The (zone, index) currently pressed on whichever screen is
-        # showing — one channel for every screen, written by the touch
-        # thread via set_pressed() and read at compose time by each
-        # screen's own frame builder (_effective_overlay_locked,
-        # _build_repeat_view_locked, _build_row_list_state_locked), which
-        # resolves it against its
-        # own geometry. index is only meaningful for LIST_ROW; every other
-        # zone carries None. Plain attribute, same discipline as
-        # dial_touch's own pressed-zone tracking.
+        # The (zone, index) pressed on whichever screen shows: one channel for
+        # every screen, resolved at compose time against that screen's geometry.
+        # index is meaningful only for LIST_ROW.
         self._pressed: "tuple[TouchZone, int | None] | None" = None
-        # One-shot: set (by toggle_repeat_screen(), when the repeat screen
-        # closes via a DOTS tap) and consumed (by TouchEventSource._poll_
-        # surface(), via consume_repeat_close_reveal() below) exclusively
-        # on the touch thread — both the setter and the getter run there,
-        # so this needs no lock at all, unlike almost everything else this
-        # class shares between threads. Tells the touch side to reveal the
-        # main screen's volume overlay on return, instead of leaving bare
-        # artwork on screen (item 1 of the repeat screen's touch design —
-        # see toggle_repeat_screen() and dial_touch.TouchStateMachine.
-        # force_overlay_visible()).
+        # One-shot, touch thread only (set by cycle_pages() when a page closes via
+        # a DOTS tap, read by consume_repeat_close_reveal()): tells the touch side
+        # to reveal the main screen's volume overlay on return.
         self._repeat_close_reveal = False
-        # The page the outputs list goes back to when it closes: the main
-        # page it was opened from ("main", "repeat" or "eq"), recorded by
-        # _open_outputs_locked() and kept across the per-output detail
-        # page, whose own back returns to the list. See _back_target().
+        # The page the outputs list goes back to ("main", "repeat" or "eq"),
+        # recorded by _open_outputs_locked() and kept across the per-output detail
+        # page. See _back_target().
         self._outputs_return = "main"
-        # Touch-thread requests (open_selector/close_list/list_page/
-        # toggle_repeat_screen/open_picker) are flag writes only — plain
-        # str/int, no lock — folded into self._screen/self._selector/
-        # self._repeat_screen/self._picker by the repeat thread
-        # (_apply_screen_requests_locked), the same pattern
-        # _touch_activity_pending uses. None means "no pending request".
+        # Pending touch-thread requests: plain str/int writes, folded into the
+        # screen state by _apply_screen_requests_locked. None: no request.
         self._screen_request: str | None = None
         self._page_request = 0
 
         # The repaint loop's timers, in the order they run on a timeout wake.
-        # Each row's callables are methods of this display, so they look up
-        # the lock and the collaborators when called.
+        # Each row's callables are methods of this display, so they look up the
+        # lock and the collaborators when called.
         self._timers = (
             _Timer("secondary_timeout", _no_deadline, self._check_secondary_timeout),
             _Timer("repeat_line", self._repeat_line_deadline, self._repeat_line_fire),
@@ -852,28 +791,15 @@ class DialDisplay:
     def notify_touch_activity(self) -> None:
         """Tell the display that touch activity happened right now.
 
-        Does what a snapshot with a visible playing appliance does (see
-        _apply_snapshot): resets the idle countdown and, if asleep, wakes.
+        Does what a snapshot with a visible playing appliance does (see _apply_snapshot): resets the
+        idle countdown and, if asleep, wakes. It resets idle, it does not disable sleep: with
+        nothing playing the next fold restarts the countdown, so a user who keeps touching for
+        longer than DISPLAY_IDLE_SLEEP_SECONDS still sees the panel sleep.
 
-        Deliberate consequence: this does NOT disable idle sleep, only
-        resets it. With nothing playing, the very next poll tick (up to
-        the poll interval later) finds no targets and restarts the idle
-        countdown from this moment. A user who keeps touching the
-        overlay for longer than DISPLAY_IDLE_SLEEP_SECONDS while nothing
-        plays will still eventually see the display sleep underneath them —
-        touch resets idle, it does not disable sleep.
-
-        Takes NO lock: this runs on the touch thread, which must never block
-        on self._lock (it can be held across a whole SPI frame push, which
-        would stall the very volume step the user is asking for). The actual
-        idle reset and wake are applied by the repaint thread, which already
-        holds self._lock when it composes — see _apply_touch_activity_locked.
-        Setting the flag and signalling are both single atomic operations.
-        Also re-opens the compact tier's own controls window (see
-        ControlsReveal.show_compact()) — a plain float write beside the flag
-        write above, harmless on every other tier, where nothing ever reads
-        it.
-        """
+        Takes NO lock: this runs on the touch thread, which must never block on self._lock (it can
+        be held across a whole SPI push). The idle reset and wake are applied by the repaint thread
+        (_apply_touch_activity_locked). Also reopens the compact tier's controls window
+        (ControlsReveal.show_compact()), a plain float write that nothing reads on other tiers."""
         self._touch_activity_pending = True
         self._controls.show_compact(time.monotonic())
         self._overlay_signal.set()
@@ -885,13 +811,11 @@ class DialDisplay:
         return self._display_sleeping
 
     def _apply_touch_activity_locked(self) -> bool:
-        """Apply a pending touch-activity notification. Caller holds
-        self._lock; runs on the repaint thread, not the touch thread.
+        """Apply a pending touch-activity notification. Caller holds self._lock; runs on the repaint
+        thread.
 
-        Returns True when this call actually woke the display from sleep —
-        the caller then asks the core for a fold (core.request_fold())
-        AFTER releasing self._lock.
-        """
+        Returns True when this call woke the display from sleep; the caller then asks the core for a
+        fold (core.request_fold()) AFTER releasing self._lock."""
         if not self._touch_activity_pending:
             return False
         self._touch_activity_pending = False
@@ -910,31 +834,15 @@ class DialDisplay:
         return False
 
     def set_overlay(self, state: OverlayState) -> None:
-        """Publish a new touch-overlay snapshot and signal the repaint
-        thread to recompose/push it.
+        """Publish a new touch-overlay snapshot and signal the repaint thread to recompose and push
+        it.
 
-        Never touches self._lock — see the LOCK ORDER comment in __init__.
-        Safe to call from the touch thread at touch cadence: the write here
-        is a single leaf-lock-guarded assignment, and the actual compose +
-        SPI push happens later, asynchronously, on the repaint thread.
-
-        A visible overlay ends an artwork-tap hide window (see
-        hide_controls()) early: a normal reveal — the ordinary tap-to-show
-        path, or an always-show track that just resumed showing controls —
-        must not be fighting a hide window that still has time left on it.
-        Plain float write, same discipline as the window's own start. Also
-        opens the compact tier's own controls window (see
-        ControlsReveal.show_compact()) — this is the reveal path
-        (on_reveal_overlay -> set_overlay(visible=True)), so a compact
-        screen's first touch after being hidden shows its controls rather
-        than only ending the (irrelevant, off-compact) hide window.
-
-        A visible overlay leaves any reveal slide alone: the repaint that
-        finds the controls back turns a running slide-out around from where
-        it has got, or starts the slide-in, on the rich and large tiers (see
-        ControlsReveal.advance()); this method never stamps or clears the
-        slide, which belongs to the painters.
-        """
+        Never touches self._lock (see LOCK ORDER in __init__): the write is one leaf-lock-guarded
+        assignment at touch cadence, and the compose and SPI push happen later on the repaint
+        thread. A visible overlay ends an artwork-tap hide window early (hide_controls()) and opens
+        the compact tier's controls window (ControlsReveal.show_compact()), both plain float writes.
+        It leaves any reveal slide alone: the repaint that finds the controls back turns a running
+        slide-out around, or starts the slide-in (ControlsReveal.advance())."""
         if state.visible:
             self._controls.end_hide()
             self._controls.show_compact(time.monotonic())
@@ -943,37 +851,17 @@ class DialDisplay:
         self._overlay_signal.set()
 
     def persistent_overlay_shown(self) -> bool:
-        """True while the display is holding the controls overlay visible
-        on its own (always_show_controls on OR the resolved content tier is
-        compact, a controllable appliance shown, backend open, not asleep,
-        and the MAIN screen is showing — never true while the appliance
-        selector is open). The compact tier's own screens have no reveal
-        step of their own regardless of the always_show_controls setting —
-        every cell on a compact screen is already a control, so a
-        reveal-then-arm rule would cost every action a second tap; see
-        _compact_tier(). Plain attribute reads;
-        the touch side reads it through touch_surface() once per loop
-        iteration, so a finger can never arm against controls that are not actually drawn —
-        when this turns False (screen went idle, went to sleep, the setting
-        was turned off, or the selector opened), the touch side is forced
-        back to reveal-on-touch within one loop tick.
+        """True while the display holds the controls overlay visible on its own: the held-overlay
+        predicate (_held_overlay()), the backend open and the main screen showing. Plain attribute
+        reads. The touch side reads it through touch_surface() once per loop, so a finger never arms
+        against controls that are not drawn; when it turns False (idle, asleep, the setting off, a
+        list open, an artwork-tap hide window) the touch side drops back to reveal-on-touch within
+        one loop tick.
 
-        "A controllable appliance shown" is the snapshot carrying a now_playing —
-        true for both real artwork and the playing-placeholder logo shown
-        across a track change, false only when nothing is playing at all.
-        The self._showing != "noop" term covers the moment right after the
-        panel is cleared (see _clear_locked): the panel is momentarily blank
-        even though the snapshot's now_playing may still be set, so nothing is
-        actually on screen for the overlay to be held over until the next
-        repaint recomposes a base image. An artwork tap (see hide_controls())
-        also drops this to False for its own window, regardless of
-        always_show_controls — the bands are hidden either way.
-
-        On the compact tier, always_show_controls is ignored (a compact
-        screen is never held permanently): instead the controls show for a
-        few seconds after a touch/reveal/screen change and then fade back
-        to bare artwork on their own — see _compact_controls_hidden().
-        """
+        The compact tier ignores always_show_controls: its controls show for a few seconds after a
+        touch and then fade to bare artwork (_compact_controls_hidden()). The self._showing !=
+        "noop" term covers the moment right after the panel is cleared, when the snapshot's
+        now_playing may still be set but nothing is on screen."""
         return (
             self._held_overlay(time.monotonic())
             and self._backend_open
@@ -981,9 +869,8 @@ class DialDisplay:
         )
 
     def _frame_controllable(self, snap) -> bool:
-        """Whether a controllable appliance is on screen: the snapshot carries
-        a now_playing, the panel is not cleared and it is not asleep. Plain
-        reads, safe from any thread."""
+        """Whether a controllable appliance is on screen: the snapshot carries a now_playing, the
+        panel is not cleared and it is not asleep. Plain reads, safe from any thread."""
         return (
             snap.now_playing is not None
             and self._showing != "noop"
@@ -1008,42 +895,25 @@ class DialDisplay:
         return self._layout_metrics().content_tier == CONTENT_COMPACT
 
     def _compact_controls_hidden(self) -> bool:
-        """Compact tier only: True once the controls window (see
-        ControlsReveal.show_compact()) has lapsed, or was never opened — a
-        freshly shown compact screen starts hidden (bare artwork), by
-        design: controls only appear after a touch/reveal, never flashed on
-        appearance. Always False off the compact tier. Plain float read."""
+        """Compact tier only: True once the controls window (ControlsReveal.show_compact()) has
+        lapsed or was never opened. A freshly shown compact screen starts hidden (bare artwork);
+        controls appear only after a touch or reveal. Always False off the compact tier. Plain
+        reads."""
         return self._compact_tier() and self._controls.compact_hidden(time.monotonic())
 
     def hide_controls(self) -> None:
-        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for an ARTWORK
-        tap on the now-playing screen, or a tap on the replay screen's own
-        artwork while a replay runs): hide the top/bottom bands for
-        CONTROLS_HIDE_SECONDS, so a tap on the artwork itself gives an
-        unobstructed view of it. Plain float write plus a repaint signal,
-        same discipline as notify_touch_activity(). While the window holds
-        the overlay is not drawn whatever the touch snapshot says,
-        persistent_overlay_shown() reads False and touch_surface() reports
-        "hidden", so the state machine drops to reveal-on-touch; a tap
-        while hidden is the ordinary reveal (on_reveal_overlay ->
-        set_overlay(visible=True)), which ends the window early (see
-        set_overlay()). The window's own expiry is woken by the repaint
-        loop's deadline scheduling (_next_repaint_deadline, the
-        controls_hidden timer).
+        """Touch-thread entry (an ARTWORK tap on the now-playing screen, or on the replay screen's
+        artwork while a replay runs): hide the top and bottom bands for CONTROLS_HIDE_SECONDS. A
+        plain float write plus a repaint signal.
 
-        On the rich and large tiers the bands do not vanish at once: the
-        first repaint that finds them due to go starts a short slide (see
-        ControlsReveal.advance()) in which each band's chrome leaves over
-        its panel edge and the inter-band text fades, ending on exactly the
-        bare frame the window then holds. The controls' return, whether the
-        window lapses or a reveal ends it early, slides them back in the same
-        way. The slide is the painters' own; nothing is stamped here.
+        While the window holds, the overlay is not drawn whatever the touch snapshot says,
+        persistent_overlay_shown() reads False and touch_surface() reports "hidden". A reveal tap
+        ends the window early (set_overlay()); the loop wakes on its expiry (the controls_hidden
+        timer). On the rich and large tiers the bands slide off and back (ControlsReveal.advance());
+        the slide belongs to the painters and nothing is stamped here.
 
-        A no-op off the two screens that have artwork to reveal: the
-        now-playing screen, and the replay screen exactly while a replay is
-        running (its enable layout has no artwork, and a stopped replay's
-        Restart control must stay visible); and on the compact tier, which
-        has no artwork zone to tap."""
+        A no-op off the two screens with artwork to reveal (main, and the replay screen exactly
+        while a replay runs) and on the compact tier, which has no artwork zone to tap."""
         screen = self._screen
         if screen == "repeat":
             if not self._repeat_replaying_lockfree():
@@ -1080,12 +950,10 @@ class DialDisplay:
         return self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE)
 
     def _held_overlay(self, now: float) -> bool:
-        """The held-visible predicate _effective_overlay_locked() applies:
-        always-show on (off compact), or the compact tier's own controls
-        window open; a controllable appliance shown; the panel not cleared
-        or asleep; and no artwork-tap hide window running. Plain reads, safe
-        from any thread: the touch thread reaches it through
-        persistent_overlay_shown()."""
+        """The held-visible predicate _effective_overlay_locked() applies: always-show on (off
+        compact), or the compact tier's controls window open; a controllable appliance shown; the
+        panel not cleared or asleep; and no artwork-tap hide window running. Plain reads, safe from
+        any thread: the touch thread reaches it through persistent_overlay_shown()."""
         return (
             (
                 (self._config.always_show_controls and not self._compact_tier())
@@ -1097,73 +965,28 @@ class DialDisplay:
 
     def touch_surface(self) -> SurfaceState:
         """(surface, name_active, dots_active, outputs_active, bell_active) for
-        dial_touch.TouchStateMachine.set_surface() — see that module's
-        SURFACES paragraph. Polled once per loop iteration by
-        TouchEventSource; a plain-attribute read discipline, same as
-        persistent_overlay_shown() and noncomposited_generation().
+        dial_touch.TouchStateMachine.set_surface(), polled once per touch loop by TouchEventSource.
+        Plain reads only, the same discipline as persistent_overlay_shown() and
+        noncomposited_generation().
 
-        bell_active is true when the screen draws a warning bell with
-        something to show.
+        name_active: a controllable appliance is shown (the snapshot carries a now_playing),
+        whatever the number of authorised appliances. outputs_active: that appliance advertises
+        dial_outputs. dots_active: it has an available repeat record. bell_active: the screen draws
+        a bell with something to show. "idle" is reported whenever nothing is playing, so the corner
+        glyphs are reachable on every idle dial; only the idle affordance decides whether
+        IDLE_REPLAY acts. While the bands slide back in the surface is already the ordinary one, so
+        a tap acts on a band as it arrives.
 
-        outputs_active is true whenever the currently focused/reporting
-        appliance advertises dial_outputs — see DialCore._update_availability,
-        which computes it every tick. False whenever nothing controllable
-        is shown (there is no appliance for the top-right zone to act on).
+        A secondary screen's tuple is fixed by its policy row (ScreenPolicy.surface); a row that
+        asks for the outputs zone still gates it on the snapshot's outputs_available. A row with
+        ScreenPolicy.replay_surface reports that tuple exactly while the compact tier's replaying
+        layout is painted (self._repeat_layout_shown == "replaying").
 
-        name_active is true whenever there is a controllable appliance
-        currently shown (the snapshot carries a now_playing) — unconditional:
-        the appliance name and its tap-zone are always active in that
-        case, never gated on how many appliances are authorized. It is
-        independent of held/hidden: by the time a second press can sample
-        the NAME zone at all, the REVEAL-ONLY FIRST TOUCH rule
-        (dial_touch.py) has already made the overlay visible.
-
-        While the bands slide back in (see ControlsReveal.advance()) the
-        surface is already the ordinary one: it follows the overlay state,
-        not the animation, so a tap acts on a band as it arrives.
-
-        dots_active is true whenever the currently focused/reporting
-        appliance has a available repeat record — see
-        DialCore._update_availability, which computes it every tick.
-        "idle" is reported whenever nothing is playing, not only while the
-        idle affordance is drawn — the corner glyphs (the bell, the Wi-Fi
-        status that opens Info) must be reachable on every idle dial. A replay tap on a plain logo still
-        stays inert (see open_picker()'s own guard); only the idle
-        affordance decides whether IDLE_REPLAY actually does anything.
-
-        Every secondary screen's surface tuple is fixed by its policy row
-        (ScreenPolicy.surface) — the repeat screen's own top-band NAME zone
-        is always meaningful while it is showing (it only ever opens for a
-        focused/reporting appliance, and closes before that appliance's
-        name could go stale — see toggle_repeat_screen() and the empty-
-        target branch of _apply_idle_tick). A row whose own tuple asks for the
-        outputs zone (the repeat screen's own top-right readout) still
-        gates on the live snapshot's outputs_available, same as main; a row
-        that carries False there is unaffected.
-
-        A policy row whose own ScreenPolicy.replay_surface is set reports
-        that second surface tuple instead, exactly while the compact tier's
-        own replaying layout is the one actually painted (self.
-        _repeat_layout_shown == "replaying") — the repeat screen's own
-        time/Restart/Stop cells sit on different rectangles than its enable
-        layout only on that tier (see dial_touch_layout.GEOMETRY_REPEAT_
-        REPLAY); every other tier paints one shared table for both states,
-        so this branch is never taken there.
-
-        Ahead of every policy row: on the compact tier, once that screen's
-        own controls window has lapsed (see _compact_controls_hidden()),
-        main and repeat both report plain "hidden" with nothing tappable —
-        the main branch below already arrives at "hidden" on its own once
-        persistent_overlay_shown() is False, but the repeat screen's surface
-        is otherwise fixed by its policy row regardless of the window, so it
-        needs this explicit override.
-
-        The replay screen's own artwork-tap hide window (see
-        hide_controls()) reports the main geometry's plain "hidden" as well,
-        with the appliance's name and dots and the outputs readout still
-        addressable: nothing is drawn to tap, so a touch brings the
-        controls back and never actuates Restart, Stop or the dots.
-        """
+        Two overrides come first. On the compact tier, once the controls window has lapsed
+        (_compact_controls_hidden()), main and repeat report plain "hidden". The repeat screen's
+        artwork-tap hide window reports "hidden" too, keeping the name, dots and outputs
+        addressable: nothing is drawn to tap, so a touch brings the controls back and never actuates
+        Restart, Stop or the dots."""
         snap = self._core.snapshot()
         if self._compact_controls_hidden() and self._screen in ("main", "repeat"):
             # (The corner bell is drawn only over playing artwork.)
@@ -1199,14 +1022,9 @@ class DialDisplay:
         return SurfaceState(SURFACE_HIDDEN, name_active, dots_active, outputs_active, bell)
 
     def noncomposited_generation(self) -> int:
-        """Current non-composited-state generation counter.
-
-        Bumped by _mark_noncomposited_locked() whenever the display clears
-        or sleeps — the touch side polls this once per loop iteration and,
-        on seeing it change, knows whatever overlay/zone geometry it was
-        relying on may no longer be on screen. A plain int read — no lock
-        needed, matching the read discipline used for the overlay snapshot.
-        """
+        """Current non-composited-state generation, bumped by _mark_noncomposited_locked() whenever
+        the display clears or sleeps. The touch side polls it once per loop and, on a change, drops
+        whatever overlay or zone geometry it relied on. A plain int read, no lock."""
         return self._noncomposited_generation
 
     # ---- backend lifecycle (caller must hold self._lock) -------------------
@@ -1226,10 +1044,8 @@ class DialDisplay:
         self._active_screen_type = self._config.screen_type
         self._backend_open = True
         self._backend_loaded = True
-        # A successful open clears any stale unrelated failure — today only
-        # a successful artwork render did this, so a successful screen_type
-        # swap would otherwise keep reporting a stale error and defeat drift
-        # detection.
+        # A successful open clears any stale failure, so a successful screen_type
+        # swap does not keep reporting an old error and hide drift.
         self._last_error = ""
         self._last_error_at = None
         # A newly opened panel holds nothing we know about, whatever was
@@ -1251,12 +1067,8 @@ class DialDisplay:
             self._render_logo_locked()
 
     def _rebuild_backend_factory_locked(self, screen_type: str) -> None:
-        """Rebuild self._backend_factory for *screen_type* via the injected
-        resolver, so the next _enable_locked() opens the right backend.
-
-        A no-op when no resolver was supplied (see backend_factory_builder
-        in __init__) — the manager simply keeps using its original factory.
-        """
+        """Rebuild self._backend_factory for *screen_type* via the injected resolver, so the next
+        _enable_locked() opens the right backend. A no-op when no resolver was supplied."""
         if self._backend_factory_builder is None:
             return
         self._backend_factory = self._backend_factory_builder(screen_type)
@@ -1284,11 +1096,8 @@ class DialDisplay:
         self._last_frame = None
 
     def _swap_backend_locked(self) -> None:
-        """Close the currently open backend and reopen via the (already
-        rebuilt) factory — used when screen_type changes while fitted and
-        open. If the new backend fails to open, _enable_locked()'s existing
-        degrade-to-noop path holds and runtime reflects it.
-        """
+        """Close the open backend and reopen via the already rebuilt factory, for a screen_type
+        change while fitted and open. A failed open takes _enable_locked()'s degrade-to-noop path."""
         self._drop_backend_locked(" during swap")
         # A reopen after a screen_type swap starts on the main screen, not
         # wherever the list happened to be — the old panel's geometry is
@@ -1334,29 +1143,15 @@ class DialDisplay:
         self._mark_noncomposited_locked()
 
     def _mark_noncomposited_locked(self) -> None:
-        """Record that the display just moved to a state with nothing of the
-        touch overlay actually on screen (cleared or asleep), for the touch
-        side to notice on its own schedule.
+        """Record that the display moved to a state with none of the touch overlay on screen
+        (cleared or asleep), for the touch side to notice on its own schedule. Called from
+        _clear_locked() and _sleep_locked() with self._lock held.
 
-        Called from _clear_locked()/_sleep_locked(), both of which run with
-        self._lock already held. They must NOT call into the touch session
-        synchronously from here: dispatching a "display went dark" action
-        would need the touch session to react, and any handler for that
-        would want the overlay leaf lock — taking that leaf lock while
-        self._lock is held here would be the mirror image of the hazard the
-        LOCK ORDER comment forbids from the touch side (leaf lock nested
-        inside self._lock). A callback would also mean this thread — which
-        may be the HTTP thread inside update_config(), not just the poll
-        thread — ends up running touch-session logic synchronously, on a
-        thread that has no business owning it.
-
-        A threading.Event plus a monotonically increasing generation counter
-        sidesteps both problems: it is pure state, set here and read there,
-        with no call ever crossing from this lock into that one. The touch
-        thread's own loop polls noncomposited_generation() once per
-        iteration and reacts (force back to reveal-only, drop the zone
-        latch) on ITS OWN thread, in ITS OWN time.
-        """
+        It must not call into the touch session: any handler would want the overlay leaf lock, and
+        taking that under self._lock is the mirror image of the hazard the LOCK ORDER forbids. The
+        caller may also be the HTTP thread (update_config), which has no business running
+        touch-session logic. So this is pure state, a generation counter the touch thread's loop
+        polls (noncomposited_generation()) and reacts to on its own thread."""
         self._noncomposited_generation += 1
         # A press latched against geometry that just went dark must not
         # carry a wash into whatever comes back on screen next.
@@ -1394,56 +1189,42 @@ class DialDisplay:
             self._record_error_locked(error_id)
 
     def _active_panel_dims(self) -> tuple[int, int]:
-        """Return the open backend's panel dimensions, falling back to the
-        default profile's dimensions when no backend is open (e.g. between
-        close() and the next open()).
+        """The open backend's panel dimensions, or the default profile's when no backend is open.
+        May be called with or without self._lock.
 
-        May be called with or without self._lock held. The HTTP thread can
-        swap or close the backend concurrently (update_config runs there), so
-        the reference is snapshotted into a local before use rather than being
-        dereferenced through self — otherwise a swap landing between the
-        _backend_open check and the width read would raise on None.
-
-        These dimensions are therefore advisory: a frame composed against them
-        can still be superseded by a swap while it is being built. That is why
-        the size is re-checked under the lock before the frame is pushed (see
-        _show_artwork) — the guard, not this read, is what keeps a wrong-sized
-        frame off the panel.
-        """
+        The HTTP thread can swap or close the backend concurrently (update_config), so the reference
+        is snapshotted into a local first. The result is advisory: a frame composed against it can
+        still be superseded by a swap, which is why the size is re-checked under the lock before the
+        frame is pushed (see _apply_artwork)."""
         backend = self._backend
         if self._backend_open and backend is not None:
             return backend.width, backend.height
         return DEFAULT_PANEL_WIDTH, DEFAULT_PANEL_HEIGHT
 
     def _logical_dims(self) -> tuple[int, int]:
-        """The compose-space size every frame is built and hit-tested in:
-        the chosen layout size when one is set, else the open backend's own
-        dimensions (or the default profile's, when no backend is open) —
-        exactly what _active_panel_dims() has always returned. May be
-        called with or without self._lock held (plain attribute reads)."""
+        """The compose-space size every frame is built and hit-tested in: the chosen layout size
+        when one is set, else the open backend's dimensions (the default profile's when none is
+        open). Plain attribute reads, with or without self._lock."""
         if self._layout.size_chosen:
             return self._layout.logical_size
         return self._active_panel_dims()
 
     def _layout_metrics(self) -> LayoutMetrics:
-        """LayoutMetrics for the logical size and the density per logical
-        pixel. Pure arithmetic on plain attribute reads, so safe from any
-        thread, with or without self._lock — the touch thread's page
-        slicing and the repaint thread's compose both read this one
-        function, so they can never disagree about rows per page."""
+        """LayoutMetrics for the logical size and the density per logical pixel. Pure arithmetic on
+        plain attribute reads, safe from any thread with or without self._lock. The touch thread's
+        page slicing and the repaint thread's compose both read this, so they cannot disagree about
+        rows per page."""
         width, height = self._logical_dims()
         return metrics_for(
             width, height, mm_per_px=self._mm_per_px, size_chosen=self._layout.size_chosen,
         )
 
     def _paint_locked(self, compose, *lead, metrics=None, after=(), panel_size=False, **options) -> None:
-        """Compose one screen with the compositor method *compose* and push
-        it (see _push_frame_locked()). The call is
-        compose(*lead, width, height, *after, rotate, bgr, metrics, **options)
-        at the logical size of *metrics* (the current layout when None). With
-        *panel_size* the compositor is also told the backend's physical size,
-        read inside the guard. Caller holds self._lock and has already
-        checked the backend is open. Never raises."""
+        """Compose one screen with the compositor method *compose* and push it
+        (_push_frame_locked()). The call is compose(*lead, width, height, *after, rotate, bgr,
+        metrics, **options) at the logical size of *metrics* (the current layout when None). With
+        *panel_size* the compositor is also told the backend's physical size, read inside the guard.
+        Caller holds self._lock and has checked the backend is open. Never raises."""
         if metrics is None:
             metrics = self._layout_metrics()
 
@@ -1457,23 +1238,16 @@ class DialDisplay:
         self._push_frame_locked(build)
 
     def _push_frame_locked(self, compose) -> None:
-        """Compose one frame at the logical size and push it to the
-        backend, resampling to the panel's physical size first if the two
-        differ (a reveal slide frame already arrives at the panel's size;
-        see the compositor's output_size) — recording a write failure the
-        same way for every screen.
-        *compose* is a zero-argument callable returning the finished frame;
-        it runs inside the guard so a compositor failure is handled
-        identically to a backend/resample failure. Caller holds self._lock
-        and has already checked the backend is open. Never raises.
+        """Compose one frame at the logical size and push it to the backend, resampling to the
+        panel's physical size when the two differ, and record a write failure the same way for every
+        screen. *compose* is a zero-argument callable returning the finished frame; it runs inside
+        the guard so a compositor failure is handled like a backend or resample failure. Caller
+        holds self._lock and has checked the backend is open. Never raises.
 
-        The transmit itself is delegated to _transmit_locked(), which sends
-        only the part of the frame that differs from the one already on the
-        panel when the backend can write a window. A transmit failure drops
-        self._last_frame: the panel may then hold part of the new frame, so
-        the next push must write the whole of it rather than a diff against
-        a frame that is no longer what the panel shows. A compose failure
-        sends nothing and leaves self._last_frame as it was."""
+        The transmit is _transmit_locked(), which sends only the part that differs from the frame on
+        the panel when the backend can write a window. A transmit failure drops self._last_frame,
+        since the panel may hold part of the new frame and the next push must write all of it. A
+        compose failure sends nothing and leaves self._last_frame as it was."""
         try:
             composed = compose()
             physical = (self._backend.width, self._backend.height)
@@ -1498,26 +1272,17 @@ class DialDisplay:
         )
 
     def _transmit_locked(self, composed) -> None:
-        """Send *composed*, already at the panel's size and orientation, to
-        the backend, writing only the regions that differ from the frame the
-        panel already shows when the backend can write a window: as many
-        separate rectangles as the cost model says pay for themselves (see
-        dial_display_windows), or, if planning fails, the bounding
-        box split in up to a few places (see dirty_windows).
+        """Send *composed*, already at the panel's size and orientation, to the backend. When the
+        backend can write a window, only the regions that differ from the frame on the panel are
+        written: as many rectangles as the cost model says pay for themselves
+        (dial_display_windows), or, if planning fails, the bounding box split in up to a few places
+        (dirty_windows). An identical frame sends nothing.
 
-        The frame reaching here is final: rotate and colour order were
-        applied by the compositor and the resample to physical size by the
-        caller, and self._last_frame is kept in that same space. So the
-        rectangles of the pixel difference are in panel pixels and map
-        straight onto the panel's address window, with no further
-        transform. An identical frame sends nothing at all. A whole-frame
-        write is used instead whenever the backend cannot window-write,
-        nothing is known to be on the panel, the two frames are not
-        comparable (size or mode differ), the window write reports it
-        could not run, or anything in the windowed path fails: a diff or
-        window problem must never cost the frame, only the saving. Raises
-        only what the whole-frame display() raises; the caller records
-        that."""
+        A whole-frame write is used instead whenever the backend cannot window-write, nothing is
+        known to be on the panel, the frames are not comparable (size or mode), the window write
+        reports it could not run, or anything in the windowed path fails: a diff or window problem
+        costs the saving, never the frame. Raises only what the whole-frame display() raises; the
+        caller records that."""
         backend = self._backend
         last = self._last_frame
         if (
@@ -1564,15 +1329,12 @@ class DialDisplay:
         backend.display(composed)
 
     def _plan_transmit_locked(self, composed, last):
-        """(boxes, new_words) for the change-region planner: *boxes* is the
-        list of windows to write, top to bottom (empty: the frames are
-        identical), and *new_words* the planner's view of *composed* for the
-        caller to cache once it is on the panel. (None, None) when the
-        planner is unavailable (a plan failure), in which
-        case the caller takes the bounding-box path. The previous frame's
-        words come from the cache when it still names *last*, else from
-        *last* itself. A planner failure is logged (rate-limited) and
-        reported as unavailable. Never raises. Caller holds self._lock."""
+        """(boxes, new_words) for the change-region planner: *boxes* is the windows to write, top to
+        bottom (empty: the frames are identical), and *new_words* the planner's view of *composed*,
+        for the caller to cache once it is on the panel. (None, None) when the planner is
+        unavailable, and the caller takes the bounding-box path. The previous frame's words come
+        from the cache when it still names *last*, else from *last*. A planner failure is logged
+        (rate-limited) and reported as unavailable. Never raises. Caller holds self._lock."""
         try:
             if composed.mode != "RGB":
                 return None, None
@@ -1598,39 +1360,22 @@ class DialDisplay:
             return None, None
 
     def _display_locked(self, image) -> None:
-        """Compose and write *image* to the backend — the single hand-off
-        point every frame reaches on its way to hardware.
+        """Compose and write *image* to the backend: the one hand-off every frame reaches on its way
+        to hardware. Caller holds self._lock.
 
-        *image* is treated as an already panel-sized base (logo, cached
-        artwork, or a freshly artwork-fitted frame — see _show_artwork) — the
-        compositor here only applies overlay/rotate/BGR, so
-        self._current_rendered_image stays untransformed in the cache and a
-        rotate/bgr toggle can re-display it under the new settings without
-        re-fetching or re-transforming artwork.
+        *image* is an already panel-sized base (logo, cached artwork or a freshly fitted frame); the
+        compositor here applies only overlay, rotate and BGR, so self._current_rendered_image stays
+        untransformed and a rotate or bgr toggle can re-display it without refetching. The compose
+        reads the CURRENT overlay snapshot with no lock (see LOCK ORDER in __init__), so a
+        fold-driven repaint landing mid-touch recomposes the overlay rather than wiping it. *image*
+        is cached as self._current_base_image so the repaint thread can recompose it against a newer
+        overlay later.
 
-        Every call here — poll-driven or repaint-driven — composes against
-        the CURRENT overlay snapshot (read with no lock; see the LOCK ORDER
-        comment in __init__), so a poll-driven repaint landing while an
-        overlay is visible (e.g. a track change firing mid-touch-session)
-        recomposes it back in rather than wiping it. *image* is also cached
-        as self._current_base_image so the repaint thread can recompose it
-        against a newer overlay snapshot later, without needing a new base
-        frame from a poll.
-
-        Whether the overlay is held over *image* is decided in
-        _effective_overlay_locked() from the snapshot's now_playing, not from
-        anything about *image* itself — a controllable appliance shown
-        (real artwork or the playing-placeholder logo) holds the overlay;
-        nothing playing does not. See persistent_overlay_shown() and
-        _effective_overlay_locked() for the shared predicate.
-
-        While a reveal slide is running (see ControlsReveal.advance()) the
-        compose also receives how far it has got, from the one clock read
-        this frame makes, so a poll-driven repaint landing mid-slide
-        composes its fresh base under the chrome at its current position
-        rather than fighting the animation, and a frame that lands after
-        the end draws the bare frame, never the full bands.
-        """
+        Whether the overlay is held is decided in _effective_overlay_locked() from the snapshot's
+        now_playing, not from *image*. While a reveal slide runs (ControlsReveal.advance()) the
+        compose also receives how far it has got, from the one clock read this frame makes, so a
+        repaint landing mid-slide composes under the chrome at its current position and a frame
+        landing after the end draws the bare frame."""
         if not (self._backend_open and self._backend is not None):
             return
         self._current_base_image = image
@@ -1666,20 +1411,12 @@ class DialDisplay:
             self._controls.frame_sent(time.monotonic())
 
     def _repaint_base_locked(self, image, *, idle_ok: bool) -> None:
-        """Publish a freshly chosen base image (artwork or logo) from the
-        poll thread, without ever switching away from a secondary screen.
-
-        On the main screen this composes the base straight to hardware — the
-        idle-chassis path when *idle_ok* and nothing plays (the
-        replay-available logo with no controls overlay), otherwise the
-        ordinary overlay compose. While a secondary screen is up it only
-        refreshes the cached base and signals a repaint: the repeat, EQ and
-        warning screens draw the base behind them and recompose over the new
-        image on the next repaint, and the flat list/info screens ignore it
-        and repaint unchanged. Either way the screen the user is on stays on
-        screen — fresh artwork lands behind it rather than popping it back to
-        the volume screen. Caller holds self._lock.
-        """
+        """Publish a freshly chosen base image (artwork or logo) from the repaint thread without
+        switching away from a secondary screen. On the main screen it composes straight to hardware:
+        the idle-chassis path when *idle_ok* and nothing plays, otherwise the ordinary overlay
+        compose. While a secondary screen is up it only refreshes the cached base and signals a
+        repaint; the repeat, EQ and warning screens draw the base behind them, and the flat list and
+        info screens ignore it. Caller holds self._lock."""
         self._current_base_image = image
         if self._screen != "main":
             self._overlay_signal.set()
@@ -1690,16 +1427,12 @@ class DialDisplay:
             self._display_locked(image)
 
     def _show_transition_locked(self) -> None:
-        """A plain dark base while the newly-shown appliance's own artwork
-        or logo is fetched/rendered: the previous appliance's artwork must
-        never linger on screen under the new appliance's name — see
-        _maybe_show_transition(), which calls this exactly when the
-        reporting-from appliance has just changed. Caller holds self._lock;
-        a no-op when no backend is open. Drops the artwork cache so the
-        fetch that follows always paints, and marks self._showing
-        "waiting" so neither show_logo()'s nor _show_artwork()'s own
-        dedupe (both compare against "logo"/"artwork") mistakes this for
-        already showing something."""
+        """A plain dark base while the newly shown appliance's artwork or logo is fetched, so the
+        previous appliance's artwork never lingers under the new name (_maybe_show_transition()
+        calls this when the reporting appliance changes). Caller holds self._lock; a no-op when no
+        backend is open. Drops the artwork cache so the fetch that follows always paints, and marks
+        self._showing "waiting" so neither show_logo()'s nor _show_artwork()'s dedupe mistakes it
+        for already showing something."""
         if not (self._backend_open and self._backend is not None):
             return
         width, height = self._logical_dims()
@@ -1711,64 +1444,26 @@ class DialDisplay:
     def _effective_overlay_locked(
         self, snapshot: OverlayState, now: float | None = None, animating: bool | None = None,
     ) -> OverlayState:
-        """Merge now-playing state into the touch-published overlay snapshot
-        at compose time.
+        """Merge now-playing state into the touch-published overlay snapshot at compose time.
 
-        The touch side only ever publishes CONTROL state (visible,
-        muted-if-known) via set_overlay() — it has no idea what track is
-        playing or what the master volume is, and must not need to, per the
-        module docstring's "touch thread stays ignorant of polling" rule.
-        pressed is filled from the unified pressed channel (self._pressed)
-        instead — the snapshot's own pressed field, if any, is ignored; see
-        set_pressed(). This fills in the fields only the poll thread knows
-        about:
-          - artist: from the reporting-from target's last poll result.
-          - album: from the same poll result.
-          - volume: the optimistic readout for that same target (see
-            dial_volume.shown_volume()), not the raw polled master_volume —
-            the readout already reconciles the polled value with any
-            pending delta.
-          - muted: the reporting-from target's last reported mute state
-            (dial_volume.shown_muted()) — never the touch-published
-            snapshot's own field any more; the touch side's optimistic echo
-            of a press already lives in that same observation store (see
-            enqueue_mute()), so there is nothing left for the snapshot's own
-            value to add.
-          - name: appliance_display_name() of the reporting-from target's
-            service name, or "" when nothing is playing. ALWAYS populated
-            whenever a controllable appliance is shown — unconditional,
-            never gated on how many appliances are authorized.
+        The touch side publishes only CONTROL state (visible, muted-if-known) via set_overlay(); it
+        knows nothing of the track or the volume. This fills in what only the fold knows: artist,
+        title, album, the optimistic volume (dial_volume.shown_volume()), the mute (shown_muted()),
+        the appliance name (set whenever a controllable appliance is shown, whatever the number of
+        authorised appliances), the page dots, the bell and the pressed zone (from the unified
+        channel self._pressed; the snapshot's own pressed field is ignored).
 
-        held-visible (see _held_overlay()): when always_show_controls
-        is on and a controllable appliance is shown (the snapshot carries a
-        now_playing — true for real artwork and for the playing-placeholder
-        logo shown across a track change; false only when nothing is
-        playing at all), and the display is not asleep, the overlay is
-        forced visible here regardless of what the touch-published snapshot
-        says — this is what makes a stale
-        visible=False snapshot, or a dismiss landing while held, harmless
-        (see dial_touch.py's HELD VISIBLE paragraph and set_held_visible()).
-        It is also what keeps the overlay drawn across a track change: the
-        base image swaps to the placeholder logo and the artist/title clear,
-        but the snapshot's now_playing stays set throughout, so the held overlay
-        is preserved rather than dropped. The self._showing != "noop" term
-        mirrors persistent_overlay_shown()'s own guard against the moment
-        right after the panel is cleared. An artwork-tap hide window (see
-        hide_controls()) hides the overlay whatever the snapshot says,
-        except while the slide is still drawing it on its way off (see
-        ControlsReveal.animating()), when it is merged regardless so the chrome can
-        be slid. Deliberately does not also check self._backend_open: the
-        caller (_display_locked) already returned early when the backend is
-        closed, so there is nothing left to guard against here. *now* and
-        *animating* let the caller pass the single clock read and slide
-        decision its compose was built on; either omitted is worked out
-        here.
+        The overlay is forced visible when held (_held_overlay()): a stale visible=False snapshot,
+        or a dismiss landing while held, is harmless, and the overlay stays drawn across a track
+        change, when the base swaps to the placeholder logo but now_playing stays set. An
+        artwork-tap hide window hides the overlay whatever the snapshot says, except while the slide
+        is still drawing it on its way off (ControlsReveal.animating()). It does not check
+        self._backend_open: _display_locked has already returned if the backend is closed. *now* and
+        *animating* let the caller pass the one clock read and slide decision its compose was built
+        on; either omitted is worked out here.
 
-        Returns *snapshot* unchanged when it is neither visible nor held:
-        compose() already treats an invisible overlay as a strict no-op
-        regardless of its other fields, so there is nothing worth merging in
-        that case.
-        """
+        Returns *snapshot* (carrying the bell) when it is neither visible nor held: compose() treats
+        an invisible overlay as a strict no-op."""
         if now is None:
             now = time.monotonic()
         if animating is None:
@@ -1793,8 +1488,8 @@ class DialDisplay:
             return snapshot if bell is None else dataclasses.replace(snapshot, bell=bell)
         artist = now_playing.artist if now_playing is not None else ""
         if now_playing is not None and self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE):
-            # Rich/large only: base keeps its artist row exactly as before,
-            # byte for byte, and compact never draws one at all. An idle or
+            # Rich/large only: base keeps its own artist row and compact draws
+            # none. An idle or
             # pending focus (nothing actually playing) reads as idle; a
             # playing appliance with no identified title yet reads as
             # playing rather than blank. Idle wins over the no-title check;
@@ -1821,10 +1516,8 @@ class DialDisplay:
         )
 
     def _redisplay_current_locked(self) -> None:
-        """Re-display the current frame synchronously — used when rotate
-        changes while already fitted and open, so the new orientation is
-        visible immediately rather than at the next poll.
-        """
+        """Re-display the current frame synchronously, for a rotate or bgr change while fitted and
+        open, so the new orientation shows at once."""
         if not (self._backend_open and self._backend is not None):
             return
         if self._current_rendered_image is not None:
@@ -1859,11 +1552,10 @@ class DialDisplay:
 
     # ---- overlay repaint loop ----------------------------------------------
     #
-    # A dedicated thread — separate from the core's poll thread — so a
-    # touch-driven overlay update never waits behind (or gets coalesced
-    # with) the poll cadence, and never has to be
-    # dispatched from the touch thread itself (which never takes self._lock;
-    # see the LOCK ORDER comment in __init__).
+    # A dedicated thread, separate from the core's, so a touch-driven overlay
+    # update never waits behind the fold cadence and never has to be dispatched
+    # from the touch thread itself (which never takes self._lock; see LOCK ORDER
+    # in __init__).
 
     def _repaint_run(self) -> None:
         while not self._repaint_stop_event.is_set():
@@ -1890,8 +1582,8 @@ class DialDisplay:
             self._repaint_once()
 
     def _run_timers(self) -> None:
-        """The timeout branch: every timer's work, in row order, then one
-        repaint request if any of them asked for one."""
+        """The timeout branch: every timer's work, in row order, then one repaint request if any of
+        them asked for one."""
         wake = False
         for timer in self._timers:
             if timer.fire():
@@ -1929,14 +1621,12 @@ class DialDisplay:
             self._core.request_fold()
 
     def _repaint_current_locked(self) -> bool:
-        """Recompose and push the current screen — used by the repaint
-        thread when only the overlay or the screen itself changed (no new
-        poll-driven frame). No-op if the backend is closed.
+        """Recompose and push the current screen, for a repaint where only the overlay or the screen
+        itself changed. A no-op if the backend is closed.
 
         Returns True when applying pending touch activity woke the display
-        (see _apply_touch_activity_locked) — propagated to the caller so it
-        can run the wake-pass side effects outside self._lock.
-        """
+        (_apply_touch_activity_locked), so the caller can run the wake-pass side effects outside
+        self._lock."""
         # Wake first if touch asked for it, so the backlight is on before
         # the frame is pushed rather than one repaint later.
         woke = self._apply_touch_activity_locked()
@@ -1962,27 +1652,21 @@ class DialDisplay:
         return woke
 
     def _idle_chassis_due_locked(self) -> bool:
-        """True whenever the idle screen's own compose path (compose_idle:
-        the corner glyphs, no volume/mute controls overlay) should be used in
-        place of the ordinary overlay compose path — whenever nothing is
-        playing, not only while the "tap to replay" affordance is due. The
-        idle screen is one screen regardless of whether a replay is held,
-        so its corner glyphs are reachable on every idle dial; which base
-        image it shows (the replay-available logo or the plain one) is
-        still decided by the affordance alone (see _display_idle_locked).
-        See touch_surface(), whose "idle" surface follows the same rule."""
+        """True whenever the idle screen's own compose path (compose_idle: the corner glyphs, no
+        volume/mute overlay) replaces the ordinary overlay compose: whenever nothing is playing, not
+        only while the "tap to replay" affordance is due. Which base image it shows (the
+        replay-available logo or the plain one) is decided by the affordance alone
+        (_display_idle_locked). touch_surface()'s "idle" surface follows the same rule."""
         return self._screen == "main" and self._core.snapshot().now_playing is None
 
     # ---- appliance selector, repeat and picker screens ----------------------
     #
-    # Touch-thread entry points (open_selector/close_list/list_page/
-    # selector_pick/cycle_pages/repeat_*_tap/open_picker/
-    # picker_pick) are flag-write-plus-signal only, exactly like
-    # notify_touch_activity() — the actual screen-state
-    # change happens on the repeat thread under self._lock
-    # (_apply_screen_requests_locked). Rows themselves are built ONLY on the
-    # repaint thread (_refresh_list_rows) — the touch
-    # thread never builds rows, it only reads the last-published state.
+    # Touch-thread entries (open_selector/close_list/list_page/selector_pick/
+    # cycle_pages/repeat_*_tap/open_picker/picker_pick) are flag-write-plus-signal
+    # only, like notify_touch_activity(); the screen-state change happens on the
+    # repaint thread under self._lock (_apply_screen_requests_locked). Rows are
+    # built only on the repaint thread (_refresh_list_rows); the touch thread
+    # reads the last-published state.
 
     def open_selector(self) -> None:
         """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a NAME tap)."""
@@ -2024,18 +1708,13 @@ class DialDisplay:
         self._overlay_signal.set()
 
     def selector_pick(self, index: int) -> None:
-        """Touch-thread entry: a LIST_ROW tap while the appliance selector
-        is open.
+        """Touch-thread entry: a LIST_ROW tap while the appliance selector is open.
 
-        Reads the last-published ListScreenState (plain reference read, no
-        lock — same discipline as _overlay_snapshot). When *index* still
-        falls within the CURRENT page, sets manual focus to that row's
-        appliance — playing or idle; picking an idle row controls it the
-        same way as picking a playing one. A stale index — the row
-        disappeared between paint and tap, e.g. the appliance left the
-        network — is silently treated as "back": no focus change, no error
-        dialog. Either way the selector closes.
-        """
+        Reads the last-published ListScreenState (a plain reference read, no lock). When *index* is
+        within the current page, sets manual focus to that row's appliance, playing or idle. A row
+        the appliance refused, or that needs an update, sets a hint instead and leaves the selector
+        open beneath it. A stale index (the row vanished between paint and tap) is treated as back:
+        no focus change, no error. Either way the selector closes unless a hint is shown."""
         selector = self._selector
         if selector is not None and selector.rows:
             page_rows = self._current_page_rows(selector)
@@ -2062,14 +1741,10 @@ class DialDisplay:
         self.close_list()
 
     def list_row_tap(self, index: int) -> None:
-        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a LIST_ROW
-        tap): routes to whichever list-chassis screen is actually open —
-        the appliance selector (selector_pick), the replay picker
-        (picker_pick), the outputs list (outputs_row_tap) or, on the
-        compact tier only, the info page (info_row_tap). Off compact the
-        info page's rows are dead at the geometry level (GEOMETRY_INFO
-        carries no LIST_ROW entries there at all), so this stays a no-op —
-        belt-and-braces only."""
+        """Touch-thread entry (a LIST_ROW tap): routes to whichever list screen is open: the
+        appliance selector (selector_pick), the replay picker (picker_pick), the outputs list
+        (outputs_row_tap) or, on the compact tier only, the info page (info_row_tap). Off compact
+        the info page's rows have no LIST_ROW geometry, so this is a no-op there."""
         if self._screen == "info":
             if self._compact_tier():
                 self.info_row_tap(index)
@@ -2082,14 +1757,10 @@ class DialDisplay:
             self.selector_pick(index)
 
     def info_row_tap(self, index: int) -> None:
-        """Touch-thread entry (a LIST_ROW tap on the compact info list):
-        remember the tapped field's absolute position in InfoState.rows and
-        request the value view — the outputs_row_tap() shape. A stale
-        index (the row count changed between paint and tap) is ignored and
-        the list stays open, rather than falling back to "close" the way
-        selector_pick()/picker_pick()/outputs_row_tap() do: closing here
-        would pop past the list itself, since the info page has nothing to
-        fall back to but main. Plain reads and writes, no lock, no I/O."""
+        """Touch-thread entry (a LIST_ROW tap on the compact info list): remember the tapped field's
+        absolute position in InfoState.rows and request the value view, the outputs_row_tap() shape.
+        A stale index is ignored and the list stays open: closing would pop past the list, since the
+        info page has nothing to fall back to but main. Plain reads and writes, no lock, no I/O."""
         state = self._info
         if state is None or not state.rows:
             return
@@ -2100,39 +1771,31 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _rows_per_page(self) -> int:
-        """Rows per list page for the active screen — the same density-aware
-        count the repaint thread paints with (_layout_metrics()), so the
-        touch-thread page slice and the painted page can never disagree
-        about which rows are on screen. Safe with or without self._lock."""
+        """Rows per list page for the active screen: the density-aware count the repaint thread
+        paints with (_layout_metrics()), so the touch-thread page slice and the painted page agree.
+        Safe with or without self._lock."""
         return self._layout_metrics().rows_per_page
 
     def _rows_of(self, state) -> tuple:
-        """Every row of a list screen's *state*: its own for the selector,
-        picker and info pages, the core's last fetched outputs (less those
-        another appliance has taken) for the outputs list. Of the list
-        screens only the outputs list holds an ApplianceScreenState."""
+        """Every row of a list screen's *state*: its own for the selector, picker and info pages,
+        the core's last fetched outputs (less those another appliance has taken) for the outputs
+        list. Only the outputs list holds an ApplianceScreenState."""
         if isinstance(state, ApplianceScreenState):
             held = held_outputs(self._core.snapshot(), state)
             return offerable(held.rows) if held is not None else ()
         return state.rows
 
     def _current_page_rows(self, state) -> tuple:
-        """The current page's slice of *state*'s rows (see _rows_of()), for
-        a ListScreenState, InfoState or ApplianceScreenState. Shared by
-        the touch-thread pick entries (lock-free) and the repaint-thread list
-        builders so the two can never disagree about which rows are on
-        screen; rows_per_page comes from dial_touch_layout, the same source
-        the hit-test reads. Takes no lock and writes nothing."""
+        """The current page's slice of *state*'s rows (_rows_of()), for a ListScreenState, InfoState
+        or ApplianceScreenState. Shared by the lock-free touch pick entries and the repaint-thread
+        list builders so both agree on which rows are on screen. Takes no lock and writes nothing."""
         _, page_rows = page_slice(self._rows_of(state), state.page, self._rows_per_page())
         return page_rows
 
     def _repeat_page_available(self) -> bool:
-        """Whether the repeat page has anything to show right now: a
-        controllable appliance (the snapshot carries a now_playing) whose
-        focused/reporting id has a available repeat record.
-        Plain reference reads of the newest snapshot plus the repeat
-        published snapshot — an appliance this dial cannot see repeat
-        state for has nothing to show on the repeat page."""
+        """Whether the repeat page has anything to show: a controllable appliance (the snapshot
+        carries a now_playing) whose focused/reporting id has an available repeat record. Plain
+        reads of the newest snapshot."""
         snap = self._core.snapshot()
         if snap.now_playing is None:
             return False
@@ -2143,28 +1806,15 @@ class DialDisplay:
         return rec is not None and rec.available
 
     def cycle_pages(self) -> None:
-        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a DOTS tap):
-        advance to the next available page — main -> repeat -> eq -> main,
-        wrapping, and skipping a page with nothing to show (no held repeat
-        record, or no EQ-capable focused/reporting appliance) so a dot
-        never comes to mean two different pages. The core always holds the
-        focused appliance's EQ bands and repeat record, so nothing is asked
-        for on the way in.
+        """Touch-thread entry (a DOTS tap): advance to the next available page, main -> repeat -> eq
+        -> main, wrapping and skipping a page with nothing to show, so a dot never means two
+        different pages.
 
-        A TRUE no-op (self._screen_request left untouched) when starting
-        from "main" (or a screen outside the three-page set entirely, e.g.
-        the selector) and nothing is available to open — the original
-        two-way toggle_repeat_screen()'s own exact behaviour, preserved so
-        an appliance with neither capability keeps its byte-identical
-        trace. Leaving "repeat" or "eq" for "main" (nothing further around
-        the wrap), by contrast, always fires — there is a real secondary
-        screen to close — and arms self._repeat_close_reveal exactly when
-        the screen just left carries close_reveals_overlay (both do): the
-        one-shot flag TouchEventSource._poll_surface() consumes to bring
-        the main screen back showing its volume overlay rather than bare
-        artwork (see the flag's own comment in __init__ and
-        dial_touch.TouchStateMachine.force_overlay_visible()).
-        """
+        A true no-op (self._screen_request untouched) when starting from main, or from a screen
+        outside the three-page set, and nothing is available to open. Leaving repeat or eq for main
+        always fires, and arms self._repeat_close_reveal when the screen just left has
+        close_reveals_overlay: the one-shot flag TouchEventSource._poll_surface() consumes to bring
+        main back showing its volume overlay (dial_touch.TouchStateMachine.force_overlay_visible())."""
         current = self._screen if self._screen in _PAGE_ORDER else "main"
         leaving_page = current != "main"
         i = _PAGE_ORDER.index(current)
@@ -2188,11 +1838,8 @@ class DialDisplay:
                 return
 
     def consume_repeat_close_reveal(self) -> bool:
-        """Touch-thread-only read-and-clear of the one-shot flag
-        cycle_pages() sets when the repeat screen closes via a
-        DOTS tap. Both the setter and this getter run exclusively on the
-        touch thread (see the flag's own comment in __init__), so no lock
-        is needed here at all."""
+        """Touch-thread-only read-and-clear of the one-shot flag cycle_pages() sets when a page
+        closes via a DOTS tap. Setter and getter both run on the touch thread, so no lock is needed."""
         value = self._repeat_close_reveal
         self._repeat_close_reveal = False
         return value
@@ -2289,13 +1936,10 @@ class DialDisplay:
         self._overlay_signal.set()
 
     def open_info(self) -> None:
-        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for the idle
-        screen's IDLE_WIFI tap). Requests the info page and starts one
-        bounded gather on its own daemon thread; the page paints at once
-        with placeholder "-" values (see _open_info_locked) and fills in
-        within about a second once the gather lands (see _gather_info()).
-        Touches no lock and does no I/O itself: two plain writes, a signal
-        and a thread start."""
+        """Touch-thread entry (the idle screen's IDLE_WIFI tap). Requests the info page and starts
+        one bounded gather on its own daemon thread; the page paints at once with placeholder "-"
+        values (_open_info_locked) and fills in when the gather lands (_gather_info()). Touches no
+        lock and does no I/O itself: two plain writes, a signal and a thread start."""
         self._info_gather_seq += 1
         seq = self._info_gather_seq
         self._screen_request = "info"
@@ -2303,12 +1947,11 @@ class DialDisplay:
         threading.Thread(target=self._gather_info, args=(seq,), daemon=True, name="dial-info").start()
 
     def _gather_info(self, seq: int) -> None:
-        """Worker thread (one per open_info() call, never the touch
-        thread): call the injected provider and fold the result in under
-        self._lock in one assignment, no I/O while the lock is held. Never raises: a missing
-        or failing provider yields the placeholder rows instead. Drops a
-        stale result — the page closed and reopened (seq no longer
-        matches) or closed outright (self._info is None)."""
+        """Worker thread (one per open_info() call, never the touch thread): call the injected
+        provider and fold the result in under self._lock in one assignment, with no I/O while the
+        lock is held. Never raises: a missing or failing provider yields the placeholder rows. Drops
+        a stale result: the page closed and reopened (seq no longer matches) or closed outright
+        (self._info is None)."""
         try:
             if self._get_info_rows is not None:
                 rows = tuple(InfoRow(label=label, value=value) for label, value in self._get_info_rows())
@@ -2480,19 +2123,14 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _close_secondary_locked(self) -> None:
-        """Pop to the main screen from any secondary screen — the
-        appliance list, the repeat screen, the replay picker, the outputs
-        list or the per-output detail page. Caller holds self._lock.
-        Called from the repeat thread's own request-folding, from
-        sleep/disable/swap (so a later wake/reopen never resumes on a
-        stale secondary screen), from the repaint thread when the focused
-        appliance changes while a bound screen is open, and is what a
-        stale selector_pick()/picker_pick()/outputs_row_tap() index falls
-        back to.
+        """Pop to the main screen from any secondary screen. Caller holds self._lock. Called from
+        request folding and the idle tick on the repaint thread, from sleep, disable and a backend
+        swap (so a later wake never resumes on a stale secondary screen), when the focused appliance
+        changes under a bound screen, and as the fallback for a stale selector_pick(), picker_pick()
+        or outputs_row_tap() index.
 
-        Every screen's own state_attr is cleared here, from the policy
-        table itself, so a screen added to the table is popped by this
-        loop without a further edit — see ScreenPolicy.state_attr."""
+        Every screen's state_attr is cleared from the policy table, so a screen added to the table
+        is popped without a further edit."""
         self._screen = "main"
         for policy in SCREEN_POLICIES.values():
             if policy.state_attr is not None:
@@ -2502,20 +2140,16 @@ class DialDisplay:
         self._overlay_signal.set()
 
     def _open_main_locked(self) -> bool:
-        """The "main" row's opener: pop to main. Extracted verbatim from
-        the old request-folding branch so the table's `open` field can
-        name it directly."""
+        """The "main" row's opener: pop to main."""
         self._close_secondary_locked()
         return True
 
     def _open_list_locked(self, screen: str, keep_page_on_return: bool = False) -> bool:
-        """The opener of the row-list screen *screen* ("selector" or
-        "picker"): open, or re-open, at page 0 with a restarted inactivity
-        clock, carrying over whatever rows were last built. Deliberately
-        does not clear another screen's own state on a direct switch (e.g.
-        from repeat) — _close_secondary_locked is the one place that does.
-        With *keep_page_on_return*, a return from the unauthorised-row hint
-        keeps the page the row was tapped on."""
+        """The opener of the row-list screen *screen* ("selector" or "picker"): open, or re-open, at
+        page 0 with a restarted inactivity clock, carrying over the rows last built. It does not
+        clear another screen's state on a direct switch; _close_secondary_locked is the one place
+        that does. With *keep_page_on_return*, a return from the unauthorised-row hint keeps the
+        page the row was tapped on."""
         attr = _policy(screen).state_attr
         prev = getattr(self, attr)
         rows = prev.rows if prev is not None else ()
@@ -2700,16 +2334,12 @@ class DialDisplay:
         return True
 
     def _apply_screen_requests_locked(self) -> None:
-        """Fold pending open_selector()/close_list()/list_page()/
-        toggle_repeat_screen()/open_picker() touch-thread requests into
-        self._screen and the per-screen state, via the screen policy
-        table: the requested row's own `open` method decides whether the
-        switch happens at all (it can refuse and leave the current screen
-        showing); a switch that does happen clears the pressed channel; a
-        pending page delta applies to whichever row is showing, when that
-        row is paged. Caller holds self._lock; runs on the repeat thread
-        only.
-        """
+        """Fold pending touch-thread requests (open_selector(), close_list(), list_page(),
+        cycle_pages(), open_picker() and the rest) into self._screen and the per-screen state, via
+        the screen policy table. The requested row's `open` decides whether the switch happens (it
+        can refuse and leave the current screen showing); a switch clears the pressed channel; a
+        pending page delta applies to the showing row when it is paged. Caller holds self._lock;
+        runs on the repaint thread only."""
         previous_screen = self._screen
         request = self._screen_request
         self._screen_request = None
@@ -2761,21 +2391,14 @@ class DialDisplay:
                     setattr(self, policy.state_attr, dataclasses.replace(active, page=new_page))
 
     def _check_secondary_timeout(self) -> None:
-        """Close the screen showing after its own inactivity timeout —
-        called from the repaint thread's own 1s timeout branch, so this
-        runs even when nothing else signals a repaint. A screen with no
-        timeout of its own (main, repeat) is simply never closed from here
-        — see ScreenPolicy.inactivity_timeout_s.
+        """Close the screen showing after its own inactivity timeout
+        (ScreenPolicy.inactivity_timeout_s; a screen with none is never closed from here). Runs as a
+        timer row on the repaint thread's timeout wake, so it fires even when nothing signals a
+        repaint.
 
-        self._screen/self._selector/self._picker are read lock-free here:
-        all three are also written by the idle tick (_apply_idle_tick,
-        _sleep_locked), not only the repeat thread,
-        but every write is already under self._lock and each is a plain
-        reference/str assignment — the same "a stale read costs at most
-        one harmless extra tick" discipline.
-        The actual close below is re-checked and applied under the lock
-        regardless.
-        """
+        self._screen and the per-screen state are read lock-free: every write is under self._lock
+        and a plain reference assignment, so a stale read costs at most one extra tick. The close
+        itself is applied under the lock."""
         policy = _policy(self._screen)
         if policy.inactivity_timeout_s is None:
             return
@@ -2793,31 +2416,21 @@ class DialDisplay:
                 self._close_secondary_locked()
 
     def _repeat_line_deadline(self) -> "float | None":
-        """When the replaying counter next needs a paint: the repeat
-        screen's line, while it is the screen showing. Lock-free plain
-        reads; reads the core's published snapshot."""
+        """When the replaying counter next needs a paint: the repeat screen's line, while it is the
+        screen showing. Lock-free plain reads of the core's published snapshot."""
         if self._screen == "repeat" and self._repeat_screen is not None:
             now = time.monotonic()
             return self._repeat_line.counter_due(self._repeat_record(self._repeat_screen.appliance_id), now)
         return None
 
     def _repeat_line_fire(self) -> bool:
-        """Whether the repeat screen is due a recompose because the
-        replaying counter's current second is not the one last painted, so
-        the line counts up between polls without skipping or repeating a
-        value. The repaint loop sizes its wait to land just after the next
-        second boundary; but due-ness is decided against the painted
-        second, never against where within the second this wake landed, so
-        a late wake, a status re-sync that moved the interpolated clock, or
-        a signal repaint that straddled the boundary all still paint the
-        second actually owed. A housekeeping wake that lands with the
-        painted second still current (the wait capped at a second when
-        something else is scheduled sooner, or the plain fallback timeout)
-        is not due and must not force an off-boundary repaint. No HTTP call:
-        the interpolation is purely local (see
-        dial_repeat_store.interpolated_position()) and the next poll always
-        corrects any drift. False while the repeat screen is not the one on
-        screen."""
+        """Whether the repeat screen is due a recompose because the replaying counter's current
+        second is not the one last painted. Due-ness is decided against the painted second, never
+        against where in the second this wake landed, so a late wake or a status re-sync still
+        paints the second owed, and a housekeeping wake with the painted second current forces no
+        repaint. No HTTP call: the interpolation is local
+        (dial_repeat_store.interpolated_position()) and the next fold corrects drift. False while
+        the repeat screen is not showing."""
         if self._screen != "repeat":
             return False
         screen = self._repeat_screen
@@ -2828,10 +2441,9 @@ class DialDisplay:
         return due is not None and due <= now
 
     def _replay_timer_deadline(self, now: float) -> "float | None":
-        """When the main page's replay timer line next needs a paint (see
-        _replay_timer_locked()), or None when there is no timer on screen.
-        Plain reads and lock-free plain writes, the same discipline as
-        RepeatLine.arm(); reads the core's published snapshot."""
+        """When the main page's replay timer line next needs a paint (_replay_timer_locked()), or
+        None when no timer is on screen. Plain reads and lock-free plain writes, the same discipline
+        as RepeatLine.arm(); reads the core's published snapshot."""
         if self._repeat_line.timer_id is None or self._screen != "main" or self._display_sleeping:
             return None
         return self._repeat_line.timer_deadline(now, self._repeat_record)
@@ -2851,10 +2463,9 @@ class DialDisplay:
         return False
 
     def _next_repaint_deadline(self) -> "float | None":
-        """The earliest monotonic time something on screen must change on
-        its own: the earliest deadline of the timers, in row order. None
-        when nothing is scheduled; the caller then falls back to its own
-        housekeeping cadence. Lock-free plain reads, the same discipline
+        """The earliest monotonic time something on screen must change on its own: the earliest
+        deadline of the timers, in row order. None when nothing is scheduled, and the caller falls
+        back to its own housekeeping cadence. Lock-free plain reads, the discipline
         _check_secondary_timeout() uses."""
         deadlines = []
         for timer in self._timers:
@@ -2868,13 +2479,10 @@ class DialDisplay:
         return self._controls.hidden_deadline(time.monotonic())
 
     def _controls_hidden_fire(self) -> bool:
-        """Wake the repaint loop exactly when an artwork-tap hide window
-        (see hide_controls()) has just ended, so the bands reappear on
-        their own without waiting for an unrelated touch or poll. One-shot:
-        resets the deadline to 0.0 (its "not hidden" value) once fired, so
-        this does not keep re-signalling every housekeeping tick after
-        expiry. The slide is the painters' to start and end; the repaint
-        this wakes finds the controls back and slides them in."""
+        """True exactly when an artwork-tap hide window (hide_controls()) has just ended, so the
+        bands return without waiting for a touch or fold. One-shot: expire_hidden() resets the
+        deadline to 0.0 (its "not hidden" value), so it does not re-signal every housekeeping tick.
+        The repaint this wakes finds the controls back and starts the slide-in."""
         controls = self._controls
         return bool(controls.hidden_until and controls.expire_hidden(time.monotonic()))
 
@@ -2884,14 +2492,10 @@ class DialDisplay:
         return self._controls.shown_deadline(time.monotonic(), self._compact_tier())
 
     def _controls_shown_fire(self) -> bool:
-        """Wake the repaint loop exactly when a compact screen's own
-        controls window (see ControlsReveal.show_compact()) has just lapsed,
-        so the bands step aside on their own without waiting for an
-        unrelated touch or poll. One-shot: resets the deadline to 0.0 once
-        fired, the same "already in the past" value
-        _compact_controls_hidden() reads as hidden, so this does not keep
-        re-signalling every housekeeping tick after expiry. False off the
-        compact tier."""
+        """True exactly when a compact screen's controls window (ControlsReveal.show_compact()) has
+        just lapsed, so the bands step aside without waiting for a touch or fold. One-shot:
+        expire_shown() resets the deadline to 0.0, the value _compact_controls_hidden() reads as
+        hidden. False off the compact tier."""
         controls = self._controls
         return bool(controls.shown_until and controls.expire_shown(time.monotonic(), self._compact_tier()))
 
@@ -2900,16 +2504,11 @@ class DialDisplay:
         return self._controls.reveal_deadline(time.monotonic())
 
     def _reveal_fire(self) -> bool:
-        """Wake the repaint loop for the next frame of a reveal slide while
-        one is running, and once more the moment it has ended (its duration
-        ran out) so the settled frame is painted at once rather than on the
-        next unrelated signal. The loop's wait has already been sized onto
-        the next frame. One-shot at the end: resets the start to 0.0 so this
-        does not keep signalling every housekeeping tick afterwards. The
-        reset is a compare-and-clear under self._lock, which the repaint
-        thread does not hold at this point (the loop takes it only around
-        the repaint), so a slide the painters stamped since the start was
-        read is left alone."""
+        """True while a reveal slide is running, and once more the moment it has ended, so the
+        settled frame paints at once. The loop's wait has already been sized onto the next frame.
+        One-shot at the end: the slide's start is cleared by a compare-and-clear under self._lock
+        (the loop does not hold it at this point), which leaves a slide the painters stamped since
+        the start was read."""
         controls = self._controls
         started = controls.started_at
         if not started:
@@ -2928,19 +2527,13 @@ class DialDisplay:
         return clamp_page(prev.page, row_count, self._rows_per_page()), prev.opened_at
 
     def _refresh_list_rows(self, snapshot) -> None:
-        """Rebuild the selector's and the replay picker's row lists from
-        *snapshot* (see selector_rows() and picker_rows() in dial_core_state
-        for the filters). Runs when a poll tick ends (see _apply_snapshot),
-        in both the playing-targets branch and the empty-targets branch,
-        whether or not either screen is actually open right now, so opening
-        one always shows fresh rows without waiting for a poll. The touch
-        thread never builds rows.
+        """Rebuild the selector's and the replay picker's row lists from *snapshot* (selector_rows()
+        and picker_rows() in dial_core_state hold the filters). Runs when a tick ends
+        (_apply_snapshot), in both the playing and the idle branch, whether or not either screen is
+        open, so opening one never waits for a fold. The touch thread never builds rows.
 
-        The page is PRESERVED (clamped to the new row count) across each
-        rebuild — resetting it to 0 here would make an open list jump back
-        to its first page every ~6s poll tick. It is reset to 0 only by a
-        fresh open (see _apply_screen_requests_locked).
-        """
+        The page is preserved (clamped to the new row count) across each rebuild; only a fresh open
+        resets it to 0 (_apply_screen_requests_locked)."""
         for screen, rows in (("selector", snapshot.selector_rows()), ("picker", snapshot.picker_rows())):
             attr = _policy(screen).state_attr
             with self._lock:
@@ -2957,12 +2550,10 @@ class DialDisplay:
                 self._overlay_signal.set()
 
     def _build_row_list_state_locked(self, screen: str, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
-        """Build the compositor's ListState for the CURRENT page of the
-        row-list screen *screen* ("selector" or "picker"). Caller holds
-        self._lock; runs on the repeat thread only. The picker's rows carry
-        the buffer length in their secondary slot, formatted "m:ss".
-        pressed comes from the unified pressed channel (self._pressed) —
-        the same one every other screen feeds from."""
+        """Build the compositor's ListState for the current page of the row-list screen *screen*
+        ("selector" or "picker"). Caller holds self._lock; repaint thread only. The picker's rows
+        carry the buffer length in their secondary slot, formatted "m:ss". The pressed zone comes
+        from the unified pressed channel (self._pressed)."""
         placeholder, to_row = _ROW_LISTS[screen]
         return list_state_for(
             getattr(self, _policy(screen).state_attr), rows_per_page_for(width, height, metrics=metrics),
@@ -2970,19 +2561,15 @@ class DialDisplay:
         )
 
     def _build_info_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
-        """Build the compositor's ListState for the info page's CURRENT
-        page — seven read-only rows, ALL pages held in self._info.rows the
-        same way ListScreenState holds the selector's and the picker's. title/
-        plain_background mark this as the read-only variant: the compact
-        tier's own title band reads "Info" instead of "Replay", and the
-        whole frame sits on the flat chassis colour rather than a dimmed
-        base image (the info page has no artwork/logo of its own to dim).
+        """Build the compositor's ListState for the info page's current page: read-only rows, all
+        pages held in self._info.rows as the selector's and the picker's are in ListScreenState.
+        title and plain_background mark the read-only variant: the compact tier's title band reads
+        "Info", and the frame sits on the flat chassis colour, since the page has no artwork of its
+        own to dim.
 
-        Row shape is tier-aware: the compact tier's own rows are names
-        only, (label, False) — no value, since a tap now opens the field's
-        own full-screen value view (see info_row_tap()/InfoValueState) and
-        the row itself only needs to name the field; every other tier keeps
-        the value drawn inline, (label, False, value), unchanged."""
+        Row shape is tier-aware: the compact tier's rows are names only, (label, False), since a tap
+        opens the field's value view (info_row_tap(), InfoValueState); every other tier draws the
+        value inline, (label, False, value)."""
         if metrics is None:
             metrics = self._layout_metrics()
         compact = metrics.content_tier == CONTENT_COMPACT
@@ -2994,23 +2581,19 @@ class DialDisplay:
         return dataclasses.replace(list_state, title=INFO_TITLE, plain_background=True)
 
     def _row_with_optimistic_locked(self, row: "OutputRow") -> "OutputRow":
-        """*row* with the core's pending optimistic override folded in when
-        it names this row — paint-time only, never written back. Shared by
-        the outputs list and the per-output detail view, so a toggle/volume
-        step reads the same on both the instant it lands."""
+        """*row* with the core's pending optimistic override folded in when it names this row:
+        paint-time only, never written back. Shared by the outputs list and the per-output detail
+        view, so a toggle or volume step reads the same on both the instant it lands."""
         override = self._core.outputs_override()
         if override is not None and override[0] == row.id:
             return dataclasses.replace(row, selected=override[1], volume=override[2])
         return row
 
     def _build_outputs_list_state_locked(self, width: int, height: int, metrics: "LayoutMetrics | None" = None) -> ListState:
-        """Build the compositor's ListState for the outputs list's CURRENT
-        page. "Loading" while the first fetch has not landed yet (the
-        core's outputs are not loaded), "No outputs" once it has and there
-        is nothing to show. The optimistic override is applied to the row
-        list before it is turned into row tuples, so the same tap that set
-        it reads back immediately without waiting for the worker's
-        reconciling fetch."""
+        """Build the compositor's ListState for the outputs list's current page. "Loading" until the
+        first fetch has landed, "No outputs" once it has and there is nothing to show. The
+        optimistic override is applied to the rows before they become row tuples, so the tap that
+        set it reads back at once."""
         state = self._outputs
         held = held_outputs(self._core.snapshot(), state)
         placeholder = "Loading" if (held is None or not held.loaded) else "No outputs"
@@ -3021,13 +2604,10 @@ class DialDisplay:
         )
 
     def _build_output_view_locked(self, now: float) -> "OutputViewState":
-        """Build the compositor's OutputViewState for the currently open
-        per-output detail page, reading the output's row fresh from the
-        core's outputs (through the optimistic override) at every paint —
-        see OutputDetailState's own docstring. A detail whose row has
-        disappeared (a race before the snapshot fold requests the outputs
-        list back) draws a disabled placeholder rather than raising; the
-        fold is what actually navigates away."""
+        """Build the compositor's OutputViewState for the open per-output detail page, reading the
+        output's row fresh from the core's outputs (through the optimistic override) at every paint.
+        A detail whose row has disappeared draws a disabled placeholder rather than raising; the
+        fold navigates away."""
         detail, state = self._output_detail, self._outputs
         name = appliance_display_name(state.service_name) if state is not None else ""
         pressed = self._pressed_zone()
@@ -3043,26 +2623,18 @@ class DialDisplay:
         )
 
     def _display_output_locked(self) -> None:
-        """Compose and push the per-output detail page frame — the
-        compose_output() counterpart to _display_repeat_locked(). Bypasses
-        _display_locked() entirely: this screen has its own dark-chassis
-        compose path, like the appliance selector/replay picker/outputs
-        list. Caller holds self._lock."""
+        """Compose and push the per-output detail frame, the compose_output() counterpart to
+        _display_repeat_locked(). Like the other secondary screens it bypasses _display_locked() and
+        has its own dark-chassis compose path. Caller holds self._lock."""
         view = self._build_output_view_locked(time.monotonic())
         self._paint_locked(self._compositor.compose_output, after=(view,))
 
     def _display_info_value_locked(self) -> None:
-        """Compose and push the compact info page's own drill-in frame —
-        the compose_info_value() counterpart to _display_output_locked().
-        Reads the tapped field's label/value fresh from self._info.rows at
-        every paint (not a copy taken when the view opened), so a gather
-        landing while it is open shows up on the next repaint — see
-        InfoValueState's own docstring. An index that has since fallen out
-        of range (the row count shrank while the view was open) paints a
-        blank value rather than raising; the view itself is only ever
-        closed by a tap-back or its own timeout, never by this. Bypasses
-        _display_locked() entirely, like every other list-chassis screen's
-        own compose path. Caller holds self._lock."""
+        """Compose and push the compact info page's drill-in frame, the compose_info_value()
+        counterpart to _display_output_locked(). Reads the tapped field's label and value fresh from
+        self._info.rows at every paint, so a gather landing while it is open shows on the next
+        repaint; an index that has fallen out of range paints a blank value rather than raising.
+        Bypasses _display_locked(). Caller holds self._lock."""
         view_state = self._info_value
         if view_state is not None and view_state.hint is not None:
             view = InfoValueView(label=view_state.hint[0], value=view_state.hint[1])
@@ -3073,14 +2645,12 @@ class DialDisplay:
         self._paint_locked(self._compositor.compose_info_value, after=(view,))
 
     def _display_card_locked(self) -> None:
-        """Compose and push the card on screen (the warnings page, or a
-        status page) over the current base image (the idle logo or the last
-        artwork, dimmed; a flat chassis when nothing has been rendered yet).
-        Text comes from the live bell or the status descriptor and its
-        latest reading, so a fresh reading shows on the next repaint. A card
-        whose entries have all cleared (or whose status has ended) closes
-        the page instead. Bypasses _display_locked() like every other
-        secondary screen. Caller holds self._lock."""
+        """Compose and push the card on screen (the warnings page, or a status page) over the
+        current base image (the idle logo or the last artwork, dimmed; a flat chassis when nothing
+        has been rendered). Text comes from the live bell or the status descriptor and its latest
+        reading, so a fresh reading shows on the next repaint. A card whose entries have all
+        cleared, or whose status has ended, closes the page instead. Bypasses _display_locked().
+        Caller holds self._lock."""
         if self._screen == "warnings":
             page, card = self._warnings_card(self._bell())
             self._warnings_page = page.painted() if page is not None else None
@@ -3112,20 +2682,13 @@ class DialDisplay:
         self._showing = "starting"
 
     def _display_list_locked(self) -> None:
-        """Compose and push whichever list-chassis screen is open (the
-        appliance selector, the replay picker, the outputs list or the
-        read-only info page). Bypasses _display_locked() so self.
-        _current_base_image survives a list visit unchanged and the frame
-        never picks up the main now-playing overlay. Caller holds
-        self._lock; the backend-open check is _repaint_current_locked's.
+        """Compose and push whichever list-chassis screen is open (the appliance selector, the
+        replay picker, the outputs list or the read-only info page). Bypasses _display_locked(), so
+        self._current_base_image survives a list visit and the frame never picks up the main
+        overlay. Caller holds self._lock; the backend-open check is _repaint_current_locked's.
 
-        Passes self._current_base_image through as compose_list()'s `base`
-        unconditionally — read only by the compact tier's own picker frame
-        (the current artwork/logo, dimmed behind it, same as every other
-        compact screen); every other tier ignores the argument entirely and
-        keeps its flat chassis background, so this is harmless off compact.
-        The info page ignores it too, on every tier (plain_background=True).
-        """
+        Passes self._current_base_image as compose_list()'s `base` unconditionally: only the compact
+        tier's picker frame draws it (dimmed); every other tier, and the info page, ignore it."""
         metrics = self._layout_metrics()
         if self._screen == "outputs":
             list_state = self._build_outputs_list_state_locked(metrics.width, metrics.height, metrics=metrics)
@@ -3139,33 +2702,22 @@ class DialDisplay:
         )
 
     def _replay_timer_locked(self, now: float) -> "tuple[str, float, int | None] | None":
-        """The main page's replay timer line right now, as (text, alpha,
-        counter second), or None when none is drawn. Only for the appliance
-        the pick was for, and only while it is the one shown; never on the
-        compact tier. Caller holds self._lock; repaint thread (reads the
-        core's published snapshot, as _build_repeat_view_locked() does)."""
+        """The main page's replay timer line right now, as (text, alpha, counter second), or None
+        when none is drawn. Only for the appliance the pick was for, while it is the one shown, and
+        never on the compact tier. Caller holds self._lock; repaint thread (reads the core's
+        published snapshot, as _build_repeat_view_locked() does)."""
         if self._repeat_line.timer_id is None or self._compact_tier():
             return None
         return self._repeat_line.timer_line(now, self._repeat_record, self._core.snapshot().focused_id())
 
     def _build_repeat_view_locked(self, screen: "ApplianceScreenState | None", now: float) -> RepeatViewState:
-        """Build the compositor's RepeatViewState from the repeat store's
-        CURRENT record for *screen* — the daemon-state-to-layout mapping:
-        no/unavailable record or a live source (recording/pending/idle)
-        draws the enable layout (the top band, plus the "Repeat Play" row);
-        hold/replaying/fading_out draw the replaying layout (the top band,
-        plus the Restart/Stop row and the position line). The row's dot
-        marker reads `armed`, never `state` — armed can be true while a
-        live source is playing. Caller holds self._lock (called from
-        _display_repeat_locked).
-
-        volume feeds the top band's display-only readout — the same
-        reading the main screen's overlay shows (dial_volume.shown_volume()),
-        addressed at *screen*'s own appliance rather than
-        whatever the main overlay would currently show, since the two
-        screens can disagree about which appliance is focused for as long
-        as it takes the next poll to notice a manual focus change.
-        """
+        """Build the compositor's RepeatViewState from the repeat store's current record for
+        *screen*: no or unavailable record, or a live source (recording, pending, idle), draws the
+        enable layout (the top band plus the "Repeat Play" row); hold, replaying and fading_out draw
+        the replaying layout (the Restart/Stop row and the position line). The row's dot marker
+        reads `armed`, never `state`. The volume feeds the top band's readout, addressed at
+        *screen*'s own appliance, since the screens can disagree about the focused appliance until
+        the next fold. Caller holds self._lock (called from _display_repeat_locked)."""
         pressed = self._pressed_zone()
         # Feeds the shared top band's third page dot — see
         # OverlayState.eq_pages/_effective_overlay_locked for the identical
@@ -3200,33 +2752,21 @@ class DialDisplay:
         )
 
     def _display_repeat_locked(self) -> None:
-        """Compose and push the repeat-screen frame — the compose_repeat()
-        counterpart to _display_locked(). Bypasses _display_locked()
-        entirely, like _display_list_locked(): this screen has its own
-        compose path and must never pick up the main now-playing overlay.
-        Passes self._current_base_image through as compose_repeat()'s
-        `base` — the replaying layout draws it (dimmed) behind the
-        position counter; the enable layout ignores it (the compact tier's
-        own frame dims it either way — see the compositor's compact repeat
-        builder). Caller holds self._lock. Stamps self._repeat_layout_shown
-        from the freshly built view so touch_surface() can report the
-        compact tier's own replay_surface exactly while this layout is the
-        one actually on screen, and commits the view's counter_second as
-        self._repeat_line.painted_second, the reference the counter's tick
-        advances against (None for any layout without a running counter,
-        so the next replaying frame re-anchors).
+        """Compose and push the repeat-screen frame, the compose_repeat() counterpart to
+        _display_locked(). Like the other secondary screens it bypasses _display_locked() and never
+        picks up the main overlay. Caller holds self._lock.
 
-        An artwork-tap hide window (see hide_controls()) hides the
-        replaying layout's controls the way it hides the main screen's,
-        with the same slide on the rich and large tiers (see
-        ControlsReveal.advance()); the counter keeps counting underneath.
-        The window ends here, at the first paint that finds no replay
-        running; that paint's layout does not animate, so the controls snap
-        back rather than slide. While the window lapses or a reveal ends it
-        early, the controls slide back in the same way.
+        Passes self._current_base_image as `base`: the replaying layout draws it dimmed behind the
+        counter, the enable layout ignores it. Stamps self._repeat_layout_shown from the freshly
+        built view, for touch_surface(), and commits the view's counter_second as the repeat line's
+        painted second, the reference the counter's timer advances against (None for a layout with
+        no running counter, so the next replaying frame re-anchors).
 
-        The touch surface is the ordinary one for the whole of a slide-in
-        (see touch_surface()): taps act on the bands as they arrive."""
+        An artwork-tap hide window hides the replaying layout's controls as it hides main's, with
+        the same slide on the rich and large tiers (ControlsReveal.advance()); the counter keeps
+        counting underneath. The window ends at the first paint that finds no replay running, and
+        that paint does not animate, so the controls snap back. The touch surface is the ordinary
+        one for the whole of a slide-in (touch_surface())."""
         now = time.monotonic()
         view = dataclasses.replace(self._build_repeat_view_locked(self._repeat_screen, now), bell=self._bell_badge())
         self._repeat_layout_shown = view.layout
@@ -3255,10 +2795,9 @@ class DialDisplay:
         self._repeat_line.commit_counter(view.counter_second)
 
     def _shown_eq(self, state: "ApplianceScreenState", control: str) -> "int | None":
-        """The bass or treble value *control* should currently show on the
-        page *state*: the core's pending optimistic override for *control*
-        when it has not expired, else the core's last reading for the
-        page's appliance (None until the first fetch lands for it)."""
+        """The bass or treble value *control* should show on the page *state*: the core's pending
+        optimistic override for *control* when it has not expired, else the core's last reading for
+        the page's appliance (None until the first fetch lands)."""
         pairs, expires_at = self._core.eq_override()
         if pairs and expires_at > time.monotonic():
             for band_id, gain in pairs:
@@ -3268,12 +2807,9 @@ class DialDisplay:
         return eq_gain(held.bands, control) if held is not None else None
 
     def _build_eq_view_locked(self, screen: "ApplianceScreenState | None", now: float) -> EqViewState:
-        """Build the compositor's EqViewState from *screen* — reads
-        bass/treble through the optimistic override (see _shown_eq()) so a
-        just-tapped stepper moves on the same frame as the tap, before the
-        worker's reconciling fetch lands. volume feeds the top band's
-        display-only readout, the same reading the repeat screen's own top
-        band shows, addressed at *screen*'s own appliance. Caller holds
+        """Build the compositor's EqViewState from *screen*, reading bass and treble through the
+        optimistic override (_shown_eq()) so a tapped stepper moves on the same frame as the tap.
+        The volume feeds the top band's readout, addressed at *screen*'s own appliance. Caller holds
         self._lock (called from _display_eq_locked)."""
         pressed = self._pressed_zone()
         if screen is None:
@@ -3289,21 +2825,17 @@ class DialDisplay:
         )
 
     def _display_eq_locked(self) -> None:
-        """Compose and push the EQ-page frame — the compose_eq()
-        counterpart to _display_repeat_locked(). Bypasses _display_locked()
-        entirely: this screen has its own compose path and must never pick
-        up the main now-playing overlay. Caller holds self._lock."""
+        """Compose and push the EQ-page frame, the compose_eq() counterpart to
+        _display_repeat_locked(). Bypasses _display_locked() and never picks up the main overlay.
+        Caller holds self._lock."""
         view = dataclasses.replace(self._build_eq_view_locked(self._eq, time.monotonic()), bell=self._bell_badge())
         self._paint_locked(self._compositor.compose_eq, after=(view,))
 
     def eq_step(self, control: str, delta: int) -> None:
-        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for an EQ_BASS_*/
-        EQ_TREBLE_* tap, repeating): absolute clamp(shown + delta, -6, +6)
-        for *control* ("bass" or "treble") — the same shape as
-        output_volume_tap(): the appliance clamps again defensively.
-        Optimistic override shown at once; the worker's fetch-after-set
-        reconciles it. A no-op when the EQ page is not open for any
-        appliance."""
+        """Touch-thread entry (an EQ_BASS_* / EQ_TREBLE_* tap, repeating): absolute clamp(shown +
+        delta, -6, +6) for *control* ("bass" or "treble"), the shape of output_volume_tap(); the
+        appliance clamps again. The optimistic override shows at once and the worker's
+        fetch-after-set reconciles it. A no-op when the EQ page is not open."""
         state = self._eq
         if state is None:
             return
@@ -3340,15 +2872,13 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _request_due_status(self, wake: bool = False) -> None:
-        """Request the page of the due status, if any. An interrupting
-        status is requested over a secondary screen (the opener pops it),
-        over a lower-priority status page and over a pending request other
-        than the restart screen's, and with wake=True into a sleeping panel
-        (the opener wakes it); it is not requested again while its own page
-        is up. Called from the repaint thread's own timeout branch as well,
-        so a status the opener refused is requested again. Callable with or
-        without self._lock: plain reads and one plain request write, the
-        same writes the core's source effects make."""
+        """Request the page of the due status, if any. An interrupting status is requested over a
+        secondary screen (the opener pops it), over a lower-priority status page and over a pending
+        request other than the restart screen's, and with wake=True into a sleeping panel (the
+        opener wakes it); it is not requested again while its own page is up. Also called from the
+        repaint thread's timeout branch (the due_status timer), so a status the opener refused is
+        requested again. Callable with or without self._lock: plain reads and one plain request
+        write, the same writes the core's source effects make."""
         desc = self._core.warnings.due_status()
         if desc is None:
             return
@@ -3396,11 +2926,9 @@ class DialDisplay:
         return view.link if view is not None else "unknown"
 
     def _wifi_flashing(self) -> bool:
-        """True exactly while the idle screen is the one on screen and the
-        link is down — the only time the flash is drawn and the only time
-        the repaint loop has to wake for it. Lock-free plain reads, the
-        _check_secondary_timeout() discipline (a stale read costs one
-        harmless extra repaint)."""
+        """True exactly while the idle screen is on screen and the link is down: the only time the
+        flash is drawn and the loop has to wake for it. Lock-free plain reads (a stale read costs
+        one extra repaint)."""
         return (
             self._screen == "main" and self._core.snapshot().now_playing is None
             and self._backend_open and not self._display_sleeping
@@ -3415,13 +2943,11 @@ class DialDisplay:
         return int(now // WIFI_FLASH_HALF_PERIOD_S) % 2 == 0
 
     def _idle_wifi_args_locked(self) -> "tuple[int, str]":
-        """(wifi_bars, wifi_style) for compose_idle(): steady lit arcs
-        while connected; while down, the flash's current half — grey, and
-        on the emphasised half either red (the link was lost after having
-        connected since boot) or nothing at all (never connected yet: the
-        dial is still connecting, which is not an alarm); and a steady
-        all-grey glyph while the link is ignored or unknown. Caller holds
-        self._lock."""
+        """(wifi_bars, wifi_style) for compose_idle(): steady lit arcs while connected; while down,
+        the flash's current half, grey, and on the emphasised half red (the link was lost after
+        having connected since boot) or nothing (never connected yet: the dial is still connecting,
+        which is not an alarm); a steady all-grey glyph while the link is ignored or unknown. Caller
+        holds self._lock."""
         view = self._core.snapshot().network
         if view is None:
             return 0, WIFI_GREY
@@ -3483,19 +3009,14 @@ class DialDisplay:
         return (math.floor(now / half) + 1) * half + DEADLINE_PAD_S
 
     def _display_idle_locked(self) -> None:
-        """Compose and push the idle-screen frame — the "replay available"
-        logo (the arrows-on-disc image) whenever the idle affordance is due,
-        else the plain logo already stored as the current base — either
-        way with the Wi-Fi status glyph top-left (steady bars while connected; while down, the grey/red
-        flash after a lost link or the grey/blank flash while still
-        connecting), the warning bell top-right while the bell holds
-        anything, and no volume/mute controls overlay (nothing is
-        playing, so there is nothing else on this screen to control).
-        Reached whenever nothing is playing (see
-        _idle_chassis_due_locked), not only while a replay is available;
-        degrades to the plain base if the replay image cannot be loaded.
-        Caller holds self._lock; a no-op if the backend is closed or nothing
-        has been rendered yet."""
+        """Compose and push the idle-screen frame: the "replay available" logo whenever the idle
+        affordance is due, else the plain logo stored as the current base. Either way it carries the
+        Wi-Fi status glyph top-left (steady bars while connected; while down, the grey/red flash
+        after a lost link or the grey/blank flash while still connecting) and the warning bell
+        top-right while the bell holds anything, with no volume/mute overlay. Reached whenever
+        nothing is playing (_idle_chassis_due_locked). Degrades to the plain base if the replay
+        image cannot be loaded. Caller holds self._lock; a no-op if the backend is closed or nothing
+        has been rendered."""
         if not (self._backend_open and self._backend is not None):
             return
         if self._current_base_image is None:
@@ -3544,7 +3065,7 @@ class DialDisplay:
                 # screen back to the playing 2x2 immediately, rather than
                 # waiting for it to time out or for the next poll to find
                 # the appliance not playing. Off compact the repeat screen
-                # simply stays, as today. A rejected/transient Stop leaves
+                # simply stays. A rejected/transient Stop leaves
                 # it too: only an ok ack pops it.
                 if (
                     self._compact_tier() and self._screen == "repeat"
@@ -3563,16 +3084,11 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _maybe_show_transition(self, previous_reporting_id: "str | None") -> None:
-        """Push a brief dark transition frame (_show_transition_locked())
-        when self._core.snapshot().focus.reporting_id has just changed, this tick,
-        directly from one appliance to a DIFFERENT one — call once the
-        tick's own reporting id is final, in either branch of
-        _apply_snapshot (something playing, or an idle focus taking over
-        from a stopped one). A no-op when it is unchanged, cleared (nothing
-        playing/focused now), or was previously unset: a fresh start (boot,
-        or the first appliance ever seen) has no stale artwork on screen to
-        guard against, so it goes straight to that appliance's own logo/
-        artwork with no transition flash first."""
+        """Push a brief dark transition frame (_show_transition_locked()) when the core's reporting
+        appliance changed this tick directly from one appliance to a different one. Call once the
+        tick's reporting id is final, in either branch of _apply_snapshot. A no-op when it is
+        unchanged, cleared, or was unset: a fresh start has no stale artwork to guard against, so it
+        goes straight to that appliance's own logo or artwork."""
         reporting_id = self._core.snapshot().focus.reporting_id
         if (
             reporting_id is not None
@@ -3583,14 +3099,10 @@ class DialDisplay:
                 self._show_transition_locked()
 
     def _close_bound_screen_if_unfocused(self) -> None:
-        """Pop whichever screen is showing if its own policy
-        says it is bound to an appliance (the outputs list, the per-output
-        detail page) and that appliance is no longer the focused/reporting
-        one this tick — an auto-pick change, a focus clear, or nothing
-        playing/focused at all. self._screen and the bound state_attr are
-        read lock-free here, the same "a stale read costs at most one
-        harmless extra tick" discipline _check_secondary_timeout() uses;
-        the close itself is re-checked and applied under self._lock."""
+        """Pop the screen showing if its policy says it is bound to an appliance (the outputs list,
+        the per-output detail page) and that appliance is no longer the focused/reporting one this
+        tick. self._screen and the bound state attribute are read lock-free (a stale read costs one
+        extra tick, as in _check_secondary_timeout()); the close is applied under self._lock."""
         policy = _policy(self._screen)
         if not policy.bound_to_appliance:
             return
@@ -3616,8 +3128,8 @@ class DialDisplay:
                 self._apply_source_effects(effect)
 
     def _core_changed(self) -> None:
-        """The core's subscriber callback. Only wakes the repaint thread to
-        read the newest snapshot; never paints, never blocks."""
+        """The core's subscriber callback. Only wakes the repaint thread to read the newest
+        snapshot; never paints, never blocks."""
         self._overlay_signal.poke()
 
     def _apply_pending_snapshot(self) -> None:
@@ -3640,13 +3152,10 @@ class DialDisplay:
             self._apply_snapshot(prev, new)
 
     def _follow_screen_data(self, prev, new) -> None:
-        """What a change in the core's outputs or EQ state means for the
-        pages showing them: a repaint when one is up, the outputs list
-        clamped to the page its rows still reach, and the per-output page
-        sent back to the list when its output has gone (taken by another
-        appliance, or removed). Runs whether or not the core is polling,
-        on the repaint thread (or whoever drives the fold), never with
-        self._lock held."""
+        """What a change in the core's outputs or EQ state means for the pages showing them: a
+        repaint when one is up, the outputs list clamped to the page its rows still reach, and the
+        per-output page sent back to the list when its output has gone. Runs on the repaint thread
+        (or whoever drives the fold), never with self._lock held."""
         if new.outputs != prev.outputs:
             with self._lock:
                 state = self._outputs
@@ -3719,12 +3228,10 @@ class DialDisplay:
                 self._close_secondary_locked()
 
     def _holds_idle_state(self, focus_cleared: bool) -> bool:
-        """True when a poll finding nothing playing must leave what the core
-        reports as it is: the panel is asleep, is about to sleep on this
-        tick's idle clock, or has a list up (or being opened) that its own
-        timeout closes. The same decision _apply_idle_tick acts on, taking
-        the screen a cleared focus closes as already closed; plain reads,
-        read on the core thread."""
+        """True when a fold finding nothing playing must leave what the core reports as it is: the
+        panel is asleep, is about to sleep on this tick's idle clock, or has a list up (or being
+        opened) that its own timeout closes. The same decision _apply_idle_tick acts on, taking the
+        screen a cleared focus closes as already closed. Plain reads; runs on the core thread."""
         if self._display_sleeping:
             return True
         screen = self._screen
@@ -3833,11 +3340,9 @@ class DialDisplay:
         self._apply_artwork(artwork)
 
     def _apply_artwork(self, artwork) -> None:
-        """Decode, fit and paint the core's artwork, or the logo when there
-        is none. The decode and fit run outside the lock, so the HTTP thread
-        can swap or close the backend underneath this work via
-        update_config; the re-check below, taken under the lock, is what
-        makes that safe."""
+        """Decode, fit and paint the core's artwork, or the logo when there is none. The decode and
+        fit run outside the lock, so the HTTP thread can swap or close the backend underneath via
+        update_config; the size re-check below, taken under the lock, is what makes that safe."""
         if artwork is None:
             self.show_logo()
             return
@@ -3912,9 +3417,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     "picker": ScreenPolicy(
         state_attr="_picker", surface=(SURFACE_PICKER, False, False, False),
         open=functools.partial(DialDisplay._open_list_locked, screen="picker"), paint=DialDisplay._display_list_locked, paged=True,
-        # touch activity extends every list screen's clock — picker now
-        # matches the selector/outputs lists rather than keeping its own
-        # older (never-extends) behaviour.
+        # Touch activity extends every list screen's clock.
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
