@@ -199,7 +199,7 @@ class TestTheCard:
         assert display.touch_surface() == ("card1", False, False, False, False)
         view = _painted(display)
         assert (view.title, view.message, view.source, view.buttons) == (
-            "microSD card", "15% life left, replace soon", "This dial", ("Close",))
+            "microSD card", "15% life left, replace soon", "This Dial", ("Close",))
 
     def test_an_appliance_warning_card_names_the_appliance(self):
         display = _rig()
@@ -215,7 +215,7 @@ class TestTheCard:
         open_warnings_page(display)
         view = _painted(display)
         assert (view.title, view.message, view.source) == (
-            "Update this dial", "Lounge, Kitchen need a newer dial", "This dial")
+            "Update this dial", "Lounge, Kitchen need a newer dial", "This Dial")
 
     def test_no_wifi_has_restart_then_close(self):
         display = _rig()
@@ -238,7 +238,7 @@ class TestTheCard:
             tap_card(display, 0)             # Next is the first cell
             _fold(display)
         assert [t for t, _ in seen] == ["No WiFi", "microSD card", "Technics stylus", "No WiFi"]
-        assert seen[0][1] == "This dial · 1 of 3" and seen[2][1] == "Kitchen · 3 of 3"
+        assert seen[0][1] == "This Dial · 1 of 3" and seen[2][1] == "Kitchen · 3 of 3"
 
     def test_no_wifi_among_others_has_three_cells(self):
         display = _rig()
@@ -326,7 +326,7 @@ class TestAnEntryClears:
         _fold(display)
         view = _painted(display)
         assert (view.title, view.buttons, view.source, view.severity) == (
-            "microSD card", ("Close",), "This dial", "warning")
+            "microSD card", ("Close",), "This Dial", "warning")
         assert display.touch_surface()[0] == "card1"
 
     def test_the_page_closes_when_the_last_entry_clears(self):

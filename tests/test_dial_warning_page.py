@@ -67,16 +67,16 @@ class TestCard:
         assert card.source == "Turntable · 1 of 3"
 
     def test_an_extra_action_sits_between_next_and_close(self):
-        bell = Bell((_entry("nowifi", source="This dial", actions=(ACTION_RESTART,)), _entry("b")))
+        bell = Bell((_entry("nowifi", source="This Dial", actions=(ACTION_RESTART,)), _entry("b")))
         card = _page(bell).card(bell)
         assert [a for _, a in card.buttons] == [ACTION_NEXT, ACTION_RESTART, ACTION_CLOSE]
         assert [label for label, _ in card.buttons] == ["Next", "Restart", "Close"]
 
     def test_an_extra_action_alone_has_no_next(self):
-        bell = Bell((_entry("nowifi", source="This dial", actions=(ACTION_RESTART,)),))
+        bell = Bell((_entry("nowifi", source="This Dial", actions=(ACTION_RESTART,)),))
         card = _page(bell).card(bell)
         assert [a for _, a in card.buttons] == [ACTION_RESTART, ACTION_CLOSE]
-        assert card.source == "This dial"
+        assert card.source == "This Dial"
 
     def test_the_text_is_read_from_the_live_bell(self):
         page = _page(_bell("a"))

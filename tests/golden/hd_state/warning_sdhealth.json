@@ -43,7 +43,7 @@
     "entries": [
       {
         "key": "sdhealth",
-        "source": "Lounge dial",
+        "source": "This Dial",
         "severity": "warning",
         "title": "microSD card",
         "message": "18% life left, replace soon",

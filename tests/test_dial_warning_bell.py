@@ -63,11 +63,11 @@ class TestDialBell:
     def test_the_sd_card_entry_reads_its_text_and_attribution(self):
         bell = dial_bell(_snapshot({"sdhealth": ("low", 18)}), WARNING_DESCRIPTORS)
         assert bell.entries == (BellEntry(
-            "sdhealth", hs.DIAL.name, "warning", "microSD card", "18% life left, replace soon", ()),)
+            "sdhealth", DIAL_SOURCE, "warning", "microSD card", "18% life left, replace soon", ()),)
 
-    def test_a_dial_without_a_name_is_attributed_to_this_dial(self):
+    def test_a_dial_is_attributed_to_this_dial_whatever_it_is_called(self):
         snap = dataclasses.replace(
-            _snapshot({"nowifi": None}), dial=dataclasses.replace(hs.DIAL, name="  "))
+            _snapshot({"nowifi": None}), dial=dataclasses.replace(hs.DIAL, name="Lounge dial"))
         (entry,) = dial_bell(snap, WARNING_DESCRIPTORS).entries
         assert entry.source == DIAL_SOURCE
 
@@ -83,7 +83,7 @@ class TestDialBell:
         bell = dial_bell(
             _snapshot({"update_dial": ("Lounge", "Kitchen")}), WARNING_DESCRIPTORS)
         (entry,) = bell.entries
-        assert entry.key == "update_dial" and entry.source == hs.DIAL.name
+        assert entry.key == "update_dial" and entry.source == DIAL_SOURCE
         assert entry.title == "Update this dial"
         assert entry.message == "Lounge, Kitchen need a newer dial"
         assert entry.severity == "warning" and entry.actions == ()
@@ -158,7 +158,7 @@ class TestWholeBell:
     def test_order_is_worst_first_dial_before_appliances_among_equals(self):
         bell = whole_bell(self._snap(), WARNING_DESCRIPTORS)
         assert [e.title for e in bell.entries] == ["Kitchen critical", "No WiFi", "Lounge info"]
-        assert [e.source for e in bell.entries] == ["Kitchen", hs.DIAL.name, "Lounge"]
+        assert [e.source for e in bell.entries] == ["Kitchen", DIAL_SOURCE, "Lounge"]
 
     def test_it_holds_nothing_when_nothing_is_wrong(self):
         assert whole_bell(_snapshot(), WARNING_DESCRIPTORS) == Bell(())

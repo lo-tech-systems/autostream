@@ -43,7 +43,7 @@
     "entries": [
       {
         "key": "nowifi",
-        "source": "Lounge dial",
+        "source": "This Dial",
         "severity": "warning",
         "title": "No WiFi",
         "message": "",
