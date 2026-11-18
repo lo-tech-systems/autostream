@@ -494,3 +494,25 @@ class TestDevicesPart:
         status = deep_freeze({"ok": True, "paired": {"mac": "AA", "name": "N"}})
         assert isinstance(status, FrozenDict)
         assert isinstance(status["paired"], FrozenDict)
+
+
+class TestWarningsPart:
+    @staticmethod
+    def entry(**fields):
+        base = dict(id="psu", incident="", severity="warning", kind="psu", subject="",
+                    title="Power supply", message="m", link=None, snooze="day")
+        base.update(fields)
+        return state.WarningEntry(**base)
+
+    def test_the_digest_covers_every_field_of_every_entry(self):
+        base = state.WarningsPart((self.entry(),))
+        for name, value in [("id", "x"), ("incident", "i"), ("severity", "info"), ("kind", "k"),
+                            ("subject", "s"), ("title", "t"), ("message", "n"),
+                            ("link", "/about"), ("snooze", "week")]:
+            other = state.WarningsPart((self.entry(**{name: value}),))
+            assert DIGESTS["warnings"](other) != DIGESTS["warnings"](base), name
+        assert DIGESTS["warnings"](base) == DIGESTS["warnings"](state.WarningsPart((self.entry(),)))
+
+    def test_an_empty_part_differs_from_one_entry(self):
+        assert DIGESTS["warnings"](state.WarningsPart()) != DIGESTS["warnings"](
+            state.WarningsPart((self.entry(),)))

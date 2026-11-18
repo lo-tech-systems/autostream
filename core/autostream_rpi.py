@@ -31,12 +31,15 @@ from __future__ import annotations
 from autostream_system_stats import (  # noqa: F401 -- re-exported for existing importers
     RPI_MODEL_FILE,
     classify_high_performance_pi,
+    cpu_thermal_status,
     get_cpu_busy_percent,
     get_cpu_serial,
     get_cpu_temperature_c,
+    get_cpu_thermal_status,
     get_psu_warning_text,
     get_raspberry_pi_model,
     is_high_performance_pi,
+    thermal_limits,
 )
 from autostream_appliance_identity import (  # noqa: F401 -- re-exported for existing importers
     APPLIANCE_ID_FILE,

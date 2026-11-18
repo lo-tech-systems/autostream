@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +21,7 @@ if _CORE not in sys.path:
 
 import autostream_appliance_state as appliance_state
 import autostream_state as state
+from fake_store import FakeStore
 from autostream_intents import Intent, Origin, submit
 from autostream_state import live
 
@@ -32,12 +34,18 @@ def sources(monkeypatch):
     values = {
         "id": "aa11bb22cc33dd44ee55", "host": "Turntable.local", "version": "0.8.0",
         "commissioning": False, "pin": True,
+        "throttled": 0, "cpu": ("ok", None), "sd": None, "dials": 0, "unlicensed": False,
     }
     monkeypatch.setattr(appliance_state.rpi, "get_appliance_id", lambda: values["id"])
     monkeypatch.setattr(appliance_state, "get_system_hostname", lambda: values["host"])
     monkeypatch.setattr(appliance_state, "is_commissioning_required",
                         lambda config, st: values["commissioning"])
     monkeypatch.setattr(appliance_state, "pin_is_set", lambda st: values["pin"])
+    monkeypatch.setattr(appliance_state, "_read_get_throttled_value", lambda: values["throttled"])
+    monkeypatch.setattr(appliance_state.rpi, "get_cpu_thermal_status", lambda previous: values["cpu"])
+    monkeypatch.setattr(appliance_state, "sdcard_health_display", lambda: values["sd"])
+    monkeypatch.setattr(appliance_state, "_dials_needing_update", lambda: values["dials"])
+    monkeypatch.setattr(appliance_state, "_unlicensed", lambda: values["unlicensed"])
     return values
 
 
@@ -173,6 +181,111 @@ class TestStart:
             worker.join(5.0)
         assert len(calls) >= 5
         assert sum("appliance state pass failed" in r.message for r in caplog.records) == 1
+
+
+WARNINGS_PART = lambda: state.store().snapshot().warnings
+
+
+class TestWarningsPass:
+    def test_it_publishes_what_the_sources_say(self, sources):
+        sources["throttled"] = 0x1
+        sources["cpu"] = ("high", 72.0)
+        sources["dials"] = 2
+        appliance_state._run_pass(make_src())
+        assert [e.id for e in WARNINGS_PART().entries] == ["psu", "cpu_temp", "dial_update"]
+        assert all(e.incident == "" for e in WARNINGS_PART().entries)
+
+    def test_an_unchanged_pass_moves_nothing(self, sources):
+        sources["throttled"] = 0x1
+        appliance_state._run_pass(make_src())
+        before = state.store().snapshot().part_versions["warnings"]
+        appliance_state._run_pass(make_src())
+        assert state.store().snapshot().part_versions["warnings"] == before
+
+    def test_a_failing_source_drops_only_its_own_warning(self, sources, monkeypatch):
+        sources["throttled"] = 0x1
+        sources["dials"] = 1
+
+        def broken():
+            raise OSError("no vcgencmd")
+
+        monkeypatch.setattr(appliance_state, "_read_get_throttled_value", broken)
+        appliance_state._run_pass(make_src())
+        assert [e.id for e in WARNINGS_PART().entries] == ["dial_update"]
+
+    def test_the_sd_level_is_held_between_passes(self, sources):
+        src = make_src()
+        sources["sd"] = 8
+        appliance_state._run_pass(src)
+        assert WARNINGS_PART().entries[0].severity == "critical"
+        sources["sd"] = 14
+        appliance_state._run_pass(src)
+        assert WARNINGS_PART().entries[0].severity == "critical"
+        sources["sd"] = 20
+        appliance_state._run_pass(src)
+        assert WARNINGS_PART().entries[0].severity == "warning"
+        sources["sd"] = 30
+        appliance_state._run_pass(src)
+        assert WARNINGS_PART().entries == ()
+
+    def test_the_thermal_status_is_passed_back_as_previous(self, sources, monkeypatch):
+        seen = []
+
+        def read(previous):
+            seen.append(previous)
+            return ("high", 70.0)
+
+        monkeypatch.setattr(appliance_state.rpi, "get_cpu_thermal_status", read)
+        src = make_src()
+        appliance_state._run_pass(src)
+        appliance_state._run_pass(src)
+        assert seen == ["ok", "high"]
+
+    def test_a_dials_change_wakes_the_worker_and_the_part_follows(self, sources, monkeypatch):
+        monkeypatch.setattr(appliance_state, "_PERIOD_S", 60.0)
+        stop = threading.Event()
+        worker = appliance_state.start(
+            stop, config_path="c.ini", state_path="s.json", settings=None,
+            app_version=lambda: "0.8.0")
+        try:
+            assert WARNINGS_PART().entries == ()
+            sources["dials"] = 1
+            with patch.object(appliance_state, "remove_dial_entry"), \
+                 patch.object(appliance_state, "notify_dial_auth_changed"):
+                submit(Intent("dials.revoke", {"uuid": UUID}, Origin.USER, "webui"))
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and not WARNINGS_PART().entries:
+                time.sleep(0.01)
+            assert [e.id for e in WARNINGS_PART().entries] == ["dial_update"]
+        finally:
+            stop.set()
+            appliance_state.poke()
+            worker.join(5.0)
+
+    @pytest.mark.parametrize("part,wakes", [
+        ("playback", True), ("inputs", True), ("dials", True), ("outputs", False)])
+    def test_only_some_parts_wake_the_worker(self, part, wakes):
+        appliance_state._poke_event.clear()
+        appliance_state._wake_on_change(state.Change(1, frozenset({part}), None, None))
+        assert appliance_state._poke_event.is_set() is wakes
+        appliance_state._poke_event.clear()
+
+    def test_disabling_both_inputs_gives_no_input(self, sources):
+        appliance_state._run_pass(make_src())
+        FakeStore().playback(SimpleNamespace(inputs={
+            1: SimpleNamespace(enabled=False), 2: SimpleNamespace(enabled=False)}))
+        appliance_state._run_pass(make_src())
+        assert [e.id for e in WARNINGS_PART().entries] == ["no_input"]
+
+    def test_the_first_pass_publishes_warnings_on_the_calling_thread(self, sources):
+        sources["throttled"] = 0x1
+        stop = threading.Event()
+        stop.set()
+        worker = appliance_state.start(
+            stop, config_path="c.ini", state_path="s.json", settings=None,
+            app_version=lambda: "0.8.0")
+        worker.join(5.0)
+        assert [e.id for e in WARNINGS_PART().entries] == ["psu"]
 
 
 class TestBinding:

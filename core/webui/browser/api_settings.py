@@ -30,6 +30,7 @@ from autostream_config import (
 from autostream_intents import Intent, submit
 from autostream_settings import SettingsView
 from autostream_state import Origin
+from autostream_state.live import state_refresh
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from urllib.parse import urlparse as _urlparse
 from webui.session_state import WebUIState
@@ -357,6 +358,7 @@ def send_hostname_post_json(handler, state: WebUIState, body: str) -> None:
         common.send_json(handler, 200, {"ok": False, "error": "Hostname could not be changed"})
         return
 
+    state_refresh()
     host_header = str(handler.headers.get("Host", "") or "")
     port_num = _urlparse(f"http://{host_header}").port
     port = str(port_num) if port_num else None

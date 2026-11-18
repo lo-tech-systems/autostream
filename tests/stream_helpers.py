@@ -19,7 +19,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_state import (
-    AppliancePart, DialsPart, OutputsPart, RepeatPart, SessionPart, SettingsPart)
+    AppliancePart, DialsPart, OutputsPart, RepeatPart, SessionPart, SettingsPart,
+    WarningEntry, WarningsPart)
 import webui.protocol.hub as proto_hub
 
 
@@ -45,6 +46,7 @@ class Publisher:
             "outputs": store.claim("outputs", owner),
             "appliance": store.claim("appliance", owner),
             "dials": store.claim("dials", owner),
+            "warnings": store.claim("warnings", owner),
         }
         self._n: dict = {}
 
@@ -60,6 +62,9 @@ class Publisher:
             return w.publish(RepeatPart(block={"enabled": n % 2 == 1}))
         if part == "dials":
             return w.publish(DialsPart(generation=n))
+        if part == "warnings":
+            return w.publish(WarningsPart((WarningEntry(
+                f"w{n}", "", "info", "no_input", "", "No input", "Set up an input", None, "week"),)))
         if part == "appliance":
             return w.publish(AppliancePart(hostname=f"host{n}", configured=True))
         return w.publish(OutputsPart(muted_all=n % 2 == 1))

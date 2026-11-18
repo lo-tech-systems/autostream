@@ -477,3 +477,75 @@ class TestGetCpuBusyPercent:
              patch.object(rpi, "_read_proc_stat_cpu_totals", return_value=(3.0, 1.0)):
             pct = rpi.get_cpu_busy_percent()
         assert pct == 66.7
+
+
+# ---------------------------------------------------------------------------
+# CPU thermal status
+# ---------------------------------------------------------------------------
+
+MODELS = {
+    "Raspberry Pi 2 Model B Rev 1.1": (70.0, 80.0),
+    "Raspberry Pi 3 Model B Rev 1.2": (70.0, 80.0),
+    "Raspberry Pi 3 Model A Plus Rev 1.0": (70.0, 80.0),
+    "Raspberry Pi 3 Model B Plus Rev 1.3": (60.0, 80.0),
+    "Raspberry Pi 4 Model B Rev 1.5": (70.0, 80.0),
+    "Raspberry Pi 400 Rev 1.0": (70.0, 80.0),
+    "Raspberry Pi 5 Model B Rev 1.0": (70.0, 80.0),
+    "Raspberry Pi 500 Rev 1.0": (70.0, 80.0),
+    "Raspberry Pi Zero 2 W Rev 1.0": (70.0, 80.0),
+    "Raspberry Pi Compute Module 4 Rev 1.0": (70.0, 80.0),
+    "unknown": (70.0, 80.0),
+    "": (70.0, 80.0),
+}
+
+
+class TestThermalLimits:
+    @pytest.mark.parametrize("model", list(MODELS))
+    def test_only_the_3_b_plus_has_a_lower_warning(self, model):
+        assert rpi.thermal_limits(model) == MODELS[model]
+
+    def test_the_match_ignores_case(self):
+        assert rpi.thermal_limits("RASPBERRY PI 3 MODEL B PLUS REV 1.3") == (60.0, 80.0)
+
+
+class TestCpuThermalStatus:
+    M = "Raspberry Pi 4 Model B Rev 1.5"
+    BPLUS = "Raspberry Pi 3 Model B Plus Rev 1.3"
+
+    @pytest.mark.parametrize("previous", ["ok", "high", "critical"])
+    def test_an_unreadable_temperature_is_ok(self, previous):
+        assert rpi.cpu_thermal_status(None, self.M, previous) == "ok"
+
+    def test_from_ok_the_warning_threshold_is_entered_at_70(self):
+        assert rpi.cpu_thermal_status(69.9, self.M) == "ok"
+        assert rpi.cpu_thermal_status(70.0, self.M) == "high"
+
+    def test_from_ok_80_is_critical_directly(self):
+        assert rpi.cpu_thermal_status(80.0, self.M) == "critical"
+
+    def test_from_high_it_holds_until_5_below_the_warning_threshold(self):
+        assert rpi.cpu_thermal_status(65.1, self.M, "high") == "high"
+        assert rpi.cpu_thermal_status(64.9, self.M, "high") == "ok"
+
+    def test_from_high_critical_is_entered_at_80(self):
+        assert rpi.cpu_thermal_status(80.0, self.M, "high") == "critical"
+
+    def test_from_critical_it_holds_down_to_75(self):
+        assert rpi.cpu_thermal_status(75.0, self.M, "critical") == "critical"
+
+    def test_from_critical_below_75_it_is_high_while_above_the_clear_point(self):
+        assert rpi.cpu_thermal_status(74.9, self.M, "critical") == "high"
+        assert rpi.cpu_thermal_status(65.0, self.M, "critical") == "high"
+        assert rpi.cpu_thermal_status(64.9, self.M, "critical") == "ok"
+
+    def test_the_3_b_plus_enters_at_60_and_clears_below_55(self):
+        assert rpi.cpu_thermal_status(59.9, self.BPLUS) == "ok"
+        assert rpi.cpu_thermal_status(60.0, self.BPLUS) == "high"
+        assert rpi.cpu_thermal_status(55.0, self.BPLUS, "high") == "high"
+        assert rpi.cpu_thermal_status(54.9, self.BPLUS, "high") == "ok"
+
+    def test_the_reading_is_passed_through(self):
+        with patch.object(rpi, "get_cpu_temperature_c", return_value=72.4), \
+             patch.object(rpi, "get_raspberry_pi_model", return_value=self.M):
+            assert rpi.get_cpu_thermal_status() == ("high", 72.4)
+            assert rpi.get_cpu_thermal_status("critical") == ("high", 72.4)

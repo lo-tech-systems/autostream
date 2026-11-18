@@ -21,6 +21,7 @@ from webui import static
 from webui.assets import LICENSE_BANNER_CSS, logo_banner_html
 from webui.common import build_nav_bar_html
 from webui import common
+from autostream_state.live import state_refresh
 from webui import session_state
 from urllib.parse import urlparse
 
@@ -120,3 +121,4 @@ def _route_post_auth_verify(handler, state, body_str):
 
 def _route_post_pin_change(handler, state, body_str):
     session_state.AUTH.handle_pin_change(handler, body_str.encode("utf-8"))
+    state_refresh()

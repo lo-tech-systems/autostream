@@ -35,6 +35,7 @@ from autostream_commissioning import (
 from autostream_intents import Intent, Origin, submit
 from autostream_settings import SettingsView
 from autostream_state import store
+from autostream_state.live import state_refresh
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from webui.assets import logo_banner_html
 from webui.common import (
@@ -424,6 +425,7 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
 
     # Update the in-process unconfigured cache
     _mark_configured(state.config_path)
+    state_refresh()
 
     if hostname_changed:
         send_hostname_changed_page(handler, hostname_raw, path="/", show_nav=False)

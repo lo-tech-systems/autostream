@@ -281,6 +281,26 @@ class DialsPart:
     generation: int = 0                     # +1 on every authorise or revoke
 
 
+@dataclass(frozen=True)
+class WarningEntry:
+    """One thing the appliance wants a person to know."""
+
+    id: str                                 # kind id, e.g. "stylus_in1", "psu"
+    incident: str                           # reserved; always ""
+    severity: str                           # "info" | "warning" | "critical"
+    kind: str                               # "psu", "cpu_temp", "sd_health", "stylus", ...
+    subject: str                            # the input label for per-input kinds, else ""
+    title: str
+    message: str
+    link: Optional[str]                     # a page of the web UI, or None
+    snooze: str                             # "day" | "week" | "none"
+
+
+@dataclass(frozen=True)
+class WarningsPart:
+    entries: tuple[WarningEntry, ...] = ()  # most severe first
+
+
 def empty_playback_snapshot() -> PlaybackSnapshot:
     return PlaybackSnapshot(
         inputs=FrozenDict(),
@@ -316,11 +336,12 @@ class Snapshot:
     devices: DevicesPart = field(default_factory=DevicesPart)
     appliance: AppliancePart = field(default_factory=AppliancePart)
     dials: DialsPart = field(default_factory=DialsPart)
+    warnings: WarningsPart = field(default_factory=WarningsPart)
 
 
 PART_NAMES = (
     "session", "repeat", "track", "inputs", "monitor", "playback", "health", "settings",
-    "outputs", "eq", "devices", "appliance", "dials",
+    "outputs", "eq", "devices", "appliance", "dials", "warnings",
 )
 
 
@@ -461,6 +482,13 @@ def _dials_digest(p: DialsPart) -> int:
     return p.generation
 
 
+def _warnings_digest(p: WarningsPart) -> tuple:
+    return tuple(
+        (e.id, e.incident, e.severity, e.kind, e.subject, e.title, e.message, e.link, e.snooze)
+        for e in p.entries
+    )
+
+
 def eq_band_digest(p: EqPart) -> tuple:
     """What a dial shows of the equaliser: the output bands."""
     return p.output_bands
@@ -498,6 +526,7 @@ DIGESTS: dict[str, Callable] = {
     "devices": _devices_digest,
     "appliance": _appliance_digest,
     "dials": _dials_digest,
+    "warnings": _warnings_digest,
 }
 
 

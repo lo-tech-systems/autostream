@@ -283,6 +283,52 @@ def get_raspberry_pi_model() -> str:
 
 
 # ---------------------------------------------------------------------------
+# CPU thermal status
+# ---------------------------------------------------------------------------
+
+# (marker, warning C, critical C); the first marker found in the lower-cased
+# model string wins, and any other model uses the default.
+_THERMAL_LIMITS = (
+    ("raspberry pi 3 model b plus", 60.0, 80.0),
+)
+_THERMAL_DEFAULT = (70.0, 80.0)
+_THERMAL_CLEAR_C = 5.0
+
+
+def thermal_limits(model: str) -> tuple[float, float]:
+    """(warning, critical) temperatures in Celsius for a model string."""
+    text = str(model or "").strip().lower()
+    for marker, warning, critical in _THERMAL_LIMITS:
+        if marker in text:
+            return warning, critical
+    return _THERMAL_DEFAULT
+
+
+def cpu_thermal_status(temp_c: Optional[float], model: str, previous: str = "ok") -> str:
+    """"ok", "high" or "critical" for a CPU temperature. A level is entered at
+    its threshold and left 5 C below it, judged from *previous*. An unreadable
+    temperature is "ok". Pure."""
+    if temp_c is None:
+        return "ok"
+    warning, critical = thermal_limits(model)
+    if temp_c >= critical:
+        return "critical"
+    if previous == "critical" and temp_c >= critical - _THERMAL_CLEAR_C:
+        return "critical"
+    if temp_c >= warning:
+        return "high"
+    if previous in ("high", "critical") and temp_c >= warning - _THERMAL_CLEAR_C:
+        return "high"
+    return "ok"
+
+
+def get_cpu_thermal_status(previous: str = "ok") -> tuple[str, Optional[float]]:
+    """(status, temperature) for this machine right now."""
+    temp_c = get_cpu_temperature_c()
+    return cpu_thermal_status(temp_c, get_raspberry_pi_model(), previous), temp_c
+
+
+# ---------------------------------------------------------------------------
 # Hardware performance classification (audio-path SRC tier selection)
 # ---------------------------------------------------------------------------
 #

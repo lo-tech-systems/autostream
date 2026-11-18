@@ -191,8 +191,12 @@ def get_align_review():
 
 def state_refresh() -> None:
     """Ask the appliance state worker to re-read its sources now (bound by
-    autostream_appliance_state). A missed call costs at most one 30 s pass."""
-    _call_bound("state_refresh")
+    autostream_appliance_state). Does nothing when no worker is running; a
+    missed call costs at most one 30 s pass."""
+    try:
+        _call_bound("state_refresh")
+    except LiveNotBound:
+        pass
 
 
 def current_warnings() -> list:
