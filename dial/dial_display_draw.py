@@ -861,6 +861,17 @@ def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
     return img
 
 
+def _unfinish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
+    """Undo _finish: the colour order first, then the rotation, so the
+    frame reads as the viewer sees the panel. Returns *img* itself,
+    unchanged, when neither flag is set."""
+    if bgr:
+        img = Image.merge("RGB", img.split()[::-1])
+    if rotate:
+        img = img.transpose(Image.ROTATE_180)
+    return img
+
+
 def _draw_bell(img: Image.Image, rect, bell: BellBadge, metrics: LayoutMetrics, fraction: float) -> None:
     """The bell glyph centred in *rect* at *fraction* of its short side."""
     side = round(min(rect[2] - rect[0], rect[3] - rect[1]) * fraction)

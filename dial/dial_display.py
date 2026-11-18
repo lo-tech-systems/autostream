@@ -55,6 +55,7 @@ from dial_display_views import (
     WarningView,
     format_mmss,
 )
+from dial_display_draw import _unfinish
 from dial_display_image import (
     decode_artwork,
     load_logo,
@@ -812,10 +813,7 @@ class DialDisplay:
         if frame is None:
             return None
         try:
-            if bgr:
-                frame = Image.merge("RGB", frame.split()[::-1])
-            if rotate:
-                frame = frame.transpose(Image.ROTATE_180)
+            frame = _unfinish(frame, rotate, bgr)
             buf = io.BytesIO()
             frame.save(buf, format="PNG", compress_level=6)
             return buf.getvalue()

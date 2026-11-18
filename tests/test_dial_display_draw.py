@@ -38,6 +38,8 @@ from dial_display_draw import (  # noqa: E402
     _GLYPH_PAINTERS,
     _GLYPH_SUPERSAMPLE,
     _BELL_RGB,
+    _finish,
+    _unfinish,
     _fit_value_lines,
     _glyph_tile,
     _halo_layer,
@@ -760,3 +762,23 @@ class TestPageDotsGlyphTiles:
 
     def test_page_dots_registered_in_glyph_painters(self):
         assert GLYPH_PAGE_DOTS in _GLYPH_PAINTERS
+
+
+# ---------------------------------------------------------------------------
+# _unfinish — the exact inverse of _finish.
+# ---------------------------------------------------------------------------
+
+class TestUnfinish:
+    @pytest.mark.parametrize("rotate", [False, True])
+    @pytest.mark.parametrize("bgr", [False, True])
+    def test_it_undoes_finish_byte_for_byte(self, rotate, bgr):
+        img = Image.new("RGB", (5, 3))
+        img.putdata([(10 * i, 20 + i, 250 - 7 * i) for i in range(15)])
+        finished = _finish(img, rotate, bgr)
+        assert (finished.tobytes() != img.tobytes()) == (rotate or bgr)
+        assert _unfinish(finished, rotate, bgr).tobytes() == img.tobytes()
+
+    def test_it_returns_the_image_itself_when_neither_flag_is_set(self):
+        img = Image.new("RGB", (4, 4))
+        assert _unfinish(img, False, False) is img
+
