@@ -363,10 +363,7 @@ class TestApplianceRouteExistence:
 
     @pytest.fixture(scope="class")
     def api_src(self):
-        try:
-            return _source_text.module_text("autostream_webui_api")
-        except KeyError:
-            pytest.skip("autostream_webui_api.py not found")
+        return _source_text.web_source()
 
     def test_audio_status_route_exists(self, api_src):
         assert "/api/audio/status" in api_src, (

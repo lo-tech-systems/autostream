@@ -909,7 +909,7 @@ class TestSetupPageNetworkCard:
     the HTML and JS strings are correctly embedded in the template strings.
     """
 
-    PAGE_SRC = _source_text.module_text("autostream_webui_page_setup")
+    PAGE_SRC = _source_text.page_source("setup")
 
     def test_network_card_html_present(self):
         assert 'id="networkCard"' in self.PAGE_SRC

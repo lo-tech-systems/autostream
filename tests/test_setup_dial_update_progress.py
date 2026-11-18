@@ -22,7 +22,7 @@ if _CORE not in sys.path:
 
 import autostream_webui_page_setup as setup
 
-_SRC = _source_text.module_text("autostream_webui_page_setup")
+_SRC = _source_text.page_source("setup")
 
 
 def _body(name: str) -> str:

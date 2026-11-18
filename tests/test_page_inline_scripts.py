@@ -152,8 +152,7 @@ def test_a_page_carries_no_more_inline_scripts_than_its_limit(page):
 
 
 def test_setup_carries_no_more_inline_scripts_than_its_limit():
-    html = (REPO_ROOT / "tests" / "golden" / "setup_page_full.html").read_text(encoding="utf-8")
-    assert len(_inline_scripts(html)) <= SETUP_INLINE
+    assert len(_inline_scripts(_render("setup"))) <= SETUP_INLINE
 
 
 @pytest.mark.parametrize("page", EXTRACTED)

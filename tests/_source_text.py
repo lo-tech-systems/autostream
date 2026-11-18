@@ -47,8 +47,34 @@ def module_path(name: str) -> Path:
 
 
 def module_text(name: str) -> str:
-    """Return the source text of the module with the given import name."""
+    """Return the source text of the module with the given import name. A
+    package directory without a module of its own name (for example
+    "webui.browser.setup") gives every file of it, sorted, joined."""
+    parts = name.split(".")
+    package_dir = CORE_DIR.joinpath(*parts)
+    flat = CORE_DIR / f"{name}.py"
+    nested = CORE_DIR.joinpath(*parts[:-1], f"{parts[-1]}.py")
+    if package_dir.is_dir() and not flat.is_file() and not nested.is_file():
+        files = sorted(p for p in package_dir.rglob("*.py") if "__pycache__" not in p.parts)
+        if not files:
+            raise KeyError(f"no core module named {name!r}")
+        return "\n".join(p.read_text(encoding="utf-8") for p in files)
     return module_path(name).read_text(encoding="utf-8")
+
+
+_WEB_FLAT_MODULES = ("autostream_webui*.py", "autostream_appliance_models.py", "autostream_appliance_gateway.py")
+
+
+def web_source() -> str:
+    """Return the text of every file of the web modules, whether they are flat
+    modules in core/ or files of the webui package, sorted by path."""
+    files: set[Path] = set()
+    for pattern in _WEB_FLAT_MODULES:
+        files.update(CORE_DIR.glob(pattern))
+    package = CORE_DIR / "webui"
+    if package.is_dir():
+        files.update(p for p in package.rglob("*.py") if "__pycache__" not in p.parts)
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(files))
 
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "nginx" / "static"
@@ -98,6 +124,24 @@ def page_data(html: str) -> dict:
     """Return the parsed data island of the page, or {} when it has none."""
     m = _ISLAND.search(html)
     return json.loads(m.group(1)) if m else {}
+
+
+# For each page: the module names and the glob patterns under nginx/static that
+# together hold its markup, scripts and styles.
+PAGE_SOURCES = {
+    "setup": (("autostream_webui_page_setup",), ("page/setup_*.js", "page/setup.css")),
+}
+
+
+def page_source(page: str) -> str:
+    """Return the source text behind one page: its modules' text, then the text
+    of its static files (sorted by name). An assert that looks for a piece of
+    page text then holds whether it lives in the Python or in a static file."""
+    modules, patterns = PAGE_SOURCES[page]
+    parts = [module_text(m) for m in modules]
+    for pattern in patterns:
+        parts.extend(p.read_text(encoding="utf-8") for p in sorted(STATIC_DIR.glob(pattern)))
+    return "\n".join(parts)
 
 
 def page_with_static(html: str) -> str:

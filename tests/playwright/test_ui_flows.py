@@ -4,9 +4,9 @@ Covers: page rendering, navigation cards, panel interaction, accessibility.
 
 The stub server started by the ``base_url`` fixture serves HTML produced by
 the real ``send_setup_page()`` renderer (core/autostream_webui_page_setup.py)
-with hardware dependencies mocked out.  Changes to the page template, its
-embedded CSS, or its JavaScript therefore break these tests, not just changes
-to hand-written HTML.
+through ``_page_stub``, with hardware dependencies mocked out.  Changes to the
+page template, its embedded CSS, or its JavaScript therefore break these tests,
+not just changes to hand-written HTML.
 
 When AUTOSTREAM_URL is set the tests run against a real appliance instead.
 
@@ -17,23 +17,15 @@ CI job: playwright in .github/workflows/ci.yml.
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
-import sys
-import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
-from fake_store import fake_outputs_result
 
 import _page_stub
-
-REPO_ROOT = Path(__file__).parent.parent.parent
 
 # ---------------------------------------------------------------------------
 # Playwright availability — the only thing that blocks test execution.
@@ -56,23 +48,6 @@ _requires_browser = pytest.mark.skipif(
     ),
 )
 
-# ---------------------------------------------------------------------------
-# Production HTML renderer
-#
-# Calls the real send_setup_page() from core/autostream_webui_page_setup.py
-# with all hardware-dependent functions patched to return safe defaults.
-# The config written to the temp file satisfies unconfigured() → False so
-# that the full page — including the System & Updates section — is rendered.
-# ---------------------------------------------------------------------------
-
-# Minimal config that makes unconfigured() return False:
-#   general.fifo_path, audio1.capture_device (hw:*), owntone.output_name
-_MINIMAL_CONFIG = json.dumps({
-    "general": {"fifo_path": "/tmp/autostream.fifo"},
-    "audio1":  {"capture_device": "hw:0,0"},
-    "owntone": {"output_name": "Living Room"},
-})
-
 # Catch-all JSON returned for every /api/* request so the real page's
 # polling JavaScript (refreshOwntoneOutputs, update poller, etc.) does not
 # raise unhandled promise rejections when the stub has no live backends.
@@ -83,94 +58,6 @@ _API_JSON: bytes = json.dumps({
     "state": "idle",
     "version": "2.0.0",
 }).encode("utf-8")
-
-
-class _CapturingHandler:
-    """Minimal HTTP-handler shim that captures the bytes written by send_setup_page()."""
-
-    def __init__(self) -> None:
-        self._buf: io.BytesIO = io.BytesIO()
-        self.headers: dict = {}
-        self._pending_set_cookies: list = []
-        self._csrf_token: str = ""
-
-    def send_response(self, code: int) -> None: pass
-    def send_header(self, key: str, value: str) -> None: pass
-    def end_headers(self) -> None: pass
-
-    @property
-    def wfile(self) -> io.BytesIO:
-        return self._buf
-
-
-def _render_production_setup_page() -> tuple[bytes, dict[str, bytes]]:
-    """Invoke the real send_setup_page() with mocked hardware deps.
-
-    Returns (full_page_html_bytes, {card_key: card_detail_json_bytes}).
-
-    send_setup_page() is summary-rows-plus-empty-panels shaped: the
-    nine detail panels are not inlined into the /setup response, so
-    the stub server also needs each card's lazy `GET /api/setup/card/<key>`
-    response pre-rendered (via handle_setup_card_get()) to serve when the
-    real browser-side openPanel() JS fetches it -- without this, panel
-    bodies would just show the client's "Could not load this section"
-    fallback and every control-presence assertion below would fail.
-
-    Any breakage in the production renderer, its CSS, or its embedded
-    JavaScript will cause this function to raise or return empty bytes,
-    which in turn fails the base_url fixture and all browser tests.
-    """
-    sys.path.insert(0, str(REPO_ROOT / "core"))
-
-    # Import lazily so the module is only loaded when the stub starts.
-    from autostream_webui_state import WebUIState  # noqa: PLC0415
-    from autostream_webui_page_setup import (  # noqa: PLC0415
-        CARDS,
-        handle_setup_card_get,
-        send_setup_page,
-    )
-
-    auth = MagicMock()
-    auth.get_csrf_token.return_value = ""
-    auth.get_boot_pin_value.return_value = None
-
-    outputs_mock = MagicMock()
-    outputs_mock.ok = True
-    outputs_mock.outputs = []
-
-    with tempfile.TemporaryDirectory() as tmp:
-        cfg_path = Path(tmp) / "config.json"
-        cfg_path.write_text(_MINIMAL_CONFIG, encoding="utf-8")
-
-        state = WebUIState(str(cfg_path), str(Path(tmp) / "state.json"))
-        handler = _CapturingHandler()
-
-        with fake_outputs_result(outputs_mock), \
-             patch("autostream_webui_page_setup.get_ap_ssid",
-                   return_value="autostream-setup"), \
-             patch("autostream_webui_page_setup.get_system_hostname",
-                   return_value="autostream"), \
-             patch("autostream_webui_page_setup.get_app_version",
-                   return_value="2.0.0"), \
-             patch("autostream_webui_page_setup.parse_dial_entries",
-                   return_value=[]), \
-             patch("autostream_webui_page_setup._get_dial_sightings",
-                   return_value=[]):
-            send_setup_page(handler, state, auth)
-
-            card_html: dict[str, bytes] = {}
-            for card in CARDS:
-                card_handler = _CapturingHandler()
-                handle_setup_card_get(card_handler, state, auth, card.key)
-                card_html[card.key] = card_handler._buf.getvalue()
-
-    html_bytes = handler._buf.getvalue()
-    if not html_bytes:
-        raise RuntimeError(
-            "send_setup_page() produced no output — "
-            "check _MINIMAL_CONFIG, mocked dependencies, and autostream_config.py"
-        )
-    return html_bytes, card_html
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +173,8 @@ def base_url():
 
     # Render production HTML once; raise clearly if the renderer is broken.
     global _STUB_HTML_BYTES, _STUB_CARD_JSON
-    _STUB_HTML_BYTES, _STUB_CARD_JSON = _render_production_setup_page()
+    _STUB_HTML_BYTES = _page_stub.render("setup")
+    _STUB_CARD_JSON = _page_stub.setup_card_json()
 
     server = HTTPServer(("127.0.0.1", 0), _StubHandler)
     port = server.server_address[1]

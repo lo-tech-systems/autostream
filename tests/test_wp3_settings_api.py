@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _setup_card_test_helpers import setup_page_mocks
 from _source_text import static_text
 from fake_store import fake_outputs_result
 
@@ -715,16 +716,7 @@ class TestSetupPageAutosaveWiring:
         _list_result = ListOutputsResult(ok=False, error="unreachable")
 
         fake_outputs_result(_list_result)
-        with patch.multiple(
-            "autostream_webui_page_setup",
-            get_system_hostname=MagicMock(return_value="autostream"),
-            get_ap_ssid=MagicMock(return_value="autostream_AP"),
-            get_app_version=MagicMock(return_value="1.0.0"),
-            _get_dial_sightings=MagicMock(return_value=[]),
-            parse_dial_entries=MagicMock(return_value=[]),
-            build_top_banner_html=MagicMock(return_value=("", "")),
-            _set_flash_cookie=MagicMock(),
-        ):
+        with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 

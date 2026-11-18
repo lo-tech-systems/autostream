@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _setup_card_test_helpers import setup_page_mocks
 from fake_store import fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -108,16 +109,7 @@ class _SetupRenderer:
         _list_result = ListOutputsResult(ok=False, error="unreachable")
 
         fake_outputs_result(_list_result)
-        with patch.multiple(
-            "autostream_webui_page_setup",
-            get_system_hostname=MagicMock(return_value="autostream"),
-            get_ap_ssid=MagicMock(return_value="autostream_AP"),
-            get_app_version=MagicMock(return_value="1.0.0"),
-            _get_dial_sightings=MagicMock(return_value=[]),
-            parse_dial_entries=MagicMock(return_value=[]),
-            build_top_banner_html=MagicMock(return_value=("", "")),
-            _set_flash_cookie=MagicMock(),
-        ):
+        with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
@@ -454,16 +446,7 @@ class TestInput1EnableToggle:
         auth.get_boot_pin_value.return_value = "1234"
 
         fake_outputs_result(ListOutputsResult(ok=False, error="unreachable"))
-        with patch.multiple(
-            "autostream_webui_page_setup",
-            get_system_hostname=MagicMock(return_value="autostream"),
-            get_ap_ssid=MagicMock(return_value="autostream_AP"),
-            get_app_version=MagicMock(return_value="1.0.0"),
-            _get_dial_sightings=MagicMock(return_value=[]),
-            parse_dial_entries=MagicMock(return_value=[]),
-            build_top_banner_html=MagicMock(return_value=("", "")),
-            _set_flash_cookie=MagicMock(),
-        ):
+        with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 
@@ -538,16 +521,7 @@ class TestSetupPageLiveEnabled:
         _list_result = ListOutputsResult(ok=False, error="unreachable")
 
         fake_outputs_result(_list_result)
-        with patch.multiple(
-            "autostream_webui_page_setup",
-            get_system_hostname=MagicMock(return_value="autostream"),
-            get_ap_ssid=MagicMock(return_value="autostream_AP"),
-            get_app_version=MagicMock(return_value="1.0.0"),
-            _get_dial_sightings=MagicMock(return_value=[]),
-            parse_dial_entries=MagicMock(return_value=[]),
-            build_top_banner_html=MagicMock(return_value=("", "")),
-            _set_flash_cookie=MagicMock(),
-        ):
+        with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 send_setup_page(handler, state, auth)
 
@@ -662,17 +636,7 @@ class TestPlaybackPanelCardSplit:
         auth.get_boot_pin_value.return_value = "1234"
 
         fake_outputs_result(ListOutputsResult(ok=False, error="unreachable"))
-        with patch.multiple(
-            "autostream_webui_page_setup",
-            get_system_hostname=MagicMock(return_value="autostream"),
-            get_ap_ssid=MagicMock(return_value="autostream_AP"),
-            get_app_version=MagicMock(return_value="1.0.0"),
-            _get_dial_sightings=MagicMock(return_value=[]),
-            parse_dial_entries=MagicMock(return_value=[]),
-            build_top_banner_html=MagicMock(return_value=("", "")),
-            _set_flash_cookie=MagicMock(),
-            is_high_performance_pi=MagicMock(return_value=True),
-        ):
+        with setup_page_mocks(is_high_performance_pi=True):
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 html = render_full_setup_with_cards(handler, state, auth, flash_msg="")
 

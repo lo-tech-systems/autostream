@@ -240,7 +240,7 @@ class TestHomePage:
 
 class TestDeepLink:
     def _src(self) -> str:
-        return _source_text.module_text("autostream_webui_page_setup")
+        return _source_text.page_source("setup")
 
     def test_setup_page_script_opens_the_input_panels_for_the_hash(self):
         src = self._src()

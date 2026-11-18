@@ -662,7 +662,7 @@ class TestMainDialCardStructural:
     """Verify the main appliance dial card HTML includes per-dial channel controls."""
 
     def _get_setup_page_source(self) -> str:
-        return _source_text.module_text("autostream_webui_page_setup")
+        return _source_text.page_source("setup")
 
     def test_dial_channel_class_present(self):
         source = self._get_setup_page_source()

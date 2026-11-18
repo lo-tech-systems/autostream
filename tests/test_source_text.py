@@ -18,8 +18,8 @@ def test_core_sources_are_sorted_and_skip_bytecode():
 
 
 def test_module_text_reads_one_module():
-    text = _source_text.module_text("autostream_webui_page_setup")
-    assert text == _source_text.module_path("autostream_webui_page_setup").read_text(encoding="utf-8")
+    text = _source_text.module_text("autostream_webui_assets")
+    assert text == _source_text.module_path("autostream_webui_assets").read_text(encoding="utf-8")
 
 
 def test_module_text_reads_a_package_module():
@@ -76,3 +76,49 @@ def test_page_with_static_appends_the_linked_files_but_not_the_theme():
     assert _source_text.static_text("poll.js")[:40] in text
     assert _source_text.static_text("render_fragments.js")[:40] in text
     assert _source_text.static_text("theme.css")[:40] not in text
+
+
+@pytest.fixture
+def fixture_tree(tmp_path, monkeypatch):
+    core = tmp_path / "core"
+    (core / "webui" / "browser" / "setup").mkdir(parents=True)
+    (core / "webui" / "browser" / "setup" / "__init__.py").write_text("# init\n", encoding="utf-8")
+    (core / "webui" / "browser" / "setup" / "b_cards.py").write_text("# second\n", encoding="utf-8")
+    (core / "webui" / "browser" / "setup" / "a_page.py").write_text("# first\n", encoding="utf-8")
+    (core / "webui" / "server.py").write_text("# server\n", encoding="utf-8")
+    (core / "autostream_webui_page_demo.py").write_text("# flat page\n", encoding="utf-8")
+    (core / "autostream_webui.py").write_text("# entry\n", encoding="utf-8")
+    (core / "autostream_other.py").write_text("# not web\n", encoding="utf-8")
+    static = tmp_path / "static"
+    (static / "page").mkdir(parents=True)
+    (static / "page" / "demo_two.js").write_text("// two\n", encoding="utf-8")
+    (static / "page" / "demo_one.js").write_text("// one\n", encoding="utf-8")
+    (static / "page" / "demo.css").write_text("/* css */\n", encoding="utf-8")
+    (static / "page" / "other.js").write_text("// unrelated\n", encoding="utf-8")
+    monkeypatch.setattr(_source_text, "CORE_DIR", core)
+    monkeypatch.setattr(_source_text, "STATIC_DIR", static)
+    return tmp_path
+
+
+def test_module_text_of_a_package_joins_its_files_in_sorted_order(fixture_tree):
+    text = _source_text.module_text("webui.browser.setup")
+    assert [line for line in text.splitlines() if line] == ["# init", "# first", "# second"]
+
+
+def test_module_text_of_a_module_inside_a_package_is_that_file(fixture_tree):
+    assert _source_text.module_text("webui.server") == "# server\n"
+
+
+def test_web_source_covers_flat_and_package_files_but_nothing_else(fixture_tree):
+    text = _source_text.web_source()
+    for piece in ("# flat page", "# entry", "# server", "# first", "# second", "# init"):
+        assert piece in text
+    assert "# not web" not in text
+
+
+def test_page_source_adds_the_pages_static_files(fixture_tree, monkeypatch):
+    monkeypatch.setitem(
+        _source_text.PAGE_SOURCES, "demo",
+        (("autostream_webui_page_demo",), ("page/demo_*.js", "page/demo.css")))
+    text = _source_text.page_source("demo")
+    assert [line for line in text.splitlines() if line] == ["# flat page", "// one", "// two", "/* css */"]

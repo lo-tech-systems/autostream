@@ -26,7 +26,7 @@ import _source_text
 REPO_ROOT = Path(__file__).parent.parent
 
 WEBUI_SRC = (REPO_ROOT / "core" / "autostream_webui.py").read_text(encoding="utf-8")
-WEBUI_API_SRC = _source_text.module_text("autostream_webui_api")
+WEBUI_API_SRC = _source_text.web_source()
 WATCHER_CLIENT_SRC = _source_text.module_text("autostream_watcher_client")
 WIFI_NETWORK_SRC = (REPO_ROOT / "core" / "autostream_wifi_network.py").read_text(encoding="utf-8")
 WIFI_WATCHER_SRC = (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")

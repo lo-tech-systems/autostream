@@ -45,6 +45,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _setup_card_test_helpers import setup_page_mocks
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -205,16 +206,12 @@ def _render_full_page(tmp_path: Path) -> str:
     sightings = [_DialSighting("dial-aaaa-1111", "Hallway Dial", "1.0.0-golden", pin_recovery=False)]
     entries = [_DialEntry("dial-aaaa-1111", "Hallway Dial", current_name="Hallway Dial")]
 
-    with patch.multiple(
-        "autostream_webui_page_setup",
-        get_system_hostname=MagicMock(return_value="autostream-golden"),
-        get_ap_ssid=MagicMock(return_value="autostream_AP"),
-        get_app_version=MagicMock(return_value=FIXED_APP_VERSION),
-        _get_dial_sightings=MagicMock(return_value=sightings),
-        parse_dial_entries=MagicMock(return_value=entries),
-        build_top_banner_html=MagicMock(return_value=("", "")),
-        _set_flash_cookie=MagicMock(),
-        is_high_performance_pi=MagicMock(return_value=True),
+    with setup_page_mocks(
+        get_system_hostname="autostream-golden",
+        get_app_version=FIXED_APP_VERSION,
+        _get_dial_sightings=sightings,
+        parse_dial_entries=entries,
+        is_high_performance_pi=True,
     ):
         with patch.object(
             state, "get_monitor_devices",
@@ -262,16 +259,12 @@ def _render_card_detail(tmp_path: Path, key: str) -> str:
     sightings = [_DialSighting("dial-aaaa-1111", "Hallway Dial", "1.0.0-golden", pin_recovery=False)]
     entries = [_DialEntry("dial-aaaa-1111", "Hallway Dial", current_name="Hallway Dial")]
 
-    with patch.multiple(
-        "autostream_webui_page_setup",
-        get_system_hostname=MagicMock(return_value="autostream-golden"),
-        get_ap_ssid=MagicMock(return_value="autostream_AP"),
-        get_app_version=MagicMock(return_value=FIXED_APP_VERSION),
-        _get_dial_sightings=MagicMock(return_value=sightings),
-        parse_dial_entries=MagicMock(return_value=entries),
-        build_top_banner_html=MagicMock(return_value=("", "")),
-        _set_flash_cookie=MagicMock(),
-        is_high_performance_pi=MagicMock(return_value=True),
+    with setup_page_mocks(
+        get_system_hostname="autostream-golden",
+        get_app_version=FIXED_APP_VERSION,
+        _get_dial_sightings=sightings,
+        parse_dial_entries=entries,
+        is_high_performance_pi=True,
     ):
         with patch.object(
             state, "get_monitor_devices",

@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).parent.parent
 
 
 def _setup_page_src() -> str:
-    return _source_text.module_text("autostream_webui_page_setup")
+    return _source_text.page_source("setup")
 
 
 def _load_page_setup() -> ModuleType:

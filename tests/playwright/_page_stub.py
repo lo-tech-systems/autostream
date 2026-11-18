@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -301,6 +301,79 @@ def _render_auth(*, next_path: str = "/", **_fakes) -> bytes:
     return b"".join(chunks)
 
 
+_SETUP_CONFIG = {
+    "general": {"fifo_path": "/tmp/autostream.fifo"},
+    "audio1": {"capture_device": "hw:0,0"},
+    "owntone": {"output_name": "Living Room"},
+}
+
+_SETUP_BT_STATUS = {"adapter_present": True, "paired": None, "link": "disconnected",
+                    "streaming": False, "scanning": False}
+
+
+@contextmanager
+def _setup_session(*, bt_enabled=False, bt_status=None, dial_sightings=(), dial_entries=(), outputs=()):
+    """Yield ``(state, auth)`` for the Setup page with the collaborators it reads
+    (the settings, the speaker list, the host's names, the dial lists and
+    Bluetooth) replaced by plain fakes."""
+    from _setup_card_test_helpers import setup_page_mocks  # noqa: PLC0415
+    from autostream_settings import SettingsStore, as_view  # noqa: PLC0415
+    from autostream_webui_state import WebUIState  # noqa: PLC0415
+    from fake_store import fake_outputs  # noqa: PLC0415
+
+    auth = _auth()
+    auth.get_boot_pin_value.return_value = None
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = Path(tmp) / "config.json"
+        config_path.write_text(json.dumps(_SETUP_CONFIG), encoding="utf-8")
+        store = SettingsStore(str(config_path), _save_interval_seconds=9999, _writer=MagicMock())
+        state = WebUIState(str(config_path), str(Path(tmp) / "state.json"), settings=as_view(store))
+        if bt_enabled:
+            state.get_bluetooth_status = lambda: dict(bt_status or _SETUP_BT_STATUS)
+        mocks = {
+            "get_ap_ssid": "autostream-setup",
+            "get_system_hostname": "autostream",
+            "get_app_version": "2.0.0",
+            "_get_dial_sightings": list(dial_sightings),
+            "parse_dial_entries": list(dial_entries),
+        }
+        if bt_enabled:
+            mocks.update(_bluetooth_installed=True, _bluetooth_services_enabled=True,
+                         _bluetooth_onboard_enabled=True)
+        else:
+            mocks["_bluetooth_installed"] = False
+        with fake_outputs(list(outputs), connected=True), setup_page_mocks(**mocks):
+            yield state, auth
+        store.close(save=False)
+
+
+def _render_setup(*, bt_enabled: bool = False, bt_status: dict | None = None,
+                  dial_sightings=(), dial_entries=(), outputs=(), **_fakes) -> bytes:
+    from autostream_webui_page_setup import send_setup_page  # noqa: PLC0415
+
+    handler, chunks = _handler("/setup")
+    with _setup_session(bt_enabled=bt_enabled, bt_status=bt_status, dial_sightings=dial_sightings,
+                        dial_entries=dial_entries, outputs=outputs) as (state, auth):
+        send_setup_page(handler, state, auth)
+    return b"".join(chunks)
+
+
+def setup_card_json(*, bt_enabled: bool = False, bt_status: dict | None = None,
+                    dial_sightings=(), dial_entries=(), outputs=()) -> dict[str, bytes]:
+    """Render every Setup card's lazy ``GET /api/setup/card/<key>`` reply, keyed
+    by card key, as the stub server hands them to the page."""
+    from autostream_webui_page_setup import CARDS, handle_setup_card_get  # noqa: PLC0415
+
+    replies: dict[str, bytes] = {}
+    with _setup_session(bt_enabled=bt_enabled, bt_status=bt_status, dial_sightings=dial_sightings,
+                        dial_entries=dial_entries, outputs=outputs) as (state, auth):
+        for card in CARDS:
+            handler, chunks = _handler(f"/api/setup/card/{card.key}")
+            handle_setup_card_get(handler, state, auth, card.key)
+            replies[card.key] = b"".join(chunks)
+    return replies
+
+
 _RENDERERS = {
     "home": _render_home,
     "remote_home": _render_remote_home,
@@ -317,6 +390,7 @@ _RENDERERS = {
     "first_boot_appliance": _render_first_boot_appliance,
     "hostname_changed": _render_hostname_changed,
     "auth": _render_auth,
+    "setup": _render_setup,
 }
 
 PAGES = tuple(_RENDERERS)

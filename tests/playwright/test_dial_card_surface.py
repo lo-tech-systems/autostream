@@ -8,19 +8,13 @@ sends no surface) keeps the SPI rows and gets no HD fields in its save.
 """
 from __future__ import annotations
 
-import io
 import json
 import re
-import sys
-import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
-from fake_store import fake_outputs_result
 
 import _page_stub
 
@@ -32,65 +26,21 @@ except ImportError:
     Page = object  # type: ignore[misc,assignment]
     expect = None  # type: ignore[assignment]
 
-REPO_ROOT = Path(__file__).parent.parent.parent
 UUID = "dial-aaaa-1111"
 
 _requires_browser = pytest.mark.skipif(
     not _PLAYWRIGHT_INSTALLED, reason="playwright not installed"
 )
 
-_CONFIG = json.dumps({
-    "general": {"fifo_path": "/tmp/autostream.fifo"},
-    "audio1": {"capture_device": "hw:0,0"},
-    "owntone": {"output_name": "Living Room"},
-})
-
-
-class _Capture:
-    def __init__(self) -> None:
-        self._buf = io.BytesIO()
-        self.headers: dict = {}
-        self._pending_set_cookies: list = []
-        self._csrf_token = ""
-
-    def send_response(self, code): pass
-    def send_header(self, key, value): pass
-    def end_headers(self): pass
-
-    @property
-    def wfile(self):
-        return self._buf
-
 
 def _render() -> tuple[bytes, bytes]:
-    sys.path.insert(0, str(REPO_ROOT / "core"))
-    from autostream_webui_state import WebUIState  # noqa: PLC0415
-    from autostream_webui_page_setup import handle_setup_card_get, send_setup_page  # noqa: PLC0415
-
-    auth = MagicMock()
-    auth.get_csrf_token.return_value = ""
-    auth.get_boot_pin_value.return_value = None
-    outputs = SimpleNamespace(ok=True, outputs=[])
     sighting = SimpleNamespace(
         uuid=UUID, name="Hall Dial", version="2.0.0", pin_recovery=False,
         ip="10.0.0.42", dial_proto="v3", sdmon=False,
     )
     entry = SimpleNamespace(uuid=UUID, name="Hall Dial", current_name="Hall Dial", last_seen="")
-    with tempfile.TemporaryDirectory() as tmp:
-        cfg = Path(tmp) / "config.json"
-        cfg.write_text(_CONFIG, encoding="utf-8")
-        state = WebUIState(str(cfg), str(Path(tmp) / "state.json"))
-        with fake_outputs_result(outputs), \
-             patch("autostream_webui_page_setup.get_ap_ssid", return_value="autostream-setup"), \
-             patch("autostream_webui_page_setup.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_setup.get_app_version", return_value="2.0.0"), \
-             patch("autostream_webui_page_setup.parse_dial_entries", return_value=[entry]), \
-             patch("autostream_webui_page_setup._get_dial_sightings", return_value=[sighting]):
-            page_h = _Capture()
-            send_setup_page(page_h, state, auth)
-            card_h = _Capture()
-            handle_setup_card_get(card_h, state, auth, "dials")
-    return page_h.wfile.getvalue(), card_h.wfile.getvalue()
+    fakes = {"dial_sightings": [sighting], "dial_entries": [entry]}
+    return _page_stub.render("setup", **fakes), _page_stub.setup_card_json(**fakes)["dials"]
 
 
 _PAGE: bytes = b""

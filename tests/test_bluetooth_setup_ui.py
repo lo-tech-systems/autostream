@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _setup_card_test_helpers import setup_page_mocks
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -119,18 +120,10 @@ class _SetupRenderer:
             state.get_bluetooth_status = lambda: bt_status  # type: ignore[attr-defined]
 
         fake_outputs_result(_list_result)
-        with patch.multiple(
-            "autostream_webui_page_setup",
-            get_system_hostname=MagicMock(return_value="autostream"),
-            get_ap_ssid=MagicMock(return_value="autostream_AP"),
-            get_app_version=MagicMock(return_value="1.0.0"),
-            _get_dial_sightings=MagicMock(return_value=[]),
-            parse_dial_entries=MagicMock(return_value=[]),
-            build_top_banner_html=MagicMock(return_value=("", "")),
-            _set_flash_cookie=MagicMock(),
-            _bluetooth_installed=MagicMock(return_value=bt_enabled),
-            _bluetooth_services_enabled=MagicMock(return_value=bt_services_on),
-            _bluetooth_onboard_enabled=MagicMock(return_value=bt_onboard_on),
+        with setup_page_mocks(
+            _bluetooth_installed=bt_enabled,
+            _bluetooth_services_enabled=bt_services_on,
+            _bluetooth_onboard_enabled=bt_onboard_on,
         ):
             with patch.object(
                 state, "get_monitor_devices", return_value=(monitor_devices or [])
@@ -233,16 +226,7 @@ class TestBluetoothDisabledGating:
         _list_result = ListOutputsResult(ok=False, error="unreachable")
 
         fake_outputs_result(_list_result)
-        with patch.multiple(
-            "autostream_webui_page_setup",
-            get_system_hostname=MagicMock(return_value="autostream"),
-            get_ap_ssid=MagicMock(return_value="autostream_AP"),
-            get_app_version=MagicMock(return_value="1.0.0"),
-            _get_dial_sightings=MagicMock(return_value=[]),
-            parse_dial_entries=MagicMock(return_value=[]),
-            build_top_banner_html=MagicMock(return_value=("", "")),
-            _set_flash_cookie=MagicMock(),
-        ):
+        with setup_page_mocks():
             with patch.object(state, "get_monitor_devices", return_value=[]):
                 send_setup_page(handler, state, auth, flash_msg="")
         store.close(save=False)

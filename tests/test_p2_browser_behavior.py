@@ -33,6 +33,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import _source_text
+from _setup_card_test_helpers import setup_page_mocks
 from fake_store import fake_outputs
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -572,7 +573,7 @@ class TestOfflinePageStructure:
 # ---------------------------------------------------------------------------
 
 def _setup_page_src() -> str:
-    return _source_text.module_text("autostream_webui_page_setup")
+    return _source_text.page_source("setup")
 
 
 class TestSetupPageDialResponseParser:
@@ -698,10 +699,9 @@ def _render_setup_page() -> str:
     rendering, not a hardcoded copy.
     """
     import io
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     m = _load_page_setup()
-    mod = m.__name__  # "autostream_webui_page_setup"
 
     buf = io.BytesIO()
     handler = MagicMock()
@@ -721,14 +721,9 @@ def _render_setup_page() -> str:
         "audio1": {"capture_device": "hw:0,0"},
     })
 
-    with patch(f"{mod}._config_snapshot", new=lambda state: parsed), \
-         fake_outputs([], connected=False), \
-         patch(f"{mod}.build_top_banner_html", new=lambda **kw: ("", "")), \
-         patch(f"{mod}.get_system_hostname", new=lambda: "test-host"), \
-         patch(f"{mod}.get_app_version", new=lambda: "1.0.0"), \
-         patch(f"{mod}.get_ap_ssid", new=lambda: "test-ssid"), \
-         patch(f"{mod}.parse_dial_entries", new=lambda: []), \
-         patch(f"{mod}._get_dial_sightings", new=lambda: []):
+    with setup_page_mocks(_config_snapshot=parsed, get_system_hostname="test-host",
+                          get_ap_ssid="test-ssid"), \
+         fake_outputs([], connected=False):
         m.send_setup_page(handler, state, auth)
 
     return buf.getvalue().decode("utf-8", errors="replace")

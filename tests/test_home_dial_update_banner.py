@@ -304,7 +304,7 @@ class TestDialCardsHtml:
 
 class TestDeepLink:
     def _src(self) -> str:
-        return _source_text.module_text("autostream_webui_page_setup")
+        return _source_text.page_source("setup")
 
     def test_setup_page_script_opens_dials_panel_for_hash(self):
         src = self._src()
