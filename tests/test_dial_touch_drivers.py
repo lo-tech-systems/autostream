@@ -2,7 +2,7 @@
 
 XPT2046 is exercised with a mocked SPI bus/board/digitalio stack (no real
 hardware); FT6206 is exercised only for its degrade-clean-without-the-
-library path, since inventing a fake adafruit_ft6206 API would test nothing
+library path, since inventing a fake adafruit_focaltouch API would test nothing
 real. Unknown driver tags must raise a clear error, mirroring
 dial_display_adafruit's unknown-driver-tag behaviour.
 """
@@ -223,22 +223,22 @@ class TestFT6206Driver:
     def test_open_without_library_raises_clean_runtime_error(self, monkeypatch):
         fake_board = types.SimpleNamespace()
         monkeypatch.setitem(sys.modules, "board", fake_board)
-        monkeypatch.delitem(sys.modules, "adafruit_ft6206", raising=False)
+        monkeypatch.delitem(sys.modules, "adafruit_focaltouch", raising=False)
 
-        # Force `import adafruit_ft6206` to fail even if it happens to be
+        # Force `import adafruit_focaltouch` to fail even if it happens to be
         # installed in this environment, so the degrade path is exercised
         # deterministically everywhere.
         real_import = __import__
 
         def _blocking_import(name, *args, **kwargs):
-            if name == "adafruit_ft6206":
-                raise ImportError("no module named adafruit_ft6206")
+            if name == "adafruit_focaltouch":
+                raise ImportError("no module named adafruit_focaltouch")
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr("builtins.__import__", _blocking_import)
 
         driver = dtd.FT6206Driver()
-        with pytest.raises(RuntimeError, match="adafruit_ft6206"):
+        with pytest.raises(RuntimeError, match="adafruit_focaltouch"):
             driver.open()
 
     def test_read_sample_before_open_returns_none(self):

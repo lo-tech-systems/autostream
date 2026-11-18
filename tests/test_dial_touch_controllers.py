@@ -98,7 +98,7 @@ class TestNoHardwareImport:
             f"sys.path.insert(0, {_DIAL!r}); "
             "import dial_touch_controllers; "
             "hw = {'board', 'busio', 'digitalio', 'adafruit_rgb_display', "
-            "'adafruit_ft6206', 'gpiozero'}; "
+            "'adafruit_focaltouch', 'gpiozero'}; "
             "hit = hw & set(sys.modules); "
             "print(','.join(sorted(hit)))"
         )
@@ -120,5 +120,5 @@ class TestNoHardwareImport:
             assert not stripped.startswith("from gpiozero")
             assert not stripped.startswith("from adafruit_rgb_display")
             assert not stripped.startswith("import adafruit_rgb_display")
-            assert not stripped.startswith("import adafruit_ft6206")
-            assert not stripped.startswith("from adafruit_ft6206")
+            assert not stripped.startswith("import adafruit_focaltouch")
+            assert not stripped.startswith("from adafruit_focaltouch")

@@ -11,11 +11,10 @@ Two driver tags:
   - "xpt2046" — resistive touch (also covers HR2046/ADS7846 clones), an
     in-repo SPI implementation with no new pip dependency, on its own SPI1
     bus via dial_spi_bus (separate from the display's SPI0).
-  - "ft6206" — capacitive touch (FT6206/FT6236) over I2C, using whichever
-    adafruit_ft6206 library happens to be installed; imported lazily and
-    reported cleanly (RuntimeError, not a bare ImportError traceback) if
-    absent. No such dependency is currently pinned in dial/requirements —
-    see FT6206Driver.open() for what would need adding.
+  - "ft6206" — capacitive touch (FT6206/FT6236) over I2C, through Adafruit's
+    FocalTech library (adafruit-circuitpython-focaltouch, pinned in
+    dial/requirements); imported lazily and reported cleanly (RuntimeError,
+    not a bare ImportError traceback) if absent.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -161,13 +160,11 @@ class FT6206Driver:
     (dial_touch_controllers.TouchController leaves z_threshold=None for this
     controller — the filter's threshold check is effectively a no-op here).
 
-    The underlying I2C library is imported lazily inside open() and is NOT
-    currently pinned in dial/requirements.txt or dial/requirements.lock —
-    Adafruit publishes one as `adafruit-circuitpython-ft6206` (module
-    `adafruit_ft6206`). If/when this driver is wired up for real hardware,
-    that package needs adding to the dial requirements; until then, a
-    machine without it degrades cleanly with a clear RuntimeError from
-    open() rather than a bare ModuleNotFoundError traceback.
+    The I2C library is Adafruit's FocalTech driver
+    (`adafruit-circuitpython-focaltouch`, module `adafruit_focaltouch`),
+    which recognises both chips. It is imported lazily inside open(), so a
+    machine without it degrades cleanly with a clear RuntimeError rather
+    than a bare ModuleNotFoundError traceback.
     """
 
     # A touch is "present" once FT6206 reports it; there is no meaningful
@@ -182,12 +179,11 @@ class FT6206Driver:
         import board
 
         try:
-            import adafruit_ft6206
+            import adafruit_focaltouch
         except ImportError as e:
             raise RuntimeError(
-                "FT6206 driver requires the adafruit-circuitpython-ft6206 "
-                "package (module adafruit_ft6206), which is not installed "
-                "and not currently pinned in dial/requirements.txt"
+                "FT6206 driver requires the adafruit-circuitpython-focaltouch "
+                "package (module adafruit_focaltouch), which is not installed"
             ) from e
 
         try:
@@ -195,7 +191,7 @@ class FT6206Driver:
         except Exception as e:
             raise RuntimeError(f"open I2C bus failed: {e}") from e
 
-        self._ft = adafruit_ft6206.Adafruit_FT6206(i2c)
+        self._ft = adafruit_focaltouch.Adafruit_FocalTouch(i2c)
 
     def close(self) -> None:
         self._ft = None
