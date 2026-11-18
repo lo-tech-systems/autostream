@@ -252,7 +252,7 @@ ICON_BLUETOOTH = (
 )
 
 # A speaker body/cone with a diagonal slash through it, matching the figure
-# the dial's own footer glyph draws (see dial_display_compositor.
+# the dial's own footer glyph draws (see dial_display_draw.
 # _draw_speaker_glyph(muted=True)) so the two UIs use the same symbol --
 # including that glyph's own slash centred on the speaker body rather than
 # the icon's box. currentColor so it follows whatever color the caller

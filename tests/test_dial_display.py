@@ -59,6 +59,7 @@ from dial_core import DialCore
 import dial_display as dd
 import dial_warning_text as dwt
 import dial_display_compositor as dd_compositor
+import dial_display_draw as dd_draw
 import dial_display_views as dd_views
 from dial_core_state import NOWIFI_PROMPT_STREAK, NowPlaying, OutputRow, artwork_key
 from dial_display import (
@@ -4683,16 +4684,16 @@ class TestSelectorUnauthorizedRows:
         label, text = dd._unauthorised_hint(name)
         layout = info_value_layout_for(width, height, metrics=metrics)
         draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
-        lines, font = dd_compositor._fit_value_lines(
+        lines, font = dd_draw._fit_value_lines(
             draw, text, (metrics.font_readout, metrics.font_body), layout.value,
         )
         assert lines and font is not None
         assert " ".join(lines) == text  # nothing dropped, no ellipsis
         max_w = layout.value[2] - layout.value[0]
         for line in lines:
-            assert dd_compositor._text_size(draw, line, font)[0] <= max_w
+            assert dd_draw._text_size(draw, line, font)[0] <= max_w
         # The title in the label band fits on one line too.
-        title_w = dd_compositor._text_size(draw, label, dd_compositor._load_font(metrics.font_body))[0]
+        title_w = dd_draw._text_size(draw, label, dd_draw._load_font(metrics.font_body))[0]
         assert title_w <= width - 2 * metrics.pad
 
 
@@ -9983,15 +9984,15 @@ class TestPairInAutostreamPage:
         label, text = dd._pairing_hint(name)
         layout = info_value_layout_for(width, height, metrics=metrics)
         draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
-        lines, font = dd_compositor._fit_value_lines(
+        lines, font = dd_draw._fit_value_lines(
             draw, text, (metrics.font_readout, metrics.font_body), layout.value,
         )
         assert lines and font is not None
         assert " ".join(lines) == text
         max_w = layout.value[2] - layout.value[0]
         for line in lines:
-            assert dd_compositor._text_size(draw, line, font)[0] <= max_w
-        title_w = dd_compositor._text_size(draw, label, dd_compositor._load_font(metrics.font_body))[0]
+            assert dd_draw._text_size(draw, line, font)[0] <= max_w
+        title_w = dd_draw._text_size(draw, label, dd_draw._load_font(metrics.font_body))[0]
         assert title_w <= width - 2 * metrics.pad
 
     @pytest.mark.parametrize("key", [
@@ -10007,13 +10008,13 @@ class TestPairInAutostreamPage:
         label, text = dd._pairing_hint("Living Room Hi-Fi")
         layout = info_value_layout_for(width, height, metrics=metrics)
         draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
-        lines, font = dd_compositor._fit_value_lines(
+        lines, font = dd_draw._fit_value_lines(
             draw, text, (metrics.font_readout, metrics.font_body), layout.value,
         )
         assert lines and font is not None and " ".join(lines) == text
         max_w = layout.value[2] - layout.value[0]
-        assert all(dd_compositor._text_size(draw, line, font)[0] <= max_w for line in lines)
-        title_w = dd_compositor._text_size(draw, label, dd_compositor._load_font(metrics.font_body))[0]
+        assert all(dd_draw._text_size(draw, line, font)[0] <= max_w for line in lines)
+        title_w = dd_draw._text_size(draw, label, dd_draw._load_font(metrics.font_body))[0]
         assert title_w <= width - 2 * metrics.pad
 
     def test_a_pin_required_effect_opens_the_pair_page_over_the_output_page_and_back_returns_there(self):

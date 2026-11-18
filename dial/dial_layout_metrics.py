@@ -72,7 +72,7 @@ BAND_MAX_MM = 12.0                # on rich/large panels, chrome stops growing p
 # logical pixel count feeds this decision at all (see metrics_for()).
 COMPACT_MAX_SHORT_SIDE_MM = 27.0
 
-# Glyph supersample factor fed to _draw_glyph() in dial_display_compositor —
+# Glyph supersample factor fed to _draw_glyph() in dial_display_draw —
 # carried here because it is a property of the content tier, decided
 # alongside every other tier-derived quantity. SUPERSAMPLE_DEFAULT is what
 # every screen has always used; on the large tier the panel's own pixel

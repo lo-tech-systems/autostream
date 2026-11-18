@@ -144,17 +144,18 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
 
     import dial_warning_text as dwt
     import dial_display_compositor as dc
+    import dial_display_draw as dd_draw
     from dial_layout_metrics import metrics_for
     from dial_touch_layout import warning_layout_for
     from dial_warning_text import CLOSE_TEXT, NEXT_TEXT, RESTART_TEXT
 
     metrics = metrics_for(width, height, mm_per_px)
     draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
-    readout_font = dc._load_font(metrics.font_readout)
-    body_font = dc._load_font(metrics.font_body)
+    readout_font = dd_draw._load_font(metrics.font_readout)
+    body_font = dd_draw._load_font(metrics.font_body)
 
     def fits(text, font, avail):
-        return dc._truncate_to_width(draw, text, font, avail) == text
+        return dd_draw._truncate_to_width(draw, text, font, avail) == text
 
     # The longest realistic version strings.
     tags = ("0.7.0", "0.10.12", "1.10.12")

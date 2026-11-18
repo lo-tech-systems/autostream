@@ -30,6 +30,7 @@ for _p in (_DIAL, _CORE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import dial_display_draw  # noqa: E402
 import dial_eq_model  # noqa: E402
 from dial_display_views import (  # noqa: E402
     BG_BASE,
@@ -76,8 +77,7 @@ from dial_display_views import (  # noqa: E402
     WIFI_SIGNAL,
     format_mmss,
 )
-from dial_display_compositor import (  # noqa: E402
-    DialDisplayCompositor,
+from dial_display_draw import (  # noqa: E402
     GLYPH_CHEVRON,
     GLYPH_CROSS,
     GLYPH_BELL,
@@ -89,16 +89,25 @@ from dial_display_compositor import (  # noqa: E402
     GLYPH_STOP,
     GLYPH_TWO_DOTS,
     GLYPH_WIFI,
-    _BODY_RENDERERS,
-    _FOOTER_RENDERERS,
     _GLYPH_PAINTERS,
     _GLYPH_SUPERSAMPLE,
-    _BELL_GLYPH_FRACTION,
     _BELL_RGB,
+    _centred_box,
+    _fit_value_lines,
+    _glyph_tile,
+    _halo_layer,
+    _load_font,
+    _text_size,
+    _truncate_to_width,
+)
+from dial_display_compositor import (  # noqa: E402
+    DialDisplayCompositor,
+    _BODY_RENDERERS,
+    _FOOTER_RENDERERS,
+    _BELL_GLYPH_FRACTION,
     timer_area,
     _COMPACT_PICKER_TITLE,
     _COMPACT_SMALL_GLYPH_FRACTION,
-    _centred_box,
     _compact_controls_frame,
     _compact_glyph_box,
     _compact_list_frame,
@@ -109,17 +118,11 @@ from dial_display_compositor import (  # noqa: E402
     _draw_compact_list_row,
     _eq_frame,
     _eq_pressed_rects,
-    _fit_value_lines,
-    _glyph_tile,
-    _halo_layer,
-    _load_font,
     _now_playing_frame,
     _repeat_frame,
     _reset_font_cache,
     _reset_render_caches,
     _reveal_layers,
-    _text_size,
-    _truncate_to_width,
     _zone_rect,
 )
 from dial_display_palette import (  # noqa: E402
@@ -862,7 +865,7 @@ class TestOverlayText:
         size = (160, 128)
         img = self._panel_image(size)
         layout = layout_for(*size)
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")):
             result = compositor.compose(
                 img, *size, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, artist="Artist", volume=42),
@@ -876,8 +879,8 @@ class TestOverlayText:
         size = (160, 128)
         img = self._panel_image(size)
         layout = layout_for(*size)
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose(
                 img, *size, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, artist="Artist", volume=42),
@@ -1017,8 +1020,8 @@ class TestOverlayName:
         size = (160, 128)
         img = self._panel_image(size)
         layout = layout_for(*size)
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose(
                 img, *size, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, name="CD Player"),
@@ -1035,7 +1038,7 @@ class TestOverlayName:
         size = (160, 128)
         img = self._panel_image(size)
         layout = layout_for(*size)
-        with patch("dial_display_compositor.ImageFilter.GaussianBlur", side_effect=RuntimeError("boom")):
+        with patch("dial_display_draw.ImageFilter.GaussianBlur", side_effect=RuntimeError("boom")):
             result = compositor.compose(
                 img, *size, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, name="CD Player"),
@@ -1211,8 +1214,8 @@ class TestComposeList:
         assert result.size == (160, 128)
 
     def test_never_raises_with_font_cache_cleared_and_no_font_available(self, compositor):
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_list(
                 160, 128, ListState(rows=(("CD Player", True),)), rotate=False, bgr=False,
             )
@@ -1404,7 +1407,7 @@ class TestPlayMarker:
         # equality with a bare row is not a safe probe here — the code-path
         # guarantee ("only a PLAY_GLYPH secondary reaches _draw_glyph with
         # GLYPH_PLAY") is what actually matters, checked directly instead.
-        from dial_display_compositor import GLYPH_PLAY, _draw_glyph as real_draw_glyph
+        from dial_display_draw import GLYPH_PLAY, _draw_glyph as real_draw_glyph
 
         calls = []
 
@@ -1423,8 +1426,8 @@ class TestPlayMarker:
         assert GLYPH_PLAY not in calls
 
     def test_marker_never_raises_with_no_font(self, compositor):
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_list(
                 160, 128, ListState(rows=(("Kitchen", True, PLAY_GLYPH),)), rotate=False, bgr=False,
             )
@@ -1613,8 +1616,8 @@ class TestComposeRepeatEnableLayout:
         assert list(result.crop(layout.stop).getdata()) == list(flat_bg.crop(layout.stop).getdata())
 
     def test_never_raises_with_no_font(self, compositor):
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_repeat(160, 128, _repeat_state(armed=True), rotate=False, bgr=False)
         assert result.size == (160, 128)
 
@@ -1815,8 +1818,8 @@ class TestComposeRepeatReplayingLayout:
         assert result.size == (160, 128)
 
     def test_never_raises_with_no_font(self, compositor):
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_repeat(160, 128, self._state(), rotate=False, bgr=False)
         assert result.size == (160, 128)
 
@@ -1961,7 +1964,7 @@ class TestComposeIdle:
 
     def test_never_raises_with_a_failing_painter(self, compositor):
         base = self._logo()
-        with patch("dial_display_compositor._glyph_tile", side_effect=RuntimeError("boom")):
+        with patch("dial_display_draw._glyph_tile", side_effect=RuntimeError("boom")):
             result = compositor.compose_idle(base, 160, 128, rotate=False, bgr=False)
         assert result.size == (160, 128)
 
@@ -2978,7 +2981,7 @@ class TestRenderCacheEquivalence:
     def test_cold_warm_bypassed_are_byte_identical(self, width, height, no_font):
         compositor = DialDisplayCompositor()
         font_cm = (
-            patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font"))
+            patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font"))
             if no_font else contextlib.nullcontext()
         )
 
@@ -2990,8 +2993,8 @@ class TestRenderCacheEquivalence:
                 _reset_font_cache()
                 cold = render_all()
                 warm = render_all()
-                with patch("dial_display_compositor._glyph_tile", _glyph_tile.__wrapped__), \
-                     patch("dial_display_compositor._halo_layer", _halo_layer.__wrapped__):
+                with patch("dial_display_draw._glyph_tile", _glyph_tile.__wrapped__), \
+                     patch("dial_display_draw._halo_layer", _halo_layer.__wrapped__):
                     bypassed = render_all()
         finally:
             _reset_font_cache()
@@ -3033,8 +3036,8 @@ class TestRenderCacheEquivalenceWithMetrics:
             _reset_font_cache()
             cold = render_all()
             warm = render_all()
-            with patch("dial_display_compositor._glyph_tile", _glyph_tile.__wrapped__), \
-                 patch("dial_display_compositor._halo_layer", _halo_layer.__wrapped__):
+            with patch("dial_display_draw._glyph_tile", _glyph_tile.__wrapped__), \
+                 patch("dial_display_draw._halo_layer", _halo_layer.__wrapped__):
                 bypassed = render_all()
         finally:
             _reset_font_cache()
@@ -3059,7 +3062,7 @@ class TestCrossGlyph:
         _reset_render_caches()
 
     def test_glyph_cross_has_a_registered_painter(self):
-        from dial_display_compositor import _GLYPH_PAINTERS
+        from dial_display_draw import _GLYPH_PAINTERS
         assert GLYPH_CROSS in _GLYPH_PAINTERS
 
     def test_tile_has_both_diagonals_and_empty_corners(self):
@@ -3081,7 +3084,7 @@ class TestPlayGlyphTile:
         _reset_render_caches()
 
     def test_every_glyph_kind_has_a_registered_painter(self):
-        from dial_display_compositor import (
+        from dial_display_draw import (
             GLYPH_ARM_DOT,
             GLYPH_MUTE,
             GLYPH_PAGE_DOTS,
@@ -3697,7 +3700,7 @@ class TestLargeFontCaps:
         size, which has nothing to do with this cap."""
         metrics = _LARGE_METRICS
         img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
-        with patch("dial_display_compositor._draw_glyph", wraps=_dc._draw_glyph) as spy:
+        with patch("dial_display_compositor._draw_glyph", wraps=dial_display_draw._draw_glyph) as spy:
             compositor.compose(
                 img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, volume=42), metrics=metrics,
@@ -3781,8 +3784,8 @@ class TestLargeNeverRaises:
     def test_no_font_available_still_composes_a_full_frame(self, compositor):
         metrics = _LARGE_METRICS
         img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose(
                 img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, artist="Artist", title="Title", album="Album"),
@@ -3794,7 +3797,7 @@ class TestLargeNeverRaises:
         metrics = _LARGE_METRICS
         img = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
         layout = layout_for(metrics.width, metrics.height, metrics=metrics)
-        with patch("dial_display_compositor.ImageFilter.GaussianBlur", side_effect=RuntimeError("boom")):
+        with patch("dial_display_draw.ImageFilter.GaussianBlur", side_effect=RuntimeError("boom")):
             with_album = compositor.compose(
                 img, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, album="Album"), metrics=metrics,
@@ -4131,8 +4134,8 @@ class TestComposeOutput:
         assert list(unpressed.crop(layout.row).getdata()) != list(pressed.crop(layout.row).getdata())
 
     def test_never_raises_with_no_font(self, compositor):
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
         assert result.size == (160, 128)
 
@@ -4180,7 +4183,7 @@ class TestComposeOutput:
         (the same size the rail's own cancel control uses), not a chevron
         stretched across the whole dots zone — a corner of the dots rect,
         outside that box, must be untouched chrome."""
-        from dial_display_compositor import _centred_box
+        from dial_display_draw import _centred_box
         from dial_display_palette import OVERLAY_DIM_FACTOR, LIST_BG_RGB
         metrics = metrics_for(160, 128)
         layout = layout_for(160, 128, metrics=metrics)
@@ -4786,7 +4789,7 @@ class TestFitValueLines:
             assert measured is not None and measured[0] <= 60
 
     def test_missing_font_returns_empty(self, draw):
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_draw._load_font", return_value=None):
             lines, font = _fit_value_lines(draw, "anything", (28, 24), (0, 0, 200, 200))
         assert lines == ()
         assert font is None
@@ -4906,7 +4909,8 @@ class TestInfoValueView:
 
     def test_never_raises_with_no_font(self, compositor):
         metrics = _COMPACT_240
-        with patch("dial_display_compositor._load_font", return_value=None):
+        with patch("dial_display_compositor._load_font", return_value=None), \
+             patch("dial_display_draw._load_font", return_value=None):
             result = compositor.compose_info_value(
                 metrics.width, metrics.height, InfoValueView(label="IPv4", value="10.0.0.5"),
                 rotate=False, bgr=False, metrics=metrics,
@@ -5254,8 +5258,8 @@ class TestCompactNeverRaises:
     def test_no_font_available_still_composes_every_compact_screen(self, compositor):
         metrics = _COMPACT_240
         base = Image.new("RGB", (metrics.width, metrics.height), (200, 150, 100))
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             playing = compositor.compose(
                 base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
                 overlay=OverlayState(visible=True, muted=True), metrics=metrics,
@@ -5524,8 +5528,8 @@ class TestComposeEq:
         assert list(first.getdata()) == list(second.getdata())
 
     def test_never_raises_with_no_font(self, compositor):
-        with patch("dial_display_compositor.ImageFont.truetype", side_effect=OSError("no font")), \
-             patch("dial_display_compositor.ImageFont.load_default", side_effect=OSError("no default")):
+        with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
+             patch("dial_display_draw.ImageFont.load_default", side_effect=OSError("no default")):
             result = compositor.compose_eq(
                 320, 240, _eq_state(bass_db=3, treble_db=-2), rotate=False, bgr=False, metrics=_RICH_METRICS,
             )
@@ -6360,19 +6364,19 @@ def _reference_body_warning(img, metrics, body):
     from dial_display_palette import DIVIDER_RGB
     layout = warning_layout_for(metrics.width, metrics.height, buttons=max(1, len(body.buttons)), metrics=metrics)
     draw = ImageDraw.Draw(img)
-    readout_font = dcm._load_font(metrics.font_readout)
-    body_font = dcm._load_font(metrics.font_body)
+    readout_font = dial_display_draw._load_font(metrics.font_readout)
+    body_font = dial_display_draw._load_font(metrics.font_body)
     mx0, my0, mx1, my1 = layout.message
     if body.line:
         split = my0 + (my1 - my0) * 3 // 5
-        dcm._draw_label_centered(draw, (mx0, my0, mx1, split), body.title, readout_font)
-        dcm._draw_label_centered(draw, (mx0, split, mx1, my1), body.line, body_font)
+        dial_display_draw._draw_label_centered(draw, (mx0, my0, mx1, split), body.title, readout_font)
+        dial_display_draw._draw_label_centered(draw, (mx0, split, mx1, my1), body.line, body_font)
     else:
-        dcm._draw_label_centered(draw, layout.message, body.title, readout_font)
+        dial_display_draw._draw_label_centered(draw, layout.message, body.title, readout_font)
     for rect, label in zip(layout.cells, body.buttons):
         # A label too wide for its cell steps down in size (see _cell_label_font).
         font = dcm._cell_label_font(draw, label, rect[2] - rect[0] - 2 * metrics.pad, metrics)
-        dcm._draw_label_centered(draw, rect, label, font)
+        dial_display_draw._draw_label_centered(draw, rect, label, font)
     w = metrics.divider_w
     cx0, cy0, cx1, cy1 = layout.card
     draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=dcm.DIVIDER_RGB, width=w)
@@ -6640,7 +6644,7 @@ class TestApplianceWarningText:
 
     def test_the_wrap_and_cap_helpers_keep_fit_value_lines_as_it_was(self):
         from PIL import ImageDraw
-        from dial_display_compositor import _cap_lines, _wrap_words
+        from dial_display_draw import _cap_lines, _wrap_words
         draw = ImageDraw.Draw(Image.new("RGB", (10, 10)))
         font = _load_font(13)
         lines = _wrap_words(draw, "one two three four five six seven eight", font, 60)

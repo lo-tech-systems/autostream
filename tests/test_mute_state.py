@@ -293,7 +293,7 @@ class TestWebUIMuteControlRemoved:
         assert "<svg" in ICON_SPEAKER_MUTED
         assert "currentColor" in ICON_SPEAKER_MUTED
         # The slash is centred on the speaker body, matching the dial's own
-        # shifted glyph (see dial_display_compositor._draw_speaker_glyph).
+        # shifted glyph (see dial_display_draw._draw_speaker_glyph).
         assert 'd="M1 5l14 14"' in ICON_SPEAKER_MUTED
 
     def test_page_js_no_longer_contains_mute_indicator_functions(self):

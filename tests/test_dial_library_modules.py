@@ -70,6 +70,7 @@ def test_the_views_module_imports_without_pillow():
 # The display layers, lowest first: each may import only the display modules listed.
 DISPLAY_LAYER_IMPORTS = {
     "dial_display_views": {"dial_display_palette"},
+    "dial_display_draw": {"dial_display_palette", "dial_display_views"},
     "dial_display_compositor": {
         "dial_display_palette", "dial_display_views", "dial_display_draw", "dial_display_reveal",
         "dial_display_render", "dial_display_image",
