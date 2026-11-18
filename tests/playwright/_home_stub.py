@@ -12,14 +12,30 @@ rebound. ``START_FAILURE``, when non-empty, is added to the outputs reply as its
 server has answered; ``API`` maps a GET path to the reply it gets, ahead of the
 plain ``{"ok": true}``. ``POST_PATHS`` and ``POST_TOKENS`` record, for each POST
 or PUT, its path and its ``X-CSRF-Token`` header.
+
+``STREAM`` and ``STREAM_CONNECTS`` drive ``/api/v1/events``. In the default
+``"refuse"`` mode the path gets the plain ``{"ok": true}`` reply, which an
+event source cannot use, so a page falls back to polling. After
+``stream_on()`` the path holds an event stream open: ``push`` writes one
+change event to every open stream, ``drop`` ends them, ``refuse_from_now``
+returns to the plain reply and ``open_streams`` counts the streams not yet
+closed. ``STREAM_CONNECTS`` has one dict per connection (its ``Last-Event-ID``
+header, its ``since`` query, ``opened_at`` and ``closed_at``, which stays
+``None`` while the connection is open). ``start_server`` and ``set_page``
+reset all of it.
 """
 from __future__ import annotations
 
 import json
+import queue
+import select
+import socket
 import sys
 import threading
+import time
 from contextlib import ExitStack
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from fake_store import fake_outputs_result
@@ -44,6 +60,10 @@ PATHS: list = []
 API: dict = {}
 POST_PATHS: list = []
 POST_TOKENS: list = []
+STREAM: dict = {"mode": "refuse", "boot": "0123456789abcdef", "version": 1000}
+STREAM_CONNECTS: list = []
+_STREAM_QUEUES: list = []
+_STREAM_LOCK = threading.Lock()
 
 _BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update", "sample_rate")
 
@@ -162,6 +182,64 @@ def render_remote_home(appliance_id: str = REMOTE_APPLIANCE_ID) -> bytes:
     return b"".join(chunks)
 
 
+def _peer_closed(sock) -> bool:
+    """Whether the client has closed (or reset) its end of *sock*. A client
+    that is merely quiet is not."""
+    try:
+        if not select.select([sock], [], [], 0)[0]:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
+
+
+def reset_stream() -> None:
+    """Back to the default mode (refuse), with no stream open and no record."""
+    with _STREAM_LOCK:
+        for events in _STREAM_QUEUES:
+            events.put(None)
+        _STREAM_QUEUES.clear()
+        STREAM_CONNECTS.clear()
+        STREAM["mode"] = "refuse"
+        STREAM["version"] = 1000
+
+
+def stream_on() -> None:
+    """Serve event streams from now on."""
+    STREAM["mode"] = "serve"
+
+
+def refuse_from_now() -> None:
+    """Answer the next stream requests with the plain reply (streams already open stay)."""
+    STREAM["mode"] = "refuse"
+
+
+def push(parts, *, resync: bool = False) -> None:
+    """Write one change event naming *parts* to every open stream."""
+    with _STREAM_LOCK:
+        STREAM["version"] += 1
+        version = STREAM["version"]
+        data = json.dumps(
+            {"boot": STREAM["boot"], "version": version, "parts": list(parts), "resync": bool(resync)},
+            separators=(",", ":"))
+        chunk = f"id: {STREAM['boot']}-{version}\nevent: change\ndata: {data}\n\n".encode()
+        for events in _STREAM_QUEUES:
+            events.put(chunk)
+
+
+def drop() -> None:
+    """End every open stream from the server side."""
+    with _STREAM_LOCK:
+        for events in _STREAM_QUEUES:
+            events.put(None)
+
+
+def open_streams() -> int:
+    """The number of streams not yet closed."""
+    with _STREAM_LOCK:
+        return sum(1 for r in STREAM_CONNECTS if r["closed_at"] is None)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, body: bytes, ct: str) -> None:
         self.send_response(200)
@@ -188,12 +266,53 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/appliances/") and path.endswith("/home") and REMOTE_HOME:
             REMOTE_HOME_POLLS.append(1)
             self._send(json.dumps(REMOTE_HOME).encode(), "application/json")
+        elif path == "/api/v1/events" and STREAM["mode"] == "serve":
+            self._serve_stream()
         elif path in API:
             self._send(json.dumps(API[path]).encode(), "application/json")
         elif self.path.startswith("/api/"):
             self._send(b'{"ok": true}', "application/json")
         else:
             self._send(PAGE, "text/html; charset=utf-8")
+
+    def _serve_stream(self) -> None:
+        """Hold an event stream open until the test drops it or the client closes."""
+        events: queue.Queue = queue.Queue()
+        record = {
+            "last_event_id": self.headers.get("Last-Event-ID"),
+            "since": (parse_qs(urlsplit(self.path).query).get("since") or [None])[0],
+            "opened_at": time.monotonic(),
+            "closed_at": None,
+        }
+        with _STREAM_LOCK:
+            STREAM_CONNECTS.append(record)
+            _STREAM_QUEUES.append(events)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.close_connection = True
+            self.wfile.write(b"retry: 100\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    chunk = events.get(timeout=0.1)
+                except queue.Empty:
+                    if _peer_closed(self.connection):
+                        break
+                    continue
+                if chunk is None:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except OSError:
+            pass
+        finally:
+            with _STREAM_LOCK:
+                record["closed_at"] = time.monotonic()
+                if events in _STREAM_QUEUES:
+                    _STREAM_QUEUES.remove(events)
 
     def do_POST(self) -> None:
         n = int(self.headers.get("Content-Length", "0"))
@@ -213,11 +332,13 @@ def set_page(page_bytes: bytes) -> None:
     """Choose the page the stub serves at ``/``."""
     global PAGE
     PAGE = page_bytes
+    reset_stream()
 
 
-def start_server(page_bytes: bytes) -> tuple[HTTPServer, str]:
+def start_server(page_bytes: bytes) -> tuple[ThreadingHTTPServer, str]:
     """Serve ``page_bytes`` at ``/`` on an ephemeral port; return the server and its URL."""
     set_page(page_bytes)
-    server = HTTPServer(("127.0.0.1", 0), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_address[1]}"
