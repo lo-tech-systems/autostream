@@ -470,13 +470,13 @@ class TestDialRestart:
         assert ("request_dial_reboot", (), {}) in core.calls
 
     def test_refused_when_only_another_warning_is_active(self, server, core):
-        core.warnings.set_active("sdhealth", 2)
+        core.warnings.set_active("sdhealth", ("failing", 2))
         response, data = act(server, "dial_restart")
         assert response.status == 409
         assert ("request_dial_reboot", (), {}) not in core.calls
 
     def test_accepted_with_other_warnings_active_too(self, server, core):
-        core.warnings.set_active("sdhealth", 2)
+        core.warnings.set_active("sdhealth", ("failing", 2))
         core.warnings.set_active("nowifi")
         response, _ = act(server, "dial_restart")
         assert response.status == 200

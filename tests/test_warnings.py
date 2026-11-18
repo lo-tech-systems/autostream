@@ -200,23 +200,3 @@ class TestShape:
         out = w.derive(make({1: snap(stylus="due"), 2: snap(belt="due")}, entries=[mismatch(1)],
                             throttled=1, dials_needing_update=1))
         assert all(re.fullmatch(r"[a-z0-9_-]{1,32}", e.id) for e in out)
-
-
-class TestSdLevel:
-    @pytest.mark.parametrize("percent,previous,expected", [
-        (None, "failing", "ok"),
-        (9, "ok", "failing"),
-        (10, "ok", "low"),
-        (15, "failing", "failing"),
-        (16, "failing", "low"),
-        (25, "failing", "low"),
-        (26, "failing", "ok"),
-        (19, "ok", "low"),
-        (20, "ok", "ok"),
-        (25, "low", "low"),
-        (26, "low", "ok"),
-        (12, "ok", "low"),
-        (15, "low", "low"),
-    ])
-    def test_thresholds_both_ways(self, percent, previous, expected):
-        assert w.sd_level(percent, previous) == expected

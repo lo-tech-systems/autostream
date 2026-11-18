@@ -45,8 +45,8 @@
         "key": "sdhealth",
         "source": "This dial",
         "severity": "warning",
-        "title": "microSD Health",
-        "message": "6%: Replace Soon",
+        "title": "microSD card",
+        "message": "18% life left, replace soon",
         "actions": []
       }
     ]
@@ -60,7 +60,7 @@
   },
   "sd_health": {
     "status": "stale",
-    "percent": 6
+    "percent": 18
   },
   "update": null,
   "panel": {

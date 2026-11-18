@@ -103,11 +103,41 @@ SDCARD_SYSFS_DEVICE = Path("/sys/block/mmcblk0/device")
 SDMON_BIN = Path("/usr/local/sbin/sdmon")
 
 # SD card health bands, shared by the web UI and the dial. The storage guard
-# supervisor script keeps its own copy of these three (it is stdlib-only and
-# runs as root outside the app tree); a test keeps the copies equal.
+# supervisor script keeps its own copy of the low, recover and stale values (it
+# is stdlib-only and runs as root outside the app tree); a test keeps the
+# copies equal.
+SD_HEALTH_FAILING_THRESHOLD = 10    # a reading below this is failing
+SD_HEALTH_FAILING_RECOVER_THRESHOLD = 15  # failing clears only once strictly above this
 SD_HEALTH_LOW_THRESHOLD = 20        # a reading below this raises the warning
 SD_HEALTH_RECOVER_THRESHOLD = 25    # a warning clears only once strictly above this
 SD_HEALTH_STALE_HOURS = 36          # a health file older than this is not a current reading
+
+SD_LEVEL_OK = "ok"
+SD_LEVEL_LOW = "low"
+SD_LEVEL_FAILING = "failing"
+
+SD_CARD_TITLE = "microSD card"
+
+
+def sd_level(percent: "int | None", previous: str = SD_LEVEL_OK) -> str:
+    """The microSD wear level for a life-left percentage: "failing" below 10 %
+    until above 15 %, "low" below 20 % until above 25 %, else "ok". Unknown is
+    "ok". *previous* is the level held from the last reading."""
+    if percent is None:
+        return SD_LEVEL_OK
+    if percent < SD_HEALTH_FAILING_THRESHOLD or (
+            previous == SD_LEVEL_FAILING and percent <= SD_HEALTH_FAILING_RECOVER_THRESHOLD):
+        return SD_LEVEL_FAILING
+    if percent < SD_HEALTH_LOW_THRESHOLD or (
+            previous in (SD_LEVEL_LOW, SD_LEVEL_FAILING) and percent <= SD_HEALTH_RECOVER_THRESHOLD):
+        return SD_LEVEL_LOW
+    return SD_LEVEL_OK
+
+
+def sd_card_text(level: str, percent: int) -> "tuple[str, str]":
+    """The title and message of the microSD wear warning for a non-ok *level*."""
+    urgency = "now" if level == SD_LEVEL_FAILING else "soon"
+    return SD_CARD_TITLE, f"{percent}% life left, replace {urgency}"
 
 # Manufacturer-id families that appear in the health tool's own support
 # table. Advisory only: a consumer card from the same manufacturer shares

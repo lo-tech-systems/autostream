@@ -356,12 +356,12 @@ class TestWarnings:
         bell = _state("warning_sdhealth")["bell"]
         assert bell == {"severity": "warning", "entries": [{
             "key": "sdhealth", "source": "This dial", "severity": "warning",
-            "title": "microSD Health", "message": "6%: Replace Soon", "actions": []}]}
+            "title": "microSD card", "message": "18% life left, replace soon", "actions": []}]}
         assert _state("warning_sdhealth")["status"] is None
 
     def test_the_sd_card_is_critical_below_three_percent(self):
         scenario = hs.SCENARIOS["warning_sdhealth"]
-        snapshot = dataclasses.replace(scenario.snapshot, warnings=hs.warning_states({"sdhealth": 2}))
+        snapshot = dataclasses.replace(scenario.snapshot, warnings=hs.warning_states({"sdhealth": ("failing", 2)}))
         bell = dataclasses.replace(scenario, snapshot=snapshot).state()["bell"]
         assert bell["severity"] == "critical" and bell["entries"][0]["severity"] == "critical"
 
@@ -406,7 +406,7 @@ class TestWarnings:
     def test_the_bell_lists_the_worst_severity_first(self):
         scenario = hs.SCENARIOS["nothing_playing"]
         snapshot = dataclasses.replace(
-            scenario.snapshot, warnings=hs.warning_states({"sdhealth": 2, "nowifi": None}))
+            scenario.snapshot, warnings=hs.warning_states({"sdhealth": ("failing", 2), "nowifi": None}))
         bell = dataclasses.replace(scenario, snapshot=snapshot).state()["bell"]
         assert [e["key"] for e in bell["entries"]] == ["sdhealth", "nowifi"]
         assert bell["severity"] == "critical"

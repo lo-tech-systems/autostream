@@ -810,7 +810,7 @@ def _render_cache_corpus(width, height, metrics=None):
         "warning_one",
         lambda c: c.compose_warning(
             logo, width, height,
-            WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Close",)),
+            WarningView(title="microSD card", message="15% life left, replace soon", buttons=("Close",)),
             rotate=False, bgr=False, metrics=metrics,
         ),
     ))

@@ -548,6 +548,32 @@ class TestSdHealthThresholds:
         assert su.SD_HEALTH_RECOVER_THRESHOLD == 25
         assert su.SD_HEALTH_STALE_HOURS == 36
 
+    def test_the_failing_thresholds_sit_below_the_low_ones(self):
+        assert su.SD_HEALTH_FAILING_THRESHOLD == 10
+        assert su.SD_HEALTH_FAILING_RECOVER_THRESHOLD == 15
+
+    def test_card_text_for_each_level(self):
+        assert su.sd_card_text("low", 18) == ("microSD card", "18% life left, replace soon")
+        assert su.sd_card_text("failing", 8) == ("microSD card", "8% life left, replace now")
+
+    @pytest.mark.parametrize("percent,previous,expected", [
+        (None, "failing", "ok"),
+        (9, "ok", "failing"),
+        (10, "ok", "low"),
+        (15, "failing", "failing"),
+        (16, "failing", "low"),
+        (25, "failing", "low"),
+        (26, "failing", "ok"),
+        (19, "ok", "low"),
+        (20, "ok", "ok"),
+        (25, "low", "low"),
+        (26, "low", "ok"),
+        (12, "ok", "low"),
+        (15, "low", "low"),
+    ])
+    def test_sd_level_thresholds_both_ways(self, percent, previous, expected):
+        assert su.sd_level(percent, previous) == expected
+
 
 # ---------------------------------------------------------------------------
 # set_journald_persistent: DIAG-tier journald coupling

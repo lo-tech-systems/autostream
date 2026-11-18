@@ -1756,7 +1756,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("bell_tap",),
         ("repaint",),               # No WiFi: Next | Restart | Close
         ("card_next",),
-        ("repaint",),               # microSD Health: Next | Close
+        ("repaint",),               # microSD card: Next | Close
         ("card_next",),
         ("repaint",),               # wraps to No WiFi
         ("card_close",),

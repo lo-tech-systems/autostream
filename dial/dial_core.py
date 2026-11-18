@@ -59,6 +59,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from autostream_peer_client import PeerReply, roster_view
+from autostream_sysutils import SD_LEVEL_OK
 
 import dial_artwork
 import dial_core_focus
@@ -85,7 +86,7 @@ from dial_mdns import PROTOCOL
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
 from dial_network import request_reboot as _default_reboot
 from dial_network import request_shutdown as _default_shutdown
-from dial_sdhealth import is_low as _sd_is_low
+from dial_sdhealth import wear_level
 from dial_update_watch import (
     PHASE_REBOOT, PHASE_VERIFY, STATUS_FAILURE, STATUS_IN_PROGRESS, STATUS_SUCCESS,
     UPDATE_SEEN_PATH, UpdateWatcher, read_seen_marker, write_seen_marker,
@@ -675,7 +676,7 @@ class DialCore:
     # ==== 4. Warning sources and power ========================================
     # Owns: `warnings` (the manager, with its own leaf lock), `update_watcher`, `update_seen_path`,
     # `_update_seen`, `_reboot`, `_shutdown`; the state's `warnings`, `due_status_id`, `network`,
-    # `wifi_ever_connected`, `wifi_down_streak`, `sd_health`, `sd_low`, `update`, `appliance_warnings`,
+    # `wifi_ever_connected`, `wifi_down_streak`, `sd_health`, `sd_level`, `update`, `appliance_warnings`,
     # `protocol_warnings`, `power`, `start_failure` and `start_failure_seen`.
     # Threads: the network worker, the SD monitor, the core thread (housekeeping and the fold), and the
     # view and HD threads (close, dismiss, power).
@@ -771,8 +772,8 @@ class DialCore:
         return self._queue_effects(SourceEffects(tuple(changes)))
 
     def on_sd_health_view(self, view) -> SourceEffects:
-        """Fold an SD health reading: low (with hysteresis) starts or
-        refreshes the warning with the percent as its severity; not low
+        """Fold an SD health reading: low or failing (with hysteresis) starts or
+        refreshes the warning with its level and percent; not low
         ends the incident. What it did to the warnings is queued for a
         view and returned."""
         changes = []
@@ -780,10 +781,10 @@ class DialCore:
         def mutate(state: CoreState) -> "bool | None":
             changed = state.sd_health != view
             state.sd_health = view
-            low = _sd_is_low(view, state.sd_low)
-            state.sd_low = low
-            if low:
-                began = self.warnings.set_active(SDHEALTH_WARNING_ID, view.percent)
+            level = wear_level(view, state.sd_level)
+            state.sd_level = level
+            if level != SD_LEVEL_OK:
+                began = self.warnings.set_active(SDHEALTH_WARNING_ID, (level, view.percent))
                 changes.append(WarningChange(SDHEALTH_WARNING_ID, True, began))
             else:
                 self.warnings.clear(SDHEALTH_WARNING_ID)

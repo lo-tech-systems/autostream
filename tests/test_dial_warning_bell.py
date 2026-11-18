@@ -61,12 +61,12 @@ class TestDialBell:
         assert dial_bell(_snapshot(), WARNING_DESCRIPTORS) == Bell(())
 
     def test_the_sd_card_entry_reads_its_text_and_attribution(self):
-        bell = dial_bell(_snapshot({"sdhealth": 6}), WARNING_DESCRIPTORS)
+        bell = dial_bell(_snapshot({"sdhealth": ("low", 18)}), WARNING_DESCRIPTORS)
         assert bell.entries == (BellEntry(
-            "sdhealth", DIAL_SOURCE, "warning", "microSD Health", "6%: Replace Soon", ()),)
+            "sdhealth", DIAL_SOURCE, "warning", "microSD card", "18% life left, replace soon", ()),)
 
-    def test_the_sd_card_is_critical_below_the_critical_percent(self):
-        assert dial_bell(_snapshot({"sdhealth": 2}), WARNING_DESCRIPTORS).severity == "critical"
+    def test_the_failing_sd_card_is_critical(self):
+        assert dial_bell(_snapshot({"sdhealth": ("failing", 2)}), WARNING_DESCRIPTORS).severity == "critical"
 
     def test_no_wifi_carries_restart_beside_close(self):
         (entry,) = dial_bell(_snapshot({"nowifi": None}), WARNING_DESCRIPTORS).entries
@@ -95,21 +95,21 @@ class TestDialBell:
         assert dial_bell(snap, descriptors) == Bell(())
 
     def test_worst_first_then_registry_order(self):
-        snap = _snapshot({"update_dial": ("Lounge",), "nowifi": None, "sdhealth": 2})
+        snap = _snapshot({"update_dial": ("Lounge",), "nowifi": None, "sdhealth": ("failing", 2)})
         bell = dial_bell(snap, WARNING_DESCRIPTORS)
         assert [e.key for e in bell.entries] == ["sdhealth", "nowifi", "update_dial"]
         assert [e.severity for e in bell.entries] == ["critical", "warning", "warning"]
 
     def test_an_active_state_without_a_descriptor_is_skipped(self):
-        assert dial_bell(_snapshot({"sdhealth": 6}), ()) == Bell(())
+        assert dial_bell(_snapshot({"sdhealth": ("low", 18)}), ()) == Bell(())
 
     def test_descriptors_may_be_given_as_a_mapping(self):
         mapping = {d.id: d for d in WARNING_DESCRIPTORS}
-        assert dial_bell(_snapshot({"sdhealth": 6}), mapping).count == 1
+        assert dial_bell(_snapshot({"sdhealth": ("low", 18)}), mapping).count == 1
 
     def test_an_inactive_state_is_skipped(self):
-        snap = dataclasses.replace(_snapshot({"sdhealth": 6}), warnings=tuple(
-            WarningState(w.id, False, None, None) for w in _snapshot({"sdhealth": 6}).warnings))
+        snap = dataclasses.replace(_snapshot({"sdhealth": ("low", 18)}), warnings=tuple(
+            WarningState(w.id, False, None, None) for w in _snapshot({"sdhealth": ("low", 18)}).warnings))
         assert dial_bell(snap, WARNING_DESCRIPTORS).count == 0
 
 

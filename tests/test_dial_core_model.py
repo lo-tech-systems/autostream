@@ -70,7 +70,7 @@ class TestNewState:
     def test_the_private_defaults(self):
         state = cm.new_state("d")
         assert state.roster == [] and state.eq_optimistic == ((), 0.0)
-        assert (state.wifi_down_streak, state.sd_low) == (0, False)
+        assert (state.wifi_down_streak, state.sd_level) == (0, "ok")
         assert state.appliance_warnings == state.protocol_warnings == {}
         assert state.start_failure_seen == state.peers == state.views == state.playing_since == {}
 

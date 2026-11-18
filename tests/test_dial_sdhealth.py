@@ -113,42 +113,40 @@ class TestReadHealth:
         assert view == sh.SdHealthView(updated_at=5.0)
 
 
-class TestIsLow:
-    def test_19_raises_from_clean(self):
+class TestWearLevel:
+    def test_19_is_low_from_clean(self):
         view = sh.SdHealthView(status=sh.STATUS_VALID, percent=19)
-        assert sh.is_low(view, False) is True
+        assert sh.wear_level(view, "ok") == "low"
 
-    def test_20_does_not_raise_from_clean(self):
+    def test_20_is_ok_from_clean(self):
         view = sh.SdHealthView(status=sh.STATUS_VALID, percent=20)
-        assert sh.is_low(view, False) is False
+        assert sh.wear_level(view, "ok") == "ok"
 
     def test_22_holds_when_previously_low(self):
         view = sh.SdHealthView(status=sh.STATUS_VALID, percent=22)
-        assert sh.is_low(view, True) is True
+        assert sh.wear_level(view, "low") == "low"
 
-    def test_22_does_not_raise_when_not_previously_low(self):
+    def test_22_is_ok_when_not_previously_low(self):
         view = sh.SdHealthView(status=sh.STATUS_VALID, percent=22)
-        assert sh.is_low(view, False) is False
+        assert sh.wear_level(view, "ok") == "ok"
 
     def test_26_clears_even_when_previously_low(self):
         view = sh.SdHealthView(status=sh.STATUS_VALID, percent=26)
-        assert sh.is_low(view, True) is False
+        assert sh.wear_level(view, "low") == "ok"
+
+    def test_below_10_is_failing_and_holds_to_15(self):
+        assert sh.wear_level(sh.SdHealthView(status=sh.STATUS_VALID, percent=9), "ok") == "failing"
+        assert sh.wear_level(sh.SdHealthView(status=sh.STATUS_VALID, percent=15), "failing") == "failing"
+        assert sh.wear_level(sh.SdHealthView(status=sh.STATUS_VALID, percent=16), "failing") == "low"
 
     def test_stale_keeps_its_percent(self):
         view = sh.SdHealthView(status=sh.STATUS_STALE, percent=15)
-        assert sh.is_low(view, False) is True
+        assert sh.wear_level(view, "ok") == "low"
 
-    def test_off_clears(self):
-        view = sh.SdHealthView(status=sh.STATUS_OFF, percent=None)
-        assert sh.is_low(view, True) is False
-
-    def test_unsupported_clears(self):
-        view = sh.SdHealthView(status=sh.STATUS_UNSUPPORTED, percent=None)
-        assert sh.is_low(view, True) is False
-
-    def test_unavailable_clears(self):
-        view = sh.SdHealthView(status=sh.STATUS_UNAVAILABLE, percent=None)
-        assert sh.is_low(view, True) is False
+    @pytest.mark.parametrize("status", [sh.STATUS_OFF, sh.STATUS_UNSUPPORTED, sh.STATUS_UNAVAILABLE])
+    def test_a_reading_without_a_percent_clears(self, status):
+        view = sh.SdHealthView(status=status, percent=None)
+        assert sh.wear_level(view, "failing") == "ok"
 
 
 class TestTick:

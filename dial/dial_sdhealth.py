@@ -25,10 +25,11 @@ import time
 from dataclasses import dataclass
 
 from autostream_sysutils import (
-    SD_HEALTH_LOW_THRESHOLD,
     SD_HEALTH_RECOVER_THRESHOLD,
     SD_HEALTH_STALE_HOURS,
+    SD_LEVEL_OK,
     SDCARD_HEALTH_JSON_FILE,
+    sd_level,
     sdcard_health_state,
 )
 
@@ -98,18 +99,15 @@ def read_health(now: "float | None" = None) -> SdHealthView:
     return SdHealthView(status=status, percent=percent, check=check, updated_at=now)
 
 
-def is_low(view: SdHealthView, previously_low: bool) -> bool:
-    """The warning rule with hysteresis, the storage guard's own: below the
-    low threshold raises; once raised, the warning holds until the reading
-    is strictly above the recover threshold. A stale reading keeps its
-    percent (a worn card does not recover by itself); anything without a
-    percent (monitoring off, unsupported, unavailable) ends the incident,
-    which is what "no false alarm" means for a file that is absent."""
+def wear_level(view: SdHealthView, previous: str) -> str:
+    """The microSD wear level for a reading, with the shared hysteresis
+    (autostream_sysutils.sd_level). A stale reading keeps its percent (a worn
+    card does not recover by itself); anything without a percent (monitoring
+    off, unsupported, unavailable) ends the incident, which is what "no false
+    alarm" means for a file that is absent."""
     if view.status not in (STATUS_VALID, STATUS_STALE) or view.percent is None:
-        return False
-    if view.percent < SD_HEALTH_LOW_THRESHOLD:
-        return True
-    return previously_low and view.percent <= SD_HEALTH_RECOVER_THRESHOLD
+        return SD_LEVEL_OK
+    return sd_level(view.percent, previous)
 
 
 def _publish(view: SdHealthView) -> None:

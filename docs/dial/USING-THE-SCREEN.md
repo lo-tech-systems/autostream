@@ -372,7 +372,7 @@ short while without a touch.
 
 When the dial has something to tell you, it shows a bell with a count. It
 never opens a card on its own: a warning waits until you tap the bell. The
-count includes the dial's own warnings (No WiFi, microSD Health and **Update
+count includes the dial's own warnings (No WiFi, microSD card and **Update
 this dial**) and the warnings of every appliance the dial lists, such as a
 stylus near the end of its life. The bell's colour follows the most urgent of
 them: blue for information, orange for a warning, red for a critical one. With
@@ -460,9 +460,11 @@ screen down. Identical on every tier.*
 Shown in the bell when SD card health monitoring is turned on (from the
 appliance's Setup page) and the card's remaining endurance drops low. The card
 has a title, a body line with the remaining percentage and a **Close** button.
-Under 3 percent the warning counts as critical and the bell turns red.
+The wording is the same as on the appliance: "replace soon" below 20 percent,
+and under 10 percent the warning counts as critical, reads "replace now" and the
+bell turns red.
 
-![SD card warning with the title microSD Health and the body 4%: Replace Soon](images/showcase/spi-dial/sd-health.png)
+![SD card warning for a worn microSD card](images/showcase/spi-dial/sd-health.png)
 
 **Close** puts the card away and does nothing more; the warning stays in the
 bell until the reading recovers. Like every warnings card it closes by itself

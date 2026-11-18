@@ -1683,7 +1683,7 @@ class TestComposeCard:
         assert pressed.getpixel((5, 130)) == plain.getpixel((5, 130))
 
     def test_one_cell_spans_the_whole_row_with_no_vertical_line(self, compositor):
-        view = WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Close",))
+        view = WarningView(title="microSD card", message="15% life left, replace soon", buttons=("Close",))
         frame = self._frame(compositor, (320, 240), view, 0.1778)
         l = warning_layout_for(320, 240, buttons=1, metrics=metrics_for(320, 240, 0.1778))
         assert l.divider_xs == ()
@@ -3080,10 +3080,10 @@ class TestWarningGenericBody:
         for desc in (d for d in WARNING_DESCRIPTORS if d.id in ("nowifi", "sdhealth")):
             # Every shipped row leaves the generic fields at their defaults.
             assert desc.title_for is None and desc.progress_for is None
-            severity = 15 if desc.message_for is not None else None
+            reading = ("low", 19) if desc.message_for is not None else None
             view = WarningView(
                 title=desc.title,
-                message=desc.message_for(severity) if desc.message_for is not None else "",
+                message=desc.message_for(reading) if desc.message_for is not None else "",
                 buttons=tuple(b.label for b in desc.buttons), pressed=len(desc.buttons) - 1 if pressed else None,
             )
             current = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)

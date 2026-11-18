@@ -11,7 +11,6 @@ characters and a message of at most 32.
 Contents:
   - Inputs    -- everything derive() reads
   - derive    -- the ordered warning entries for one set of inputs
-  - sd_level  -- the held microSD wear level (hysteresis)
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from autostream_state import InputsPart, WarningEntry
+from autostream_sysutils import SD_LEVEL_FAILING, SD_LEVEL_OK, sd_card_text
 
 if TYPE_CHECKING:
     from autostream_playback_stats import InputPlaybackSnapshot, PlaybackSnapshot
@@ -36,11 +36,6 @@ _KIND_ORDER = (
     "sample_rate", "dial_update", "licence", "no_input",
 )
 
-# The microSD card's life-left thresholds in percent: a level is entered below
-# the first figure and left above the second.
-_SD_FAILING = (10, 15)
-_SD_LOW = (20, 25)
-
 
 @dataclass(frozen=True)
 class Inputs:
@@ -54,18 +49,6 @@ class Inputs:
     dials_needing_update: int
     unlicensed: bool
 
-
-def sd_level(percent: Optional[int], previous: str = "ok") -> str:
-    """The microSD wear level for a life-left percentage: "failing" below 10 %
-    until above 15 %, "low" below 20 % until above 25 %, else "ok". Unknown is
-    "ok". *previous* is the level held from the last reading."""
-    if percent is None:
-        return "ok"
-    if percent < _SD_FAILING[0] or (previous == "failing" and percent <= _SD_FAILING[1]):
-        return "failing"
-    if percent < _SD_LOW[0] or (previous in ("low", "failing") and percent <= _SD_LOW[1]):
-        return "low"
-    return "ok"
 
 
 def _fit(text, limit: int) -> str:
@@ -176,13 +159,11 @@ def _temperature(status: str, temp_c: Optional[float]) -> list[WarningEntry]:
 
 
 def _card(level: str, percent: Optional[int]) -> list[WarningEntry]:
-    if percent is None or level == "ok":
+    if percent is None or level == SD_LEVEL_OK:
         return []
-    if level == "failing":
-        return [_entry("sd_health", "critical", "sd_health", "microSD card",
-                       f"{percent}% life left, replace now", "/about#system")]
-    return [_entry("sd_health", "warning", "sd_health", "microSD card",
-                   f"{percent}% life left, replace soon", "/about#system")]
+    title, message = sd_card_text(level, percent)
+    severity = "critical" if level == SD_LEVEL_FAILING else "warning"
+    return [_entry("sd_health", severity, "sd_health", title, message, "/about#system")]
 
 
 def _no_input(playback) -> list[WarningEntry]:

@@ -243,7 +243,7 @@ Warnings never open a card by themselves. A bell shows that something needs
 a look, and a tap on it opens the card.
 
 - **The dial's bell** sits at the right of the APPLIANCES heading. It counts
-  the dial's own warnings: No WiFi, microSD Health, and **Update this dial**,
+  the dial's own warnings: No WiFi, microSD card, and **Update this dial**,
   which names the appliances that run newer software than the dial. It is an
   outline with no number while there is nothing to report, and filled with the
   count once there is. Its colour follows the most urgent warning: blue for

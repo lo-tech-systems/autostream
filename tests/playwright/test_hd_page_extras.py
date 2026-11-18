@@ -1438,7 +1438,7 @@ def lounge_warning_while_on_kitchen():
 def two_dial_warnings(base=None):
     """No Wi-Fi and a failing SD card at once: two entries in the dial bell."""
     base = base or hs.SCENARIOS["nothing_playing"]
-    return base.with_snapshot(warnings=hs.warning_states({"nowifi": None, "sdhealth": 6}))
+    return base.with_snapshot(warnings=hs.warning_states({"nowifi": None, "sdhealth": ("low", 18)}))
 
 
 def with_update_result(base):
@@ -1480,7 +1480,7 @@ class TestDialBell:
         expect(dial_bell(page).locator(".warn-count")).to_have_text("1")
         assert page.evaluate("getComputedStyle(document.getElementById('dial-bell')).color") == "rgb(233, 113, 50)"
         hd.show(hs.SCENARIOS["nothing_playing"].with_snapshot(
-            warnings=hs.warning_states({"nowifi": None, "sdhealth": 2})))
+            warnings=hs.warning_states({"nowifi": None, "sdhealth": ("failing", 2)})))
         expect(dial_bell(page)).to_have_class(re.compile("sev-critical"))
         expect(dial_bell(page).locator(".warn-count")).to_have_text("2")
         assert page.evaluate("getComputedStyle(document.getElementById('dial-bell')).color") \
@@ -1538,8 +1538,8 @@ class TestDialBell:
         sent = watch_actions(page)
         open_page(page, hd)
         dial_bell(page).click()
-        expect(page.locator("#card-title")).to_have_text("microSD Health")
-        expect(page.locator("#card-message")).to_have_text("6%: Replace Soon")
+        expect(page.locator("#card-title")).to_have_text("microSD card")
+        expect(page.locator("#card-message")).to_have_text("18% life left, replace soon")
         assert card_buttons(page) == ["Close"]
         page.locator("#card-buttons button").click()
         page.wait_for_timeout(150)
@@ -1554,7 +1554,7 @@ class TestDialBell:
         expect(page.locator("#card-source")).to_have_text("This dial · 1 of 2")
         assert card_buttons(page) == ["Next", "Restart", "Close"]
         page.locator("#card-buttons button", has_text="Next").click()
-        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        expect(page.locator("#card-title")).to_have_text("microSD card")
         expect(page.locator("#card-source")).to_have_text("This dial · 2 of 2")
         assert card_buttons(page) == ["Next", "Close"]
         page.locator("#card-buttons button", has_text="Next").click()
@@ -1564,7 +1564,7 @@ class TestDialBell:
         hd.show(hs.SCENARIOS["warning_sdhealth"])
         open_page(page, hd)
         dial_bell(page).click()
-        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        expect(page.locator("#card-title")).to_have_text("microSD card")
         hd.show(hs.SCENARIOS["nothing_playing"])
         expect(page.locator("#card-title")).to_have_text("Dial is healthy")
 
@@ -1633,7 +1633,7 @@ class TestStatusCards:
 
     def test_a_dial_warning_does_not_hide_the_status_card(self, page, hd):
         hd.show(hs.SCENARIOS["warning_update"].with_snapshot(
-            warnings=hs.warning_states({"sdhealth": 6, "update": hs.SCENARIOS["warning_update"].snapshot.update})))
+            warnings=hs.warning_states({"sdhealth": ("low", 18), "update": hs.SCENARIOS["warning_update"].snapshot.update})))
         open_page(page, hd)
         expect(page.locator("#card-title")).to_have_text("Updating...")
 
@@ -1641,7 +1641,7 @@ class TestStatusCards:
         hd.show(hs.SCENARIOS["warning_sdhealth"])
         open_page(page, hd)
         dial_bell(page).click()
-        expect(page.locator("#card-title")).to_have_text("microSD Health")
+        expect(page.locator("#card-title")).to_have_text("microSD card")
         hd.show(with_update_result(hs.SCENARIOS["warning_sdhealth"]))
         expect(page.locator("#card-title")).to_have_text("Updated")
 

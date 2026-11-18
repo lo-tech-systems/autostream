@@ -199,7 +199,7 @@ class TestTheCard:
         assert display.touch_surface() == ("card1", False, False, False, False)
         view = _painted(display)
         assert (view.title, view.message, view.source, view.buttons) == (
-            "microSD Health", "15%: Replace Soon", "This dial", ("Close",))
+            "microSD card", "15% life left, replace soon", "This dial", ("Close",))
 
     def test_an_appliance_warning_card_names_the_appliance(self):
         display = _rig()
@@ -237,7 +237,7 @@ class TestTheCard:
             seen.append((view.title, view.source))
             tap_card(display, 0)             # Next is the first cell
             _fold(display)
-        assert [t for t, _ in seen] == ["No WiFi", "microSD Health", "Technics stylus", "No WiFi"]
+        assert [t for t, _ in seen] == ["No WiFi", "microSD card", "Technics stylus", "No WiFi"]
         assert seen[0][1] == "This dial · 1 of 3" and seen[2][1] == "Kitchen · 3 of 3"
 
     def test_no_wifi_among_others_has_three_cells(self):
@@ -258,7 +258,7 @@ class TestTheCard:
         open_warnings_page(display)
         on_sd_health_view(display, _sd(12))
         _fold(display)
-        assert _painted(display).message == "12%: Replace Soon"
+        assert _painted(display).message == "12% life left, replace soon"
 
     def test_the_pressed_cell_is_passed_to_the_compositor_by_index(self):
         display = _rig()
@@ -290,7 +290,7 @@ class TestClosing:
         tap_card(display, 0)
         _fold(display)
         open_warnings_page(display)
-        assert display._screen == "warnings" and _painted(display).title == "microSD Health"
+        assert display._screen == "warnings" and _painted(display).title == "microSD card"
 
     def test_restart_shows_the_restarting_screen_and_asks_for_the_reboot(self):
         display = _rig()
@@ -325,7 +325,7 @@ class TestAnEntryClears:
         display._apply_pending_snapshot()
         _fold(display)
         view = _painted(display)
-        assert (view.title, view.buttons, view.source) == ("microSD Health", ("Close",), "This dial")
+        assert (view.title, view.buttons, view.source) == ("microSD card", ("Close",), "This dial")
         assert display.touch_surface()[0] == "card1"
 
     def test_the_page_closes_when_the_last_entry_clears(self):
@@ -578,7 +578,7 @@ class TestBellOnThePlayingScreen:
 
 # ---------------------------------------------------------------------------
 # Test helpers for the warnings: a settable clock and an SD health reading
-# (see dial_sdhealth.py for is_low()'s hysteresis rule).
+# (see dial_sdhealth.py for wear_level()'s hysteresis rule).
 # ---------------------------------------------------------------------------
 
 class _Clock:
@@ -679,7 +679,7 @@ class TestGenericWarningCapabilities:
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         open_warnings_page(display)
         view = self._painted_view(display)
-        assert view.percent is None and view.title == "microSD Health"
+        assert view.percent is None and view.title == "microSD card"
 
     def test_tick_warnings_clears_expired_rows(self, rig):
         display, fb, clock = rig(auto_clear_after_s=60.0)

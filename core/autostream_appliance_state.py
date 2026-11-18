@@ -43,9 +43,9 @@ from autostream_dials import (
 )
 from autostream_intents.table import Intent, Outcome, bind
 from autostream_state import AppliancePart, DialsPart, Origin, WarningsPart, live
-from autostream_sysutils import format_hostname, get_system_hostname, sdcard_health_display
+from autostream_sysutils import format_hostname, get_system_hostname, sd_level, sdcard_health_display
 from autostream_system_stats import _read_get_throttled_value
-from autostream_warnings import Inputs, derive, sd_level
+from autostream_warnings import Inputs, derive
 
 _OWNER = "autostream_appliance_state"
 _PERIOD_S = 30.0

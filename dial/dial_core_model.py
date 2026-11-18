@@ -64,7 +64,7 @@ class CoreState(PublishedState):
     # per set; the outputs tap lives on the output request instead.
     eq_optimistic: tuple = ((), 0.0)    # (((band_id, gain_db), ...), expires_at); ((), 0.0) when none
     wifi_down_streak: int = 0           # consecutive down link readings; reset by a connected or ignored one
-    sd_low: bool = False                # the SD health incident latch (with hysteresis)
+    sd_level: str = "ok"                # the SD wear level latch (sd_level()'s "ok", "low", "failing")
     appliance_warnings: dict = field(default_factory=dict)   # appliance id -> its validated, attributed warnings
     protocol_warnings: dict = field(default_factory=dict)    # appliance id -> the dial's own "Update" warning for it; private
     start_failure_seen: dict = field(default_factory=dict)   # appliance id -> (boot, seq) handled; private

@@ -12,6 +12,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+from autostream_sysutils import SD_CARD_TITLE, SD_LEVEL_FAILING, SD_LEVEL_LOW, sd_card_text
 from dial_appliance_warnings import (
     APPLIANCE_WARNING_MESSAGE_MAX, ApplianceWarning, DIAL_WARNING_ID, SEVERITY_CRITICAL,
     SEVERITY_INFO, SEVERITY_WARNING, clean_text,
@@ -42,26 +43,16 @@ UPDATE_RESULT_WARNING_ID = "update_result"
 
 # The No-WiFi warning's fixed title.
 NOWIFI_MESSAGE_TEXT = "No WiFi"
-# The SD card warning's fixed strings: a title at readout size and a body
-# line at body size (the percent is filled in).
-SDHEALTH_TITLE_TEXT = "microSD Health"
-SDHEALTH_BODY_TEXT = "{percent}%: Replace Soon"
-SDHEALTH_BODY_TEXT_NO_PERCENT = "Replace Soon"
 
-# The SD card warning is critical once the reading is under this.
-SDHEALTH_CRITICAL_PERCENT = 3
+# The SD card warning's reading is (level, percent): "low" is a warning and
+# "failing" is critical; the words are the appliance's own.
+def _sdhealth_severity_for(reading) -> str:
+    level = reading[0] if reading else SD_LEVEL_LOW
+    return SEVERITY_CRITICAL if level == SD_LEVEL_FAILING else SEVERITY_WARNING
 
 
-def _sdhealth_severity_for(percent) -> str:
-    if isinstance(percent, int) and percent < SDHEALTH_CRITICAL_PERCENT:
-        return SEVERITY_CRITICAL
-    return SEVERITY_WARNING
-
-
-def _sdhealth_message_for(percent) -> str:
-    if percent is None:
-        return SDHEALTH_BODY_TEXT_NO_PERCENT
-    return SDHEALTH_BODY_TEXT.format(percent=percent)
+def _sdhealth_message_for(reading) -> str:
+    return sd_card_text(*reading)[1] if reading else ""
 
 
 # The software update cards. The in-progress card's title is fixed and its
@@ -168,7 +159,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     ),
     WarningDescriptor(
         id=SDHEALTH_WARNING_ID, kind=KIND_WARNING,
-        title=SDHEALTH_TITLE_TEXT, message_for=_sdhealth_message_for,
+        title=SD_CARD_TITLE, message_for=_sdhealth_message_for,
         severity_for=_sdhealth_severity_for,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
     ),

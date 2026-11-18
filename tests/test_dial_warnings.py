@@ -270,12 +270,17 @@ class TestTheTable:
         for desc in WARNING_DESCRIPTORS:
             assert desc.severity_for(None) in ("info", "warning", "critical")
 
-    def test_the_sd_card_is_critical_below_the_critical_percent(self):
-        from dial_warning_text import SDHEALTH_CRITICAL_PERCENT
+    def test_the_sd_card_is_critical_only_when_failing(self):
         severity_for = WARNING_BY_ID["sdhealth"].severity_for
-        assert severity_for(SDHEALTH_CRITICAL_PERCENT - 1) == "critical"
-        assert severity_for(SDHEALTH_CRITICAL_PERCENT) == "warning"
+        assert severity_for(("failing", 8)) == "critical"
+        assert severity_for(("low", 18)) == "warning"
         assert severity_for(None) == "warning"
+
+    def test_the_sd_card_words_are_the_appliances(self):
+        desc = WARNING_BY_ID["sdhealth"]
+        reading = ("failing", 8)
+        assert (desc.title_text(reading), desc.message_text(reading)) == (
+            "microSD card", "8% life left, replace now")
 
     def test_the_dial_update_message_names_the_appliances(self):
         message_for = WARNING_BY_ID["update_dial"].message_for

@@ -715,12 +715,18 @@ class TestSdHealthSource:
         effects = core.on_sd_health_view(_sd(1))
         (change,) = effects.changes
         assert (change.warning_id, change.active, change.began) == ("sdhealth", True, True)
-        assert core._state.sd_low is True
-        assert _row(core, "sdhealth").reading == 1
+        assert core._state.sd_level == "failing"
+        assert _row(core, "sdhealth").reading == ("failing", 1)
         assert core.snapshot().sd_health == _sd(1)
         effects = core.on_sd_health_view(_sd(100))
         assert effects.changes[0].active is False
-        assert core._state.sd_low is False and core.snapshot().due_status_id is None
+        assert core._state.sd_level == "ok" and core.snapshot().due_status_id is None
+
+    def test_a_reading_between_the_bands_is_a_warning_not_critical(self):
+        core, manager, _ = _warning_core()
+        core.on_sd_health_view(_sd(18))
+        assert core._state.sd_level == "low"
+        assert _row(core, "sdhealth").reading == ("low", 18)
 
     def test_a_reading_without_a_percent_ends_the_incident(self):
         core, manager, _ = _warning_core()
