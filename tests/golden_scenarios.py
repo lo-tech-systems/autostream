@@ -522,20 +522,22 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
 
 def _begin_mute(scenario: Scenario, fake, monkeypatch) -> None:
     """Mute the scenario's selected outputs through the authority, so that each
-    remembers the level in muted_levels. The rows are first read at those
-    levels, and read again at the scenario's own once the mute is held."""
+    keeps the level in muted_levels. The rows are first read at those levels,
+    and read again muted at them once the player holds the mute."""
     import dataclasses
     import autostream_player_service as player_service
     from autostream_players import ActionResult
     from autostream_state import Origin
     from autostream_state.outputs import get_authority
     monkeypatch.setattr(player_service, "update_output", lambda *a, **k: ActionResult(ok=True))
-    fake.outputs([
+    monkeypatch.setattr(player_service, "set_output_muted", lambda *a, **k: ActionResult(ok=True))
+    at_levels = [
         dataclasses.replace(r, volume_percent=scenario.muted_levels.get(r.id, r.volume_percent))
         for r in scenario.outputs
-    ])
+    ]
+    fake.outputs(at_levels)
     get_authority().mute_all(Origin.USER)
-    fake.outputs(list(scenario.outputs))
+    fake.outputs([dataclasses.replace(r, muted=r.selected) for r in at_levels])
 
 
 def make_state():

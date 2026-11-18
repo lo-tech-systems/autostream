@@ -164,11 +164,14 @@ class TestTheOthers:
     def test_mute_all_but_the_held_speaker(self, w):
         merge(w, [playing(1), playing(2), playing(3)])
         w.a.hold("1", Origin.DEVICE)
+        w.fb.calls.clear()
         applied = w.a.mute_all(Origin.DEVICE, except_id="1")
         p = snap()
         assert not p.unit("1").muted and p.unit("2").muted and p.unit("3").muted
         assert sorted(u for u, _ in applied.mute_tokens) == ["2", "3"]
         assert not p.muted_all
+        assert [(c[0], c[1][:2]) for c in w.fb.calls] == [
+            ("set_output_muted", ("2", True)), ("set_output_muted", ("3", True))]
 
     def test_a_speaker_switched_on_later_does_not_join_a_mute_that_left_one_out(self, w):
         merge(w, [playing(1), playing(2), group_row(3, "stopped", session_holdable=True)])

@@ -3,12 +3,13 @@ output-change rules, the end of a session, and the WebUI's now-playing
 header/level slot (the volume slider is the WebUI's only unmute path).
 
 Covers:
-1.  The authority's mute model: a mute remembers each speaker's level, a
-    muted selection reads as muted, a speaker joining it comes on silent, a
-    user level change ends one speaker's mute, a deselect forgets it.
-2.  submit_output_change(): enable-while-muted stays silent and remembers
-    the requested level; a non-user volume-only write on a muted output
-    remembers instead of writing; an explicit user volume write on a muted
+1.  The authority's mute model: a mute is the player's, which keeps each
+    speaker's level; a muted selection reads as muted, a speaker joining it
+    comes on silent, a user level change ends one speaker's mute, a
+    deselect forgets it.
+2.  submit_output_change(): enable-while-muted starts silent at the
+    requested level; a non-user volume-only write on a muted output moves
+    and writes the kept level; an explicit user volume write on a muted
     output ends its mute and writes normally; disable forgets the mute.
 3.  The end of a session clears every mute.
 4.  The WebUI now-playing header text (not a separate control) is the only
@@ -80,14 +81,20 @@ def _disabled_track_id_snapshot():
 @pytest.fixture
 def writes(monkeypatch):
     """The player service: every volume write is recorded as (id, kwargs) in
-    order, and answered from `results` (default: ok)."""
-    rec = SimpleNamespace(calls=[], results=[])
+    order, and answered from `results` (default: ok); every mute call as
+    (id, muted) in `mutes`."""
+    rec = SimpleNamespace(calls=[], results=[], mutes=[])
 
     def update_output(base_url, out_id, **kwargs):
         rec.calls.append((out_id, kwargs))
         return rec.results.pop(0) if rec.results else _update_result(True)
 
+    def set_output_muted(base_url, out_id, muted, **kwargs):
+        rec.mutes.append((out_id, muted))
+        return _update_result(True)
+
     monkeypatch.setattr(player_service, "update_output", update_output)
+    monkeypatch.setattr(player_service, "set_output_muted", set_output_muted)
     rec.levels = lambda: [(i, kw.get("volume_percent")) for i, kw in rec.calls]
     return rec
 
@@ -97,10 +104,11 @@ def _arrange(*outputs):
 
 
 def _muted(writes, *outputs):
-    """Adopt *outputs* and mute the selected ones, remembering their levels."""
+    """Adopt *outputs* and mute the selected ones, keeping their levels."""
     _arrange(*outputs)
     get_authority().mute_all(Origin.USER)
     writes.calls.clear()
+    writes.mutes.clear()
 
 
 def snap():
@@ -116,35 +124,37 @@ class TestMuteModel:
         _arrange(_output("o1", 40))
         assert snap().muted_all is False and snap().unit("o1").muted is False
 
-    def test_a_mute_remembers_the_level_and_reports_it_as_the_volume(self, writes):
-        _muted(writes, _output("o1", 40))
+    def test_a_mute_keeps_the_level_and_reports_it_as_the_volume(self, writes):
+        _arrange(_output("o1", 40))
+        get_authority().mute_all(Origin.USER)
+        assert writes.mutes == [("o1", True)] and writes.calls == []
         assert snap().muted_all is True
         assert snap().unit("o1").volume == 40
         assert snap().unit("o1").muted is True
 
-    def test_a_second_mute_never_overwrites_the_remembered_level(self, writes):
+    def test_a_second_mute_never_overwrites_the_kept_level(self, writes):
         _muted(writes, _output("o1", 40))
         get_authority().mute_all(Origin.USER)
         assert snap().unit("o1").volume == 40
-        assert writes.calls == []
+        assert writes.calls == [] and writes.mutes == []
 
-    def test_a_speaker_switched_on_while_muted_comes_on_silent_and_remembers_its_level(self, writes):
+    def test_a_speaker_switched_on_while_muted_comes_on_silent_and_keeps_its_level(self, writes):
         _muted(writes, _output("o1", 40), _output("o2", 0, selected=False))
         get_authority().select("o2", Origin.USER, volume=55)
-        assert writes.levels() == [("o2", 0)]
+        assert [(i, kw.get("volume_percent"), kw.get("muted")) for i, kw in writes.calls] == [("o2", 55, True)]
         assert snap().unit("o2").muted is True and snap().unit("o2").volume == 55
 
     def test_a_user_level_change_ends_the_mute_of_that_speaker_only(self, writes):
         _muted(writes, _output("o1", 40), _output("o2", 60))
         get_authority().set_volume("o1", 25, Origin.USER)
-        assert writes.levels() == [("o1", 25)]
+        assert writes.levels() == [("o1", 25)] and writes.mutes == [("o1", False)]
         assert snap().unit("o1").muted is False and snap().unit("o2").muted is True
         assert snap().muted_all is False
 
-    def test_a_level_change_by_anyone_else_only_moves_what_a_restore_brings_back(self, writes):
+    def test_a_level_change_by_anyone_else_moves_the_kept_level_and_writes_it(self, writes):
         _muted(writes, _output("o1", 40))
         get_authority().set_volume("o1", 25, Origin.SYSTEM)
-        assert writes.calls == []
+        assert writes.levels() == [("o1", 25)] and writes.mutes == []
         assert snap().unit("o1").volume == 25 and snap().unit("o1").muted is True
 
     def test_switching_a_speaker_off_forgets_its_mute(self, writes):
@@ -179,13 +189,12 @@ class TestMuteModel:
         assert writes.levels() == [("Kitchen", 30)]
         assert snap().unit("Kitchen").muted is False and snap().unit("Kitchen").volume == 30
 
-    def test_a_volume_set_on_the_speaker_itself_ends_that_speakers_mute(self, writes):
+    def test_a_volume_set_on_the_speaker_itself_does_not_end_its_mute(self, writes):
         _muted(writes, _output("o1", 40), _output("o2", 60))
-        FakeStore().outputs([_output("o1", 15), _output("o2", 0)])
         get_authority().device_volume_seen("o1")
-        assert snap().unit("o1").muted is False and snap().unit("o1").volume == 15
+        assert snap().unit("o1").muted is True and snap().unit("o1").volume == 40
         assert snap().unit("o2").muted is True
-        assert writes.calls == []
+        assert writes.calls == [] and writes.mutes == []
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +206,7 @@ class TestOutputChangeMuteHooks:
     def _arrange_one(selected: bool, volume: int = 30):
         FakeStore().outputs([FakeStore.output_row("o1", "Speaker", selected=selected, volume_percent=volume)])
 
-    def test_enable_while_muted_comes_on_silent_and_remembers_the_level(self, writes):
+    def test_enable_while_muted_comes_on_silent_and_keeps_the_level(self, writes):
         import webui.browser.home_model as models
         FakeStore().outputs([
             FakeStore.output_row("o2", "Other", selected=True, volume_percent=30),
@@ -210,20 +219,21 @@ class TestOutputChangeMuteHooks:
             requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
         )
         assert result == {"ok": True, "id": "o1"}
-        assert [kw.get("volume_percent") for _i, kw in writes.calls] == [0]
+        assert [(kw.get("volume_percent"), kw.get("muted")) for _i, kw in writes.calls] == [(55, True)]
         assert snap().unit("o1").volume == 55 and snap().unit("o1").muted is True
 
-    def test_a_system_level_write_while_muted_is_remembered_and_not_sent(self, writes):
+    def test_a_system_level_write_while_muted_moves_the_kept_level_and_is_written(self, writes):
         import webui.browser.home_model as models
         self._arrange_one(selected=True, volume=40)
         get_authority().mute_all(Origin.USER)
         writes.calls.clear()
+        writes.mutes.clear()
         result = webui_home_model.submit_output_change(
             {"id": "o1", "selected": True, "volume": 12},
             requester="coordinator", pin_requester=None, origin=Origin.SYSTEM,
         )
         assert result == {"ok": True, "id": "o1"}
-        assert writes.calls == []
+        assert writes.levels() == [("o1", 12)] and writes.mutes == []
         assert snap().unit("o1").volume == 12 and snap().muted_all is True
 
     def test_a_user_level_write_while_muted_ends_the_mute_and_writes(self, writes):
@@ -326,7 +336,8 @@ def inspect_source(module) -> str:
 def _hold_mute() -> None:
     """One speaker on and muted, as the page finds it when it is rendered."""
     FakeStore().outputs([FakeStore.output_row("o1", "Speaker", selected=True, volume_percent=30)])
-    with patch.object(player_service, "update_output", return_value=ActionResult(ok=True)):
+    with patch.object(player_service, "update_output", return_value=ActionResult(ok=True)), \
+            patch.object(player_service, "set_output_muted", return_value=ActionResult(ok=True)):
         get_authority().mute_all(Origin.USER)
 
 

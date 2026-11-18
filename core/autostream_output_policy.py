@@ -109,8 +109,8 @@ class OutputPolicy:
 
     def on_device_event(self, ev: DeviceEvent, outputs: OutputsPart, now: float) -> None:
         if ev.kind != "receiver_command":
-            # A device volume has already ended the unit's mute in the
-            # authority; a later Play finds its token gone.
+            # A device volume is the authority's business: it never ends a
+            # mute; a muted speaker's knob arrives as a wake.
             return
         who = ev.speaker_name or ev.speaker_id
         verb = ev.verb

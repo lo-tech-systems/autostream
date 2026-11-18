@@ -449,7 +449,12 @@ def player(monkeypatch):
         rec.calls.append(("update_output", out_id, kwargs))
         return answer()
 
+    def set_output_muted(base_url, out_id, muted, **kwargs):
+        rec.calls.append(("set_output_muted", out_id, muted))
+        return answer()
+
     monkeypatch.setattr(ps, "update_output", update_output)
+    monkeypatch.setattr(ps, "set_output_muted", set_output_muted)
     monkeypatch.setattr(ps, "submit_output_pin", lambda *a, **k: answer())
     return rec
 

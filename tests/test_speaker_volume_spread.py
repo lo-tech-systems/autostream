@@ -361,26 +361,16 @@ def test_a_muted_speaker_is_not_moved(w):
     assert u3.muted and u3.volume == 20
 
 
-def test_pressing_a_muted_speaker_unmutes_only_it(w):
+@pytest.mark.parametrize("at_s", [1.0, 5.0])
+def test_a_device_volume_on_a_muted_unit_neither_unmutes_it_nor_spreads(w, at_s):
     setup3(w)
     land_writes(w)
     w.a.mute("1", Origin.USER)
+    set_level(w, "1", 30, muted=True)
     w.fb.calls.clear()
-    report(w, "1", 10, 5.0)
-    assert snap().unit("1").muted is False and level("1") == 10
-    assert (level("2"), level("3")) == (40, 20)
-    assert volume_writes(w) == []
-    report(w, "1", 20, 5.5)
-    assert (level("1"), level("2"), level("3")) == (20, 80, 40)
-
-
-def test_a_press_inside_the_hold_of_a_mute_does_not_spread(w):
-    setup3(w)
-    land_writes(w)
-    w.a.mute("1", Origin.USER)
-    w.fb.calls.clear()
-    report(w, "1", 10, 1.0)
-    report(w, "1", 20, 2.0)
+    report(w, "1", 10, at_s, muted=True)
+    report(w, "1", 20, at_s + 0.5, muted=True)
+    assert snap().unit("1").muted is True
     assert (level("2"), level("3")) == (40, 20)
     assert volume_writes(w) == []
 

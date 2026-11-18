@@ -61,7 +61,8 @@
       "state": "streaming",
       "failure": "none"
      },
-     "has_homepods": false
+     "has_homepods": false,
+     "muted": true
     }
    ]
   },
@@ -73,26 +74,31 @@
  "expect": {
   "writes": [
    [
+    "set_output_muted",
+    "1001",
+    true
+   ],
+   [
     "update_output",
     "1001",
     {
-     "volume_percent": 0
+     "enabled": false
     }
    ]
   ],
   "units": {
    "1001": {
-    "selected": true,
+    "selected": false,
     "muted": false,
     "volume": 45,
     "held": false
    }
   },
-  "silence_chosen": false,
+  "silence_chosen": true,
   "paused": [],
   "log": [
    "receiver pause from Speaker A (1001): Speaker A muted (it cannot be held); nothing else changed",
-   "pause from Speaker A: nothing it paused or muted is still so; nothing turned off"
+   "pause from Speaker A lasted too long: Speaker A turned off"
   ]
  }
 }

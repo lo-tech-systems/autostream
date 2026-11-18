@@ -59,6 +59,11 @@ def merge(w, rows, **kw):
     w.a.merge_for_tests(list(rows), boot=kw.pop("boot", "b0"), now=w.t[0], **kw)
 
 
+def mutes(w):
+    """The mute calls made, as (unit id, muted)."""
+    return [(c[1][0], c[1][1]) for c in w.fb.calls if c[0] == "set_output_muted"]
+
+
 # ---------------------------------------------------------------------------
 # Reads, adoption and the reachable flag
 # ---------------------------------------------------------------------------
@@ -381,28 +386,37 @@ class TestUnitForDevice:
 
     def test_a_device_volume_under_a_row_id_reaches_that_row_whatever_the_member(self, w):
         merge(w, [homepods_row(20, "streaming", selected=True, volume_percent=40)])
-        w.a.mute("20", Origin.USER)
+        w.t[0] = T0 + 5
         w.a.on_device_event(DeviceEvent(
             "device_volume", "20", "Speaker 20", "volumeup", "45", 1, 1.0, member_id="22"))
-        w.a.step(now=T0)
-        assert snap().unit("20").muted is False
+        w.a.step(now=w.t[0])
+        assert w.a._units["20"].device_volume_at == T0 + 5
 
     def test_a_level_a_speaker_reports_over_upnp_is_a_device_volume(self, w):
         # owntone-mini reports a level set on the speaker itself, read from
         # its UPnP renderer, with its own verb and the level in percent
         merge(w, [row(1, selected=True, volume_percent=40)])
-        w.a.mute("1", Origin.USER)
+        w.t[0] = T0 + 5
         w.a.on_device_event(DeviceEvent("device_volume", "1", "Speaker 1", "upnp.volume", "31", 1, 1.0))
-        w.a.step(now=T0)
-        assert snap().unit("1").muted is False
+        w.a.step(now=w.t[0])
+        assert w.a._units["1"].device_volume_at == T0 + 5
 
     def test_a_device_volume_for_zero_reaches_every_selected_unit(self, w, caplog):
-        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50), row(3)])
-        w.a.mute_all(Origin.USER)
-        assert snap().muted_all is True
+        rows = [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50), row(3)]
+        w.fb.rows = rows
+        merge(w, rows)
+        w.t[0] = T0 + 5
         w.a.on_device_event(DeviceEvent("device_volume", "0", None, "dmcp.volume", "60", 1, 1.0))
+        w.a.step(now=w.t[0])
+        assert [w.a._units[uid].device_volume_at for uid in ("1", "2", "3")] == [T0 + 5, T0 + 5, 0.0]
+
+    def test_a_device_volume_on_a_muted_unit_leaves_the_mute(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50)])
+        w.a.mute_all(Origin.USER)
+        w.a.on_device_event(DeviceEvent("device_volume", "1", "Speaker 1", "volumeup", "45", 1, 1.0))
+        w.a.on_device_event(DeviceEvent("device_volume", "0", None, "dmcp.volume", "60", 2, 2.0))
         w.a.step(now=T0)
-        assert snap().muted_all is False and not any(u.muted for u in snap().units)
+        assert snap().muted_all is True and all(u.muted for u in snap().units)
 
     def test_events_that_map_to_no_unit_or_have_no_policy_are_logged_and_dropped(self, w, caplog):
         merge(w, [row(1, selected=True, volume_percent=40)])
@@ -427,7 +441,7 @@ class TestSelect:
         before = state.store().snapshot().version
         applied = w.a.select("2", Origin.USER, volume=30, offset_ms=-20, mode="airplay2")
         assert w.fb.calls == [("update_output", ("2",), dict(
-            enabled=True, volume_percent=30, offset_ms=-20, mode="airplay2", timeout=3.0))]
+            enabled=True, volume_percent=30, muted=False, offset_ms=-20, mode="airplay2", timeout=3.0))]
         u = snap().unit("2")
         assert u.selected and u.volume == 30 and u.cause is Origin.USER
         assert applied.version > before and applied.refused is None
@@ -446,13 +460,13 @@ class TestSelect:
         merge(w, [group_row(1, "streaming", selected=True, volume_percent=30)])
         assert snap().unit("1").availability == "ok"
 
-    def test_joining_a_muted_session_is_silent_and_remembers_the_level(self, w):
+    def test_joining_a_muted_session_is_silent_and_keeps_the_level(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2)])
         w.a.mute_all(Origin.USER)
         w.fb.calls.clear()
         w.a.select("2", Origin.SESSION, volume=35)
         assert w.fb.updates() == [("2", dict(
-            enabled=True, volume_percent=0, offset_ms=None, mode=None, timeout=3.0))]
+            enabled=True, volume_percent=35, muted=True, offset_ms=None, mode=None, timeout=3.0))]
         u = snap().unit("2")
         assert u.muted is True and u.volume == 35
 
@@ -475,14 +489,15 @@ class TestSelect:
     def test_a_select_made_with_a_level_carries_it(self, w):
         merge(w, [row(1, volume_percent=44)])
         w.a.select("1", Origin.USER, volume=25)
-        assert w.fb.updates() == [("1", dict(enabled=True, volume_percent=25, offset_ms=None, mode=None, timeout=3.0))]
+        assert w.fb.updates() == [("1", dict(enabled=True, volume_percent=25, muted=False, offset_ms=None, mode=None,
+                                             timeout=3.0))]
 
     def test_a_speaker_joining_a_muted_session_starts_silent(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, volume_percent=30)])
         w.a.mute_all(Origin.USER)
         w.fb.calls.clear()
         w.a.select("2", Origin.USER, volume=30)
-        assert [f["volume_percent"] for _u, f in w.fb.updates()] == [0]
+        assert [(f["volume_percent"], f["muted"]) for _u, f in w.fb.updates()] == [(30, True)]
 
     def test_a_player_that_starts_at_the_enabled_level_gets_one_request_with_both(self, w):
         w.a.assume_start_volume_for_tests(True)
@@ -495,8 +510,8 @@ class TestSelect:
         merge(w, [row(1, volume_percent=44)])
         w.a.select("1", Origin.USER, volume=25)
         assert w.fb.updates() == [
-            ("1", dict(volume_percent=25, timeout=3.0)),
-            ("1", dict(enabled=True, volume_percent=25, offset_ms=None, mode=None, timeout=3.0)),
+            ("1", dict(volume_percent=25, muted=False, timeout=3.0)),
+            ("1", dict(enabled=True, volume_percent=25, muted=False, offset_ms=None, mode=None, timeout=3.0)),
         ]
 
     def test_a_player_that_does_not_gets_a_muted_speaker_started_silent_by_both_requests(self, w):
@@ -505,7 +520,7 @@ class TestSelect:
         w.a.mute_all(Origin.USER)
         w.fb.calls.clear()
         w.a.select("2", Origin.USER, volume=30)
-        assert [f["volume_percent"] for _u, f in w.fb.updates()] == [0, 0]
+        assert [(f["volume_percent"], f["muted"]) for _u, f in w.fb.updates()] == [(30, True), (30, True)]
 
     def test_a_failed_level_request_does_not_stop_the_select(self, w):
         w.a.assume_start_volume_for_tests(False)
@@ -655,18 +670,21 @@ class TestSetVolume:
         w.a.mute_all(Origin.USER)
         w.fb.calls.clear()
         w.a.set_volume("1", 70, Origin.USER)
+        assert [c[0] for c in w.fb.calls] == ["update_output", "set_output_muted"]
         assert w.fb.updates() == [("1", dict(volume_percent=70, timeout=3.0))]
+        assert mutes(w) == [("1", False)]
         p = snap()
         assert p.unit("1").muted is False and p.unit("1").volume == 70
         assert p.unit("2").muted is True and p.unit("2").volume == 50
         assert p.muted_all is False
 
-    def test_another_cause_on_a_muted_unit_only_moves_the_level_it_returns_to(self, w):
+    def test_another_cause_on_a_muted_unit_writes_the_level_and_it_stays_muted(self, w):
         merge(w, [row(1, selected=True, volume_percent=40)])
         w.a.mute_all(Origin.USER)
         w.fb.calls.clear()
         applied = w.a.set_volume("1", 30, Origin.SESSION)
-        assert w.fb.calls == [] and applied.outcome is None
+        assert w.fb.updates() == [("1", dict(volume_percent=30, timeout=3.0))]
+        assert mutes(w) == [] and [o.ok for o in applied.outcome.result()] == [True]
         u = snap().unit("1")
         assert u.muted is True and u.volume == 30
 
@@ -727,9 +745,16 @@ class TestStepVolume:
         w.a.mute_all(Origin.USER)
         w.fb.calls.clear()
         w.a.step_volume(10, Origin.USER, default_level=50)
-        assert dict(w.fb.updates()) == {"1": dict(volume_percent=40, timeout=3.0),
-                                        "2": dict(volume_percent=60, timeout=3.0)}
-        assert snap().muted_all is False
+        assert mutes(w) == [("1", False), ("2", False)] and w.fb.updates() == []
+        assert snap().muted_all is False and [u.volume for u in snap().units] == [40, 60]
+
+    def test_up_while_muted_lifts_a_unit_kept_at_zero_to_the_default(self, w):
+        self.start(w, 0, 60)
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.step_volume(10, Origin.USER, default_level=50)
+        assert mutes(w) == [("1", False), ("2", False)]
+        assert w.fb.updates() == [("1", dict(volume_percent=50, timeout=3.0))]
 
     def test_the_requester_is_on_the_change(self, w):
         self.start(w, 40)
@@ -793,8 +818,18 @@ class TestSetMaster:
         applied = w.a.set_master(25, Origin.USER, default_level=50)
         assert applied.restored is True and snap().muted_all is False
         assert self.levels() == [20, 30]
+        assert mutes(w) == [("1", False), ("2", False)]
         assert dict(w.fb.updates()) == {"1": dict(volume_percent=20, timeout=3.0),
                                         "2": dict(volume_percent=30, timeout=3.0)}
+
+    def test_a_restore_lifts_a_unit_kept_at_zero_and_writes_each_level_once(self, w):
+        self.start(w, 0, 60)
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.set_master(40, Origin.USER, default_level=20)
+        # 0 is lifted to 20; the group (20, 60) at 40 is then (20, 60) as is
+        assert mutes(w) == [("1", False), ("2", False)]
+        assert w.fb.updates() == [("1", dict(volume_percent=20, timeout=3.0))]
 
     def test_a_unit_muted_on_its_own_is_left_alone(self, w):
         self.start(w, 40, 60)
@@ -845,7 +880,7 @@ class TestMasterFields:
                   row(3)])
         assert (snap().master_volume, snap().selected_count) == (46, 2)
 
-    def test_a_muted_unit_counts_at_its_remembered_level(self, w):
+    def test_a_muted_unit_counts_at_its_level(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=60)])
         w.a.mute_all(Origin.USER)
         assert snap().master_volume == 50
@@ -859,33 +894,42 @@ class TestMasterFields:
 
 
 class TestMute:
-    def test_mute_all_remembers_levels_and_silences_each_audible_unit(self, w):
+    def test_mute_all_asks_the_player_to_mute_each_unit_keeping_its_level(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=0), row(3)])
         applied = w.a.mute_all(Origin.USER)
-        assert w.fb.updates() == [("1", dict(volume_percent=0, timeout=3.0))]
+        assert mutes(w) == [("1", True), ("2", True)] and w.fb.updates() == []
         p = snap()
         assert p.muted_all is True
         assert p.unit("1").muted and p.unit("1").volume == 40     # the level it returns to
         assert p.unit("2").muted and p.unit("2").volume == 0
         assert not p.unit("3").muted
-        assert [o.ok for o in applied.outcome.result()] == [True]
+        assert [o.ok for o in applied.outcome.result()] == [True, True]
 
-    def test_a_second_mute_does_not_overwrite_what_the_first_remembered(self, w):
+    def test_a_second_mute_sends_nothing_and_keeps_the_level(self, w):
         merge(w, [row(1, selected=True, volume_percent=40)])
         w.a.mute_all(Origin.USER)
-        merge(w, [row(1, selected=True, volume_percent=0)])
+        merge(w, [row(1, selected=True, volume_percent=40, muted=True)])
         applied = w.a.mute_all(Origin.USER)
         assert applied.outcome is None
         assert snap().unit("1").volume == 40
 
-    def test_unmute_all_returns_each_unit_to_its_level_or_the_default(self, w):
+    def test_unmute_all_unmutes_each_unit_and_lifts_one_kept_at_zero(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=0)])
         w.a.mute_all(Origin.USER)
         w.fb.calls.clear()
         w.a.unmute_all(Origin.USER, default_level=55)
-        assert dict(w.fb.updates()) == {"1": dict(volume_percent=40, timeout=3.0),
-                                        "2": dict(volume_percent=55, timeout=3.0)}
-        assert snap().muted_all is False
+        assert mutes(w) == [("1", False), ("2", False)]
+        assert w.fb.updates() == [("2", dict(volume_percent=55, timeout=3.0))]
+        assert snap().muted_all is False and [u.volume for u in snap().units] == [40, 55]
+
+    def test_a_refused_mute_is_logged_and_the_desired_mute_stands(self, w, caplog):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.fb.results = [error("http_error")]
+        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
+            applied = w.a.mute("1", Origin.USER)
+        assert [o.ok for o in applied.outcome.result()] == [False]
+        assert snap().unit("1").muted is True
+        assert "Mute of 1 refused by the player (http_error)" in caplog.text
 
     def test_unmute_all_lifts_a_silent_unit_that_was_never_muted(self, w):
         merge(w, [row(1, selected=True, volume_percent=0), row(2, selected=True, volume_percent=30)])
@@ -911,19 +955,19 @@ class TestMute:
     def test_per_unit_mute_and_unmute(self, w):
         merge(w, [row(1, selected=True, volume_percent=40)])
         w.a.mute("1", Origin.POLICY)
-        assert snap().unit("1").muted and w.fb.updates() == [("1", dict(volume_percent=0, timeout=3.0))]
+        assert snap().unit("1").muted and mutes(w) == [("1", True)] and w.fb.updates() == []
         w.fb.calls.clear()
         w.a.unmute("1", Origin.POLICY, default_level=50)
-        assert not snap().unit("1").muted
-        assert w.fb.updates() == [("1", dict(volume_percent=40, timeout=3.0))]
+        assert not snap().unit("1").muted and snap().unit("1").volume == 40
+        assert mutes(w) == [("1", False)] and w.fb.updates() == []
 
-    def test_a_device_volume_ends_the_mute_at_once(self, w):
+    def test_a_device_volume_leaves_the_mute(self, w):
         merge(w, [row(1, selected=True, volume_percent=40)])
         w.a.mute_all(Origin.USER)
-        merge(w, [row(1, selected=True, volume_percent=0)])
+        merge(w, [row(1, selected=True, volume_percent=40, muted=True)])
         w.a.device_volume_seen("1")
         u = snap().unit("1")
-        assert not u.muted and u.cause is Origin.DEVICE
+        assert u.muted and u.volume == 40 and snap().muted_all is True
 
 
 class TestPin:
@@ -1376,7 +1420,7 @@ class TestReselect:
         silence = snap().silence_chosen
         w.a.reselect("1", Origin.USER)
         select = w.fb.updates()[-1][1]
-        assert select["volume_percent"] == 0
+        assert select["volume_percent"] == 40 and select["muted"] is True
         assert snap().unit("1").muted is True
         assert snap().silence_chosen == silence
 
@@ -1466,7 +1510,7 @@ class TestWaitOutcome:
     def test_no_write_has_no_outcome(self, w):
         merge(w, [row(1, selected=True, volume_percent=10)])
         w.a.mute_all(Origin.USER)
-        assert wait_outcome(w.a.set_volume("1", 20, Origin.SESSION), 1.0) == ()
+        assert wait_outcome(w.a.mute_all(Origin.SESSION), 1.0) == ()
 
     def test_an_unfinished_write_answers_pending_for_each_expected_write(self, w):
         future = __import__("concurrent.futures").futures.Future()
@@ -1998,28 +2042,18 @@ class TestReconcile:
         at(w, 2.5)
         assert len(selects(w)) == 1
 
-    def test_a_muted_unit_that_reads_louder_is_silenced_again_when_the_player_reports_device_events(self, w):
+    @pytest.mark.parametrize("device_events", [True, False])
+    def test_a_muted_units_row_level_is_adopted_and_the_mute_stands(self, w, device_events):
         put(w, [row(1, selected=True, volume_percent=40)])
         w.a.mute_all(Origin.USER)
-        w.a._delivers_device_events = True
+        w.a._delivers_device_events = device_events
         w.fb.calls.clear()
         w.t[0] += 5
-        put(w, [row(1, selected=True, volume_percent=40)])
+        put(w, [row(1, selected=True, volume_percent=55, muted=True)])
         at(w, 5.1)
-        assert w.fb.updates() == []
         at(w, 8)
-        assert w.fb.updates() == [("1", dict(volume_percent=0, timeout=3.0))]
-        assert snap().unit("1").muted is True
-
-    def test_without_device_events_a_louder_read_on_a_muted_unit_ends_the_mute(self, w):
-        put(w, [row(1, selected=True, volume_percent=40)])
-        w.a.mute_all(Origin.USER)
-        w.fb.calls.clear()
-        w.t[0] += 5
-        put(w, [row(1, selected=True, volume_percent=40)])
-        at(w, 5.1)
         u = snap().unit("1")
-        assert u.muted is False and u.volume == 40 and u.cause is Origin.BACKEND
+        assert u.muted is True and u.volume == 55 and u.cause is Origin.BACKEND
         assert w.fb.calls == []
 
     def test_a_level_changed_on_the_player_is_adopted_without_a_write(self, w):
@@ -2097,8 +2131,8 @@ class TestRealThreads:
         applied = live.a.select("2", Origin.USER, volume=30)
         assert applied.outcome.result(5)[0].ok is True
         assert live.fb.updates() == [
-            ("2", dict(volume_percent=30, timeout=3.0)),
-            ("2", dict(enabled=True, volume_percent=30, offset_ms=None, mode=None, timeout=3.0)),
+            ("2", dict(volume_percent=30, muted=False, timeout=3.0)),
+            ("2", dict(enabled=True, volume_percent=30, muted=False, offset_ms=None, mode=None, timeout=3.0)),
         ]
 
     def test_volume_writes_queued_behind_a_stalled_write_coalesce_to_the_last_level(self, live):
@@ -2111,6 +2145,17 @@ class TestRealThreads:
             assert applied.outcome.result(5)[0].ok is True
         sent = [f["volume_percent"] for uid, f in live.fb.updates() if uid == "1"]
         assert sent == [10, 20]
+
+    def test_two_quick_mute_writes_for_one_unit_coalesce_into_one_call(self, live):
+        live.fb.gate = threading.Event()
+        first = live.a.set_volume("1", 41, Origin.USER)          # holds the apply thread
+        assert live.fb.entered.wait(5)
+        later = [live.a.mute("1", Origin.USER), live.a.unmute("1", Origin.USER, default_level=0),
+                 live.a.mute("1", Origin.USER)]
+        live.fb.gate.set()
+        for applied in [first] + later:
+            assert all(o.ok for o in applied.outcome.result(5))
+        assert mutes(live) == [("1", True)]
 
     def test_each_unit_keeps_its_own_queued_write(self, live):
         live.fb.rows = [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=40)]
@@ -2290,7 +2335,6 @@ class TestMuteTokens:
         lambda a: a.unmute_all(Origin.USER, default_level=50),
         lambda a: a.step_volume(5, Origin.USER, default_level=50),
         lambda a: a.unmute("1", Origin.DEVICE, default_level=50),
-        lambda a: a.device_volume_seen("1"),
         lambda a: a.deselect("1", Origin.USER),
         lambda a: a.deselect_all(Origin.USER),
     ])
@@ -2301,13 +2345,15 @@ class TestMuteTokens:
         clear(w.a)
         assert _marks(w, "1") == (0, False)
 
-    def test_a_louder_read_adopted_on_a_muted_unit_clears_its_token(self, w):
+    def test_a_device_volume_or_a_read_level_keeps_the_token(self, w):
         put(w, [row(1, selected=True, volume_percent=40)])
         w.a.mute_all(Origin.USER)
+        token = _marks(w, "1")[0]
+        w.a.device_volume_seen("1")
         w.t[0] += 5
-        put(w, [row(1, selected=True, volume_percent=40)])
+        put(w, [row(1, selected=True, volume_percent=55, muted=True)])
         at(w, 5.1)
-        assert _marks(w, "1") == (0, False)
+        assert _marks(w, "1") == (token, False) and snap().unit("1").volume == 55
 
     def test_a_failed_start_that_is_reverted_clears_the_token(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2)])
@@ -2322,8 +2368,8 @@ class TestMuteTokens:
         token = w.a.mute("1", Origin.DEVICE).mute_tokens[0][1]
         w.fb.calls.clear()
         w.a.unmute("1", Origin.DEVICE, default_level=0, only_token=token)
-        assert snap().unit("1").muted is False
-        assert w.fb.updates() == [("1", dict(volume_percent=40, timeout=3.0))]
+        assert snap().unit("1").muted is False and snap().unit("1").volume == 40
+        assert mutes(w) == [("1", False)] and w.fb.updates() == []
 
     @pytest.mark.parametrize("how", ["moved", "unmuted", "restamped"])
     def test_a_token_mismatch_changes_nothing_and_tells_nobody(self, w, how):
@@ -2355,13 +2401,14 @@ class TestMuteTokens:
     def test_unmuting_an_unknown_unit_is_refused(self, w):
         assert w.a.unmute("9", Origin.DEVICE, default_level=0).refused == "unknown_output"
 
-    def test_a_unit_muted_at_zero_comes_back_at_zero_with_no_write(self, w):
+    def test_a_unit_muted_at_zero_comes_back_at_zero_with_no_level_write(self, w):
         merge(w, [row(1, selected=True, volume_percent=0)])
         token = w.a.mute("1", Origin.DEVICE).mute_tokens[0][1]
-        assert w.fb.calls == []
+        assert mutes(w) == [("1", True)]
+        w.fb.calls.clear()
         w.a.unmute("1", Origin.DEVICE, default_level=0, only_token=token)
         assert snap().unit("1").muted is False and snap().unit("1").volume == 0
-        assert w.fb.calls == []
+        assert mutes(w) == [("1", False)] and w.fb.updates() == []
 
     def test_unmute_joined_restores_only_joined_mutes_after_the_token(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2), row(3), row(4)])
@@ -2374,8 +2421,8 @@ class TestMuteTokens:
         p = snap()
         assert not p.unit("2").muted and not p.unit("3").muted
         assert p.unit("1").muted
-        assert dict(w.fb.updates()) == {"2": dict(volume_percent=30, timeout=3.0),
-                                        "3": dict(volume_percent=35, timeout=3.0)}
+        assert (p.unit("2").volume, p.unit("3").volume) == (30, 35)
+        assert mutes(w) == [("2", False), ("3", False)] and w.fb.updates() == []
 
     def test_unmute_joined_leaves_a_join_from_before_the_token(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2)])
@@ -2500,7 +2547,8 @@ class TestPolicyHooks:
         w.a.mute("1", Origin.USER)
         w.a.on_device_event(DeviceEvent("device_volume", "1", None, "volumeup", "45", 1, 1.0))
         w.a.step(now=T0 + 3)
-        assert ("event", "volumeup", T0 + 3, False) in pol.calls
+        # A device volume leaves the mute, so the policy sees the unit muted
+        assert ("event", "volumeup", T0 + 3, True) in pol.calls
 
     def test_the_policy_is_told_the_clock_read_after_the_wait(self, w, pol):
         merge(w, [row(1, selected=True, volume_percent=40)])
@@ -2883,7 +2931,7 @@ class TestDefaultMatches:
         merge(w, [row("A", "A", selected=True, volume_percent=30)])
         assert snap().default_matches is False
 
-    def test_a_muted_selection_still_matches_at_its_remembered_level(self, w):
+    def test_a_muted_selection_still_matches_at_its_level(self, w):
         w.a.set_default_members([("A", "A", 30)], 20)
         merge(w, [row("A", "A", selected=True, volume_percent=30)])
         w.a.mute_all(Origin.USER)

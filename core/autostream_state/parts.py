@@ -212,7 +212,7 @@ class OutputUnitView:
     id: str                                 # the visible row id (the Apple TV's id for a TV group)
     name: str
     selected: bool                          # desired
-    volume: int                             # intended level: remembered level while muted, else desired volume
+    volume: int                             # the speaker's own level: what it plays at, or returns to while muted
     muted: bool
     availability: str                       # "ok" | "starting" | "failed" | "password" | "gone"
     cause: Origin                           # who last changed desired

@@ -274,8 +274,8 @@ def _volume_set(intent: Intent, wait: float) -> Outcome:
 
 
 def _mute_set(intent: Intent, wait: float) -> Outcome:
-    """Mute every selected speaker, or restore them to their remembered
-    levels. Both are idempotent."""
+    """Mute every selected speaker, or restore them to their own levels.
+    Both are idempotent."""
     args = intent.args
     authority = get_authority()
     if args["action"] == "mute":

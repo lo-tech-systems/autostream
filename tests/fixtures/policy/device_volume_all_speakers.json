@@ -73,7 +73,8 @@
       "state": "streaming",
       "failure": "none"
      },
-     "has_homepods": false
+     "has_homepods": false,
+     "muted": true
     },
     {
      "id": "1002",
@@ -85,7 +86,8 @@
       "state": "streaming",
       "failure": "none"
      },
-     "has_homepods": false
+     "has_homepods": false,
+     "muted": true
     }
    ]
   },
@@ -109,18 +111,24 @@
  "expect": {
   "writes": [
    [
-    "update_output",
+    "set_output_muted",
     "1001",
-    {
-     "volume_percent": 0
-    }
+    true
    ],
    [
-    "update_output",
+    "set_output_muted",
     "1002",
-    {
-     "volume_percent": 0
-    }
+    true
+   ],
+   [
+    "set_output_muted",
+    "1001",
+    false
+   ],
+   [
+    "set_output_muted",
+    "1002",
+    false
    ]
   ],
   "units": {
@@ -141,7 +149,7 @@
   "paused": [],
   "log": [
    "receiver pause from Speaker A (1001): Speaker A muted (it cannot be held); Speaker B muted",
-   "receiver play from Speaker A: nothing restored"
+   "receiver play from Speaker A: Speaker A, Speaker B restored"
   ]
  }
 }

@@ -16,9 +16,9 @@ Threads (started mode, which production uses):
   outputs-events     the event source (owned and described in
                      autostream_backend_events); it only enqueues.
 
-A speaker's mute (the level it returns to) is part of the desired state and
-lives in the memory of the process only; the end of a session clears every
-mute.
+A speaker's mute is part of the desired state: the player silences the
+speaker and keeps its level. It lives in the memory of the process only; the
+end of a session clears every mute.
 
 Without threads (tests, and before start()), an intent runs its write on the
 calling thread once the desired change has been published, and reads happen
@@ -252,9 +252,8 @@ class PlayerServiceBackend:
 @dataclass
 class UnitDesired:
     selected: bool
-    volume: int                       # the level at the speaker: 0 while muted
+    volume: int                       # the speaker's own level: what it plays at, or returns to while muted or held
     muted: bool
-    remembered_level: Optional[int]   # the level a muted speaker returns to; None: the default
     cause: Origin
     changed_at: float
     mute_token: int = 0               # the token of the current mute; 0 when not muted
@@ -376,7 +375,7 @@ class _Batch:
 
 @dataclass
 class _Write:
-    kind: str                         # select | deselect | volume | deselect_all | pin | hold
+    kind: str                         # select | deselect | volume | mute | deselect_all | pin | hold
     unit_id: Optional[str]
     seq: int                          # the unit's desired_seq when the write was queued
     params: dict
@@ -659,11 +658,7 @@ class OutputAuthority:
         """The level the selected speakers stand at, as a dial shows it: the
         mean of their intended levels, rounded up. With *online_only*, the
         speakers the player has not lost."""
-        levels = [
-            _clamp(u.desired.remembered_level if u.desired.muted and u.desired.remembered_level is not None
-                   else u.desired.volume)
-            for u in self._selected_locked(online_only)
-        ]
+        levels = [_clamp(u.desired.volume) for u in self._selected_locked(online_only)]
         if not levels:
             return None
         return -(-sum(levels) // len(levels))
@@ -860,10 +855,9 @@ class OutputAuthority:
         claims: dict[str, str] = {}
         for u in self._ordered_units_locked():
             d = u.desired
-            level = d.remembered_level if d.muted and d.remembered_level is not None else d.volume
             name = u.reported.name if u.reported is not None else u.name
             view = OutputUnitView(
-                id=u.id, name=name, selected=d.selected, volume=level, muted=d.muted,
+                id=u.id, name=name, selected=d.selected, volume=d.volume, muted=d.muted,
                 availability=u.availability, cause=d.cause, reported=u.reported,
                 connecting=self._connecting_locked(u), auto_start=u.id in matched, held=d.held,
             )
@@ -915,7 +909,6 @@ class OutputAuthority:
     @staticmethod
     def _clear_mute_locked(d: UnitDesired) -> None:
         d.muted = False
-        d.remembered_level = None
         d.mute_token = 0
         d.mute_joined = False
 
@@ -926,9 +919,12 @@ class OutputAuthority:
 
     def _enqueue(self, w: _Write) -> None:
         with self._wq_cond:
-            if w.kind == "volume":
+            if w.kind in ("volume", "mute"):
+                # A write is built from desired state when it runs, so a queued
+                # one of the same kind takes this one's place and ends in the
+                # same state
                 for queued in self._wq:
-                    if queued.kind == "volume" and queued.unit_id == w.unit_id:
+                    if queued.kind == w.kind and queued.unit_id == w.unit_id:
                         queued.sinks.extend(w.sinks)
                         queued.seq = w.seq
                         self._wq_cond.notify()
@@ -960,15 +956,13 @@ class OutputAuthority:
                 self._pending.clear()
             d = u.desired
             if self._muted_all_locked():
-                # Joining a muted session: silent, and the level asked for is
-                # what a later restore brings it to.
-                d.remembered_level = (vol or d.volume) or None
+                # Joining a muted session: the speaker starts silent, keeping
+                # its level for a later restore.
                 if not d.muted:
                     d.mute_token = self._next_token_locked()
                     d.mute_joined = True
                 d.muted = True
-                d.volume = 0
-            elif vol is not None:
+            if vol is not None:
                 d.volume = vol
             if not d.selected:
                 u.select_seq += 1
@@ -1136,54 +1130,59 @@ class OutputAuthority:
             if u is None:
                 return self._refused("unknown_output")
             d = u.desired
-            write = True
-            if d.muted:
-                if cause == Origin.USER:
-                    # A deliberate level change on a muted speaker is its unmute.
-                    self._clear_mute_locked(d)
-                    d.volume = vol
-                    self._mute_held = False
-                else:
-                    d.remembered_level = vol
-                    write = False
-            else:
-                d.volume = vol
+            writes = [("volume", u)]
+            d.volume = vol
+            if d.muted and cause == Origin.USER:
+                # A deliberate level change on a muted speaker is its unmute.
+                self._clear_mute_locked(d)
+                self._mute_held = False
+                writes.append(("mute", u))
+            # Any other cause moves the level a muted speaker returns to; the
+            # player keeps it silent meanwhile.
             self._stamp(u, cause, now)
-            batch = None
-            if write:
-                batch = _Batch(1)
-                self._enqueue(_Write("volume", unit_id, u.desired_seq, {}, [(batch, 0)]))
+            future = self._queue_writes_locked(writes, requester)
             pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, batch.future if batch is not None else None)
+        return self._finish_intent(pending, future)
 
-    def _queue_volume_writes_locked(self, units: list, cause_seq_units: bool = True):
-        """One volume write per unit, as one batch. Returns the batch's future,
-        or None when there is nothing to write."""
-        if not units:
+    def _queue_writes_locked(self, writes: list, requester: Optional[str] = None):
+        """One write per (kind, unit) pair, as one batch, in order, each
+        carrying *requester*. Returns the batch's future, or None when there
+        is nothing to write."""
+        if not writes:
             return None
-        batch = _Batch(len(units))
-        for index, u in enumerate(units):
-            self._enqueue(_Write("volume", u.id, u.desired_seq, {}, [(batch, index)]))
+        batch = _Batch(len(writes))
+        for index, (kind, u) in enumerate(writes):
+            self._enqueue(_Write(kind, u.id, u.desired_seq, {}, [(batch, index)], requester=requester))
         return batch.future
 
-    def _unmute_all_locked(self, cause: Origin, default_level: int, now: float) -> list:
-        """The restore half of mute and of a volume step while muted; returns
-        the units whose level moves."""
-        changed = []
+    def _queue_volume_writes_locked(self, units: list):
+        return self._queue_writes_locked([("volume", u) for u in units])
+
+    def _unmute_all_locked(self, cause: Origin, default_level: int, now: float) -> tuple:
+        """The restore half of mute and of a volume step while muted. Returns
+        (unmuted, lifted): the units whose mute ended, and those (muted or
+        not) lifted from 0 to *default_level* when that is above 0."""
+        unmuted, lifted = [], []
         level = _clamp(default_level)
         for u in self._selected_locked():
             d = u.desired
+            touched = False
             if d.muted:
-                d.volume = d.remembered_level if d.remembered_level is not None else level
                 self._clear_mute_locked(d)
-            elif d.volume == 0:
+                unmuted.append(u)
+                touched = True
+            if d.volume == 0 and level > 0:
                 d.volume = level
-            else:
-                continue
-            self._stamp(u, cause, now)
-            changed.append(u)
+                lifted.append(u)
+                touched = True
+            if touched:
+                self._stamp(u, cause, now)
         self._mute_held = False
-        return changed
+        return unmuted, lifted
+
+    @staticmethod
+    def _restore_writes(unmuted: list, lifted: list) -> list:
+        return [("mute", u) for u in unmuted] + [("volume", u) for u in lifted]
 
     def step_volume(self, delta: int, cause: Origin, *, default_level: int,
                     requester: Optional[str] = None) -> Applied:
@@ -1203,7 +1202,7 @@ class OutputAuthority:
                         version=store().snapshot().version, outcome=None,
                         master=self._master_locked(), muted=True,
                     )
-                changed = self._unmute_all_locked(cause, default_level, now)
+                writes = self._restore_writes(*self._unmute_all_locked(cause, default_level, now))
                 restored = True
                 master = self._master_locked()
             else:
@@ -1211,8 +1210,8 @@ class OutputAuthority:
                 current = round(sum(u.desired.volume for u in audible) / len(audible))
                 new_master = _clamp(current + int(delta))
                 master = new_master
-                changed = self._scale_locked(audible, new_master, current, cause, now)
-            future = self._queue_volume_writes_locked(changed)
+                writes = [("volume", u) for u in self._scale_locked(audible, new_master, current, cause, now)]
+            future = self._queue_writes_locked(writes)
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
 
@@ -1245,14 +1244,14 @@ class OutputAuthority:
             if not selected:
                 return self._refused("no_active_outputs")
             restored = False
-            changed = []
+            unmuted, lifted = [], []
             if self._muted_all_locked():
                 if level == 0:
                     return Applied(
                         version=store().snapshot().version, outcome=None,
                         master=self._master_locked(online_only=True), muted=True,
                     )
-                changed = self._unmute_all_locked(cause, default_level, now)
+                unmuted, lifted = self._unmute_all_locked(cause, default_level, now)
                 restored = True
             audible = [u for u in selected if not u.desired.muted]
             if not audible:
@@ -1263,8 +1262,8 @@ class OutputAuthority:
                 )
             base = sum(u.desired.volume for u in audible) / len(audible)
             moved = self._scale_locked(audible, level, base, cause, now)
-            changed = changed + [u for u in moved if u not in changed]
-            future = self._queue_volume_writes_locked(changed)
+            levels = lifted + [u for u in moved if u not in lifted]
+            future = self._queue_writes_locked(self._restore_writes(unmuted, levels))
             master = self._master_locked(online_only=True)
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
@@ -1282,7 +1281,7 @@ class OutputAuthority:
             selected = [u for u in self._selected_locked() if u.id != except_id]
             if not selected:
                 return self._refused("no_active_outputs")
-            changed = []
+            writes = []
             tokens = []
             for u in selected:
                 d = u.desired
@@ -1293,18 +1292,15 @@ class OutputAuthority:
                         d.mute_joined = False
                         tokens.append((u.id, d.mute_token))
                     continue
-                d.remembered_level = d.volume if d.volume > 0 else None
                 d.muted = True
                 d.mute_token = self._next_token_locked()
                 d.mute_joined = False
                 tokens.append((u.id, d.mute_token))
                 self._stamp(u, cause, now)
-                if d.volume > 0:
-                    d.volume = 0
-                    changed.append(u)
+                writes.append(("mute", u))
             if except_id is None:
                 self._mute_held = True
-            future = self._queue_volume_writes_locked(changed)
+            future = self._queue_writes_locked(writes)
             master = self._master_locked()
             token_at = self._mute_counter
             pending = self._publish_locked(cause, requester)
@@ -1322,8 +1318,8 @@ class OutputAuthority:
                 return self._refused("not_connected")
             if not self._selected_locked():
                 return self._refused("no_active_outputs")
-            changed = self._unmute_all_locked(cause, default_level, now)
-            future = self._queue_volume_writes_locked(changed)
+            writes = self._restore_writes(*self._unmute_all_locked(cause, default_level, now))
+            future = self._queue_writes_locked(writes)
             master = self._master_locked()
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, master=master, muted=False)
@@ -1336,36 +1332,41 @@ class OutputAuthority:
             if u is None:
                 return self._refused("unknown_output")
             d = u.desired
-            changed = []
+            writes = []
             tokens = []
             if d.selected and not d.muted:
-                d.remembered_level = d.volume if d.volume > 0 else None
                 d.muted = True
                 d.mute_token = self._next_token_locked()
                 d.mute_joined = False
                 tokens.append((u.id, d.mute_token))
                 self._stamp(u, cause, now)
-                if d.volume > 0:
-                    d.volume = 0
-                    changed.append(u)
+                writes.append(("mute", u))
             elif d.selected and cause == Origin.USER:
                 # The user's Mute owns a mute a device Pause made.
                 d.mute_token = self._next_token_locked()
                 d.mute_joined = False
                 tokens.append((u.id, d.mute_token))
-            future = self._queue_volume_writes_locked(changed)
+            future = self._queue_writes_locked(writes)
             token_at = self._mute_counter
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, mute_tokens=tuple(tokens), token_at=token_at)
 
     def _restore_locked(self, u: UnitState, cause: Origin, default_level: int, now: float) -> bool:
-        """End a unit's mute. True when its level moves, so a write is due."""
+        """End a unit's mute. A unit kept at 0 is lifted to *default_level*
+        when that is above 0; True when it was, so a level write is due too."""
         d = u.desired
-        before = d.volume
-        d.volume = d.remembered_level if d.remembered_level is not None else _clamp(default_level)
         self._clear_mute_locked(d)
+        lifted = d.volume == 0 and default_level > 0
+        if lifted:
+            d.volume = _clamp(default_level)
         self._stamp(u, cause, now)
-        return d.volume != before
+        return lifted
+
+    def _restore_writes_one_locked(self, u: UnitState, cause: Origin, default_level: int, now: float) -> list:
+        """The writes that end a unit's mute: the mute, and its level when
+        it was lifted from 0."""
+        lifted = self._restore_locked(u, cause, default_level, now)
+        return [("mute", u)] + ([("volume", u)] if lifted else [])
 
     def _release_mute_hold_locked(self) -> None:
         if not any(u.desired.muted for u in self._selected_locked()):
@@ -1386,9 +1387,9 @@ class OutputAuthority:
             d = u.desired
             if not d.muted or (only_token is not None and d.mute_token != only_token):
                 return Applied(version=store().snapshot().version, outcome=None)
-            changed = [u] if self._restore_locked(u, cause, default_level, now) else []
+            writes = self._restore_writes_one_locked(u, cause, default_level, now)
             self._release_mute_hold_locked()
-            future = self._queue_volume_writes_locked(changed)
+            future = self._queue_writes_locked(writes)
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future)
 
@@ -1406,9 +1407,9 @@ class OutputAuthority:
             ]
             if not ended:
                 return Applied(version=store().snapshot().version, outcome=None)
-            changed = [u for u in ended if self._restore_locked(u, cause, default_level, now)]
+            writes = [w for u in ended for w in self._restore_writes_one_locked(u, cause, default_level, now)]
             self._release_mute_hold_locked()
-            future = self._queue_volume_writes_locked(changed)
+            future = self._queue_writes_locked(writes)
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future)
 
@@ -1446,11 +1447,11 @@ class OutputAuthority:
         self._after_intent()
 
     def device_volume_seen(self, unit_id: str, *, single: bool = True) -> None:
-        """A volume was set on the speaker itself: a mute on it ends at once
-        (its level is whatever the speaker now reports) and the re-apply of a
-        muted level is suppressed for a moment. A report made at one speaker
-        (*single*) on an unmuted unit that autostream did not just write is
-        armed to apply to the other speakers."""
+        """A volume was set on the speaker itself: stamped for the cause of
+        the adoption that follows, and armed to apply to the other speakers
+        when made at one speaker (*single*) on an unmuted unit that autostream
+        did not just write. It never ends a mute: the player does not report
+        the level of a muted speaker; a turn of its knob arrives as a wake."""
         self._touched = True
         now = self._clock()
         with self._lock:
@@ -1461,15 +1462,6 @@ class OutputAuthority:
             d = u.desired
             if single and not d.muted and not self._spread_held(u, now):
                 u.report_at = now
-            if not d.muted:
-                return
-            self._clear_mute_locked(d)
-            self._mute_held = False
-            if u.reported is not None:
-                d.volume = u.reported.volume_percent
-            self._stamp(u, Origin.DEVICE, now)
-            pending = self._publish_locked(Origin.DEVICE, None)
-        pending.notify()
 
     # -- the event sink (the event source thread; each only enqueues) ----------
 
@@ -1844,7 +1836,7 @@ class OutputAuthority:
                     id=uid, name=row.name,
                     desired=UnitDesired(
                         selected=row.selected, volume=row.volume_percent, muted=False,
-                        remembered_level=None, cause=Origin.ADOPTED, changed_at=now,
+                        cause=Origin.ADOPTED, changed_at=now,
                     ),
                     reported=row, seen_at=now,
                     select_seq=1 if row.selected else 0,
@@ -1977,11 +1969,7 @@ class OutputAuthority:
             return None
         if r.volume_percent == d.volume:
             return False
-        if d.muted:
-            # A level above silence on a muted speaker is a change made on the
-            # speaker; without device events nothing else can be told apart.
-            self._clear_mute_locked(d)
-            self._mute_held = False
+        # A row's level is the speaker's own level, muted or not
         d.volume = r.volume_percent
         d.cause = Origin.DEVICE if now - u.device_volume_at < DEVICE_VOLUME_MARK_S else Origin.BACKEND
         d.changed_at = now
@@ -2129,21 +2117,7 @@ class OutputAuthority:
                     self._enqueue(_Write("deselect", u.id, u.desired_seq, {}, [(batch, 0)]))
                 continue
             u.diff_since.pop("deselect", None)
-            if d.muted and r.volume_percent > 0 and d.selected:
-                recent = now - u.device_volume_at < DEVICE_VOLUME_MARK_S
-                if recent or busy:
-                    continue
-                if self._delivers_device_events:
-                    if self._due(u, "mute", now):
-                        u.diff_since.pop("mute", None)
-                        batch = _Batch(1)
-                        self._enqueue(_Write("volume", u.id, u.desired_seq, {}, [(batch, 0)]))
-                else:
-                    self._adopt_volume_locked(u, r, now)
-                    changed = True
-                continue
-            u.diff_since.pop("mute", None)
-            if not d.muted and not busy:
+            if not busy:
                 # With a write queued the row read may predate it, as above.
                 before = d.volume
                 adopted = self._adopt_volume_locked(u, r, now)
@@ -2354,11 +2328,13 @@ class OutputAuthority:
             if u is None or u.reported is None:
                 return None
             d = u.desired
-            # Every select carries its level, and a muted speaker starts silent.
+            # Every select carries the speaker's own level and its mute, so a
+            # muted speaker starts silent and keeps that level.
             asked = w.params.get("volume")
-            level = 0 if d.muted else _clamp(d.volume if asked is None else asked)
+            level = _clamp(d.volume if asked is None else asked)
+            muted = d.muted
             kwargs = dict(
-                enabled=True, volume_percent=level,
+                enabled=True, volume_percent=level, muted=muted,
                 offset_ms=w.params.get("offset_ms"), mode=w.params.get("mode"),
                 timeout=WRITE_TIMEOUT_S,
             )
@@ -2377,7 +2353,7 @@ class OutputAuthority:
             def select_after_level(b):
                 # A player that does not start a speaker at the level it is
                 # enabled with is given the level first, so the start uses it.
-                first = b.update_output(uid, volume_percent=level, timeout=WRITE_TIMEOUT_S)
+                first = b.update_output(uid, volume_percent=level, muted=muted, timeout=WRITE_TIMEOUT_S)
                 if not first.ok:
                     LOG.debug("Start level for %s not applied: %s", uid, first.message)
                 return [b.update_output(uid, **kwargs)]
@@ -2389,8 +2365,14 @@ class OutputAuthority:
         if kind == "volume":
             if u is None or not u.desired.selected:
                 return None
-            level = 0 if u.desired.muted else u.desired.volume
+            level = u.desired.volume
             return lambda b: [b.update_output(uid, volume_percent=level, timeout=WRITE_TIMEOUT_S)]
+        if kind == "mute":
+            # The mute as it is wanted now, as for a hold
+            if u is None or u.reported is None or not u.desired.selected:
+                return None
+            muted = u.desired.muted
+            return lambda b: [b.set_output_muted(uid, muted, timeout=WRITE_TIMEOUT_S)]
         if kind == "deselect_all":
             if w.params.get("session"):
                 return lambda b: [b.stop_and_disable_all(timeout=WRITE_TIMEOUT_S)]
@@ -2417,6 +2399,10 @@ class OutputAuthority:
             # since its row was read): it plays on, and so it reads.
             u.desired.held = False
             fx.log(logging.INFO, "Hold of %s refused by the player (%s)", w.unit_id, r.error_code)
+        if w.kind == "mute" and not r.ok:
+            # The desired mute stands; the reconcile asks again once the row
+            # still disagrees
+            fx.log(logging.INFO, "Mute of %s refused by the player (%s)", w.unit_id, r.error_code)
         if r.ok or (w.kind == "volume" and r.error_code == "timeout"):
             if u is not None:
                 u.own_write_at = now

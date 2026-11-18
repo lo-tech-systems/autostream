@@ -63,8 +63,13 @@ def player(monkeypatch):
         rec.calls.append(("submit_output_pin", out_id, pin))
         return answer()
 
+    def set_output_muted(base_url, out_id, muted, timeout=None):
+        rec.calls.append(("set_output_muted", out_id, muted))
+        return answer()
+
     monkeypatch.setattr(ps, "update_output", update_output)
     monkeypatch.setattr(ps, "submit_output_pin", submit_output_pin)
+    monkeypatch.setattr(ps, "set_output_muted", set_output_muted)
     return rec
 
 
@@ -106,7 +111,7 @@ class TestEnable:
         assert r == {"ok": True, "id": ID}
         (name, out_id, kw), = player.calls
         assert (name, out_id) == ("update_output", ID)
-        assert kw == dict(enabled=True, volume_percent=35, offset_ms=120, mode="airplay2", timeout=3.0)
+        assert kw == dict(enabled=True, volume_percent=35, muted=False, offset_ms=120, mode="airplay2", timeout=3.0)
 
     def test_the_list_shows_the_speaker_on_as_soon_as_the_call_returns(self, player):
         arrange()
@@ -247,21 +252,22 @@ class TestVolume:
         hold_mute(player)
         change(on(volume=45))
         assert snap().muted_all is False and snap().unit(ID).muted is False
-        assert player.calls[0][2]["volume_percent"] == 45
+        assert player.calls == [("update_output", ID, dict(volume_percent=45, timeout=3.0)),
+                                ("set_output_muted", ID, False)]
 
-    def test_a_coordinator_level_change_while_muted_is_remembered_and_not_written(self, player):
+    def test_a_coordinator_level_change_while_muted_is_written_and_the_unit_stays_muted(self, player):
         arrange(row(ID, "Kitchen", selected=True, volume_percent=30))
         hold_mute(player)
         r = change(on(volume=45), requester="coordinator", origin=Origin.SYSTEM)
         assert r == {"ok": True, "id": ID}
-        assert player.calls == []
+        assert player.calls == [("update_output", ID, dict(volume_percent=45, timeout=3.0))]
         assert snap().unit(ID).muted is True and snap().unit(ID).volume == 45
 
-    def test_a_speaker_switched_on_while_muted_starts_silent_and_remembers_its_level(self, player):
+    def test_a_speaker_switched_on_while_muted_starts_silent_and_keeps_its_level(self, player):
         arrange(row("7", "Other", selected=True, volume_percent=25), row(ID, "Kitchen"))
         hold_mute(player)
         assert change(on(volume=40)) == {"ok": True, "id": ID}
-        assert [c[2].get("volume_percent") for c in player.calls] == [0]
+        assert [(c[2].get("volume_percent"), c[2].get("muted")) for c in player.calls] == [(40, True)]
         assert snap().unit(ID).muted is True and snap().unit(ID).volume == 40
         assert snap().muted_all is True
 
@@ -271,7 +277,7 @@ class TestVolume:
 # ---------------------------------------------------------------------------
 
 class TestDisable:
-    def test_it_writes_the_deselect_and_forgets_the_remembered_level(self, player):
+    def test_it_writes_the_deselect_and_forgets_the_mute(self, player):
         arrange(row(ID, "Kitchen", selected=True, volume_percent=20))
         hold_mute(player)
         assert change({"id": ID, "selected": False}) == {"ok": True, "id": ID}
@@ -582,7 +588,7 @@ class TestVolumeStepAndMute:
         _mute("mute")
         player.calls.clear()
         assert _step(9).result == {"ok": True, "muted": False, "volume": 40}
-        assert [c[2]["volume_percent"] for c in player.calls] == [40]
+        assert player.calls == [("set_output_muted", "1", False)]
 
     def test_a_step_from_silence_lifts_every_speaker_to_the_step(self, player):
         arrange(row("1", "A", selected=True, volume_percent=0), row("2", "B", selected=True, volume_percent=0))
@@ -737,7 +743,7 @@ class TestSelectDefault:
         assert _default(volume=42, offset_ms=120, mode="airplay2").ok is True
         assert player.calls == [(
             "update_output", ID,
-            dict(enabled=True, volume_percent=42, offset_ms=120, mode="airplay2", timeout=3.0),
+            dict(enabled=True, volume_percent=42, muted=False, offset_ms=120, mode="airplay2", timeout=3.0),
         )]
 
     def test_offset_and_mode_are_optional(self, player, usage):

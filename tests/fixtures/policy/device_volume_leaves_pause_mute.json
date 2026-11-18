@@ -73,7 +73,8 @@
       "state": "streaming",
       "failure": "none"
      },
-     "has_homepods": false
+     "has_homepods": false,
+     "muted": true
     },
     {
      "id": "1002",
@@ -109,11 +110,14 @@
  "expect": {
   "writes": [
    [
-    "update_output",
+    "set_output_muted",
     "1001",
-    {
-     "volume_percent": 0
-    }
+    true
+   ],
+   [
+    "set_output_muted",
+    "1001",
+    false
    ]
   ],
   "units": {
@@ -134,7 +138,7 @@
   "paused": [],
   "log": [
    "receiver pause from Speaker A (1001): Speaker A muted (it cannot be held); nothing else changed",
-   "receiver play from Speaker A: nothing restored"
+   "receiver play from Speaker A: Speaker A restored"
   ]
  }
 }

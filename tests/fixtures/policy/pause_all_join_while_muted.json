@@ -97,11 +97,9 @@
     true
    ],
    [
-    "update_output",
+    "set_output_muted",
     "1002",
-    {
-     "volume_percent": 0
-    }
+    true
    ],
    [
     "update_output",
@@ -109,6 +107,7 @@
     {
      "enabled": true,
      "volume_percent": 35,
+     "muted": false,
      "offset_ms": null,
      "mode": null
     }
@@ -119,11 +118,9 @@
     false
    ],
    [
-    "update_output",
+    "set_output_muted",
     "1002",
-    {
-     "volume_percent": 30
-    }
+    false
    ]
   ],
   "units": {

@@ -61,11 +61,9 @@
     true
    ],
    [
-    "update_output",
+    "set_output_muted",
     "1002",
-    {
-     "volume_percent": 0
-    }
+    true
    ],
    [
     "update_output",
@@ -92,7 +90,7 @@
    "1002": {
     "selected": false,
     "muted": false,
-    "volume": 0,
+    "volume": 30,
     "held": false
    }
   },
