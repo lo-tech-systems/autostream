@@ -3803,7 +3803,7 @@ class DialDisplay:
         appliance_id = self._replay_timer_id
         if appliance_id is None or self._compact_tier():
             return None
-        if appliance_id != (self._core.snapshot().focus.manual_id or self._core.snapshot().focus.reporting_id):
+        if appliance_id != self._core.snapshot().focused_id():
             return None
         shown_at = self._replay_timer_shown_at
         position = self._repeat_position_line(self._repeat_record(appliance_id), now)
@@ -4305,8 +4305,8 @@ class DialDisplay:
         if not policy.bound_to_appliance:
             return
         state = getattr(self, policy.state_attr)
-        current_id = self._core.snapshot().focus.manual_id or self._core.snapshot().focus.reporting_id
-        if state is not None and state.appliance_id != current_id:
+        snap = self._core.snapshot()
+        if state is not None and state.appliance_id != snap.focused_id():
             with self._lock:
                 self._close_secondary_locked()
 
