@@ -134,6 +134,15 @@ class TestDigests:
         banner = dataclasses.replace(empty, stylus_banner_text="Stylus due")
         assert DIGESTS["playback"](empty) != DIGESTS["playback"](banner)
 
+    def test_appliance_digest_is_every_field(self):
+        base = state.AppliancePart()
+        for name, value in [("id", "a"), ("hostname", "h"), ("version", "v"),
+                            ("configured", True), ("pin_set", True)]:
+            assert DIGESTS["appliance"](dataclasses.replace(base, **{name: value})) != DIGESTS["appliance"](base)
+
+    def test_dials_digest_is_the_generation(self):
+        assert DIGESTS["dials"](state.DialsPart(1)) != DIGESTS["dials"](state.DialsPart(0))
+
     def test_health_digest_is_all_five_fields(self):
         base = state.HealthPart()
         for name, value in [

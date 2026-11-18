@@ -18,7 +18,8 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from autostream_state import OutputsPart, RepeatPart, SessionPart, SettingsPart
+from autostream_state import (
+    AppliancePart, DialsPart, OutputsPart, RepeatPart, SessionPart, SettingsPart)
 import webui.protocol.hub as proto_hub
 
 
@@ -32,7 +33,8 @@ def wait_for(predicate, timeout: float = 3.0, step: float = 0.01) -> bool:
 
 
 class Publisher:
-    """Publishes to four parts of a store, each call moving the part."""
+    """Publishes to some parts of a store, each call moving the part. The
+    appliance part is published as configured; ``set_appliance`` sets it."""
 
     def __init__(self, store) -> None:
         owner = "test_owner"
@@ -41,6 +43,8 @@ class Publisher:
             "session": store.claim("session", owner),
             "repeat": store.claim("repeat", owner),
             "outputs": store.claim("outputs", owner),
+            "appliance": store.claim("appliance", owner),
+            "dials": store.claim("dials", owner),
         }
         self._n: dict = {}
 
@@ -54,10 +58,17 @@ class Publisher:
             return w.publish(SessionPart(True, f"input{n}"))
         if part == "repeat":
             return w.publish(RepeatPart(block={"enabled": n % 2 == 1}))
+        if part == "dials":
+            return w.publish(DialsPart(generation=n))
+        if part == "appliance":
+            return w.publish(AppliancePart(hostname=f"host{n}", configured=True))
         return w.publish(OutputsPart(muted_all=n % 2 == 1))
 
     def __call__(self, part: str) -> None:
         self.bump(part).notify()
+
+    def set_appliance(self, **fields) -> None:
+        self._writers["appliance"].publish(AppliancePart(**fields)).notify()
 
 
 class Client:

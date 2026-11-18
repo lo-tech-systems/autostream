@@ -461,7 +461,10 @@ def start_server(deps: WebUIDeps) -> threading.Thread:
             updates.get_app_version()
 
             # One hub for every state stream, subscribed before requests are served.
-            hub = webui.protocol.hub.StreamHub(store())
+            hub = webui.protocol.hub.StreamHub(
+                store(),
+                peer_control=lambda: common._config_snapshot(session_state.STATE).webui.advertise_appliance,
+            )
             hub.start()
             webui.protocol.hub.install(hub)
 

@@ -30,7 +30,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 import autostream_logging as log_setup
-from autostream_protocol import PROTOCOL
+from autostream_protocol import PROTOCOL, parse_client
 from autostream_state import PART_NAMES
 from webui import common
 from webui.protocol import hub as hub_module
@@ -136,6 +136,24 @@ def _peer_closed(sock) -> bool:
         return True
 
 
+def _client_param(path: str) -> Optional[str]:
+    """The ``client`` query parameter, or None when the request has none."""
+    values = parse_qs(urlsplit(path).query).get("client")
+    return values[0] if values else None
+
+
+def _access_event(hub, snap, client: Optional[str], last) -> tuple[bytes, object]:
+    """(bytes, answer): the access event of a named client when its answer
+    differs from *last*, else b"". Without a client, never."""
+    if client is None:
+        return b"", last
+    answer = hub.access(client, configured=snap.appliance.configured)
+    if answer == last:
+        return b"", last
+    data = json.dumps(answer.event_data(client), separators=(",", ":"))
+    return b"event: access\ndata: %s\n\n" % data.encode("ascii"), answer
+
+
 def _write(handler, payload: bytes) -> None:
     handler.wfile.write(payload)
     handler.wfile.flush()
@@ -156,7 +174,7 @@ def _wait(handler, hub, seen_gen: int, deadline: float) -> Optional[int]:
             return None
 
 
-def _stream(handler, hub) -> str:
+def _stream(handler, hub, client: Optional[str] = None) -> str:
     sock = handler.connection
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SEND_BUFFER_BYTES)
@@ -175,6 +193,8 @@ def _stream(handler, hub) -> str:
     snap = hub.store.snapshot()
     parts, resync = changed_parts(snap, since)
     out = b"retry: %d\n\n" % RETRY_MS
+    access_event, last_access = _access_event(hub, snap, client, None)
+    out += access_event
     if parts:
         out += _event(hub, snap, parts, resync)
     _write(handler, out)
@@ -191,11 +211,16 @@ def _stream(handler, hub) -> str:
         if now - opened >= max_age:               # before every write, busy or quiet
             return "lifetime"
         if woke is None:                          # quiet for HEARTBEAT_S
-            _write(handler, b": ka\n\n")
+            access_event, last_access = _access_event(hub, hub.store.snapshot(), client, last_access)
+            _write(handler, access_event + b": ka\n\n")
             last_write = now
             continue
         seen_gen = hub.generation()
         snap = hub.store.snapshot()
+        access_event, last_access = _access_event(hub, snap, client, last_access)
+        if access_event:
+            _write(handler, access_event)
+            last_write = time.monotonic()
         parts = tuple(p for p in PART_NAMES if snap.part_versions.get(p, 0) > seen)
         if parts:
             _write(handler, _event(hub, snap, parts, False))
@@ -204,11 +229,12 @@ def _stream(handler, hub) -> str:
     return "server stopping"
 
 
-def serve_events(handler, hub) -> str:
+def serve_events(handler, hub, client: Optional[str] = None) -> str:
     """Run one stream on the calling thread and return why it ended. The
-    caller has already taken a slot with hub.enter()."""
+    caller has already taken a slot with hub.enter(). *client* names a dial or
+    a peer, which is told what it may do in access events."""
     try:
-        return _stream(handler, hub)
+        return _stream(handler, hub, client)
     except socket.timeout:                        # a write that did not finish in time
         return "timeout"
     except OSError as exc:                        # reset, broken pipe, client gone
@@ -227,6 +253,10 @@ def send_events(handler, state) -> None:
     if _protocol_param(handler.path) not in (None, str(PROTOCOL)):
         common.send_json(handler, 200, {"ok": False, "error": "protocol_mismatch", "protocol": PROTOCOL})
         return
+    client = _client_param(handler.path)
+    if client is not None and parse_client(client) is None:
+        common.send_browser_api_error(handler, 400, "invalid_client")
+        return
     address = handler._get_client_ip()
     refusal = hub.enter(address)
     if refusal is not None:
@@ -235,7 +265,7 @@ def send_events(handler, state) -> None:
         common.send_browser_api_error(handler, 503, refusal, retryable=True)
         return
     try:
-        reason = serve_events(handler, hub)
+        reason = serve_events(handler, hub, client)
     finally:
         hub.exit(address)
     logging.debug("state stream: ended (%s)", reason)

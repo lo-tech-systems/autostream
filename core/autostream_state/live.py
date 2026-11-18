@@ -84,7 +84,7 @@ class LiveNotBound(RuntimeError):
 
 # Names that a Level 2 module implements and binds when it is imported.
 BINDABLE = ("annotate_outputs", "get_log_level_state", "get_align_status", "get_align_review",
-            "current_warnings", "warnings_payload")
+            "current_warnings", "warnings_payload", "state_refresh")
 
 _bound_lock = threading.Lock()
 _bound: dict[str, tuple[Callable, str]] = {}
@@ -187,6 +187,12 @@ def get_align_status() -> dict:
 def get_align_review():
     """The calibration run's snapshots and pending result (bound by autostream_align)."""
     return _call_bound("get_align_review")
+
+
+def state_refresh() -> None:
+    """Ask the appliance state worker to re-read its sources now (bound by
+    autostream_appliance_state). A missed call costs at most one 30 s pass."""
+    _call_bound("state_refresh")
 
 
 def current_warnings() -> list:

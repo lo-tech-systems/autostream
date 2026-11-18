@@ -250,12 +250,16 @@ def test_parts_returns_only_the_named_parts(server, publish):
     assert got["protocol"] == 4 and got["version"] == snap.version
 
 
-def test_an_empty_parts_returns_the_top_level_only(server, publish):
+def full_appliance(server):
+    return proto_state.state_json(server.store.snapshot(), clients=0)["parts"]["appliance"]
+
+
+def test_an_empty_parts_returns_the_top_level_and_the_appliance(server, publish):
     publish("session")
     status, body = server.get("/api/v1/state?parts=")
     assert status == 200
     got = json.loads(body)
-    assert got["parts"] == {}
+    assert got["parts"] == {"appliance": full_appliance(server)}
     assert set(got) == {"boot", "version", "protocol", "clients", "part_versions", "parts"}
 
 

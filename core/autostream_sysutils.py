@@ -753,6 +753,14 @@ def get_system_hostname() -> str:
         return ""
 
 
+def format_hostname(raw: str) -> str:
+    """The hostname as shown to people: trimmed, without a ".local" suffix,
+    and "autostream" when nothing is left."""
+    hostname = str(raw or "").strip()
+    if hostname.lower().endswith(".local"):
+        hostname = hostname[:-6]
+    return hostname.strip() or "autostream"
+
 
 def set_system_hostname(new_hostname: str) -> None:
     """Set the system hostname and trigger mDNS announcements.

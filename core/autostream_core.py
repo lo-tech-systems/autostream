@@ -125,7 +125,7 @@ def _set_monitor_runtime_info(
 # Every module that binds intent rows when it is imported.
 _HANDLER_MODULES = (
     "autostream_align",
-    "autostream_dial_push",
+    "autostream_appliance_state",
     "autostream_live_config",
     "autostream_log_policy",
     "autostream_monitor_control",
@@ -322,6 +322,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
         import webui.server as webui_server
         import webui.system.updates as webui_updates
         services.start(runtime.lifecycle(), settings,
+                       config_path=config_path, state_path=STATE_PATH,
                        app_version=webui_updates.get_app_version,
                        sweeps=(webui_gateway.sweep_token_cache,),
                        on_peer_removed=(webui_gateway.evict_gateway_token,))

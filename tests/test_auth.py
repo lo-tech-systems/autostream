@@ -683,3 +683,57 @@ class TestConcurrencySafety:
         t1.join(timeout=5); t2.join(timeout=5)
 
         assert not errors, f"Errors during concurrent gc/issue: {errors}"
+
+
+class TestPinIsSet:
+    """The module-level check reads the files each time and has no cache."""
+
+    def _is_set(self, state, boot=(None, None, None, PIN_STATUS_MISSING)):
+        from autostream_auth import pin_is_set
+        with patch("autostream_auth._read_boot_pin_file", return_value=boot):
+            return pin_is_set(str(state))
+
+    def test_a_valid_override_is_a_pin(self, tmp_path):
+        state = _write_state_with_pin_override(tmp_path, "goodpin1")
+        assert self._is_set(state) is True
+
+    def test_no_override_and_no_boot_pin_is_none(self, tmp_path):
+        assert self._is_set(tmp_path / "state.json") is False
+
+    def test_a_valid_boot_pin_counts_when_there_is_no_override(self, tmp_path):
+        boot = ("factorypin", "/boot/pin.txt", 1.0, PIN_STATUS_OK)
+        assert self._is_set(tmp_path / "state.json", boot) is True
+
+    def test_a_malformed_override_falls_back_to_the_boot_pin(self, tmp_path):
+        state = _write_state_with_pin_override(tmp_path, "bad pin!!")
+        boot = ("factorypin", "/boot/pin.txt", 1.0, PIN_STATUS_OK)
+        assert self._is_set(state, boot) is True
+        assert self._is_set(state) is False
+
+    def test_a_malformed_boot_pin_is_none(self, tmp_path):
+        boot = ("bad pin!!", "/boot/pin.txt", 1.0, PIN_STATUS_OK)
+        assert self._is_set(tmp_path / "state.json", boot) is False
+
+    def test_an_unreadable_boot_pin_is_none(self, tmp_path):
+        boot = (None, "/boot/pin.txt", None, PIN_STATUS_UNREADABLE)
+        assert self._is_set(tmp_path / "state.json", boot) is False
+
+    def test_it_follows_the_files_with_no_cache(self, tmp_path):
+        from autostream_auth import pin_is_set
+        state = tmp_path / "state.json"
+        with patch("autostream_auth._read_boot_pin_file",
+                   return_value=(None, None, None, PIN_STATUS_MISSING)):
+            assert pin_is_set(str(state)) is False
+            _write_state_with_pin_override(tmp_path, "goodpin1")
+            assert pin_is_set(str(state)) is True
+
+
+class TestFormatHostname:
+    @pytest.mark.parametrize("raw,shown", [
+        ("Turntable", "Turntable"), ("Turntable.local", "Turntable"),
+        ("  Kitchen.LOCAL ", "Kitchen"), ("", "autostream"), (None, "autostream"),
+        (".local", "autostream"),
+    ])
+    def test_the_name_people_see(self, raw, shown):
+        from autostream_sysutils import format_hostname
+        assert format_hostname(raw) == shown

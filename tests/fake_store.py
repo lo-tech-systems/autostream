@@ -111,6 +111,12 @@ class FakeStore:
     def settings(self, generation: int):
         return self._put("settings", state.SettingsPart(generation))
 
+    def appliance(self, **fields):
+        return self._put("appliance", state.AppliancePart(**fields))
+
+    def dials(self, generation: int):
+        return self._put("dials", state.DialsPart(generation))
+
     def outputs(self, rows, *, connected: bool = True, boot: str = "b0", start_failure=None):
         """Adopt *rows* (OutputInfo, or dicts of its fields) as a successful
         read, through the output authority's own merge, so the authority and

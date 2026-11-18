@@ -34,11 +34,7 @@ from autostream_dials import (
     dial_proto_generation,
     get_dial_sighting,
     parse_dial_entries,
-    remove_dial_entry,
-    validate_dial_name,
-    write_dial_entry,
 )
-from autostream_intents.table import Intent, Outcome, bind
 import autostream_rpi as rpi
 from autostream_state import (
     active_track,
@@ -328,37 +324,6 @@ def notify_dial_auth_changed(uuid: str) -> None:
     if not appliance_id:
         return
     enqueue_push(_AUTH_CHANGED_PATH, uuid, appliance_id)
-
-
-# ---------------------------------------------------------------------------
-# Authorize / revoke
-# ---------------------------------------------------------------------------
-
-def _authorize(intent: Intent, wait: float) -> Outcome:
-    uuid, name = intent.args["uuid"], intent.args["name"]
-    if not validate_dial_name(name):
-        return Outcome(ok=False, error="invalid_name")
-    write_dial_entry(uuid, name)
-    _notify_after_write(uuid, "authorize")
-    return Outcome(ok=True)
-
-
-def _revoke(intent: Intent, wait: float) -> Outcome:
-    uuid = intent.args["uuid"]
-    remove_dial_entry(uuid)
-    _notify_after_write(uuid, "revoke")
-    return Outcome(ok=True)
-
-
-def _notify_after_write(uuid: str, verb: str) -> None:
-    try:
-        notify_dial_auth_changed(uuid)
-    except Exception as e:
-        logging.debug("dial auth push: enqueue failed after %s: %s", verb, e)
-
-
-bind("dials.authorize", _authorize, owner="autostream_dial_push")
-bind("dials.revoke", _revoke, owner="autostream_dial_push")
 
 
 def _emit_hint(kinds: frozenset, except_dials: frozenset) -> None:

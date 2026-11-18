@@ -14,8 +14,9 @@ store's publishers only touch the hub's condition, and no lock is held while a
 socket is written.
 
 Contents:
-  - StreamHub  -- the subscriber, the client limits, the part cache and the
-                  state body cache
+  - StreamHub  -- the subscriber, the client limits, the part cache, the
+                  state body cache and the answer to what a named client may do
+  - Access     -- that answer: a role and the reason when it is none
   - install    -- make a hub the one the routes use
   - current    -- the installed hub, or None
 """
@@ -23,9 +24,14 @@ Contents:
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, NamedTuple, Optional
+
+import autostream_dials as dials
+from autostream_intents import Role
+from autostream_protocol import parse_client
 
 MAX_STREAMS = 64
 MAX_STREAMS_PER_ADDRESS = 8
@@ -33,6 +39,19 @@ BODY_MAX_AGE_S = 1.0        # the state body is rebuilt after this long, same ve
 
 TOO_MANY_CLIENTS = "too_many_clients"
 TOO_MANY_FROM_ADDRESS = "too_many_from_address"
+
+
+class Access(NamedTuple):
+    """What a named client may do: its role, and why it has none."""
+
+    role: Role
+    reason: Optional[str] = None
+
+    def event_data(self, client: str) -> dict:
+        return {"client": client, "role": self.role.name.lower(), "reason": self.reason}
+
+
+_MEMO_MAX = 256
 
 
 class _PartCache:
@@ -58,9 +77,15 @@ class _PartCache:
 class StreamHub:
     """The store's one subscriber for the streams, and the count of clients."""
 
-    def __init__(self, store, *, clock=time.monotonic) -> None:
+    def __init__(self, store, *, clock=time.monotonic,
+                 peer_control: Optional[Callable[[], bool]] = None) -> None:
+        """*peer_control* says whether other appliances may control this one;
+        without it, or when it raises, they may not."""
         self._source = store
         self._clock = clock
+        self._peer_control = peer_control
+        self._access_memo: dict = {}
+        self._memo_generation = -1
         self._cond = threading.Condition()
         self._generation = 0
         self._stopped = False
@@ -143,6 +168,47 @@ class StreamHub:
 
     def client_count(self) -> int:
         return self._clients
+
+    def access(self, client: str, *, configured: bool) -> Access:
+        """What the named client (``dial:<id>`` or ``peer:<id>``) may do. The
+        caller says whether the appliance is configured: the intents route
+        reads it live and a stream reads the appliance part, so the two never
+        disagree within one request. A dial answer is remembered per dials
+        generation; an unreadable dials store is never remembered."""
+        if not configured:
+            return Access(Role.NONE, "unconfigured")
+        parsed = parse_client(client)
+        if parsed is None:
+            return Access(Role.NONE, "invalid_client")
+        kind = parsed[0]
+        if kind == "peer":
+            return self._peer_access()
+        generation = self._source.snapshot().dials.generation
+        key = (client, generation)
+        with self._count_lock:
+            if generation != self._memo_generation or len(self._access_memo) >= _MEMO_MAX:
+                self._access_memo.clear()
+                self._memo_generation = generation
+            known = self._access_memo.get(key)
+        if known is not None:
+            return known
+        verdict = dials.dial_authorization(parsed[1])
+        if verdict == dials.AUTH_UNAVAILABLE:
+            return Access(Role.NONE, "auth_unavailable")
+        answer = (Access(Role.PLAYBACK) if verdict == dials.AUTH_AUTHORIZED
+                  else Access(Role.NONE, "dial_not_authorized"))
+        with self._count_lock:
+            if generation == self._memo_generation:
+                self._access_memo[key] = answer
+        return answer
+
+    def _peer_access(self) -> Access:
+        try:
+            allowed = bool(self._peer_control()) if self._peer_control is not None else False
+        except Exception:
+            logging.debug("stream hub: peer control setting unreadable", exc_info=True)
+            allowed = False
+        return Access(Role.PLAYBACK) if allowed else Access(Role.NONE, "control_disabled")
 
     def _on_change(self, change) -> None:
         if not change.parts:        # a tag-only change, or a cycle that moved nothing

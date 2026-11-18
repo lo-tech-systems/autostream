@@ -31,7 +31,7 @@ owntone owntone_mini pin_pairing playback_stats player_service players protocol 
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup".split()
+_L2 = "align announce appliance_state appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup".split()
 
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
@@ -72,6 +72,8 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_startup", "autostream_playback_tracking"),
     ("autostream_startup", "autostream_input_status"),
     ("autostream_services", "autostream_appliances"),
+    ("autostream_services", "autostream_appliance_state"),
+    ("autostream_appliance_state", "autostream_dial_push"),
     ("autostream_services", "autostream_dial_warnings"),
     ("autostream_services", "autostream_output_usage"),
     ("autostream_dial_warnings", "autostream_dial_push"),
@@ -137,7 +139,7 @@ LIVE_PINNED: frozenset[str] = frozenset({
     "get_owntone_runtime_info", "get_vibra_runtime_info",
     "annotate_outputs", "get_log_level_state",
     "get_align_status", "get_align_review",
-    "start_buffer_ms", "pin_claim", "current_warnings", "warnings_payload",
+    "start_buffer_ms", "pin_claim", "current_warnings", "warnings_payload", "state_refresh",
 })
 
 # Packages whose public names (from __all__) an L3 module may import.

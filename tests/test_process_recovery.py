@@ -243,9 +243,11 @@ class TestScannerWrappers:
              patch.object(services.dials, "start_dial_scanner",
                    side_effect=capture_dial_scanner), \
              patch.object(services.dial_warnings, "start_watcher"), \
+             patch.object(services.appliance_state, "start"), \
              patch.object(services.appliances, "start_appliance_scanner",
                    side_effect=capture_appliance_scanner):
             services.start(runtime.lifecycle(), MagicMock(),
+                           config_path="c.ini", state_path="s.json",
                            app_version=lambda: "v", sweeps=())
 
         assert "dial_event" in captured, "start_dial_scanner was not called"

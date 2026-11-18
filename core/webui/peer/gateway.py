@@ -43,6 +43,7 @@ from typing import Optional
 
 from autostream_intents import Intent, Origin, submit
 from autostream_state import store
+from autostream_sysutils import format_hostname
 from autostream_pin_pairing import REQUESTER_WEBUI
 from webui.browser import home_model
 from webui.browser.home_model import (
@@ -675,7 +676,7 @@ def send_appliances_json(handler, state) -> None:  # noqa: ARG001
             continue
         appliances.append({
             "id": s.id,
-            "hostname": _format_hostname(s.hostname),
+            "hostname": format_hostname(s.hostname),
             "version": s.version,
             "is_bound": False,
             "home_path": f"/a/{s.id}/",
@@ -695,21 +696,11 @@ def send_appliances_json(handler, state) -> None:  # noqa: ARG001
 
 def _local_hostname() -> str:
     from autostream_sysutils import get_system_hostname
-    hostname = str(get_system_hostname() or "").strip()
-    if hostname.lower().endswith(".local"):
-        hostname = hostname[:-6]
-    return hostname.strip() or "autostream"
+    return format_hostname(get_system_hostname())
 
 
 def _local_version() -> str:
     return updates.get_app_version()
-
-
-def _format_hostname(raw: str) -> str:
-    hostname = str(raw or "").strip()
-    if hostname.lower().endswith(".local"):
-        hostname = hostname[:-6]
-    return hostname.strip() or "autostream"
 
 
 # ---------------------------------------------------------------------------

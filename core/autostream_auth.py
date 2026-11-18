@@ -171,6 +171,46 @@ def constant_time_eq(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
+def _read_boot_pin_file() -> Tuple[Optional[str], Optional[str], Optional[float], str]:
+    """Return (pin, path, mtime, status) for the boot-partition PIN file. Pin is
+    the first non-empty line, stripped."""
+    for path in PIN_PATH_CANDIDATES:
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Exists maybe, but can't stat reliably
+            return None, path, None, PIN_STATUS_UNREADABLE
+
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    candidate = line.strip()
+                    if candidate:
+                        return candidate, path, st.st_mtime, PIN_STATUS_OK
+            # File exists but had no non-empty line
+            return None, path, st.st_mtime, PIN_STATUS_INVALID
+        except OSError:
+            return None, path, st.st_mtime, PIN_STATUS_UNREADABLE
+
+    # No candidate paths existed
+    return None, None, None, PIN_STATUS_MISSING
+
+
+def pin_is_set(state_path: str) -> bool:
+    """Whether a valid PIN is in force: the configured override when it is
+    valid, else the boot-partition PIN. Reads the files each time."""
+    try:
+        pin, present = read_pin_override(state_path)
+    except (OSError, ValueError):
+        pin, present = None, True
+    if present and pin and PIN_REGEX.match(pin):
+        return True
+    boot_pin, _path, _mtime, status = _read_boot_pin_file()
+    return status == PIN_STATUS_OK and bool(boot_pin) and bool(PIN_REGEX.match(boot_pin))
+
+
 # ----------------------------
 # State
 # ----------------------------
@@ -231,28 +271,7 @@ class AuthManager:
 
     def _read_pin_file(self) -> Tuple[Optional[str], Optional[str], Optional[float], str]:
         """Return (pin, path, mtime, status). Pin is first non-empty line stripped."""
-        for path in PIN_PATH_CANDIDATES:
-            try:
-                st = os.stat(path)
-            except FileNotFoundError:
-                continue
-            except OSError:
-                # Exists maybe, but can't stat reliably
-                return None, path, None, PIN_STATUS_UNREADABLE
-
-            try:
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        candidate = line.strip()
-                        if candidate:
-                            return candidate, path, st.st_mtime, PIN_STATUS_OK
-                # File exists but had no non-empty line
-                return None, path, st.st_mtime, PIN_STATUS_INVALID
-            except OSError:
-                return None, path, st.st_mtime, PIN_STATUS_UNREADABLE
-
-        # No candidate paths existed
-        return None, None, None, PIN_STATUS_MISSING
+        return _read_boot_pin_file()
 
     def _read_pin_override(self) -> Tuple[Optional[str], Optional[str], Optional[float], str, bool]:
         """Return (pin, path, mtime, status, present) for config override."""

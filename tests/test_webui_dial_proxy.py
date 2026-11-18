@@ -1365,7 +1365,7 @@ class TestHandleDialAuthorize:
             sent.append((status, data))
 
         with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_dial_push.write_dial_entry"):
+             patch("autostream_appliance_state.write_dial_entry"):
             handle_dial_authorize_post(MagicMock(), body)
 
         return sent[0] if sent else (None, {})
@@ -1407,7 +1407,7 @@ class TestHandleDialAuthorize:
 
     def test_valid_authorize_calls_write_dial_entry(self):
         with patch("webui.common.send_json"), \
-             patch("autostream_dial_push.write_dial_entry") as mock_write:
+             patch("autostream_appliance_state.write_dial_entry") as mock_write:
             handle_dial_authorize_post(MagicMock(), {"uuid": "x", "name": "Test"})
         mock_write.assert_called_once_with("x", "Test")
 
@@ -1420,7 +1420,7 @@ class TestHandleDialRevoke:
             sent.append((status, data))
 
         with patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_dial_push.remove_dial_entry"):
+             patch("autostream_appliance_state.remove_dial_entry"):
             handle_dial_revoke_post(MagicMock(), body)
 
         return sent[0] if sent else (None, {})
@@ -1442,7 +1442,7 @@ class TestHandleDialRevoke:
 
     def test_revoke_calls_remove_dial_entry(self):
         with patch("webui.common.send_json"), \
-             patch("autostream_dial_push.remove_dial_entry") as mock_remove:
+             patch("autostream_appliance_state.remove_dial_entry") as mock_remove:
             handle_dial_revoke_post(MagicMock(), {"uuid": "my-uuid"})
         mock_remove.assert_called_once_with("my-uuid")
 
@@ -1483,7 +1483,7 @@ class TestManagementDispatcherFallback:
 
         with patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("webui.common.send_json", side_effect=fake_send_json), \
-             patch("autostream_dial_push.write_dial_entry"):
+             patch("autostream_appliance_state.write_dial_entry"):
             dispatch_dial_management_post(
                 MagicMock(), "/api/dial/authorize", {"uuid": "x", "name": "Y"}
             )

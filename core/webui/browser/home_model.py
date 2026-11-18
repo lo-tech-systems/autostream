@@ -18,7 +18,7 @@ from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_B
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, store
 import autostream_rpi as rpi
-from autostream_sysutils import get_system_hostname
+from autostream_sysutils import format_hostname, get_system_hostname
 from webui.system import updates
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ def build_home_state(snap, parsed) -> dict:
 
     ti_dict = active_track(snap).to_public_dict()
 
-    hostname = _format_hostname(get_system_hostname())
+    hostname = format_hostname(get_system_hostname())
     reply = {
         "ok": True,
         "appliance": {
@@ -236,13 +236,6 @@ def _session_and_repeat_fields(snap) -> dict:
     if repeat_status is not None:
         fields["repeat"] = repeat_status
     return fields
-
-
-def _format_hostname(raw: str) -> str:
-    hostname = str(raw or "").strip()
-    if hostname.lower().endswith(".local"):
-        hostname = hostname[:-6]
-    return hostname.strip() or "autostream"
 
 
 # ---------------------------------------------------------------------------

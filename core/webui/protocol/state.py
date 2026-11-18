@@ -63,8 +63,10 @@ def part_json(snap, name: str) -> bytes:
 def state_json(snap, *, clients: int, parts=None) -> dict:
     """The snapshot's parts as they are, with the boot id, the version, the
     protocol number, the version at which each part last moved, and the number
-    of stream clients. *parts* names the parts to include; None is all."""
-    names = PART_NAMES if parts is None else parts
+    of stream clients. *parts* names the parts to include; None is all, and none
+    at all gives the appliance part alone, since it says who is asking and
+    whether it is set up."""
+    names = PART_NAMES if parts is None else (parts or ("appliance",))
     return {
         "boot": snap.boot,
         "version": snap.version,

@@ -75,10 +75,10 @@ class TestCallSites:
         calls, fake_send_json = _recorder()
         with (
             patch("webui.common.send_json", side_effect=fake_send_json),
-            patch("autostream_dial_push.write_dial_entry",
+            patch("autostream_appliance_state.write_dial_entry",
                   side_effect=lambda u, n: calls.append(("write", u, n))),
-            patch("autostream_dial_push.validate_dial_name", return_value=True),
-            patch("autostream_dial_push.notify_dial_auth_changed",
+            patch("autostream_appliance_state.validate_dial_name", return_value=True),
+            patch("autostream_appliance_state.notify_dial_auth_changed",
                   side_effect=lambda u: calls.append(("notify", u))),
         ):
             handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "Kitchen"})
@@ -90,9 +90,9 @@ class TestCallSites:
         calls, fake_send_json = _recorder()
         with (
             patch("webui.common.send_json", side_effect=fake_send_json),
-            patch("autostream_dial_push.remove_dial_entry",
+            patch("autostream_appliance_state.remove_dial_entry",
                   side_effect=lambda u: calls.append(("remove", u))),
-            patch("autostream_dial_push.notify_dial_auth_changed",
+            patch("autostream_appliance_state.notify_dial_auth_changed",
                   side_effect=lambda u: calls.append(("notify", u))),
         ):
             handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
@@ -106,9 +106,9 @@ class TestCallSites:
         wraps the call in try/except."""
         with (
             patch("webui.common.send_json") as mock_send_json,
-            patch("autostream_dial_push.write_dial_entry"),
-            patch("autostream_dial_push.validate_dial_name", return_value=True),
-            patch("autostream_dial_push.notify_dial_auth_changed",
+            patch("autostream_appliance_state.write_dial_entry"),
+            patch("autostream_appliance_state.validate_dial_name", return_value=True),
+            patch("autostream_appliance_state.notify_dial_auth_changed",
                   side_effect=RuntimeError("boom")),
         ):
             handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "Kitchen"})
@@ -118,8 +118,8 @@ class TestCallSites:
     def test_revoke_response_not_delayed_by_notify_failure(self):
         with (
             patch("webui.common.send_json") as mock_send_json,
-            patch("autostream_dial_push.remove_dial_entry"),
-            patch("autostream_dial_push.notify_dial_auth_changed",
+            patch("autostream_appliance_state.remove_dial_entry"),
+            patch("autostream_appliance_state.notify_dial_auth_changed",
                   side_effect=RuntimeError("boom")),
         ):
             handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
@@ -129,8 +129,8 @@ class TestCallSites:
     def test_an_invalid_name_answers_400_and_writes_and_queues_nothing(self):
         with (
             patch("webui.common.send_json") as mock_send_json,
-            patch("autostream_dial_push.write_dial_entry") as write,
-            patch("autostream_dial_push.notify_dial_auth_changed") as notify,
+            patch("autostream_appliance_state.write_dial_entry") as write,
+            patch("autostream_appliance_state.notify_dial_auth_changed") as notify,
         ):
             handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "bad;name"})
 
@@ -152,9 +152,9 @@ class TestCallSites:
     def test_a_raising_write_answers_500_and_queues_no_push(self):
         with (
             patch("webui.common.send_json") as mock_send_json,
-            patch("autostream_dial_push.write_dial_entry", side_effect=OSError("read-only")),
-            patch("autostream_dial_push.validate_dial_name", return_value=True),
-            patch("autostream_dial_push.notify_dial_auth_changed") as notify,
+            patch("autostream_appliance_state.write_dial_entry", side_effect=OSError("read-only")),
+            patch("autostream_appliance_state.validate_dial_name", return_value=True),
+            patch("autostream_appliance_state.notify_dial_auth_changed") as notify,
         ):
             handle_dial_authorize_post(MagicMock(), {"uuid": UUID, "name": "Kitchen"})
         mock_send_json.assert_called_once_with(ANY, 500, {"ok": False, "error": "internal_error"})
@@ -163,23 +163,23 @@ class TestCallSites:
     def test_a_raising_removal_answers_500_and_queues_no_push(self):
         with (
             patch("webui.common.send_json") as mock_send_json,
-            patch("autostream_dial_push.remove_dial_entry", side_effect=OSError("read-only")),
-            patch("autostream_dial_push.notify_dial_auth_changed") as notify,
+            patch("autostream_appliance_state.remove_dial_entry", side_effect=OSError("read-only")),
+            patch("autostream_appliance_state.notify_dial_auth_changed") as notify,
         ):
             handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
         mock_send_json.assert_called_once_with(ANY, 500, {"ok": False, "error": "internal_error"})
         notify.assert_not_called()
 
-    def test_the_intents_are_the_users_and_carry_the_strings_unstripped(self):
+    def test_the_intents_are_the_users_and_carry_the_strings_stripped(self):
         from autostream_state import Origin
         seen = []
         with (
             patch("webui.dial.management.submit", side_effect=_submitted(seen)),
             patch("webui.common.send_json"),
-            patch("autostream_dial_push.write_dial_entry") as write,
-            patch("autostream_dial_push.validate_dial_name", return_value=True),
-            patch("autostream_dial_push.remove_dial_entry"),
-            patch("autostream_dial_push.notify_dial_auth_changed"),
+            patch("autostream_appliance_state.write_dial_entry") as write,
+            patch("autostream_appliance_state.validate_dial_name", return_value=True),
+            patch("autostream_appliance_state.remove_dial_entry"),
+            patch("autostream_appliance_state.notify_dial_auth_changed"),
         ):
             handle_dial_authorize_post(MagicMock(), {"uuid": " " + UUID, "name": " Kitchen "})
             handle_dial_revoke_post(MagicMock(), {"uuid": UUID})
@@ -187,7 +187,7 @@ class TestCallSites:
             ("dials.authorize", Origin.USER, "webui"),
             ("dials.revoke", Origin.USER, "webui"),
         ]
-        write.assert_called_once_with(" " + UUID, " Kitchen ")
+        write.assert_called_once_with(UUID, "Kitchen")
 
 
 # ---------------------------------------------------------------------------

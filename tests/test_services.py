@@ -58,13 +58,21 @@ class TestStart:
         def sweep():
             pass
 
+        def record_state(shutdown_event, **kwargs):
+            assert shutdown_event is life.stop
+            assert kwargs["config_path"] == "c.ini" and kwargs["state_path"] == "s.json"
+            assert kwargs["settings"] == "settings" and kwargs["app_version"]() == "v"
+            order.append("appliance_state")
+
         with patch.object(services.dials, "start_dial_scanner", side_effect=record("dials")), \
              patch.object(services.dial_warnings, "start_watcher", side_effect=record("warnings")), \
+             patch.object(services.appliance_state, "start", side_effect=record_state), \
              patch.object(services.appliances, "start_appliance_scanner", side_effect=record("appliances")), \
              patch.object(services.threading, "Thread", FakeThread):
-            services.start(life, "settings", app_version=lambda: "v", sweeps=(sweep,))
+            services.start(life, "settings", config_path="c.ini", state_path="s.json",
+                           app_version=lambda: "v", sweeps=(sweep,))
 
-        assert order == ["dials", "warnings", "appliances", "thread:device-scan",
+        assert order == ["dials", "warnings", "appliance_state", "appliances", "thread:device-scan",
                          "thread:announce-reconcile", "thread:vibra-runtime-refresh"]
         scan, announce, _vibra = threads
         assert scan[0] is services._device_scan_loop and scan[1] == (life, "settings")
@@ -81,12 +89,14 @@ class TestStart:
 
         with patch.object(services.dials, "start_dial_scanner"), \
              patch.object(services.dial_warnings, "start_watcher"), \
+             patch.object(services.appliance_state, "start"), \
              patch.object(services.appliances, "register_peer_removal_callback",
                           side_effect=lambda fn: order.append(("register", fn))), \
              patch.object(services.appliances, "start_appliance_scanner",
                           side_effect=lambda **kw: order.append(("scanner", None))), \
              patch.object(services.threading, "Thread"):
-            services.start(life, "settings", app_version=lambda: "v", on_peer_removed=(hook,))
+            services.start(life, "settings", config_path="c.ini", state_path="s.json",
+                           app_version=lambda: "v", on_peer_removed=(hook,))
 
         assert order == [("register", hook), ("scanner", None)]
 
@@ -96,7 +106,8 @@ class TestStart:
              patch.object(services.threading, "Thread") as thread, \
              caplog.at_level("ERROR"):
             with pytest.raises(RuntimeError):
-                services.start(life, MagicMock(), app_version=lambda: "v")
+                services.start(life, MagicMock(), config_path="c.ini", state_path="s.json",
+                               app_version=lambda: "v")
         thread.assert_not_called()
         assert any("Background services error" in r.message for r in caplog.records)
 

@@ -265,6 +265,22 @@ class OutputsPart:
         return tuple(u.reported for u in self.units if u.reported is not None)
 
 
+@dataclass(frozen=True)
+class AppliancePart:
+    """Who this appliance is and whether it is set up."""
+
+    id: str = ""                            # the appliance id, or "" when it has none
+    hostname: str = ""                      # as people see it, without ".local"
+    version: str = ""                       # the installed release
+    configured: bool = False                # first-boot commissioning is not required
+    pin_set: bool = False                   # a PIN is in force
+
+
+@dataclass(frozen=True)
+class DialsPart:
+    generation: int = 0                     # +1 on every authorise or revoke
+
+
 def empty_playback_snapshot() -> PlaybackSnapshot:
     return PlaybackSnapshot(
         inputs=FrozenDict(),
@@ -298,11 +314,13 @@ class Snapshot:
     outputs: OutputsPart = field(default_factory=OutputsPart)
     eq: EqPart = field(default_factory=EqPart)
     devices: DevicesPart = field(default_factory=DevicesPart)
+    appliance: AppliancePart = field(default_factory=AppliancePart)
+    dials: DialsPart = field(default_factory=DialsPart)
 
 
 PART_NAMES = (
     "session", "repeat", "track", "inputs", "monitor", "playback", "health", "settings",
-    "outputs", "eq", "devices",
+    "outputs", "eq", "devices", "appliance", "dials",
 )
 
 
@@ -435,6 +453,14 @@ def _devices_digest(p: DevicesPart) -> tuple:
     return (p.monitor_devices, p.bluetooth_status)
 
 
+def _appliance_digest(p: AppliancePart) -> tuple:
+    return (p.id, p.hostname, p.version, p.configured, p.pin_set)
+
+
+def _dials_digest(p: DialsPart) -> int:
+    return p.generation
+
+
 def eq_band_digest(p: EqPart) -> tuple:
     """What a dial shows of the equaliser: the output bands."""
     return p.output_bands
@@ -470,6 +496,8 @@ DIGESTS: dict[str, Callable] = {
     "outputs": _outputs_digest,
     "eq": _eq_digest,
     "devices": _devices_digest,
+    "appliance": _appliance_digest,
+    "dials": _dials_digest,
 }
 
 
