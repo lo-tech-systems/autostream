@@ -42,7 +42,10 @@ from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, 
 from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
 from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for, repeat_layout_for
 from autostream_peer_client import PeerReply
+import dial_artwork
 import dial_core
+import dial_core_state
+import dial_repeat_store
 from dial_core import DialCore
 import dial_display as dd
 import dial_warning_text as dwt
@@ -1361,7 +1364,7 @@ class TestUpdateConfig:
 
 # ---------------------------------------------------------------------------
 # Screen-size setting (physical diagonal) — mm_per_px derivation and its
-# plumbing into _metrics_locked() / redisplay-on-change. Density has no
+# plumbing into _layout_metrics() / redisplay-on-change. Density has no
 # effect on rendered bytes in this stage (see test_dial_display_compositor.py
 # for that invariant); these tests cover the manager's own bookkeeping.
 # ---------------------------------------------------------------------------
@@ -1428,13 +1431,13 @@ class TestScreenSizeSetting:
         expected = mm_per_px_for(new_profile, new_profile.default_diagonal_inches)
         assert display._mm_per_px == pytest.approx(expected)
 
-    def test_metrics_locked_reflects_backend_dims_and_density(self):
+    def test_layout_metrics_reflects_backend_dims_and_density(self):
         display, fb, gt = make_display(fitted=True, screen_size_inches=2.8)
         display.enable()
         profile = get_profile(DEFAULT_PROFILE_KEY)
         expected_mm = mm_per_px_for(profile, 2.8)
         with display._lock:
-            m = display._metrics_locked()
+            m = display._layout_metrics()
         assert m.width == fb.width
         assert m.height == fb.height
         assert m.mm_per_px == pytest.approx(expected_mm)
@@ -1951,7 +1954,7 @@ class TestCreateDialDisplay:
 class TestRateLimitedLogger:
     def _limiter(self):
         clock = [1000.0]
-        return dd._RateLimitedLogger(clock=lambda: clock[0]), clock
+        return dial_artwork.RateLimitedLogger(clock=lambda: clock[0]), clock
 
     def test_first_occurrence_logs(self):
         limiter, _ = self._limiter()
@@ -2237,7 +2240,7 @@ class TestArtistRowFallbackRichLarge:
             display.core.set_field_for_tests("now_playing", NowPlaying("svc", "", "", 50, playing=True))
         with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=content_tier)):
             result = display._effective_overlay_locked(OverlayState(visible=True))
-        assert result.artist == dd.PLAYING_ARTIST_TEXT
+        assert result.artist == dial_core_state.PLAYING_TEXT
 
     @pytest.mark.parametrize("tier", ["rich", "large"])
     def test_playing_with_no_title_but_an_input_label_shows_the_label(self, tier):
@@ -2488,29 +2491,25 @@ class TestOverlaySetAndRepaintExecutor:
 # ---------------------------------------------------------------------------
 
 class TestNoncompositedNotification:
-    def test_clear_locked_bumps_generation_and_sets_event(self):
+    def test_clear_locked_bumps_generation(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
         gen_before = display.noncomposited_generation()
-        display._noncomposited_event.clear()
 
         with display._lock:
             display._clear_locked()
 
         assert display.noncomposited_generation() == gen_before + 1
-        assert display._noncomposited_event.is_set()
 
-    def test_sleep_locked_bumps_generation_and_sets_event(self):
+    def test_sleep_locked_bumps_generation(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
         gen_before = display.noncomposited_generation()
-        display._noncomposited_event.clear()
 
         with display._lock:
             display._sleep_locked()
 
         assert display.noncomposited_generation() == gen_before + 1
-        assert display._noncomposited_event.is_set()
 
     def test_mark_noncomposited_locked_only_mutates_its_own_state(self):
         """_mark_noncomposited_locked() must be a pure state update — it must
@@ -3572,7 +3571,7 @@ class TestReplayReveal:
         with display._lock:
             display._screen = "repeat"
             display._repeat_screen = dd.RepeatScreenState(
-                appliance_id=self.AID, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=at,
+                appliance_id=self.AID, service_name="Kitchen", opened_at=at,
             )
             display._current_base_image = base
         self._seed(state, at)
@@ -4233,7 +4232,7 @@ class TestAcceptedReplayFrame:
             with display._lock:
                 display._repaint_current_locked()
             playing_overlays = [o for kind, o in frames if kind == "playing" and o is not None]
-            assert any(o.artist == dd.PLAYING_ARTIST_TEXT for o in playing_overlays)
+            assert any(o.artist == dial_core_state.PLAYING_TEXT for o in playing_overlays)
 
             # The replay is fading out: still playing, still the synthetic target.
             seed_repeat(_REPLAY_AID, _repeat_obj(
@@ -4256,7 +4255,7 @@ class TestAcceptedReplayFrame:
                     display._repaint_current_locked()
             after_stop = frames[mark:]
             assert not any(
-                o is not None and o.artist == dd.PLAYING_ARTIST_TEXT for kind, o in after_stop
+                o is not None and o.artist == dial_core_state.PLAYING_TEXT for kind, o in after_stop
             )
             assert display.core.snapshot().now_playing is None
             assert display.core.snapshot().idle_affordance is True
@@ -4782,7 +4781,7 @@ class TestListPagingMatchesPaintedRows:
     def test_rows_per_page_matches_painted_metrics(self):
         display, fb, gt, targets = self._rich_opened(count=5)
         with display._lock:
-            painted = display._metrics_locked().rows_per_page
+            painted = display._layout_metrics().rows_per_page
         assert painted == 5  # richer tier on the 2.8-inch 320x240 panel
         assert display._rows_per_page() == painted
 
@@ -5837,7 +5836,7 @@ class TestRepeatViewTopBandAndBaseImage:
 
 class TestRepeatCounterLatency:
     """Item 8: the replaying position counter lags the true position by
-    REPEAT_COUNTER_LATENCY_S, clamped at zero."""
+    DEFAULT_LATENCY_S, clamped at zero."""
 
     def _opened_replaying(self, position_seconds, appliance_id="13" * 10):
         t = _target(name="Kitchen", service_name="Kitchen", appliance_id=appliance_id)
@@ -5865,14 +5864,14 @@ class TestRepeatCounterLatency:
         display, aid = self._opened_replaying(position_seconds=10.0)
         with display._lock:
             view = display._build_repeat_view_locked(display._repeat_screen, time.monotonic())
-        # 10.0 true seconds in, minus the REPEAT_COUNTER_LATENCY_S lag —
+        # 10.0 true seconds in, minus the DEFAULT_LATENCY_S lag —
         # allow the interpolation's own elapsed-time nudge either side of
         # the expected second by comparing the parsed minutes:seconds
         # rather than the exact string.
         shown = view.line.split(" / ")[0]
         minutes, seconds = (int(p) for p in shown.split(":"))
         shown_seconds = minutes * 60 + seconds
-        assert shown_seconds == pytest.approx(10.0 - dd.REPEAT_COUNTER_LATENCY_S, abs=1)
+        assert shown_seconds == pytest.approx(10.0 - dial_repeat_store.DEFAULT_LATENCY_S, abs=1)
 
     def test_hold_layout_already_reads_zero(self):
         aid = "14" * 10
@@ -5897,7 +5896,7 @@ class TestRepeatLineInterpolation:
         )
         # 100.0 + 3.0 elapsed = 12.0 raw; wraps at (10 + 1.5) = 11.5 -> 0.5,
         # then clamped to <= duration (already under it).
-        pos = dd._interpolate_repeat_position(rec, now=103.0)
+        pos = dial_repeat_store.interpolated_position(rec, now=103.0)
         assert pos == pytest.approx(0.5)
 
     def test_clamped_to_duration_within_the_gap_window(self):
@@ -5910,7 +5909,7 @@ class TestRepeatLineInterpolation:
         # 100.0 + 0.7 = 10.2 raw, under the 11.5 wrap point, but past
         # duration (10.0) — clamped, not wrapped, since it is still within
         # the inter-loop gap.
-        pos = dd._interpolate_repeat_position(rec, now=100.7)
+        pos = dial_repeat_store.interpolated_position(rec, now=100.7)
         assert pos == pytest.approx(10.0)
 
     def test_never_negative(self):
@@ -5920,7 +5919,7 @@ class TestRepeatLineInterpolation:
             recording_seconds=10.0, position_seconds=0.0, duration_seconds=0.0,
             observed_at=100.0,
         )
-        pos = dd._interpolate_repeat_position(rec, now=99.0)  # clock went backwards
+        pos = dial_repeat_store.interpolated_position(rec, now=99.0)  # clock went backwards
         assert pos >= 0.0
 
     def _open_repeat_screen_directly(self, display, aid):
@@ -5930,7 +5929,7 @@ class TestRepeatLineInterpolation:
         with display._lock:
             display._screen = "repeat"
             display._repeat_screen = dd.RepeatScreenState(
-                appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+                appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
             )
 
     def _seed_replaying(self, aid, position_seconds, observed_at=1000.0):
@@ -5948,7 +5947,7 @@ class TestRepeatLineInterpolation:
         self._open_repeat_screen_directly(display, aid)
         self._seed_replaying(aid, position_seconds=5.0, observed_at=1000.0)
         display._repeat_painted_second = 3
-        # shown(now) = position + elapsed - REPEAT_COUNTER_LATENCY_S
+        # shown(now) = position + elapsed - DEFAULT_LATENCY_S
         #            = 5.0 + 1.002 - 2.0 = 4.002 -- just past the 4.0 boundary.
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1001.002):
@@ -5999,7 +5998,7 @@ class TestNextRepaintDeadline:
         with display._lock:
             display._screen = "repeat"
             display._repeat_screen = dd.RepeatScreenState(
-                appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+                appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
             )
         return display
 
@@ -6008,8 +6007,8 @@ class TestNextRepaintDeadline:
         aid = "d" * 20
         display = self._opened(aid)
         # Chosen so shown(now) == `shown` exactly: shown = position +
-        # elapsed - REPEAT_COUNTER_LATENCY_S, with elapsed fixed at 1.0.
-        position = shown + dd.REPEAT_COUNTER_LATENCY_S - 1.0
+        # elapsed - DEFAULT_LATENCY_S, with elapsed fixed at 1.0.
+        position = shown + dial_repeat_store.DEFAULT_LATENCY_S - 1.0
         self._seed(aid, position_seconds=position, observed_at=1000.0)
         display._repeat_painted_second = math.floor(shown)
         now = 1001.0
@@ -6046,7 +6045,7 @@ class TestNextRepaintDeadline:
         aid = "e" * 20
         display = self._opened(aid)
         # shown(1000.0) == 2.0 exactly -> repeat deadline is 1000.0 + 1.0 + 0.005.
-        self._seed(aid, position_seconds=2.0 + dd.REPEAT_COUNTER_LATENCY_S, observed_at=1000.0)
+        self._seed(aid, position_seconds=2.0 + dial_repeat_store.DEFAULT_LATENCY_S, observed_at=1000.0)
         display._repeat_painted_second = 2
         display._controls_hidden_until = 1000.3
         with patch("dial_display.time.monotonic", return_value=1000.0):
@@ -6065,7 +6064,7 @@ class TestRepeatCounterFloors:
         display, fb, gt = make_display(targets=[])
         display.enable()
         screen = dd.RepeatScreenState(
-            appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+            appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
         )
         for position, expected in [(2.0, "0:00"), (2.9, "0:00"), (3.0, "0:01"), (3.9, "0:01")]:
             seed_repeat(aid, drs.RepeatRecord(
@@ -6083,7 +6082,7 @@ class TestRepeatCounterFloors:
         display, fb, gt = make_display(targets=[])
         display.enable()
         screen = dd.RepeatScreenState(
-            appliance_id=aid, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+            appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
         )
         # (latency, reported position, expected counter)
         for latency, position, expected in [
@@ -6127,7 +6126,7 @@ class TestRepeatCounterPaintedReference:
         with display._lock:
             display._screen = "repeat"
             display._repeat_screen = dd.RepeatScreenState(
-                appliance_id=self.AID, service_name="Kitchen", ip="10.0.0.1", port=80, opened_at=1000.0,
+                appliance_id=self.AID, service_name="Kitchen", opened_at=1000.0,
             )
         return display
 
@@ -6144,7 +6143,7 @@ class TestRepeatCounterPaintedReference:
         interpolated clock is `shift` seconds ahead (negative: behind) of
         the current record's."""
         rec = repeat_of(self.AID)
-        self._seed(dd._interpolate_repeat_position(rec, clock.t) + shift, clock.t)
+        self._seed(dial_repeat_store.interpolated_position(rec, clock.t) + shift, clock.t)
 
     def _paint(self, display):
         with display._lock:
@@ -6829,7 +6828,7 @@ class TestOnOutputsResult:
         core holding *rows* for it (nothing when *held* is False)."""
         display, fb, gt = make_display(targets=[])
         display._outputs = dd.OutputsState(
-            appliance_id=appliance_id, service_name="Kitchen", ip="10.0.0.1", port=80,
+            appliance_id=appliance_id, service_name="Kitchen",
             page=page, opened_at=time.monotonic(),
         )
         if held:
@@ -7732,7 +7731,7 @@ class TestCompactPersistentOverlayAndSurface:
         display, fb, gt = _make_compact_display(targets=[t], always_show_controls=False)
         display.enable()
         with display._lock:
-            assert display._metrics_locked().content_tier == "compact"
+            assert display._layout_metrics().content_tier == "compact"
         _poll_with_artwork(display, fb)
         assert display.persistent_overlay_shown() is False
 
@@ -8051,7 +8050,7 @@ class TestCompactWrapPaging:
     def test_rows_per_page_is_two(self):
         display, targets = self._opened_selector(count=3)
         with display._lock:
-            assert display._metrics_locked().rows_per_page == 2
+            assert display._layout_metrics().rows_per_page == 2
 
     def test_advancing_past_the_last_page_wraps_to_zero(self):
         display, targets = self._opened_selector(count=3)  # pages: [T0,T1], [T2]
@@ -8148,7 +8147,7 @@ class TestCompactPickerPick:
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
-        assert display._metrics_locked().rows_per_page == 2  # both rows fit on page 0
+        assert display._layout_metrics().rows_per_page == 2  # both rows fit on page 0
 
         with patch("dial_core.DialCore._send") as mock_transport:
             display.picker_pick(1)
@@ -8291,7 +8290,7 @@ class TestInfoPagePaging:
         with display._lock:
             display._repaint_current_locked()
         with display._lock:
-            metrics = display._metrics_locked()
+            metrics = display._layout_metrics()
             page0 = display._build_info_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         assert metrics.rows_per_page == 5  # richer tier on this 2.8-inch 320x240 panel
         assert len(page0.rows) == 5

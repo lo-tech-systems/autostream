@@ -73,7 +73,7 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    AUTH_UNAUTHORIZED, DERIVED_EQ_IDS, PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
+    AUTH_UNAUTHORIZED, DERIVED_EQ_IDS, PIN_ERRORS, EqState, OutputRow, PickerRow, SelectorRow,
     awaiting_title, title_fallback,
     eq_gain,
 )
@@ -88,12 +88,7 @@ from dial_network import (
     LINK_DOWN,
 )
 from dial_network import request_reboot as _request_reboot
-from dial_repeat_store import (
-    DEFAULT_LATENCY_S,
-    REPEAT_LOOP_GAP_S,
-    heard_position,
-    interpolated_position,
-)
+from dial_repeat_store import heard_position
 from dial_info import INFO_LABELS
 from dial_warning_bell import Bell, whole_bell
 from dial_warning_page import Card, WarningsPageState, status_card
@@ -148,25 +143,6 @@ SELECTOR_TIMEOUT_SECONDS = 18
 # (the fallback every cycle lands on); "repeat" and "eq" are skipped when
 # _repeat_page_available()/self._eq_available says there is nothing to show.
 _PAGE_ORDER = ("main", "repeat", "eq")
-
-# The fixed inter-loop gap the appliance's replay engine inserts between
-# the end of a buffer and its restart — used only to wrap the locally
-# interpolated Replaying-line position between polls (see
-# _interpolate_repeat_position()). Purely cosmetic: the next status poll
-# always corrects any drift this produces.
-_REPEAT_LOOP_GAP_S = REPEAT_LOOP_GAP_S
-
-# The repeat screen's position counter is deliberately shown behind the
-# true (interpolated or daemon-reported) playback position by the
-# appliance's audio start buffer (RepeatRecord.latency_seconds): that much
-# latency sits in the audio chain between a restart/seek landing and sound
-# reaching the listener, so showing the raw position would read as running
-# ahead of what is heard. This constant is the figure used when the
-# appliance does not report one. Applied to the "replaying" layout's line
-# only (clamped at zero — see _build_repeat_view_locked); the "hold" layout
-# already reads "0:00" with nothing further to subtract, and the duration
-# side of "m:ss / m:ss" is never touched by this.
-REPEAT_COUNTER_LATENCY_S = DEFAULT_LATENCY_S
 
 # A status re-sync can move the locally interpolated counter back by up to
 # the appliance's own status-cache age plus jitter: well under a second.
@@ -273,7 +249,6 @@ _WINDOW_SPLIT_MAX_WINDOWS = 3
 
 # How the poll reacts to a screen when it finds nothing playing.
 IDLE_KEEP = "keep"                       # the screen stays; its own timeout closes it
-IDLE_CLOSE = "close"                     # popped to main
 IDLE_KEEP_WITH_FOCUS = "keep_with_focus" # kept only while an idle focus gives it something to show
 
 
@@ -283,7 +258,6 @@ class ScreenPolicy:
     unbound DialDisplay methods; `open` returns False to refuse the request
     and leave the current screen in place (e.g. the repeat screen with
     nothing to show for it)."""
-    name: str
     state_attr: str | None            # the manager attribute holding this screen's state, or None (main)
     surface: tuple[str, bool, bool, bool] | None  # (surface, name_active, dots_active, outputs_active) for touch, or None: computed (main)
     open: object                      # unbound DialDisplay method (self) -> bool
@@ -291,7 +265,7 @@ class ScreenPolicy:
     paged: bool                       # a paged list: page requests apply, rows are sliced per page
     inactivity_timeout_s: float | None
     touch_extends_timeout: bool       # touch activity re-stamps opened_at
-    when_nothing_plays: str           # IDLE_KEEP | IDLE_CLOSE | IDLE_KEEP_WITH_FOCUS
+    when_nothing_plays: str           # IDLE_KEEP | IDLE_KEEP_WITH_FOCUS
     defers_sleep: bool                # open (or requested) screen holds off the idle-sleep countdown
     close_reveals_overlay: bool       # a DOTS toggle-close arms the one-shot main-overlay reveal
     closes_on_focus_clear: bool       # a manual-focus clear pops it
@@ -370,19 +344,10 @@ def _dirty_windows(diff, bbox) -> list:
     return windows
 
 
-def _interpolate_repeat_position(rec, now: float) -> float:
-    """Local interpolation of the repeat screen's Replaying-line playback
-    position between polls: advances the last observed position by elapsed
-    wall time and wraps at the loop boundary (the buffer's duration plus
-    the fixed inter-loop gap). No network call is added for this — the
-    next status poll always corrects any drift. Never negative."""
-    return interpolated_position(rec, now)
-
-
 def _repeat_counter_value(rec, now: float) -> float:
     """The replaying counter's unfloored value at *now*: the interpolated
     position less the record's latency (the appliance's audio start buffer,
-    REPEAT_COUNTER_LATENCY_S when it did not say). Deliberately not
+    DEFAULT_LATENCY_S when it did not say). Deliberately not
     clamped: it runs negative for the first moments after a (re)start or a
     loop wrap, which lets the repaint deadline aim at the true moment the
     counter reaches 0:01 rather than waking a second early. Readers that
@@ -390,13 +355,6 @@ def _repeat_counter_value(rec, now: float) -> float:
     clamps. The one expression the tick, the deadline and the view builder
     all share."""
     return heard_position(rec, now)
-
-
-# ---------------------------------------------------------------------------
-# Rate-limited logging
-# ---------------------------------------------------------------------------
-
-_RateLimitedLogger = dial_artwork.RateLimitedLogger
 
 
 class _Signal(threading.Event):
@@ -457,12 +415,11 @@ class DisplayRuntimeStatus:
 
 
 # Rich/large artist-row fallback text (see _effective_overlay_locked): shown
-# in the artist line's own slot when the tier draws one but there is no real
-# artist to put there — an idle or pending focus, or a playing appliance
-# with no identified title yet. Compact draws no artist row at all, and base
-# keeps its own row unchanged, so neither constant is ever read there.
+# in the artist line's own slot when the tier draws one but the focus is idle
+# or pending, so there is no real artist to put there. Compact draws no
+# artist row at all, and base keeps its own row unchanged, so the constant is
+# never read there.
 IDLE_ARTIST_TEXT = "Idle"
-PLAYING_ARTIST_TEXT = PLAYING_TEXT
 
 
 @dataclass(frozen=True)
@@ -499,8 +456,6 @@ class RepeatScreenState:
     repaint instead — see _build_repeat_view_locked."""
     appliance_id: str
     service_name: str
-    ip: str
-    port: int
     opened_at: float
 
 
@@ -568,8 +523,6 @@ class OutputsState:
     snapshot at paint time (see DialDisplay._rows_of)."""
     appliance_id: str
     service_name: str
-    ip: str
-    port: int
     page: int
     opened_at: float
 
@@ -591,8 +544,6 @@ class EqScreenState:
     paint time (loaded False draws "-" and dimmed controls)."""
     appliance_id: str
     service_name: str
-    ip: str
-    port: int
     opened_at: float
 
 
@@ -900,7 +851,7 @@ class DialDisplay:
         self._idle_started_at: float | None = None
         self._display_sleeping = False
 
-        self._log_limiter = _RateLimitedLogger()
+        self._log_limiter = dial_artwork.RateLimitedLogger()
 
         # ---- Touch overlay plumbing -----------------------------------
         #
@@ -965,7 +916,6 @@ class DialDisplay:
         # threads read it lock-free.
         # Non-composited-state notification (screen cleared or asleep) for
         # the touch side to observe — see _mark_noncomposited_locked().
-        self._noncomposited_event = threading.Event()
         self._noncomposited_generation = 0
 
         # Monotonic deadline until which the controls bands are hidden after
@@ -1983,7 +1933,6 @@ class DialDisplay:
         latch) on ITS OWN thread, in ITS OWN time.
         """
         self._noncomposited_generation += 1
-        self._noncomposited_event.set()
         # A press latched against geometry that just went dark must not
         # carry a wash into whatever comes back on screen next.
         self._pressed = None
@@ -2063,13 +2012,6 @@ class DialDisplay:
         return metrics_for(
             width, height, mm_per_px=self._mm_per_px, size_chosen=self._layout.size_chosen,
         )
-
-    def _metrics_locked(self) -> LayoutMetrics:
-        """The active screen's LayoutMetrics. Caller holds self._lock;
-        computed once per compose, a handful of multiplications, nothing
-        per pixel. A thin delegate to _layout_metrics() kept under its own
-        name for its existing call sites."""
-        return self._layout_metrics()
 
     def _push_frame_locked(self, compose) -> None:
         """Compose one frame at the logical size and push it to the
@@ -2249,7 +2191,7 @@ class DialDisplay:
         if not (self._backend_open and self._backend is not None):
             return
         self._current_base_image = image
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         now = time.monotonic()
         snapshot = self._overlay_snapshot
         steady = (snapshot.visible or self._held_overlay_locked(now)) and not self._controls_hidden(now)
@@ -3135,7 +3077,7 @@ class DialDisplay:
             return None
         return RepeatScreenState(
             appliance_id=appliance_id, service_name=entry.service_name,
-            ip=entry.ip, port=entry.port, opened_at=time.monotonic(),
+            opened_at=time.monotonic(),
         )
 
     def _open_main_locked(self) -> bool:
@@ -3240,7 +3182,7 @@ class DialDisplay:
             return False
         self._eq = EqScreenState(
             appliance_id=entry.appliance_id, service_name=entry.service_name,
-            ip=entry.ip, port=entry.port, opened_at=time.monotonic(),
+            opened_at=time.monotonic(),
         )
         self._screen = "eq"
         return True
@@ -3264,7 +3206,7 @@ class DialDisplay:
             self._outputs_return = "main"
         self._outputs = OutputsState(
             appliance_id=entry.appliance_id, service_name=entry.service_name,
-            ip=entry.ip, port=entry.port, page=0, opened_at=time.monotonic(),
+            page=0, opened_at=time.monotonic(),
         )
         self._screen = "outputs"
         return True
@@ -3477,7 +3419,7 @@ class DialDisplay:
         current (the wait capped at a second when something else is
         scheduled sooner, or the plain fallback timeout) is not due and
         must not force an off-boundary repaint. No HTTP call: the
-        interpolation is purely local (see _interpolate_repeat_position())
+        interpolation is purely local (see dial_repeat_store.interpolated_position())
         and the next poll always corrects any drift. A no-op while asleep
         or when the repeat screen is not the one on screen.
         """
@@ -3812,7 +3754,7 @@ class DialDisplay:
         compose path, like the appliance selector/replay picker/outputs
         list. Caller holds self._lock."""
         view = self._build_output_view_locked(time.monotonic())
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         self._push_frame_locked(lambda: self._compositor.compose_output(
             metrics.width, metrics.height, view,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
@@ -3837,7 +3779,7 @@ class DialDisplay:
             rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
             row = rows[view_state.index] if view_state is not None and 0 <= view_state.index < len(rows) else None
             view = InfoValueView(label=row.label if row else "", value=row.value if row else "-")
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         self._push_frame_locked(lambda: self._compositor.compose_info_value(
             metrics.width, metrics.height, view,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
@@ -3867,7 +3809,7 @@ class DialDisplay:
             pressed=CARD_BUTTON_ZONES.index(zone) if zone in CARD_BUTTON_ZONES else None,
             percent=card.percent, source=card.source,
         )
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         base = self._current_base_image
         self._push_frame_locked(lambda: self._compositor.compose_warning(
             base, metrics.width, metrics.height, view,
@@ -3877,7 +3819,7 @@ class DialDisplay:
     def _display_restarting_locked(self) -> None:
         """Compose and push the "Restarting..." frame. Caller holds
         self._lock."""
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         self._push_frame_locked(lambda: self._compositor.compose_restarting(
             metrics.width, metrics.height,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
@@ -3888,7 +3830,7 @@ class DialDisplay:
         showing. Caller holds self._lock and has checked the backend is
         open. Leaves the base-image cache empty on purpose: the first poll
         must paint the logo or artwork over this, not find a stale base."""
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         self._push_frame_locked(lambda: self._compositor.compose_starting(
             metrics.width, metrics.height,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
@@ -3910,7 +3852,7 @@ class DialDisplay:
         keeps its flat chassis background, so this is harmless off compact.
         The info page ignores it too, on every tier (plain_background=True).
         """
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         if self._screen == "picker":
             list_state = self._build_picker_list_state_locked(metrics.width, metrics.height, metrics=metrics)
         elif self._screen == "outputs":
@@ -4086,7 +4028,7 @@ class DialDisplay:
         now = time.monotonic()
         view = dataclasses.replace(self._build_repeat_view_locked(self._repeat_screen, now), bell=self._bell_badge())
         self._repeat_layout_shown = view.layout
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         # Only a running replay has artwork behind its controls to reveal:
         # a window still open when the replay stops (Restart must be
         # tappable again) or the layout changes ends at once.
@@ -4154,7 +4096,7 @@ class DialDisplay:
         entirely: this screen has its own compose path and must never pick
         up the main now-playing overlay. Caller holds self._lock."""
         view = dataclasses.replace(self._build_eq_view_locked(self._eq, time.monotonic()), bell=self._bell_badge())
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         self._push_frame_locked(lambda: self._compositor.compose_eq(
             metrics.width, metrics.height, view,
             rotate=self._config.rotate, bgr=self._config.bgr, metrics=metrics,
@@ -4367,7 +4309,7 @@ class DialDisplay:
         # nothing comparable before it and must not slide in or out.
         self._controls_last = None
         self._reveal_started_at = 0.0
-        metrics = self._metrics_locked()
+        metrics = self._layout_metrics()
         base = (
             (load_logo(self._replay_logo_path, metrics.width, metrics.height) if self._core.snapshot().idle_affordance else None)
             or self._current_base_image
@@ -4655,10 +4597,7 @@ class DialDisplay:
                 open_or_requested.append(_policy(self._screen_request))
             list_open = any(p.defers_sleep for p in open_or_requested)
             current = _policy(self._screen)
-            if (
-                current.when_nothing_plays == IDLE_CLOSE
-                or (current.when_nothing_plays == IDLE_KEEP_WITH_FOCUS and not tick.idle_focus)
-            ):
+            if current.when_nothing_plays == IDLE_KEEP_WITH_FOCUS and not tick.idle_focus:
                 self._close_secondary_locked()
             if not list_open:
                 if self._idle_started_at is None:
@@ -4773,21 +4712,21 @@ class DialDisplay:
 # entries can name the class's own (unbound) methods directly.
 SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     "main": ScreenPolicy(
-        name="main", state_attr=None, surface=None,
+        state_attr=None, surface=None,
         open=DialDisplay._open_main_locked, paint=None, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP, defers_sleep=False,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "selector": ScreenPolicy(
-        name="selector", state_attr="_selector", surface=("selector", False, False, False),
+        state_attr="_selector", surface=("selector", False, False, False),
         open=DialDisplay._open_selector_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "picker": ScreenPolicy(
-        name="picker", state_attr="_picker", surface=("picker", False, False, False),
+        state_attr="_picker", surface=("picker", False, False, False),
         open=DialDisplay._open_picker_locked, paint=DialDisplay._display_list_locked, paged=True,
         # touch activity extends every list screen's clock — picker now
         # matches the selector/outputs lists rather than keeping its own
@@ -4797,7 +4736,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="main",
     ),
     "info": ScreenPolicy(
-        name="info", state_attr="_info", surface=("info", False, False, False),
+        state_attr="_info", surface=("info", False, False, False),
         open=DialDisplay._open_info_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
@@ -4807,14 +4746,14 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     # full-screen value, closed by a tap anywhere (LIST_BACK) or its own
     # timeout, back to the list it opened from at the same page.
     "info_value": ScreenPolicy(
-        name="info_value", state_attr="_info_value", surface=("info_value", False, False, False),
+        state_attr="_info_value", surface=("info_value", False, False, False),
         open=DialDisplay._open_info_value_locked, paint=DialDisplay._display_info_value_locked, paged=False,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
         close_reveals_overlay=False, closes_on_focus_clear=False, back_to="info",
     ),
     "repeat": ScreenPolicy(
-        name="repeat", state_attr="_repeat_screen", surface=("repeat", True, True, True),
+        state_attr="_repeat_screen", surface=("repeat", True, True, True),
         open=DialDisplay._open_repeat_locked, paint=DialDisplay._display_repeat_locked, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
@@ -4829,7 +4768,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     # the dots (or the poll's own closes) are its only exit, same as
     # repeat.
     "eq": ScreenPolicy(
-        name="eq", state_attr="_eq", surface=("eq", True, True, True),
+        state_attr="_eq", surface=("eq", True, True, True),
         open=DialDisplay._open_eq_locked, paint=DialDisplay._display_eq_locked, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
@@ -4837,7 +4776,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         bound_to_appliance=True,
     ),
     "outputs": ScreenPolicy(
-        name="outputs", state_attr="_outputs", surface=("outputs", False, False, False),
+        state_attr="_outputs", surface=("outputs", False, False, False),
         open=DialDisplay._open_outputs_locked, paint=DialDisplay._display_list_locked, paged=True,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
@@ -4845,7 +4784,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         bound_to_appliance=True,
     ),
     "output": ScreenPolicy(
-        name="output", state_attr="_output_detail", surface=("output", True, False, False),
+        state_attr="_output_detail", surface=("output", True, False, False),
         open=DialDisplay._open_output_locked, paint=DialDisplay._display_output_locked, paged=False,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
@@ -4857,7 +4796,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     # idle screen it sits over) it lets the panel sleep. Its touch surface
     # is the card for the entry's button count (see touch_surface()).
     "warnings": ScreenPolicy(
-        name="warnings", state_attr="_warnings_page", surface=None,
+        state_attr="_warnings_page", surface=None,
         open=DialDisplay._open_warnings_locked, paint=DialDisplay._display_card_locked, paged=False,
         inactivity_timeout_s=SELECTOR_TIMEOUT_SECONDS, touch_extends_timeout=True,
         when_nothing_plays=IDLE_KEEP, defers_sleep=False,
@@ -4867,7 +4806,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
     # panel down, or falls back to main after RESTARTING_TIMEOUT_SECONDS if
     # the reboot request failed.
     "restarting": ScreenPolicy(
-        name="restarting", state_attr="_restarting", surface=("restarting", False, False, False),
+        state_attr="_restarting", surface=("restarting", False, False, False),
         open=DialDisplay._open_restarting_locked, paint=DialDisplay._display_restarting_locked, paged=False,
         inactivity_timeout_s=RESTARTING_TIMEOUT_SECONDS, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP, defers_sleep=True,
@@ -4886,7 +4825,7 @@ def _status_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
     one named after it when it has none."""
     surface = f"card{len(desc.buttons)}" if desc.buttons else desc.screen
     return ScreenPolicy(
-        name=desc.screen, state_attr="_warning_screen", surface=(surface, False, False, False),
+        state_attr="_warning_screen", surface=(surface, False, False, False),
         open=functools.partial(DialDisplay._open_status_locked, warning_id=desc.id),
         paint=DialDisplay._display_card_locked, paged=False,
         inactivity_timeout_s=None, touch_extends_timeout=False,
