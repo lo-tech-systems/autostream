@@ -282,6 +282,9 @@ class TestTheTable:
         assert (desc.title_text(reading), desc.message_text(reading)) == (
             "microSD card", "8% life left, replace now")
 
+    def test_a_descriptor_without_a_detail_gives_an_empty_one(self):
+        assert WARNING_BY_ID["sdhealth"].detail_text(("low", 18)) == ""
+
     def test_the_dial_update_message_names_the_appliances(self):
         message_for = WARNING_BY_ID["update_dial"].message_for
         assert message_for(("Lounge",)) == "Lounge needs a newer dial"

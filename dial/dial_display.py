@@ -2440,6 +2440,7 @@ class DialDisplay:
             title=card.title, message=card.message, buttons=tuple(label for label, _ in card.buttons),
             pressed=CARD_BUTTON_ZONES.index(zone) if zone in CARD_BUTTON_ZONES else None,
             percent=card.percent, source=card.source, severity=card.severity,
+            detail=card.detail,
         )
         self._paint_locked(self._compositor.compose_warning, after=(view,))
 

@@ -121,7 +121,8 @@ def _repeat_block(record) -> dict | None:
 def _entry_block(entry) -> dict:
     return {
         "key": entry.key, "source": entry.source, "severity": entry.severity,
-        "title": entry.title, "message": entry.message, "actions": list(entry.actions),
+        "title": entry.title, "message": entry.message, "detail": entry.detail,
+        "actions": list(entry.actions),
     }
 
 

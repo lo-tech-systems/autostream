@@ -43,6 +43,7 @@ class BellEntry:
     title: str
     message: str
     actions: tuple      # actions beside Close, e.g. (ACTION_RESTART,)
+    detail: str = ""    # the reason under the message, "" for none
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,7 @@ def dial_bell(snapshot, descriptors) -> Bell:
             severity=desc.severity(state.reading),
             title=desc.title_text(state.reading),
             message=desc.message_text(state.reading),
+            detail=desc.detail_text(state.reading),
             actions=tuple(b.action for b in desc.buttons if b.action != ACTION_CLOSE),
         ))
     return Bell(_worst_first(entries))
@@ -107,6 +109,7 @@ def appliance_bell(appliance) -> Bell:
             severity=w.severity,
             title=w.title,
             message=w.message,
+            detail=w.detail,
             actions=(),
         )
         for w in appliance.warnings

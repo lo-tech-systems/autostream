@@ -57,6 +57,8 @@ class WarningDescriptor:
     buttons: left to right.
     title_for(reading) -> the readout-size line, replacing `title` when
       set (a page whose heading depends on its reading).
+    detail_for(reading) -> the longer explanation under the message, shown
+      where there is room, or None for none.
     progress_for(reading) -> a percent 0..100 drawn as a bar under the
       message, or None for no bar.
     interrupting: the page may open over a secondary screen, and a source
@@ -86,6 +88,7 @@ class WarningDescriptor:
     source_name: str = ""
     screen: str = ""
     priority: int = 0
+    detail_for: "object | None" = None
 
     def title_text(self, reading) -> str:
         """The readout-size line for *reading*: title_for's when it gives
@@ -97,6 +100,11 @@ class WarningDescriptor:
         """The body-size line for *reading*; "" when there is none."""
         message = self.message_for(reading) if self.message_for is not None else None
         return message if isinstance(message, str) else ""
+
+    def detail_text(self, reading) -> str:
+        """The explanation under the message for *reading*; "" when there is none."""
+        detail = self.detail_for(reading) if self.detail_for is not None else None
+        return detail if isinstance(detail, str) else ""
 
     def severity(self, reading) -> str:
         return self.severity_for(reading)

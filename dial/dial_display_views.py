@@ -348,6 +348,7 @@ class WarningView:
     percent: "int | None" = None
     source: str = ""
     severity: str = ""
+    detail: str = ""
 
 
 # Background sources for _new_frame(): where a frame's base image comes
@@ -434,6 +435,7 @@ class Body:
     percent: "int | None" = None   # BODY_WARNING: progress bar under the message (0..100), None for none
     source: str = ""               # BODY_WARNING: the band above the title; non-empty fits the text to the rest of the row
     severity: str = ""             # BODY_WARNING: colours the rule under the source band
+    detail: str = ""               # BODY_WARNING: the reason under the message, drawn only where it fits whole
 
 
 @dataclass(frozen=True)

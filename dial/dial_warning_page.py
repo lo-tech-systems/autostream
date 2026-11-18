@@ -41,6 +41,7 @@ class Card:
     buttons: tuple
     status_id: str = ""
     severity: str = ""
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,7 @@ class WarningsPageState:
         many = len(remaining) > 1
         actions = (ACTION_CLOSE, *entry.actions) + (ACTION_NEXT,) * many
         return Card(
-            title=entry.title, message=entry.message,
+            title=entry.title, message=entry.message, detail=entry.detail,
             source=f"{entry.source} · {remaining.index(self.key) + 1} of {len(remaining)}" if many else entry.source,
             percent=None, buttons=tuple((BUTTON_TEXT[a], a) for a in actions), severity=entry.severity,
         )

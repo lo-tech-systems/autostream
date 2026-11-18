@@ -88,10 +88,21 @@ class TestDialBell:
         assert entry.message == "Lounge, Kitchen need a newer dial"
         assert entry.severity == "warning" and entry.actions == ()
 
+    def test_a_dial_warning_with_no_detail_gives_an_empty_one(self):
+        (entry,) = dial_bell(_snapshot({"nowifi": None}), WARNING_DESCRIPTORS).entries
+        assert entry.detail == ""
+
     def test_a_status_is_not_in_the_bell(self):
         snap = _snapshot({"update": hs.SCENARIOS["warning_update"].snapshot.update,
                           "update_result": hs.SCENARIOS["warning_update_result"].snapshot.update})
         assert dial_bell(snap, WARNING_DESCRIPTORS) == Bell(())
+
+    def test_an_appliance_descriptor_gives_the_warnings_detail(self):
+        warning = ApplianceWarning("stylus", "warning", "Stylus", "Soon", "Lounge", "Played 450 h.")
+        desc = appliance_warning_descriptor(hs.LOUNGE, warning)
+        assert desc.detail_text(None) == "Played 450 h."
+        plain = ApplianceWarning("stylus", "warning", "Stylus", "Soon", "Lounge")
+        assert appliance_warning_descriptor(hs.LOUNGE, plain).detail_text(None) == ""
 
     def test_an_appliances_warning_is_not_in_the_dial_bell(self):
         warning = ApplianceWarning("stylus", "warning", "Stylus", "Soon", appliance_name="Lounge")
@@ -128,6 +139,12 @@ class TestApplianceBell:
         (entry,) = appliance_bell(a).entries
         assert entry == BellEntry(
             f"appliance:{hs.LOUNGE}:stylus_in1", "Lounge", "warning", "Stylus", "Soon", ())
+
+    def test_the_detail_is_carried_to_the_entry(self):
+        a = dataclasses.replace(_appliance(hs.LOUNGE, "Lounge", ("s", "warning", "Stylus", "Soon")), warnings=(
+            ApplianceWarning("s", "warning", "Stylus", "Soon", "Lounge", "Played 450 h."),))
+        (entry,) = appliance_bell(a).entries
+        assert entry.detail == "Played 450 h."
 
     def test_worst_first_and_ties_keep_the_reported_order(self):
         a = _appliance(

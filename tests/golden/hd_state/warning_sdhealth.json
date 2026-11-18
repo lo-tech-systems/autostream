@@ -47,6 +47,7 @@
         "severity": "warning",
         "title": "microSD card",
         "message": "18% life left, replace soon",
+        "detail": "",
         "actions": []
       }
     ]

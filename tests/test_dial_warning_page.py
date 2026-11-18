@@ -24,10 +24,10 @@ from dial_test_support import WARNING_BY_ID  # noqa: E402
 from dial_warnings import ACTION_CLOSE, ACTION_NEXT, ACTION_RESTART  # noqa: E402
 
 
-def _entry(key, source="Turntable", actions=(), title=None, message="msg"):
+def _entry(key, source="Turntable", actions=(), title=None, message="msg", detail=""):
     return BellEntry(
         key=key, source=source, severity=SEVERITY_WARNING, title=title or key.title(),
-        message=message, actions=tuple(actions))
+        message=message, actions=tuple(actions), detail=detail)
 
 
 def _bell(*keys, **kw):
@@ -81,6 +81,11 @@ class TestCard:
     def test_the_text_is_read_from_the_live_bell(self):
         page = _page(_bell("a"))
         assert page.card(_bell("a", message="changed")).message == "changed"
+
+    def test_the_card_carries_its_entrys_detail(self):
+        bell = Bell((_entry("a", detail="Played 450 h."),))
+        assert _page(bell).card(bell).detail == "Played 450 h."
+        assert _page(_bell("a")).card(_bell("a")).detail == ""
 
     def test_a_missing_entry_has_no_card(self):
         assert _page(_bell("a")).card(_bell("b")) is None

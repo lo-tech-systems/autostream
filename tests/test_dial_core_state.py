@@ -553,6 +553,14 @@ class TestApplianceWarningValidator:
         assert w == aw.ApplianceWarning("stylus", "warning", "Replace stylus", "500 h played")
         assert w.appliance_name == ""
 
+    def test_a_detail_is_kept_and_cleaned_and_a_bad_one_is_empty(self):
+        (w,) = _validate(_reply(_warn(detail="  Played\x00 450 h.  " + "d" * 500)))
+        assert w.detail == ("Played 450 h. " + "d" * 500)[:aw.APPLIANCE_WARNING_DETAIL_MAX]
+        (w,) = _validate(_reply(_warn(detail=7)))
+        assert w.detail == ""
+        (w,) = _validate(_reply(_warn()))
+        assert w.detail == ""
+
     def test_too_many_warnings_keeps_the_first_few(self):
         warnings = [_warn(id=f"w{i}", title=f"T{i}") for i in range(50)]
         out = _validate(_reply(*warnings))

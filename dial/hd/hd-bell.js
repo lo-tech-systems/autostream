@@ -61,7 +61,7 @@ export function bellCard(dial, bell) {
     const acts = [["close", "Close"]].concat(e.actions.map((act) => [act, ACTION_LABELS[act] || act]),
         entries.length > 1 ? [["next", "Next"]] : []);
     return Object.assign(card, {
-        title: e.title, message: e.message, severity: e.severity,
+        title: e.title, message: e.message, detail: e.detail, severity: e.severity,
         source: e.source + (entries.length > 1 ? " · " + (at + 1) + " of " + entries.length : ""),
         buttons: acts.map((a, i) => button(a[0], a[1], i))
     });

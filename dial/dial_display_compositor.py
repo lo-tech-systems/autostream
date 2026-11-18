@@ -835,7 +835,7 @@ def _warning_frame(view: WarningView, width: int, height: int, metrics: LayoutMe
         header=None,
         body=Body(
             BODY_WARNING, title=view.title, line=view.message, buttons=view.buttons, percent=view.percent,
-            source=view.source, severity=view.severity,
+            source=view.source, severity=view.severity, detail=view.detail,
         ),
         footer=Footer(FOOTER_NONE),
     )

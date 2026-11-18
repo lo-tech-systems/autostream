@@ -36,6 +36,7 @@
           "severity": "warning",
           "title": "Update Lounge",
           "message": "Its software is older than this dial's. Update it from its web UI.",
+          "detail": "",
           "actions": []
         }
       ],

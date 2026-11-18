@@ -34,6 +34,10 @@ APPLIANCE_WARNINGS_MAX = 16
 # Longest title and message kept, in characters; longer ones are truncated.
 APPLIANCE_WARNING_TITLE_MAX = 40
 APPLIANCE_WARNING_MESSAGE_MAX = 120
+# Longest detail kept. The appliance's own detail is shorter than this, as its
+# message is shorter than the message limit above; neither cap says how long
+# the appliance's text is.
+APPLIANCE_WARNING_DETAIL_MAX = 120
 # A warning id is short and plain, so it is safe to use as a key.
 APPLIANCE_WARNING_ID_RE = re.compile(r"[a-z0-9_-]{1,32}")
 
@@ -55,6 +59,7 @@ class ApplianceWarning:
     title: str              # non-empty, at most APPLIANCE_WARNING_TITLE_MAX characters
     message: str            # at most APPLIANCE_WARNING_MESSAGE_MAX characters
     appliance_name: str = ""  # the roster's display name, set by the core
+    detail: str = ""        # the reason, at most APPLIANCE_WARNING_DETAIL_MAX characters; "" for none
 
 
 def clean_text(value, limit: int) -> str:
@@ -175,6 +180,7 @@ def appliance_warning_entries(entries, limit: int) -> tuple[ApplianceWarning, ..
                 ),
                 title=title,
                 message=clean_text(entry.get("message"), APPLIANCE_WARNING_MESSAGE_MAX),
+                detail=clean_text(entry.get("detail"), APPLIANCE_WARNING_DETAIL_MAX),
             ))
         return tuple(out)
     except Exception:

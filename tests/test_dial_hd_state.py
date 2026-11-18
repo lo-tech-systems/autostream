@@ -65,7 +65,7 @@ class TestCorpus:
             "playing_untitled", "playing_untitled_input", "replay_hold", "replaying", "fading_out", "replay_elsewhere", "in_use_speaker",
             "unreachable", "unauthorized", "recovery_pending", "eq_none", "eq_six",
             "warning_sdhealth", "warning_update", "warning_update_result", "warning_nowifi",
-            "appliance_warning", "appliance_warning_info", "disconnected",
+            "appliance_warning", "appliance_warning_info", "appliance_warning_detail", "disconnected",
             "pin_required", "pin_invalid", "pin_busy", "pin_rate_limited",
             "pin_expired", "power_requested", "power_failed",
             "start_failure_refused", "start_failure_elsewhere", "start_failure_late_pin",
@@ -356,7 +356,7 @@ class TestWarnings:
         bell = _state("warning_sdhealth")["bell"]
         assert bell == {"severity": "warning", "entries": [{
             "key": "sdhealth", "source": "This Dial", "severity": "warning",
-            "title": "microSD card", "message": "18% life left, replace soon", "actions": []}]}
+            "title": "microSD card", "message": "18% life left, replace soon", "detail": "", "actions": []}]}
         assert _state("warning_sdhealth")["status"] is None
 
     def test_the_sd_card_is_critical_below_three_percent(self):
@@ -387,8 +387,13 @@ class TestWarnings:
         key = f"appliance:{hs.LOUNGE}:stylus_in1"
         assert state["appliances"][0]["warnings"] == [{
             "key": key, "source": "Lounge", "severity": "warning", "title": "Technics stylus",
-            "message": "Needs changing soon.", "actions": []}]
+            "message": "Needs changing soon.", "detail": "", "actions": []}]
         assert state["bell"] == {"severity": None, "entries": []}
+
+    def test_an_appliance_warning_carries_its_detail(self):
+        state = _state("appliance_warning_detail")
+        assert state["appliances"][0]["warnings"][0]["detail"] == "Played 450 h of its 500 h life."
+        assert _state("appliance_warning")["appliances"][0]["warnings"][0]["detail"] == ""
 
     def test_an_info_warning_is_an_info_entry(self):
         entry = _state("appliance_warning_info")["appliances"][0]["warnings"][0]
@@ -401,7 +406,7 @@ class TestWarnings:
         assert block["warnings"] == [{
             "key": f"appliance:{hs.LOUNGE}:update_appliance", "source": "Lounge", "severity": "warning",
             "title": "Update Lounge",
-            "message": "Its software is older than this dial's. Update it from its web UI.", "actions": []}]
+            "message": "Its software is older than this dial's. Update it from its web UI.", "detail": "", "actions": []}]
 
     def test_the_bell_lists_the_worst_severity_first(self):
         scenario = hs.SCENARIOS["nothing_playing"]

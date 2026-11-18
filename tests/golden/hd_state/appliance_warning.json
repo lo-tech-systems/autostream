@@ -36,6 +36,7 @@
           "severity": "warning",
           "title": "Technics stylus",
           "message": "Needs changing soon.",
+          "detail": "",
           "actions": []
         }
       ],

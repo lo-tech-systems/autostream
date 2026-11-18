@@ -47,6 +47,7 @@
         "severity": "warning",
         "title": "No WiFi",
         "message": "",
+        "detail": "",
         "actions": [
           "restart"
         ]

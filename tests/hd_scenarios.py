@@ -331,10 +331,10 @@ def replay_scenario(name: str, state: str, **repeat_kwargs) -> Scenario:
     return Scenario(name, _replay_snapshot(state, **repeat_kwargs), muted=None if state == "hold" else False)
 
 
-def _stylus_warning(severity="warning"):
+def _stylus_warning(severity="warning", detail=""):
     return ApplianceWarning(
         "stylus_in1", severity, "Technics stylus", "Needs changing soon.",
-        appliance_name="Lounge",
+        appliance_name="Lounge", detail=detail,
     )
 
 
@@ -426,6 +426,8 @@ def _build() -> dict:
     ), muted=None))
     add(_appliance_warning_scenario("appliance_warning", _stylus_warning()))
     add(_appliance_warning_scenario("appliance_warning_info", _stylus_warning(severity="info")))
+    add(_appliance_warning_scenario(
+        "appliance_warning_detail", _stylus_warning(detail="Played 450 h of its 500 h life.")))
     needs_update = _appliance_warning_scenario(
         "appliance_needs_update", _update_warning(), proto=2)
     add(needs_update.with_snapshot(appliances=tuple(

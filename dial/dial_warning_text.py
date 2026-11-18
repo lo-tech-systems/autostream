@@ -219,9 +219,11 @@ def appliance_warning_descriptor(appliance_id: str, warning: ApplianceWarning) -
     """The descriptor for one validated appliance warning. Its text is the
     warning's own (data, never a format template), with one Close button."""
     message = warning.message
+    detail = warning.detail
     return WarningDescriptor(
         id=appliance_warning_key(appliance_id, warning.id), kind=KIND_WARNING,
         title=warning.title, message_for=lambda _reading: message,
+        detail_for=lambda _reading: detail,
         severity_for=lambda _reading: warning.severity,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
         source_name=warning.appliance_name or APPLIANCE_WARNING_SOURCE_FALLBACK,
