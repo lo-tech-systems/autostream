@@ -28,7 +28,6 @@ from typing import Callable
 from dial_config import (
     InvalidScreenSettings,
     PIN_RESET_PATH,
-    _read_env_file,
     effective_scope,
     validate_screen_settings,
 )
@@ -42,7 +41,7 @@ from dial_display_profiles import (
 )
 from dial_touch_controllers import list_controllers
 from dial_touch_layout import metrics_for
-from dial_values import is_int
+from dial_values import is_int, read_env_file
 
 # autostream_sysutils is deployed flat into /opt/autostream beside the dial
 # package; in the repo it lives in core/.
@@ -83,7 +82,7 @@ _TOUCH_RESTART_COOLDOWN_SECONDS = 60
 # ---- Version ----------------------------------------------------------------
 
 def _load_version() -> str:
-    env = _read_env_file(_INSTALL_STATE_PATH)
+    env = read_env_file(_INSTALL_STATE_PATH)
     return env.get('AUTOSTREAM_RELEASE_TAG', 'unknown') or 'unknown'
 
 
@@ -193,7 +192,7 @@ def _pin_clear_attempts(ip: str) -> None:
 # ---- Update state -----------------------------------------------------------
 
 def _read_update_state() -> str:
-    env = _read_env_file(_UPDATE_RESULT_PATH)
+    env = read_env_file(_UPDATE_RESULT_PATH)
     status = env.get('STATUS', '').lower()
     return {'success': 'complete', 'failure': 'failed', 'in_progress': 'running'}.get(
         status, 'idle'
@@ -206,7 +205,7 @@ def _read_update_fields() -> dict:
     Every field is optional in the file (older result files lack the phase
     and attempt keys), so each falls back to a neutral value.
     """
-    env = _read_env_file(_UPDATE_RESULT_PATH)
+    env = read_env_file(_UPDATE_RESULT_PATH)
 
     def _int(key: str, high: int) -> int:
         try:

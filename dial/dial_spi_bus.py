@@ -65,6 +65,8 @@ import os
 import threading
 from dataclasses import dataclass, field
 
+from dial_values import read_text_or
+
 
 @dataclass(frozen=True)
 class SpiBusSpec:
@@ -132,9 +134,8 @@ def _configure_spi_chunk_size(path: str = _SPIDEV_BUFSIZ_PATH) -> None:
     if "SPI_BUFSIZE" in os.environ:
         return
     try:
-        with open(path, encoding="ascii") as f:
-            limit = int(f.read().strip())
-    except (OSError, ValueError):
+        limit = int(read_text_or(path))
+    except ValueError:
         return
     size = min(limit, _SPI_CHUNK_MAX)
     if size > _PUREIO_DEFAULT_CHUNK:

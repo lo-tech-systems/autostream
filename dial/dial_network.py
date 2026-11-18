@@ -24,7 +24,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import http.client
-import json
 import logging
 import subprocess
 import threading
@@ -38,6 +37,7 @@ from dial_info import (
     SIGNAL_WEAK,
     wifi_status,
 )
+from dial_values import parse_json_object, read_text_or
 
 # The watcher publishes a fresh snapshot every 15 s; polling faster than
 # that can only ever re-read the same snapshot.
@@ -169,11 +169,7 @@ def stop_network_worker() -> None:
 
 
 def _read_token() -> str:
-    try:
-        with open(WATCHER_TOKEN_PATH, "r", encoding="utf-8") as handle:
-            return handle.read().strip()
-    except OSError:
-        return ""
+    return read_text_or(WATCHER_TOKEN_PATH)
 
 
 def _fetch_snapshot() -> "dict | None":
@@ -197,10 +193,10 @@ def _fetch_snapshot() -> "dict | None":
     if status != 200:
         return None
     try:
-        parsed = json.loads(raw.decode("utf-8"))
+        parsed = parse_json_object(raw.decode("utf-8"))
     except Exception:
         return None
-    if not isinstance(parsed, dict) or parsed.get("ok") is not True:
+    if parsed.get("ok") is not True:
         return None
     return parsed
 

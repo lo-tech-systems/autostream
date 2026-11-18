@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from dial_values import clamp_percent
+from dial_values import clamp_percent, read_text_or
 
 BACKLIGHT_ROOT = Path("/sys/class/backlight")
 TICK_S = 1.0
@@ -81,8 +81,8 @@ class Backlight(BacklightBase):
     @staticmethod
     def _read_max(path: Path) -> int:
         try:
-            value = int(path.read_text().strip())
-        except (OSError, ValueError):
+            value = int(read_text_or(path))
+        except ValueError:
             return 0
         return value if value > 0 else 0
 

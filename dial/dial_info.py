@@ -28,6 +28,8 @@ import re
 import socket
 import subprocess
 
+from dial_values import read_text_or
+
 INFO_LABELS = ("WiFi", "Signal", "IPv4", "Dial name", "Firmware", "Disk free", "SD health")
 
 SIGNAL_WEAK = "Weak"
@@ -236,12 +238,7 @@ def _configured_connection() -> "str | None":
                     return value.strip()
     except (OSError, ValueError):
         pass
-    try:
-        with open(LEGACY_CONNECTION_NAME_PATH, encoding="utf-8") as handle:
-            name = handle.read().strip()
-        return name or None
-    except OSError:
-        return None
+    return read_text_or(LEGACY_CONNECTION_NAME_PATH) or None
 
 
 def configured_ssid() -> "str | None":

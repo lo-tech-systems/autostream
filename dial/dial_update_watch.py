@@ -22,7 +22,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from dial_values import clamp_percent
+from dial_values import clamp_percent, read_text_or
 
 UPDATE_RESULT_PATH = "/var/lib/autostream/update-result.env"
 UPDATE_SEEN_PATH = "/var/lib/autostream/dial-update-seen"
@@ -114,11 +114,7 @@ class UpdateWatcher:
 
 
 def read_seen_marker(path: str = UPDATE_SEEN_PATH) -> str:
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read().strip()
-    except OSError:
-        return ""
+    return read_text_or(path)
 
 
 def write_seen_marker(value: str, path: str = UPDATE_SEEN_PATH) -> None:

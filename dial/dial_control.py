@@ -23,7 +23,7 @@ from dial_control_protocol import (
     CONTROL_SERVER_CLIENT_TIMEOUT,
     CONTROL_SOCKET_PATH,
 )
-from dial_values import is_int
+from dial_values import NotAnObject, NotJson, is_int, parse_json_object
 
 # ---------------------------------------------------------------------------
 # AF_UNIX shim — absent from some Python builds and from Windows
@@ -133,11 +133,10 @@ def _dispatch(raw: bytes, server: "DialControlServer") -> dict:
         return _err("invalid_json", "request is not valid UTF-8")
 
     try:
-        obj = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+        obj = parse_json_object(text)
+    except NotJson:
         return _err("invalid_json", "request is not valid JSON")
-
-    if not isinstance(obj, dict):
+    except NotAnObject:
         return _err("invalid_request", "request must be a JSON object")
 
     # --- Command dispatch ---

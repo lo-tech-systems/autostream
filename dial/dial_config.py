@@ -27,6 +27,7 @@ from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES, LAYOUT_
 # Importing it here is safe and preserves the invariant that dial_config never
 # pulls in hardware.
 from dial_touch_controllers import DEFAULT_TOUCH_KEY, TOUCH_CONTROLLERS
+from dial_values import read_env_file
 
 HW_CONFIG_PATH     = Path('/etc/autostream/autostream-dial.json')
 SETTINGS_PATH      = Path('/var/lib/autostream/dial-settings.json')
@@ -534,25 +535,6 @@ def _resolve_persisted_panel_power_off(value: object) -> bool:
     return False
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
-    """Parse a KEY=VALUE env file without executing it."""
-    data: dict[str, str] = {}
-    try:
-        for raw in path.read_text(encoding='utf-8').splitlines():
-            line = raw.strip()
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            k, _, v = line.partition('=')
-            k = k.strip()
-            v = v.strip()
-            if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-                v = v[1:-1]
-            data[k] = v
-    except OSError:
-        pass
-    return data
-
-
 def load_config() -> DialConfig:
     """Load hardware config then overlay mutable settings.
 
@@ -656,7 +638,7 @@ def load_config() -> DialConfig:
             cfg.display = replace(cfg.display, mute_scope=SCOPE_ALL)
 
     if not cfg.uuid:
-        state = _read_env_file(INSTALL_STATE_PATH)
+        state = read_env_file(INSTALL_STATE_PATH)
         cfg.uuid = state.get('DIAL_UUID', '')
 
     if not cfg.uuid:
