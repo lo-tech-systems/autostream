@@ -533,6 +533,85 @@ inline void OutputMixer::mix_block(float* out)
 
 
 // =============================================================================
+// OutputThreadStats
+//
+// Cumulative timing and loss counters for the output thread, kept apart
+// from OutputStage so they build and test without the stage's ALSA and
+// libsamplerate link. Every record_*() call is made by the output thread
+// only; counters() is read from the control thread with relaxed loads and
+// no lock. The maxima are load, compare, store, which is safe with a
+// single writer.
+// =============================================================================
+
+class OutputThreadStats
+{
+public:
+    struct Counters
+    {
+        uint64_t lock_contended        = 0;   // blocks whose try_lock on the processor mutex failed
+        uint64_t lock_wait_total_us    = 0;   // time spent waiting for it on those blocks, summed
+        uint64_t lock_wait_max_us      = 0;
+        uint64_t lock_waits_over_1ms   = 0;
+        uint64_t sched_late_max_us     = 0;   // timer-paced only: the latest wake past its deadline
+        uint64_t live_wait_timeouts    = 0;   // live-clocked polls that gave up and padded the block
+        uint64_t prefill_dropped_bytes = 0;   // partial cold-start prefill discarded at idle
+    };
+
+    void record_lock_wait(std::chrono::steady_clock::duration waited)
+    {
+        auto     n  = std::chrono::duration_cast<std::chrono::microseconds>(waited).count();
+        uint64_t us = n > 0 ? static_cast<uint64_t>(n) : 0;
+        _lock_contended.fetch_add(1, std::memory_order_relaxed);
+        _lock_wait_total_us.fetch_add(us, std::memory_order_relaxed);
+        if (us > _lock_wait_max_us.load(std::memory_order_relaxed))
+            _lock_wait_max_us.store(us, std::memory_order_relaxed);
+        if (us > 1000)
+            _lock_waits_over_1ms.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void record_late(double seconds)
+    {
+        long long n  = std::llround(seconds * 1e6);
+        uint64_t  us = n > 0 ? static_cast<uint64_t>(n) : 0;
+        if (us > _sched_late_max_us.load(std::memory_order_relaxed))
+            _sched_late_max_us.store(us, std::memory_order_relaxed);
+    }
+
+    void record_live_wait_timeout()
+    {
+        _live_wait_timeouts.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void record_prefill_dropped(size_t bytes)
+    {
+        _prefill_dropped_bytes.fetch_add(static_cast<uint64_t>(bytes), std::memory_order_relaxed);
+    }
+
+    Counters counters() const
+    {
+        Counters c;
+        c.lock_contended        = _lock_contended.load(std::memory_order_relaxed);
+        c.lock_wait_total_us    = _lock_wait_total_us.load(std::memory_order_relaxed);
+        c.lock_wait_max_us      = _lock_wait_max_us.load(std::memory_order_relaxed);
+        c.lock_waits_over_1ms   = _lock_waits_over_1ms.load(std::memory_order_relaxed);
+        c.sched_late_max_us     = _sched_late_max_us.load(std::memory_order_relaxed);
+        c.live_wait_timeouts    = _live_wait_timeouts.load(std::memory_order_relaxed);
+        c.prefill_dropped_bytes = _prefill_dropped_bytes.load(std::memory_order_relaxed);
+        return c;
+    }
+
+private:
+    std::atomic<uint64_t> _lock_contended{0};
+    std::atomic<uint64_t> _lock_wait_total_us{0};
+    std::atomic<uint64_t> _lock_wait_max_us{0};
+    std::atomic<uint64_t> _lock_waits_over_1ms{0};
+    std::atomic<uint64_t> _sched_late_max_us{0};
+    std::atomic<uint64_t> _live_wait_timeouts{0};
+    std::atomic<uint64_t> _prefill_dropped_bytes{0};
+};
+
+
+// =============================================================================
 // OutputStage
 //
 // Runs OutputMixer on one thread: paces each block, applies the shared
@@ -566,6 +645,10 @@ public:
     // more than once, or when the thread was never started.
     void stop();
 
+    // The output thread's own timing and loss counters. Relaxed loads only;
+    // safe from any thread.
+    OutputThreadStats::Counters counters() const { return _stats.counters(); }
+
 private:
     void thread_func();
 
@@ -578,4 +661,6 @@ private:
     std::thread       _thread;
     std::atomic<bool> _running{false};
     std::atomic<bool> _stop_requested{false};
+
+    OutputThreadStats _stats;
 };

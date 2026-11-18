@@ -328,6 +328,56 @@ static void test_output_gap_is_cold()
 }
 
 // ---------------------------------------------------------------------------
+// OutputThreadStats: zero on construction, then the arithmetic.
+// ---------------------------------------------------------------------------
+
+static void test_output_thread_stats_zero_on_construction()
+{
+    OutputThreadStats stats;
+    OutputThreadStats::Counters c = stats.counters();
+    CHECK(c.lock_contended == 0 && c.lock_wait_total_us == 0 && c.lock_wait_max_us == 0
+          && c.lock_waits_over_1ms == 0 && c.sched_late_max_us == 0
+          && c.live_wait_timeouts == 0 && c.prefill_dropped_bytes == 0,
+          "a fresh OutputThreadStats reports every counter as zero");
+}
+
+static void test_output_thread_stats_lock_waits()
+{
+    OutputThreadStats stats;
+    stats.record_lock_wait(std::chrono::microseconds(200));
+    stats.record_lock_wait(std::chrono::microseconds(1500));
+    stats.record_lock_wait(std::chrono::microseconds(700));
+    OutputThreadStats::Counters c = stats.counters();
+    CHECK(c.lock_contended == 3, "every recorded wait counts as a contended block");
+    CHECK(c.lock_wait_total_us == 2400, "waits are summed in microseconds");
+    CHECK(c.lock_wait_max_us == 1500, "the longest wait is kept");
+    CHECK(c.lock_waits_over_1ms == 1, "only the wait over one millisecond is counted as such");
+}
+
+static void test_output_thread_stats_late_keeps_maximum()
+{
+    OutputThreadStats stats;
+    stats.record_late(0.002);
+    stats.record_late(0.010);
+    stats.record_late(0.004);
+    CHECK(stats.counters().sched_late_max_us == 10000, "record_late keeps the largest lateness");
+    stats.record_late(-0.001);
+    CHECK(stats.counters().sched_late_max_us == 10000, "a negative lateness is ignored");
+}
+
+static void test_output_thread_stats_accumulates_timeouts_and_prefill()
+{
+    OutputThreadStats stats;
+    stats.record_live_wait_timeout();
+    stats.record_live_wait_timeout();
+    stats.record_prefill_dropped(3840);
+    stats.record_prefill_dropped(1920);
+    OutputThreadStats::Counters c = stats.counters();
+    CHECK(c.live_wait_timeouts == 2, "live-wait timeouts accumulate");
+    CHECK(c.prefill_dropped_bytes == 5760, "discarded prefill bytes accumulate");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -345,6 +395,11 @@ int main()
     test_zero_gain_source_drained_not_summed();
     test_push_beyond_capacity_drops_and_counts();
     test_output_gap_is_cold();
+
+    test_output_thread_stats_zero_on_construction();
+    test_output_thread_stats_lock_waits();
+    test_output_thread_stats_late_keeps_maximum();
+    test_output_thread_stats_accumulates_timeouts_and_prefill();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);
