@@ -21,7 +21,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from _source_text import page_with_static
 
+from _source_text import page_data, page_with_static, static_text
 from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -30,7 +32,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 try:
-    from autostream_webui_page_airplay import _REMOTE_HOME_SCRIPT
+    _REMOTE_HOME_SCRIPT = static_text("page/remote_home.js")
     from autostream_webui_page_equaliser import _EQUALISER_JS, _REMOTE_EQUALISER_SCRIPT
     _HAS_SCRIPTS = True
 except ImportError:
@@ -251,7 +253,7 @@ def _render_local_home_html() -> str:
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
 
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 @pytest.fixture(scope="module")
@@ -266,7 +268,8 @@ class TestOutputsEmptyToleranceConstant:
         assert OUTPUTS_EMPTY_TOLERANCE_SECONDS == 6.0
 
     def test_tolerance_injected_into_local_script(self, local_home_html):
-        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS=6000;" in local_home_html
+        assert page_data(local_home_html)["outputs_empty_tolerance_ms"] == 6000
+        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS = pageData.outputs_empty_tolerance_ms;" in local_home_html
 
     def test_tolerance_injected_into_remote_script(self):
         from unittest.mock import MagicMock
@@ -302,8 +305,9 @@ class TestOutputsEmptyToleranceConstant:
                 stack.enter_context(p)
             send_remote_home_page(handler, state, "some-remote-appliance-id")
 
-        remote_home_html = b"".join(chunks).decode("utf-8", errors="replace")
-        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS=6000;" in remote_home_html
+        remote_home_html = page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
+        assert page_data(remote_home_html)["outputs_empty_tolerance_ms"] == 6000
+        assert "window.__OUTPUTS_EMPTY_TOLERANCE_MS = pageData.outputs_empty_tolerance_ms;" in remote_home_html
 
 
 @_skip

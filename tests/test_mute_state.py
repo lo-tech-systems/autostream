@@ -37,6 +37,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_with_static, static_text
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -596,9 +597,7 @@ class TestWebUIMuteControlRemoved:
         assert "unmuteMaster" not in src
 
     def test_page_js_header_shows_muted_suffix(self):
-        import autostream_webui_assets as assets
-        src = inspect_source(assets)
-        assert "(Muted)" in src
+        assert "(Muted)" in static_text("page/home_cards.js")
 
 
 def inspect_source(module) -> str:
@@ -680,7 +679,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
         for p in patches:
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 def _render_airplay_page_html_playing() -> str:
@@ -721,7 +720,7 @@ def _render_remote_home_html() -> str:
         for p in patches:
             stack.enter_context(p)
         send_remote_home_page(handler, state, "a" * 20)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 class TestNowPlayingLevelSlotMarkup:

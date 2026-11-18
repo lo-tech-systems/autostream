@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_with_static
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -93,7 +94,7 @@ def _render_remote_home(aid: str = _REMOTE_ID) -> str:
          patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
          patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound"):
         send_remote_home_page(handler, state, aid)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 def _render_remote_equaliser(aid: str = _REMOTE_ID) -> str:

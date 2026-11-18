@@ -39,6 +39,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_with_static
 
 from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
@@ -466,7 +467,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
 
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 class TestTopControlsCssRegressions:
@@ -608,7 +609,7 @@ class TestHomeRepeatButton:
         held ('most recent kept'), not the old capacity-loss framing
         ('tail only')."""
         html = _render_airplay_page(repeat_enabled=True)
-        assert "if (recording.truncated_head) title += ' · most recent kept';" in html
+        assert "if (recording.truncated_head) title += ' \\u00b7 most recent kept';" in html
         assert "· tail only" not in html
         assert "btn.title = title;" in html
 

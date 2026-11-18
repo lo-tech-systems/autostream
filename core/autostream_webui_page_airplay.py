@@ -9,7 +9,6 @@ Renderer for the main AirPlay control page (/).
 from __future__ import annotations
 
 import html
-import json
 import logging
 
 from typing import Optional
@@ -27,7 +26,6 @@ import autostream_webui_static as static
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
     BANNER_LOGO_HTML,
-    HOME_CARDS_SCRIPT,
     ICON_BLUETOOTH,
     ICON_CD,
     ICON_LINE_LEVEL,
@@ -55,99 +53,9 @@ from autostream_webui_state import WebUIState
 OUTPUTS_EMPTY_TOLERANCE_SECONDS = 6.0
 
 
-_NP_ART_CSS = (
-    ".now-playing-icon.np-icon-art{width:72px;height:72px;border-radius:6px;overflow:hidden;}"
-    ".now-playing-icon.np-icon-art img{width:100%;height:100%;object-fit:cover;display:block;}"
-)
-
-_VU_STEREO_CSS = (
-    ".vu-meter{flex-direction:row;gap:3px;width:23px;}"
-    ".vu-col{display:flex;flex-direction:column-reverse;gap:2px;"
-    "width:10px;flex:0 0 10px;}"
-    ".np-level{display:flex;align-items:center;width:23px;flex:0 0 23px;}"
-)
-
-# Shared extra_css for the two "Home page" renderers below (send_airplay_page,
-# send_remote_home_page) — built once at import time rather than reconstructed
-# identically inside each function on every request.
-_PIN_MODAL_NOTE_CSS = (
-    "  #pinModal .modal-note{margin:.6rem 0 0 0;font-size:.95rem;color:var(--color-text-muted);}\n"
-    "  #pinModal .modal-note[hidden]{display:none;}"
-)
-_HOME_PAGE_STYLE_FILES = ("page/modal.css", "page/appliance_selector.css")
-_HOME_PAGE_EXTRA_CSS = f"{_PIN_MODAL_NOTE_CSS}\n{_VU_STEREO_CSS}\n{_NP_ART_CSS}"
-
-
-_REMOTE_HOME_SCRIPT = """<script>
-function renderHomeState(data){
-  renderNowPlayingCard(data);
-  updateRepeatButton(data);
-  var prefs=(data&&data.preferences)||{};var showMaster=!!prefs.show_master_volume;var masterCard=document.getElementById('master-volume-card');if(masterCard)masterCard.hidden=!showMaster;
-  if(Array.isArray(data.outputs)){
-    var outputs=data.outputs;
-    if(outputs.length===0){
-      if(__outputsEmptySince==null)__outputsEmptySince=Date.now();
-      if((Date.now()-__outputsEmptySince)>=window.__OUTPUTS_EMPTY_TOLERANCE_MS){var _ol=document.getElementById('outputs-list');if(_ol)while(_ol.firstChild)_ol.removeChild(_ol.firstChild);__lastOutputsShape='';setOutputsPlaceholder('empty');}
-      // else: within tolerance -- leave existing cards and placeholder alone
-    }else{
-      __outputsEmptySince=null;
-      var inShape=_outputsShape(outputs);if(inShape!==__lastOutputsShape){__lastOutputsShape=inShape;renderOutputList(outputs);}else{setOutputsPlaceholder('hidden');outputs.forEach(function(o){var id=String(o.id);if(window.__PENDING_OUTPUTS&&window.__PENDING_OUTPUTS.has(id))return;var cb=document.getElementById('output_enabled_'+id);var sl=document.getElementById('vol_slider_'+id);if(cb){cb.checked=!!o.selected;updateOutputStateVisual(id,!!o.selected);}if(sl&&sl!==document.activeElement){var v=normalizeVolume(o.volume);if(sl.value!==String(v)){sl.value=String(v);updateVolumeLabel(id,v);}}});reorderOutputCards();if(document.activeElement!==document.getElementById('master_vol_slider'))updateMasterVolumeCard();}
-    }
-  }
-  // else: outputs unknown (field missing/null despite an ok reply) -- freeze
-  // the empty-tolerance timer and leave the DOM untouched entirely.
-  var warnings=(data&&data.warnings)||{};['stylus','belt','bearing'].forEach(function(item){var el=document.getElementById(item+'-warning-banner');if(!el)return;var txt=String(warnings[item]||'').trim();el.style.display=txt?'block':'none';el.textContent=txt;});
-  if(showMaster)updateMasterVolumeCard();
-}
-var __lastOutputsShape='';
-var __outputsEmptySince=null;
-function _outputShapeKey(o){return String(o.id)+'|'+String(o.name||'')+'|'+String(!!o.is_default)+'|'+String(!!o.remote_in_use)+'|'+String(o.remote_owner||'');}
-function _outputsShape(outputs){return outputs.map(_outputShapeKey).sort().join(',');}
-var __remoteFailCount=0;var __remotePolling=true;var __remotePollTimer=null;
-var __DEFINITIVE_ERRORS=['not_found','appliance_unconfigured','appliance_conflicted','appliance_identity_unavailable'];
-var __TRANSPORT_ERRORS=['remote_timeout','remote_bad_response','appliance_offline'];
-function __homeRedirectWithFlash(msg){window.location.href='/?msg='+encodeURIComponent('error:'+msg);}
-function __homeHandleDefinitiveError(err){var h=window.__REMOTE_HOSTNAME||'autostream';var msgs={'not_found':'The selected appliance address is invalid. Returned to this appliance.','appliance_unconfigured':h+' is not ready for remote control. Returned to this appliance.','appliance_conflicted':h+' has a network identity conflict and cannot be selected safely. Returned to this appliance.','appliance_identity_unavailable':h+' cannot currently provide multi-appliance access. Returned to this appliance.'};__homeRedirectWithFlash(msgs[err]||(h+' is unavailable. Returned to this appliance.'));}
-function scheduleRemotePoll(){if(__remotePollTimer)clearTimeout(__remotePollTimer);__remotePollTimer=setTimeout(pollHomeState,3000);}
-async function pollHomeState(){if(!__remotePolling)return;var data=null;try{var r=await fetch(window.__POLL_URL,{cache:'no-store',signal:AbortSignal.timeout(5000)});data=await r.json();}catch(e){__remoteFailCount++;if(__remoteFailCount>=3){__homeRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');return;}scheduleRemotePoll();return;}if(!data||!data.ok){var err=(data&&data.error)||'remote_timeout';if(__DEFINITIVE_ERRORS.indexOf(err)>=0){__homeHandleDefinitiveError(err);return;}if(__TRANSPORT_ERRORS.indexOf(err)>=0){__remoteFailCount++;if(__remoteFailCount>=3){__homeRedirectWithFlash((window.__REMOTE_HOSTNAME||'autostream')+' is unavailable. Returned to this appliance.');return;}}scheduleRemotePoll();return;}__remoteFailCount=0;renderHomeState(data);scheduleRemotePoll();}
-window.addEventListener('DOMContentLoaded',function(){
-  window.__PENDING_OUTPUTS=new Set();window.__MASTER_DRAG_SNAPSHOTS={};window.__MASTER_DRAG_BASE=0;window.__OUTPUTS_IN_FLIGHT=false;
-  initApplianceSelector();refreshApplianceSelector();
-  setInterval(function(){if(!document.hidden)refreshApplianceSelector();},15000);
-  document.addEventListener('visibilitychange',function(){if(!document.hidden){__remotePolling=true;__remoteFailCount=0;pollHomeState();refreshApplianceSelector();}else{__remotePolling=false;if(__remotePollTimer){clearTimeout(__remotePollTimer);__remotePollTimer=null;}}});
-  __remotePolling=true;__remoteFailCount=0;
-  setInterval(vuRenderTick,VU_BIN_MS);
-  pollHomeState();
-});
-</script>"""
-
-_NAVIGATE_SCRIPT = (
-    "<script>"
-    "function navigateToRemoteAppliance(hostname){"
-    "fetch('/api/appliances',{cache:'no-store'})"
-    ".then(function(r){return r.json();})"
-    ".then(function(data){"
-    "if(!data||!data.ok||!Array.isArray(data.appliances))return;"
-    "var appliance=data.appliances.find(function(a){"
-    "return String(a.hostname||'').toLowerCase()===String(hostname||'').toLowerCase();"
-    "});"
-    "if(appliance){window.location.href='/a/'+String(appliance.id)+'/';}"
-    "}).catch(function(){});"
-    "}"
-    "document.addEventListener('DOMContentLoaded',function(){"
-    "var list=document.getElementById('outputs-list');"
-    "if(!list)return;"
-    "list.addEventListener('click',function(e){"
-    "if(!window.__CONTROL_OTHER_APPLIANCES)return;"
-    "var card=e.target.closest('.output-card[data-remote-in-use=\"1\"]');"
-    "if(!card)return;"
-    "if(e.target.closest('.output-toggle')||e.target.closest('.output-slider-wrap'))return;"
-    "var owner=card.getAttribute('data-remote-owner');"
-    "if(owner)navigateToRemoteAppliance(owner);"
-    "});"
-    "});"
-    "</script>"
-)
+# Stylesheets both Home renderers link: the shared modal and selector styles and
+# the Home page's own rules.
+_HOME_PAGE_STYLE_FILES = ("page/modal.css", "page/appliance_selector.css", "page/home.css")
 
 
 def _build_appliances_for_selector() -> list:
@@ -462,165 +370,38 @@ def send_airplay_page(
         _top_right_html = ""
     csrf_meta = (
         f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
-        f"<script>window.__CSRF='{html.escape(csrf_token)}';"
-        f"window.__PRESET_VOLUME={preset_volume};"
-        f"window.__SHOW_INPUT_DETAIL={'true' if show_input_detail else 'false'};"
-        f"window.__VU_DELAY_MS={int(vu_delay_ms)};"
-        f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
-        f"window.__ICON_BLUETOOTH={json.dumps(ICON_BLUETOOTH)};"
-        f"window.__ICON_CD={json.dumps(ICON_CD)};"
-        f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
-        f"window.__LOCAL_ID='{html.escape(_local_id)}';"
-        f"window.__SELECTOR_CURRENT_ID='{html.escape(_local_id)}';"
-        f"window.__OUTPUT_URL='/api/output';"
-        f"window.__REPEAT_URL='/api/repeat';"
-        f"window.__OUTPUTS_EMPTY_TOLERANCE_MS={int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000)};"
-        f"window.__PIN_PROMPT_FALLBACK='Enter PIN shown on your device';"
-        f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
-        f"</script>"
+        f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>"
     ) + static.script_tag("page/csrf_recovery.js")
 
-    _extra_css = _HOME_PAGE_EXTRA_CSS
-    _poll_js_src = static.script_tag("poll.js")
-    _render_fragments_js_src = static.script_tag("render_fragments.js")
-    _head_extra = f"""{csrf_meta}
-{_poll_js_src}
-{_render_fragments_js_src}
-""" + HOME_CARDS_SCRIPT + static.script_tag("page/appliance_selector.js") + static.script_tag("page/info_modal.js") + f"""
-      <script>
-        function getOutputIdKey(outputs) {{
-          return JSON.stringify(outputs.map(function(o) {{
-            return String(o.id) + '|' + String(!!o.remote_in_use) + '|' + String(o.remote_owner || '');
-          }}).sort());
-        }}
-        function onStatusPollData(d) {{
-          renderNowPlayingCard(d);
-          updateRepeatButton(d);
-          ['stylus', 'belt', 'bearing', 'dial_update', 'sample_rate'].forEach(function(item) {{
-            var el = document.getElementById(item.replace('_', '-') + '-warning-banner');
-            if (!el) return;
-            var key = item === 'stylus' ? 'playback_banner_text' : item + '_banner_text';
-            var txt = String((d && d[key]) || '').trim();
-            el.style.display = txt ? 'block' : 'none';
-            el.textContent = txt;
-            if (item === 'sample_rate' && txt) {{
-              // The link follows the input that is mismatching.
-              var idx = 0;
-              var lv = (d && Array.isArray(d.input_levels)) ? d.input_levels : [];
-              for (var i = 0; i < lv.length; i++) {{
-                if (lv[i] && Number(lv[i].rate_mismatch_hz) > 0) {{
-                  var n = Number.isFinite(Number(lv[i].index)) ? Number(lv[i].index) : i + 1;
-                  if (idx === 0 || n < idx) idx = n;
-                }}
-              }}
-              el.href = '/setup#input' + (idx || 1);
-            }}
-          }});
-        }}
-        function onOutputsPollData(j) {{
-          var __list = document.getElementById('outputs-list');
-          var __domIds = __list ? Array.from(__list.querySelectorAll('.output-card[data-output-id]')).map(function(c) {{
-            return c.getAttribute('data-output-id') + '|' + (c.getAttribute('data-remote-in-use') === '1' ? 'true' : 'false') + '|' + (c.getAttribute('data-remote-owner') || '');
-          }}) : [];
-          var domKey = __domIds.length > 0 ? JSON.stringify(__domIds.sort()) : '';
-          if (!j || !j.ok) {{
-            if (domKey === '') {{ setOutputsPlaceholder('unreachable'); }}
-            return;
-          }}
-          if (!Array.isArray(j.outputs)) {{
-            // Outputs unknown (field missing despite an ok reply): leave the
-            // DOM untouched and freeze the empty-tolerance timer rather than
-            // treating this as a confirmed empty outputs list.
-            return;
-          }}
-          if (typeof maybePromptForPin === 'function') {{
-            try {{ maybePromptForPin(j.outputs); }} catch (e) {{}}
-          }}
-          var outputs = j.outputs;
-          if (outputs.length === 0) {{
-            if (window.__OUTPUTS_EMPTY_SINCE == null) {{ window.__OUTPUTS_EMPTY_SINCE = Date.now(); }}
-            if (domKey !== '' && (Date.now() - window.__OUTPUTS_EMPTY_SINCE) < window.__OUTPUTS_EMPTY_TOLERANCE_MS) {{
-              return;
-            }}
-          }} else {{
-            window.__OUTPUTS_EMPTY_SINCE = null;
-          }}
-          var targetKey = outputs.length > 0 ? getOutputIdKey(outputs) : '';
-          if (targetKey === domKey) {{
-            if (targetKey === '') {{
-              setOutputsPlaceholder('empty');
-            }} else {{
-              setOutputsPlaceholder('hidden');
-              for (const o of outputs) {{
-                const id = String(o.id);
-                if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
-                const cb = document.getElementById("output_enabled_" + id);
-                const sl = document.getElementById("vol_slider_" + id);
-                if (cb) cb.checked = !!o.selected;
-                updateOutputStateVisual(id, !!o.selected);
-                if (sl && !isActiveControl(sl)) {{
-                  const v = normalizeVolume(o.volume);
-                  const vstr = String(v);
-                  if (sl.value !== vstr) sl.value = vstr;
-                  updateVolumeLabel(id, v);
-                }}
-              }}
-              reorderOutputCards();
-              if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
-            }}
-            return;
-          }}
-          var hasPending = window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.size > 0;
-          var masterActive = isActiveControl(document.getElementById('master_vol_slider'));
-          var pinVisible = !!(document.getElementById('pinModal') && document.getElementById('pinModal').classList.contains('show'));
-          var anySliderActive = !!(document.activeElement && document.activeElement.id && document.activeElement.id.startsWith('vol_slider_'));
-          if (!hasPending && !masterActive && !pinVisible && !anySliderActive) {{
-            renderOutputList(outputs);
-            return;
-          }}
-          if (domKey !== '') {{ setOutputsPlaceholder('hidden'); }}
-          for (const o of outputs) {{
-            const id = String(o.id);
-            if (window.__PENDING_OUTPUTS && window.__PENDING_OUTPUTS.has(id)) continue;
-            const cb = document.getElementById("output_enabled_" + id);
-            const sl = document.getElementById("vol_slider_" + id);
-            if (cb) cb.checked = !!o.selected;
-            updateOutputStateVisual(id, !!o.selected);
-            if (sl && !isActiveControl(sl)) {{
-              const v = normalizeVolume(o.volume);
-              const vstr = String(v);
-              if (sl.value !== vstr) sl.value = vstr;
-              updateVolumeLabel(id, v);
-            }}
-          }}
-          reorderOutputCards();
-          if (!isActiveControl(document.getElementById('master_vol_slider'))) updateMasterVolumeCard();
-        }}
-
-        window.addEventListener('DOMContentLoaded',function(){{
-          window.__PENDING_OUTPUTS = new Set();
-          window.__PIN_DISMISSED = new Set();
-          window.__PIN_PROMPT_ACTIVE = false;
-          window.__MASTER_DRAG_SNAPSHOTS = {{}};
-          window.__MASTER_DRAG_BASE = 0;
-          document.querySelectorAll('[data-volume-label-for]').forEach(s=>{{
-            var i=s.getAttribute('data-volume-label-for'), sl=document.getElementById('vol_slider_'+i);
-            if(sl)updateVolumeLabel(i, sl.value);
-            var cb=document.getElementById('output_enabled_'+i);
-            if(cb) updateOutputStateVisual(String(i), !!cb.checked);
-          }});
-          reorderOutputCards();
-          updateMasterVolumeCard();
-          window.__OUTPUTS_EMPTY_SINCE = null;
-          setInterval(vuRenderTick, VU_BIN_MS);
-          initApplianceSelector();
-          refreshApplianceSelector();
-          setInterval(function(){{if(!document.hidden) refreshApplianceSelector();}},15000);
-          document.addEventListener('visibilitychange',function(){{if(!document.hidden) refreshApplianceSelector();}});
-          Poller({{ url: '/api/status', intervalMs: 1500, onData: onStatusPollData }});
-          Poller({{ url: '/api/owntone/outputs_state', intervalMs: 1500, timeoutMs: 5000, onData: onOutputsPollData }});
-        }});
-      </script>""" + _NAVIGATE_SCRIPT
+    _island = static.page_data_island({
+        "preset_volume": preset_volume,
+        "show_input_detail": bool(show_input_detail),
+        "vu_delay_ms": int(vu_delay_ms),
+        "icons": {
+            "turntable": ICON_TURNTABLE,
+            "bluetooth": ICON_BLUETOOTH,
+            "cd": ICON_CD,
+            "line_level": ICON_LINE_LEVEL,
+        },
+        "local_id": _local_id,
+        "selector_current_id": _local_id,
+        "output_url": "/api/output",
+        "repeat_url": "/api/repeat",
+        "outputs_empty_tolerance_ms": int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000),
+        "pin_prompt_fallback": "Enter PIN shown on your device",
+        "control_other_appliances": bool(effective_control),
+    })
+    _head_extra = (
+        csrf_meta
+        + _island
+        + "\n"
+        + static.script_tag("poll.js") + "\n"
+        + static.script_tag("render_fragments.js") + "\n"
+        + static.script_tag("page/home_cards.js")
+        + static.script_tag("page/appliance_selector.js")
+        + static.script_tag("page/info_modal.js")
+        + static.script_tag("page/home.js")
+    )
     _body_prefix = """
 <div id="pinModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="pinModalTitle">
   <div class="panel modal-panel">
@@ -689,7 +470,7 @@ def send_airplay_page(
     # input detail to show); there is no separate mute indicator here any
     # more -- a mute is now shown in the header text instead, and the VU
     # meter itself simply stays visible whether the appliance is muted or
-    # not (see _VU_STEREO_CSS's .np-level rule for the slot's fixed width).
+    # not (see home.css's .np-level rule for the slot's fixed width).
     _vu_html = f'<div class="np-level" id="np-level">{_vu_meter_html}</div>'
     _np_card_cls = "" if _np_is_playing else " np-ready"
     _np_hdr_text = "Now Playing" if _np_is_playing else "Ready"
@@ -772,7 +553,6 @@ def send_airplay_page(
         "autostream",
         _body_html,
         style_files=_HOME_PAGE_STYLE_FILES,
-        extra_css=_extra_css,
         head_extra=_head_extra,
         body_prefix=_body_prefix,
         body_suffix=static.script_tag("page/a2hs.js") + static.script_tag("page/banner_dismiss.js"),
@@ -841,36 +621,39 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         "text-align:center;text-decoration:none;"
     )
 
-    _extra_css = _HOME_PAGE_EXTRA_CSS
+    _island = static.page_data_island({
+        "preset_volume": preset_volume,
+        "show_input_detail": False,
+        "vu_delay_ms": 2250,
+        "icons": {
+            "turntable": ICON_TURNTABLE,
+            "bluetooth": ICON_BLUETOOTH,
+            "cd": ICON_CD,
+            "line_level": ICON_LINE_LEVEL,
+        },
+        "local_id": _local_id,
+        "selector_current_id": appliance_id,
+        "output_url": output_url,
+        "repeat_url": repeat_url,
+        "outputs_empty_tolerance_ms": int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000),
+        "pin_prompt_fallback": "Enter PIN",
+        "control_other_appliances": bool(effective_control),
+        "remote_aid": appliance_id,
+        "remote_hostname": _remote_hostname,
+        "poll_url": poll_url,
+    })
 
     _head_extra = (
         f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
-        f"<script>"
-        f"window.__CSRF='{html.escape(csrf_token)}';"
-        f"window.__PRESET_VOLUME={preset_volume};"
-        f"window.__SHOW_INPUT_DETAIL=false;"
-        f"window.__VU_DELAY_MS=2250;"
-        f"window.__ICON_TURNTABLE={json.dumps(ICON_TURNTABLE)};"
-        f"window.__ICON_BLUETOOTH={json.dumps(ICON_BLUETOOTH)};"
-        f"window.__ICON_CD={json.dumps(ICON_CD)};"
-        f"window.__ICON_LINE_LEVEL={json.dumps(ICON_LINE_LEVEL)};"
-        f"window.__LOCAL_ID='{html.escape(_local_id)}';"
-        f"window.__REMOTE_AID='{html.escape(appliance_id)}';"
-        f"window.__REMOTE_HOSTNAME='{html.escape(_remote_hostname)}';"
-        f"window.__SELECTOR_CURRENT_ID='{html.escape(appliance_id)}';"
-        f"window.__POLL_URL='{html.escape(poll_url)}';"
-        f"window.__OUTPUT_URL='{html.escape(output_url)}';"
-        f"window.__REPEAT_URL='{html.escape(repeat_url)}';"
-        f"window.__OUTPUTS_EMPTY_TOLERANCE_MS={int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000)};"
-        f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
-        f"</script>\n"
+        f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>"
         + static.script_tag("page/csrf_recovery.js")
+        + _island
+        + "\n"
         + static.script_tag("render_fragments.js") + "\n"
-        + HOME_CARDS_SCRIPT
+        + static.script_tag("page/home_cards.js")
         + static.script_tag("page/appliance_selector.js")
         + static.script_tag("page/info_modal.js")
-        + _REMOTE_HOME_SCRIPT
-        + _NAVIGATE_SCRIPT
+        + static.script_tag("page/remote_home.js")
     )
 
     _body_prefix = """
@@ -894,7 +677,7 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     # Repeat control -- same small pill-style button as the local page, but
     # hidden until the polled home feed's "repeat" block confirms the remote
     # appliance actually has the feature enabled (updateRepeatButton, shared
-    # via HOME_CARDS_SCRIPT, un-hides it from renderHomeState). An older
+    # via home_cards.js, un-hides it from renderHomeState). An older
     # remote appliance that never reports a "repeat" block simply leaves the
     # pill hidden -- no error shown. Navigation back to the bound appliance
     # is via the logo (BANNER_LOGO_HTML links to "/"), so this slot no longer
@@ -962,7 +745,6 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"autostream — {html.escape(_remote_hostname)}",
         _body_html,
         style_files=_HOME_PAGE_STYLE_FILES,
-        extra_css=_extra_css,
         head_extra=_head_extra,
         body_prefix=_body_prefix,
         body_suffix=static.script_tag("page/a2hs.js") + static.script_tag("page/banner_dismiss.js"),

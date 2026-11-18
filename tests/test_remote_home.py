@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_with_static
 from _source_text import page_scripts, static_text
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -233,7 +234,7 @@ class TestRemoteHomePageContent:
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="bound-host"):
             send_remote_home_page(handler, state, aid)
 
-        return b"".join(written_chunks).decode("utf-8", errors="replace")
+        return page_with_static(b"".join(written_chunks).decode("utf-8", errors="replace"))
 
     def test_page_returns_html(self):
         html = self._render()

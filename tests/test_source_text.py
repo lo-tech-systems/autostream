@@ -68,3 +68,11 @@ def test_page_scripts_joins_inline_bodies_and_linked_files_in_order():
 def test_page_data_parses_the_island_and_defaults_to_empty():
     assert _source_text.page_data(_PAGE) == {"a": 1, "b": "x"}
     assert _source_text.page_data("<html></html>") == {}
+
+
+def test_page_with_static_appends_the_linked_files_but_not_the_theme():
+    text = _source_text.page_with_static(_PAGE)
+    assert text.startswith(_PAGE)
+    assert _source_text.static_text("poll.js")[:40] in text
+    assert _source_text.static_text("render_fragments.js")[:40] in text
+    assert _source_text.static_text("theme.css")[:40] not in text

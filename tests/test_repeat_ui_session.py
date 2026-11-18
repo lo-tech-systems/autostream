@@ -32,7 +32,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
-from _source_text import linked_static, page_scripts, static_text
+from _source_text import linked_static, page_data, page_scripts, page_with_static, static_text
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -109,7 +109,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
 
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 @pytest.fixture(scope="module")
@@ -162,7 +162,7 @@ class TestReplayHeading:
             "'Repeat Play' : 'Now Playing') : 'Ready') + mutedSuffix + hdrSuffix;" in home_html
         )
         assert (
-            "var hdrSuffix = window.__REMOTE_HOSTNAME ? (' · ' + window.__REMOTE_HOSTNAME) : '';"
+            "var hdrSuffix = window.__REMOTE_HOSTNAME ? (' \\u00b7 ' + window.__REMOTE_HOSTNAME) : '';"
             in home_html
         )
 
@@ -675,7 +675,7 @@ def _render_remote_home_page() -> str:
             stack.enter_context(p)
         send_remote_home_page(handler, state, "some-remote-appliance-id")
 
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 @pytest.fixture(scope="module")
@@ -695,12 +695,12 @@ class TestRemoteHomeDelegatesToSharedNowPlayingRenderer:
 
     def test_shared_script_is_byte_identical_on_both_pages(self, home_html, remote_home_html):
         # Regression guard for the refactor itself: both pages must embed
-        # the exact same HOME_CARDS_SCRIPT text, not independently
-        # hand-maintained copies that can drift apart again.
-        from autostream_webui_assets import HOME_CARDS_SCRIPT
-
-        assert HOME_CARDS_SCRIPT in home_html
-        assert HOME_CARDS_SCRIPT in remote_home_html
+        # the exact same script file, not independently hand-maintained
+        # copies that can drift apart again.
+        assert "page/home_cards.js" in linked_static(home_html)
+        assert "page/home_cards.js" in linked_static(remote_home_html)
+        assert static_text("page/home_cards.js") in home_html
+        assert static_text("page/home_cards.js") in remote_home_html
 
     def test_info_modal_shared_across_both_pages(self, home_html, remote_home_html):
         # Regression guard for the info-modal extraction: both pages must
@@ -739,10 +739,10 @@ class TestRemoteShellTopControls:
 
 class TestRepeatUrlParameterization:
     def test_local_page_sets_repeat_url_to_api_repeat(self, home_html):
-        assert "window.__REPEAT_URL='/api/repeat';" in home_html
+        assert page_data(home_html)["repeat_url"] == "/api/repeat"
 
     def test_remote_page_sets_repeat_url_to_gateway_path(self, remote_home_html):
-        assert "window.__REPEAT_URL='/api/appliances/some-remote-appliance-id/repeat';" in remote_home_html
+        assert page_data(remote_home_html)["repeat_url"] == "/api/appliances/some-remote-appliance-id/repeat"
 
 
 class TestLogoIsHomeLink:

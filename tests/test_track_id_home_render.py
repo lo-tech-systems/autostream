@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_data, page_with_static
 
 from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
@@ -114,7 +115,7 @@ def _render_airplay_page(ti_snapshot=None, playback_snapshot=None, levels=None) 
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
 
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 def _render_remote_home() -> str:
@@ -147,7 +148,7 @@ def _render_remote_home() -> str:
             stack.enter_context(p)
         send_remote_home_page(handler, state, _REMOTE_ID)
 
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 # ---------------------------------------------------------------------------
@@ -453,13 +454,16 @@ class TestNowPlayingIconKind:
             ti_snapshot=disabled_snapshot(),
             playback_snapshot=_playback_snapshot_with_input(),
         )
-        assert "window.__ICON_CD=" in html
+        assert page_data(html)["icons"]["cd"].startswith("<svg")
+        assert "window.__ICON_CD = pageIcons.cd;" in html
 
 
 @_skip
 class TestRemoteHomeCdIcon:
     def test_remote_home_emits_cd_icon_for_js(self):
-        assert "window.__ICON_CD=" in _render_remote_home()
+        html = _render_remote_home()
+        assert page_data(html)["icons"]["cd"].startswith("<svg")
+        assert "window.__ICON_CD = pageIcons.cd;" in html
 
 
 @_skip

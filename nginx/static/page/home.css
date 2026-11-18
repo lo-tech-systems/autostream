@@ -1,0 +1,4 @@
+#pinModal .modal-note{margin:.6rem 0 0 0;font-size:.95rem;color:var(--color-text-muted);}
+  #pinModal .modal-note[hidden]{display:none;}
+.vu-meter{flex-direction:row;gap:3px;width:23px;}.vu-col{display:flex;flex-direction:column-reverse;gap:2px;width:10px;flex:0 0 10px;}.np-level{display:flex;align-items:center;width:23px;flex:0 0 23px;}
+.now-playing-icon.np-icon-art{width:72px;height:72px;border-radius:6px;overflow:hidden;}.now-playing-icon.np-icon-art img{width:100%;height:100%;object-fit:cover;display:block;}

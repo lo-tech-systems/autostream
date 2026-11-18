@@ -199,7 +199,7 @@ def _render_home() -> str:
         ):
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return _source_text.page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 class TestHomePage:

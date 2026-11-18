@@ -98,3 +98,15 @@ def page_data(html: str) -> dict:
     """Return the parsed data island of the page, or {} when it has none."""
     m = _ISLAND.search(html)
     return json.loads(m.group(1)) if m else {}
+
+
+def page_with_static(html: str) -> str:
+    """Return the page markup followed by the text of every /static/ script and
+    page stylesheet it links, in document order (the shared theme excepted). For
+    asserts that look for a piece of page text without caring whether it is
+    inline or in a linked file."""
+    parts = [html]
+    for rel in linked_static(html):
+        if rel != "theme.css":
+            parts.append(static_text(rel))
+    return "\n".join(parts)

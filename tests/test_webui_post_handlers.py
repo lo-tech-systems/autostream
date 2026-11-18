@@ -1491,16 +1491,13 @@ class TestOutputChangeOrigin:
 
 class TestPollDrivenPinPromptSource:
     def test_home_cards_script_defines_run_pin_flow(self):
-        from autostream_webui_assets import HOME_CARDS_SCRIPT
-        assert "function runPinFlow" in HOME_CARDS_SCRIPT
+        assert "function runPinFlow" in _source_text.static_text("page/home_cards.js")
 
     def test_home_cards_script_defines_maybe_prompt_for_pin(self):
-        from autostream_webui_assets import HOME_CARDS_SCRIPT
-        assert "function maybePromptForPin" in HOME_CARDS_SCRIPT
+        assert "function maybePromptForPin" in _source_text.static_text("page/home_cards.js")
 
     def test_airplay_page_calls_maybe_prompt_for_pin_from_outputs_poll(self):
-        source = _source_text.module_text("autostream_webui_page_airplay")
-        assert "maybePromptForPin(j.outputs)" in source
+        assert "maybePromptForPin(j.outputs)" in _source_text.static_text("page/home.js")
 
 
 class TestOutputRequesterPassed:
@@ -1541,8 +1538,7 @@ class TestOutputRequesterPassed:
 
 class TestHomePinDialogScript:
     def test_pin_flow_posts_one_pair_and_enable_request(self):
-        import autostream_webui_assets as assets
-        src = assets.HOME_CARDS_SCRIPT
+        src = _source_text.static_text("page/home_cards.js")
         assert "postPairAndEnable" in src
         assert "selected: true" in src
         assert "op:'pin'" in src
@@ -1552,8 +1548,7 @@ class TestHomePinDialogScript:
         assert "postOutputUpdate" not in flow
 
     def test_poll_prompt_stands_down_for_a_foreign_claim(self):
-        import autostream_webui_assets as assets
-        src = assets.HOME_CARDS_SCRIPT
+        src = _source_text.static_text("page/home_cards.js")
         body = src[src.index("async function maybePromptForPin"):src.index("async function sendUpdate")]
         assert "pin_claim" in body
         assert "'webui'" in body
@@ -1565,8 +1560,7 @@ class TestHomePinDialogScript:
         assert 'id="pinModalNote"' in src
 
     def test_rate_limited_reply_shows_the_wait(self):
-        import autostream_webui_assets as assets
-        src = assets.HOME_CARDS_SCRIPT
+        src = _source_text.static_text("page/home_cards.js")
         assert "rate_limited" in src
         assert "retry_after_s" in src
         assert "before retry" in src

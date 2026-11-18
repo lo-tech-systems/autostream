@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import urlencode
 
 import pytest
+from _source_text import page_data, page_with_static
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -649,7 +650,7 @@ class TestRemoteHomeMasterVolumeLabel:
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="local-host"):
             send_remote_home_page(handler, state, _REMOTE_ID)
 
-        return b"".join(written_chunks).decode("utf-8", errors="replace")
+        return page_with_static(b"".join(written_chunks).decode("utf-8", errors="replace"))
 
     def test_master_volume_label_is_plain(self):
         html = self._render("music-room")
@@ -747,7 +748,7 @@ class TestLocalHomeInUseCardHTML:
                    return_value=("", "")):
             _send_airplay_page(handler, state, auth)
 
-        return b"".join(chunks).decode("utf-8", errors="replace")
+        return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
     def test_in_use_card_has_data_remote_in_use_attribute(self):
         html = self._render()
@@ -772,8 +773,8 @@ class TestLocalHomeInUseCardHTML:
 
     def test_control_flag_true_when_enabled(self):
         html = self._render(effective_control=True)
-        assert "__CONTROL_OTHER_APPLIANCES=true" in html
+        assert page_data(html)["control_other_appliances"] is True
 
     def test_control_flag_false_when_disabled(self):
         html = self._render(effective_control=False)
-        assert "__CONTROL_OTHER_APPLIANCES=false" in html
+        assert page_data(html)["control_other_appliances"] is False
