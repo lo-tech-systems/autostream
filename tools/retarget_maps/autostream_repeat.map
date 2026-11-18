@@ -1,0 +1,10 @@
+# The repeat block and its ack overlay moved from the coordinator into their own module.
+autostream_core.apply_repeat_ack -> autostream_repeat.apply_repeat_ack  alias=repeat
+autostream_core._set_repeat_status -> autostream_repeat.publish_from_daemon  alias=repeat
+autostream_core._repeat_status_lock -> autostream_repeat._overlay_lock  alias=repeat
+autostream_core._rearm_replay_identification -> autostream_repeat._rearm_replay_identification  alias=repeat
+autostream_core._announce_playing_if_active -> autostream_repeat._announce_playing_if_active  alias=repeat
+autostream_core._announce_replay_playing -> autostream_repeat._announce_replay_playing  alias=repeat
+autostream_core.notify_state_changed -> autostream_repeat.notify_state_changed  alias=repeat
+autostream_core._repeat_recording_origin -> autostream_state.repeat_recording_origin  alias=state
+autostream_core._replay_origin_input -> autostream_state.replay_origin_input  alias=state

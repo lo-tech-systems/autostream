@@ -414,6 +414,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_federation as federation
     import autostream_mute_state as mute_state
     import autostream_player_service as player_service
+    import autostream_repeat
     import autostream_start_buffer_cache as start_buffer_cache
     import autostream_system_stats as system_stats
     import autostream_webui_api as api
@@ -448,6 +449,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
                  connected=scenario.monitor_connected, last_seen_at=1000.0)
     fake.health(**scenario.selfheal)
     fake.session(scenario.session.get("active"), scenario.session.get("source"))
+    fake.repeat(scenario.repeat)
     sample_rate_text = "Sample rate: 44.1 kHz"
     rate_note = core.RATE_MATCHING_NOTE_DEFAULT
 
@@ -465,7 +467,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
             monkeypatch.setattr(module, name, value)
 
     shared = dict(
-        get_repeat_status=lambda: scenario.repeat,
         get_playback_snapshot=lambda: scenario.playback,
         get_monitor_levels_dbfs=lambda: [dict(lv) for lv in levels],
         sample_rate_warning_text=lambda: "",
@@ -508,9 +509,8 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              build_top_banner_html=lambda **kwargs: ("", ""))
     setattrs(core,
              get_active_track_identification_snapshot=lambda: scenario.track,
-             get_session_source_input_index=lambda: scenario.source_input,
-             get_playback_snapshot=lambda: scenario.playback,
-             apply_repeat_ack=lambda ack: ack)
+             get_playback_snapshot=lambda: scenario.playback)
+    setattrs(autostream_repeat, apply_repeat_ack=lambda ack: ack)
     setattrs(monitor_client, _connected_monitor=connected_monitor)
     setattrs(start_buffer_cache, current_ms=lambda base_url=None: START_BUFFER_MS)
     setattrs(system_stats, _read_get_throttled_value=lambda: scenario.throttled)

@@ -31,7 +31,7 @@ from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 import autostream_webui_api as api
 from autostream_webui_state import WebUIState
 from track_id.models import disabled_snapshot
-from fake_store import fake_session
+from fake_store import fake_repeat, fake_session
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -173,7 +173,7 @@ def _success(fn, body, dial_proto):
         patch("autostream_webui_api.apply_mute_action",
               return_value=(200, {"ok": True, "muted": True})),
         fake_session({"active": True, "source": "input1"}),
-        patch("autostream_webui_api.get_repeat_status", return_value=None),
+        fake_repeat(None),
         patch("autostream_core.get_active_track_identification_snapshot",
               return_value=disabled_snapshot()),
     ):

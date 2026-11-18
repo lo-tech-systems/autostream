@@ -32,7 +32,7 @@ owntone owntone_mini pin_pairing playback_stats player_service players rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliances dial_push dial_warnings log_policy output_usage session".split()
+_L2 = "align announce appliances dial_push dial_warnings log_policy output_usage repeat session".split()
 _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
@@ -58,6 +58,7 @@ EXCEPTIONS: dict[tuple[str, str], str] = {}
 L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_repeat", "autostream_session"),
     ("autostream_repeat", "autostream_announce"),
+    ("autostream_repeat", "autostream_dial_push"),
     ("autostream_monitor_control", "autostream_repeat"),
     ("autostream_audio_monitor", "autostream_selfheal"),
     ("autostream_selfheal", "autostream_session"),
@@ -336,7 +337,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_monitor_levels_dbfs'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_playback_snapshot'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'get_repeat_status'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'note_user_output_action'),
     ('C', 'autostream_appliance_models', 'autostream_session', 'request_nowplaying_republish'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'sample_rate_warning_text'),
@@ -354,8 +354,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_api', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_monitor_levels_dbfs'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_playback_snapshot'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'get_repeat_status'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'get_session_source_input_index'),
     ('A', 'autostream_webui_api', 'autostream_core', 'input_rate_texts'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_bearing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_belt'),

@@ -37,6 +37,8 @@ import autostream_core as core
 import autostream_dial_push as dp
 import autostream_state
 from track_id.models import TrackIdentificationSnapshot, state_status_text
+import autostream_repeat as repeat
+from fake_store import FakeStore
 
 GOLDEN = Path(__file__).parent / "golden" / "dial_hint_sequences.json"
 RECORD = os.environ.get("AUTOSTREAM_GOLDEN_RECORD") == "1"
@@ -188,7 +190,6 @@ class Driver:
         self.now = 1000.0
         self.scheduled: list = []
         self.emissions: list = []
-        self._repeat = None
         self._track = _snapshot(spec())
 
         def emit(kinds, except_dials):
@@ -200,13 +201,14 @@ class Driver:
 
         monkeypatch.setattr(dp, "_coalescer", dp.StateChangeCoalescer(
             emit, clock=lambda: self.now, schedule=schedule))
-        monkeypatch.setattr(core, "get_repeat_status", lambda: self._repeat)
         monkeypatch.setattr(
             core, "get_active_track_identification_snapshot", lambda: self._track)
-        # The ack path reads and rewrites the coordinator's own caches.
-        monkeypatch.setattr(core, "_repeat_status", None)
+        # The ack path reads and rewrites the repeat and session parts.
+        FakeStore().repeat(None)
+        FakeStore().session(False, None)
         self.watches = (
-            dp.ChangeWatch("repeat", lambda: autostream_state.repeat_digest(core.get_repeat_status())),
+            dp.ChangeWatch("repeat", lambda: autostream_state.repeat_digest(
+                autostream_state.store().snapshot().repeat.block)),
             dp.ChangeWatch("track", lambda: autostream_state.track_digest(
                 core.get_active_track_identification_snapshot())),
         )
@@ -214,12 +216,11 @@ class Driver:
     def run(self, steps) -> list:
         for kind, arg in steps:
             if kind == "tick":
-                self._repeat = arg["repeat"]
                 self._track = _snapshot(arg["track"])
-                core._set_repeat_status(arg["repeat"])
+                repeat.publish_from_daemon(arg["repeat"])
                 dp.hint_dials_after_cycle(arg["session_event"], self.watches)
             elif kind == "ack":
-                core.apply_repeat_ack(dict(arg))
+                repeat.apply_repeat_ack(dict(arg))
             elif kind == "advance":
                 self._advance(arg)
             else:

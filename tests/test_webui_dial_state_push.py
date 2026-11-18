@@ -37,6 +37,7 @@ import autostream_webui_dials as wd
 from autostream_dials import DialSighting
 import autostream_state as state
 import autostream_session as session
+import autostream_repeat as repeat
 
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
 PATH = "/state-changed"
@@ -870,26 +871,25 @@ class TestRepeatAndLoopCallSites:
                 "state": state, "armed": True, "position_seconds": 5.0}
 
     def _apply(self, ack, cached=True):
-        import autostream_core as core
         seen = []
 
         def notify(*kinds, **kw):
-            free = core._repeat_status_lock.acquire(blocking=False)
+            free = repeat._overlay_lock.acquire(blocking=False)
             if free:
-                core._repeat_status_lock.release()
+                repeat._overlay_lock.release()
             seen.append((kinds, kw, free,
-                         core.get_repeat_status()["replay"]["active"],
+                         state.store().snapshot().repeat.block["replay"]["active"],
                          state.store().snapshot().session.active))
 
-        core._set_repeat_status(self._block() if cached else None)
+        repeat.publish_from_daemon(self._block() if cached else None)
         session.publish(False, None)
         try:
-            with patch("autostream_core._rearm_replay_identification"), \
-                 patch("autostream_core._announce_replay_playing"), \
-                 patch("autostream_core.notify_state_changed", side_effect=notify) as n:
-                result = core.apply_repeat_ack(ack)
+            with patch("autostream_repeat._rearm_replay_identification"), \
+                 patch("autostream_repeat._announce_replay_playing"), \
+                 patch("autostream_repeat.notify_state_changed", side_effect=notify) as n:
+                result = repeat.apply_repeat_ack(ack)
         finally:
-            core._set_repeat_status(None)
+            repeat.publish_from_daemon(None)
             session.publish(False, None)
         return result, n, seen
 
@@ -928,8 +928,8 @@ class TestRepeatAndLoopCallSites:
             "announce.sync_playing_announcement(session_source is not None, version)") < hook
         assert hook < src.index("_teardown_identification_after_replay_end(")
         flat = " ".join(src.split())
-        assert ('ChangeWatch("repeat", lambda: '
-                'autostream_state.repeat_digest(get_repeat_status()))' in flat)
+        assert ('ChangeWatch("repeat", lambda: autostream_state.repeat_digest( '
+                'autostream_state.store().snapshot().repeat.block))' in flat)
         assert ('ChangeWatch("track", lambda: autostream_state.track_digest( '
                 'get_active_track_identification_snapshot()))' in flat)
         assert (src.index("dial_hint_watches = (")
@@ -937,20 +937,24 @@ class TestRepeatAndLoopCallSites:
 
     def test_the_loops_digests_read_the_cached_state(self):
         import autostream_core as core
+        from fake_store import FakeStore
+        fake = FakeStore()
         rs = {"v": self._block()}
         snap = {"v": _snap()}
-        with patch("autostream_core.get_repeat_status", side_effect=lambda: rs["v"]), \
-             patch("autostream_core.get_active_track_identification_snapshot",
+        fake.repeat(rs["v"])
+        with patch("autostream_core.get_active_track_identification_snapshot",
                    side_effect=lambda: snap["v"]), \
              patch.object(dp, "notify_state_changed") as notify:
             watches = (
-                dp.ChangeWatch("repeat", lambda: state.repeat_digest(core.get_repeat_status())),
+                dp.ChangeWatch("repeat", lambda: state.repeat_digest(
+                    state.store().snapshot().repeat.block)),
                 dp.ChangeWatch("track", lambda: state.track_digest(
                     core.get_active_track_identification_snapshot())),
             )
             for w in watches:
                 assert w.step() is False
             rs["v"] = dict(self._block(), armed=False)
+            fake.repeat(rs["v"])
             assert watches[0].step() is True
             assert watches[1].step() is False
             snap["v"] = _snap(title="Other")

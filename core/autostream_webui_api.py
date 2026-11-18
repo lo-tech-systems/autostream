@@ -105,14 +105,13 @@ from autostream_dials import (
 )
 from autostream_dial_push import notify_state_changed
 from autostream_runtime import request_config_reload
-from autostream_state import store
+from autostream_state import session_source_input_index, store
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
     apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
-    get_repeat_status,
     input_rate_texts,
     sample_rate_warning_text,
     reset_input_belt,
@@ -467,10 +466,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     # Pass the daemon's "repeat" status block through verbatim when present.
     # An old binary that never reports it means the key is
     # omitted entirely -- no KeyError, feature-unsupported by absence.
-    try:
-        repeat_status = get_repeat_status()
-    except Exception:
-        repeat_status = None
+    repeat_status = snap.repeat.block
     if repeat_status is not None:
         response["repeat"] = repeat_status
     # Reconcile/watchdog counters, always present (coordinator-owned
@@ -1076,14 +1072,15 @@ def _derive_repeat_state(rs: dict) -> str:
     return "idle"
 
 
-def _dial_repeat_object(base_url: str | None = None) -> dict | None:
+def _dial_repeat_object(base_url: str | None = None, snap=None) -> dict | None:
     """The dial protocol's "repeat" object for POST /api/dial/status, or
     None when the daemon block is unavailable (older monitor binary, or no
     poll yet). Every field but state, available and latency_ms is a
-    passthrough of the cached daemon block (get_repeat_status()).
+    passthrough of the repeat block of the state snapshot (the caller's
+    *snap*, or the current one).
     latency_ms is the audio start buffer, read from a cache so this never
     waits on OwnTone."""
-    rs = get_repeat_status()
+    rs = (snap if snap is not None else store().snapshot()).repeat.block
     if not isinstance(rs, dict):
         return None
     rec = rs.get("recording") if isinstance(rs.get("recording"), dict) else {}
@@ -1105,13 +1102,13 @@ def _dial_repeat_object(base_url: str | None = None) -> dict | None:
     }
 
 
-def _dial_input_dict(parsed) -> dict | None:
+def _dial_input_dict(parsed, snap=None) -> dict | None:
     """The dial protocol's "input" object: the input behind the current
     session, or None when nothing is playing. A replay resolves to the
     input it was recorded from. Reads cached state and the config snapshot
     only."""
-    from autostream_core import get_session_source_input_index
-    idx = get_session_source_input_index()
+    idx = session_source_input_index(
+        snap if snap is not None else store().snapshot())
     if idx not in (1, 2):
         return None
     audio = parsed.audio1 if idx == 1 else parsed.audio2
@@ -1189,6 +1186,7 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         return
 
     muted = mute_state.is_muted()
+    snap = store().snapshot()
     reported_outputs = (
         [
             _with_volume(o, mute_state.intended_level(o.id, o.volume_percent))
@@ -1205,9 +1203,9 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "track_id": _dial_track_id_dict(),
         "appliance_id": get_appliance_id(),
         "muted": muted,
-        "input": _dial_input_dict(parsed),
+        "input": _dial_input_dict(parsed, snap),
     }
-    repeat = _dial_repeat_object(base_url)
+    repeat = _dial_repeat_object(base_url, snap)
     if repeat is not None:
         response["repeat"] = repeat
     send_json(handler, 200, response)
@@ -1265,7 +1263,7 @@ def send_dial_repeat_post_json(handler, state: WebUIState, json_obj: dict) -> No
     Start is expressed as seek 0 -- the dial never sends a nonzero position.
     Seek is rate-limited to one call per second appliance-wide; stop is
     idempotent (the daemon acks ok:true in every state) and never
-    rate-limited. Never reads get_repeat_status(): the response is built
+    rate-limited. Never reads the repeat block: the response is built
     entirely from the daemon's own transport ack.
     """
     dial_id = _dial_auth_gate(handler, json_obj)
@@ -2002,7 +2000,7 @@ def _live_repeat_codec(state: object, value: object) -> bool:
         return True
 
     new_codec = str(value)
-    status = get_repeat_status() or {}
+    status = store().snapshot().repeat.block or {}
     previous_codec = status.get("codec")
     if previous_codec == new_codec:
         return True
@@ -2019,7 +2017,7 @@ def _live_repeat_target_minutes(state: object, value: object) -> bool:
     committed the new value to the settings store (settings.update() runs
     before live_fn is called) -- snap.repeat.target_minutes here is already
     the NEW value, not the one the daemon is currently running with. The
-    daemon's own last-reported target (get_repeat_status()) is used as the
+    daemon's own last-reported target (the repeat part) is used as the
     "previous value" instead: it reflects what is actually live, independent
     of settings-store write timing, so it is the only value that can
     correctly answer "did this change from what's running".
@@ -2052,7 +2050,7 @@ def _live_repeat_target_minutes(state: object, value: object) -> bool:
     except Exception:
         return False
 
-    status = get_repeat_status() or {}
+    status = store().snapshot().repeat.block or {}
     try:
         previous_target = int(status.get("target_minutes"))
     except (TypeError, ValueError):

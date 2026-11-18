@@ -61,19 +61,17 @@ import autostream_core as core
 from autostream_core import (
     AudioMonitor,
     _dispatch_session_event,
-    _replay_origin_input,
     _resync_monitor_daemon,
     _session_nowplaying_end,
     _session_nowplaying_start,
     _SessionTracker,
-    _set_repeat_status,
     _start_session_owntone,
-    get_repeat_status,
     send_live_repeat_transport,
     set_live_repeat_armed,
     set_live_repeat_armed_ack,
     set_live_repeat_enabled,
 )
+from autostream_repeat import publish_from_daemon as _set_repeat_status
 from autostream_session import publish as _set_session_state
 import autostream_state
 
@@ -81,8 +79,16 @@ import autostream_state
 def get_session_state() -> dict:
     return autostream_state.store().snapshot().session.as_dict()
 
+
+def get_repeat_status():
+    return autostream_state.store().snapshot().repeat.block
+
+
+from fake_store import fake_repeat
+
 from autostream_monitor_client import MonitorClient
 import autostream_runtime as runtime
+import autostream_repeat as repeat
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
@@ -315,7 +321,7 @@ class TestP2LiveApplyNotReload:
         TestP2LiveCodecPulse for the full matrix)."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "auto"}), \
+        with fake_repeat({"codec": "auto"}), \
              patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert m.call_count == 2
@@ -363,7 +369,7 @@ class TestP2LiveTargetMinutesPulse:
         """Repeat currently off: the new target just persists; the enable
         path forwards it later, so nothing should be pushed now."""
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+        with fake_repeat({"target_minutes": 80}), \
              patch("autostream_webui_api.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 80)
         assert resp["ok"] is True
@@ -375,7 +381,7 @@ class TestP2LiveTargetMinutesPulse:
         browser just saved: no pulse."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+        with fake_repeat({"target_minutes": 80}), \
              patch("autostream_webui_api.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 80)
         assert resp["ok"] is True
@@ -388,7 +394,7 @@ class TestP2LiveTargetMinutesPulse:
         both carrying the new target and the current codec."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True, "codec": "mp2_224"}))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+        with fake_repeat({"target_minutes": 80}), \
              patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 33)
         assert resp["ok"] is True
@@ -400,7 +406,7 @@ class TestP2LiveTargetMinutesPulse:
     def test_pulse_failure_reports_live_error(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"target_minutes": 80}), \
+        with fake_repeat({"target_minutes": 80}), \
              patch("autostream_webui_api.set_live_repeat_enabled", side_effect=[True, False]):
             resp, _ = _post_settings(state, "repeat.target_minutes", 33)
         assert resp["ok"] is True
@@ -413,7 +419,7 @@ class TestP2LiveTargetMinutesPulse:
         push."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.get_repeat_status", return_value=None), \
+        with fake_repeat(None), \
              patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.target_minutes", 33)
         assert resp["live"] is True
@@ -431,7 +437,7 @@ class TestP2LiveCodecPulse:
         """Repeat currently off: the new codec just persists; the enable
         path forwards it later, so nothing should be pushed now."""
         state, _ = _make_state(str(tmp_path))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+        with fake_repeat({"codec": "mp2_192"}), \
              patch("autostream_webui_api.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.codec", "mp2_192")
         assert resp["ok"] is True
@@ -443,7 +449,7 @@ class TestP2LiveCodecPulse:
         browser just saved: no pulse."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+        with fake_repeat({"codec": "mp2_192"}), \
              patch("autostream_webui_api.set_live_repeat_enabled") as m:
             resp, _ = _post_settings(state, "repeat.codec", "mp2_192")
         assert resp["ok"] is True
@@ -456,7 +462,7 @@ class TestP2LiveCodecPulse:
         both carrying the new codec and the current target_minutes."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True, "target_minutes": 80}))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+        with fake_repeat({"codec": "mp2_192"}), \
              patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert resp["ok"] is True
@@ -468,7 +474,7 @@ class TestP2LiveCodecPulse:
     def test_pulse_failure_reports_live_error(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.get_repeat_status", return_value={"codec": "mp2_192"}), \
+        with fake_repeat({"codec": "mp2_192"}), \
              patch("autostream_webui_api.set_live_repeat_enabled", side_effect=[True, False]):
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert resp["ok"] is True
@@ -481,7 +487,7 @@ class TestP2LiveCodecPulse:
         push."""
         state, store = _make_state(str(tmp_path))
         store.update(lambda raw: raw.setdefault("repeat", {}).update({"enabled": True}))
-        with patch("autostream_webui_api.get_repeat_status", return_value=None), \
+        with fake_repeat(None), \
              patch("autostream_webui_api.set_live_repeat_enabled", return_value=True) as m:
             resp, _ = _post_settings(state, "repeat.codec", "pcm")
         assert resp["live"] is True
@@ -1658,8 +1664,8 @@ class TestApplyRepeatAck:
     def _isolate_caches(self):
         _set_repeat_status(None)
         _set_session_state(False, None)
-        with patch("autostream_core._rearm_replay_identification") as rearm, \
-             patch("autostream_core._announce_replay_playing") as announce:
+        with patch("autostream_repeat._rearm_replay_identification") as rearm, \
+             patch("autostream_repeat._announce_replay_playing") as announce:
             self.rearm = rearm
             self.announce = announce
             yield
@@ -1668,7 +1674,7 @@ class TestApplyRepeatAck:
 
     def test_seek_ack_from_hold_marks_replay_active_at_ack_position(self):
         _set_repeat_status(_cached_block())
-        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=0.0))
+        repeat.apply_repeat_ack(_ack("repeat_seek", "replaying", position=0.0))
         rs = get_repeat_status()
         assert rs["replay"] == {
             "active": True, "fading_out": False,
@@ -1678,7 +1684,7 @@ class TestApplyRepeatAck:
 
     def test_seek_ack_during_replay_updates_position_and_keeps_duration(self):
         _set_repeat_status(_replaying_block(position=200.0))
-        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=30.0))
+        repeat.apply_repeat_ack(_ack("repeat_seek", "replaying", position=30.0))
         replay = get_repeat_status()["replay"]
         assert replay["position_seconds"] == 30.0
         assert replay["duration_seconds"] == 342.0
@@ -1686,7 +1692,7 @@ class TestApplyRepeatAck:
 
     def test_arm_ack_starting_from_hold_uses_position_zero_not_engine_position(self):
         _set_repeat_status(_cached_block())
-        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying", position=217.5))
+        repeat.apply_repeat_ack(_ack("set_repeat_armed", "replaying", position=217.5))
         replay = get_repeat_status()["replay"]
         assert replay["active"] is True
         assert replay["position_seconds"] == 0.0
@@ -1694,14 +1700,14 @@ class TestApplyRepeatAck:
 
     def test_arm_ack_while_replaying_keeps_the_cached_position(self):
         _set_repeat_status(_replaying_block(position=88.0))
-        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying", position=90.0))
+        repeat.apply_repeat_ack(_ack("set_repeat_armed", "replaying", position=90.0))
         assert get_repeat_status()["replay"]["position_seconds"] == 88.0
 
     def test_arm_ack_while_recording_only_changes_armed(self):
         before = _cached_block()
         before["recording"]["active"] = True
         _set_repeat_status(before)
-        core.apply_repeat_ack(_ack("set_repeat_armed", "recording", armed=True))
+        repeat.apply_repeat_ack(_ack("set_repeat_armed", "recording", armed=True))
         after = get_repeat_status()
         assert after["armed"] is True
         assert after["replay"] == before["replay"]
@@ -1709,7 +1715,7 @@ class TestApplyRepeatAck:
 
     def test_stop_ack_marks_fading_out_and_disarmed(self):
         _set_repeat_status(_replaying_block(position=50.0))
-        core.apply_repeat_ack(
+        repeat.apply_repeat_ack(
             _ack("repeat_stop", "fading_out", armed=False, position=51.0))
         rs = get_repeat_status()
         assert rs["armed"] is False
@@ -1719,7 +1725,7 @@ class TestApplyRepeatAck:
 
     def test_hold_ack_marks_replay_inactive(self):
         _set_repeat_status(_replaying_block())
-        core.apply_repeat_ack(
+        repeat.apply_repeat_ack(
             _ack("set_repeat_armed", "hold", armed=False, position=10.0))
         rs = get_repeat_status()
         assert rs["armed"] is False
@@ -1732,8 +1738,8 @@ class TestApplyRepeatAck:
         ack = {"type": "ack", "command": "repeat_seek", "ok": False,
                "error": "source_active", "state": "recording",
                "armed": True, "position_seconds": 0.0}
-        assert core.apply_repeat_ack(ack) is ack
-        assert get_repeat_status() is block
+        assert repeat.apply_repeat_ack(ack) is ack
+        assert get_repeat_status() == block
         assert get_session_state() == {"active": False, "source": None}
         self.rearm.assert_not_called()
         self.announce.assert_not_called()
@@ -1741,8 +1747,8 @@ class TestApplyRepeatAck:
     def test_none_ack_is_a_noop_and_returned(self):
         block = _cached_block()
         _set_repeat_status(block)
-        assert core.apply_repeat_ack(None) is None
-        assert get_repeat_status() is block
+        assert repeat.apply_repeat_ack(None) is None
+        assert get_repeat_status() == block
 
     @pytest.mark.parametrize("ack", [
         {"ok": True, "command": "repeat_seek", "state": "bogus", "armed": True},
@@ -1752,13 +1758,13 @@ class TestApplyRepeatAck:
     def test_unknown_shapes_are_a_noop(self, ack):
         block = _cached_block()
         _set_repeat_status(block)
-        assert core.apply_repeat_ack(ack) is ack
-        assert get_repeat_status() is block
+        assert repeat.apply_repeat_ack(ack) is ack
+        assert get_repeat_status() == block
         assert get_session_state()["active"] is False
 
     def test_no_cached_block_is_a_noop(self):
         ack = _ack("repeat_seek", "replaying")
-        assert core.apply_repeat_ack(ack) is ack
+        assert repeat.apply_repeat_ack(ack) is ack
         assert get_repeat_status() is None
         assert get_session_state()["active"] is False
         self.rearm.assert_not_called()
@@ -1767,75 +1773,75 @@ class TestApplyRepeatAck:
     def test_overlay_does_not_mutate_the_previously_cached_dict(self):
         block = _cached_block()
         _set_repeat_status(block)
-        core.apply_repeat_ack(_ack("repeat_seek", "replaying"))
+        repeat.apply_repeat_ack(_ack("repeat_seek", "replaying"))
         assert block["replay"]["active"] is False
         assert block["armed"] is False
-        assert get_repeat_status() is not block
+        assert get_repeat_status()["replay"]["active"] is True
 
     def test_replaying_ack_marks_session_active_replay(self):
         _set_repeat_status(_cached_block())
-        core.apply_repeat_ack(_ack("repeat_seek", "replaying"))
+        repeat.apply_repeat_ack(_ack("repeat_seek", "replaying"))
         assert get_session_state() == {"active": True, "source": "replay"}
 
     def test_replaying_ack_leaves_an_already_active_session_source_alone(self):
         _set_repeat_status(_replaying_block())
         _set_session_state(True, "input2")
-        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=5.0))
+        repeat.apply_repeat_ack(_ack("repeat_seek", "replaying", position=5.0))
         assert get_session_state() == {"active": True, "source": "input2"}
 
     def test_fading_out_ack_leaves_session_state_unchanged(self):
         _set_repeat_status(_replaying_block())
-        core.apply_repeat_ack(_ack("repeat_stop", "fading_out", armed=False))
+        repeat.apply_repeat_ack(_ack("repeat_stop", "fading_out", armed=False))
         assert get_session_state() == {"active": False, "source": None}
 
     def test_hold_ack_leaves_session_state_unchanged(self):
         _set_repeat_status(_replaying_block())
         _set_session_state(True, "replay")
-        core.apply_repeat_ack(_ack("set_repeat_armed", "hold", armed=False))
+        repeat.apply_repeat_ack(_ack("set_repeat_armed", "hold", armed=False))
         assert get_session_state() == {"active": True, "source": "replay"}
 
     def test_seek_from_hold_hooks_identify_origin_as_starting(self):
         _set_repeat_status(_cached_block(origin_input=2))
-        core.apply_repeat_ack(_ack("repeat_seek", "replaying"))
+        repeat.apply_repeat_ack(_ack("repeat_seek", "replaying"))
         self.rearm.assert_called_once_with(2, in_session=False)
         self.announce.assert_called_once_with()
 
     def test_seek_during_replay_hooks_identify_origin_as_in_session(self):
         _set_repeat_status(_replaying_block(origin_input=2))
-        core.apply_repeat_ack(_ack("repeat_seek", "replaying", position=12.0))
+        repeat.apply_repeat_ack(_ack("repeat_seek", "replaying", position=12.0))
         self.rearm.assert_called_once_with(2, in_session=True)
         self.announce.assert_not_called()
 
     def test_arm_from_hold_hooks_fire_but_arm_while_replaying_does_not(self):
         _set_repeat_status(_cached_block())
-        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
+        repeat.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
         self.rearm.assert_called_once_with(1, in_session=False)
         self.announce.assert_called_once_with()
         self.rearm.reset_mock()
         self.announce.reset_mock()
-        core.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
+        repeat.apply_repeat_ack(_ack("set_repeat_armed", "replaying"))
         self.rearm.assert_not_called()
         self.announce.assert_not_called()
 
     def test_stop_and_hold_acks_fire_no_hooks(self):
         _set_repeat_status(_replaying_block())
-        core.apply_repeat_ack(_ack("repeat_stop", "fading_out", armed=False))
-        core.apply_repeat_ack(_ack("set_repeat_armed", "hold", armed=False))
+        repeat.apply_repeat_ack(_ack("repeat_stop", "fading_out", armed=False))
+        repeat.apply_repeat_ack(_ack("set_repeat_armed", "hold", armed=False))
         self.rearm.assert_not_called()
         self.announce.assert_not_called()
 
     def test_repeat_recording_origin_reads_origin_without_active_replay(self):
-        assert core._repeat_recording_origin(_cached_block(origin_input=2)) == 2
-        assert core._repeat_recording_origin({"recording": {}}) is None
-        assert core._repeat_recording_origin({"recording": {"origin_input": True}}) is None
-        assert core._repeat_recording_origin(None) is None
+        assert autostream_state.repeat_recording_origin(_cached_block(origin_input=2)) == 2
+        assert autostream_state.repeat_recording_origin({"recording": {}}) is None
+        assert autostream_state.repeat_recording_origin({"recording": {"origin_input": True}}) is None
+        assert autostream_state.repeat_recording_origin(None) is None
 
     def test_send_live_repeat_transport_applies_the_ack(self):
         ack = _ack("repeat_seek", "replaying")
         client = MagicMock()
         client.repeat_seek.return_value = ack
         with patch("autostream_monitor_client._connected_monitor") as cm, \
-                patch("autostream_core.apply_repeat_ack",
+                patch("autostream_repeat.apply_repeat_ack",
                       side_effect=lambda a: a) as apply:
             cm.return_value.__enter__.return_value = client
             assert send_live_repeat_transport("seek", 0.0) is ack
@@ -1846,7 +1852,7 @@ class TestApplyRepeatAck:
         client = MagicMock()
         client.repeat_stop.return_value = ack
         with patch("autostream_monitor_client._connected_monitor") as cm, \
-                patch("autostream_core.apply_repeat_ack",
+                patch("autostream_repeat.apply_repeat_ack",
                       side_effect=lambda a: a) as apply:
             cm.return_value.__enter__.return_value = client
             assert send_live_repeat_transport("stop") is ack
@@ -1854,7 +1860,7 @@ class TestApplyRepeatAck:
 
     def test_send_live_repeat_transport_unreachable_returns_none(self):
         with patch("autostream_monitor_client._connected_monitor") as cm, \
-                patch("autostream_core.apply_repeat_ack") as apply:
+                patch("autostream_repeat.apply_repeat_ack") as apply:
             cm.return_value.__enter__.return_value = None
             assert send_live_repeat_transport("seek", 0.0) is None
         apply.assert_not_called()
@@ -1864,7 +1870,7 @@ class TestApplyRepeatAck:
         client = MagicMock()
         client.set_repeat_armed_ack.return_value = ack
         with patch("autostream_monitor_client._connected_monitor") as cm, \
-                patch("autostream_core.apply_repeat_ack",
+                patch("autostream_repeat.apply_repeat_ack",
                       side_effect=lambda a: a) as apply:
             cm.return_value.__enter__.return_value = client
             assert set_live_repeat_armed_ack(True) is ack

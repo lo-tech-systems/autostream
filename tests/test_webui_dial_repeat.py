@@ -9,7 +9,7 @@ Covers:
     mapping for every known daemon error token, for an unrecognised/"unknown
     command" daemon error, and for a None ack (daemon unreachable); an ok
     response carries state, armed, position_seconds, appliance_id; the
-    route never reads get_repeat_status().
+    route never reads the repeat part.
 3.  POST /api/dial/repeat/arm: invalid_armed 400 for a non-bool; calls
     set_live_repeat_armed_ack() with the bool; never calls
     apply_repeat_arm_request() (that string-body API is a different route's
@@ -80,8 +80,8 @@ def _invoke_transport(
         patch("autostream_webui_api.dial_speaks_v2", return_value=True),
         patch("autostream_webui_api.get_appliance_id", return_value=appliance_id),
         patch("autostream_webui_api.send_live_repeat_transport", transport_mock),
-        patch("autostream_webui_api.get_repeat_status",
-              side_effect=AssertionError("route must not read get_repeat_status")),
+        patch("autostream_webui_api.store",
+              side_effect=AssertionError("route must not read the repeat part")),
     ):
         send_dial_repeat_post_json(handler, MagicMock(), json_obj)
     code, body = _response(handler)
@@ -353,8 +353,8 @@ class TestAckMapping:
             "position_seconds": 0.0, "appliance_id": TEST_APPLIANCE_ID,
         }
 
-    def test_route_never_reads_get_repeat_status(self):
-        """get_repeat_status is monkeypatched to raise in _invoke_transport;
+    def test_route_never_reads_the_repeat_part(self):
+        """The state store is monkeypatched to raise in _invoke_transport;
         a successful call proves the route never touches it."""
         ack = {"ok": True, "state": "hold", "armed": False, "position_seconds": 0.0}
         code, body, _ = _invoke_transport(

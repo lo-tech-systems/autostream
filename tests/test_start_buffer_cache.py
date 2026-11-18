@@ -16,6 +16,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_start_buffer_cache as cache
+from fake_store import fake_repeat
 from autostream_players import (
     SETTING_START_BUFFER_MS_DEFAULT,
     SETTING_START_BUFFER_MS_MAX,
@@ -167,7 +168,7 @@ def test_repeat_object_carries_int_latency_ms_from_cache():
     import autostream_webui_api as api
 
     cache.note_saved(1950)
-    with patch.object(api, "get_repeat_status", return_value=_daemon_block()), \
+    with fake_repeat(_daemon_block()), \
             patch.object(cache, "_fetch") as fetch:
         obj = api._dial_repeat_object(BASE)
     assert obj["latency_ms"] == 1950
@@ -178,7 +179,7 @@ def test_repeat_object_carries_int_latency_ms_from_cache():
 def test_repeat_object_without_cache_reports_default():
     import autostream_webui_api as api
 
-    with patch.object(api, "get_repeat_status", return_value=_daemon_block()), \
+    with fake_repeat(_daemon_block()), \
             patch.object(cache, "_fetch", return_value=None):
         obj = api._dial_repeat_object(BASE)
         _wait_idle()

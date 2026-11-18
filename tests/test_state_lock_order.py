@@ -6,6 +6,9 @@ The lock-order rules of the state store, checked with recording locks:
   3. No subscriber is called while the calling thread holds the store lock or
      a domain lock.
   5. The function given to update() takes no lock.
+
+and, for each part owner, that the owner's own lock is released before its
+change reaches a subscriber.
 """
 from __future__ import annotations
 
@@ -33,6 +36,18 @@ def st():
     lockcheck.install(s)
     yield s
     lockcheck.uninstall()
+
+
+@pytest.fixture
+def tracked_singleton():
+    """The process store with a recording lock, put back afterwards."""
+    s = state.store()
+    s.reset_for_tests(track_locks=True)
+    lockcheck.install(s)
+    yield s
+    lockcheck.uninstall()
+    s._lock = threading.Lock()
+    s._cond = threading.Condition(s._lock)
 
 
 def test_publish_update_and_notify_acquire_nothing_under_the_store_lock(st):
@@ -102,3 +117,30 @@ def test_wait_for_change_wakes_while_publishers_run(st):
     t.join(5)
     assert result and result[0].version == 1
     assert st.lock_violations == []
+
+
+def test_the_repeat_overlay_lock_is_released_before_subscribers_run(tracked_singleton, monkeypatch):
+    from unittest.mock import patch
+
+    import autostream_repeat as repeat
+
+    monkeypatch.setattr(repeat, "_overlay_lock", lockcheck.TrackedLock("overlay"))
+    seen = []
+    tracked_singleton.subscribe(lambda change: seen.append(lockcheck.held()))
+    block = {
+        "enabled": True, "armed": False,
+        "recording": {"active": False, "seconds": 10.0, "origin_input": 1},
+        "replay": {"active": False, "fading_out": False,
+                   "position_seconds": 0.0, "duration_seconds": 0.0},
+    }
+    repeat.publish_from_daemon(block)
+    with patch("autostream_repeat._rearm_replay_identification"), \
+         patch("autostream_repeat._announce_replay_playing"), \
+         patch("autostream_repeat.notify_state_changed"):
+        repeat.apply_repeat_ack({"ok": True, "command": "set_repeat_armed",
+                                 "state": "replaying", "armed": True,
+                                 "position_seconds": 0.0})
+    assert len(seen) >= 3
+    assert all(held == frozenset() for held in seen)
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
+    assert tracked_singleton.lock_violations == []

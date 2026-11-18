@@ -512,7 +512,7 @@ class TestBuildHomeStateLocal:
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6], \
              fake_session(session), \
-             patch("autostream_appliance_models.get_repeat_status", return_value=None):
+             fake_repeat(None):
             result = models.build_home_state(str(cfg_path))
         assert result["session"] == session
 
@@ -523,7 +523,7 @@ class TestBuildHomeStateLocal:
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
-             patch("autostream_appliance_models.get_repeat_status", return_value=repeat_block):
+             fake_repeat(repeat_block):
             result = models.build_home_state(str(cfg_path))
         assert result["repeat"] == repeat_block
 
@@ -541,7 +541,7 @@ class TestBuildHomeStateLocal:
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
-             patch("autostream_appliance_models.get_repeat_status", return_value=repeat_block):
+             fake_repeat(repeat_block):
             result = models.build_home_state(str(cfg_path))
         assert result["repeat"]["requested_minutes"] == 80
         assert result["repeat"] == repeat_block
@@ -552,7 +552,7 @@ class TestBuildHomeStateLocal:
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
-             patch("autostream_appliance_models.get_repeat_status", return_value=None):
+             fake_repeat(None):
             result = models.build_home_state(str(cfg_path))
         assert "repeat" not in result
 
@@ -766,7 +766,7 @@ class TestBuildHomeStateAnnotation:
 import logging as _logging
 
 import autostream_pin_pairing as _pairing
-from fake_store import fake_session
+from fake_store import fake_repeat, fake_session
 
 
 def _result(ok: bool, error_code: str = "", message: str = ""):

@@ -14,7 +14,6 @@ and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
 variable.
 """
 
-import copy
 import os
 import json
 import logging
@@ -32,6 +31,7 @@ import autostream_announce as announce
 import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
+import autostream_repeat
 import autostream_runtime as runtime
 import autostream_session
 import autostream_state
@@ -50,7 +50,6 @@ from autostream_artwork import ArtworkMemoryCache
 from autostream_dial_push import (
     ChangeWatch,
     hint_dials_after_cycle,
-    notify_state_changed,
 )
 from autostream_bluetooth_client import (
     BluetoothClient,
@@ -118,6 +117,7 @@ from autostream_sysutils import (
 #   (_monitors_lock and _track_id_request_gate are in autostream_runtime;
 #    the Avahi "playing" announcement lock is in autostream_announce)
 #   (the now-playing republish-request lock is in autostream_session)
+#   (the repeat-block overlay lock is in autostream_repeat)
 #
 # "Output-arbitration state" group -- both read together by the
 # zero-output-watchdog-equivalent logic (_reconcile_owntone_outputs_if_wiped):
@@ -125,11 +125,6 @@ from autostream_sysutils import (
 #                                                 timestamp (selfheal input)
 #   _user_silence_latch_lock                  -- deliberate-silence flag
 #                                                 (selfheal input)
-#
-# "Monitor-runtime read-cache" group -- daemon-status-derived caches consumed
-# by the Web UI's /api/status, not coordinator-internal arbitration state:
-#   _repeat_status_lock                       -- last-polled repeat-feature
-#                                                 status dict
 #
 # Class-level (not module-level, listed here for completeness):
 #   MonitorClient._lock                       -- serializes daemon-socket
@@ -233,7 +228,7 @@ def get_active_track_identification_snapshot():
     same actively-sourcing definition used by
     _ingest_status()/maybe_trigger_track_identification() (see
     monitor._replay_origin, refreshed each poll cycle from the
-    coordinator's _replay_origin_input()). Without the replay-origin check,
+    coordinator's replay_origin_input()). Without the replay-origin check,
     /api/status.track_identification would fall back to waiting_snapshot()
     during replay even though the origin monitor's _ti_snapshot already holds
     a live match -- the daemon confirms vibra keeps matching tracks during
@@ -306,51 +301,6 @@ def _set_monitor_runtime_info(
             else float(last_seen_at)
         ),
     )).notify()
-
-
-# ── Repeat status cache ───────────────────────────────────────────
-# Cached verbatim from the most recent get_status() poll's top-level "repeat"
-# block, so /api/status can pass it through without a second daemon round trip.
-# None means either the feature has never reported (old binary / not yet
-# polled) -- Python treats an absent block as feature-unsupported.
-
-_repeat_status_lock = threading.Lock()
-_repeat_status: Optional[dict] = None
-
-
-def _set_repeat_status_locked(status: Optional[dict]) -> None:
-    """Install *status*; the caller holds _repeat_status_lock."""
-    global _repeat_status
-    _repeat_status = status if isinstance(status, dict) else None
-
-
-def _set_repeat_status(status: Optional[dict]) -> None:
-    with _repeat_status_lock:
-        _set_repeat_status_locked(status)
-
-
-def get_repeat_status() -> Optional[dict]:
-    """Return the most recently polled daemon "repeat" status block, or None."""
-    with _repeat_status_lock:
-        return _repeat_status
-
-
-def get_session_source_input_index() -> Optional[int]:
-    """The input number behind the current session, or None when idle.
-
-    "input1"/"input2" name a live source; "replay" resolves to the input
-    the replaying recording came from, as the track identification snapshot
-    and the now-playing source are resolved.
-    """
-    source = autostream_state.store().snapshot().session.source
-    if source is None:
-        return None
-    if source == "replay":
-        return _replay_origin_input(get_repeat_status())
-    try:
-        return int(source[len("input"):])
-    except (ValueError, IndexError, TypeError):
-        return None
 
 
 # ── User-initiated output action marker ──────────────────────────────────────
@@ -437,203 +387,6 @@ _health_writer = autostream_state.store().claim("health", "autostream_core")
 
 def _set_owntone_selfheal_state(**fields) -> None:
     _health_writer.update(lambda cur: replace(cur, **fields)).notify()
-
-
-def _replay_origin_input(repeat_status: Optional[dict]) -> Optional[int]:
-    """Return the input index replay is attributed to, or None if not replaying.
-
-    Replay is only a "source" while repeat.replay.active is
-    true, and it is attributed to repeat.recording.origin_input (the daemon
-    guarantees capture-stop -> replay-start is atomic within one snapshot, so
-    there is never a poll where an input is still "capturing" for the same
-    recording that is also replaying).
-    """
-    if not isinstance(repeat_status, dict):
-        return None
-    replay = repeat_status.get("replay")
-    if not (isinstance(replay, dict) and bool(replay.get("active"))):
-        return None
-    recording = repeat_status.get("recording")
-    if not isinstance(recording, dict):
-        return None
-    origin = recording.get("origin_input")
-    return origin if isinstance(origin, int) else None
-
-
-def _repeat_recording_origin(repeat_status: Optional[dict]) -> Optional[int]:
-    """Return repeat.recording.origin_input from a cached repeat block, or None.
-
-    Unlike _replay_origin_input() this does not require replay to be active:
-    the daemon retains the origin through Hold, so it is still meaningful for
-    an ack that is about to start a replay.
-    """
-    if not isinstance(repeat_status, dict):
-        return None
-    recording = repeat_status.get("recording")
-    if not isinstance(recording, dict):
-        return None
-    origin = recording.get("origin_input")
-    return origin if isinstance(origin, int) and not isinstance(origin, bool) else None
-
-
-_REPEAT_ACK_COMMANDS = ("repeat_seek", "repeat_stop", "set_repeat_armed")
-_REPEAT_ACK_STATES = (
-    "idle", "recording", "pending", "hold", "replaying", "fading_out",
-)
-
-
-def _overlay_repeat_status_from_ack(
-    status: dict, ack: dict,
-) -> tuple[dict, bool, bool]:
-    """Return (overlaid copy of *status*, started, sought) for an accepted ack.
-
-    Pure: *status* is never mutated (the cached dict may be in a reader's
-    hands). started is True when the ack moves the daemon from not replaying
-    to replaying; sought is True for a replaying repeat_seek ack.
-    """
-    new = copy.deepcopy(status)
-    replay = new.get("replay")
-    if not isinstance(replay, dict):
-        replay = {}
-        new["replay"] = replay
-    was_active = bool(replay.get("active"))
-    state = ack["state"]
-    command = ack["command"]
-    raw_position = ack.get("position_seconds")
-    ack_position = (
-        float(raw_position)
-        if isinstance(raw_position, (int, float)) and not isinstance(raw_position, bool)
-        and math.isfinite(raw_position)
-        else None
-    )
-
-    new["armed"] = bool(ack.get("armed"))
-
-    started = state == "replaying" and not was_active
-    if state in ("replaying", "fading_out"):
-        replay["active"] = True
-        replay["fading_out"] = state == "fading_out"
-        if command == "set_repeat_armed":
-            # An arm ack carries the engine's current position, which is
-            # stale when the arm starts a replay from Hold (that replay
-            # always begins at zero) and irrelevant when already replaying.
-            if started:
-                replay["position_seconds"] = 0.0
-        elif ack_position is not None:
-            replay["position_seconds"] = ack_position
-        if started:
-            recording = new.get("recording")
-            seconds = recording.get("seconds") if isinstance(recording, dict) else None
-            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
-                # Both are total_bytes / byte_rate in the daemon, so the
-                # recording length is the replay length.
-                replay["duration_seconds"] = float(seconds)
-    elif state in ("hold", "idle"):
-        replay["active"] = False
-        replay["fading_out"] = False
-    # recording / pending: only "armed" can have changed.
-
-    sought = state == "replaying" and command == "repeat_seek"
-    return new, started, sought
-
-
-def _rearm_replay_identification(origin_input: Optional[int], in_session: bool) -> None:
-    """Re-arm track identification on the replay origin's monitor.
-
-    Called from apply_repeat_ack on the API thread. in_session is False when
-    the ack starts a replay from Hold (the coordinator's session_started
-    will publish the session's now-playing) and True for a seek within a
-    running replay. Does nothing when the origin monitor is not known.
-    """
-    if origin_input is None:
-        return
-    with runtime._monitors_lock:
-        target = next(
-            (m for m in runtime.all_monitors if m.input_index == origin_input), None)
-    if target is not None:
-        target.on_replay_seek_accepted(in_session)
-
-
-def _announce_playing_if_active(version: str) -> None:
-    """Pool worker: sync the announcement to the session state as it is now.
-
-    The state is read when the task runs, not when it was submitted, so a
-    stop that lands between the ack and the write leaves the service file
-    removed (or never written) instead of announcing an idle appliance. A
-    stop landing inside the window between this read and the write is
-    corrected by the coordinator's next tick or the periodic reconciliation.
-    """
-    announce.sync_playing_announcement(
-        autostream_state.store().snapshot().session.active, version)
-
-
-def _announce_replay_playing() -> None:
-    """Advertise the appliance as playing as soon as a replay start is acked.
-
-    Called from apply_repeat_ack on the API thread, so the write (a sudo
-    admin call) is handed to the task pool rather than run inline. The
-    submission is single-flight, and sync_playing_announcement is
-    idempotent under its lock, so the coordinator's own sync later in
-    the session either finds it announced or waits briefly for the write:
-    one write per session. Never raises.
-    """
-    version = announce._playing_version
-    if version is None or announce._playing_announced:
-        return
-    try:
-        runtime._task_pool.submit(
-            "playing-announce", _announce_playing_if_active, version)
-    except Exception:
-        logging.debug("replay playing announcement not submitted", exc_info=True)
-
-
-def apply_repeat_ack(ack: Optional[dict]) -> Optional[dict]:
-    """Fold an accepted transport/arm ack into the coordinator's view.
-
-    Called on the API thread by send_live_repeat_transport and
-    set_live_repeat_armed_ack, so every entry point (dial, Web UI, gateway)
-    gets it. Returns *ack* unchanged. No-op for None, ok:false, or a shape
-    the daemon never produces. The next poll cycle overwrites everything
-    written here with the daemon's own report; this only closes the gap
-    between the ack and that cycle.
-
-    Identification is re-armed here, at the ack, rather than by bumping the
-    daemon's replay track_change_seq on a seek: this runs on the API thread
-    so it is immediate, and every seek goes through
-    send_live_repeat_transport so it covers every caller. A daemon-side bump
-    would only be read on the coordinator's next poll and would re-arm a
-    second time for the same seek.
-    """
-    if not (isinstance(ack, dict) and ack.get("ok")):
-        return ack
-    if ack.get("state") not in _REPEAT_ACK_STATES:
-        return ack
-    if ack.get("command") not in _REPEAT_ACK_COMMANDS:
-        return ack
-
-    with _repeat_status_lock:
-        # Nothing to overlay (older daemon, or not yet polled), and no
-        # recording origin to resolve.
-        if not isinstance(_repeat_status, dict):
-            return ack
-        new_status, started, sought = _overlay_repeat_status_from_ack(
-            _repeat_status, ack)
-        _set_repeat_status_locked(new_status)
-
-    if ack["state"] == "replaying":
-        # No-op when a session is already active (fading_out is one from the
-        # coordinator's view; hold/idle are left to its session_ended path so
-        # the OwnTone stop and now-playing end are not skipped).
-        autostream_session.note_replay_started()
-
-    notify_state_changed("repeat")
-
-    if sought or started:
-        _rearm_replay_identification(
-            _repeat_recording_origin(new_status), in_session=not started)
-    if started:
-        _announce_replay_playing()
-    return ack
 
 
 def _empty_playback_snapshot() -> PlaybackSnapshot:
@@ -1094,7 +847,7 @@ def _stop_and_disable_owntone(base_url: str, reason: str) -> None:
 def _current_source_monitor(monitors, source: Optional[str], origin_input: Optional[int]):
     """Resolve a vector key ("input1"/"input2"/"replay") to its AudioMonitor.
 
-    *origin_input* is the already-computed _replay_origin_input() for the
+    *origin_input* is the already-computed replay_origin_input() for the
     SAME snapshot the vector was built from -- resolving "replay" any other
     way would risk reading a later, possibly-stale repeat_status.
     """
@@ -1149,12 +902,12 @@ class _SessionTracker:
         Returns (event, prev_monitor, new_monitor, new_source) where event is
         one of "session_started" / "session_ended" / "source_changed" / None.
         """
-        origin_input = _replay_origin_input(repeat_status)
+        origin_input = autostream_state.replay_origin_input(repeat_status)
         vector = {f"input{m.input_index}": bool(m.is_capturing) for m in monitors}
         vector["replay"] = origin_input is not None
 
         # Mutual exclusion between a capturing input and replay for the same
-        # recording is a daemon invariant (see _replay_origin_input); prefer
+        # recording is a daemon invariant (see replay_origin_input); prefer
         # "replay" if it's ever violated since it is the rarer, more specific
         # state to surface.
         active = [k for k, v in vector.items() if v]
@@ -2317,7 +2070,7 @@ def set_live_repeat_armed_ack(
     with monitor_client._connected_monitor(socket_path) as client:
         if client is None:
             return None
-        return apply_repeat_ack(client.set_repeat_armed_ack(bool(armed)))
+        return autostream_repeat.apply_repeat_ack(client.set_repeat_armed_ack(bool(armed)))
 
 
 def set_live_repeat_armed(
@@ -2345,8 +2098,8 @@ def send_live_repeat_transport(
         if client is None:
             return None
         if action == "stop":
-            return apply_repeat_ack(client.repeat_stop())
-        return apply_repeat_ack(client.repeat_seek(position_seconds))
+            return autostream_repeat.apply_repeat_ack(client.repeat_stop())
+        return autostream_repeat.apply_repeat_ack(client.repeat_seek(position_seconds))
 
 
 def apply_output_eq(
@@ -2614,7 +2367,7 @@ class AudioMonitor:
         self._rate_mismatch_last_warning: float = 0.0
         self.is_silent: bool = True
         self.is_capturing: bool = False
-        # Set each poll cycle from the coordinator's _replay_origin_input():
+        # Set each poll cycle from the coordinator's replay_origin_input():
         # True while this input is the origin of a currently
         # replaying recording, i.e. it is the session's audible source even
         # though it is not itself "capturing". See _ingest_status() and
@@ -2726,7 +2479,7 @@ class AudioMonitor:
         transition so the coordinator can fire callbacks in a second pass,
         after all monitors have been updated.
 
-        *replay_origin* is this same poll cycle's _replay_origin_input()
+        *replay_origin* is this same poll cycle's replay_origin_input()
         result compared against self.input_index: True while
         this input is the origin of a currently-replaying recording, so it
         is "actively sourcing" the session even though is_capturing is False.
@@ -3078,7 +2831,7 @@ class AudioMonitor:
     def on_replay_seek_accepted(self, in_session: bool) -> None:
         """Re-arm identification after an accepted replay start or seek.
 
-        Called on the API thread from apply_repeat_ack for the replay origin
+        Called on the API thread from apply_repeat_ack (autostream_repeat) for the replay origin
         monitor. A seek resets the daemon's reader and decoder but not its
         track_change_seq, so no gap event would ever tell the coordinator
         that the audio moved. *in_session* is True for a seek within a
@@ -3266,7 +3019,7 @@ class AudioMonitor:
     ) -> None:
         """Dispatch an identification worker if the deadline has elapsed and conditions allow.
 
-        *replay_origin* is this poll cycle's _replay_origin_input() result
+        *replay_origin* is this poll cycle's replay_origin_input() result
         compared against self.input_index: an input replaying
         its own recording is "actively sourcing" the session even though
         is_capturing is False, and the daemon already serves replay-tap
@@ -4798,7 +4551,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     # a reload or a daemon reconnect compares the state before with the
     # state after.
     dial_hint_watches = (
-        ChangeWatch("repeat", lambda: autostream_state.repeat_digest(get_repeat_status())),
+        ChangeWatch("repeat", lambda: autostream_state.repeat_digest(
+            autostream_state.store().snapshot().repeat.block)),
         ChangeWatch("track", lambda: autostream_state.track_digest(
             get_active_track_identification_snapshot())),
     )
@@ -4967,7 +4721,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # overwritten by a later poll before this cycle finishes.
                 repeat_status = status.get("repeat")
                 repeat_status = repeat_status if isinstance(repeat_status, dict) else None
-                _set_repeat_status(repeat_status)
+                autostream_repeat.publish_from_daemon(repeat_status)
 
                 # Computed once per poll cycle from this same snapshot
                 # and reused below for _ingest_status()'s
@@ -4975,7 +4729,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # gate, and the track-ID actively-sourcing gate -- all must
                 # agree on which input (if any) is the replay origin for THIS
                 # cycle, not a later, possibly-stale repeat_status.
-                replay_origin_idx = _replay_origin_input(repeat_status)
+                replay_origin_idx = autostream_state.replay_origin_input(repeat_status)
 
                 # Read-only per-tick snapshot bundling the three values just
                 # computed above, so the ingest call sites below (and the

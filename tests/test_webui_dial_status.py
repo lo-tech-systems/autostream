@@ -63,7 +63,8 @@ from track_id.models import (
 )
 import autostream_session as session
 import autostream_state
-from fake_store import fake_session
+from fake_store import fake_repeat, fake_session
+import autostream_repeat as repeat
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -131,12 +132,11 @@ def _invoke(
     by the patched dial_authorization() (one of AUTH_AUTHORIZED,
     AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE). appliance_id is what the patched
     get_appliance_id() returns (None for an identity-less appliance).
-    repeat_status is what the patched get_repeat_status() returns (None by
+    repeat_status is the repeat block put into the store (None by
     default -- no cached daemon "repeat" block, e.g. an older monitor binary
-    or no poll yet). session_state, when given, is what the patched
-    get_session_state() returns instead of one derived from `playing`.
-    source_input is what get_session_source_input_index() returns (input 1
-    while playing, None otherwise, by default); input_types are the two
+    or no poll yet). session_state, when given, is the session put into the
+    store instead of one derived from `playing`. source_input is the input
+    behind a playing session (input 1 by default); input_types are the two
     inputs' configured types.
     """
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
@@ -167,13 +167,11 @@ def _invoke(
         patch("autostream_webui_api.list_outputs", return_value=list_result),
         patch("autostream_webui_api.update_output", update_mock),
         fake_session(session_state if session_state is not None
-              else {"active": playing, "source": "input1" if playing else None}),
-        patch("autostream_webui_api.get_repeat_status", return_value=repeat_status),
+              else {"active": playing,
+                    "source": f"input{source_input or 1}" if playing else None}),
+        fake_repeat(repeat_status),
         patch("autostream_core.get_active_track_identification_snapshot",
               return_value=track_id_snapshot),
-        patch("autostream_core.get_session_source_input_index",
-              return_value=source_input if source_input is not None
-              else (1 if playing else None)),
     ):
         send_dial_status_post_json(handler, state, json_obj)
 
@@ -308,7 +306,7 @@ class TestPlayingField:
             patch("autostream_webui_api._config_snapshot", return_value=parsed),
             patch("autostream_webui_api.list_outputs", return_value=_ok_list()),
             fake_session({"active": True, "source": "replay"}),
-            patch("autostream_webui_api.get_repeat_status", return_value=None),
+            fake_repeat(None),
             patch("autostream_core.get_active_track_identification_snapshot",
                   return_value=disabled_snapshot()),
         ):
@@ -319,22 +317,21 @@ class TestPlayingField:
     def test_playing_is_true_immediately_after_a_replaying_ack(self):
         """A replaying ack folded into the coordinator's caches makes the
         very next status poll report playing, before any daemon poll."""
-        import autostream_core as core
-        core._set_repeat_status(_daemon_block(
+        repeat.publish_from_daemon(_daemon_block(
             recording={"active": False, "seconds": 42.0, "origin_input": 1}))
         session.publish(False, None)
         try:
-            core.apply_repeat_ack({
+            repeat.apply_repeat_ack({
                 "ok": True, "command": "repeat_seek", "state": "replaying",
                 "armed": True, "position_seconds": 0.0,
             })
             code, body, _ = _invoke(
                 {"dial_id": DIAL_ID},
                 session_state=autostream_state.store().snapshot().session.as_dict(),
-                repeat_status=core.get_repeat_status(),
+                repeat_status=autostream_state.store().snapshot().repeat.block,
             )
         finally:
-            core._set_repeat_status(None)
+            repeat.publish_from_daemon(None)
             session.publish(False, None)
         assert body["playing"] is True
 
@@ -519,7 +516,7 @@ class TestRepeatField:
         )
         code, body, _ = _invoke({"dial_id": DIAL_ID}, repeat_status=block)
         assert code == 200
-        with patch("autostream_webui_api.get_repeat_status", return_value=block):
+        with fake_repeat(block):
             from autostream_webui_api import _dial_repeat_object
             expected = _dial_repeat_object()
         assert body["repeat"] == expected
@@ -601,19 +598,19 @@ class TestRepeatField:
         assert body["repeat"]["held"] is False
 
     def test_repeat_object_is_replaying_immediately_after_a_seek_ack(self):
-        import autostream_core as core
-        core._set_repeat_status(_daemon_block(
+        repeat.publish_from_daemon(_daemon_block(
             recording={"active": False, "seconds": 42.0, "origin_input": 1}))
         session.publish(False, None)
         try:
-            core.apply_repeat_ack({
+            repeat.apply_repeat_ack({
                 "ok": True, "command": "repeat_seek", "state": "replaying",
                 "armed": True, "position_seconds": 0.0,
             })
             code, body, _ = _invoke(
-                {"dial_id": DIAL_ID}, repeat_status=core.get_repeat_status())
+                {"dial_id": DIAL_ID},
+                repeat_status=autostream_state.store().snapshot().repeat.block)
         finally:
-            core._set_repeat_status(None)
+            repeat.publish_from_daemon(None)
             session.publish(False, None)
         assert code == 200
         assert body["repeat"]["state"] == "replaying"

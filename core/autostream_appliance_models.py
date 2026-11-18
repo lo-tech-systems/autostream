@@ -29,7 +29,6 @@ from autostream_core import (
     get_live_output_eq_status,
     get_monitor_levels_dbfs,
     get_playback_snapshot,
-    get_repeat_status,
     note_user_output_action,
     sample_rate_warning_text,
     set_live_output_auto_trim,
@@ -385,10 +384,7 @@ def _session_and_repeat_fields(snap) -> dict:
     absence rather than by error.
     """
     fields: dict = {"session": snap.session.as_dict()}
-    try:
-        repeat_status = get_repeat_status()
-    except Exception:
-        repeat_status = None
+    repeat_status = snap.repeat.block
     if repeat_status is not None:
         fields["repeat"] = repeat_status
     return fields

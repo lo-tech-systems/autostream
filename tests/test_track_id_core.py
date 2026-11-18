@@ -40,6 +40,7 @@ from track_id.models import (
 )
 import autostream_runtime as runtime
 import autostream_session as session
+import autostream_repeat as repeat
 
 
 # ---------------------------------------------------------------------------
@@ -2152,10 +2153,10 @@ class TestReplaySeekRearm:
 
     @pytest.fixture(autouse=True)
     def _isolate_caches(self):
-        core._set_repeat_status(None)
+        repeat.publish_from_daemon(None)
         session.publish(False, None)
         yield
-        core._set_repeat_status(None)
+        repeat.publish_from_daemon(None)
         session.publish(False, None)
 
     @staticmethod
@@ -2298,9 +2299,9 @@ class TestReplaySeekRearm:
         other = _make_monitor(input_index=1)
         other._ti_snapshot = _identified_snapshot()
         other_gen = other._ti_generation
-        core._set_repeat_status(_repeat_block(replaying=True, origin_input=2))
+        repeat.publish_from_daemon(_repeat_block(replaying=True, origin_input=2))
         with patch.object(runtime, "all_monitors", [other, origin]):
-            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=30.0))
+            repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=30.0))
         assert origin._ti_snapshot.state == STATE_WAITING
         assert origin._ti_next_attempt_reason == "seek"
         assert other._ti_snapshot.state == STATE_IDENTIFIED
@@ -2308,17 +2309,17 @@ class TestReplaySeekRearm:
 
     def test_in_session_seek_ack_publishes_interstitial_on_the_origin(self):
         origin, _ = self._armed_origin()
-        core._set_repeat_status(_repeat_block(replaying=True))
+        repeat.publish_from_daemon(_repeat_block(replaying=True))
         with patch.object(runtime, "all_monitors", [origin]), \
              patch.object(core, "_load_placeholder_artwork", return_value=None):
-            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
+            repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
         origin._nowplaying_publisher.publish_refresh.assert_called_once()
 
     def test_apply_repeat_ack_without_cached_block_does_not_touch_monitors(self):
         origin, _ = self._armed_origin()
         gen_before = origin._ti_generation
         with patch.object(runtime, "all_monitors", [origin]):
-            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
+            repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
         assert origin._ti_generation == gen_before
         assert origin._ti_snapshot.state == STATE_IDENTIFIED
 
@@ -2331,9 +2332,9 @@ class TestReplaySeekRearm:
     def test_stop_and_rejected_acks_do_not_rearm(self, ack):
         origin, _ = self._armed_origin()
         gen_before = origin._ti_generation
-        core._set_repeat_status(_repeat_block(replaying=True))
+        repeat.publish_from_daemon(_repeat_block(replaying=True))
         with patch.object(runtime, "all_monitors", [origin]):
-            core.apply_repeat_ack(ack)
+            repeat.apply_repeat_ack(ack)
         assert origin._ti_generation == gen_before
         assert origin._ti_snapshot.state == STATE_IDENTIFIED
         origin._nowplaying_publisher.publish_refresh.assert_not_called()
@@ -2343,18 +2344,18 @@ class TestReplaySeekRearm:
         gen_before = origin._ti_generation
         ack = _repeat_ack("set_repeat_armed", "replaying", position=217.5)
 
-        core._set_repeat_status(_repeat_block(replaying=False))
+        repeat.publish_from_daemon(_repeat_block(replaying=False))
         with patch.object(runtime, "all_monitors", [origin]):
-            core.apply_repeat_ack(ack)
+            repeat.apply_repeat_ack(ack)
         assert origin._ti_generation == gen_before + 1
         assert origin._ti_snapshot.state == STATE_WAITING
         # Started from Hold: the session start publishes, not the ack.
         origin._nowplaying_publisher.publish_refresh.assert_not_called()
 
         origin._ti_snapshot = _identified_snapshot()
-        core._set_repeat_status(_repeat_block(replaying=True))
+        repeat.publish_from_daemon(_repeat_block(replaying=True))
         with patch.object(runtime, "all_monitors", [origin]):
-            core.apply_repeat_ack(ack)
+            repeat.apply_repeat_ack(ack)
         assert origin._ti_generation == gen_before + 1
         assert origin._ti_snapshot.state == STATE_IDENTIFIED
 
@@ -2367,9 +2368,9 @@ class TestReplaySeekRearm:
         origin._replay_origin = False
         origin.track_change_seq = 0
         origin._track_change_seq_baseline = 0
-        core._set_repeat_status(_repeat_block(replaying=False))
+        repeat.publish_from_daemon(_repeat_block(replaying=False))
         with patch.object(runtime, "all_monitors", [origin]):
-            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
+            repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
             assert core.get_active_track_identification_snapshot().state == STATE_WAITING
 
             status = {

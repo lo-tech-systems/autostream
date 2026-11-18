@@ -49,7 +49,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_mute_state as mute_state
-from fake_store import fake_session
+from fake_store import fake_repeat, fake_session
 
 
 @pytest.fixture(autouse=True)
@@ -418,7 +418,7 @@ class TestStatusMuteAware:
              patch("autostream_webui_api.list_outputs", return_value=_list_result(outputs)), \
              patch("autostream_webui_api.get_appliance_id", return_value=None), \
              patch("autostream_webui_api._session_playing", return_value=False), \
-             patch("autostream_webui_api.get_repeat_status", return_value=None), \
+             fake_repeat(None), \
              patch("autostream_core.get_active_track_identification_snapshot",
                    return_value=_disabled_track_id_snapshot()):
             api.send_dial_status_post_json(_handler(), MagicMock(), {"dial_id": "uid"})
@@ -578,7 +578,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
              patch("autostream_appliance_models.get_setting") as mock_setting, \
              patch("autostream_appliance_models.get_active_track_identification_snapshot") as mock_ti, \
              fake_session({"active": False, "source": None}), \
-             patch("autostream_appliance_models.get_repeat_status", return_value=None), \
+             fake_repeat(None), \
              patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
              patch("autostream_appliance_models.get_app_version", return_value="1.0"), \
              patch("autostream_appliance_models.get_appliance_id", return_value="id"):

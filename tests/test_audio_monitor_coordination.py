@@ -544,7 +544,8 @@ import autostream_eq_bands as eq_bands
 import autostream_logging as log_setup
 import autostream_announce as announce
 import autostream_session as session
-from fake_store import fake_session
+from fake_store import fake_repeat, fake_session
+import autostream_repeat as repeat
 
 
 def _fake_connected(client):
@@ -946,14 +947,14 @@ class TestUpdateLiveInputType:
 
 
 # ---------------------------------------------------------------------------
-# get_session_source_input_index / get_monitor_levels_dbfs
+# session_source_input_index / get_monitor_levels_dbfs
 # ---------------------------------------------------------------------------
 
 class TestGetSessionSourceInputIndex:
     def _index(self, state, repeat_status=None):
-        with fake_session(state), \
-             patch.object(core, "get_repeat_status", return_value=repeat_status):
-            return core.get_session_source_input_index()
+        with fake_session(state), fake_repeat(repeat_status):
+            return autostream_state.session_source_input_index(
+                autostream_state.store().snapshot())
 
     def test_input1(self):
         assert self._index({"active": True, "source": "input1"}) == 1
@@ -1357,21 +1358,21 @@ class TestReplayAckAnnouncement:
     def teardown_method(self):
         announce._playing_announced = False
         announce._playing_version = None
-        core._set_repeat_status(None)
+        repeat.publish_from_daemon(None)
         session.publish(False, None)
 
     def _ack_from_hold(self, command="repeat_seek", state="replaying",
                        replaying=False):
-        core._set_repeat_status(_repeat_block(replaying=replaying))
-        with patch.object(core, "_rearm_replay_identification"), \
+        repeat.publish_from_daemon(_repeat_block(replaying=replaying))
+        with patch.object(repeat, "_rearm_replay_identification"), \
              patch.object(runtime._task_pool, "submit", return_value=True) as submit:
-            core.apply_repeat_ack(_repeat_ack(command, state))
+            repeat.apply_repeat_ack(_repeat_ack(command, state))
         return submit
 
     def test_replaying_ack_submits_the_announcement_off_thread(self):
         submit = self._ack_from_hold()
         submit.assert_called_once_with(
-            "playing-announce", core._announce_playing_if_active, "v1")
+            "playing-announce", repeat._announce_playing_if_active, "v1")
 
     def test_replaying_ack_is_a_noop_when_already_announced(self):
         announce._playing_announced = True
@@ -1393,11 +1394,11 @@ class TestReplayAckAnnouncement:
         assert self._ack_from_hold("set_repeat_armed", "hold").call_count == 0
 
     def test_a_submit_failure_never_reaches_the_caller(self):
-        core._set_repeat_status(_repeat_block())
-        with patch.object(core, "_rearm_replay_identification"), \
+        repeat.publish_from_daemon(_repeat_block())
+        with patch.object(repeat, "_rearm_replay_identification"), \
              patch.object(runtime._task_pool, "submit",
                           side_effect=RuntimeError("pool down")):
-            core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
+            repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
 
     def test_duplicate_submission_is_dropped_by_single_flight(self):
         import threading
@@ -1411,10 +1412,10 @@ class TestReplayAckAnnouncement:
 
         try:
             with patch.object(runtime, "_task_pool", pool), \
-                 patch.object(core, "_announce_playing_if_active", slow):
-                core._announce_replay_playing()
+                 patch.object(repeat, "_announce_playing_if_active", slow):
+                repeat._announce_replay_playing()
                 assert started.wait(5)
-                core._announce_replay_playing()
+                repeat._announce_replay_playing()
                 assert pool.is_inflight("playing-announce")
         finally:
             release.set()
@@ -1424,7 +1425,7 @@ class TestReplayAckAnnouncement:
         # service announced.
         session.publish(False, None)
         with patch.object(announce, "write_avahi_playing_service") as write:
-            core._announce_playing_if_active("v1")
+            repeat._announce_playing_if_active("v1")
         write.assert_not_called()
         assert announce._playing_announced is False
 
@@ -1433,7 +1434,7 @@ class TestReplayAckAnnouncement:
         with patch.object(announce, "get_appliance_id", return_value=_FIXED_APPLIANCE_ID), \
              patch.object(announce, "write_avahi_playing_service",
                           return_value=True) as write:
-            core._announce_playing_if_active("v1")
+            repeat._announce_playing_if_active("v1")
             announce.sync_playing_announcement(True, "v1")
         write.assert_called_once_with("v1", _FIXED_APPLIANCE_ID)
         assert announce._playing_announced is True

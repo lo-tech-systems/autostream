@@ -100,3 +100,11 @@ def fake_session(value: dict):
     test used to patch a session getter."""
     FakeStore().session(value["active"], value.get("source"))
     return contextlib.nullcontext()
+
+
+def fake_repeat(block):
+    """Put a repeat block (or None) into the store and return a context
+    manager that does nothing, so it can stand in a ``with`` statement where
+    a test used to patch a repeat getter."""
+    FakeStore().repeat(block)
+    return contextlib.nullcontext()
