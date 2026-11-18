@@ -27,6 +27,7 @@ import autostream_core as _core_mod
 from autostream_core import _check_webui_thread
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
+import autostream_logging as log_setup
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +333,7 @@ class TestOutputUsageStartup:
         calls = []
         with patch.object(runtime, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
-             patch.object(_core_mod, "setup_logging"), \
+             patch.object(log_setup, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level"), \
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(_core_mod, "_ensure_playback_tracker"), \
@@ -372,7 +373,7 @@ class TestStartupWifiWatcherForwarding:
 
         with patch.object(runtime, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
-             patch.object(_core_mod, "setup_logging"), \
+             patch.object(log_setup, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level") as m_apply, \
              patch("autostream_watcher_client.forward_log_level_to_watcher",
                    return_value=True) as m_forward, \
@@ -406,7 +407,7 @@ class TestStartupWifiWatcherForwarding:
 
         with patch.object(runtime, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
-             patch.object(_core_mod, "setup_logging"), \
+             patch.object(log_setup, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level",
                    side_effect=RuntimeError("policy down")), \
              patch.object(_core_mod, "audit_static_system_facts"), \

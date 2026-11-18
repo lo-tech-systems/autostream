@@ -14,6 +14,7 @@ import socket
 import threading
 from typing import Optional
 
+import autostream_logging as log_setup
 from autostream_config import normalize_log_level
 
 
@@ -392,3 +393,25 @@ def _connected_monitor(socket_path: Optional[str] = None):
         yield client if client.connect() else None
     finally:
         client.close()
+
+
+def set_live_monitor_log_level(
+    log_level: str,
+    socket_path: Optional[str] = None,
+) -> bool:
+    """Apply the platform log level immediately to the running monitor daemon."""
+    normalized = normalize_log_level(log_level)
+    with _connected_monitor(socket_path) as client:
+        if client is None:
+            return False
+        return client.set_log_level(normalized)
+
+
+def update_live_platform_log_level(
+    log_level: str,
+    socket_path: Optional[str] = None,
+) -> tuple[str, bool]:
+    """Apply the platform log level to Python and the monitor daemon."""
+    normalized = log_setup.update_live_log_level(log_level)
+    monitor_ok = set_live_monitor_log_level(normalized, socket_path=socket_path)
+    return normalized, monitor_ok

@@ -492,7 +492,6 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_webui_post_handlers.py', 2, 'autostream_appliances', 'reconcile_appliance_announcement'),
     ('test_webui_post_handlers.py', 2, 'autostream_output_usage', 'usage_for_output'),
     ('test_webui_post_handlers.py', 2, 'autostream_webui_common', 'get_app_version'),
-    ('test_wp1_log_level_policy.py', 2, 'autostream_sysutils', 'run_admin_cmd'),
     ('test_wp2_log_level_api.py', 1, 'autostream_log_policy', 'get_log_level_state'),
     ('test_wp2_log_level_api.py', 2, 'autostream_log_policy', 'get_log_level_state'),
     ('test_wp2_log_level_api.py', 2, 'autostream_log_policy', 'set_log_level'),

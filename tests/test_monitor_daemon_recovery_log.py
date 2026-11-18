@@ -31,6 +31,7 @@ if _CORE not in sys.path:
 import autostream_core as core
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
+import autostream_logging as log_setup
 
 
 def _minimal_cfg(tmp_path: Path) -> Path:
@@ -91,7 +92,7 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         stack.enter_context(patch.object(core, "_ensure_playback_tracker"))
         stack.enter_context(patch.object(core, "_start_output_usage_poller"))
         stack.enter_context(patch("autostream_log_policy.apply_startup_log_level"))
-        stack.enter_context(patch.object(core, "setup_logging"))
+        stack.enter_context(patch.object(log_setup, "setup_logging"))
         stack.enter_context(patch.object(core, "_reconcile_audio_path_startup"))
         stack.enter_context(patch.object(
             core, "reconcile_fifo_with_backend",

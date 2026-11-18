@@ -27,10 +27,10 @@ ORDER = ["L0", "L1a", "L1b", "L2", "L3", "L4"]
 _L0 = """
 align_tone appliance_identity artwork auth bluetooth_client bluetooth_facts
 bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
-federation licensing mdns monitor_client mute_state nowplaying owntone
-owntone_mini pin_pairing playback_stats player_service players rpi runtime
-runtime_state settings settings_schema start_buffer_cache system_stats sysutils
-watcher_client wifi_network
+federation licensing logging mdns monitor_client mute_state nowplaying
+owntone owntone_mini pin_pairing playback_stats player_service players rpi
+runtime runtime_state settings settings_schema start_buffer_cache system_stats
+sysutils watcher_client wifi_network
 """.split()
 _L2 = "align appliances dial_push dial_warnings log_policy output_usage".split()
 _L3 = """
@@ -343,8 +343,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_dial_warnings', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
-    ('A', 'autostream_log_policy', 'autostream_core', 'set_live_monitor_log_level'),
-    ('A', 'autostream_log_policy', 'autostream_core', 'update_live_log_level'),
     ('A', 'autostream_webui_api', 'autostream_core', 'any_monitor_capturing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'apply_track_id_config_live_from_parsed'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_active_track_identification_snapshot'),

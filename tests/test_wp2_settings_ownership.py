@@ -279,7 +279,7 @@ class TestRunAutostreamFinalSave:
             patch("autostream_core._ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
-            patch("autostream_core.setup_logging"),
+            patch("autostream_logging.setup_logging"),
         ):
             sf.is_set.side_effect = _is_set
             sf.wait.return_value = True  # for any wait() calls
@@ -319,7 +319,7 @@ class TestRunAutostreamFinalSave:
             patch("autostream_core._ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
-            patch("autostream_core.setup_logging"),
+            patch("autostream_logging.setup_logging"),
             patch("autostream_settings.SettingsStore", CloseSpy),
         ):
             sf.is_set.side_effect = _is_set
@@ -377,7 +377,7 @@ class TestRunAutostreamStartupFormatReconcile:
             patch("autostream_core._ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
-            patch("autostream_core.setup_logging"),
+            patch("autostream_logging.setup_logging"),
             patch("autostream_core.reconcile_fifo_with_backend") as rf,
             # Not under test here, but must still be patched: real
             # reconcile_monitor_format() would otherwise make a live HTTP
@@ -461,7 +461,7 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
             patch("autostream_core._ensure_playback_tracker"),
             patch("autostream_core._start_output_usage_poller"),
             patch("autostream_log_policy.apply_startup_log_level"),
-            patch("autostream_core.setup_logging"),
+            patch("autostream_logging.setup_logging"),
             patch("autostream_core.is_high_performance_pi", return_value=False),
             patch("autostream_core.push_resample_quality"),
             patch("autostream_core.sync_monitor_args_for_audio_path"),

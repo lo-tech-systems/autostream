@@ -185,10 +185,10 @@ def _make_no_op_apply(monkeypatch):
     def _fake_set_nginx(_): return True
 
     monkeypatch.setattr(
-        "autostream_core.update_live_log_level", _fake_update_live, raising=False,
+        "autostream_logging.update_live_log_level", _fake_update_live, raising=False,
     )
     monkeypatch.setattr(
-        "autostream_core.set_live_monitor_log_level", lambda *_: True, raising=False,
+        "autostream_monitor_client.set_live_monitor_log_level", lambda *_: True, raising=False,
     )
     monkeypatch.setattr(
         "autostream_sysutils.set_nginx_verbose_logging", _fake_set_nginx, raising=False,
@@ -386,8 +386,8 @@ class TestSetLogLevelApplied:
             lambda v: calls.append(v) or True,
             raising=False,
         )
-        monkeypatch.setattr("autostream_core.update_live_log_level", lambda _: None, raising=False)
-        monkeypatch.setattr("autostream_core.set_live_monitor_log_level", lambda *_: True, raising=False)
+        monkeypatch.setattr("autostream_logging.update_live_log_level", lambda _: None, raising=False)
+        monkeypatch.setattr("autostream_monitor_client.set_live_monitor_log_level", lambda *_: True, raising=False)
         with patch.dict("sys.modules", {"autostream_player_service": MagicMock()}):
             p = _write_config(tmp_path, _minimal_config("info"))
             lp.set_log_level(p, "debug", changed_by="user")
@@ -401,8 +401,8 @@ class TestSetLogLevelApplied:
             lambda v: calls.append(v) or True,
             raising=False,
         )
-        monkeypatch.setattr("autostream_core.update_live_log_level", lambda _: None, raising=False)
-        monkeypatch.setattr("autostream_core.set_live_monitor_log_level", lambda *_: True, raising=False)
+        monkeypatch.setattr("autostream_logging.update_live_log_level", lambda _: None, raising=False)
+        monkeypatch.setattr("autostream_monitor_client.set_live_monitor_log_level", lambda *_: True, raising=False)
         with patch.dict("sys.modules", {"autostream_player_service": MagicMock()}):
             p = _write_config(tmp_path, _minimal_config("debug", "user"))
             lp.set_log_level(p, "info", changed_by="user")

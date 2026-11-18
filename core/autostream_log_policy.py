@@ -225,16 +225,16 @@ def set_log_level(
 
     # Apply to Python logger.
     try:
-        from autostream_core import update_live_log_level
-        update_live_log_level(new_level)
+        import autostream_logging as log_setup
+        log_setup.update_live_log_level(new_level)
         applied["autostream"] = True
     except Exception as e:
         logger.warning("set_log_level: Python logger apply failed: %s", e)
 
     # Apply to monitor daemon.
     try:
-        from autostream_core import set_live_monitor_log_level
-        monitor_ok = set_live_monitor_log_level(new_level)
+        import autostream_monitor_client as monitor_client
+        monitor_ok = monitor_client.set_live_monitor_log_level(new_level)
         applied["monitor"] = monitor_ok
     except Exception as e:
         logger.warning("set_log_level: monitor apply failed: %s", e)

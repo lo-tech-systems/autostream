@@ -540,6 +540,7 @@ from contextlib import contextmanager as _contextmanager
 import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_eq_bands as eq_bands
+import autostream_logging as log_setup
 
 
 def _fake_connected(client):
@@ -995,14 +996,14 @@ class TestGetMonitorLevelsDbfs:
 class TestSetLiveMonitorLogLevel:
     def test_returns_false_when_client_unavailable(self):
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            result = core.set_live_monitor_log_level("info")
+            result = monitor_client.set_live_monitor_log_level("info")
         assert result is False
 
     def test_calls_set_log_level_with_normalized_level(self):
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_log_level.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.set_live_monitor_log_level("WARNING")
+            result = monitor_client.set_live_monitor_log_level("WARNING")
         assert result is True
         mock_client.set_log_level.assert_called_once()
         called_level = mock_client.set_log_level.call_args[0][0]
@@ -1012,7 +1013,7 @@ class TestSetLiveMonitorLogLevel:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_log_level.return_value = False
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            result = core.set_live_monitor_log_level("debug")
+            result = monitor_client.set_live_monitor_log_level("debug")
         assert result is False
 
 
@@ -1023,24 +1024,24 @@ class TestUpdateLivePlatformLogLevel:
         root = _logging.getLogger()
         saved_level = root.level
         saved_handler_levels = [h.level for h in root.handlers]
-        saved_platform_level = core._live_platform_log_level
+        saved_platform_level = log_setup._live_platform_log_level
         yield
         root.setLevel(saved_level)
         for h, lvl in zip(root.handlers, saved_handler_levels):
             h.setLevel(lvl)
-        core._live_platform_log_level = saved_platform_level
+        log_setup._live_platform_log_level = saved_platform_level
 
     def test_returns_normalized_level_and_monitor_bool(self):
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_log_level.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            normalized, monitor_ok = core.update_live_platform_log_level("DEBUG")
+            normalized, monitor_ok = monitor_client.update_live_platform_log_level("DEBUG")
         assert isinstance(normalized, str)
         assert monitor_ok is True
 
     def test_monitor_fail_still_returns_normalized(self):
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(None)):
-            normalized, monitor_ok = core.update_live_platform_log_level("info")
+            normalized, monitor_ok = monitor_client.update_live_platform_log_level("info")
         assert isinstance(normalized, str)
         assert monitor_ok is False
 
@@ -1049,7 +1050,7 @@ class TestUpdateLivePlatformLogLevel:
         mock_client = MagicMock(spec=MonitorClient)
         mock_client.set_log_level.return_value = True
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(mock_client)):
-            core.update_live_platform_log_level("DEBUG")
+            monitor_client.update_live_platform_log_level("DEBUG")
         assert _logging.getLogger().level == _logging.DEBUG
 
 

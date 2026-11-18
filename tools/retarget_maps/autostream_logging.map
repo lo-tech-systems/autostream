@@ -1,0 +1,7 @@
+# Names that moved from the coordinator into autostream_logging and
+# autostream_monitor_client.
+autostream_core.setup_logging -> autostream_logging.setup_logging  alias=log_setup
+autostream_core.update_live_log_level -> autostream_logging.update_live_log_level  alias=log_setup
+autostream_core._live_platform_log_level -> autostream_logging._live_platform_log_level  alias=log_setup
+autostream_core.set_live_monitor_log_level -> autostream_monitor_client.set_live_monitor_log_level  alias=monitor_client
+autostream_core.update_live_platform_log_level -> autostream_monitor_client.update_live_platform_log_level  alias=monitor_client
