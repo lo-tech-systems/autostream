@@ -615,3 +615,35 @@ class TestBackgroundThread:
         time.sleep(0.15)
         assert writes == [], "background thread wrote when clean"
         store.close(save=False)
+
+
+class TestGeneration:
+    def test_it_starts_at_zero_and_follows_each_commit(self, tmp_path):
+        store = _make_store(tmp_path)
+        assert store.generation == 0
+        store.update(lambda r: r.update({"a": 1}))
+        assert store.generation == 1
+        store.update(lambda r: r.update({"a": 2}))
+        assert store.generation == 2
+        store.close(save=False)
+
+    def test_a_failed_mutation_does_not_move_it(self, tmp_path):
+        store = _make_store(tmp_path)
+
+        def boom(r):
+            raise RuntimeError("no")
+
+        with pytest.raises(RuntimeError):
+            store.update(boom)
+        assert store.generation == 0
+        store.close(save=False)
+
+    def test_a_reload_from_disk_moves_it(self, tmp_path):
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({"a": 1}))
+        store = SettingsStore(str(p), _save_interval_seconds=60.0)
+        before = store.generation
+        p.write_text(json.dumps({"a": 2}))
+        store.reload_from_disk()
+        assert store.generation > before
+        store.close(save=False)

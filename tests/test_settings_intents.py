@@ -314,3 +314,26 @@ def test_hooks_that_were_never_bound_fail_loud():
             live_config._hooks()
     finally:
         live_config._coordinator = saved
+
+
+# ------------------------------------------------------------------ the output policy settings
+
+@pytest.mark.parametrize("path,value,read", [
+    ("outputs.device_pause_scope", "off_all", lambda c: c.outputs.device_pause_scope),
+    ("outputs.pause_off_seconds", 90, lambda c: c.outputs.pause_off_seconds),
+    ("outputs.play_after_metadata_ignore_seconds", 2.5, lambda c: c.outputs.play_after_metadata_ignore_seconds),
+])
+def test_an_output_policy_setting_is_stored_and_reported_live(ctx, store, path, value, read):
+    reply = _apply(ctx, (path, value))
+    assert reply.ok is True
+    assert reply.result["outcomes"] == [
+        {"persisted": True, "live": True, "live_error": None, "reload_scheduled": False}]
+    assert read(store.snapshot()) == value
+
+
+def test_the_output_policy_settings_are_read_by_the_next_event(ctx, store):
+    live_config.bind_settings_store(store)
+    assert live_config.output_policy_settings().device_pause_scope == "ignore"
+    _apply(ctx, ("outputs.device_pause_scope", "all"), ("outputs.pause_off_seconds", 45))
+    got = live_config.output_policy_settings()
+    assert (got.device_pause_scope, got.pause_off_seconds) == ("all", 45)

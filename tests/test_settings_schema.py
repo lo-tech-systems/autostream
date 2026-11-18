@@ -138,6 +138,9 @@ _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
     "repeat.enabled",
     "repeat.codec",
     "repeat.target_minutes",
+    "outputs.device_pause_scope",
+    "outputs.pause_off_seconds",
+    "outputs.play_after_metadata_ignore_seconds",
 })
 
 
@@ -391,5 +394,77 @@ class TestWildcardTemplateRows:
             raw = store.raw_snapshot()
             assert raw["owntone"]["offsets"]["abc123"] == 500
             assert raw["owntone"]["offsets"]["def456"] == -1500
+        finally:
+            store.close(save=False)
+
+
+class TestOutputPolicyRows:
+    @pytest.fixture(autouse=True)
+    def _registered(self):
+        import autostream_live_config  # noqa: F401  (registers the rows)
+
+    def test_the_rows_are_live_and_read_at_use(self):
+        from autostream_settings_schema import LiveClass, get_field_spec
+        for path in ("outputs.device_pause_scope", "outputs.pause_off_seconds",
+                     "outputs.play_after_metadata_ignore_seconds"):
+            spec = get_field_spec(path)
+            assert spec.live_class is LiveClass.LIVE
+            assert spec.live_fn(object(), spec.default) is True
+
+    def test_the_defaults_are_the_config_defaults(self):
+        import autostream_config as cfg
+        from autostream_settings_schema import get_field_spec
+        assert get_field_spec("outputs.device_pause_scope").default == cfg.DEVICE_PAUSE_SCOPE_DEFAULT
+        assert get_field_spec("outputs.pause_off_seconds").default == cfg.PAUSE_OFF_SECONDS_DEFAULT
+        assert get_field_spec("outputs.play_after_metadata_ignore_seconds").default == cfg.PLAY_GUARD_SECONDS_DEFAULT
+
+    def test_the_scope_must_be_one_of_the_four(self):
+        from autostream_settings_schema import get_field_spec
+        spec = get_field_spec("outputs.device_pause_scope")
+        for ok in ("ignore", "output", "all", "off_all"):
+            assert spec.validate(ok) == ok
+        for bad in ("", "All", "everything", 3, None, True):
+            with pytest.raises(ValueError, match="device_pause_scope must be one of"):
+                spec.validate(bad)
+
+    def test_the_pause_timeout_is_a_whole_number_in_range(self):
+        from autostream_settings_schema import get_field_spec
+        spec = get_field_spec("outputs.pause_off_seconds")
+        assert spec.validate(30) == 30 and spec.validate(3600) == 3600
+        for bad in (29, 3601, 60.5, "60", True, None):
+            with pytest.raises(ValueError, match="pause_off_seconds"):
+                spec.validate(bad)
+
+    def test_the_play_guard_is_a_number_in_range(self):
+        from autostream_settings_schema import get_field_spec
+        spec = get_field_spec("outputs.play_after_metadata_ignore_seconds")
+        assert spec.validate(0) == 0.0 and spec.validate(2.5) == 2.5 and spec.validate(60) == 60.0
+        for bad in (-0.1, 60.1, "3", True, None, float("nan"), float("inf")):
+            with pytest.raises(ValueError, match="play_after_metadata_ignore_seconds"):
+                spec.validate(bad)
+
+    def test_the_include_tv_template_matches_any_output_and_is_passive(self):
+        from autostream_settings_schema import LiveClass, get_field_spec, template_leaf
+        spec = get_field_spec("owntone.include_tv.abc123")
+        assert spec is not None and spec.path == "owntone.include_tv.*"
+        assert spec.live_class is LiveClass.PASSIVE and spec.live_fn is None
+        assert (spec.section, spec.key) == ("owntone", "include_tv")
+        assert template_leaf(spec.path, "owntone.include_tv.abc123") == "abc123"
+        assert spec.validate(False) is False
+        for bad in ("false", 0, None):
+            with pytest.raises(ValueError):
+                spec.validate(bad)
+
+    def test_a_stored_choice_lands_in_the_nested_dict(self, tmp_path):
+        import json
+        from autostream_settings import SettingsStore
+        from autostream_settings_schema import get_field_spec
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({}))
+        store = SettingsStore(str(p), _save_interval_seconds=60.0, _writer=lambda path, data: None)
+        try:
+            store._set_normalized(get_field_spec("owntone.include_tv.abc"), False, path="owntone.include_tv.abc")
+            assert store.raw_snapshot()["owntone"]["include_tv"] == {"abc": False}
+            assert store.snapshot().owntone.include_tv == {"abc": False}
         finally:
             store.close(save=False)

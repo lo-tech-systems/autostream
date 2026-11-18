@@ -366,6 +366,9 @@ def _reset_state_store():
     if intents_table is not None:
         intents_table.reset_for_tests()
     _outputs_module.get_authority().reset_for_tests()
+    live_config = _mod("autostream_live_config")
+    if live_config is not None:
+        live_config.reset_output_settings_for_tests()
     yield
     leaked = autostream_state.store().take_leaked()
     if leaked:

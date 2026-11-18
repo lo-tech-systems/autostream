@@ -173,6 +173,12 @@ class SettingsStore:
             return copy.deepcopy(self._raw)
 
     @property
+    def generation(self) -> int:
+        """How many commits the settings have had since the store started. An
+        int read: no lock."""
+        return self._generation
+
+    @property
     def config_path(self) -> str:
         """The path to the configuration file managed by this store."""
         return self._config_path

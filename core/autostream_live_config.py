@@ -19,10 +19,12 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import Callable, Optional
+from types import MappingProxyType
+from typing import Callable, Mapping, Optional
 
 import autostream_monitor_client as monitor_client
 import autostream_monitor_control as monitor_control
@@ -33,13 +35,20 @@ from autostream_bluetooth_client import (
     is_loopback_playback,
 )
 from autostream_config import (
+    OutputsConfig,
     AUDIO_PATH_CHOICES,
     BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
+    DEVICE_PAUSE_SCOPE_DEFAULT,
+    DEVICE_PAUSE_SCOPES,
+    PLAY_GUARD_SECONDS_DEFAULT,
+    PLAY_GUARD_SECONDS_RANGE,
     REPEAT_CODEC_CHOICES,
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
+    PAUSE_OFF_SECONDS_DEFAULT,
+    PAUSE_OFF_SECONDS_RANGE,
     VALID_AIRPLAY_MODES,
     input_type_silence_threshold_dbfs,
     load_config,
@@ -1234,6 +1243,126 @@ register_field(
     "owntone.airplay_modes.*", "owntone", "airplay_modes", normalize_airplay_mode,
     enum=frozenset(VALID_AIRPLAY_MODES), live_class=LiveClass.LIVE,
 )
+
+
+# Whether an Apple TV's HomePods play with the Apple TV. Stored only when the
+# user changes it (absent: with); it takes effect at the next start of that
+# output, and nothing about it is pushed here.
+register_field(
+    "owntone.include_tv.*", "owntone", "include_tv", _validate_bool,
+    type=bool, default=True, live_class=LiveClass.PASSIVE,
+)
+
+
+def _validate_device_pause_scope(value: object) -> str:
+    if not isinstance(value, str) or value not in DEVICE_PAUSE_SCOPES:
+        raise ValueError("device_pause_scope must be one of " + ", ".join(DEVICE_PAUSE_SCOPES))
+    return value
+
+
+def _validate_pause_off_seconds(value: object) -> int:
+    low, high = PAUSE_OFF_SECONDS_RANGE
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ValueError(f"pause_off_seconds must be a whole number from {low} to {high}")
+    return value
+
+
+def _validate_play_guard_seconds(value: object) -> float:
+    low, high = PLAY_GUARD_SECONDS_RANGE
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or not low <= value <= high):
+        raise ValueError(f"play_after_metadata_ignore_seconds must be a number from {low:g} to {high:g}")
+    return float(value)
+
+
+def _live_read_at_use(state: object, value: object) -> bool:
+    """These settings are read when the Pause or Play arrives, so a stored
+    value is already in force."""
+    return True
+
+
+register_field(
+    "outputs.device_pause_scope", "outputs", "device_pause_scope", _validate_device_pause_scope,
+    live=_live_read_at_use, type=str, enum=frozenset(DEVICE_PAUSE_SCOPES),
+    default=DEVICE_PAUSE_SCOPE_DEFAULT, live_class=LiveClass.LIVE,
+)
+register_field(
+    "outputs.pause_off_seconds", "outputs", "pause_off_seconds", _validate_pause_off_seconds,
+    live=_live_read_at_use, type=int, bounds=PAUSE_OFF_SECONDS_RANGE,
+    default=PAUSE_OFF_SECONDS_DEFAULT, live_class=LiveClass.LIVE,
+)
+register_field(
+    "outputs.play_after_metadata_ignore_seconds", "outputs", "play_after_metadata_ignore_seconds",
+    _validate_play_guard_seconds,
+    live=_live_read_at_use, type=float, bounds=PLAY_GUARD_SECONDS_RANGE,
+    default=PLAY_GUARD_SECONDS_DEFAULT, live_class=LiveClass.LIVE,
+)
+
+
+# The include-Apple-TV choices and the Pause settings, as the output
+# authority and the policy read them: parsed again only when the settings
+# store has committed since. _output_settings_lock is a leaf held for the
+# compare and the swap; the store is read outside it.
+@dataclass(frozen=True)
+class OutputSettings:
+    generation: int
+    include_tv: Mapping[str, bool]
+    policy: OutputsConfig
+
+
+_UNBOUND_OUTPUT_SETTINGS = OutputSettings(-1, MappingProxyType({}), OutputsConfig())
+_output_settings_lock = threading.Lock()
+_output_settings_store: Optional[SettingsStore] = None
+_output_settings: OutputSettings = _UNBOUND_OUTPUT_SETTINGS
+_output_settings_touched = False
+
+
+def bind_settings_store(settings: Optional[SettingsStore]) -> None:
+    """Bootstrap: where output_settings() reads from. None unbinds."""
+    global _output_settings_store, _output_settings, _output_settings_touched
+    with _output_settings_lock:
+        _output_settings_store = settings
+        _output_settings = _UNBOUND_OUTPUT_SETTINGS
+        _output_settings_touched = True
+
+
+def output_settings() -> OutputSettings:
+    """The include-Apple-TV choices and the policy settings, re-read only when
+    the settings store's generation moved. Unbound: the defaults."""
+    global _output_settings, _output_settings_touched
+    with _output_settings_lock:
+        store_ = _output_settings_store
+        cached = _output_settings
+    if store_ is None:
+        return cached
+    generation = store_.generation
+    if cached.generation == generation:
+        return cached
+    parsed = store_.snapshot()
+    fresh = OutputSettings(generation, MappingProxyType(dict(parsed.owntone.include_tv)), parsed.outputs)
+    with _output_settings_lock:
+        _output_settings = fresh
+        _output_settings_touched = True
+    return fresh
+
+
+def output_policy_settings() -> OutputsConfig:
+    return output_settings().policy
+
+
+def include_tv_for(unit_id: str) -> bool:
+    return output_settings().include_tv.get(unit_id, True)
+
+
+def reset_output_settings_for_tests() -> None:
+    """Unbind and forget. Returns at once when nothing touched the cache."""
+    global _output_settings_store, _output_settings, _output_settings_touched
+    if not _output_settings_touched:
+        return
+    with _output_settings_lock:
+        _output_settings_store = None
+        _output_settings = _UNBOUND_OUTPUT_SETTINGS
+        _output_settings_touched = False
 
 
 def apply_output_offset(state: object, output_id: str, raw_offset) -> dict:

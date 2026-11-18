@@ -3275,10 +3275,12 @@ class _BootstrapResult:
     switch_silence_seconds: float
 
 
-def _start_output_authority(cfg) -> None:
+def _start_output_authority(cfg, settings) -> None:
     """Start the output authority on the player named in the configuration.
     Only starts its threads: the first read and the choice of event source
     are the authority's own, so the web server is never held up by the player."""
+    import autostream_live_config
+    autostream_live_config.bind_settings_store(settings)
     get_authority().start(PlayerServiceBackend(cfg.owntone.base_url))
 
 
@@ -3323,7 +3325,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
 
     autostream_dial_push.install_state_hints(autostream_state.store())
     _bind_intent_handlers()
-    _start_output_authority(cfg)
+    _start_output_authority(cfg, settings)
 
     # Optionally start the web UI.  Let any startup failure propagate so the
     # process exits nonzero and systemd can restart it.

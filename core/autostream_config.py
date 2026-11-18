@@ -12,7 +12,7 @@ Single source of truth for:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 import math
@@ -21,7 +21,7 @@ from pathlib import Path
 import re
 import stat
 import threading
-from typing import Optional
+from typing import Mapping, Optional
 
 # Canonical path for the mutable runtime state file.
 # Import this constant rather than hardcoding the path at call sites.
@@ -438,6 +438,67 @@ class OwntoneConfig:
     output_offsets_ms: dict[str, int]
     output_airplay_modes: dict[str, str]
     known_outputs: dict[str, str]
+    # Output id -> the user's choice of playing an Apple TV's HomePods with
+    # (True) or without (False) the Apple TV. Absent: with.
+    include_tv: Mapping[str, bool] = field(default_factory=dict)
+
+
+# What a Pause pressed on a speaker does.
+DEVICE_PAUSE_IGNORE = "ignore"        # keep playing
+DEVICE_PAUSE_OUTPUT = "output"        # mute that speaker
+DEVICE_PAUSE_ALL = "all"              # mute every playing speaker
+DEVICE_PAUSE_OFF_ALL = "off_all"      # turn every speaker off
+DEVICE_PAUSE_SCOPES = (DEVICE_PAUSE_IGNORE, DEVICE_PAUSE_OUTPUT, DEVICE_PAUSE_ALL, DEVICE_PAUSE_OFF_ALL)
+# What a Pause on a speaker does when the owner has not chosen.
+DEVICE_PAUSE_SCOPE_DEFAULT = DEVICE_PAUSE_IGNORE
+# Speakers a Pause muted are turned off once the Pause has lasted this long.
+PAUSE_OFF_SECONDS_DEFAULT = 300
+PAUSE_OFF_SECONDS_RANGE = (30, 3600)
+# A Play this soon after a now-playing push is taken to answer the push, not
+# the user. Provisional until an Apple TV's reply to new artwork is measured.
+PLAY_GUARD_SECONDS_DEFAULT = 10.0
+PLAY_GUARD_SECONDS_RANGE = (0.0, 60.0)
+
+
+def normalize_device_pause_scope(value: object) -> str:
+    """One of DEVICE_PAUSE_SCOPES; anything else is the default."""
+    v = value.strip().lower() if isinstance(value, str) else ""
+    return v if v in DEVICE_PAUSE_SCOPES else DEVICE_PAUSE_SCOPE_DEFAULT
+
+
+def normalize_pause_off_seconds(value: object) -> int:
+    """Clamp to PAUSE_OFF_SECONDS_RANGE; the default on invalid input."""
+    if isinstance(value, bool):
+        return PAUSE_OFF_SECONDS_DEFAULT
+    try:
+        v = int(float(str(value)))
+    except Exception:
+        return PAUSE_OFF_SECONDS_DEFAULT
+    low, high = PAUSE_OFF_SECONDS_RANGE
+    return max(low, min(high, v))
+
+
+def normalize_play_guard_seconds(value: object) -> float:
+    """Clamp to PLAY_GUARD_SECONDS_RANGE; the default on invalid input or NaN."""
+    if isinstance(value, bool):
+        return PLAY_GUARD_SECONDS_DEFAULT
+    try:
+        v = float(str(value))
+    except Exception:
+        return PLAY_GUARD_SECONDS_DEFAULT
+    if math.isnan(v):
+        return PLAY_GUARD_SECONDS_DEFAULT
+    low, high = PLAY_GUARD_SECONDS_RANGE
+    return max(low, min(high, v))
+
+
+@dataclass(frozen=True)
+class OutputsConfig:
+    """What the appliance does about Pause and Play pressed on a speaker
+    (JSON section outputs). All three are read when the event arrives."""
+    device_pause_scope: str = DEVICE_PAUSE_SCOPE_DEFAULT
+    pause_off_seconds: int = PAUSE_OFF_SECONDS_DEFAULT
+    play_after_metadata_ignore_seconds: float = PLAY_GUARD_SECONDS_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -672,6 +733,7 @@ class AutostreamConfig:
     updates: UpdatesConfig
     track_identification: TrackIdentificationConfig
     repeat: RepeatConfig
+    outputs: OutputsConfig = field(default_factory=OutputsConfig)
 
 
 def _parse_audio_input_config(section: dict) -> AudioInputConfig:
@@ -807,6 +869,14 @@ def parse_config(
             if key:
                 airplay_modes[key] = normalize_airplay_mode(v)
 
+    include_tv: dict[str, bool] = {}
+    include_tv_raw = owntone_d.get("include_tv") or {}
+    if isinstance(include_tv_raw, dict):
+        for k, v in include_tv_raw.items():
+            key = str(k).strip()
+            if key and isinstance(v, bool):
+                include_tv[key] = v
+
     # known_outputs lives in the state file, not the config file.
     known_outputs: dict[str, str] = {}
     raw_known = (state.get("owntone") or {}).get("known_outputs") or {}
@@ -824,6 +894,7 @@ def parse_config(
         output_offsets_ms=offsets,
         output_airplay_modes=airplay_modes,
         known_outputs=known_outputs,
+        include_tv=include_tv,
     )
 
     webui_d = data.get("webui") or {}
@@ -901,6 +972,19 @@ def parse_config(
         ),
     )
 
+    outputs_d = data.get("outputs") or {}
+    if not isinstance(outputs_d, dict):
+        outputs_d = {}
+    outputs = OutputsConfig(
+        device_pause_scope=normalize_device_pause_scope(outputs_d.get("device_pause_scope")),
+        pause_off_seconds=normalize_pause_off_seconds(
+            outputs_d.get("pause_off_seconds", PAUSE_OFF_SECONDS_DEFAULT)
+        ),
+        play_after_metadata_ignore_seconds=normalize_play_guard_seconds(
+            outputs_d.get("play_after_metadata_ignore_seconds", PLAY_GUARD_SECONDS_DEFAULT)
+        ),
+    )
+
     return AutostreamConfig(
         general=general,
         audio1_enabled=audio1_enabled,
@@ -913,6 +997,7 @@ def parse_config(
         updates=updates,
         track_identification=track_identification,
         repeat=repeat,
+        outputs=outputs,
     )
 
 

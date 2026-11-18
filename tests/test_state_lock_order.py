@@ -495,3 +495,35 @@ def test_the_backend_double_notices_a_call_made_under_the_authority_lock(authori
     with authority._lock:
         with pytest.raises(AssertionError, match="authority lock"):
             authority.backend_for_test.update_output("1", volume_percent=1)
+
+
+def test_the_settings_cache_parses_outside_its_lock(tracked_singleton, tmp_path, monkeypatch):
+    import json
+    import autostream_live_config as lc
+    from autostream_settings import SettingsStore
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({}))
+    settings = SettingsStore(str(path), _save_interval_seconds=9999, _writer=lambda p, d: None)
+    cache_lock = lockcheck.TrackedLock("settings_cache")
+    store_lock = lockcheck.TrackedLock("settings_store")
+    monkeypatch.setattr(lc, "_output_settings_lock", cache_lock)
+    settings._lock = store_lock
+    held_in_snapshot = []
+    real = settings.snapshot
+
+    def watching():
+        held_in_snapshot.append(lockcheck.held())
+        return real()
+
+    settings.snapshot = watching
+    try:
+        lc.bind_settings_store(settings)
+        lc.include_tv_for("1")
+        settings.update(lambda r: r.setdefault("outputs", {}).update({"device_pause_scope": "all"}))
+        lc.output_policy_settings()
+    finally:
+        settings.close(save=False)
+    assert held_in_snapshot and all("settings_cache" not in h for h in held_in_snapshot)
+    assert lockcheck.ORDER_VIOLATIONS == []
+    assert lockcheck.ACQUIRED_UNDER_STORE == []

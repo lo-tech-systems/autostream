@@ -777,3 +777,53 @@ class TestSetupPageAutosaveWiring:
         assert 'name="mdns_grace_period_minutes"' in html
         assert "mDNS Grace Period" in html
         assert "settingsTransact('/api/settings/mdns-grace-period'" in html
+
+
+class TestOutputPolicyFields:
+    @pytest.mark.parametrize("field,value", [
+        ("outputs.device_pause_scope", "output"),
+        ("outputs.pause_off_seconds", 120),
+        ("outputs.play_after_metadata_ignore_seconds", 4.5),
+    ])
+    def test_post_accepts_and_stores_each(self, tmp_path, field, value):
+        import autostream_live_config  # noqa: F401  (registers the rows)
+        from autostream_webui_api import send_settings_post_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        try:
+            send_settings_post_json(handler, state, {"field": field, "value": value})
+            section, key = field.split(".")
+            assert store.raw_snapshot()[section][key] == value
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 200
+        assert body == {"ok": True, "field": field, "value": value, "live": True}
+
+    def test_post_refuses_a_value_out_of_range(self, tmp_path):
+        import autostream_live_config  # noqa: F401
+        from autostream_webui_api import send_settings_post_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        try:
+            send_settings_post_json(handler, state, {"field": "outputs.pause_off_seconds", "value": 5})
+        finally:
+            store.close(save=False)
+        code, body = _response(handler)
+        assert code == 400 and body["ok"] is False
+
+    def test_get_does_not_list_them(self, tmp_path):
+        from autostream_webui_api import send_settings_get_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        try:
+            send_settings_get_json(handler, state)
+        finally:
+            store.close(save=False)
+        _, body = _response(handler)
+        assert set(body["values"]) == {
+            "webui.dark_mode", "webui.show_master_volume", "webui.show_input_detail",
+            "webui.show_hostname_on_home", "webui.control_other_appliances",
+            "webui.output_usage_poll_interval_seconds", "updates.update_channel",
+            "general.audio_path", "repeat.enabled", "repeat.codec", "repeat.target_minutes",
+        }
