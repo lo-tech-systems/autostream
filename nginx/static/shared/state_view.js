@@ -153,7 +153,8 @@ const kindWord = (k) => k.charAt(0).toUpperCase() + k.slice(1).replace(/_/g, ' '
 // banner: every critical entry. strip: the others, with same-kind entries for
 // several inputs folded into one card, and a link only on the appliance's own
 // page. more: how many cards lie beyond the first two. serviceSeverity: the
-// worst severity of an entry that links to /service, or null.
+// worst severity of an entry that links to /service, or null (always null on
+// another appliance's page, which has no links).
 export function warningsFor(p, { own = true } = {}) {
   const all = (p.warnings && p.warnings.entries) || [];
   const cards = [];
@@ -172,7 +173,7 @@ export function warningsFor(p, { own = true } = {}) {
   });
   let serviceSeverity = null;
   for (const e of all) {
-    if (e.link === '/service' && (serviceSeverity === null || RANK[e.severity] < RANK[serviceSeverity])) serviceSeverity = e.severity;
+    if (own && e.link === '/service' && (serviceSeverity === null || RANK[e.severity] < RANK[serviceSeverity])) serviceSeverity = e.severity;
   }
   const banner = all.filter((e) => e.severity === 'critical').map((e) => ({ severity: e.severity, title: e.title, message: e.message }));
   return { banner, strip, more: Math.max(0, strip.length - 2), serviceSeverity };

@@ -9,6 +9,8 @@ relay.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 import _home_stub as stub
 from _home_helpers import wait_for, watch_errors
@@ -243,3 +245,29 @@ class TestRemoteEqualiser:
         hrefs = page.locator("#appliance-selector-dropdown a.appliance-selector-option").evaluate_all(
             "els => els.map(e => e.getAttribute('href'))")
         assert hrefs == ["/equaliser", f"/a/{PEER_ID}/equaliser", f"/a/{OTHER_ID}/equaliser"]
+
+
+def _entry(kind: str, severity: str, *, subject: str, link: str) -> dict:
+    return {"id": f"{kind}_{subject}", "incident": "", "severity": severity, "kind": kind,
+            "subject": subject, "title": f"{subject} {kind}", "message": f"{kind} message", "link": link}
+
+
+@_requires_browser
+class TestRemoteWarnings:
+    def test_the_other_appliances_cards_are_plain_and_leave_the_service_tab_alone(self, page: "Page", remote):
+        stylus = _entry("stylus", "warning", subject="Turntable", link="/service")
+        rate = _entry("sample_rate", "warning", subject="CD", link="/setup#input1")
+        rig = remote(parts=parts(speaker(), warnings={"entries": [stylus, rate]}))
+        open_home(page, rig)
+        strip = page.locator("#warnings-strip")
+        expect(strip.locator("div.warning-card")).to_have_count(2)
+        expect(strip.locator("a.warning-card-link")).to_have_count(0)
+        expect(strip.locator(".warning-card-chevron")).to_have_count(0)
+        expect(strip.get_by_role("link")).to_have_count(0)
+        expect(page.locator("#service-nav-tab")).not_to_have_class(re.compile(r"nav-tab-warn"))
+        wait_for(page, lambda: rig.peer.open_streams() >= 1, "the relayed stream", 10)
+        belt = _entry("belt", "info", subject="Turntable", link="/service")
+        rig.peer.push({"warnings": {"entries": [belt, stylus]}})
+        expect(strip.get_by_text("belt message")).to_have_count(1)
+        expect(strip.locator("a.warning-card-link")).to_have_count(0)
+        expect(page.locator("#service-nav-tab")).not_to_have_class(re.compile(r"nav-tab-warn"))

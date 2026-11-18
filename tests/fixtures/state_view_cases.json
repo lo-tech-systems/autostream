@@ -3900,7 +3900,7 @@
    }
   },
   {
-   "name": "warningsFor: the marker is still found on a remote page",
+   "name": "warningsFor: a remote page leaves the Service tab",
    "fn": "warningsFor",
    "opts": {
     "own": false
@@ -3932,7 +3932,7 @@
      }
     ],
     "more": 0,
-    "serviceSeverity": "info"
+    "serviceSeverity": null
    }
   }
  ]
