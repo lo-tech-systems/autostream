@@ -12,7 +12,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-from dial_core_state import (
+from dial_appliance_warnings import (
     APPLIANCE_WARNING_MESSAGE_MAX, ApplianceWarning, DIAL_WARNING_ID, SEVERITY_CRITICAL,
     SEVERITY_INFO, SEVERITY_WARNING, clean_text,
 )

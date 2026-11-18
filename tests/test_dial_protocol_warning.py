@@ -14,7 +14,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core"), str(REPO_ROOT / "te
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import dial_core_state as cs
+import dial_appliance_warnings as aw
 import dial_mdns
 from autostream_protocol import PROTOCOL
 from dial_test_support import RosterEntry
@@ -34,8 +34,8 @@ def entry(name="Lounge", *, appliance_id="a" * 20, auth="authorized", proto=3):
 
 class TestProtocolWarning:
     def test_a_lower_number_gives_update_appliance(self):
-        warning = cs.protocol_warning(entry(proto=3), OWN)
-        assert warning.id == cs.PROTOCOL_WARNING_ID == "update_appliance"
+        warning = aw.protocol_warning(entry(proto=3), OWN)
+        assert warning.id == aw.PROTOCOL_WARNING_ID == "update_appliance"
         assert warning.severity == "warning"
         assert warning.title == "Update Lounge"
         assert warning.message == "Its software is older than this dial's. Update it from its web UI."
@@ -43,7 +43,7 @@ class TestProtocolWarning:
 
     @pytest.mark.parametrize("proto", [5, 9])
     def test_a_higher_number_gives_no_appliance_warning(self, proto):
-        assert cs.protocol_warning(entry(proto=proto), OWN) is None
+        assert aw.protocol_warning(entry(proto=proto), OWN) is None
 
     def test_the_newer_appliances_are_named_in_roster_order(self):
         roster = (
@@ -52,41 +52,41 @@ class TestProtocolWarning:
             entry("Study", appliance_id="c" * 20, proto=2),
             entry("Patio", appliance_id="d" * 20, proto=9),
         )
-        assert cs.newer_appliance_names(roster, OWN) == ("Lounge", "Patio")
+        assert aw.newer_appliance_names(roster, OWN) == ("Lounge", "Patio")
 
     @pytest.mark.parametrize("proto", [0, None, True, OWN])
     def test_an_appliance_with_no_newer_number_is_not_named(self, proto):
-        assert cs.newer_appliance_names((entry(proto=proto),), OWN) == ()
+        assert aw.newer_appliance_names((entry(proto=proto),), OWN) == ()
 
     def test_an_appliance_with_no_identity_is_not_named(self):
-        assert cs.newer_appliance_names((entry(appliance_id="", proto=9),), OWN) == ()
+        assert aw.newer_appliance_names((entry(appliance_id="", proto=9),), OWN) == ()
 
     def test_the_same_number_gives_none(self):
-        assert cs.protocol_warning(entry(proto=OWN), OWN) is None
+        assert aw.protocol_warning(entry(proto=OWN), OWN) is None
 
     @pytest.mark.parametrize("proto", [0, None, True])
     def test_an_appliance_that_has_not_said_a_number_gets_none_yet(self, proto):
-        assert cs.protocol_warning(entry(proto=proto), OWN) is None
+        assert aw.protocol_warning(entry(proto=proto), OWN) is None
 
     @pytest.mark.parametrize("auth", ["unauthorized", "unknown", "authorized"])
     def test_access_is_not_asked(self, auth):
-        assert cs.protocol_warning(entry(auth=auth), OWN) is not None
+        assert aw.protocol_warning(entry(auth=auth), OWN) is not None
 
     def test_an_appliance_with_no_identity_gets_none(self):
-        assert cs.protocol_warning(entry(appliance_id=""), OWN) is None
+        assert aw.protocol_warning(entry(appliance_id=""), OWN) is None
 
     def test_a_long_name_is_fitted_to_the_title(self):
-        warning = cs.protocol_warning(entry("x" * 60), OWN)
-        assert len(warning.title) <= cs.APPLIANCE_WARNING_TITLE_MAX
+        warning = aw.protocol_warning(entry("x" * 60), OWN)
+        assert len(warning.title) <= aw.APPLIANCE_WARNING_TITLE_MAX
         assert warning.title.startswith("Update xxx")
 
     def test_a_long_name_is_fitted_to_the_message_of_the_dial_warning(self):
         from dial_warning_text import WARNING_BY_ID
-        names = cs.newer_appliance_names((entry("x" * 300, proto=5),), OWN)
-        assert len(WARNING_BY_ID["update_dial"].message_for(names)) <= cs.APPLIANCE_WARNING_MESSAGE_MAX
+        names = aw.newer_appliance_names((entry("x" * 300, proto=5),), OWN)
+        assert len(WARNING_BY_ID["update_dial"].message_for(names)) <= aw.APPLIANCE_WARNING_MESSAGE_MAX
 
     def test_a_name_from_the_network_is_cleaned(self):
-        warning = cs.protocol_warning(entry("Lo‮unge\x07"), OWN)
+        warning = aw.protocol_warning(entry("Lo‮unge\x07"), OWN)
         assert "‮" not in warning.title and "\x07" not in warning.title
 
 
@@ -95,7 +95,7 @@ class Pool:
 
     def __init__(self):
         self.rig = Rig()
-        self.key = appliance_warning_key(aid("Lounge"), cs.PROTOCOL_WARNING_ID)
+        self.key = appliance_warning_key(aid("Lounge"), aw.PROTOCOL_WARNING_ID)
 
     def set(self, *, hello=None, record=PROTOCOL, access="unknown", seq=1):
         """The appliance as sighted (the record's number) and as its client
@@ -119,7 +119,7 @@ class Pool:
     def dial_warning(self):
         """The reading of the dial's own warning, None when it is not active."""
         warnings = self.rig.core.warnings
-        return warnings.reading(cs.DIAL_WARNING_ID) if warnings.is_active(cs.DIAL_WARNING_ID) else None
+        return warnings.reading(aw.DIAL_WARNING_ID) if warnings.is_active(aw.DIAL_WARNING_ID) else None
 
     def ids(self):
         return [w.id for w in self.held()]
@@ -138,7 +138,7 @@ def pool():
 class TestCore:
     def test_a_lower_hello_raises_update_appliance(self, pool):
         pool.set(hello=3)
-        assert pool.ids() == [cs.PROTOCOL_WARNING_ID]
+        assert pool.ids() == [aw.PROTOCOL_WARNING_ID]
 
     def test_a_higher_hello_raises_the_dials_own_warning_naming_the_appliance(self, pool):
         pool.set(hello=5)
@@ -151,7 +151,7 @@ class TestCore:
 
     def test_the_record_is_read_until_the_hello_has_been(self, pool):
         pool.set(hello=None, record=3)
-        assert pool.ids() == [cs.PROTOCOL_WARNING_ID]
+        assert pool.ids() == [aw.PROTOCOL_WARNING_ID]
         pool.set(hello=None, record=5)
         assert pool.ids() == [] and pool.dial_warning() == ("Lounge",)
 
@@ -165,9 +165,9 @@ class TestCore:
 
     def test_a_mismatched_appliance_with_unknown_access_is_still_warned(self, pool):
         pool.set(hello=3, access="unknown")
-        assert pool.ids() == [cs.PROTOCOL_WARNING_ID]
+        assert pool.ids() == [aw.PROTOCOL_WARNING_ID]
         pool.set(hello=3, access="none", seq=2)
-        assert pool.ids() == [cs.PROTOCOL_WARNING_ID]
+        assert pool.ids() == [aw.PROTOCOL_WARNING_ID]
 
     def test_it_is_registered_once_over_several_ticks(self, pool):
         pool.set(hello=3)

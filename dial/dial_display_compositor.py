@@ -57,7 +57,7 @@ import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 from dial_display_image import transform_artwork_for_panel
-from dial_core_state import SEVERITY_CRITICAL, SEVERITY_WARNING
+from dial_appliance_warnings import SEVERITY_CRITICAL, SEVERITY_WARNING
 from dial_display_palette import (
     GLYPH_RGB,
     PRESSED_FILL_RGB,

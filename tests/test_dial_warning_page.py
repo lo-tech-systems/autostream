@@ -16,7 +16,7 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
-from dial_core_state import SEVERITY_WARNING  # noqa: E402
+from dial_appliance_warnings import SEVERITY_WARNING  # noqa: E402
 from dial_warning_bell import Bell, BellEntry  # noqa: E402
 from dial_warning_page import WarningsPageState, status_card  # noqa: E402
 from dial_warning_text import WARNING_BY_ID  # noqa: E402

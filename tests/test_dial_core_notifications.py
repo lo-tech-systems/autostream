@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 import pytest
 
 import dial_core
+import dial_appliance_warnings
 import dial_core_state
 from dial_core import EFFECTS_BACKLOG_MAX, DialCore
 
@@ -337,7 +338,7 @@ _PUBLISHED = {
 class TestSnapshotsAreImmutable:
     def test_every_snapshot_type_is_frozen(self):
         types = {
-            name: obj for name, obj in vars(dial_core_state).items()
+            name: obj for name, obj in {**vars(dial_core_state), **vars(dial_appliance_warnings)}.items()
             if name in _PUBLISHED and dataclasses.is_dataclass(obj)
         }
         assert set(types) == _PUBLISHED

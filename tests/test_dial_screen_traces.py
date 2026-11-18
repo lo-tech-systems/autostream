@@ -38,7 +38,8 @@ for _p in (_DIAL, _CORE):
 import dial_display as dd
 from dial_config import DialDisplayConfig
 from dial_core_focus import FOCUS_PENDING_GRACE_S
-from dial_core_state import ApplianceWarning, eq_gain
+from dial_appliance_warnings import ApplianceWarning
+from dial_core_state import eq_gain
 from dial_core import DialCore
 import dial_network
 from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS

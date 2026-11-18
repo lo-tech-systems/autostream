@@ -14,6 +14,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+import dial_appliance_warnings as aw  # noqa: E402
 import dial_core_focus as cf  # noqa: E402
 import dial_core_state as cs  # noqa: E402
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN  # noqa: E402
@@ -87,10 +88,13 @@ class TestDataclasses:
         not_frozen = [cls.__name__ for cls in classes if not cls.__dataclass_params__.frozen]
         assert not not_frozen, f"not frozen: {not_frozen}"
 
-    def test_module_does_not_import_the_display(self):
-        src = (REPO_ROOT / "dial" / "dial_core_state.py").read_text(encoding="utf-8")
+    @pytest.mark.parametrize(
+        "name", ["dial_core_state.py", "dial_core_focus.py", "dial_appliance_warnings.py"])
+    def test_a_pure_core_module_imports_no_display_thread_clock_or_volume_worker(self, name):
+        src = (REPO_ROOT / "dial" / name).read_text(encoding="utf-8")
         assert "dial_display" not in src
         assert "import threading" not in src and "import time" not in src
+        assert "from dial_volume" not in src and "import dial_volume" not in src
 
 
 def _appliance(aid, **kw) -> cs.ApplianceState:
@@ -540,28 +544,28 @@ def _warn(**kw):
 
 
 def _validate(body):
-    return cs.appliance_warning_entries(body["warnings"], cs.APPLIANCE_WARNINGS_MAX)
+    return aw.appliance_warning_entries(body["warnings"], aw.APPLIANCE_WARNINGS_MAX)
 
 
 class TestApplianceWarningValidator:
     def test_a_good_reply_comes_through_whole(self):
         (w,) = _validate(_reply(_warn()))
-        assert w == cs.ApplianceWarning("stylus", "warning", "Replace stylus", "500 h played")
+        assert w == aw.ApplianceWarning("stylus", "warning", "Replace stylus", "500 h played")
         assert w.appliance_name == ""
 
     def test_too_many_warnings_keeps_the_first_few(self):
         warnings = [_warn(id=f"w{i}", title=f"T{i}") for i in range(50)]
         out = _validate(_reply(*warnings))
-        assert [w.id for w in out] == [f"w{i}" for i in range(cs.APPLIANCE_WARNINGS_MAX)]
+        assert [w.id for w in out] == [f"w{i}" for i in range(aw.APPLIANCE_WARNINGS_MAX)]
 
     def test_a_list_padded_with_junk_is_scanned_only_so_far(self):
-        junk = [None] * (4 * cs.APPLIANCE_WARNINGS_MAX)
+        junk = [None] * (4 * aw.APPLIANCE_WARNINGS_MAX)
         assert _validate(_reply(*junk, _warn())) == ()
 
     def test_long_strings_are_truncated_not_refused(self):
         (w,) = _validate(_reply(_warn(title="t" * 500, message="m" * 5000)))
-        assert w.title == "t" * cs.APPLIANCE_WARNING_TITLE_MAX
-        assert w.message == "m" * cs.APPLIANCE_WARNING_MESSAGE_MAX
+        assert w.title == "t" * aw.APPLIANCE_WARNING_TITLE_MAX
+        assert w.message == "m" * aw.APPLIANCE_WARNING_MESSAGE_MAX
 
     def test_control_characters_are_stripped(self):
         (w,) = _validate(_reply(_warn(title="Re\x00pl\x1bace\x7f stylus", message="a\x07b\x9fc")))
@@ -606,7 +610,7 @@ class TestApplianceWarningValidator:
     @pytest.mark.parametrize("value", ["fatal", "", None, 3, ["critical"], {"a": 1}])
     def test_an_unknown_severity_takes_the_default(self, value):
         (w,) = _validate(_reply(_warn(severity=value)))
-        assert w.severity == cs.APPLIANCE_WARNING_DEFAULT_SEVERITY == cs.SEVERITY_INFO
+        assert w.severity == aw.APPLIANCE_WARNING_DEFAULT_SEVERITY == aw.SEVERITY_INFO
 
     @pytest.mark.parametrize("value", ["info", "warning", "critical", " Critical ", "WARNING"])
     def test_the_known_severities_are_kept(self, value):
@@ -646,7 +650,7 @@ class TestApplianceWarningValidator:
 
     def test_attribution_replaces_whatever_the_appliance_claimed(self):
         out = _validate(_reply(_warn(appliance_name="Spoofed", id="a", title="t"), _warn(id="b")))
-        named = cs.attribute_appliance_warnings(out, "Kitchen")
+        named = aw.attribute_appliance_warnings(out, "Kitchen")
         assert [w.appliance_name for w in named] == ["Kitchen", "Kitchen"]
         assert all(w.appliance_name == "" for w in out)
         names = [f.name for f in dataclasses.fields(cs.ApplianceState)]

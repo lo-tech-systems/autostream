@@ -62,14 +62,15 @@ import dial_core_requests as rq
 import dial_peer_view
 from dial_config import SCOPE_ALL
 from dial_eq_model import DERIVED_EQ_IDS, EQ_BASS_TREBLE_LIMIT_DB
+from dial_appliance_warnings import DIAL_WARNING_ID, newer_appliance_names, protocol_warning
 from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS,
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
     DialInfo, FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
-    DIAL_WARNING_ID, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState,
-    roster_entry, artwork_key, display_order, dots_active, eq_gain, newer_appliance_names,
-    protocol_warning, reopen_for_pin, six_band, start_failure_action,
+    pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState,
+    roster_entry, artwork_key, display_order, dots_active, eq_gain,
+    reopen_for_pin, six_band, start_failure_action,
 )
 from dial_mdns import PROTOCOL
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED

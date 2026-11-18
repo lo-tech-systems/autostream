@@ -935,7 +935,8 @@ def set_appliance_warnings(display, appliance_id, warnings):
     """Make the core hold *warnings* as what *appliance_id* reports, as a
     fold of its warnings part would; refused for an appliance the core does
     not hold."""
-    from dial_core_state import ActionResult, attribute_appliance_warnings
+    from dial_appliance_warnings import attribute_appliance_warnings
+    from dial_core_state import ActionResult
     core = display.core
     outcome = []
 

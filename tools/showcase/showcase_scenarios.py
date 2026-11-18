@@ -21,8 +21,9 @@ for _p in (str(HERE), str(REPO_ROOT / "tests"), str(REPO_ROOT / "dial"), str(REP
 
 import hd_scenarios as hs  # noqa: E402
 from covers import cover_png  # noqa: E402
+from dial_appliance_warnings import ApplianceWarning  # noqa: E402
 from dial_core_state import (  # noqa: E402
-    ApplianceWarning, Artwork, EqBand, EqState, NowPlaying, OutputRow, OutputsState, artwork_key,
+    Artwork, EqBand, EqState, NowPlaying, OutputRow, OutputsState, artwork_key,
 )
 from dial_warning_text import WARNING_DESCRIPTORS, appliance_warning_descriptor, appliance_warning_key  # noqa: E402
 from music import BY_KEY, Track  # noqa: E402

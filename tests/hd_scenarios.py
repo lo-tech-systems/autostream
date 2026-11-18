@@ -28,10 +28,11 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 
 from autostream_peer_client import PeerSnapshot
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
+from dial_appliance_warnings import ApplianceWarning, protocol_warning
 from dial_core_state import (
-    ApplianceState, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqBand, EqState,
+    ApplianceState, Artwork, CoreSnapshot, DialInfo, EqBand, EqState,
     FocusState, NowPlaying, OutputRow, OutputsState, PowerState, StartFailureNotice,
-    TransportRequest, WarningState, artwork_key, protocol_warning,
+    TransportRequest, WarningState, artwork_key,
 )
 from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView
 from dial_repeat_store import RepeatRecord

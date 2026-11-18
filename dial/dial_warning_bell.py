@@ -22,9 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from dial_core_state import (
-    AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_WARNING,
-)
+from dial_appliance_warnings import SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_WARNING
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_warning_text import appliance_warning_key
 from dial_warnings import ACTION_CLOSE, APPLIANCE_WARNING_PREFIX, KIND_WARNING
 

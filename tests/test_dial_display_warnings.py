@@ -22,7 +22,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
         sys.path.insert(0, _p)
 
 import dial_display as dd  # noqa: E402
-from dial_core_state import ApplianceWarning  # noqa: E402
+from dial_appliance_warnings import ApplianceWarning  # noqa: E402
 from dial_display_compositor import BellBadge  # noqa: E402
 from dial_info import INFO_LABELS  # noqa: E402
 from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView  # noqa: E402

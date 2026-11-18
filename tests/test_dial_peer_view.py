@@ -14,9 +14,8 @@ for _p in (_ROOT / "dial", _ROOT / "core"):
 import dial_peer_view as pv  # noqa: E402
 from autostream_peer_client import PeerSnapshot  # noqa: E402
 from autostream_peer_registry import Sighting  # noqa: E402
-from dial_core_state import (  # noqa: E402
-    AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN, APPLIANCE_WARNINGS_MAX, ApplianceWarning,
-)
+from dial_appliance_warnings import APPLIANCE_WARNINGS_MAX, ApplianceWarning  # noqa: E402
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN  # noqa: E402
 
 AID = "a" * 20
 ME = "dial:abc"

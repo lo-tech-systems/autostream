@@ -16,9 +16,8 @@ for _sub in ("dial", "tests"):
         sys.path.insert(0, _p)
 
 import hd_scenarios as hs
-from dial_core_state import (
-    AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN, ApplianceWarning, WarningState,
-)
+from dial_appliance_warnings import ApplianceWarning
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN, WarningState
 from dial_warning_bell import (
     DIAL_SOURCE, Bell, BellEntry, appliance_bell, dial_bell, rostered, whole_bell,
 )
