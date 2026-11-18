@@ -66,12 +66,6 @@ class UnknownTouchDriverError(RuntimeError):
     """Raised by open_driver() for a driver_tag with no known implementation."""
 
 
-def _board_pin(board_module, gpio: int, *aliases: str):
-    """Delegates to dial_spi_bus.board_pin — one definition, shared by
-    every module that has to resolve a BCM number to a board alias."""
-    return dial_spi_bus.board_pin(board_module, gpio, *aliases)
-
-
 class XPT2046Driver:
     """In-repo resistive touch driver for XPT2046 and its HR2046/ADS7846
     pin-compatible clones. Uses the SPI1 bus constructed by
@@ -92,7 +86,7 @@ class XPT2046Driver:
         except Exception as e:
             raise RuntimeError(f"open SPI1 failed: {e}") from e
 
-        cs = digitalio.DigitalInOut(_board_pin(board, _TOUCH_CS_GPIO))
+        cs = digitalio.DigitalInOut(dial_spi_bus.board_pin(board, _TOUCH_CS_GPIO))
         cs.switch_to_output(value=True)
         self._cs = cs
 

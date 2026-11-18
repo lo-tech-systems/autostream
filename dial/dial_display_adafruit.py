@@ -25,7 +25,7 @@ import logging
 
 import dial_spi_bus
 from dial_display import DisplayBackend
-from dial_display_profiles import DEFAULT_PROFILE_KEY, DisplayProfile, backend_name_for, get_profile
+from dial_display_profiles import DisplayProfile, backend_name_for
 
 # Fixed wiring (Raspberry Pi SPI0), shared across every profile — this is
 # board wiring, not panel geometry, so it is not part of the profile table.
@@ -63,12 +63,6 @@ _DRIVER_OWNS_BACKLIGHT = {"st7735s"}
 # so the offsets are only supplied to the drivers that declare them. Profiles
 # for offset-less drivers must therefore leave x_offset/y_offset at 0.
 _DRIVER_TAKES_OFFSETS = {"st7735s", "st7789"}
-
-
-def _board_pin(board_module, gpio: int, *aliases: str):
-    """Delegates to dial_spi_bus.board_pin — one definition, shared by
-    every module that has to resolve a BCM number to a board alias."""
-    return dial_spi_bus.board_pin(board_module, gpio, *aliases)
 
 
 def _claim_digital_out(digitalio_module, pin, label: str):
@@ -287,12 +281,12 @@ class AdafruitDisplayBackend(DisplayBackend):
             raise RuntimeError(f"open SPI0 failed: {e}") from e
         self._spi = spi
 
-        cs = _claim_chip_select_or_none(digitalio, _board_pin(board, _CS_GPIO, "CE0"))
-        dc = _claim_digital_out(digitalio, _board_pin(board, _DC_GPIO), "GPIO25 data-command")
-        reset = _claim_digital_out(digitalio, _board_pin(board, _RESET_GPIO), "GPIO24 reset")
+        cs = _claim_chip_select_or_none(digitalio, dial_spi_bus.board_pin(board, _CS_GPIO, "CE0"))
+        dc = _claim_digital_out(digitalio, dial_spi_bus.board_pin(board, _DC_GPIO), "GPIO25 data-command")
+        reset = _claim_digital_out(digitalio, dial_spi_bus.board_pin(board, _RESET_GPIO), "GPIO24 reset")
 
         driver_owns_backlight = profile.driver_tag in _DRIVER_OWNS_BACKLIGHT
-        backlight = _claim_digital_out(digitalio, _board_pin(board, _BACKLIGHT_GPIO), "GPIO18 backlight")
+        backlight = _claim_digital_out(digitalio, dial_spi_bus.board_pin(board, _BACKLIGHT_GPIO), "GPIO18 backlight")
 
         kwargs = dict(
             rst=reset,
@@ -441,15 +435,3 @@ class AdafruitDisplayBackend(DisplayBackend):
                 self._backlight.value = True
             except Exception:
                 pass
-
-
-class AdafruitST7735SBackend(AdafruitDisplayBackend):
-    """Zero-arg backend bound to the default (today's shipped) profile.
-
-    Kept as its own class, rather than a bare alias, so every existing
-    zero-arg call site (create_dial_display(), the test suite) keeps working
-    unchanged.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(get_profile(DEFAULT_PROFILE_KEY))

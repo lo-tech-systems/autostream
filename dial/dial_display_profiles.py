@@ -264,12 +264,6 @@ def mm_per_px_for_size(diagonal_inches: float, width: int, height: int) -> float
     return diagonal_mm / math.hypot(width, height)
 
 
-def mm_per_px_for(profile: DisplayProfile, diagonal_inches: float) -> float:
-    """Physical pixel pitch for *profile* glass of *diagonal_inches* — see
-    mm_per_px_for_size()."""
-    return mm_per_px_for_size(diagonal_inches, profile.width, profile.height)
-
-
 def effective_diagonal_inches(profile: DisplayProfile, override: float | None) -> float:
     """The diagonal size in effect for *profile*: *override* when a user has
     set one, else the profile's own built-in default."""

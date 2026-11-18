@@ -1797,7 +1797,7 @@ class TestBuildTouchSourceLayoutWiring:
         assert captured["machine_kwargs"]["metrics"].content_tier == "large"
 
     def test_none_layout_size_matches_todays_construction(self):
-        from dial_display_profiles import effective_diagonal_inches, get_profile, mm_per_px_for
+        from dial_display_profiles import effective_diagonal_inches, get_profile, mm_per_px_for_size
         from dial_touch_layout import metrics_for
 
         captured = self._built_with_layout("ili9341_320x240", 2.8, None)
@@ -1808,7 +1808,7 @@ class TestBuildTouchSourceLayoutWiring:
         assert captured["filter_kwargs"]["physical_size"] == (profile.width, profile.height)
         expected_metrics = metrics_for(
             profile.width, profile.height,
-            mm_per_px=mm_per_px_for(profile, effective_diagonal_inches(profile, 2.8)),
+            mm_per_px=mm_per_px_for_size(effective_diagonal_inches(profile, 2.8), profile.width, profile.height),
         )
         assert captured["machine_kwargs"]["metrics"] == expected_metrics
 

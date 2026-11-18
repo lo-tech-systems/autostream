@@ -26,7 +26,6 @@ MAX_DECODED_ARTWORK_PIXELS = 16_777_216
 Image.MAX_IMAGE_PIXELS = MAX_DECODED_ARTWORK_PIXELS
 warnings.simplefilter("error", Image.DecompressionBombWarning)
 
-MAX_ARTWORK_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_EXPANDED_ARTWORK_BYTES = 64 * 1024 * 1024
 
 # The ST7735S glass is a 128x160 panel physically mounted in landscape, so the
@@ -72,10 +71,6 @@ def _blur_radius_for(width: int, height: int) -> int:
     """
     return scale_px(10, width, height, 0)
 
-
-# Kept as a module constant for existing callers/tests — equal to
-# _blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT) by construction, i.e. 10.
-BACKDROP_BLUR_RADIUS = _blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT)
 
 # Percentage by which the blurred backdrop is darkened before compositing —
 # 35 means backdrop pixels are multiplied down to 65% of their blurred

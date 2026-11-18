@@ -24,7 +24,6 @@ if _DIAL not in sys.path:
 
 import dial_display_image as ddi
 from dial_display_image import (
-    BACKDROP_BLUR_RADIUS,
     BACKDROP_DARKEN_PERCENT,
     LOGO_BACKGROUND_RGB,
     PANEL_HEIGHT,
@@ -168,7 +167,7 @@ class TestTransformArtworkForPanel:
         # Matches the same cover/blur/darken pipeline the implementation
         # uses, exactly.
         expected_backdrop = ddi._cover_panel(img)
-        expected_backdrop = expected_backdrop.filter(ImageFilter.GaussianBlur(BACKDROP_BLUR_RADIUS))
+        expected_backdrop = expected_backdrop.filter(ImageFilter.GaussianBlur(ddi._blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT)))
         expected_backdrop = ImageEnhance.Brightness(expected_backdrop).enhance(
             1 - BACKDROP_DARKEN_PERCENT / 100
         )
@@ -176,7 +175,7 @@ class TestTransformArtworkForPanel:
 
         # Darkened relative to the un-darkened blurred backdrop, by
         # approximately BACKDROP_DARKEN_PERCENT.
-        undarkened = ddi._cover_panel(img).filter(ImageFilter.GaussianBlur(BACKDROP_BLUR_RADIUS))
+        undarkened = ddi._cover_panel(img).filter(ImageFilter.GaussianBlur(ddi._blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT)))
         undarkened_pixel = undarkened.getpixel((2, PANEL_HEIGHT // 2))
         ratio = sum(band_pixel) / sum(undarkened_pixel)
         assert abs(ratio - (1 - BACKDROP_DARKEN_PERCENT / 100)) < 0.05
@@ -257,9 +256,6 @@ class TestTransformArtworkForPanelNonDefaultDims:
 class TestBlurRadiusFor:
     def test_returns_ten_at_default_panel_size(self):
         assert ddi._blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT) == 10
-
-    def test_matches_backdrop_blur_radius_constant(self):
-        assert ddi._blur_radius_for(PANEL_WIDTH, PANEL_HEIGHT) == BACKDROP_BLUR_RADIUS
 
     def test_scales_up_for_larger_panels(self):
         # min(short side) * 10 / 128, rounded — see the helper's docstring.

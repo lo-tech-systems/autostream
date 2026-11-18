@@ -123,7 +123,7 @@ _EXPECTED_DEFAULT_INCHES = {
     "ili9341_320x240": 2.8,
 }
 
-# mm_per_px_for(profile, profile.default_diagonal_inches), computed by hand
+# mm_per_px_for_size(default diagonal, width, height), computed by hand
 # from diagonal_mm / hypot(width, height).
 _EXPECTED_MM_PER_PX = {
     "st7735s_160x128": 0.2231,
@@ -146,13 +146,13 @@ class TestPhysicalSizeDefaults:
     def test_mm_per_px_for_matches_confirmed_table(self):
         for key, expected in _EXPECTED_MM_PER_PX.items():
             profile = ddp.DISPLAY_PROFILES[key]
-            actual = ddp.mm_per_px_for(profile, profile.default_diagonal_inches)
+            actual = ddp.mm_per_px_for_size(profile.default_diagonal_inches, profile.width, profile.height)
             assert actual == pytest.approx(expected, abs=1e-4)
 
     def test_mm_per_px_for_scales_with_diagonal(self):
         profile = ddp.get_profile(ddp.DEFAULT_PROFILE_KEY)
-        small = ddp.mm_per_px_for(profile, 1.0)
-        large = ddp.mm_per_px_for(profile, 2.0)
+        small = ddp.mm_per_px_for_size(1.0, profile.width, profile.height)
+        large = ddp.mm_per_px_for_size(2.0, profile.width, profile.height)
         assert large == pytest.approx(small * 2, rel=1e-9)
 
     def test_effective_diagonal_inches_without_override_uses_profile_default(self):
@@ -263,18 +263,6 @@ class TestLogicalSizeFor:
     def test_named_size_is_the_table_entry(self):
         profile = ddp.get_profile("ili9341_320x240")
         assert ddp.logical_size_for(profile, "large") == (640, 480)
-
-
-class TestMmPerPxForSizeDelegate:
-    def test_mm_per_px_for_matches_mm_per_px_for_size_on_every_profile(self):
-        """mm_per_px_for() must stay a byte-identical delegate to
-        mm_per_px_for_size() applied to the profile's own dims — the None-path
-        invariant this whole feature is built to preserve."""
-        for profile in ddp.DISPLAY_PROFILES.values():
-            expected = ddp.mm_per_px_for_size(
-                profile.default_diagonal_inches, profile.width, profile.height
-            )
-            assert ddp.mm_per_px_for(profile, profile.default_diagonal_inches) == expected
 
 
 class TestLayoutContextFor:

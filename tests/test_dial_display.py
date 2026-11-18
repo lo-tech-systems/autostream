@@ -37,7 +37,7 @@ import logging
 
 from dial_config import DialDisplayConfig
 from dial_display_compositor import DEFAULT_MARK, OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL, _LIST_BG_RGB
-from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile, mm_per_px_for
+from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile, mm_per_px_for_size
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
 from dial_touch_layout import TouchZone, layout_for, list_layout_for, metrics_for, repeat_layout_for
@@ -1373,13 +1373,13 @@ class TestScreenSizeSetting:
     def test_init_derives_mm_per_px_from_profile_default(self):
         display, fb, gt = make_display(fitted=False, screen_type=DEFAULT_PROFILE_KEY)
         profile = get_profile(DEFAULT_PROFILE_KEY)
-        expected = mm_per_px_for(profile, profile.default_diagonal_inches)
+        expected = mm_per_px_for_size(profile.default_diagonal_inches, profile.width, profile.height)
         assert display._mm_per_px == pytest.approx(expected)
 
     def test_init_derives_mm_per_px_from_override(self):
         display, fb, gt = make_display(fitted=False, screen_size_inches=3.5)
         profile = get_profile(DEFAULT_PROFILE_KEY)
-        expected = mm_per_px_for(profile, 3.5)
+        expected = mm_per_px_for_size(3.5, profile.width, profile.height)
         assert display._mm_per_px == pytest.approx(expected)
 
     def test_update_config_size_only_change_redisplays_synchronously(self):
@@ -1409,7 +1409,7 @@ class TestScreenSizeSetting:
         display.update_config(DialDisplayConfig(fitted=True, screen_size_inches=3.5))
         after = display._mm_per_px
         assert after != before
-        assert after == pytest.approx(mm_per_px_for(profile, 3.5))
+        assert after == pytest.approx(mm_per_px_for_size(3.5, profile.width, profile.height))
 
     def test_screen_type_change_updates_mm_per_px_to_new_profile_default(self):
         fb_old = FakeBackend()
@@ -1428,14 +1428,14 @@ class TestScreenSizeSetting:
         display.update_config(DialDisplayConfig(fitted=True, screen_type="st7789_240x240"))
 
         new_profile = get_profile("st7789_240x240")
-        expected = mm_per_px_for(new_profile, new_profile.default_diagonal_inches)
+        expected = mm_per_px_for_size(new_profile.default_diagonal_inches, new_profile.width, new_profile.height)
         assert display._mm_per_px == pytest.approx(expected)
 
     def test_layout_metrics_reflects_backend_dims_and_density(self):
         display, fb, gt = make_display(fitted=True, screen_size_inches=2.8)
         display.enable()
         profile = get_profile(DEFAULT_PROFILE_KEY)
-        expected_mm = mm_per_px_for(profile, 2.8)
+        expected_mm = mm_per_px_for_size(2.8, profile.width, profile.height)
         with display._lock:
             m = display._layout_metrics()
         assert m.width == fb.width
@@ -9994,7 +9994,7 @@ class TestPairInAutostreamPage:
 
         profile = get_profile(key)
         width, height = profile.width, profile.height
-        metrics = metrics_for(width, height, mm_per_px_for(profile, profile.default_diagonal_inches))
+        metrics = metrics_for(width, height, mm_per_px_for_size(profile.default_diagonal_inches, profile.width, profile.height))
         label, text = dd._pairing_hint("Living Room Hi-Fi")
         layout = info_value_layout_for(width, height, metrics=metrics)
         draw = ImageDraw.Draw(Image.new("RGB", (width, height)))

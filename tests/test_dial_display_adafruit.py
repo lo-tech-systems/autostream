@@ -37,8 +37,12 @@ except ImportError:
 
 import dial_display_adafruit as dda
 import dial_spi_bus
-from dial_display_adafruit import AdafruitDisplayBackend, AdafruitST7735SBackend
-from dial_display_profiles import DISPLAY_PROFILES, get_profile
+from dial_display_adafruit import AdafruitDisplayBackend
+from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES, get_profile
+
+
+def _default_backend():
+    return AdafruitDisplayBackend(get_profile(DEFAULT_PROFILE_KEY))
 
 
 @pytest.fixture(autouse=True)
@@ -69,10 +73,10 @@ class TestNoModuleLevelHardwareImports:
 
     def test_instantiation_does_not_touch_hardware(self):
         """Constructing the backend must not import or touch any hardware module."""
-        AdafruitST7735SBackend()  # must not raise even without board/adafruit_rgb_display installed
+        _default_backend()  # must not raise even without board/adafruit_rgb_display installed
 
     def test_open_failure_is_non_fatal_when_adafruit_absent(self):
-        backend = AdafruitST7735SBackend()
+        backend = _default_backend()
         with pytest.raises(Exception):
             backend.open()  # raises because 'board' is not installed in this env
 
@@ -173,7 +177,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
 
         assert st7735_ctor.call_count == 1
@@ -198,7 +202,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules_with_alt_board_names()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
 
         spi_ctor.assert_called_once_with(clock="SCLK", MOSI="MOSI", MISO="MISO")
@@ -212,7 +216,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
         dio_ctor.assert_any_call("GPIO18")
         args, kwargs = st7735_ctor.call_args
@@ -223,7 +227,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             backlight = backend._backlight
             backend.close()
@@ -235,7 +239,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             sentinel_image = object()
             backend.display(sentinel_image)
@@ -246,7 +250,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             backend.clear()
         frame = _pushed_frame(fake_display, 160, 128)
@@ -261,7 +265,7 @@ class TestMockedHardwareBackend:
         )
         source = Image.new("RGB", (128, 160), (255, 0, 0))
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             backend.display(source)
 
@@ -271,11 +275,11 @@ class TestMockedHardwareBackend:
         assert abs(r - 14) <= 8 and abs(g - 40) <= 4 and abs(b - 65) <= 8
 
     def test_display_before_open_is_noop(self):
-        backend = AdafruitST7735SBackend()
+        backend = _default_backend()
         backend.display(object())  # must not raise
 
     def test_clear_before_open_is_noop(self):
-        backend = AdafruitST7735SBackend()
+        backend = _default_backend()
         backend.clear()  # must not raise
 
     def test_backlight_setup_failure_names_pin(self):
@@ -290,7 +294,7 @@ class TestMockedHardwareBackend:
 
         modules["digitalio"].DigitalInOut = MagicMock(side_effect=fake_digital_in_out)
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             with pytest.raises(RuntimeError, match="GPIO18 backlight"):
                 backend.open()
 
@@ -306,7 +310,7 @@ class TestMockedHardwareBackend:
 
         modules["digitalio"].DigitalInOut = MagicMock(side_effect=fake_digital_in_out)
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             with pytest.raises(RuntimeError, match="GPIO24 reset"):
                 backend.open()
 
@@ -315,7 +319,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             backlight = backend._backlight
             backend.sleep()
@@ -332,7 +336,7 @@ class TestMockedHardwareBackend:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             backlight = backend._backlight
             backlight.value = False
@@ -343,11 +347,11 @@ class TestMockedHardwareBackend:
         fake_display.image.assert_not_called()
 
     def test_sleep_before_open_is_noop(self):
-        backend = AdafruitST7735SBackend()
+        backend = _default_backend()
         backend.sleep()  # must not raise
 
     def test_wake_before_open_is_noop(self):
-        backend = AdafruitST7735SBackend()
+        backend = _default_backend()
         backend.wake()  # must not raise
 
     def test_busy_ce0_uses_hardware_chip_select(self):
@@ -362,7 +366,7 @@ class TestMockedHardwareBackend:
 
         modules["digitalio"].DigitalInOut = MagicMock(side_effect=fake_digital_in_out)
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
 
         args, kwargs = st7735_ctor.call_args
@@ -380,7 +384,7 @@ class TestSharedSpiBus:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
 
         # busio.SPI() is called exactly once — by dial_spi_bus.get_bus(),
@@ -394,7 +398,7 @@ class TestSharedSpiBus:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             first_spi = backend._spi
             backend.close()
@@ -412,7 +416,7 @@ class TestSharedSpiBus:
             _install_fake_hardware_modules()
         )
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             bus = dial_spi_bus.get_bus(dial_spi_bus.DISPLAY_BUS)
             backend.close()
@@ -437,7 +441,7 @@ class TestSharedSpiBus:
         modules2["busio"] = modules["busio"]
 
         with patch.dict(sys.modules, modules):
-            old_backend = AdafruitST7735SBackend()
+            old_backend = _default_backend()
             old_backend.open()
             old_spi = old_backend._spi
             old_backend.close()
@@ -461,7 +465,7 @@ class TestSharedSpiBus:
             with patch.object(
                 dial_spi_bus, "get_bus", wraps=dial_spi_bus.get_bus
             ) as get_bus_spy:
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
 
         get_bus_spy.assert_called_once_with(dial_spi_bus.DISPLAY_BUS)
@@ -487,7 +491,7 @@ class TestProfileTableIntegrity:
 
 class TestZeroArgBackwardCompat:
     def test_zero_arg_backend_reports_default_dims_and_name(self):
-        backend = AdafruitST7735SBackend()
+        backend = _default_backend()
         assert backend.width == 160
         assert backend.height == 128
         assert backend.name == "adafruit_st7735s"
@@ -699,7 +703,7 @@ class TestPushFrameFastPath:
         frame = Image.new("RGB", (160, 128), (1, 2, 3))
         with patch.dict(sys.modules, modules):
             with patch.object(dda, "_pack_rgb565", return_value=packed_bytes) as pack_mock:
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
                 backend.display(frame)
 
@@ -720,7 +724,7 @@ class TestPushFrameFastPath:
         frame = Image.new("RGB", (160, 128), (1, 2, 3))
         with patch.dict(sys.modules, modules):
             with patch.object(dda, "_pack_rgb565", return_value=packed_bytes):
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
                 backend.display(frame)  # must not raise
 
@@ -733,7 +737,7 @@ class TestPushFrameFastPath:
         frame = Image.new("RGB", (160, 128), (1, 2, 3))
         with patch.dict(sys.modules, modules):
             with patch.object(dda, "_pack_rgb565", return_value=None):
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
                 backend.display(frame)
 
@@ -765,7 +769,7 @@ class TestDisplayWindow:
         region = Image.new("RGB", (4, 3), (1, 2, 3))
         with patch.dict(sys.modules, modules):
             with patch.object(dda, "_pack_rgb565", return_value=packed_bytes) as pack_mock:
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
                 ok = backend.display_window(region, 10, 20, 13, 22)
 
@@ -785,7 +789,7 @@ class TestDisplayWindow:
         region.putpixel((0, 1), (0, 0, 255))
         region.putpixel((1, 1), (255, 255, 255))
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             ok = backend.display_window(region, 5, 6, 6, 7)
 
@@ -803,7 +807,7 @@ class TestDisplayWindow:
         st7735_ctor.return_value = no_block_display
         region = Image.new("RGB", (4, 3), (1, 2, 3))
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             ok = backend.display_window(region, 0, 0, 3, 2)
 
@@ -817,7 +821,7 @@ class TestDisplayWindow:
         region = Image.new("RGB", (4, 3), (1, 2, 3))
         with patch.dict(sys.modules, modules):
             with patch.object(dda, "_pack_rgb565", return_value=None):
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
                 ok = backend.display_window(region, 0, 0, 3, 2)
 
@@ -825,7 +829,7 @@ class TestDisplayWindow:
         fake_display._block.assert_not_called()
 
     def test_before_open_returns_false(self):
-        backend = AdafruitST7735SBackend()
+        backend = _default_backend()
         region = Image.new("RGB", (4, 3), (1, 2, 3))
         assert backend.display_window(region, 0, 0, 3, 2) is False
 
@@ -836,7 +840,7 @@ class TestDisplayWindow:
         region = Image.new("RGB", (4, 3), (1, 2, 3))
         with patch.dict(sys.modules, modules):
             with patch.object(dda, "_pack_rgb565") as pack_mock:
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
 
                 with pytest.raises(ValueError):
@@ -855,7 +859,7 @@ class TestDisplayWindow:
         )
         region = Image.new("RGB", (4, 3), (1, 2, 3))
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
 
             with pytest.raises(ValueError):
@@ -1009,7 +1013,7 @@ class TestFastBlockWriter:
         packed = b"\x12\x34" * 12
         with patch.dict(sys.modules, modules):
             with patch.object(dda, "_pack_rgb565", return_value=packed):
-                backend = AdafruitST7735SBackend()
+                backend = _default_backend()
                 backend.open()
                 assert backend.display_window(Image.new("RGB", (4, 3)), 10, 20, 13, 22) is True
                 backend.display(Image.new("RGB", (backend.width, backend.height)))
@@ -1021,7 +1025,7 @@ class TestFastBlockWriter:
         modules, spi_ctor, dio_ctor, st7735_ctor, _ = _install_fake_hardware_modules()
         st7735_ctor.return_value = _FakeDriver()
         with patch.dict(sys.modules, modules):
-            backend = AdafruitST7735SBackend()
+            backend = _default_backend()
             backend.open()
             assert backend._write_block is not None
             backend.close()
