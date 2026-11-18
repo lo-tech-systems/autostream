@@ -65,9 +65,6 @@ def _minimal_cfg(tmp_path: Path, *, audio1_enabled: bool = True, audio2_enabled:
 def _make_playback_snapshot():
     snap = MagicMock()
     snap.inputs = {}
-    snap.stylus_banner_text = ""
-    snap.belt_banner_text = ""
-    snap.bearing_banner_text = ""
     snap.has_warning = False
     snap.to_public_dict.return_value = {}
     return snap

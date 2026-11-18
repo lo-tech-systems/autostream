@@ -15,7 +15,6 @@ autostream_webui_page_airplay.SETTING_START_BUFFER_MS_DEFAULT -> webui.browser.h
 autostream_webui_page_airplay.WebUIState -> webui.browser.home.WebUIState  alias=webui_home
 autostream_webui_page_airplay._HOME_PAGE_STYLE_FILES -> webui.browser.home._HOME_PAGE_STYLE_FILES  alias=webui_home
 autostream_webui_page_airplay._build_appliances_for_selector -> webui.browser.home._build_appliances_for_selector  alias=webui_home
-autostream_webui_page_airplay._dial_update_banner_text -> webui.browser.home._dial_update_banner_text  alias=webui_home
 autostream_webui_page_airplay.active_track -> webui.browser.home.active_track  alias=webui_home
 autostream_webui_page_airplay.annotations -> webui.browser.home.annotations  alias=webui_home
 autostream_webui_page_airplay.build_appliance_selector_html -> webui.browser.home.build_appliance_selector_html  alias=webui_home
@@ -49,7 +48,6 @@ autostream_appliance_models.Optional -> webui.browser.home_model.Optional  alias
 autostream_appliance_models.Origin -> webui.browser.home_model.Origin  alias=webui_home_model
 autostream_appliance_models.PIN_RE -> webui.browser.home_model.PIN_RE  alias=webui_home_model
 autostream_appliance_models._EQ_TREBLE_SECONDARY_SCALE -> webui.browser.home_model._EQ_TREBLE_SECONDARY_SCALE  alias=webui_home_model
-autostream_appliance_models._dial_update_banner_text -> webui.browser.home_model._dial_update_banner_text  alias=webui_home_model
 autostream_appliance_models._format_hostname -> webui.browser.home_model._format_hostname  alias=webui_home_model
 autostream_appliance_models._sanitized_volume -> webui.browser.home_model._sanitized_volume  alias=webui_home_model
 autostream_appliance_models._session_and_repeat_fields -> webui.browser.home_model._session_and_repeat_fields  alias=webui_home_model

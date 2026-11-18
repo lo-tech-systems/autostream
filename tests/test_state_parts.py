@@ -80,7 +80,7 @@ class TestDefaults:
     def test_the_playback_default_is_an_empty_snapshot(self):
         empty = state.empty_playback_snapshot()
         assert isinstance(empty, PlaybackSnapshot)
-        assert empty.inputs == {} and empty.stylus_banner_text is None
+        assert empty.inputs == {}
         assert empty.stylus_warning_indices == () and empty.has_warning is False
 
     def test_the_rate_texts_are_the_setup_page_texts(self):
@@ -146,11 +146,11 @@ class TestDigests:
         assert DIGESTS["track"](a) == DIGESTS["track"](b)
         assert len({DIGESTS["track"](a), DIGESTS["track"](c), DIGESTS["track"](d)}) == 3
 
-    def test_playback_digest_moves_on_a_banner(self):
+    def test_playback_digest_moves_on_a_stylus_warning(self):
         empty = state.empty_playback_snapshot()
         assert DIGESTS["playback"](empty) == DIGESTS["playback"](state.empty_playback_snapshot())
-        banner = dataclasses.replace(empty, stylus_banner_text="Stylus due")
-        assert DIGESTS["playback"](empty) != DIGESTS["playback"](banner)
+        changed = dataclasses.replace(empty, stylus_warning_indices=(1,))
+        assert DIGESTS["playback"](empty) != DIGESTS["playback"](changed)
 
     def test_appliance_digest_is_every_field(self):
         base = state.AppliancePart()

@@ -194,7 +194,7 @@ def _playback_with_flag():
     import dataclasses
 
     snap = state.empty_playback_snapshot()
-    return dataclasses.replace(snap, stylus_banner_text="Stylus due")
+    return dataclasses.replace(snap, stylus_warning_indices=(1,))
 
 
 def test_a_monitors_identification_lock_is_released_before_subscribers_run(tracked_singleton):

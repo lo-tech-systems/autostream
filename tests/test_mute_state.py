@@ -363,9 +363,6 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
 
     playback = MagicMock()
     playback.inputs = {}
-    playback.stylus_banner_text = ""
-    playback.belt_banner_text = ""
-    playback.bearing_banner_text = ""
     playback.has_warning = False
     playback.to_public_dict.return_value = {}
 

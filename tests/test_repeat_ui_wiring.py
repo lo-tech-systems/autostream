@@ -413,9 +413,6 @@ def _make_parsed(*, repeat_enabled: bool = True, repeat_codec: str = "auto"):
 def _make_playback_snapshot():
     snap = MagicMock()
     snap.inputs = {}
-    snap.stylus_banner_text = ""
-    snap.belt_banner_text = ""
-    snap.bearing_banner_text = ""
     snap.has_warning = False
     snap.to_public_dict.return_value = {}
     return snap

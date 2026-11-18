@@ -22,7 +22,6 @@ if _CORE not in sys.path:
 import autostream_dials as dials
 import webui.browser.setup.cards_dials as cards_dials
 
-_BANNER = "Dial updates required"
 _BANNER_OPEN = "<a id='dial-update-warning-banner' href='/setup#dials' style='display:"
 
 
@@ -35,40 +34,6 @@ def _sighting(uuid="u1", proto=None, version="1.0.0") -> dials.DialSighting:
 
 def _sightings(*items):
     return patch("autostream_dials.get_all_sightings", return_value=list(items))
-
-
-# ---------------------------------------------------------------------------
-# Banner text
-# ---------------------------------------------------------------------------
-
-class TestBannerText:
-    def test_empty_when_no_dials_sighted(self):
-        with _sightings():
-            assert dials.build_dial_update_banner_text() == ""
-
-    def test_empty_when_all_sighted_dials_advertise_current_dialect(self):
-        with _sightings(_sighting("a", 4), _sighting("b", 4)):
-            assert dials.build_dial_update_banner_text() == ""
-
-    def test_one_legacy_dial_gives_banner(self):
-        with _sightings(_sighting("a", None)):
-            assert dials.build_dial_update_banner_text() == _BANNER
-
-    def test_same_text_for_any_count(self):
-        with _sightings(_sighting("a", None), _sighting("b", None), _sighting("c", 4)):
-            assert dials.build_dial_update_banner_text() == _BANNER
-
-    def test_unknown_dialect_counts_as_needing_update(self):
-        with _sightings(_sighting("a", 2)):
-            assert dials.build_dial_update_banner_text() == _BANNER
-
-    def test_v2_dial_against_v3_appliance_gives_banner(self):
-        with _sightings(_sighting("a", 3)):
-            assert dials.build_dial_update_banner_text() == _BANNER
-
-    def test_dial_newer_than_the_appliance_gives_no_banner(self):
-        with _sightings(_sighting("a", 5)):
-            assert dials.build_dial_update_banner_text() == ""
 
 
 # ---------------------------------------------------------------------------

@@ -508,17 +508,14 @@ class PlaybackSnapshot:
     # Stylus
     stylus_warning_indices: tuple[int, ...]
     stylus_overdue_indices: tuple[int, ...]
-    stylus_banner_text: Optional[str]
 
     # Drive belt
     belt_warning_indices: tuple[int, ...]
     belt_overdue_indices: tuple[int, ...]
-    belt_banner_text: Optional[str]
 
     # Main bearing oil
     bearing_warning_indices: tuple[int, ...]
     bearing_overdue_indices: tuple[int, ...]
-    bearing_banner_text: Optional[str]
 
     @property
     def has_warning(self) -> bool:
@@ -536,13 +533,10 @@ class PlaybackSnapshot:
             },
             "stylus_warning_input_indices": list(self.stylus_warning_indices),
             "stylus_overdue_input_indices": list(self.stylus_overdue_indices),
-            "stylus_banner_text": self.stylus_banner_text,
             "belt_warning_input_indices": list(self.belt_warning_indices),
             "belt_overdue_input_indices": list(self.belt_overdue_indices),
-            "belt_banner_text": self.belt_banner_text,
             "bearing_warning_input_indices": list(self.bearing_warning_indices),
             "bearing_overdue_input_indices": list(self.bearing_overdue_indices),
-            "bearing_banner_text": self.bearing_banner_text,
             "has_warning": self.has_warning,
         }
 
@@ -554,87 +548,6 @@ class MaintenanceResetResult:
     applied: bool
     persisted: bool
     last_service_at: Optional[str] = None  # ISO timestamp actually written to state
-
-
-def _build_banner(
-    snapshots: dict[int, InputPlaybackSnapshot],
-    *,
-    overdue_filter: Callable,
-    warning_filter: Callable,
-    overdue_single: Callable,
-    overdue_multi: str,
-    warning_single: Callable,
-    warning_multi: str,
-    overdue_sort_key: Optional[Callable] = None,
-    warning_sort_key: Optional[Callable] = None,
-) -> Optional[str]:
-    """Generic maintenance banner builder — returns a short string or None."""
-    overdue = sorted(
-        (s for s in snapshots.values() if overdue_filter(s)),
-        key=overdue_sort_key or (lambda s: s.input_index),
-    )
-    if overdue:
-        return overdue_single(overdue[0]) if len(overdue) == 1 else overdue_multi
-    warning = sorted(
-        (s for s in snapshots.values() if warning_filter(s)),
-        key=warning_sort_key or (lambda s: s.input_index),
-    )
-    if not warning:
-        return None
-    return warning_single(warning[0]) if len(warning) == 1 else warning_multi
-
-
-def build_stylus_warning_text(
-    snapshots: dict[int, InputPlaybackSnapshot],
-) -> Optional[str]:
-    """Return a concise banner string, or None if no stylus warning is needed."""
-    return _build_banner(
-        snapshots,
-        overdue_filter=lambda s: s.enabled and s.stylus_life_hours > 0 and s.stylus_overdue,
-        warning_filter=lambda s: s.enabled and s.stylus_life_hours > 0 and s.stylus_warning,
-        overdue_single=lambda s: f"{s.label} stylus needs changing now.",
-        overdue_multi="Stylus replacement needed on multiple inputs.",
-        warning_single=lambda s: (
-            f"{s.label} stylus needs changing soon ({s.stylus_remaining_hours:.1f} h remaining)."
-            if s.stylus_remaining_hours is not None
-            else f"{s.label} stylus needs changing soon (replacement due soon)."
-        ),
-        warning_multi="Stylus replacement due soon on multiple inputs.",
-        warning_sort_key=lambda s: (
-            s.stylus_remaining_seconds if s.stylus_remaining_seconds is not None else 10**18,
-            s.input_index,
-        ),
-    )
-
-
-def build_belt_banner_text(
-    snapshots: dict[int, InputPlaybackSnapshot],
-) -> Optional[str]:
-    """Return a concise banner string for drive belt, or None if no warning."""
-    return _build_banner(
-        snapshots,
-        overdue_filter=lambda s: s.enabled and s.belt_overdue,
-        warning_filter=lambda s: s.enabled and s.belt_warning,
-        overdue_single=lambda s: f"{s.label} drive belt needs attention now.",
-        overdue_multi="Drive belt service needed on multiple inputs.",
-        warning_single=lambda s: f"{s.label} drive belt service is due soon.",
-        warning_multi="Drive belt service due soon on multiple inputs.",
-    )
-
-
-def build_bearing_banner_text(
-    snapshots: dict[int, InputPlaybackSnapshot],
-) -> Optional[str]:
-    """Return a concise banner string for main bearing oil, or None if no warning."""
-    return _build_banner(
-        snapshots,
-        overdue_filter=lambda s: s.enabled and s.bearing_overdue,
-        warning_filter=lambda s: s.enabled and s.bearing_warning,
-        overdue_single=lambda s: f"{s.label} main bearing needs attention now.",
-        overdue_multi="Main bearing service needed on multiple inputs.",
-        warning_single=lambda s: f"{s.label} main bearing service is due soon.",
-        warning_multi="Main bearing service due soon on multiple inputs.",
-    )
 
 
 class StatsStore:
@@ -1157,21 +1070,18 @@ class PlaybackTracker:
                 stylus_overdue_indices=_sorted_indices(
                     lambda s: s.enabled and s.stylus_life_hours > 0 and s.stylus_overdue
                 ),
-                stylus_banner_text=build_stylus_warning_text(inputs),
                 belt_warning_indices=_sorted_indices(
                     lambda s: s.enabled and s.belt_warning and not s.belt_overdue
                 ),
                 belt_overdue_indices=_sorted_indices(
                     lambda s: s.enabled and s.belt_overdue
                 ),
-                belt_banner_text=build_belt_banner_text(inputs),
                 bearing_warning_indices=_sorted_indices(
                     lambda s: s.enabled and s.bearing_warning and not s.bearing_overdue
                 ),
                 bearing_overdue_indices=_sorted_indices(
                     lambda s: s.enabled and s.bearing_overdue
                 ),
-                bearing_banner_text=build_bearing_banner_text(inputs),
             )
 
     def get_input_snapshot(self, input_index: int) -> InputPlaybackSnapshot:

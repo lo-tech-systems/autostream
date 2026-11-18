@@ -340,13 +340,10 @@ def empty_playback_snapshot() -> PlaybackSnapshot:
         inputs=FrozenDict(),
         stylus_warning_indices=(),
         stylus_overdue_indices=(),
-        stylus_banner_text=None,
         belt_warning_indices=(),
         belt_overdue_indices=(),
-        belt_banner_text=None,
         bearing_warning_indices=(),
         bearing_overdue_indices=(),
-        bearing_banner_text=None,
     )
 
 
@@ -458,7 +455,6 @@ def _playback_digest(p: PlaybackSnapshot) -> tuple:
         for i, s in sorted(p.inputs.items())
     )
     return (
-        p.stylus_banner_text, p.belt_banner_text, p.bearing_banner_text,
         tuple(p.stylus_warning_indices), tuple(p.stylus_overdue_indices),
         tuple(p.belt_warning_indices), tuple(p.belt_overdue_indices),
         tuple(p.bearing_warning_indices), tuple(p.bearing_overdue_indices),

@@ -607,7 +607,6 @@ class TestMultiInputSnapshot:
         snap = tr.snapshot()
         assert 1 in snap.stylus_overdue_indices
         assert 2 in snap.stylus_warning_indices
-        assert snap.stylus_banner_text is not None
 
 
 # ---------------------------------------------------------------------------

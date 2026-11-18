@@ -115,14 +115,12 @@ def _playback(*, stylus_warning: bool = False):
             one, stylus_warning=True, stylus_playback_seconds=950 * 3600,
             stylus_playback_hours=950.0, stylus_remaining_seconds=50 * 3600,
             stylus_remaining_hours=50.0)
-    text = "Stylus due for replacement soon" if stylus_warning else None
     return PlaybackSnapshot(
         inputs={1: one, 2: two},
         stylus_warning_indices=(1,) if stylus_warning else (),
         stylus_overdue_indices=(),
-        stylus_banner_text=text,
-        belt_warning_indices=(), belt_overdue_indices=(), belt_banner_text=None,
-        bearing_warning_indices=(), bearing_overdue_indices=(), bearing_banner_text=None,
+        belt_warning_indices=(), belt_overdue_indices=(),
+        bearing_warning_indices=(), bearing_overdue_indices=(),
     )
 
 
