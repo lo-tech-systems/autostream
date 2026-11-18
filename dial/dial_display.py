@@ -2661,6 +2661,18 @@ class DialDisplay:
         self._repeat_close_reveal = False
         return value
 
+    def _repeat_tap_record(self) -> "tuple[ApplianceScreenState, object] | None":
+        """The open repeat page and the repeat-store record of its
+        appliance, or None when the page is not open or the record is
+        absent or unavailable. Lock-free."""
+        screen = self._repeat_screen
+        if screen is None:
+            return None
+        rec = self._repeat_record(screen.appliance_id)
+        if rec is None or not rec.available:
+            return None
+        return screen, rec
+
     def repeat_toggle_tap(self) -> None:
         """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a REPEAT_PLAY
         tap): toggle arm/disarm — only meaningful in the enable layout
@@ -2668,12 +2680,10 @@ class DialDisplay:
         enabled); a tap here while the replaying/hold layout is showing
         (no "Repeat Play" row drawn) is a no-op. Enqueues on the core's
         request lane — no lock, no I/O on this thread."""
-        screen = self._repeat_screen
-        if screen is None:
+        found = self._repeat_tap_record()
+        if found is None:
             return
-        rec = self._repeat_record(screen.appliance_id)
-        if rec is None or not rec.available:
-            return
+        screen, rec = found
         if rec.state in ("recording", "pending", "idle"):
             self._core.set_repeat_armed(screen.appliance_id, not rec.armed)
         elif rec.state == "replaying":
@@ -2686,12 +2696,10 @@ class DialDisplay:
         tap): seek to 0 — restart a running replay, or start one from
         Hold. A no-op while fading out (the appliance would refuse it with
         "fading_out" anyway) or while a live source is recording."""
-        screen = self._repeat_screen
-        if screen is None:
+        found = self._repeat_tap_record()
+        if found is None:
             return
-        rec = self._repeat_record(screen.appliance_id)
-        if rec is None or not rec.available:
-            return
+        screen, rec = found
         if rec.state in ("replaying", "hold"):
             self._core.restart_replay(screen.appliance_id)
 
@@ -2700,12 +2708,10 @@ class DialDisplay:
         tap): stop a running replay (fades out, lands in Hold, disarmed).
         A no-op outside Replaying — while fading out the button is drawn
         pressed and inert, and in Hold there is nothing to stop."""
-        screen = self._repeat_screen
-        if screen is None:
+        found = self._repeat_tap_record()
+        if found is None:
             return
-        rec = self._repeat_record(screen.appliance_id)
-        if rec is None or not rec.available:
-            return
+        screen, rec = found
         if rec.state == "replaying":
             self._core.stop_replay(screen.appliance_id)
 
