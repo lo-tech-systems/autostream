@@ -1242,7 +1242,8 @@ std::string AudioMonitor::api_get_status()
             << "\"stall_max_seconds\":"   << fc.stall_max_seconds    << ","
             << "\"pipe_bytes\":"          << fc.pipe_bytes           << ","
             << "\"backlog_bytes\":"       << fc.backlog_bytes        << ","
-            << "\"backlog_peak_bytes\":"  << fc.backlog_peak_bytes   << "}";
+            << "\"backlog_peak_bytes\":"  << fc.backlog_peak_bytes   << ","
+            << "\"backlog_capacity_bytes\":" << _fifo_writer.backlog_capacity_bytes() << "}";
     }
 
     {

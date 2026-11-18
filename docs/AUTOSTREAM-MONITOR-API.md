@@ -1117,7 +1117,8 @@ Success response:
     "stall_max_seconds":0.0,
     "pipe_bytes":1048576,
     "backlog_bytes":0,
-    "backlog_peak_bytes":0
+    "backlog_peak_bytes":0,
+    "backlog_capacity_bytes":384000
   },
   "underruns":{
     "live1":0,
@@ -1286,7 +1287,8 @@ Top-level fields:
   - `pipe_bytes`: size of the kernel pipe at the last open; `-1` while it is
     not open
   - `backlog_bytes`: bytes queued after the last write; `backlog_peak_bytes`
-    is the most queued at any point
+    is the most queued at any point; `backlog_capacity_bytes` is the most the
+    backlog can hold (one second of output audio), allocated at start-up
 - `underruns`
   - cumulative count, since daemon start, of output frames that had to be
     padded with silence because a mixer source came up short at mix time, one

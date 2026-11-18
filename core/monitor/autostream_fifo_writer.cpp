@@ -26,7 +26,20 @@
 // FifoWriter
 // =============================================================================
 
-FifoWriter::FifoWriter() = default;
+FifoWriter::FifoWriter()
+    : _backlog_capacity(backlog_cap_bytes())
+{
+    // Size the backlog to its cap once, here on the main thread before any
+    // audio thread exists, and touch every page, so the first reader stall
+    // never grows the vector or faults a page on the real-time thread
+    // under the FIFO mutex. clear() keeps the capacity. backlog_cap_bytes()
+    // caches the process-wide output format on its first call, so the
+    // format must be final when the first FifoWriter is built: main() sets
+    // it before AudioMonitor is constructed, and a test binary sees the
+    // native default.
+    _backlog.assign(_backlog_capacity, 0);
+    _backlog.clear();
+}
 
 FifoWriter::~FifoWriter()
 {
@@ -253,8 +266,8 @@ bool FifoWriter::write_impl(const void* data, size_t len)
             return false;
         }
 
-        // Backlog fully drained; free it rather than leaving an empty but
-        // still-allocated vector around from a stall that has since cleared.
+        // Backlog fully drained. clear() keeps the capacity the constructor
+        // faulted in, which is the point: the next stall must not allocate.
         _backlog.clear();
         _backlog_pos = 0;
     }

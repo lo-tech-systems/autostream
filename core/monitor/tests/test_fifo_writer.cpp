@@ -510,6 +510,55 @@ static void test_broken_pipe_counts_backlog_and_block()
 }
 
 // ---------------------------------------------------------------------------
+// (7) The backlog is sized to its cap at construction and a stall, a drain,
+//     an overflow or a close never changes that capacity.
+// ---------------------------------------------------------------------------
+
+static void test_backlog_capacity_is_reserved_up_front()
+{
+    FifoFixture fx;
+    FifoWriter  writer;
+
+    size_t cap_bytes = static_cast<size_t>(AudioMonitor::output_rate_hz())
+                     * static_cast<size_t>(AudioMonitor::output_bytes_per_frame());
+    CHECK(writer.backlog_capacity_bytes() == cap_bytes, "the reported capacity is the cap");
+    CHECK(writer.backlog_vector_capacity() >= cap_bytes, "the vector holds the cap from construction");
+    const size_t capacity_before = writer.backlog_vector_capacity();
+
+    writer.set_path(fx.path);
+    {
+        std::vector<uint8_t> priming = make_pattern(16, /*base=*/0);
+        CHECK(writer.write(priming.data(), priming.size()), "priming write succeeds");
+        fx.read_available(priming.size());
+    }
+
+    int pipe_cap = ::fcntl(fx.reader_fd, F_GETPIPE_SZ);
+    CHECK(pipe_cap > 0, "F_GETPIPE_SZ reports the pipe's current capacity");
+
+    const size_t tail_len = 777;
+    std::vector<uint8_t> fill = make_pattern(static_cast<size_t>(pipe_cap) + tail_len, /*base=*/4);
+    CHECK(!writer.write(fill.data(), fill.size()), "the fill write leaves a tail in the backlog");
+    CHECK(writer.backlog_vector_capacity() == capacity_before, "queuing a tail does not change the capacity");
+
+    fx.read_available(static_cast<size_t>(pipe_cap));
+    std::vector<uint8_t> next = make_pattern(2048, /*base=*/6);
+    CHECK(writer.write(next.data(), next.size()), "the drain write succeeds");
+    CHECK(writer.backlog_vector_capacity() == capacity_before, "draining does not change the capacity");
+    fx.read_available(tail_len + next.size());
+
+    // An overflow drops the queue wholesale; the capacity stays.
+    std::vector<uint8_t> fill2 = make_pattern(static_cast<size_t>(pipe_cap) + tail_len, /*base=*/8);
+    CHECK(!writer.write(fill2.data(), fill2.size()), "a second fill queues a tail");
+    std::vector<uint8_t> oversized = make_pattern(cap_bytes, /*base=*/9);
+    CHECK(!writer.write(oversized.data(), oversized.size()), "an oversized block overflows the backlog");
+    CHECK(writer.backlog_vector_capacity() == capacity_before, "an overflow does not change the capacity");
+
+    writer.close();
+    CHECK(writer.backlog_vector_capacity() == capacity_before, "close() does not change the capacity");
+    CHECK(writer.backlog_capacity_bytes() == cap_bytes, "the reported capacity is unchanged");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -527,6 +576,7 @@ int main()
     test_end_stream_on_a_healthy_writer_changes_nothing();
     test_no_reader_counts_discarded_bytes();
     test_broken_pipe_counts_backlog_and_block();
+    test_backlog_capacity_is_reserved_up_front();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);

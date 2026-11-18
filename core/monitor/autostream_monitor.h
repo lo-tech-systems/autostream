@@ -743,6 +743,14 @@ public:
     };
     Counters counters() const;
 
+    // The bytes the backlog can hold, fixed when the writer is built. A
+    // const member, so any thread may read it.
+    size_t backlog_capacity_bytes() const { return _backlog_capacity; }
+
+    // The backlog vector's own capacity, for tests; it must stay equal to
+    // backlog_capacity_bytes(). Single-threaded use only.
+    size_t backlog_vector_capacity() const { return _backlog.capacity(); }
+
     // What end_stream() discarded and closed.
     struct StreamEnd
     {
@@ -818,9 +826,11 @@ private:
     bool        _pipe_resize_warned  = false; // F_SETPIPE_SZ failure logged once, not on every reopen
 
     // Bytes the pipe has not yet accepted, queued in delivery order.
-    // _backlog_pos marks the next unread byte; the vector is freed (not
-    // just reset) once the backlog fully drains, so a stall that has since
-    // cleared does not leave a large allocation sitting around.
+    // _backlog_pos marks the next unread byte. The constructor sizes the
+    // vector to the cap and touches every page; clear() and erase() keep
+    // that capacity, and append_to_backlog() never lets the size pass the
+    // cap, so the vector never allocates on the output thread.
+    const size_t         _backlog_capacity;   // the cap, fixed at construction; read by the status path
     std::vector<uint8_t> _backlog;
     size_t                _backlog_pos = 0;
 
