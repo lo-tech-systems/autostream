@@ -1,0 +1,4 @@
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+.box { max-width: 42rem; margin: 2rem auto; padding: 1.25rem; border: 1px solid #ddd; border-radius: 12px; background:#fff; }
+.muted { color: #666; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }

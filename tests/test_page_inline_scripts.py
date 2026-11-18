@@ -32,18 +32,22 @@ MAX_INLINE = {
     "align": 1,
     "service": 0,
     "logs": 0,
-    "owntone": 2,
-    "owntone_restarting": 1,
-    "rebooting": 2,
+    "owntone": 1,
+    "owntone_restarting": 0,
+    "rebooting": 1,
     "first_boot_owntone": 0,
     "first_boot_appliance": 0,
-    "hostname_changed": 1,
+    "hostname_changed": 0,
     "auth": 1,
 }
 SETUP_INLINE = 12
 
 # Pages whose scripts are all files: nothing inline but the token bootstrap.
-EXTRACTED = ("home", "remote_home", "equaliser", "remote_equaliser", "about", "align", "service", "logs")
+EXTRACTED = (
+    "home", "remote_home", "equaliser", "remote_equaliser", "about", "align", "service", "logs",
+    "owntone", "owntone_restarting", "rebooting", "first_boot_owntone", "first_boot_appliance",
+    "hostname_changed",
+)
 
 _BOOTSTRAP = "window.__CSRF='t';"
 # The local equaliser reads its token from a hidden field, so it carries no inline script.
@@ -56,6 +60,12 @@ EXPECTED_INLINE = {
     "align": [_BOOTSTRAP],
     "service": [],
     "logs": [],
+    "owntone": [_BOOTSTRAP],
+    "owntone_restarting": [],
+    "rebooting": [_BOOTSTRAP],
+    "first_boot_owntone": [],
+    "first_boot_appliance": [],
+    "hostname_changed": [],
 }
 # The page's own scripts; the island must come before the first of them.
 FIRST_FILES = {
@@ -65,6 +75,10 @@ FIRST_FILES = {
     "remote_equaliser": ("remote_equaliser.js", "equaliser_curve.js"),
     "about": ("about.js",),
     "logs": ("logs.js",),
+    "owntone": ("owntone.js",),
+    "owntone_restarting": ("owntone_restarting.js",),
+    "rebooting": ("rebooting.js",),
+    "hostname_changed": ("hostname_changed.js",),
 }
 
 # Island keys each extracted page may carry, and the route that serves it.
@@ -83,6 +97,12 @@ ISLAND_KEYS = {
     "align": set(),
     "service": set(),
     "logs": {"csrf_token"},
+    "owntone": {"live_enabled"},
+    "owntone_restarting": {"next_path"},
+    "rebooting": {"min_wait_ms"},
+    "first_boot_owntone": set(),
+    "first_boot_appliance": set(),
+    "hostname_changed": {"redirect_url"},
 }
 PAGE_PATH = {
     "home": "/",
@@ -93,6 +113,13 @@ PAGE_PATH = {
     "align": "/align",
     "service": "/service",
     "logs": "/logs",
+    "owntone": "/owntone-setup",
+    "owntone_restarting": "/owntone-restarting",
+    "rebooting": "/rebooting",
+    "first_boot_owntone": "/first-boot/owntone",
+    "first_boot_appliance": "/first-boot/appliance",
+    # Served as the reply to a hostname change, not at a path of its own.
+    "hostname_changed": None,
 }
 
 
@@ -151,6 +178,8 @@ def test_the_island_carries_only_the_keys_of_its_page(page):
 @pytest.mark.parametrize("page", EXTRACTED)
 def test_an_island_on_a_public_route_carries_only_listed_keys(page):
     import autostream_webui_routes as routes  # noqa: PLC0415
+    if PAGE_PATH[page] is None:
+        pytest.skip("not served at a path of its own")
     route = routes._resolve(PAGE_PATH[page], "GET")
     assert route is not None
     if route.auth is routes.AuthRequirement.NONE:
@@ -220,3 +249,25 @@ def test_the_about_island_carries_the_licence_text_and_cannot_end_its_element():
 
 def test_the_logs_island_carries_the_page_token():
     assert _source_text.page_data(_render("logs")) == {"csrf_token": "t"}
+
+
+@pytest.mark.parametrize("page", ("owntone", "owntone_restarting", "rebooting"))
+def test_the_pages_with_a_live_flag_or_a_redirect_target_need_a_full_sign_in(page):
+    import autostream_webui_routes as routes  # noqa: PLC0415
+    route = routes._resolve(PAGE_PATH[page], "GET")
+    assert route.auth is routes.AuthRequirement.FULL
+
+
+def test_the_restarting_island_carries_the_next_path_and_cannot_end_its_element():
+    html = _page_stub.render("owntone_restarting", next_path="/x</script><b>&").decode("utf-8")
+    assert _source_text.page_data(html) == {"next_path": "/x</script><b>&"}
+    assert html.count("</script>") == html.count("<script")
+
+
+def test_the_rebooting_island_carries_the_minimum_wait():
+    assert _source_text.page_data(_render("rebooting")) == {"min_wait_ms": 90000}
+
+
+def test_the_hostname_changed_island_carries_the_redirect_url():
+    island = _source_text.page_data(_render("hostname_changed"))
+    assert island["redirect_url"].startswith("http://autostream.local")

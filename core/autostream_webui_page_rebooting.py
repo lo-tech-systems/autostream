@@ -27,11 +27,13 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
     # it doesn't want the nav-bar/shell machinery -- there's nowhere
     # useful to navigate to while the appliance is rebooting -- so it builds its
     # own minimal document instead. It still links the shared theme.css just like
-    # every other page (nginx serves /static/ directly, independent of the app,
-    # so the stylesheet loads fine even this close to shutdown); only a few
-    # page-specific rules are inlined below.
+    # every other page. nginx serves /static/ directly, independent of the app, so
+    # the stylesheet and the page script (nginx/static/page/rebooting.js) load
+    # fine even this close to shutdown: both are fetched with the page itself,
+    # before the reboot is requested.
     #
-    # Minimum time (ms) before we even attempt to return to '/'.
+    # Minimum time (ms) before we even attempt to return to '/'. It reaches the
+    # page script through the data island.
     # The reboot API schedules with a 3 s delay; shutdown and boot take time on
     # slower hardware.
     min_wait_ms = 90000
@@ -51,13 +53,9 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
         <meta charset="utf-8">{VIEWPORT_META}
         <title>Rebooting&hellip;</title>
         {style_link}
-        <style>
-          body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }}
-          .box {{ max-width: 42rem; margin: 2rem auto; padding: 1.25rem; border: 1px solid #ddd; border-radius: 12px; background:#fff; }}
-          .muted {{ color: #666; }}
-          .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }}
-        </style>
+        {static.style_tag("page/rebooting.css")}
         {csrf_meta}
+        {static.page_data_island({"min_wait_ms": int(min_wait_ms)})}
       </head>
       <body>{lic_html}{lic_spacer}
         <div class="box">
@@ -67,61 +65,7 @@ def send_rebooting_page(handler, state: WebUIState, auth) -> None:
           <p class="muted">If you are not redirected, try <a href="/">opening the app</a> again in a moment.</p>
         </div>
 
-        <script>
-          const minWaitMs = {int(min_wait_ms)};
-          const startedAt = Date.now();
-          const statusEl = document.getElementById("status");
-
-          function setStatus(t) {{
-            if (statusEl) statusEl.textContent = t;
-          }}
-
-          async function requestReboot() {{
-            try {{
-              const r = await fetch("/api/reboot", {{
-                method: "POST",
-                headers: {{ "X-CSRF-Token": window.__CSRF || "" }},
-                cache: "no-store",
-                keepalive: true
-              }});
-              try {{
-                const j = await r.json();
-                if (j && j.ok) {{
-                  setStatus("Reboot scheduled. Waiting for restart\\u2026");
-                  return;
-                }}
-              }} catch (e) {{}}
-              setStatus("Reboot requested. Waiting for restart\\u2026");
-            }} catch (e) {{
-              setStatus("Waiting for restart\\u2026");
-            }}
-          }}
-
-          async function pollRoot() {{
-            const elapsed = Date.now() - startedAt;
-            if (elapsed < minWaitMs) {{
-              const s = Math.ceil((minWaitMs - elapsed) / 1000);
-              setStatus("Reboot scheduled. Restarting in ~" + s + "s\\u2026");
-              setTimeout(pollRoot, 700);
-              return;
-            }}
-
-            setStatus("Checking if the app is back\\u2026");
-            try {{
-              const r = await fetch("/", {{ cache: "no-store" }});
-              if (r && r.ok) {{
-                window.location.replace("/");
-                return;
-              }}
-            }} catch (e) {{
-              // Not up yet
-            }}
-            setTimeout(pollRoot, 1200);
-          }}
-
-          requestReboot();
-          pollRoot();
-        </script>
+        {static.script_tag("page/rebooting.js")}
       </body>
       </html>
     """

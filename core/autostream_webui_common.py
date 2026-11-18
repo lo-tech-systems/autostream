@@ -173,8 +173,11 @@ def send_hostname_changed_page(
     page = build_page_html(
         "Hostname changed",
         body_html,
-        head_extra=f'<meta http-equiv="refresh" content="5;url={safe_url}">',
-        body_suffix=f'<script>setTimeout(function(){{window.location.href="{safe_url}";}},5000);</script>',
+        head_extra=(
+            f'<meta http-equiv="refresh" content="5;url={safe_url}">'
+            + static.page_data_island({"redirect_url": redirect_url})
+        ),
+        body_suffix=static.script_tag("page/hostname_changed.js"),
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab=active_tab,

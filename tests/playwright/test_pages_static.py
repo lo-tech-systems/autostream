@@ -7,6 +7,7 @@ load or on a click still happens.
 """
 from __future__ import annotations
 
+
 import pytest
 import _home_stub as stub
 import _page_stub
@@ -221,3 +222,91 @@ class TestLogs:
             assert errors == []
         finally:
             server.shutdown()
+
+
+@_requires_browser
+class TestOwntone:
+    def test_a_visibility_toggle_posts_through_the_settings_transaction(self, page: "Page"):
+        outputs = [{"id": "tv", "name": "Speaker A"}]
+        server, base = start_server(_page_stub.render("owntone", outputs=outputs))
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            assert page.evaluate("liveEnabled") is True
+            expect(page.locator("#spk_settings_0")).to_be_visible()
+            page.locator("input[name=show_0]").evaluate("el => el.click()")
+            _wait_for(page, lambda: "/api/owntone/output-visibility" in stub.POST_PATHS,
+                      "the visibility post")
+            assert stub.POSTS[-1] == {"output_name": "Speaker A", "output_id": "tv", "visible": False}
+            assert stub.POST_TOKENS[-1] == "t"
+            expect(page.locator("#spk_settings_0")).to_be_hidden()
+            assert errors == []
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestRebooting:
+    def test_the_countdown_starts_from_the_island_wait(self, page: "Page"):
+        server, base = start_server(_page_stub.render("rebooting"))
+        try:
+            errors = _watch_errors(page)
+            page.clock.install(time=0)
+            page.goto(f"{base}/")
+            _wait_for(page, lambda: "/api/reboot" in stub.POST_PATHS, "the reboot request")
+            page.clock.run_for(1000)
+            expect(page.locator("#status")).to_have_text("Reboot scheduled. Restarting in ~90s…")
+            page.clock.run_for(59000)
+            expect(page.locator("#status")).to_have_text("Reboot scheduled. Restarting in ~31s…")
+            assert errors == []
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestRestarting:
+    def test_the_continue_link_and_redirect_use_the_island_path(self, page: "Page"):
+        server, base = start_server(_page_stub.render("owntone_restarting", next_path="/setup?x=1"))
+        try:
+            errors = _watch_errors(page)
+            stub.API["/api/owntone/ready"] = {"ok": False, "probe": "waiting"}
+            page.goto(f"{base}/")
+            expect(page.locator("#status")).to_have_text("Not ready yet. waiting")
+            expect(page.locator("a")).to_have_attribute("href", "/setup?x=1")
+            assert page.evaluate("pageData.next_path") == "/setup?x=1"
+            stub.API["/api/owntone/ready"] = {"ok": True}
+            page.wait_for_url(f"{base}/setup?x=1")
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_a_next_path_holding_a_script_end_tag_stays_text(self, page: "Page"):
+        evil = "/a</script><script>window.__injected=1</script><b>x"
+        server, base = start_server(_page_stub.render("owntone_restarting", next_path=evil))
+        try:
+            errors = _watch_errors(page)
+            stub.API["/api/owntone/ready"] = {"ok": False}
+            page.goto(f"{base}/")
+            expect(page.locator("#status")).to_have_text("Not ready yet. ")
+            assert page.evaluate("pageData.next_path") == evil
+            assert page.evaluate("window.__injected") is None
+            assert page.locator(".box b").count() == 0
+            assert errors == []
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestFirstBoot:
+    @pytest.mark.parametrize("name", ["first_boot_owntone", "first_boot_appliance"])
+    def test_both_pages_load_with_no_error(self, page: "Page", name: str):
+        server, base = start_server(_page_stub.render(name))
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            assert page.locator("body *").count() > 5
+            assert errors == []
+        finally:
+            server.shutdown()
+

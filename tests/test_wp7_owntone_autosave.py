@@ -27,7 +27,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from autostream_settings import SettingsStore
-from _source_text import page_scripts, static_text
+from _source_text import page_data, page_scripts, static_text
 from fake_store import fake_outputs_result
 
 
@@ -1042,18 +1042,19 @@ class TestOwntoneSetupPage:
 
     def test_live_enabled_always_true(self, tmp_path):
         html = self._render_page(str(tmp_path))
-        assert "const liveEnabled = true" in html
+        assert page_data(html)["live_enabled"] is True
+        assert "const liveEnabled = pageData.live_enabled" in page_scripts(html)
 
     def test_autosave_functions_present(self, tmp_path):
         html = self._render_page(str(tmp_path))
-        assert "_owntoneOffsetDebounced" in html
+        assert "_owntoneOffsetDebounced" in page_scripts(html)
         # Retired with the Start Buffer slider->select conversion; its
         # only caller was the slider's debounced oninput handler.
-        assert "_owntoneNativeDebounced" not in html
+        assert "_owntoneNativeDebounced" not in page_scripts(html)
 
     def test_settings_transact_available(self, tmp_path):
         html = self._render_page(str(tmp_path))
-        assert "settingsTransact" in html
+        assert "settingsTransact" in page_scripts(html)
 
     def test_refresh_link_present(self, tmp_path):
         html = self._render_page(str(tmp_path))
@@ -1394,7 +1395,7 @@ class TestStartBufferSelect:
         )
         assert 'name="start_buffer_ms"' in html
         assert 'type="range"' not in html
-        assert "_owntoneNativeDebounced" not in html
+        assert "_owntoneNativeDebounced" not in page_scripts(html)
 
     def test_options_span_300_to_3500(self, tmp_path):
         from autostream_players import SETTING_START_BUFFER_MS

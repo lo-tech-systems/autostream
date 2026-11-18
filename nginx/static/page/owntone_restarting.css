@@ -1,0 +1,4 @@
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
+.box { max-width: 42rem; padding: 1.25rem; border: 1px solid #ddd; border-radius: 12px; }
+.muted { color: #666; }
+code { background: #f6f6f6; padding: 0.15rem 0.35rem; border-radius: 6px; }

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_data, page_scripts
 from fake_store import fake_outputs_result
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
@@ -321,8 +322,8 @@ class TestOwntonPageNoInitialSetupMode:
 
     def test_live_enabled_always_true(self, tmp_path):
         html = self._render(tmp_path)
-        assert "const liveEnabled = true;" in html
-        assert "const liveEnabled = false;" not in html
+        assert page_data(html)["live_enabled"] is True
+        assert "const liveEnabled = pageData.live_enabled" in page_scripts(html)
 
     def test_no_initial_setup_heading(self, tmp_path):
         html = self._render(tmp_path)

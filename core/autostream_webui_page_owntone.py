@@ -171,12 +171,13 @@ def send_owntone_restarting_page(handler, state) -> None:
     # This holding page deliberately does not go through build_page_html()/the shared
     # extra_css channel: it is a minimal standalone document shown while OwnTone
     # itself is restarting, so it does not depend on the shared theme.css asset or
-    # any other autostream module state.
+    # any other autostream module state. Its style and script are plain files that
+    # nginx serves itself (nginx/static/page/owntone_restarting.*), and the
+    # redirect target reaches the script through the data island.
     # Allow a caller-provided next target, defaulting to owntone setup.
     qs = parse_qs(urlparse(handler.path).query)
     next_path = (qs.get("next", []) or ["/owntone-setup"])[0]
     next_path_html = html.escape(next_path, quote=True)
-    next_path_js = json.dumps(next_path)  # safe for embedding in a JS string literal
 
     body = f"""<!doctype html>
       <html lang="en">
@@ -184,12 +185,8 @@ def send_owntone_restarting_page(handler, state) -> None:
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Restarting Owntone</title>
-        <style>
-          body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }}
-          .box {{ max-width: 42rem; padding: 1.25rem; border: 1px solid #ddd; border-radius: 12px; }}
-          .muted {{ color: #666; }}
-          code {{ background: #f6f6f6; padding: 0.15rem 0.35rem; border-radius: 6px; }}
-        </style>
+        {static.style_tag("page/owntone_restarting.css")}
+        {static.page_data_island({"next_path": next_path})}
       </head>
       <body>
         <div class="box">
@@ -198,27 +195,7 @@ def send_owntone_restarting_page(handler, state) -> None:
           <p id="status" class="muted">Checking&hellip;</p>
           <p class="muted">If this doesn't move on, you can <a href="{next_path_html}">try continuing</a>.</p>
         </div>
-        <script>
-          const nextPath = {next_path_js};
-          async function poll() {{
-            try {{
-              const r = await fetch("/api/owntone/ready", {{ cache: "no-store" }});
-              const j = await r.json();
-              const msg = (j.restart && j.restart.message) ? j.restart.message : "";
-              const probe = j.probe ? j.probe : "";
-              document.getElementById("status").textContent =
-                (j.ok ? "Ready. Redirecting\\u2026" : ("Not ready yet. " + (msg || probe || "")));
-              if (j.ok) {{
-                window.location.replace(nextPath);
-                return;
-              }}
-            }} catch (e) {{
-              document.getElementById("status").textContent = "Not ready yet. (" + e + ")";
-            }}
-            setTimeout(poll, 800);
-          }}
-          poll();
-        </script>
+        {static.script_tag("page/owntone_restarting.js")}
       </body>
       </html>
     """
@@ -679,31 +656,7 @@ def send_owntone_setup_page(
     )
     _body_suffix = f"""\
 {static.script_tag("page/autosave.js")}
-<script>
-  const liveEnabled = true;
-  function onShowToggle(i, checked) {{
-    document.getElementById('spk_settings_' + i).style.display = checked ? 'block' : 'none';
-  }}
-  var _owntoneTimers = {{}};
-  function _owntoneOffsetSync(i, offsetMs) {{
-    var slider = document.getElementById('off_slider_' + i);
-    var val = document.getElementById('off_val_' + i);
-    if (slider) slider.value = offsetMs;
-    if (val) val.textContent = offsetMs + ' ms';
-  }}
-  function _owntoneOffsetDebounced(i, outputId, offsetMs) {{
-    clearTimeout(_owntoneTimers['offset_' + outputId]);
-    _owntoneTimers['offset_' + outputId] = setTimeout(function() {{
-      settingsTransact('/api/owntone/output-offset', {{output_id: outputId, offset_ms: offsetMs}}, {{
-        onSuccess: function(d) {{ _owntoneOffsetSync(i, d.offset_ms); }}
-      }});
-    }}, 300);
-  }}
-  function _owntoneOffsetReset(i, outputId) {{
-    _owntoneOffsetSync(i, 0);
-    if (liveEnabled) _owntoneOffsetDebounced(i, outputId, 0);
-  }}
-</script>"""
+{static.script_tag("page/owntone.js")}"""
     html_body = build_page_html(
         "Owntone Setup",
         _body_html,
@@ -715,6 +668,6 @@ def send_owntone_setup_page(
         show_nav=True,
         active_tab="setup",
         dark_mode=parsed.webui.dark_mode,
-        head_extra=csrf_meta,
+        head_extra=csrf_meta + static.page_data_island({"live_enabled": True}),
     )
     send_html(handler, 200, html_body)
