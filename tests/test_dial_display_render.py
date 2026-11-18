@@ -1671,16 +1671,16 @@ class TestComposeCard:
         dimmed = round(200 * OVERLAY_DIM_FACTOR)
         assert frame.getpixel((2, 2)) == (dimmed, dimmed, dimmed)       # no card fill on compact
         l = warning_layout_for(240, 240, buttons=2, metrics=metrics_for(240, 240, 0.0973))
-        assert (l.cells, l.divider_xs, l.divider_y) == (((0, 126, 114, 240), (126, 126, 240, 240)), (120,), 120)
-        assert frame.getpixel((5, 120)) == (255, 255, 255)              # horizontal, full width
+        assert (l.cells, l.divider_xs, l.divider_y) == (((0, 164, 114, 240), (126, 164, 240, 240)), (120,), 158)
+        assert frame.getpixel((5, 158)) == (255, 255, 255)              # horizontal, full width
         assert frame.getpixel((120, 200)) == (255, 255, 255)            # vertical, bottom row
         assert frame.getpixel((120, 8)) == (dimmed, dimmed, dimmed)     # none in the top row
 
     def test_compact_pressed_second_cell_washes_its_cell(self, compositor):
         plain = self._frame(compositor, (240, 240), self._view(), 0.0973)
         pressed = self._frame(compositor, (240, 240), self._view(pressed=1), 0.0973)
-        assert pressed.getpixel((130, 130))[0] > plain.getpixel((130, 130))[0]
-        assert pressed.getpixel((5, 130)) == plain.getpixel((5, 130))
+        assert pressed.getpixel((130, 200))[0] > plain.getpixel((130, 200))[0]
+        assert pressed.getpixel((5, 200)) == plain.getpixel((5, 200))
 
     def test_one_cell_spans_the_whole_row_with_no_vertical_line(self, compositor):
         view = WarningView(title="microSD card", message="15% life left, replace soon", buttons=("Close",))
@@ -3242,26 +3242,26 @@ class TestApplianceWarningText:
         draw, rect, metrics, plan = _fit_plan(tier, _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
         assert " ".join(text for text, *_ in plan[1:]).startswith(_WORST_TITLE)
 
-    def test_the_base_panel_shows_the_source_and_one_ellipsized_title_line_for_the_longest_title(self):
+    def test_the_base_panel_ellipsizes_the_source_and_the_title_for_the_longest_title(self):
         draw, rect, metrics, plan = _fit_plan("base_160x128", _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
-        assert len(plan) == 2
-        assert plan[0][0].endswith("...") and plan[1][0].endswith("...")
+        assert len(plan) == 3
+        assert plan[0][0].endswith("...") and plan[-1][0].endswith("...")
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_the_typical_title_and_source_show_whole_on_every_tier(self, tier):
         draw, rect, metrics, plan = _fit_plan(tier, *_TYPICAL)
         assert [text for text, *_ in plan[:2]] == ["Lounge", "Technics stylus"]
 
-    def test_a_message_gets_the_row_left_over_and_the_base_panel_has_none(self):
+    def test_a_message_gets_the_row_left_over(self):
         _, _, _, base = _fit_plan("base_160x128", *_TYPICAL)
-        assert len(base) == 2
+        assert len(base) == 3 and base[2][0].startswith("Needs changing")
         for tier in ("compact_128x128", "compact_240x240", "rich_320x240"):
             _, _, _, plan = _fit_plan(tier, *_TYPICAL)
             assert len(plan) >= 3 and plan[2][0].startswith("Needs changing")
 
-    def test_the_message_shrinks_before_it_is_cut(self):
+    def test_the_message_is_never_larger_than_body_size(self):
         _, _, metrics, plan = _fit_plan("compact_128x128", *_TYPICAL)
-        assert plan[1][2] == metrics.font_body and plan[2][2] < metrics.font_body
+        assert plan[2][2] <= metrics.font_body
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_a_short_title_alone_is_drawn_at_readout_size(self, tier):

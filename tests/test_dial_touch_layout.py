@@ -937,40 +937,44 @@ class TestWarningLayout:
     def test_rich_two_cells_pinned(self):
         w = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
         assert w.card == (41, 48, 278, 192)
-        assert w.message == (41, 48, 278, 114)
-        assert w.cells == ((41, 126, 153, 192), (166, 126, 278, 192))
-        assert (w.divider_xs, w.divider_y) == ((159,), 120)
+        assert w.message == (41, 48, 278, 136)
+        assert w.cells == ((41, 148, 153, 192), (166, 148, 278, 192))
+        assert (w.divider_xs, w.divider_y) == ((159,), 142)
 
     def test_base_two_cells_pinned(self):
         w = warning_layout_for(160, 128, buttons=2)
         assert w.card == (21, 25, 139, 102)
-        assert w.message == (21, 25, 139, 60)
-        assert w.cells == ((21, 67, 77, 102), (83, 67, 139, 102))
-        assert (w.divider_xs, w.divider_y) == ((80,), 63)
+        assert w.message == (21, 25, 139, 72)
+        assert w.cells == ((21, 79, 77, 102), (83, 79, 139, 102))
+        assert (w.divider_xs, w.divider_y) == ((80,), 75)
 
     def test_base_one_cell_spans_the_whole_row(self):
         w = warning_layout_for(160, 128, buttons=1)
-        assert w.cells == ((21, 67, 139, 102),)
+        assert w.cells == ((21, 79, 139, 102),)
         assert w.divider_xs == ()
 
     def test_base_three_cells_pinned(self):
         w = warning_layout_for(160, 128, buttons=3)
-        assert w.cells == ((21, 67, 56, 102), (62, 67, 97, 102), (104, 67, 139, 102))
+        assert w.cells == ((21, 79, 56, 102), (62, 79, 97, 102), (104, 79, 139, 102))
         assert w.divider_xs == (59, 100)
 
-    def test_compact_two_cells_are_the_two_by_two(self):
+    def test_compact_two_cells_share_the_two_by_two_columns_with_a_shorter_button_row(self):
         for metrics in (_COMPACT_240x240, _COMPACT_128x128):
             c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
             w = warning_layout_for(metrics.width, metrics.height, buttons=2, metrics=metrics)
             assert w.card == (0, 0, metrics.width, metrics.height)
-            assert (w.message, *w.cells) == (c.top_row, c.bl, c.br)
-            assert (w.divider_xs, w.divider_y) == ((c.divider_x,), c.divider_y)
+            assert (w.message[0], w.message[2]) == (c.top_row[0], c.top_row[2])
+            assert [(r[0], r[2]) for r in w.cells] == [(c.bl[0], c.bl[2]), (c.br[0], c.br[2])]
+            assert w.divider_xs == (c.divider_x,)
+            # The message row is about two thirds of the card.
+            assert w.message[3] > metrics.height // 2
+            assert w.cells[0][3] - w.cells[0][1] < metrics.height // 2
 
-    def test_compact_one_cell_is_the_two_by_two_with_the_bottom_row_merged(self):
+    def test_compact_one_cell_spans_the_button_row(self):
         for metrics in (_COMPACT_240x240, _COMPACT_128x128):
-            c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
-            w = warning_layout_for(metrics.width, metrics.height, buttons=1, metrics=metrics)
-            assert w.cells == ((c.bl[0], c.bl[1], c.br[2], c.br[3]),)
+            two = warning_layout_for(metrics.width, metrics.height, buttons=2, metrics=metrics)
+            one = warning_layout_for(metrics.width, metrics.height, buttons=1, metrics=metrics)
+            assert one.cells == ((two.cells[0][0], two.cells[0][1], two.cells[1][2], two.cells[1][3]),)
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     @pytest.mark.parametrize("buttons", [1, 2, 3])

@@ -905,8 +905,9 @@ def warning_layout_for(
 ) -> WarningLayout:
     """The card geometry for *buttons* cells. The card is
     CARD_WIDTH_FRACTION x CARD_HEIGHT_FRACTION of the panel, centred (the
-    whole panel on compact, where it is exactly the 2x2 grid for two
-    cells); its two rows and its bottom-row cells are split with the same
+    whole panel on compact, where it shares the 2x2 grid's columns for two
+    cells); its two rows (the message row two thirds, the buttons one third)
+    and its bottom-row cells are split with the same
     _split(total, margin, weights) rule every table here uses, offset to
     the card's origin. One cell spans the whole bottom row. No buttons is a
     notice: the message row is the whole card, with no cells, no dividers
@@ -926,7 +927,7 @@ def warning_layout_for(
     count = max(0, int(buttons))
     if count == 0:
         return WarningLayout(card=card, message=card, cells=(), divider_y=None, divider_xs=())
-    (r0a, r0b), (r1a, r1b) = _split(card_h, m, [1, 1])
+    (r0a, r0b), (r1a, r1b) = _split(card_h, m, [2, 1])
     bands = _split(card_w, m, [1] * count)
     return WarningLayout(
         card=card,
