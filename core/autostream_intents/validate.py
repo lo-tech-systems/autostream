@@ -86,6 +86,22 @@ def text(
     return check
 
 
+def texts(*, min_items: int, max_items: int, max_len: int, error: str) -> Validator:
+    """A list or tuple of non-blank strings of at most *max_len* characters,
+    between *min_items* and *max_items* long, returned as a tuple with each
+    string as given."""
+
+    def check(value: object) -> tuple:
+        if not isinstance(value, (list, tuple)) or not (min_items <= len(value) <= max_items):
+            raise Invalid(error)
+        for item in value:
+            if not isinstance(item, str) or not item.strip() or len(item) > max_len:
+                raise Invalid(error)
+        return tuple(value)
+
+    return check
+
+
 def choice(*values: object, error: str) -> Validator:
     """One of the listed values, compared by equality."""
 

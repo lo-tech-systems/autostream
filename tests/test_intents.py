@@ -132,6 +132,14 @@ class TestValidators:
             with pytest.raises(v.Invalid):
                 check(wrong)
 
+    def test_texts_become_a_tuple_of_the_strings_as_given(self):
+        check = v.texts(min_items=2, max_items=3, max_len=4, error="bad")
+        assert check(["ab", " cd "]) == ("ab", " cd ")
+        for wrong in ("ab", ["ab"], ["a", "b", "c", "d"], ["ab", ""], ["ab", "  "],
+                      ["ab", 5], ["ab", "abcde"], None):
+            with pytest.raises(v.Invalid):
+                check(wrong)
+
     def test_anything_passes_the_value_on(self):
         marker = object()
         assert v.anything()(marker) is marker
@@ -151,6 +159,7 @@ class TestRows:
             "settings.apply", "settings.save", "settings.reload", "settings.form_apply",
             "settings.advertisement", "settings.auto_update",
             "settings.service_field.set", "settings.discard", "first_boot.commit",
+            "align.start", "align.abort", "align.finish", "align.discard",
             "backend.setting.set", "log.level.set",
             "receiver.pause", "receiver.play", "outputs.pause_off",
             "input.counters.reset", "input.playback_config.set",

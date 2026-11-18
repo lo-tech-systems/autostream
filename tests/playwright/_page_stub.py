@@ -175,13 +175,14 @@ def _render_align(**_fakes) -> bytes:
     handler, chunks = _handler("/align")
     with tempfile.TemporaryDirectory() as tmp:
         state = _scratch_state(tmp)
-        state.align_run = MagicMock()
-        state.align_run.pending_result.return_value = None
-        state.align_run.snapshots.return_value = []
+        run = MagicMock()
+        run.pending_result.return_value = None
+        run.snapshots.return_value = []
         with ExitStack() as stack:
             for p in (
                 *_banner_patches("autostream_webui_page_align"),
                 patch("autostream_webui_page_align._offsets_supported", return_value=True),
+                patch("autostream_align._RUN", run),
             ):
                 stack.enter_context(p)
             send_align_page(handler, state)

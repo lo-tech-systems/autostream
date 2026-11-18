@@ -252,6 +252,31 @@ def _build_rows() -> dict:
         ),
         _row("settings.discard", {}, (), {Origin.USER}),
         _row(
+            "align.start",
+            {
+                "output_ids": v.texts(
+                    min_items=2, max_items=32, max_len=64,
+                    error="output_ids must list at least two outputs"),
+                "volume": v.integer(
+                    1, 100, error="volume must be a whole number between 1 and 100"),
+                # Built from the request's Host header, which only the route has.
+                "ret_url": v.text(error=_BAD_BODY, max_len=512),
+            },
+            {"output_ids", "volume", "ret_url"},
+            {Origin.USER},
+        ),
+        _row("align.abort", {}, (), {Origin.USER}),
+        _row("align.discard", {}, (), {Origin.USER}),
+        _row(
+            "align.finish",
+            {
+                "ref": v.text(error=_BAD_BODY, max_len=64, allow_empty=True),
+                "arrivals": v.optional(v.anything()),
+            },
+            {"ref"},
+            {Origin.USER},
+        ),
+        _row(
             "first_boot.commit",
             {
                 "step": v.choice("output", "finish", error=_BAD_BODY),

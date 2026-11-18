@@ -137,6 +137,7 @@ LIVE_PINNED: frozenset[str] = frozenset({
     "get_setting", "get_capabilities", "list_outputs",
     "get_owntone_runtime_info", "get_vibra_runtime_info",
     "annotate_outputs", "get_log_level_state",
+    "get_align_status", "get_align_review",
 })
 
 # Packages whose public names (from __all__) an L3 module may import.
@@ -377,7 +378,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('C', 'autostream_webui_api', 'autostream_start_buffer_cache', '*'),
     ('C', 'autostream_webui_common', 'autostream_config', 'load_config'),
     ('C', 'autostream_webui_post_handlers', 'autostream_config', 'load_config'),
-    ('C', 'autostream_webui_state', 'autostream_align', 'AlignRun'),
     ('D', 'autostream_webui_api', 'subprocess', '*'),
     ('D', 'autostream_webui_common', 'subprocess', '*'),
     ('D', 'autostream_webui_page_about', 'subprocess', '*'),

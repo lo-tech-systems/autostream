@@ -16,6 +16,8 @@ Contents:
   - AlignResult          -- the full parsed handoff (ref + arrivals)
   - parse_result_entries -- parser for the 'data' query parameter
   - AlignRun             -- run lifecycle: start/abort/finish/cleanup/status
+  - AlignReview          -- every output at start, and the pending result
+  - the process's one run, its four intent rows and its two live reads
 """
 
 from __future__ import annotations
@@ -30,7 +32,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import quote, unquote
 
-from autostream_state import store
+from autostream_intents.table import Intent, Outcome, bind
+from autostream_state import live, store
 
 _log = logging.getLogger(__name__)
 
@@ -147,9 +150,10 @@ def parse_result_entries(raw: str) -> list:
 class AlignRun:
     """Owns the lifecycle of one calibration run.
 
-    A single instance lives on WebUIState (state.align_run) for the life of
-    the process. Not re-entrant across runs -- start() refuses while a run
-    is already active.
+    A single instance (_RUN, below) lives for the life of the process. Not
+    re-entrant across runs -- start() refuses while a run is already active.
+    The run's lock is only ever held for a read or write of its own fields,
+    never across a player call, the tone helper or a wait.
     """
 
     def __init__(
@@ -715,3 +719,100 @@ class AlignRun:
     def discard_result(self) -> None:
         with self._lock:
             self._pending_result = None
+
+
+# ---------------------------------------------------------------------------
+# The process's one run, with its intent rows and live reads
+# ---------------------------------------------------------------------------
+
+_OWNER = "autostream_align"
+_RUN = AlignRun()
+
+
+@dataclass(frozen=True)
+class AlignReview:
+    """What the Align page shows after a measurement: every output as it was
+    when the run started, and the result waiting for Apply or Re-run."""
+    snapshots: tuple
+    pending: Optional[AlignResult]
+
+
+def reset_for_tests() -> None:
+    """Clean up and replace the process's run."""
+    global _RUN
+    _RUN.cleanup()
+    _RUN = AlignRun()
+
+
+def _base_url_of(state: object) -> str:
+    """The configured player URL for a request: the settings store when the
+    state has one, else the configuration file. "" when neither answers."""
+    from autostream_settings import writable_store  # noqa: PLC0415
+    try:
+        settings = writable_store(getattr(state, "settings", None))
+        if settings is not None:
+            return str(settings.snapshot().owntone.base_url or "")
+        from autostream_config import CONFIG_IO_LOCK, load_config, parse_config  # noqa: PLC0415
+        with CONFIG_IO_LOCK:
+            cfg = load_config(state.config_path)
+        return str(parse_config(cfg).owntone.base_url or "")
+    except Exception:
+        _log.debug("align: could not read the player URL", exc_info=True)
+        return ""
+
+
+def _align_start(intent: Intent, wait: float) -> Outcome:
+    """Begin a calibration run. *context* is the request's state, whose
+    settings give the player URL. The result's launch_url is the measurement
+    page's address."""
+    args = intent.args
+    ok, value = _RUN.start(
+        base_url=_base_url_of(intent.context),
+        ret_url=args["ret_url"],
+        output_ids=list(args["output_ids"]),
+        volume_percent=args["volume"],
+    )
+    if not ok:
+        return Outcome(ok=False, error=value)
+    return Outcome(ok=True, result={"launch_url": value})
+
+
+def _align_abort(intent: Intent, wait: float) -> Outcome:
+    _RUN.abort()
+    return Outcome(ok=True)
+
+
+def _align_finish(intent: Intent, wait: float) -> Outcome:
+    """Stop the run and keep the measurement as the pending result. An empty
+    ref (a malformed handoff) stops the run and keeps nothing."""
+    ref = intent.args["ref"]
+    if not ref:
+        _RUN.finish(None)
+        return Outcome(ok=True)
+    arrivals = tuple(
+        AlignArrival(output_id=oid, delta_ms=delta, spread_ms=spread)
+        for oid, delta, spread in (intent.args.get("arrivals") or ())
+    )
+    _RUN.finish(AlignResult(ref_output_id=ref, arrivals=arrivals))
+    return Outcome(ok=True)
+
+
+def _align_discard(intent: Intent, wait: float) -> Outcome:
+    _RUN.discard_result()
+    return Outcome(ok=True)
+
+
+def _live_get_align_status() -> dict:
+    return _RUN.status()
+
+
+def _live_get_align_review() -> AlignReview:
+    return AlignReview(tuple(_RUN.snapshots()), _RUN.pending_result())
+
+
+bind("align.start", _align_start, owner=_OWNER)
+bind("align.abort", _align_abort, owner=_OWNER)
+bind("align.finish", _align_finish, owner=_OWNER)
+bind("align.discard", _align_discard, owner=_OWNER)
+live.bind("get_align_status", _live_get_align_status, owner=_OWNER)
+live.bind("get_align_review", _live_get_align_review, owner=_OWNER)

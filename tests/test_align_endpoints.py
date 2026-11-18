@@ -72,8 +72,28 @@ def _make_state(config_path: str, state_path: str, store: SettingsStore, align_r
     state.config_path = config_path
     state.state_path = state_path
     state.settings = as_view(store)
-    state.align_run = align_run
+    if align_run is not None:
+        _install_run(align_run)
     return state
+
+
+def _install_run(run) -> None:
+    """Make *run* the process's calibration run until the test ends."""
+    import autostream_align
+    autostream_align._RUN = run
+
+
+def _state_with_run(run) -> MagicMock:
+    _install_run(run)
+    return MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _keep_the_process_run():
+    import autostream_align
+    saved = autostream_align._RUN
+    yield
+    autostream_align._RUN = saved
 
 
 def _json_or_raw(data: bytes):
@@ -141,20 +161,6 @@ class TestAlignStart:
 
         assert sent["body"]["ok"] is False
         assert "two outputs" in sent["body"]["error"]
-
-    def test_no_align_run_on_state_is_unavailable(self, tmp_path):
-        from autostream_webui_page_align import send_align_start_json
-        config_path = _make_config(str(tmp_path))
-        state_path = _make_state_file(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, state_path, store, align_run=None)
-        handler, sent = _make_handler()
-        handler.headers = {"Host": "autostream.local"}
-
-        body = json.dumps({"output_ids": ["out-a", "out-b"], "volume": 50})
-        send_align_start_json(handler, state, body)
-
-        assert sent["body"]["ok"] is False
 
     def test_rejects_volume_zero(self, tmp_path):
         from autostream_webui_page_align import send_align_start_json
@@ -275,19 +281,6 @@ def test_status_returns_run_status_verbatim(tmp_path):
     assert sent["body"] == align_run.status.return_value
 
 
-def test_status_default_shape_when_no_align_run(tmp_path):
-    from autostream_webui_page_align import send_align_status_json
-    config_path = _make_config(str(tmp_path))
-    state_path = _make_state_file(str(tmp_path))
-    store = _make_store(config_path)
-    state = _make_state(config_path, state_path, store, align_run=None)
-    handler, sent = _make_handler()
-
-    send_align_status_json(handler, state)
-
-    assert sent["body"]["state"] == "idle"
-
-
 # ── GET /align/result ────────────────────────────────────────────────────────
 
 class TestAlignResultGet:
@@ -380,7 +373,7 @@ class TestReviewSection:
             ref_output_id="out-a",
             arrivals=(AlignArrival("out-b", -400, 5),),
         )
-        state = MagicMock(align_run=align_run)
+        state = _state_with_run(align_run)
 
         html_out = _render_review_section(state)
 
@@ -400,7 +393,7 @@ class TestReviewSection:
             ref_output_id="out-a",
             arrivals=(AlignArrival("out-b", -500, 5),),
         )
-        state = MagicMock(align_run=align_run)
+        state = _state_with_run(align_run)
 
         html_out = _render_review_section(state)
 
@@ -418,7 +411,7 @@ class TestReviewSection:
             ref_output_id="out-a",
             arrivals=(AlignArrival("out-b", 10, 55),),
         )
-        state = MagicMock(align_run=align_run)
+        state = _state_with_run(align_run)
 
         html_out = _render_review_section(state)
 
@@ -429,7 +422,7 @@ class TestReviewSection:
         from autostream_webui_page_align import _render_review_section
         align_run = MagicMock()
         align_run.pending_result.return_value = None
-        state = MagicMock(align_run=align_run)
+        state = _state_with_run(align_run)
         assert _render_review_section(state) == ""
 
     def test_apply_and_rerun_buttons_are_equal_sized_and_labelled(self, tmp_path):
@@ -442,7 +435,7 @@ class TestReviewSection:
             ref_output_id="out-a",
             arrivals=(),
         )
-        state = MagicMock(align_run=align_run)
+        state = _state_with_run(align_run)
 
         html_out = _render_review_section(state)
 

@@ -32,6 +32,7 @@ import logging
 from autostream_align import parse_result_entries
 from autostream_intents import Intent, Origin, submit
 from autostream_state import store
+from autostream_state.live import get_align_review, get_align_status
 from autostream_webui_api import send_json
 from autostream_webui_assets import COMMON_MODAL_CSS, INFO_MODAL_HTML, INFO_MODAL_SCRIPT
 from autostream_webui_common import (
@@ -218,16 +219,14 @@ def _render_outputs_section(state: WebUIState) -> str:
 
 
 def _render_review_section(state: WebUIState) -> str:
-    run = getattr(state, "align_run", None)
-    if run is None:
-        return ""
-    result = run.pending_result()
+    review = get_align_review()
+    result = review.pending
     if result is None:
         return ""
 
     from autostream_align import AlignArrival
 
-    snapshots = {s.id: s for s in run.snapshots()}
+    snapshots = {s.id: s for s in review.snapshots}
     arrivals = {a.output_id: a for a in result.arrivals}
     if result.ref_output_id not in arrivals:
         # The phone page's data list need not repeat the reference output
@@ -483,20 +482,18 @@ document.addEventListener('DOMContentLoaded',function(){
 def send_align_result_get(handler, state: WebUIState, query: dict) -> None:
     """Parse the ?v=&ref=&data= handoff, stop the run, and render the review
     page (table of outputs with proposed offsets, Apply/Discard)."""
-    from autostream_align import AlignResult
-
-    run = getattr(state, "align_run", None)
     version = (query.get("v") or [""])[0]
     ref = (query.get("ref") or [""])[0].strip()
     data_raw = (query.get("data") or [""])[0]
 
-    if run is not None and version == "1" and ref:
-        arrivals = parse_result_entries(data_raw)
-        run.finish(AlignResult(ref_output_id=ref, arrivals=tuple(arrivals)))
-    elif run is not None:
+    if version == "1" and ref:
+        arrivals = tuple(
+            (a.output_id, a.delta_ms, a.spread_ms) for a in parse_result_entries(data_raw))
+        submit(Intent("align.finish", {"ref": ref, "arrivals": arrivals}, Origin.USER, "webui"))
+    else:
         # Malformed handoff -- still stop the run so it doesn't run to
         # timeout, but don't fabricate a result to show.
-        run.finish(None)
+        submit(Intent("align.finish", {"ref": ""}, Origin.USER, "webui"))
 
     send_align_page(handler, state)
 
@@ -506,11 +503,6 @@ def send_align_result_get(handler, state: WebUIState, query: dict) -> None:
 # -----------------------------------------------------------------------------
 
 def send_align_start_json(handler, state: WebUIState, body: str) -> None:
-    run = getattr(state, "align_run", None)
-    if run is None:
-        send_json(handler, 200, {"ok": False, "error": "Calibration is unavailable"})
-        return
-
     try:
         payload = json.loads(body or "{}")
     except json.JSONDecodeError:
@@ -531,11 +523,6 @@ def send_align_start_json(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 400, {"ok": False, "error": "volume must be a whole number between 1 and 100"})
         return
 
-    try:
-        base_url = _config_snapshot(state).owntone.base_url
-    except Exception:
-        base_url = ""
-
     # Authoritative capability gate: without per-output offset support the
     # run could measure but Apply would change nothing audible.
     if not _offsets_supported(state):
@@ -550,32 +537,22 @@ def send_align_start_json(handler, state: WebUIState, body: str) -> None:
     host = handler.headers.get("Host") or "localhost"
     ret_url = f"http://{host}/align/result"
 
-    ok, result = run.start(
-        base_url=base_url, ret_url=ret_url, output_ids=output_ids, volume_percent=volume
-    )
-    if not ok:
-        send_json(handler, 200, {"ok": False, "error": result})
+    reply = submit(Intent(
+        "align.start", {"output_ids": output_ids, "volume": volume, "ret_url": ret_url},
+        Origin.USER, "webui", context=state))
+    if not reply.ok:
+        send_json(handler, 200, {"ok": False, "error": reply.error})
         return
-    send_json(handler, 200, {"ok": True, "launch_url": result})
+    send_json(handler, 200, {"ok": True, "launch_url": reply.result["launch_url"]})
 
 
 def send_align_abort_json(handler, state: WebUIState) -> None:
-    run = getattr(state, "align_run", None)
-    if run is not None:
-        run.abort()
+    submit(Intent("align.abort", {}, Origin.USER, "webui"))
     send_json(handler, 200, {"ok": True})
 
 
 def send_align_status_json(handler, state: WebUIState) -> None:
-    run = getattr(state, "align_run", None)
-    if run is None:
-        send_json(handler, 200, {
-            "state": "idle", "current_output_id": None, "current_output_name": None,
-            "cycle_count": 0, "seconds_remaining": None, "launch_url": "",
-            "last_error": "", "has_pending_result": False,
-        })
-        return
-    send_json(handler, 200, run.status())
+    send_json(handler, 200, get_align_status())
 
 
 def send_align_apply_json(handler, state: WebUIState, body: str) -> None:
@@ -599,15 +576,11 @@ def send_align_apply_json(handler, state: WebUIState, body: str) -> None:
         if reply.ok:
             applied[reply.result["output_id"]] = reply.result["offset_ms"]
 
-    run = getattr(state, "align_run", None)
-    if run is not None:
-        run.discard_result()
+    submit(Intent("align.discard", {}, Origin.USER, "webui"))
 
     send_json(handler, 200, {"ok": True, "applied": applied})
 
 
 def send_align_discard_json(handler, state: WebUIState) -> None:
-    run = getattr(state, "align_run", None)
-    if run is not None:
-        run.discard_result()
+    submit(Intent("align.discard", {}, Origin.USER, "webui"))
     send_json(handler, 200, {"ok": True})

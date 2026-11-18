@@ -38,11 +38,6 @@ class WebUIState:
         # OwnTone restart state
         self._init_owntone_restart()
 
-        # "Align outputs" calibration run -- single instance for the process
-        # lifetime; AlignRun itself refuses to start a second concurrent run.
-        from autostream_align import AlignRun
-        self.align_run = AlignRun()
-
     @property
     def settings(self) -> "Optional[SettingsView]":
         return self._settings

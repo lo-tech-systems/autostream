@@ -83,7 +83,7 @@ class LiveNotBound(RuntimeError):
 
 
 # Names that a Level 2 module implements and binds when it is imported.
-BINDABLE = ("annotate_outputs", "get_log_level_state")
+BINDABLE = ("annotate_outputs", "get_log_level_state", "get_align_status", "get_align_review")
 
 _bound_lock = threading.Lock()
 _bound: dict[str, tuple[Callable, str]] = {}
@@ -160,3 +160,13 @@ def annotate_outputs(outputs: list[dict]) -> list[dict]:
 def get_log_level_state(*args, **kwargs):
     """The log-level policy state (bound by autostream_log_policy)."""
     return _call_bound("get_log_level_state", *args, **kwargs)
+
+
+def get_align_status() -> dict:
+    """The calibration run's status (bound by autostream_align)."""
+    return _call_bound("get_align_status")
+
+
+def get_align_review():
+    """The calibration run's snapshots and pending result (bound by autostream_align)."""
+    return _call_bound("get_align_review")
