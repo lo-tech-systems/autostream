@@ -170,9 +170,9 @@ def _temperature(status: str, temp_c: Optional[float]) -> list[WarningEntry]:
     degrees = "" if temp_c is None else f", {round(temp_c)} °C"
     if status == "critical":
         return [_entry("cpu_temp", "critical", "cpu_temp", "CPU temperature",
-                       f"Too hot{degrees}", None)]
+                       f"Too hot{degrees}", "/about#system")]
     return [_entry("cpu_temp", "warning", "cpu_temp", "CPU temperature",
-                   f"Running hot{degrees}", None)]
+                   f"Running hot{degrees}", "/about#system")]
 
 
 def _card(level: str, percent: Optional[int]) -> list[WarningEntry]:

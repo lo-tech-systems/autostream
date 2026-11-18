@@ -82,6 +82,7 @@ class TestRows:
             "cpu_temp", "warning", "Running hot, 72 °C")
         crit = only(w.derive(make(cpu_status="critical", cpu_temp_c=81.2)))
         assert (crit.severity, crit.message) == ("critical", "Too hot, 81 °C")
+        assert hot.link == crit.link == "/about#system"
 
     def test_sd_failing_and_low(self):
         bad = only(w.derive(make(sd_percent=8, sd_level="failing")))
