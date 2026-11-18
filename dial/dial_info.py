@@ -28,6 +28,7 @@ import re
 import socket
 import subprocess
 
+from autostream_wifi_network import split_nmcli_terse
 from dial_values import read_text_or
 
 INFO_LABELS = ("WiFi", "Signal", "IPv4", "Dial name", "Firmware", "Disk free", "SD health")
@@ -128,31 +129,6 @@ def current_ipv4() -> str:
     return _ipv4() or ""
 
 
-def _nmcli_split(line: str) -> list:
-    """Split one nmcli -t line on unescaped colons, unescaping `\\:`/`\\\\`
-    as it goes — nmcli's terse output escapes a literal colon or backslash
-    inside a field with a leading backslash, so a plain str.split(":") would
-    misparse an SSID containing one."""
-    fields = []
-    current = []
-    i = 0
-    while i < len(line):
-        ch = line[i]
-        if ch == "\\" and i + 1 < len(line):
-            current.append(line[i + 1])
-            i += 2
-            continue
-        if ch == ":":
-            fields.append("".join(current))
-            current = []
-            i += 1
-            continue
-        current.append(ch)
-        i += 1
-    fields.append("".join(current))
-    return fields
-
-
 def _wifi_status_nmcli() -> "tuple[str, str] | None":
     """(ssid, category) from the active row of `nmcli ... dev wifi list`, or
     None when nmcli is unavailable, fails, or reports no active connection —
@@ -161,7 +137,7 @@ def _wifi_status_nmcli() -> "tuple[str, str] | None":
     if result is None or result.returncode != 0:
         return None
     for line in result.stdout.splitlines():
-        fields = _nmcli_split(line)
+        fields = split_nmcli_terse(line)
         if len(fields) < 3:
             continue
         active, ssid, signal = fields[0], fields[1], fields[2]
