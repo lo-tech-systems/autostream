@@ -20,10 +20,12 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_appliance_gateway as gw
+import webui.peer.gateway as gw
 import autostream_webui_api as api
 from autostream_settings import SettingsStore, as_view
 from fake_store import FakeStore, fake_levels
+import webui.peer.federation as webui_federation
+import webui.peer.gateway as webui_gateway
 
 APPLIANCE_ID = "a" * 20
 
@@ -71,7 +73,7 @@ def _reply(route, *args):
                side_effect=lambda h, code, body: sent.update(code=code, body=body)), \
          patch("webui.common.send_json",
                side_effect=lambda h, code, body: sent.update(code=code, body=body)), \
-         patch("autostream_appliance_gateway.resolve_appliance", return_value=("bound", None)):
+         patch("webui.peer.gateway.resolve_appliance", return_value=("bound", None)):
         route(MagicMock(), *args)
     return sent["code"], sent["body"]
 
@@ -79,7 +81,7 @@ def _reply(route, *args):
 def test_the_federation_home_reads_no_file_and_asks_no_player(state):
     _arrange()
     with _files_and_player_fail():
-        code, body = _reply(api.send_federation_home_json, state)
+        code, body = _reply(webui_federation.send_federation_home_json, state)
     assert code == 200
     assert body["ok"] is True
     assert body["vu_delay_ms"] == 2250
@@ -94,7 +96,7 @@ def test_the_federation_home_never_waits_on_the_player(state):
          patch("autostream_start_buffer_cache._fetch", side_effect=lambda *a, **k: time.sleep(2)):
         started = time.monotonic()
         try:
-            code, _ = _reply(api.send_federation_home_json, state)
+            code, _ = _reply(webui_federation.send_federation_home_json, state)
         finally:
             cache.reset()
     assert code == 200
@@ -103,7 +105,7 @@ def test_the_federation_home_never_waits_on_the_player(state):
 
 def test_the_federation_equaliser_reads_no_file(state):
     with _files_and_player_fail():
-        code, body = _reply(api.send_federation_equaliser_json, state)
+        code, body = _reply(webui_federation.send_federation_equaliser_json, state)
     assert code == 200
     assert body["ok"] is True
     assert body["gain_db"] == pytest.approx(2.5)
@@ -112,14 +114,14 @@ def test_the_federation_equaliser_reads_no_file(state):
 def test_the_gateway_bound_home_reads_no_file_and_asks_no_player(state):
     _arrange()
     with _files_and_player_fail():
-        code, body = _reply(gw.send_gateway_home_json, state, APPLIANCE_ID)
+        code, body = _reply(webui_gateway.send_gateway_home_json, state, APPLIANCE_ID)
     assert code == 200
     assert body["vu_delay_ms"] == 2250
 
 
 def test_the_gateway_bound_equaliser_reads_no_file(state):
     with _files_and_player_fail():
-        code, body = _reply(gw.send_gateway_equaliser_json, state, APPLIANCE_ID)
+        code, body = _reply(webui_gateway.send_gateway_equaliser_json, state, APPLIANCE_ID)
     assert code == 200
     assert body["gain_db"] == pytest.approx(2.5)
 
@@ -129,17 +131,17 @@ def test_the_gateway_bound_output_reads_the_settings_view(state):
     with _files_and_player_fail(), \
          patch("webui.browser.home_model.submit_output_change",
                return_value={"ok": True}) as change:
-        code, body = _reply(gw.send_gateway_output_json, state, APPLIANCE_ID,
+        code, body = _reply(webui_gateway.send_gateway_output_json, state, APPLIANCE_ID,
                             json.dumps({"id": "o1", "selected": True}))
     assert (code, body) == (200, {"ok": True})
     assert change.call_args.kwargs["requester"] == "webui"
 
 
 @pytest.mark.parametrize("route, args, expected", [
-    (api.send_federation_home_json, (), {"ok": False, "error": "boom"}),
-    (api.send_federation_equaliser_json, (), {"ok": False, "error": "boom"}),
-    (gw.send_gateway_home_json, (APPLIANCE_ID,), {"ok": False, "error": "internal_error"}),
-    (gw.send_gateway_equaliser_json, (APPLIANCE_ID,), {"ok": False, "error": "internal_error"}),
+    (webui_federation.send_federation_home_json, (), {"ok": False, "error": "boom"}),
+    (webui_federation.send_federation_equaliser_json, (), {"ok": False, "error": "boom"}),
+    (webui_gateway.send_gateway_home_json, (APPLIANCE_ID,), {"ok": False, "error": "internal_error"}),
+    (webui_gateway.send_gateway_equaliser_json, (APPLIANCE_ID,), {"ok": False, "error": "internal_error"}),
 ])
 def test_a_settings_view_that_fails_gives_a_500(state, route, args, expected):
     with patch("webui.common._config_snapshot", side_effect=RuntimeError("boom")), \

@@ -829,7 +829,7 @@ class TestRouteWiring:
         stubs = [
             "autostream_core", "autostream_config", "autostream_settings",
             "autostream_auth", "autostream_federation", "autostream_appliances",
-            "autostream_appliance_gateway", "autostream_rpi",
+            "webui.peer.gateway", "autostream_rpi",
             "autostream_owntone", "autostream_nowplaying",
             "autostream_playback_stats", "autostream_output_usage",
             "autostream_dials", "autostream_players",

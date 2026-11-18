@@ -32,6 +32,7 @@ import webui.browser.home_api as webui_home_api
 import webui.browser.equaliser as webui_equaliser
 import webui.repeat as repeat
 import webui.dial.api as webui_dial_api
+import webui.peer.federation as webui_federation
 
 _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
@@ -432,7 +433,7 @@ def _unpatched(recorder: Recorder, name: str) -> Callable:
 def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
     import webui.browser.home_model as models
-    import autostream_appliance_gateway as gateway
+    import webui.peer.gateway as gateway
     import autostream_dial_warnings  # noqa: F401  binds the live warnings reads
     import autostream_monitor_client as monitor_client
     import autostream_federation as federation
@@ -441,7 +442,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_state as state
     import autostream_start_buffer_cache as start_buffer_cache
     import autostream_system_stats as system_stats
-    import autostream_webui_api as api
     import webui.browser.home as airplay
     from autostream_dials import AUTH_AUTHORIZED
     from autostream_players import ActionResult
@@ -511,7 +511,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     setattrs(webui_dial_api,
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True)
-    setattrs(api, get_live_output_eq_status=lambda: scenario.eq_status)
+    setattrs(webui_federation, get_live_output_eq_status=lambda: scenario.eq_status)
     import webui.browser.equaliser as web_equaliser
     setattrs(web_equaliser, get_live_output_eq_status=lambda: scenario.eq_status)
     setattrs(models,
@@ -589,13 +589,12 @@ def _dial(extra: Optional[dict] = None) -> dict:
 
 
 def routes() -> list[Route]:
-    import autostream_webui_api as api
     import webui.browser.home as airplay
 
     state = make_state()
 
     def federation_session(handler):
-        api.send_federation_session_json(handler, PEER_IP)
+        webui_federation.send_federation_session_json(handler, PEER_IP)
 
     def refuse_sessions(monkeypatch):
         import autostream_federation as federation
@@ -614,7 +613,7 @@ def routes() -> list[Route]:
         Route("status", "POST /api/federation/v1/session (rate limited)", federation_session,
               prepare=refuse_sessions),
         Route("status", "GET /api/federation/v1/home",
-              lambda h: api.send_federation_home_json(h, state)),
+              lambda h: webui_federation.send_federation_home_json(h, state)),
         Route("status", "GET /",
               lambda h: webui_home.send_airplay_page(h, state, make_auth()), html=True),
         Route("outputs", "GET /api/owntone/outputs",
@@ -636,7 +635,7 @@ def routes() -> list[Route]:
         Route("eq", "POST /api/dial/eq",
               lambda h: webui_dial_api.send_dial_eq_post_json(h, state, _dial())),
         Route("eq", "GET /api/federation/v1/equaliser/status",
-              lambda h: api.send_federation_eq_status_json(h, state)),
+              lambda h: webui_federation.send_federation_eq_status_json(h, state)),
         Route("repeat", "POST /api/dial/repeat seek",
               lambda h: webui_dial_api.send_dial_repeat_post_json(
                   h, state, _dial({"action": "seek", "position_seconds": 0}))),

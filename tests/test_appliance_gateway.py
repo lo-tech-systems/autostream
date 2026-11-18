@@ -1,4 +1,4 @@
-"""test_appliance_gateway.py — unit tests for autostream_appliance_gateway.
+"""test_appliance_gateway.py — unit tests for webui.peer.gateway.
 
 Tests cover:
   - resolve_appliance (invalid/bound/conflict/remote/offline)
@@ -28,9 +28,10 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_appliance_gateway as gw
+import webui.peer.gateway as gw
 from fake_store import FakeStore
 from autostream_pin_pairing import REQUESTER_WEBUI
+import webui.peer.gateway as webui_gateway
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +39,12 @@ from autostream_pin_pairing import REQUESTER_WEBUI
 # ---------------------------------------------------------------------------
 
 def _reset_state():
-    with gw._state_lock:
-        gw._token_cache.clear()
-        gw._backoff_state.clear()
-        gw._backoff_ip.clear()
-        gw._read_cache.clear()
-        gw._in_flight.clear()
+    with webui_gateway._state_lock:
+        webui_gateway._token_cache.clear()
+        webui_gateway._backoff_state.clear()
+        webui_gateway._backoff_ip.clear()
+        webui_gateway._read_cache.clear()
+        webui_gateway._in_flight.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -96,52 +97,52 @@ def _capture_send(handler):
 
 class TestResolveAppliance:
     def test_invalid_short(self):
-        res, _ = gw.resolve_appliance("abc")
+        res, _ = webui_gateway.resolve_appliance("abc")
         assert res == "invalid"
 
     def test_invalid_uppercase(self):
         # 20 chars but uppercase
-        res, _ = gw.resolve_appliance("AABBCCDD1122334455AA")
+        res, _ = webui_gateway.resolve_appliance("AABBCCDD1122334455AA")
         assert res == "invalid"
 
     def test_invalid_too_long(self):
-        res, _ = gw.resolve_appliance("a" * 21)
+        res, _ = webui_gateway.resolve_appliance("a" * 21)
         assert res == "invalid"
 
     def test_invalid_non_hex(self):
-        res, _ = gw.resolve_appliance("zz" + "a" * 18)
+        res, _ = webui_gateway.resolve_appliance("zz" + "a" * 18)
         assert res == "invalid"
 
     def test_bound(self):
         local_id = "a" * 20
         with patch("autostream_rpi.get_appliance_id", return_value=local_id):
-            res, sighting = gw.resolve_appliance(local_id)
+            res, sighting = webui_gateway.resolve_appliance(local_id)
         assert res == "bound"
         assert sighting is None
 
     def test_conflict(self):
         aid = "b" * 20
         with patch("autostream_rpi.get_appliance_id", return_value="c" * 20), \
-             patch("autostream_appliance_gateway.get_conflict_ids", return_value=frozenset({aid})):
-            res, _ = gw.resolve_appliance(aid)
+             patch("webui.peer.gateway.get_conflict_ids", return_value=frozenset({aid})):
+            res, _ = webui_gateway.resolve_appliance(aid)
         assert res == "conflict"
 
     def test_remote(self):
         aid = "d" * 20
         sighting = _make_sighting(appliance_id=aid)
         with patch("autostream_rpi.get_appliance_id", return_value="e" * 20), \
-             patch("autostream_appliance_gateway.get_conflict_ids", return_value=frozenset()), \
-             patch("autostream_appliance_gateway.get_appliance_sighting", return_value=sighting):
-            res, got = gw.resolve_appliance(aid)
+             patch("webui.peer.gateway.get_conflict_ids", return_value=frozenset()), \
+             patch("webui.peer.gateway.get_appliance_sighting", return_value=sighting):
+            res, got = webui_gateway.resolve_appliance(aid)
         assert res == "remote"
         assert got is sighting
 
     def test_offline(self):
         aid = "f" * 20
         with patch("autostream_rpi.get_appliance_id", return_value="e" * 20), \
-             patch("autostream_appliance_gateway.get_conflict_ids", return_value=frozenset()), \
-             patch("autostream_appliance_gateway.get_appliance_sighting", return_value=None):
-            res, got = gw.resolve_appliance(aid)
+             patch("webui.peer.gateway.get_conflict_ids", return_value=frozenset()), \
+             patch("webui.peer.gateway.get_appliance_sighting", return_value=None):
+            res, got = webui_gateway.resolve_appliance(aid)
         assert res == "offline"
         assert got is None
 
@@ -155,115 +156,115 @@ class TestBackoff:
 
     def test_no_backoff_initially(self):
         key = ("x" * 20, "/api/federation/v1/home")
-        with gw._state_lock:
-            in_b, _ = gw._check_backoff_locked(key)
+        with webui_gateway._state_lock:
+            in_b, _ = webui_gateway._check_backoff_locked(key)
         assert in_b is False
 
     def test_first_failure_sets_1s_backoff(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._record_failure_locked(key)
-            until, step = gw._backoff_state[key]
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key)
+            until, step = webui_gateway._backoff_state[key]
         assert step == 0
         assert until > time.monotonic()
 
     def test_second_failure_advances_step(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._record_failure_locked(key)
-            gw._record_failure_locked(key)
-            _, step = gw._backoff_state[key]
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key)
+            webui_gateway._record_failure_locked(key)
+            _, step = webui_gateway._backoff_state[key]
         assert step == 1  # step 1 → 2 seconds
 
     def test_max_step_is_capped(self):
         key = self._KEY
-        with gw._state_lock:
+        with webui_gateway._state_lock:
             for _ in range(20):  # way more failures than backoff steps
-                gw._record_failure_locked(key)
-            _, step = gw._backoff_state[key]
-        assert step == len(gw._BACKOFF_STEPS) - 1
+                webui_gateway._record_failure_locked(key)
+            _, step = webui_gateway._backoff_state[key]
+        assert step == len(webui_gateway._BACKOFF_STEPS) - 1
 
     def test_success_clears_backoff(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._record_failure_locked(key, "10.0.0.1")
-            gw._record_success_locked(key)
-        assert key not in gw._backoff_state
-        assert key not in gw._backoff_ip
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key, "10.0.0.1")
+            webui_gateway._record_success_locked(key)
+        assert key not in webui_gateway._backoff_state
+        assert key not in webui_gateway._backoff_ip
 
     def test_update_backoff_success(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._record_failure_locked(key)
-        gw._update_backoff(key, 200, {"ok": True})
-        assert key not in gw._backoff_state
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key)
+        webui_gateway._update_backoff(key, 200, {"ok": True})
+        assert key not in webui_gateway._backoff_state
 
     def test_update_backoff_failure(self):
         key = self._KEY
-        gw._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"}, "10.0.0.1")
-        assert key in gw._backoff_state
-        assert gw._backoff_ip[key] == "10.0.0.1"
+        webui_gateway._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"}, "10.0.0.1")
+        assert key in webui_gateway._backoff_state
+        assert webui_gateway._backoff_ip[key] == "10.0.0.1"
 
     def test_update_backoff_application_error_does_not_advance(self):
         """409 appliance_unconfigured is an application error, not a transport failure."""
         key = ("b" * 20, "/api/federation/v1/home")
-        with gw._state_lock:
-            gw._backoff_state.pop(key, None)
-        gw._update_backoff(key, 409, {"ok": False, "error": "appliance_unconfigured"})
-        assert key not in gw._backoff_state
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state.pop(key, None)
+        webui_gateway._update_backoff(key, 409, {"ok": False, "error": "appliance_unconfigured"})
+        assert key not in webui_gateway._backoff_state
 
     def test_update_backoff_remote_bad_response_is_transport(self):
         """remote_bad_response counts as a transport failure for backoff."""
         key = ("c" * 20, "/api/federation/v1/home")
-        gw._update_backoff(key, 200, {"ok": False, "error": "remote_bad_response"})
-        assert key in gw._backoff_state
+        webui_gateway._update_backoff(key, 200, {"ok": False, "error": "remote_bad_response"})
+        assert key in webui_gateway._backoff_state
 
     def test_check_backoff_in_window(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._backoff_state[key] = (time.monotonic() + 10, 0)
-            in_b, retry = gw._check_backoff_locked(key)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[key] = (time.monotonic() + 10, 0)
+            in_b, retry = webui_gateway._check_backoff_locked(key)
         assert in_b is True
         assert retry >= 1
 
     def test_check_backoff_expired(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._backoff_state[key] = (time.monotonic() - 1, 0)
-            in_b, _ = gw._check_backoff_locked(key)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[key] = (time.monotonic() - 1, 0)
+            in_b, _ = webui_gateway._check_backoff_locked(key)
         assert in_b is False
 
     def test_address_change_clears_backoff(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._record_failure_locked(key, "10.0.0.10")
-            in_b, retry = gw._check_backoff_for_ip_locked(key, "10.0.0.20")
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key, "10.0.0.10")
+            in_b, retry = webui_gateway._check_backoff_for_ip_locked(key, "10.0.0.20")
         assert in_b is False
         assert retry == 0
-        assert key not in gw._backoff_state
-        assert key not in gw._backoff_ip
+        assert key not in webui_gateway._backoff_state
+        assert key not in webui_gateway._backoff_ip
 
     def test_same_address_keeps_backoff(self):
         key = self._KEY
-        with gw._state_lock:
-            gw._record_failure_locked(key, "10.0.0.10")
-            in_b, retry = gw._check_backoff_for_ip_locked(key, "10.0.0.10")
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key, "10.0.0.10")
+            in_b, retry = webui_gateway._check_backoff_for_ip_locked(key, "10.0.0.10")
         assert in_b is True
         assert retry >= 1
-        assert key in gw._backoff_state
+        assert key in webui_gateway._backoff_state
 
     def test_write_guard_address_change_allows_request(self):
         aid = "a" * 20
         key = (aid, "*write*")
         sighting = _make_sighting(ip="10.0.0.20", appliance_id=aid)
         handler = _make_handler()
-        with gw._state_lock:
-            gw._record_failure_locked(key, "10.0.0.10")
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key, "10.0.0.10")
         with patch("webui.common.send_browser_api_error") as mock_err:
-            in_backoff = gw._check_and_emit_backoff(handler, aid, "*write*", sighting)
+            in_backoff = webui_gateway._check_and_emit_backoff(handler, aid, "*write*", sighting)
         assert in_backoff is False
         mock_err.assert_not_called()
-        assert key not in gw._backoff_state
+        assert key not in webui_gateway._backoff_state
 
 
 class TestImport:
@@ -281,32 +282,32 @@ class TestImport:
 
 class TestTokenCache:
     def test_no_token_initially(self):
-        with gw._state_lock:
-            t = gw._get_token_from_cache_locked("a" * 20)
+        with webui_gateway._state_lock:
+            t = webui_gateway._get_token_from_cache_locked("a" * 20)
         assert t is None
 
     def test_cached_token_returned_within_margin(self):
         aid = "a" * 20
         far_future = time.monotonic() + 600
-        with gw._state_lock:
-            gw._token_cache[aid] = ("mytoken", far_future)
-            t = gw._get_token_from_cache_locked(aid)
+        with webui_gateway._state_lock:
+            webui_gateway._token_cache[aid] = ("mytoken", far_future)
+            t = webui_gateway._get_token_from_cache_locked(aid)
         assert t == "mytoken"
 
     def test_token_near_expiry_not_returned(self):
         aid = "a" * 20
         # Expires in 60s which is less than _TOKEN_RENEW_MARGIN (120s)
-        with gw._state_lock:
-            gw._token_cache[aid] = ("mytoken", time.monotonic() + 60)
-            t = gw._get_token_from_cache_locked(aid)
+        with webui_gateway._state_lock:
+            webui_gateway._token_cache[aid] = ("mytoken", time.monotonic() + 60)
+            t = webui_gateway._get_token_from_cache_locked(aid)
         assert t is None
 
     def test_evict_removes_token(self):
         aid = "a" * 20
-        with gw._state_lock:
-            gw._token_cache[aid] = ("mytoken", time.monotonic() + 600)
-        gw.evict_gateway_token(aid)
-        assert aid not in gw._token_cache
+        with webui_gateway._state_lock:
+            webui_gateway._token_cache[aid] = ("mytoken", time.monotonic() + 600)
+        webui_gateway.evict_gateway_token(aid)
+        assert aid not in webui_gateway._token_cache
 
     _VALID_TOKEN = "a" * 40  # minimum 40-char hex token for schema validation
 
@@ -320,19 +321,19 @@ class TestTokenCache:
             "expires_in": 600,
             "federation_version": 1,
         }
-        with patch.object(gw, "_remote_federation_request", return_value=(200, session_resp)):
-            token, err, retry = gw._acquire_token(aid, sighting)
+        with patch.object(webui_gateway, "_remote_federation_request", return_value=(200, session_resp)):
+            token, err, retry = webui_gateway._acquire_token(aid, sighting)
         assert token == self._VALID_TOKEN
         assert err == ""
         assert retry == 0
-        assert aid in gw._token_cache
+        assert aid in webui_gateway._token_cache
 
     def test_acquire_token_transport_error(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            token, err, retry = gw._acquire_token(aid, sighting)
+            token, err, retry = webui_gateway._acquire_token(aid, sighting)
         assert token is None
         assert err == "remote_timeout"
         assert retry == 0
@@ -342,8 +343,8 @@ class TestTokenCache:
         sighting = _make_sighting(appliance_id=aid)
         bad_resp = {"ok": True, "token": 12345, "token_type": "Bearer",
                     "expires_in": 600, "federation_version": 1}
-        with patch.object(gw, "_remote_federation_request", return_value=(200, bad_resp)):
-            token, err, _ = gw._acquire_token(aid, sighting)
+        with patch.object(webui_gateway, "_remote_federation_request", return_value=(200, bad_resp)):
+            token, err, _ = webui_gateway._acquire_token(aid, sighting)
         assert token is None
         assert err == "remote_bad_response"
 
@@ -352,8 +353,8 @@ class TestTokenCache:
         sighting = _make_sighting(appliance_id=aid)
         bad_resp = {"ok": True, "token": "short", "token_type": "Bearer",
                     "expires_in": 600, "federation_version": 1}
-        with patch.object(gw, "_remote_federation_request", return_value=(200, bad_resp)):
-            token, err, _ = gw._acquire_token(aid, sighting)
+        with patch.object(webui_gateway, "_remote_federation_request", return_value=(200, bad_resp)):
+            token, err, _ = webui_gateway._acquire_token(aid, sighting)
         assert token is None
         assert err == "remote_bad_response"
 
@@ -363,8 +364,8 @@ class TestTokenCache:
         sighting = _make_sighting(appliance_id=aid)
         bad_resp = {"ok": True, "token": self._VALID_TOKEN, "token_type": "Bearer",
                     "expires_in": 600, "federation_version": True}
-        with patch.object(gw, "_remote_federation_request", return_value=(200, bad_resp)):
-            token, err, _ = gw._acquire_token(aid, sighting)
+        with patch.object(webui_gateway, "_remote_federation_request", return_value=(200, bad_resp)):
+            token, err, _ = webui_gateway._acquire_token(aid, sighting)
         assert token is None
         assert err == "remote_bad_response"
 
@@ -374,18 +375,18 @@ class TestTokenCache:
         sighting = _make_sighting(appliance_id=aid)
         extra_resp = {"ok": True, "token": self._VALID_TOKEN, "token_type": "Bearer",
                       "expires_in": 600, "federation_version": 1, "extra": "field"}
-        with patch.object(gw, "_remote_federation_request", return_value=(200, extra_resp)):
-            token, err, _ = gw._acquire_token(aid, sighting)
+        with patch.object(webui_gateway, "_remote_federation_request", return_value=(200, extra_resp)):
+            token, err, _ = webui_gateway._acquire_token(aid, sighting)
         assert token is None
         assert err == "remote_bad_response"
 
     def test_acquire_token_rate_limited_preserves_retry_after(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(429, {"ok": False, "error": "rate_limited",
                                              "retry_after": 30})):
-            token, err, retry = gw._acquire_token(aid, sighting)
+            token, err, retry = webui_gateway._acquire_token(aid, sighting)
         assert token is None
         assert err == "rate_limited"
         assert retry == 30
@@ -402,17 +403,17 @@ class TestRemoteFederationRequest:
     def test_timeout_returns_0_and_remote_timeout(self):
         import socket as _socket
         sighting = self._make_sighting()
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.request.side_effect = _socket.timeout("timed out")
-            status, data = gw._remote_federation_request("GET", sighting, "/foo", "tok")
+            status, data = webui_gateway._remote_federation_request("GET", sighting, "/foo", "tok")
         assert status == 0
         assert data["error"] == "remote_timeout"
 
     def test_connection_refused_returns_remote_timeout(self):
         sighting = self._make_sighting()
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.request.side_effect = ConnectionRefusedError()
-            status, data = gw._remote_federation_request("GET", sighting, "/foo", "tok")
+            status, data = webui_gateway._remote_federation_request("GET", sighting, "/foo", "tok")
         assert status == 0
         assert data["error"] == "remote_timeout"
 
@@ -422,10 +423,10 @@ class TestRemoteFederationRequest:
         mock_resp.status = 200
         mock_resp.getheader.return_value = "text/html"
         mock_resp.read.return_value = b"<html/>"
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.sock = MagicMock()
             MockConn.return_value.getresponse.return_value = mock_resp
-            status, data = gw._remote_federation_request("GET", sighting, "/foo", "tok")
+            status, data = webui_gateway._remote_federation_request("GET", sighting, "/foo", "tok")
         assert status == 0
         assert data["error"] == "remote_bad_response"
 
@@ -436,10 +437,10 @@ class TestRemoteFederationRequest:
         mock_resp.status = 200
         mock_resp.getheader.return_value = "application/json"
         mock_resp.read.return_value = oversized
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.sock = MagicMock()
             MockConn.return_value.getresponse.return_value = mock_resp
-            status, data = gw._remote_federation_request("GET", sighting, "/foo", "tok")
+            status, data = webui_gateway._remote_federation_request("GET", sighting, "/foo", "tok")
         assert status == 0
         assert data["error"] == "remote_bad_response"
 
@@ -449,10 +450,10 @@ class TestRemoteFederationRequest:
         mock_resp.status = 200
         mock_resp.getheader.return_value = "application/json"
         mock_resp.read.return_value = b"not json"
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.sock = MagicMock()
             MockConn.return_value.getresponse.return_value = mock_resp
-            status, data = gw._remote_federation_request("GET", sighting, "/foo", "tok")
+            status, data = webui_gateway._remote_federation_request("GET", sighting, "/foo", "tok")
         assert status == 0
         assert data["error"] == "remote_bad_response"
 
@@ -463,10 +464,10 @@ class TestRemoteFederationRequest:
         mock_resp.status = 200
         mock_resp.getheader.return_value = "application/json"
         mock_resp.read.return_value = json.dumps(payload).encode()
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.sock = MagicMock()
             MockConn.return_value.getresponse.return_value = mock_resp
-            status, data = gw._remote_federation_request("GET", sighting, "/foo", "tok")
+            status, data = webui_gateway._remote_federation_request("GET", sighting, "/foo", "tok")
         assert status == 200
         assert data == payload
 
@@ -479,8 +480,8 @@ class TestRemoteRequest:
     def test_token_failure_returns_error(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_get_or_renew_token", return_value=(None, "remote_timeout", 0)):
-            status, data = gw._remote_request(aid, sighting, "GET", "/foo")
+        with patch.object(webui_gateway, "_get_or_renew_token", return_value=(None, "remote_timeout", 0)):
+            status, data = webui_gateway._remote_request(aid, sighting, "GET", "/foo")
         assert status == 0
         assert data["error"] == "remote_timeout"
 
@@ -488,8 +489,8 @@ class TestRemoteRequest:
         """rate_limited from token acquisition must return 429 with retry_after, not status 0."""
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_get_or_renew_token", return_value=(None, "rate_limited", 45)):
-            status, data = gw._remote_request(aid, sighting, "GET", "/foo")
+        with patch.object(webui_gateway, "_get_or_renew_token", return_value=(None, "rate_limited", 45)):
+            status, data = webui_gateway._remote_request(aid, sighting, "GET", "/foo")
         assert status == 429
         assert data["error"] == "rate_limited"
         assert data.get("retry_after") == 45
@@ -497,7 +498,7 @@ class TestRemoteRequest:
     def test_401_triggers_retry(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        gw._token_cache[aid] = ("old_token", time.monotonic() + 600)
+        webui_gateway._token_cache[aid] = ("old_token", time.monotonic() + 600)
         call_count = [0]
         def fake_fed_req(method, s, path, token, body=None):
             call_count[0] += 1
@@ -506,20 +507,20 @@ class TestRemoteRequest:
             return 200, {"ok": True}
         session_resp = {"ok": True, "token": "new_token", "token_type": "Bearer",
                         "expires_in": 600, "federation_version": 1}
-        with patch.object(gw, "_remote_federation_request", side_effect=fake_fed_req), \
-             patch.object(gw, "_acquire_token", return_value=("new_token", "", 0)):
-            status, data = gw._remote_request(aid, sighting, "GET", "/foo")
+        with patch.object(webui_gateway, "_remote_federation_request", side_effect=fake_fed_req), \
+             patch.object(webui_gateway, "_acquire_token", return_value=("new_token", "", 0)):
+            status, data = webui_gateway._remote_request(aid, sighting, "GET", "/foo")
         assert status == 200
         assert data["ok"] is True
 
     def test_401_retry_token_acquisition_failure(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        gw._token_cache[aid] = ("old_token", time.monotonic() + 600)
-        with patch.object(gw, "_remote_federation_request",
+        webui_gateway._token_cache[aid] = ("old_token", time.monotonic() + 600)
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(401, {"ok": False, "error": "unauthorized"})), \
-             patch.object(gw, "_acquire_token", return_value=(None, "remote_timeout", 0)):
-            status, data = gw._remote_request(aid, sighting, "GET", "/foo")
+             patch.object(webui_gateway, "_acquire_token", return_value=(None, "remote_timeout", 0)):
+            status, data = webui_gateway._remote_request(aid, sighting, "GET", "/foo")
         assert status == 0
         assert data["error"] == "remote_timeout"
 
@@ -527,12 +528,12 @@ class TestRemoteRequest:
         """_remote_request must not touch backoff state — callers own that."""
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_get_or_renew_token", return_value=("tok", "", 0)), \
-             patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_get_or_renew_token", return_value=("tok", "", 0)), \
+             patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            gw._remote_request(aid, sighting, "GET", "/foo")
+            webui_gateway._remote_request(aid, sighting, "GET", "/foo")
         # Backoff state must not have been modified (no tuple key for this aid)
-        assert not any(k[0] == aid for k in gw._backoff_state)
+        assert not any(k[0] == aid for k in webui_gateway._backoff_state)
 
 
 # ---------------------------------------------------------------------------
@@ -549,12 +550,12 @@ class TestCoalescedRemoteGet:
         fed_path = "/api/federation/v1/home"
         cached = {"ok": True, "cached": True}
         now = time.monotonic()
-        with gw._state_lock:
-            gw._read_cache[(aid, fed_path)] = {
+        with webui_gateway._state_lock:
+            webui_gateway._read_cache[(aid, fed_path)] = {
                 "data": cached, "cached_at": now,
-                "fresh_until": now + 1.0, "stale_until": now + gw._STALE_READ_CACHE_TTL,
+                "fresh_until": now + 1.0, "stale_until": now + webui_gateway._STALE_READ_CACHE_TTL,
             }
-        status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
         assert status == 200
         assert data["cached"] is True
 
@@ -563,8 +564,8 @@ class TestCoalescedRemoteGet:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         ok_data = {"ok": True, "live": True}
-        with patch.object(gw, "_remote_request", return_value=(200, ok_data)):
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, ok_data)):
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
         assert status == 200
         assert data["live"] is True
 
@@ -573,28 +574,28 @@ class TestCoalescedRemoteGet:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         ok_data = {"ok": True}
-        with patch.object(gw, "_remote_request", return_value=(200, ok_data)):
-            gw._coalesced_remote_get(aid, sighting, fed_path)
-        assert (aid, fed_path) in gw._read_cache
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, ok_data)):
+            webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
+        assert (aid, fed_path) in webui_gateway._read_cache
 
     def test_failure_records_backoff(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            gw._coalesced_remote_get(aid, sighting, fed_path)
-        assert (aid, fed_path) in gw._backoff_state
+            webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
+        assert (aid, fed_path) in webui_gateway._backoff_state
 
     def test_backoff_guard_short_circuits(self):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
-        with gw._state_lock:
-            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
-            gw._backoff_ip[(aid, fed_path)] = sighting.ip
-        with patch.object(gw, "_remote_request") as mock_req:
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
+            webui_gateway._backoff_ip[(aid, fed_path)] = sighting.ip
+        with patch.object(webui_gateway, "_remote_request") as mock_req:
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
         mock_req.assert_not_called()
         assert data["error"] == "remote_backoff"
 
@@ -602,16 +603,16 @@ class TestCoalescedRemoteGet:
         aid = "a" * 20
         sighting = _make_sighting(ip="10.0.0.20", appliance_id=aid)
         fed_path = "/api/federation/v1/home"
-        with gw._state_lock:
-            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
-            gw._backoff_ip[(aid, fed_path)] = "10.0.0.10"
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
+            webui_gateway._backoff_ip[(aid, fed_path)] = "10.0.0.10"
         live_data = {"ok": True, "live": True}
-        with patch.object(gw, "_remote_request", return_value=(200, live_data)) as mock_req:
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, live_data)) as mock_req:
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
         mock_req.assert_called_once()
         assert status == 200
         assert data["live"] is True
-        assert (aid, fed_path) not in gw._backoff_state
+        assert (aid, fed_path) not in webui_gateway._backoff_state
 
     def test_expired_fresh_cache_makes_new_request(self):
         """Past fresh_until but within stale_until: must attempt remote before returning stale."""
@@ -620,15 +621,15 @@ class TestCoalescedRemoteGet:
         fed_path = "/api/federation/v1/home"
         old_data = {"ok": True, "old": True}
         now = time.monotonic()
-        with gw._state_lock:
-            gw._read_cache[(aid, fed_path)] = {
+        with webui_gateway._state_lock:
+            webui_gateway._read_cache[(aid, fed_path)] = {
                 "data": old_data, "cached_at": now - 5.0,
                 "fresh_until": now - 0.1,
-                "stale_until": now + gw._STALE_READ_CACHE_TTL,
+                "stale_until": now + webui_gateway._STALE_READ_CACHE_TTL,
             }
         fresh = {"ok": True, "fresh": True}
-        with patch.object(gw, "_remote_request", return_value=(200, fresh)):
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, fresh)):
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
         assert data.get("fresh") is True
 
     def test_success_stores_new_cache_shape(self):
@@ -637,9 +638,9 @@ class TestCoalescedRemoteGet:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         ok_data = {"ok": True}
-        with patch.object(gw, "_remote_request", return_value=(200, ok_data)):
-            gw._coalesced_remote_get(aid, sighting, fed_path)
-        entry = gw._read_cache.get((aid, fed_path))
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, ok_data)):
+            webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
+        entry = webui_gateway._read_cache.get((aid, fed_path))
         assert entry is not None
         assert "fresh_until" in entry
         assert "stale_until" in entry
@@ -651,11 +652,11 @@ class TestCoalescedRemoteGet:
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(429, {"ok": False, "error": "rate_limited",
                                              "retry_after": 30})):
-            gw._coalesced_remote_get(aid, sighting, fed_path)
-        assert (aid, fed_path) not in gw._backoff_state
+            webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
+        assert (aid, fed_path) not in webui_gateway._backoff_state
 
     def test_coalescing_second_caller_gets_same_result(self):
         """A second concurrent caller waits on the Event and gets the owner's result."""
@@ -671,9 +672,9 @@ class TestCoalescedRemoteGet:
             time.sleep(0.2)  # hold long enough for t2 to join the in-flight
             return 200, ok_data
 
-        with patch.object(gw, "_remote_request", side_effect=slow_request):
+        with patch.object(webui_gateway, "_remote_request", side_effect=slow_request):
             def call_get(idx):
-                results[idx] = gw._coalesced_remote_get(aid, sighting, fed_path)
+                results[idx] = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
             t1 = threading.Thread(target=call_get, args=(0,))
             t2 = threading.Thread(target=call_get, args=(1,))
@@ -703,12 +704,12 @@ class TestStaleCache:
     def _prime_stale(self, aid, fed_path, data=None, fresh_offset=-2.0):
         """Insert a cache entry whose fresh_until has passed but stale_until has not."""
         now = time.monotonic()
-        with gw._state_lock:
-            gw._read_cache[(aid, fed_path)] = {
+        with webui_gateway._state_lock:
+            webui_gateway._read_cache[(aid, fed_path)] = {
                 "data": data or {"ok": True, "cached": True},
                 "cached_at": now + fresh_offset - 1.0,
                 "fresh_until": now + fresh_offset,
-                "stale_until": now + gw._STALE_READ_CACHE_TTL,
+                "stale_until": now + webui_gateway._STALE_READ_CACHE_TTL,
             }
 
     def test_stale_returned_on_owner_transport_failure(self):
@@ -718,9 +719,9 @@ class TestStaleCache:
         fed_path = "/api/federation/v1/home"
         self._prime_stale(aid, fed_path, data={"ok": True, "last_known": True})
 
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         assert status == 200
         assert data.get("ok") is True
@@ -734,9 +735,9 @@ class TestStaleCache:
         fed_path = "/api/federation/v1/home"
         self._prime_stale(aid, fed_path)
 
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            _, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+            _, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         assert data["stale_reason"] == "remote_timeout"
         assert isinstance(data["stale_age_ms"], int)
@@ -748,11 +749,11 @@ class TestStaleCache:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/equaliser"
         self._prime_stale(aid, fed_path, data={"ok": True, "eq_cached": True})
-        with gw._state_lock:
-            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
 
-        with patch.object(gw, "_remote_request") as mock_req:
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        with patch.object(webui_gateway, "_remote_request") as mock_req:
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         mock_req.assert_not_called()
         assert status == 200
@@ -766,10 +767,10 @@ class TestStaleCache:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         self._prime_stale(aid, fed_path)
-        with gw._state_lock:
-            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 5, 0)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, fed_path)] = (time.monotonic() + 5, 0)
 
-        _, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        _, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         assert data.get("stale") is True
         assert data.get("retry_after", 0) >= 1
@@ -780,17 +781,17 @@ class TestStaleCache:
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
         now = time.monotonic()
-        with gw._state_lock:
-            gw._read_cache[(aid, fed_path)] = {
+        with webui_gateway._state_lock:
+            webui_gateway._read_cache[(aid, fed_path)] = {
                 "data": {"ok": True},
                 "cached_at": now - 20.0,
                 "fresh_until": now - 16.0,
                 "stale_until": now - 1.0,   # stale window also expired
             }
 
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         assert status == 0
         assert data["error"] == "remote_timeout"
@@ -803,8 +804,8 @@ class TestStaleCache:
         self._prime_stale(aid, fed_path, data={"ok": True, "old": True})
 
         fresh = {"ok": True, "fresh": True}
-        with patch.object(gw, "_remote_request", return_value=(200, fresh)):
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, fresh)):
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         assert data.get("fresh") is True
         assert "stale" not in data
@@ -817,9 +818,9 @@ class TestStaleCache:
         original = {"ok": True, "key": "value"}
         self._prime_stale(aid, fed_path, data=original)
 
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
-            gw._coalesced_remote_get(aid, sighting, fed_path)
+            webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         # Original cached data must not have been modified
         assert "stale" not in original
@@ -839,9 +840,9 @@ class TestStaleCache:
             time.sleep(0.2)
             return 0, {"ok": False, "error": "remote_timeout"}
 
-        with patch.object(gw, "_remote_request", side_effect=slow_fail):
+        with patch.object(webui_gateway, "_remote_request", side_effect=slow_fail):
             def call_get(idx):
-                results[idx] = gw._coalesced_remote_get(aid, sighting, fed_path)
+                results[idx] = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
             t1 = threading.Thread(target=call_get, args=(0,))
             t2 = threading.Thread(target=call_get, args=(1,))
@@ -862,11 +863,11 @@ class TestStaleCache:
         aid = "i" * 20
         sighting = _make_sighting(appliance_id=aid)
         fed_path = "/api/federation/v1/home"
-        with gw._state_lock:
-            gw._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, fed_path)] = (time.monotonic() + 10, 0)
 
-        with patch.object(gw, "_remote_request") as mock_req:
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+        with patch.object(webui_gateway, "_remote_request") as mock_req:
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         mock_req.assert_not_called()
         assert status == 0
@@ -879,9 +880,9 @@ class TestStaleCache:
         fed_path = "/api/federation/v1/home"
         self._prime_stale(aid, fed_path, data={"ok": True, "cached": True})
 
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(200, {"ok": False, "error": "appliance_unconfigured"})):
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         assert data.get("error") == "appliance_unconfigured"
         assert "stale" not in data
@@ -893,10 +894,10 @@ class TestStaleCache:
         fed_path = "/api/federation/v1/home"
         self._prime_stale(aid, fed_path, data={"ok": True, "cached": True})
 
-        with patch.object(gw, "_remote_request",
+        with patch.object(webui_gateway, "_remote_request",
                           return_value=(429, {"ok": False, "error": "rate_limited",
                                              "retry_after": 30})):
-            status, data = gw._coalesced_remote_get(aid, sighting, fed_path)
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
         assert status == 429
         assert data.get("error") == "rate_limited"
@@ -916,9 +917,9 @@ class TestStaleCache:
             time.sleep(0.2)
             return 200, {"ok": False, "error": "appliance_identity_unavailable"}
 
-        with patch.object(gw, "_remote_request", side_effect=slow_definitive):
+        with patch.object(webui_gateway, "_remote_request", side_effect=slow_definitive):
             def call_get(idx):
-                results[idx] = gw._coalesced_remote_get(aid, sighting, fed_path)
+                results[idx] = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
             t1 = threading.Thread(target=call_get, args=(0,))
             t2 = threading.Thread(target=call_get, args=(1,))
@@ -945,9 +946,9 @@ class TestStaleCache:
             time.sleep(0.2)
             return 0, {"ok": False, "error": "remote_bad_response"}
 
-        with patch.object(gw, "_remote_request", side_effect=slow_bad_response):
+        with patch.object(webui_gateway, "_remote_request", side_effect=slow_bad_response):
             def call_get(idx):
-                results[idx] = gw._coalesced_remote_get(aid, sighting, fed_path)
+                results[idx] = webui_gateway._coalesced_remote_get(aid, sighting, fed_path)
 
             t1 = threading.Thread(target=call_get, args=(0,))
             t2 = threading.Thread(target=call_get, args=(1,))
@@ -976,12 +977,12 @@ class TestEndpointScopedBackoff:
         sighting = _make_sighting(appliance_id=aid)
         home_path = "/api/federation/v1/home"
         eq_path = "/api/federation/v1/equaliser"
-        with gw._state_lock:
-            gw._backoff_state[(aid, home_path)] = (time.monotonic() + 30, 2)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, home_path)] = (time.monotonic() + 30, 2)
 
         eq_data = {"ok": True, "equaliser": True}
-        with patch.object(gw, "_remote_request", return_value=(200, eq_data)) as mock_req:
-            status, data = gw._coalesced_remote_get(aid, sighting, eq_path)
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, eq_data)) as mock_req:
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, eq_path)
 
         mock_req.assert_called_once()
         assert status == 200
@@ -993,12 +994,12 @@ class TestEndpointScopedBackoff:
         sighting = _make_sighting(appliance_id=aid)
         home_path = "/api/federation/v1/home"
         eq_path = "/api/federation/v1/equaliser"
-        with gw._state_lock:
-            gw._backoff_state[(aid, eq_path)] = (time.monotonic() + 30, 2)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, eq_path)] = (time.monotonic() + 30, 2)
 
         home_data = {"ok": True, "home": True}
-        with patch.object(gw, "_remote_request", return_value=(200, home_data)) as mock_req:
-            status, data = gw._coalesced_remote_get(aid, sighting, home_path)
+        with patch.object(webui_gateway, "_remote_request", return_value=(200, home_data)) as mock_req:
+            status, data = webui_gateway._coalesced_remote_get(aid, sighting, home_path)
 
         mock_req.assert_called_once()
         assert status == 200
@@ -1008,13 +1009,13 @@ class TestEndpointScopedBackoff:
         """POST _update_backoff must use '*write*' scope, not the POST path."""
         aid = "l" * 20
         key = (aid, "*write*")
-        with gw._state_lock:
-            gw._backoff_state.pop(key, None)
-        gw._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"})
-        assert key in gw._backoff_state
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state.pop(key, None)
+        webui_gateway._update_backoff(key, 0, {"ok": False, "error": "remote_timeout"})
+        assert key in webui_gateway._backoff_state
         # GET path must still be clear
         get_key = (aid, "/api/federation/v1/home")
-        assert get_key not in gw._backoff_state
+        assert get_key not in webui_gateway._backoff_state
 
 
 # ---------------------------------------------------------------------------
@@ -1034,13 +1035,13 @@ class TestSendAppliancesJson:
             sent_data.append(data)
 
         with patch("autostream_rpi.get_appliance_id", return_value=local_id), \
-             patch("autostream_appliance_gateway.scanner_ready", return_value=True), \
-             patch("autostream_appliance_gateway.grace_remaining_ms", return_value=0), \
-             patch("autostream_appliance_gateway.get_all_appliances", return_value=fake_peers), \
-             patch("autostream_appliance_gateway._local_hostname", return_value="home"), \
-             patch("autostream_appliance_gateway._local_version", return_value="1.0.0"), \
+             patch("webui.peer.gateway.scanner_ready", return_value=True), \
+             patch("webui.peer.gateway.grace_remaining_ms", return_value=0), \
+             patch("webui.peer.gateway.get_all_appliances", return_value=fake_peers), \
+             patch("webui.peer.gateway._local_hostname", return_value="home"), \
+             patch("webui.peer.gateway._local_version", return_value="1.0.0"), \
              patch("webui.common.send_json", side_effect=fake_send_json):
-            gw.send_appliances_json(handler, MagicMock())
+            webui_gateway.send_appliances_json(handler, MagicMock())
 
         return sent_codes, sent_data
 
@@ -1066,7 +1067,7 @@ class TestSendAppliancesJson:
             sent_data.append(data)
         with patch("autostream_rpi.get_appliance_id", return_value=None), \
              patch("webui.common.send_json", side_effect=fake_send_json):
-            gw.send_appliances_json(handler, MagicMock())
+            webui_gateway.send_appliances_json(handler, MagicMock())
         assert sent_codes == [500]
         assert sent_data[0]["error"] == "appliance_identity_unavailable"
 
@@ -1101,15 +1102,15 @@ class TestSendGatewayHomeJson:
         state = MagicMock()
         state.config_path = "dummy.ini"
 
-        with patch("autostream_appliance_gateway.resolve_appliance",
+        with patch("webui.peer.gateway.resolve_appliance",
                    return_value=(resolution, sighting)), \
              patch("webui.common._config_snapshot", return_value=PARSED), \
-             patch("autostream_appliance_gateway.build_home_state",
+             patch("webui.peer.gateway.build_home_state",
                    return_value=home_data or {"ok": True}) as build, \
              patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("webui.common.send_browser_api_error",
                    side_effect=fake_browser_err):
-            gw.send_gateway_home_json(handler, state, aid)
+            webui_gateway.send_gateway_home_json(handler, state, aid)
 
         self.build = build
         return sent_codes, sent_data, sent_browser_errors
@@ -1145,12 +1146,12 @@ class TestSendGatewayHomeJson:
         sent_data = []
         state = MagicMock(config_path="dummy.ini")
 
-        with patch("autostream_appliance_gateway.resolve_appliance",
+        with patch("webui.peer.gateway.resolve_appliance",
                    return_value=("remote", sighting)), \
-             patch.object(gw, "_coalesced_remote_get", return_value=(200, remote_data)), \
+             patch.object(webui_gateway, "_coalesced_remote_get", return_value=(200, remote_data)), \
              patch("webui.common.send_json",
                    side_effect=lambda h, c, d: (sent_codes.append(c), sent_data.append(d))):
-            gw.send_gateway_home_json(handler, state, "a" * 20)
+            webui_gateway.send_gateway_home_json(handler, state, "a" * 20)
 
         assert sent_codes == [200]
         assert sent_data[0]["ok"] is True
@@ -1179,15 +1180,15 @@ class TestSendGatewayRepeatJson:
         state = MagicMock()
         state.config_path = "dummy.ini"
 
-        with patch("autostream_appliance_gateway.resolve_appliance",
+        with patch("webui.peer.gateway.resolve_appliance",
                    return_value=(resolution, sighting)), \
              patch("webui.repeat.apply_repeat_arm_request",
                    return_value=apply_result) as apply_mock, \
-             patch.object(gw, "_remote_request", return_value=remote_result) as remote_mock, \
+             patch.object(webui_gateway, "_remote_request", return_value=remote_result) as remote_mock, \
              patch("webui.common.send_json", side_effect=fake_send_json), \
              patch("webui.common.send_browser_api_error",
                    side_effect=fake_browser_err):
-            gw.send_gateway_repeat_json(handler, state, aid, body_str)
+            webui_gateway.send_gateway_repeat_json(handler, state, aid, body_str)
 
         return sent_codes, sent_data, sent_browser_errors, apply_mock, remote_mock
 
@@ -1264,7 +1265,7 @@ class TestSendGatewayOutputJsonSilenceChoice:
         state = MagicMock()
         state.config_path = "dummy.ini"
 
-        with patch("autostream_appliance_gateway.resolve_appliance",
+        with patch("webui.peer.gateway.resolve_appliance",
                    return_value=("bound", None)), \
              patch("webui.common._config_snapshot") as mock_parse, \
              patch("webui.common.send_json", side_effect=fake_send_json), \
@@ -1273,7 +1274,7 @@ class TestSendGatewayOutputJsonSilenceChoice:
             mock_parse.return_value.owntone.base_url = "http://localhost:3689"
             mock_parse.return_value.owntone.output_offsets_ms = {}
             mock_parse.return_value.owntone.output_airplay_modes = {}
-            gw.send_gateway_output_json(handler, state, "a" * 20, json.dumps(body))
+            webui_gateway.send_gateway_output_json(handler, state, "a" * 20, json.dumps(body))
 
         return sent_codes, sent_data
 
@@ -1323,7 +1324,7 @@ class TestHandleRemoteResponse:
         with patch("webui.common.send_json", side_effect=fake_json), \
              patch("webui.common.send_browser_api_error",
                    side_effect=fake_browser_err):
-            gw._handle_remote_response(handler, "a" * 20, status, data)
+            webui_gateway._handle_remote_response(handler, "a" * 20, status, data)
 
         return sent_codes, sent_errors
 
@@ -1375,16 +1376,16 @@ class TestGatewayLogging:
         aid = "a" * 20
         key = (aid, "/api/federation/v1/home")
         with caplog.at_level(logging.DEBUG):
-            with gw._state_lock:
-                gw._record_failure_locked(key)
+            with webui_gateway._state_lock:
+                webui_gateway._record_failure_locked(key)
         assert any("backoff set" in r.message and aid in r.message for r in caplog.records)
 
     def test_backoff_set_includes_delay_and_step(self, caplog):
         aid = "b" * 20
         key = (aid, "/api/federation/v1/home")
         with caplog.at_level(logging.DEBUG):
-            with gw._state_lock:
-                gw._record_failure_locked(key)
+            with webui_gateway._state_lock:
+                webui_gateway._record_failure_locked(key)
         msg = next(r.message for r in caplog.records if "backoff set" in r.message)
         assert "1s" in msg  # first failure → step 0 → 1 second
         assert "step 0" in msg
@@ -1392,29 +1393,29 @@ class TestGatewayLogging:
     def test_backoff_cleared_logged_on_success(self, caplog):
         aid = "a" * 20
         key = (aid, "/api/federation/v1/home")
-        with gw._state_lock:
-            gw._record_failure_locked(key)  # pre-set (logged, but outside caplog scope)
+        with webui_gateway._state_lock:
+            webui_gateway._record_failure_locked(key)  # pre-set (logged, but outside caplog scope)
         with caplog.at_level(logging.DEBUG):
-            with gw._state_lock:
-                gw._record_success_locked(key)
+            with webui_gateway._state_lock:
+                webui_gateway._record_success_locked(key)
         assert any("backoff cleared" in r.message and aid in r.message for r in caplog.records)
 
     def test_backoff_not_logged_when_already_clear(self, caplog):
         key = ("a" * 20, "/api/federation/v1/home")  # no prior failure → nothing to clear
         with caplog.at_level(logging.DEBUG):
-            with gw._state_lock:
-                gw._record_success_locked(key)
+            with webui_gateway._state_lock:
+                webui_gateway._record_success_locked(key)
         assert not any("backoff cleared" in r.message for r in caplog.records)
 
     def test_serving_backoff_logged(self, caplog):
         aid = "a" * 20
         scope = "/api/federation/v1/home"
         handler = _make_handler()
-        with gw._state_lock:
-            gw._backoff_state[(aid, scope)] = (time.monotonic() + 10, 0)
+        with webui_gateway._state_lock:
+            webui_gateway._backoff_state[(aid, scope)] = (time.monotonic() + 10, 0)
         with caplog.at_level(logging.DEBUG), \
              patch("webui.common.send_browser_api_error"):
-            gw._check_and_emit_backoff(handler, aid, scope)
+            webui_gateway._check_and_emit_backoff(handler, aid, scope)
         assert any("serving backoff" in r.message and aid in r.message for r in caplog.records)
 
     def test_no_serving_backoff_log_when_not_in_backoff(self, caplog):
@@ -1423,7 +1424,7 @@ class TestGatewayLogging:
         handler = _make_handler()
         with caplog.at_level(logging.DEBUG), \
              patch("webui.common.send_browser_api_error"):
-            gw._check_and_emit_backoff(handler, aid, scope)
+            webui_gateway._check_and_emit_backoff(handler, aid, scope)
         assert not any("serving backoff" in r.message for r in caplog.records)
 
     # -- Token acquisition ---------------------------------------------------
@@ -1431,48 +1432,48 @@ class TestGatewayLogging:
     def test_token_acquisition_attempt_logged(self, caplog):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
             with caplog.at_level(logging.DEBUG):
-                gw._acquire_token(aid, sighting)
+                webui_gateway._acquire_token(aid, sighting)
         assert any("acquiring token" in r.message and aid in r.message for r in caplog.records)
 
     def test_token_transport_failure_logged(self, caplog):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(0, {"ok": False, "error": "remote_timeout"})):
             with caplog.at_level(logging.DEBUG):
-                gw._acquire_token(aid, sighting)
+                webui_gateway._acquire_token(aid, sighting)
         assert any("transport failure" in r.message and aid in r.message for r in caplog.records)
 
     def test_token_rate_limited_logged(self, caplog):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(429, {"ok": False, "error": "rate_limited",
                                              "retry_after": 30})):
             with caplog.at_level(logging.DEBUG):
-                gw._acquire_token(aid, sighting)
+                webui_gateway._acquire_token(aid, sighting)
         assert any("rate-limited" in r.message and aid in r.message for r in caplog.records)
 
     def test_token_rejection_logged(self, caplog):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(409, {"ok": False, "error": "appliance_unconfigured"})):
             with caplog.at_level(logging.DEBUG):
-                gw._acquire_token(aid, sighting)
+                webui_gateway._acquire_token(aid, sighting)
         assert any("token acquisition rejected" in r.message and "HTTP 409" in r.message
                    for r in caplog.records)
 
     def test_token_acquired_logged(self, caplog):
         aid = "a" * 20
         sighting = _make_sighting(appliance_id=aid)
-        with patch.object(gw, "_remote_federation_request",
+        with patch.object(webui_gateway, "_remote_federation_request",
                           return_value=(200, self._SESSION_RESP)):
             with caplog.at_level(logging.DEBUG):
-                gw._acquire_token(aid, sighting)
+                webui_gateway._acquire_token(aid, sighting)
         assert any("token acquired" in r.message and aid in r.message for r in caplog.records)
 
     # -- Transport layer -----------------------------------------------------
@@ -1480,18 +1481,18 @@ class TestGatewayLogging:
     def test_socket_timeout_logged(self, caplog):
         import socket as _socket
         sighting = _make_sighting()
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.request.side_effect = _socket.timeout("timed out")
             with caplog.at_level(logging.DEBUG):
-                gw._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
+                webui_gateway._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
         assert any("socket timeout" in r.message for r in caplog.records)
 
     def test_connection_error_logged(self, caplog):
         sighting = _make_sighting()
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.request.side_effect = ConnectionRefusedError()
             with caplog.at_level(logging.DEBUG):
-                gw._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
+                webui_gateway._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
         assert any("connection error" in r.message for r in caplog.records)
 
     def test_successful_response_logged(self, caplog):
@@ -1500,11 +1501,11 @@ class TestGatewayLogging:
         mock_resp.status = 200
         mock_resp.getheader.return_value = "application/json"
         mock_resp.read.return_value = json.dumps({"ok": True}).encode()
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.sock = MagicMock()
             MockConn.return_value.getresponse.return_value = mock_resp
             with caplog.at_level(logging.DEBUG):
-                gw._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
+                webui_gateway._remote_federation_request("GET", sighting, "/api/federation/v1/home", "tok")
         assert any("fed response" in r.message and "HTTP 200" in r.message for r in caplog.records)
 
     def test_token_not_logged_in_transport(self, caplog):
@@ -1515,11 +1516,11 @@ class TestGatewayLogging:
         mock_resp.status = 200
         mock_resp.getheader.return_value = "application/json"
         mock_resp.read.return_value = json.dumps({"ok": True}).encode()
-        with patch("autostream_appliance_gateway.http.client.HTTPConnection") as MockConn:
+        with patch("webui.peer.gateway.http.client.HTTPConnection") as MockConn:
             MockConn.return_value.sock = MagicMock()
             MockConn.return_value.getresponse.return_value = mock_resp
             with caplog.at_level(logging.DEBUG):
-                gw._remote_federation_request("GET", sighting, "/foo", secret)
+                webui_gateway._remote_federation_request("GET", sighting, "/foo", secret)
         assert not any(secret in r.message for r in caplog.records)
 
     # -- Browser error response ----------------------------------------------
@@ -1529,7 +1530,7 @@ class TestGatewayLogging:
         handler = _make_handler()
         with patch("webui.common.send_browser_api_error"), \
              caplog.at_level(logging.DEBUG):
-            gw._handle_remote_response(
+            webui_gateway._handle_remote_response(
                 handler, aid, 0, {"ok": False, "error": "remote_timeout"},
             )
         assert any("error response" in r.message and aid in r.message for r in caplog.records)
@@ -1539,7 +1540,7 @@ class TestGatewayLogging:
         handler = _make_handler()
         with patch("webui.common.send_json"), \
              caplog.at_level(logging.DEBUG):
-            gw._handle_remote_response(handler, aid, 200, {"ok": True})
+            webui_gateway._handle_remote_response(handler, aid, 200, {"ok": True})
         assert not any("error response" in r.message for r in caplog.records)
 
 
@@ -1549,13 +1550,13 @@ class TestGatewayOutputRequester:
         parsed.owntone.base_url = "http://localhost:3689"
         parsed.owntone.output_offsets_ms = {}
         parsed.owntone.output_airplay_modes = {}
-        with patch("autostream_appliance_gateway.resolve_appliance",
+        with patch("webui.peer.gateway.resolve_appliance",
                    return_value=("bound", None)), \
              patch("webui.common._config_snapshot", return_value=parsed), \
              patch("webui.common.send_json"), \
              patch("webui.browser.home_model.submit_output_change",
                    return_value={"ok": True}) as mut:
-            gw.send_gateway_output_json(
+            webui_gateway.send_gateway_output_json(
                 MagicMock(), MagicMock(), "a" * 20,
                 json.dumps({"id": "1", "selected": True}))
         assert mut.call_args.kwargs["requester"] == "webui"

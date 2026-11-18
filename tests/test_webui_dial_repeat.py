@@ -79,7 +79,7 @@ def _invoke_transport(
         patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_monitor_control.send_live_repeat_transport", transport_mock),
-        patch("autostream_webui_api.store",
+        patch("webui.dial.api.store",
               side_effect=AssertionError("route must not read the repeat part")),
     ):
         send_dial_repeat_post_json(handler, MagicMock(), json_obj)

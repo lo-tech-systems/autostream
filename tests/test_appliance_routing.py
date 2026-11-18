@@ -131,7 +131,7 @@ class TestGetAppliances:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_appliances_json") as stub:
+             patch("webui.peer.gateway.send_appliances_json") as stub:
             handler.do_GET()
 
         stub.assert_called_once()
@@ -145,7 +145,7 @@ class TestGetAppliances:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_appliances_json"):
+             patch("webui.peer.gateway.send_appliances_json"):
             handler.send_response = lambda c, *a: send_response_codes.append(c)
             handler.do_GET()
 
@@ -164,7 +164,7 @@ class TestGetGatewayHome:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_home_json") as stub:
+             patch("webui.peer.gateway.send_gateway_home_json") as stub:
             handler.do_GET()
         return stub
 
@@ -179,7 +179,7 @@ class TestGetGatewayHome:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_home_json") as stub:
+             patch("webui.peer.gateway.send_gateway_home_json") as stub:
             handler.do_GET()
         _, call_aid = stub.call_args[0][2], stub.call_args[0][2] if stub.call_args[0] else stub.call_args[1].get("appliance_id")
         assert aid in str(stub.call_args)
@@ -193,7 +193,7 @@ class TestGetGatewayHome:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_home_json"):
+             patch("webui.peer.gateway.send_gateway_home_json"):
             handler.do_GET()
         assert 302 not in redirect_codes
 
@@ -211,7 +211,7 @@ class TestGetGatewayEqualiser:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_equaliser_json") as stub:
+             patch("webui.peer.gateway.send_gateway_equaliser_json") as stub:
             handler.do_GET()
         stub.assert_called_once()
 
@@ -222,7 +222,7 @@ class TestGetGatewayEqualiser:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_eq_status_json") as stub:
+             patch("webui.peer.gateway.send_gateway_eq_status_json") as stub:
             handler.do_GET()
         stub.assert_called_once()
 
@@ -257,7 +257,7 @@ class TestPostGatewayRequiresCsrf:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_output_json") as stub:
+             patch("webui.peer.gateway.send_gateway_output_json") as stub:
             handler.do_POST()
         stub.assert_not_called()
 
@@ -275,7 +275,7 @@ class TestPostGatewayRequiresCsrf:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_output_json") as stub:
+             patch("webui.peer.gateway.send_gateway_output_json") as stub:
             handler.do_POST()
         stub.assert_called_once()
 
@@ -293,7 +293,7 @@ class TestPostGatewayRequiresCsrf:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_eq_config_json") as stub:
+             patch("webui.peer.gateway.send_gateway_eq_config_json") as stub:
             handler.do_POST()
         stub.assert_called_once()
 
@@ -309,7 +309,7 @@ class TestPostGatewayRequiresCsrf:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_eq_reset_json") as stub:
+             patch("webui.peer.gateway.send_gateway_eq_reset_json") as stub:
             handler.do_POST()
         stub.assert_called_once()
 
@@ -328,7 +328,7 @@ class TestPostGatewayRequiresCsrf:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_output_json") as stub:
+             patch("webui.peer.gateway.send_gateway_output_json") as stub:
             handler.do_POST()
         # Handler must be reached even without authenticated session
         stub.assert_called_once()

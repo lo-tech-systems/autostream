@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import html
 import logging
-import re
 import subprocess
 import sys
 import threading
@@ -50,14 +49,6 @@ from webui import session_state
 from webui.browser import first_boot
 from autostream_webui_api import (
     run_updater,
-    send_federation_eq_config_json,
-    send_federation_eq_reset_json,
-    send_federation_eq_status_json,
-    send_federation_equaliser_json,
-    send_federation_home_json,
-    send_federation_output_json,
-    send_federation_repeat_json,
-    send_federation_session_json,
     send_update_check_json,
     send_update_status_json,
     send_network_setup_json,
@@ -82,7 +73,6 @@ from webui.browser.api_service import send_service_config_json, send_service_res
 from webui.browser.api_settings import _route_get_log_level, _route_post_settings, _route_post_settings_save, _route_put_log_level, send_advertisement_post_json, send_auto_update_post_json, send_hostname_post_json, send_log_level_get_json, send_log_level_put_json, send_save_now_json, send_settings_get_json, send_settings_post_json
 from webui.browser.api_owntone import send_owntone_buffered_audio_json, send_owntone_grace_period_json, send_owntone_output_include_tv_json, send_owntone_output_mode_json, send_owntone_output_offset_json, send_owntone_output_visibility_json, send_owntone_start_buffer_json, send_owntone_uncompressed_json, send_owntone_user_agent_json, send_settings_mdns_grace_period_json
 from webui.repeat import send_repeat_post_json
-import autostream_federation
 from webui.dial.api import (
     _route_post_dial_eq,
     _route_post_dial_eq_set,
@@ -129,24 +119,16 @@ from webui.system.power import handle_factory_reset_post
 from autostream_config import STATE_PATH
 import autostream_commissioning as commissioning
 import autostream_rpi as rpi
-from autostream_appliance_gateway import (
-    send_appliances_json,
-    send_gateway_eq_config_json,
-    send_gateway_eq_reset_json,
-    send_gateway_eq_status_json,
-    send_gateway_equaliser_json,
-    send_gateway_home_json,
-    send_gateway_output_json,
-    send_gateway_repeat_json,
+from webui.peer.gateway import (
+    _route_get_appliances_list,
+    _route_get_gateway_sub,
+    _route_post_gateway,
 )
+from webui.peer import federation
+from webui.peer.federation import _route_get_federation, _route_post_federation
 from webui import common
 from webui.system import updates
 
-_FEDERATION_PREFIX = "/api/federation/v1"
-_GATEWAY_PREFIX = "/api/appliances"
-_REMOTE_PAGE_PREFIX = "/a/"
-_APPLIANCE_ID_RE = re.compile(r"^[0-9a-f]{20}$")
-_FEDERATION_BODY_MAX = 4096  # bytes
 
 # High-frequency polling endpoints. Access-log lines for these are demoted to
 # DEBUG (see ConfigWebHandler.log_message) since they dominate the resting
@@ -300,93 +282,12 @@ def _route_post_factory_reset(handler, state, body_str):
 # --- Federation (bearer) ----------------------------------------------------
 
 
-def _route_get_federation(handler, state):
-    handler._dispatch_federation("GET", handler._normalized_path())
-
-
-def _route_post_federation(handler, state):
-    # Reproduces do_POST's former universal body-read (steps 2-3) up to and
-    # including the "Invalid JSON" check -- but NOT the later "JSON object
-    # required" non-dict-body check (do_POST's own former federation branch
-    # returned before ever reaching that check, so a federation POST never
-    # saw it either). _dispatch_federation only consumes body_str; any
-    # further JSON validation (e.g. POST /session's own isinstance check)
-    # stays inside it, unchanged.
-    body_bytes = handler._read_post_body_bytes()
-    if body_bytes is None:
-        return  # error already sent
-    try:
-        body_str = body_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        handler.send_error(400, "Request body is not valid UTF-8")
-        return
-    content_type = (handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    if body_str and content_type == "application/json":
-        try:
-            json.loads(body_str)
-        except json.JSONDecodeError:
-            handler.send_error(400, "Invalid JSON")
-            return
-    handler._dispatch_federation("POST", handler._normalized_path(), body_str)
 
 
 # --- Loopback-aware fast paths ----------------------------------------------
 
 
 # --- Gateway (browser session surface) --------------------------------------
-
-
-def _route_get_appliances_list(handler, state):
-    send_appliances_json(handler, state)
-
-
-def _route_get_gateway_sub(handler, state):
-    path = handler._normalized_path()
-    tail = path[len(_GATEWAY_PREFIX) + 1:]  # strip "/api/appliances/"
-    parts = tail.split("/", 1)
-    aid = parts[0]
-    sub = parts[1] if len(parts) > 1 else ""
-    local_id = rpi.get_appliance_id() or ""
-    if aid != local_id and not common._effective_control_other_appliances(state):
-        common.send_json(handler, 403, {"ok": False, "error": "control_disabled"})
-    elif sub == "home":
-        send_gateway_home_json(handler, state, aid)
-    elif sub == "equaliser":
-        send_gateway_equaliser_json(handler, state, aid)
-    elif sub == "equaliser/status":
-        send_gateway_eq_status_json(handler, state, aid)
-    else:
-        handler.send_error(404, "Not found")
-
-
-def _route_post_gateway(handler, state, body_str):
-    path = handler._normalized_path()
-    tail = path[len(_GATEWAY_PREFIX) + 1:]
-    parts = tail.split("/", 1)
-    aid = parts[0]
-    sub = parts[1] if len(parts) > 1 else ""
-    local_id = rpi.get_appliance_id() or ""
-    if aid != local_id and not common._effective_control_other_appliances(state):
-        common.send_json(handler, 403, {"ok": False, "error": "control_disabled"})
-    elif sub == "output":
-        if not body_str:
-            handler.send_error(400, "Missing request body")
-            return
-        send_gateway_output_json(handler, state, aid, body_str)
-    elif sub == "equaliser/config":
-        if not body_str:
-            handler.send_error(400, "Missing request body")
-            return
-        send_gateway_eq_config_json(handler, state, aid, body_str)
-    elif sub == "equaliser/reset":
-        send_gateway_eq_reset_json(handler, state, aid)
-    elif sub == "repeat":
-        if not body_str:
-            handler.send_error(400, "Missing request body")
-            return
-        send_gateway_repeat_json(handler, state, aid, body_str)
-    else:
-        handler.send_error(404, "Not found")
 
 
 # --- Remote pages -------------------------------------------------------------
@@ -690,102 +591,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _dispatch_federation(self, method: str, path: str, body_str: str = "") -> None:
-        """Dispatch a federation API request before browser auth/CSRF.
-
-        Never redirects to /auth, never reads or sets browser cookies, and
-        never creates a browser UI session.  Source-IP-bound bearer tokens
-        are the only acceptable credential on all routes except POST /session.
-        """
-        source_ip = self._get_client_ip()
-
-        # Unavailable during commissioning or when identity is missing.
-        # 404 per the documented federation wire contract (peers key off the
-        # "error" body field, never the status code).
-        if commissioning.is_commissioning_required(session_state.STATE.config_path, session_state.STATE.state_path):
-            common.send_json(self, 404, {"ok": False, "error": "appliance_unconfigured"})
-            return
-        if not rpi.get_appliance_id():
-            common.send_json(self, 404, {"ok": False, "error": "appliance_unconfigured"})
-            return
-
-        # Fail closed: refuse every federation route (including /session, so
-        # no bearer token is ever issued) when the local peer-control setting
-        # is off. Unlike _effective_control_other_appliances (which fails
-        # open for the local UI), an unreadable setting here must not leave
-        # the security gap open.
-        try:
-            if not common._config_snapshot(session_state.STATE).webui.advertise_appliance:
-                common.send_json(self, 403, {"ok": False, "error": "control_disabled"})
-                return
-        except Exception:
-            logging.debug("federation: control setting unreadable; refusing", exc_info=True)
-            common.send_json(self, 403, {"ok": False, "error": "control_disabled"})
-            return
-
-        # POST /session: no bearer token required
-        if path == f"{_FEDERATION_PREFIX}/session":
-            if method != "POST":
-                common.send_json(self, 405, {"ok": False, "error": "method_not_allowed"})
-                return
-            if body_str:
-                if len(body_str) > _FEDERATION_BODY_MAX:
-                    common.send_json(self, 400, {"ok": False, "error": "body_too_large"})
-                    return
-                try:
-                    obj = json.loads(body_str)
-                except json.JSONDecodeError:
-                    common.send_json(self, 400, {"ok": False, "error": "invalid_json"})
-                    return
-                if not isinstance(obj, dict) or obj:
-                    common.send_json(self, 400, {"ok": False, "error": "invalid_request_body"})
-                    return
-            send_federation_session_json(self, source_ip)
-            return
-
-        # All other federation endpoints require a valid bearer token
-        auth_header = self.headers.get("Authorization") or ""
-        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
-        if not autostream_federation.validate_session(token, source_ip):
-            common.send_json(self, 401, {"ok": False, "error": "unauthorized"})
-            return
-
-        if method == "GET":
-            if path == f"{_FEDERATION_PREFIX}/home":
-                send_federation_home_json(self, session_state.STATE)
-            elif path == f"{_FEDERATION_PREFIX}/equaliser":
-                send_federation_equaliser_json(self, session_state.STATE)
-            elif path == f"{_FEDERATION_PREFIX}/equaliser/status":
-                send_federation_eq_status_json(self, session_state.STATE)
-            else:
-                common.send_json(self, 400, {"ok": False, "error": "invalid_endpoint"})
-            return
-
-        if method == "POST":
-            if len(body_str) > _FEDERATION_BODY_MAX:
-                common.send_json(self, 400, {"ok": False, "error": "body_too_large"})
-                return
-            if path == f"{_FEDERATION_PREFIX}/output":
-                if not body_str:
-                    common.send_json(self, 400, {"ok": False, "error": "missing_body"})
-                    return
-                send_federation_output_json(self, session_state.STATE, body_str)
-            elif path == f"{_FEDERATION_PREFIX}/equaliser/config":
-                if not body_str:
-                    common.send_json(self, 400, {"ok": False, "error": "missing_body"})
-                    return
-                send_federation_eq_config_json(self, session_state.STATE, body_str)
-            elif path == f"{_FEDERATION_PREFIX}/equaliser/reset":
-                send_federation_eq_reset_json(self, session_state.STATE)
-            elif path == f"{_FEDERATION_PREFIX}/repeat":
-                if not body_str:
-                    common.send_json(self, 400, {"ok": False, "error": "missing_body"})
-                    return
-                send_federation_repeat_json(self, session_state.STATE, body_str)
-            else:
-                common.send_json(self, 400, {"ok": False, "error": "invalid_endpoint"})
-            return
-
-        common.send_json(self, 405, {"ok": False, "error": "method_not_allowed"})
+        """Dispatch a federation API request before browser auth/CSRF."""
+        federation.dispatch(self, method, path, body_str)
 
     def do_GET(self):  # noqa: N802
         path = self._normalized_path()

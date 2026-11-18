@@ -388,7 +388,7 @@ class TestGatewayGetGuard:
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=True), \
-             patch("autostream_webui.send_gateway_home_json", side_effect=fake_send_json), \
+             patch("webui.peer.gateway.send_gateway_home_json", side_effect=fake_send_json), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             handler.do_GET()
 
@@ -408,7 +408,7 @@ class TestGatewayGetGuard:
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
-             patch("autostream_webui.send_gateway_home_json", side_effect=fake_send_json), \
+             patch("webui.peer.gateway.send_gateway_home_json", side_effect=fake_send_json), \
              patch("webui.common.send_json", side_effect=fake_send_json):
             handler.do_GET()
 

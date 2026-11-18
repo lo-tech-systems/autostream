@@ -43,14 +43,10 @@ from autostream_bluetooth_client import (
     bluetooth_services_enabled,
     classify_loopback_hw,
 )
-from autostream_config import DEFAULT_AIRPLAY_MODE, is_valid_monitor_device_id
+from autostream_config import is_valid_monitor_device_id
 from autostream_intents import Intent, submit
 from autostream_settings import SettingsView
-from autostream_state import Origin, store
-from autostream_state.live import get_live_output_eq_status
-from autostream_pin_pairing import REQUESTER_WEBUI
-from webui.browser import home_model
-from webui.browser.home_model import build_equaliser_state, build_home_state, sanitize_output_body
+from autostream_state import Origin
 from autostream_sysutils import (
     bt_onboard_set,
     bt_services_disable,
@@ -63,8 +59,7 @@ from autostream_sysutils import (
     sdcard_health_state,
 )
 from webui.common import render_license_md
-from webui.session_state import WebUIState
-from webui import common, repeat
+from webui import common
 from webui.browser import api_settings
 
 
@@ -140,159 +135,6 @@ def send_update_status_json(handler) -> None:
             "percent": 0,
             "last_run_at": "",
         })
-
-
-# ---------------------------------------------------------------------------
-# Federation target API handlers (called by autostream_webui._dispatch_federation)
-# ---------------------------------------------------------------------------
-
-def send_federation_session_json(handler, source_ip: str) -> None:
-    """POST /api/federation/v1/session -- issue a short-lived bearer token.
-
-    Rate-limited to 5 successful issuances per source IP per 60-second window.
-    A rejected request does not consume an issuance slot.
-    The token is never logged.
-    """
-    import autostream_federation
-    token, value = autostream_federation.create_session(source_ip)
-    if token is None:
-        retry_after = value
-        handler.send_response(429)
-        handler.send_header("Content-Type", "application/json; charset=utf-8")
-        handler.send_header("Retry-After", str(retry_after))
-        body = json.dumps({
-            "ok": False,
-            "error": "rate_limited",
-            "retryable": True,
-            "retry_after": retry_after,
-        }).encode("utf-8")
-        handler.send_header("Content-Length", str(len(body)))
-        handler.end_headers()
-        handler.wfile.write(body)
-        return
-    common.send_json(handler, 200, {
-        "ok": True,
-        "token": token,
-        "token_type": "Bearer",
-        "expires_in": autostream_federation.EXPIRY_SECONDS,
-        "federation_version": autostream_federation.FEDERATION_VERSION,
-    })
-
-
-def send_federation_home_json(handler, state: WebUIState) -> None:
-    """GET /api/federation/v1/home — return aggregate Home state."""
-    try:
-        parsed = common._config_snapshot(state)
-    except Exception as e:
-        logging.warning("federation home: settings unavailable: %s", e)
-        common.send_json(handler, 500, {"ok": False, "error": str(e)})
-        return
-    common.send_json(handler, 200, build_home_state(store().snapshot(), parsed))
-
-
-def send_federation_output_json(handler, state: WebUIState, body_str: str) -> None:
-    """POST /api/federation/v1/output — toggle or PIN-submit an AirPlay output."""
-    try:
-        body = json.loads(body_str)
-    except (json.JSONDecodeError, ValueError):
-        common.send_json(handler, 400, {"ok": False, "error": "invalid_json"})
-        return
-    if not isinstance(body, dict):
-        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
-        return
-
-    out_id = str(body.get("id") or "").strip()
-    if not out_id:
-        common.send_json(handler, 400, {"ok": False, "error": "missing_output_id"})
-        return
-
-    try:
-        parsed = common._config_snapshot(state)
-        from autostream_player_service import config_airplay_mode_to_backend
-        from autostream_config import DEFAULT_AIRPLAY_MODE
-        offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
-        offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
-        mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE)
-        mode = config_airplay_mode_to_backend(mode_text)
-    except Exception as e:
-        logging.error("federation output: config error: %s", e)
-        common.send_json(handler, 500, {"ok": False, "error": "internal_error"})
-        return
-
-    # Same preserved error-priority ordering as before this extraction: the
-    # out_id/config checks above run first, then the shared sanitiser
-    # validates the op/pin/selected/volume shape.
-    sanitized, sanitize_error = sanitize_output_body(body)
-    if sanitize_error is not None:
-        common.send_json(handler, 400, {"ok": False, "error": sanitize_error})
-        return
-
-    result = home_model.submit_output_change(
-        sanitized, requester="peer", pin_requester=REQUESTER_WEBUI,
-        offset_ms=offset_ms, mode=mode,
-    )
-    common.send_json(handler, 200, result)
-
-
-def send_federation_equaliser_json(handler, state: WebUIState) -> None:
-    """GET /api/federation/v1/equaliser — return aggregate Equaliser state."""
-    try:
-        parsed = common._config_snapshot(state)
-    except Exception as e:
-        logging.warning("federation equaliser: settings unavailable: %s", e)
-        common.send_json(handler, 500, {"ok": False, "error": str(e)})
-        return
-    common.send_json(handler, 200, build_equaliser_state(parsed))
-
-
-def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) -> None:
-    """POST /api/federation/v1/equaliser/config — apply one EQ field."""
-    try:
-        payload = json.loads(body_str)
-    except (json.JSONDecodeError, ValueError):
-        common.send_json(handler, 400, {"ok": False, "error": "invalid_json"})
-        return
-    if not isinstance(payload, dict):
-        common.send_json(handler, 400, {"ok": False, "error": "invalid_request_body"})
-        return
-    field = str(payload.get("field", "")).strip()
-    value_raw = str(payload.get("value", "")).strip()
-    reply = submit(Intent(
-        "output.eq.set", {"fields": ((field, value_raw),)}, Origin.USER, "peer", context=state))
-    if "invalid" in reply.result:
-        common.send_json(handler, 400, {"ok": False, "error": reply.result["invalid"]})
-        return
-    if not reply.ok:
-        common.send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
-        return
-    common.send_json(handler, 200, {"ok": True, "field": field, "value": reply.result.get("value", "")})
-
-
-def send_federation_eq_reset_json(handler, state: WebUIState) -> None:
-    """POST /api/federation/v1/equaliser/reset — zero all EQ bands; does not change output gain or auto-trim."""
-    reply = submit(Intent("output.eq.reset", {}, Origin.USER, "peer", context=state))
-    if not reply.ok:
-        common.send_json(handler, 500, {"ok": False, "error": reply.result.get("error", reply.error) or "internal_error"})
-        return
-    common.send_json(handler, 200, {"ok": True})
-
-
-def send_federation_eq_status_json(handler, state: WebUIState) -> None:  # noqa: ARG001
-    """GET /api/federation/v1/equaliser/status — return live trim state."""
-    status = get_live_output_eq_status()
-    if status is None:
-        common.send_json(handler, 200, {"ok": False, "error": "monitor_unavailable"})
-        return
-    common.send_json(handler, 200, {"ok": True, **status})
-
-
-def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> None:  # noqa: ARG001
-    """POST /api/federation/v1/repeat -- arm/disarm repeat replay on the local
-    appliance.  Same request/response contract as POST /api/repeat -- see
-    apply_repeat_arm_request().
-    """
-    status, resp = repeat.apply_repeat_arm_request(body_str, requester="peer")
-    common.send_json(handler, status, resp)
 
 
 # ---------------------------------------------------------------------------

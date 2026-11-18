@@ -296,12 +296,12 @@ class TestFederationErrorContract:
     """
 
     def test_federation_401_is_native_not_tunneled(self):
-        from autostream_webui_api import send_federation_home_json
+        from webui.peer.federation import send_federation_home_json
         sent = []
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
              patch("webui.common._config_snapshot", return_value=object()), \
-             patch("autostream_webui_api.build_home_state",
+             patch("webui.peer.federation.build_home_state",
                    return_value={"ok": True, "outputs": [], "appliance": {},
                                  "preferences": {}, "playback": {}, "input_levels": [],
                                  "warnings": {}, "vu_delay_ms": 100}):

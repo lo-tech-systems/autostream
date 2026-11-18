@@ -1,4 +1,4 @@
-"""autostream_appliance_gateway.py -- bound-appliance gateway for remote appliances.
+"""webui/peer/gateway.py -- bound-appliance gateway for remote appliances.
 
 Provides:
   - /api/appliances (appliance list with bound-first ordering)
@@ -949,3 +949,65 @@ def send_gateway_repeat_json(handler, state, appliance_id: str, body_str: str) -
     )
     _update_backoff((appliance_id, "*write*"), status, data, sighting.ip)
     _handle_remote_response(handler, appliance_id, status, data)
+
+
+# ---------------------------------------------------------------------------
+# Route-table adapters
+# ---------------------------------------------------------------------------
+
+_GATEWAY_PREFIX = "/api/appliances"
+
+
+def _route_get_appliances_list(handler, state):
+    send_appliances_json(handler, state)
+
+
+def _route_get_gateway_sub(handler, state):
+    path = handler._normalized_path()
+    tail = path[len(_GATEWAY_PREFIX) + 1:]  # strip "/api/appliances/"
+    parts = tail.split("/", 1)
+    aid = parts[0]
+    sub = parts[1] if len(parts) > 1 else ""
+    local_id = rpi.get_appliance_id() or ""
+    if aid != local_id and not common._effective_control_other_appliances(state):
+        common.send_json(handler, 403, {"ok": False, "error": "control_disabled"})
+    elif sub == "home":
+        send_gateway_home_json(handler, state, aid)
+    elif sub == "equaliser":
+        send_gateway_equaliser_json(handler, state, aid)
+    elif sub == "equaliser/status":
+        send_gateway_eq_status_json(handler, state, aid)
+    else:
+        handler.send_error(404, "Not found")
+
+
+def _route_post_gateway(handler, state, body_str):
+    path = handler._normalized_path()
+    tail = path[len(_GATEWAY_PREFIX) + 1:]
+    parts = tail.split("/", 1)
+    aid = parts[0]
+    sub = parts[1] if len(parts) > 1 else ""
+    local_id = rpi.get_appliance_id() or ""
+    if aid != local_id and not common._effective_control_other_appliances(state):
+        common.send_json(handler, 403, {"ok": False, "error": "control_disabled"})
+    elif sub == "output":
+        if not body_str:
+            handler.send_error(400, "Missing request body")
+            return
+        send_gateway_output_json(handler, state, aid, body_str)
+    elif sub == "equaliser/config":
+        if not body_str:
+            handler.send_error(400, "Missing request body")
+            return
+        send_gateway_eq_config_json(handler, state, aid, body_str)
+    elif sub == "equaliser/reset":
+        send_gateway_eq_reset_json(handler, state, aid)
+    elif sub == "repeat":
+        if not body_str:
+            handler.send_error(400, "Missing request body")
+            return
+        send_gateway_repeat_json(handler, state, aid, body_str)
+    else:
+        handler.send_error(404, "Not found")
+
+

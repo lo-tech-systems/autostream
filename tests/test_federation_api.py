@@ -436,7 +436,7 @@ class TestFederationEqStatus:
                           headers={"Authorization": bearer})
         live = {"output_auto_trim_enabled": True, "output_auto_trim_db": -1.0,
                 "effective_output_gain_db": 0.5}
-        with patch("autostream_webui_api.get_live_output_eq_status", return_value=live):
+        with patch("webui.peer.federation.get_live_output_eq_status", return_value=live):
             code, data = _call(h, state)
         assert code == 200
         assert data["ok"] is True
@@ -447,7 +447,7 @@ class TestFederationEqStatus:
         bearer = _get_bearer()
         h = _make_handler("GET", "/api/federation/v1/equaliser/status",
                           headers={"Authorization": bearer})
-        with patch("autostream_webui_api.get_live_output_eq_status", return_value=None):
+        with patch("webui.peer.federation.get_live_output_eq_status", return_value=None):
             code, data = _call(h, state)
         assert code == 200
         assert data["ok"] is False

@@ -307,7 +307,7 @@ class TestGatewayRoutesAuth:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_appliances_json"):
+             patch("webui.peer.gateway.send_appliances_json"):
             handler.do_GET()
         assert 302 not in redirect_codes, "Gateway list must not redirect to /auth"
 
@@ -320,7 +320,7 @@ class TestGatewayRoutesAuth:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.send_gateway_home_json"):
+             patch("webui.peer.gateway.send_gateway_home_json"):
             handler.do_GET()
         assert 302 not in redirect_codes
 

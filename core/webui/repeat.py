@@ -25,7 +25,7 @@ def apply_repeat_arm_request(body: str, *, requester: str = REQUESTER_WEBUI) -> 
     Shared core logic for POST /api/repeat (below), POST
     /api/federation/v1/repeat (send_federation_repeat_json), and the
     bound-appliance path of POST /api/appliances/<id>/repeat
-    (autostream_appliance_gateway.send_gateway_repeat_json) -- all three
+    (webui.peer.gateway.send_gateway_repeat_json) -- all three
     apply to this same appliance's daemon, so the validation and
     response-shape contract lives in one place rather than three.
 

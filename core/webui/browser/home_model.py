@@ -358,9 +358,9 @@ def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
     """Derive the trusted output-mutation body from a raw browser/peer JSON body.
 
     Shared by the local federation-server handler
-    (``send_federation_output_json`` in autostream_webui_api.py) and the
+    (``send_federation_output_json`` in webui/peer/federation.py) and the
     gateway client handler (``send_gateway_output_json`` in
-    autostream_appliance_gateway.py) so the two write paths that forward a
+    webui/peer/gateway.py) so the two write paths that forward a
     browser's POST body across the federation boundary re-derive the exact
     same accepted-field set from the exact same logic, rather than
     hand-duplicating it. Only the documented ``{"id", "op", "pin"}``,

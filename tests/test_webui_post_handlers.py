@@ -523,6 +523,7 @@ class TestOutputUpdateForwarding:
 from autostream_state import Origin
 import webui.browser.home_model as webui_home_model
 import webui.browser.post_handlers as webui_post_handlers
+import webui.peer.federation as webui_federation
 
 
 def _speaker(id_: str, name: str, *, selected: bool = False):
@@ -837,7 +838,7 @@ class TestOutputRequesterPassed:
              patch("webui.common._config_snapshot", return_value=parsed), \
              patch("webui.browser.home_model.submit_output_change",
                    return_value={"ok": True}) as mut:
-            api.send_federation_output_json(
+            webui_federation.send_federation_output_json(
                 MagicMock(), MagicMock(), json.dumps({"id": "1", "selected": True}))
         assert mut.call_args.kwargs["requester"] == "peer"
         assert mut.call_args.kwargs["pin_requester"] == "webui"
