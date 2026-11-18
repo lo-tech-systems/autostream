@@ -66,12 +66,13 @@ from dial_appliance_warnings import DIAL_WARNING_ID, newer_appliance_names, prot
 from dial_core_effects import (
     OutputsEffect, RepeatEffect, RepeatOutcome, SourceEffects, StartFailureEffect, WarningChange,
 )
+from dial_core_model import CoreState, new_state, snapshot_of
 from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS,
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
-    DialInfo, FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
+    FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
-    pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState,
+    pin_capable_outputs, PowerState, TickContext, TransportRequest, WarningState,
     roster_entry, artwork_key, display_order, dots_active, eq_gain,
     reopen_for_pin, six_band, start_failure_action,
 )
@@ -148,69 +149,6 @@ _PLAIN_FIELDS = frozenset((
 ))
 
 
-@dataclass
-class _CoreState:
-    """The core's mutable state: `CoreSnapshot`'s fields other than `seq` and
-    `at`, which `_publish` stamps, plus the folded peer snapshots the
-    appliance list is mapped from. Values are immutable (tuples and frozen
-    dataclasses) and are replaced, never edited in place, so a published
-    snapshot can share them."""
-    polling: bool
-    appliances: tuple
-    focus: FocusState
-    now_playing: NowPlaying | None
-    artwork: object | None
-    idle_affordance: bool
-    outputs: object | None
-    eq: object | None
-    outputs_available: bool
-    eq_available: bool
-    warnings: tuple
-    due_status_id: str | None
-    network: object | None
-    wifi_ever_connected: bool
-    sd_health: object | None
-    update: object | None
-    transport: object | None
-    outputs_request: object | None   # the latest output request, as `transport` is the latest replay one
-    power: object                    # a PowerState
-    volume_readout: tuple
-    dial: DialInfo
-    dots_active: bool
-    visible_playing: tuple      # ids of the playing appliances this dial may use, as of the last fold
-    ticks: int                  # folds completed
-    tick: "TickContext | None"  # what the last completed fold started from
-    auth_promotions: int        # appliances a fold found newly authorised
-    roster: object          # the appliance states in roster order as last folded (a read-only list)
-    # Kept apart from the EQ state because a tap's value stays shown (until a
-    # reading stamped after the window lands) even when nobody is watching the
-    # page any more; the snapshot carries it on the state. A slider sends many
-    # sets with no outcome to act on, so the EQ has one window, not a request
-    # per set; the outputs tap lives on the output request instead.
-    eq_optimistic: tuple                # (((band_id, gain_db), ...), expires_at); ((), 0.0) when none
-    wifi_down_streak: int               # consecutive down link readings; reset by a connected or ignored one
-    sd_low: bool                        # the SD health incident latch (with hysteresis)
-    appliance_warnings: dict            # appliance id -> its validated, attributed warnings
-    protocol_warnings: dict             # appliance id -> the dial's own "Update" warning for it; private
-    start_failure: object | None        # the raised StartFailureNotice, published
-    start_failure_seen: dict            # appliance id -> (boot, seq) handled; private
-    focused_peer: object | None = None  # the focused appliance's PeerSnapshot as last folded
-    peers: dict = dataclasses.field(default_factory=dict)          # appliance id -> its last folded PeerSnapshot
-    views: dict = dataclasses.field(default_factory=dict)          # appliance id -> ApplianceState mapped from it
-    playing_since: dict = dataclasses.field(default_factory=dict)  # appliance id -> core clock its session was first folded
-
-
-# Held in the state for the core's own use, never published as such.
-_PRIVATE_FIELDS = (
-    "roster", "eq_optimistic",
-    "wifi_down_streak", "sd_low", "appliance_warnings", "start_failure_seen",
-    "protocol_warnings", "peers", "views", "playing_since",
-)
-
-_SNAPSHOT_FIELDS = tuple(
-    f.name for f in dataclasses.fields(_CoreState) if f.name not in _PRIVATE_FIELDS
-)
-
 def _eq_band_ids(held) -> tuple:
     """The band ids a set may name given the EQ state held: bass and treble
     always, and the appliance's own bands once a six-band reading has
@@ -218,48 +156,6 @@ def _eq_band_ids(held) -> tuple:
     if held is None or not six_band(held.capability_version):
         return DERIVED_EQ_IDS
     return DERIVED_EQ_IDS + tuple(b.id for b in held.bands if b.id not in DERIVED_EQ_IDS)
-
-
-def _initial_state(dial_id: str) -> _CoreState:
-    return _CoreState(
-        polling=False,
-        appliances=(),
-        focus=FocusState(None, None, None, None, None, None, False),
-        now_playing=None,
-        artwork=None,
-        idle_affordance=False,
-        outputs=None,
-        eq=None,
-        outputs_available=False,
-        eq_available=False,
-        warnings=(),
-        due_status_id=None,
-        network=None,
-        wifi_ever_connected=False,
-        sd_health=None,
-        update=None,
-        transport=None,
-        outputs_request=None,
-        power=POWER_IDLE,
-        volume_readout=(None, None),
-        dial=DialInfo(
-            name="", version="", uuid=dial_id, ip="", port=0, inputs=(),
-            volume_scope="current", mute_scope="current",
-        ),
-        dots_active=False,
-        visible_playing=(),
-        ticks=0,
-        tick=None,
-        auth_promotions=0,
-        roster=[],
-        eq_optimistic=((), 0.0),
-        wifi_down_streak=0,
-        sd_low=False,
-        appliance_warnings={},
-        protocol_warnings={},
-        start_failure=None,
-        start_failure_seen={},
-    )
 
 
 @dataclass
@@ -300,7 +196,7 @@ class DialCore:
         self._clock = clock if clock is not None else (lambda: time.monotonic())
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
-        self._state = _initial_state(dial_id)
+        self._state = new_state(dial_id)
         self._seq = 0
         self._subscribers: dict[int, Callable[[], None]] = {}
         self._next_handle = 1
@@ -387,15 +283,9 @@ class DialCore:
     # ---- publishing --------------------------------------------------------
 
     def _build_snapshot_locked(self) -> CoreSnapshot:
-        fields = {name: getattr(self._state, name) for name in _SNAPSHOT_FIELDS}
-        if fields["eq"] is not None:
-            fields["eq"] = dataclasses.replace(
-                fields["eq"], optimistic=self._state.eq_optimistic[0],
-                optimistic_expires_at=self._state.eq_optimistic[1],
-            )
-        return CoreSnapshot(seq=self._seq, at=self._clock(), **fields)
+        return snapshot_of(self._state, self._seq, self._clock())
 
-    def _publish(self, mutate_fn: Callable[[_CoreState], "bool | None"]) -> CoreSnapshot:
+    def _publish(self, mutate_fn: Callable[[CoreState], "bool | None"]) -> CoreSnapshot:
         """Apply *mutate_fn* to the state under the lock (in-memory work
         only), publish the resulting snapshot, then signal the subscribers
         outside the lock. Returns the new snapshot. A mutate function that
@@ -435,13 +325,13 @@ class DialCore:
         focus field happens under the lock, so writers of different focus
         fields never lose each other's update."""
         if name in _FOCUS_FIELDS:
-            def mutate(state: _CoreState) -> "bool | None":
+            def mutate(state: CoreState) -> "bool | None":
                 held = getattr(state.focus, name)
                 if held is value or held == value:
                     return False
                 state.focus = dataclasses.replace(state.focus, **{name: value})
         elif name in _PLAIN_FIELDS:
-            def mutate(state: _CoreState) -> "bool | None":
+            def mutate(state: CoreState) -> "bool | None":
                 held = getattr(state, name)
                 if held is value or held == value:
                     return False
@@ -462,7 +352,7 @@ class DialCore:
                 if self._artwork_url is not None and artwork_key(self._artwork_url) == key:
                     self._artwork_url = None
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             held = state.artwork
             if held is None or (key is not None and held.key != key):
                 return False
@@ -480,7 +370,7 @@ class DialCore:
         entry = roster_entry(self._state.roster, appliance_id)
         if entry is not None and entry.auth == AUTH_UNAUTHORIZED:
             return ActionResult(False, "unauthorized")
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             held = state.focus.manual_id
             if held is appliance_id or held == appliance_id:
                 return False
@@ -494,14 +384,14 @@ class DialCore:
         *expires_at*: a picker-started replay has not yet reached the
         playing set, so the ordinary "gone from the roster" clear must not
         fire before it has had a chance to appear."""
-        def mutate(state: _CoreState) -> None:
+        def mutate(state: CoreState) -> None:
             state.focus = dial_core_focus.with_pending(state.focus, appliance_id, service_name, expires_at)
         self._publish(mutate)
 
     def drop_pending_focus(self, appliance_id: str) -> bool:
         """Clear the manual and pending focus when the pending focus is for
         *appliance_id* (its replay did not start). True if it was cleared."""
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             dropped = dial_core_focus.dropped_pending(state.focus, appliance_id)
             if dropped is None:
                 return False
@@ -511,18 +401,18 @@ class DialCore:
     def accept_replay(self, appliance_id: str, until: float) -> bool:
         """Open the accepted-replay window for *appliance_id* until *until*,
         when the dial is following that appliance. True if it was opened."""
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             accepted = dial_core_focus.with_accepted(state.focus, appliance_id, until)
             if accepted is None:
                 return False
             state.focus = accepted
         return self._changed(mutate)
 
-    def _changed(self, mutate_fn: Callable[[_CoreState], "bool | None"]) -> bool:
+    def _changed(self, mutate_fn: Callable[[CoreState], "bool | None"]) -> bool:
         """Publish through *mutate_fn*; True if it changed anything."""
         changed = []
 
-        def wrapped(state: _CoreState) -> "bool | None":
+        def wrapped(state: CoreState) -> "bool | None":
             if mutate_fn(state) is False:
                 return False
             changed.append(True)
@@ -549,7 +439,7 @@ class DialCore:
         return self._state.eq_optimistic
 
     def set_eq_override(self, pairs: tuple, expires_at: float) -> None:
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             if state.eq_optimistic == (pairs, expires_at):
                 return False
             state.eq_optimistic = (pairs, expires_at)
@@ -571,7 +461,7 @@ class DialCore:
     def _refusal(self, appliance_id: str, capability: str) -> ActionResult | None:
         return self._refusal_in(self._state, appliance_id, capability)
 
-    def _refusal_in(self, state: _CoreState, appliance_id: str, capability: str) -> ActionResult | None:
+    def _refusal_in(self, state: CoreState, appliance_id: str, capability: str) -> ActionResult | None:
         """Why a request needing *capability* cannot go to *appliance_id*, or
         None. The capability is the appliance's own state, which has every
         capability or none (one protocol)."""
@@ -700,7 +590,7 @@ class DialCore:
     def _begin_request(
         self, lane: str, appliance_id: str, kind: str, *, output_id: str | None = None,
         shown: tuple | None = None,
-    ) -> tuple[Callable[[_CoreState], None], float]:
+    ) -> tuple[Callable[[CoreState], None], float]:
         """The mutate function that records a pending request of *kind* on
         *lane* ("transport" or "outputs_request"), so a caller can fold it
         into a publish of its own, and the request's token: the monotonic
@@ -710,7 +600,7 @@ class DialCore:
         takes it."""
         now = self._clock()
 
-        def mutate(state: _CoreState) -> None:
+        def mutate(state: CoreState) -> None:
             setattr(state, lane, TransportRequest(
                 appliance_id, kind, now, "pending", now, None, output_id, 0, shown,
             ))
@@ -723,7 +613,7 @@ class DialCore:
         record in one of *states*."""
         return self._repeat_refusal_in(self._state, appliance_id, states)
 
-    def _repeat_refusal_in(self, state: _CoreState, appliance_id: str, states: tuple) -> ActionResult | None:
+    def _repeat_refusal_in(self, state: CoreState, appliance_id: str, states: tuple) -> ActionResult | None:
         refusal = self._refusal_in(state, appliance_id, "repeat_capable")
         if refusal is not None:
             return refusal
@@ -786,7 +676,7 @@ class DialCore:
 
     # ---- warnings, update watch and sources ----------------------------------
 
-    def _derive_appliances_locked(self, state: _CoreState) -> tuple:
+    def _derive_appliances_locked(self, state: CoreState) -> tuple:
         """The appliance list: the appliances' own mapped states, each
         carrying its warnings and the dial's own for it."""
         merged = self._all_warnings(state)
@@ -795,7 +685,7 @@ class DialCore:
         ))
 
     @staticmethod
-    def _all_warnings(state: _CoreState) -> dict:
+    def _all_warnings(state: CoreState) -> dict:
         """Each appliance's own warnings followed by the dial's protocol
         warning for it, when it has one."""
         merged = dict(state.appliance_warnings)
@@ -803,7 +693,7 @@ class DialCore:
             merged[appliance_id] = merged.get(appliance_id, ()) + (warning,)
         return merged
 
-    def _sync_warnings_locked(self, state: _CoreState) -> bool:
+    def _sync_warnings_locked(self, state: CoreState) -> bool:
         """Copy the warning manager's runtime state and due status into
         *state*. True when either changed."""
         warnings = tuple(WarningState(*row) for row in self.warnings.runtime())
@@ -820,7 +710,7 @@ class DialCore:
         incident."""
         began = []
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             began.append(self.warnings.set_active(warning_id, reading))
             return None if self._sync_warnings_locked(state) else False
         self._publish(mutate)
@@ -828,7 +718,7 @@ class DialCore:
 
     def warning_cleared(self, warning_id: str) -> WarningChange:
         """A source reports its condition gone: the incident ends."""
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             self.warnings.clear(warning_id)
             return None if self._sync_warnings_locked(state) else False
         self._publish(mutate)
@@ -869,7 +759,7 @@ class DialCore:
         if not accepted:
             return False
 
-        def mutate(state: _CoreState) -> None:
+        def mutate(state: CoreState) -> None:
             state.power = PowerState("failed" if early else "requested", self._clock())
         self._publish(mutate)
         return True
@@ -882,7 +772,7 @@ class DialCore:
         if ok:
             return
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             if state.power.state != "requested":
                 if early is not None:
                     early.append(False)
@@ -901,7 +791,7 @@ class DialCore:
         and returned."""
         changes = []
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             changed = state.network != view
             state.network = view
             if view.link == LINK_CONNECTED:
@@ -930,7 +820,7 @@ class DialCore:
         view and returned."""
         changes = []
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             changed = state.sd_health != view
             state.sd_health = view
             low = _sd_is_low(view, state.sd_low)
@@ -954,7 +844,7 @@ class DialCore:
         and the verify phase (nothing until the verdict). A finished run
         raises its result card once, recorded in the seen marker, which
         is file I/O, so call with no lock held."""
-        def store(state: _CoreState) -> "bool | None":
+        def store(state: CoreState) -> "bool | None":
             if state.update == view:
                 return False
             state.update = view
@@ -991,7 +881,7 @@ class DialCore:
         published due status."""
         changes = tuple(self.warning_cleared(wid) for wid in self.warnings.expired())
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             return None if self._sync_warnings_locked(state) else False
         self._publish(mutate)
         return SourceEffects(changes, signal=bool(changes))
@@ -1007,7 +897,7 @@ class DialCore:
             watched.changes + expired.changes, watched.restarting, watched.signal or expired.signal,
         )
 
-    def _store_appliance_warnings_locked(self, state: _CoreState, appliance_id: str, new: tuple) -> bool:
+    def _store_appliance_warnings_locked(self, state: CoreState, appliance_id: str, new: tuple) -> bool:
         """Replace the appliance's held warnings with *new* (validated and
         attributed): each is registered on the manager and reported active,
         and those no longer present end their incidents. False when *new* is
@@ -1066,7 +956,7 @@ class DialCore:
         self._publish(lambda state: self._replace_dial(state, inputs=inputs))
 
     @staticmethod
-    def _replace_dial(state: _CoreState, **fields) -> "bool | None":
+    def _replace_dial(state: CoreState, **fields) -> "bool | None":
         """Apply *fields* to the published dial info; False when none of
         them differs."""
         dial = dataclasses.replace(state.dial, **fields)
@@ -1118,7 +1008,7 @@ class DialCore:
         try:
             readout = self._readout_now()
 
-            def mutate(state: _CoreState) -> None:
+            def mutate(state: CoreState) -> None:
                 state.volume_readout = readout
                 self._effects.append(SourceEffects())
                 del self._effects[:-EFFECTS_BACKLOG_MAX]
@@ -1136,7 +1026,7 @@ class DialCore:
         try:
             readout = self._readout_now()
 
-            def mutate(state: _CoreState) -> None:
+            def mutate(state: CoreState) -> None:
                 state.volume_readout = readout
             self._publish(mutate)
         except Exception:
@@ -1253,7 +1143,7 @@ class DialCore:
         """Queue *effects* for a view and publish, so the view is woken to
         take them. A queue nobody drains (no view is attached) keeps the
         newest `EFFECTS_BACKLOG_MAX`. Returns *effects*."""
-        def mutate(state: _CoreState) -> None:
+        def mutate(state: CoreState) -> None:
             self._effects.append(effects)
             del self._effects[:-EFFECTS_BACKLOG_MAX]
         self._publish(mutate)
@@ -1352,7 +1242,7 @@ class DialCore:
         has left the roster. One log line per change."""
         lines: list = []
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             wanted = {}
             for r in state.roster:
                 warning = protocol_warning(r, PROTOCOL)
@@ -1389,7 +1279,7 @@ class DialCore:
         for line in lines:
             logging.info("dial core: %s", line)
 
-    def _fold_start_failures_locked(self, state: _CoreState, failures: dict, effects: list, lines: list) -> None:
+    def _fold_start_failures_locked(self, state: CoreState, failures: dict, effects: list, lines: list) -> None:
         """Decide each appliance's start failure read this fold (see
         `start_failure_action`) and record what it means: remembered, a
         notice raised, or the dial's accepted output request reopened as one
@@ -1422,7 +1312,7 @@ class DialCore:
                 lines.append(f"{name} could not start {report.name} ({report.reason})")
 
     @staticmethod
-    def _appliance_label(state: _CoreState, appliance_id: str) -> str:
+    def _appliance_label(state: CoreState, appliance_id: str) -> str:
         """The roster's display name for *appliance_id*, else the id."""
         for r in state.roster:
             if getattr(r, "appliance_id", "") == appliance_id:
@@ -1433,7 +1323,7 @@ class DialCore:
         """Answer the raised notice whose key is *key*: it leaves the snapshot for
         every view. Accepted whether or not it was still raised (a second view, or
         one racing the hold, answers a notice already gone)."""
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             held = state.start_failure
             if held is None or held.key != key:
                 return False
@@ -1446,7 +1336,7 @@ class DialCore:
         held = self._state.start_failure
         if held is None or now - held.raised_at < START_FAILURE_HOLD_S:
             return
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             current = state.start_failure
             if current is None or current.key != held.key:
                 return False
@@ -1469,7 +1359,7 @@ class DialCore:
         if self._thread is not None:
             self._lane.start()
 
-        def mutate(state: _CoreState) -> None:
+        def mutate(state: CoreState) -> None:
             state.polling = True
         self._publish(mutate)
         self._wake.set()
@@ -1516,7 +1406,7 @@ class DialCore:
         now = self._clock()
         resolved = []
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             held = getattr(state, lane)
             if held is None or held.requested_at != token or held.state != "pending":
                 return False
@@ -1570,7 +1460,7 @@ class DialCore:
         now = self._clock()
         begun: dict = {}
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             refusal = self._intent_refusal_locked(state, appliance_id, name, args)
             if refusal is not None:
                 begun["refusal"] = refusal
@@ -1596,7 +1486,7 @@ class DialCore:
             self._fold_reply(appliance_id, begun["kind"], now, reply)
         return reply
 
-    def _intent_refusal_locked(self, state: _CoreState, appliance_id: str, name: str, args: dict) -> str | None:
+    def _intent_refusal_locked(self, state: CoreState, appliance_id: str, name: str, args: dict) -> str | None:
         """The name submit_intent refuses *name* with, or None. Core lock held."""
         refusal = self._refusal_in(state, appliance_id, _INTENT_CAPABILITY[name])
         if refusal is not None:
@@ -1615,7 +1505,7 @@ class DialCore:
                 return "wrong_state"
         return None
 
-    def _intent_record_locked(self, state: _CoreState, appliance_id: str, name: str, args: dict):
+    def _intent_record_locked(self, state: CoreState, appliance_id: str, name: str, args: dict):
         """(lane, kind, output_id, shown) recording intent *name*, or None for
         an intent with no request record. Core lock held; the checks have
         passed."""
@@ -1634,7 +1524,7 @@ class DialCore:
         return "outputs_request", "output_set", row.id, shown
 
     @staticmethod
-    def _output_row_in(state: _CoreState, appliance_id: str, output_id):
+    def _output_row_in(state: CoreState, appliance_id: str, output_id):
         held = state.outputs
         if held is None or held.appliance_id != appliance_id:
             return None
@@ -1697,7 +1587,7 @@ class DialCore:
         effects: list = []
         lines: list = []
 
-        def mutate(state: _CoreState) -> None:
+        def mutate(state: CoreState) -> None:
             nonlocal choice, hold, now_playing
             if state.focus is not focus_read:
                 # A tap moved the focus since it was read: decide again from it.
@@ -1774,7 +1664,7 @@ class DialCore:
                 raw, snap.boot or "", self._own_requester, age_s=age)
         return failures
 
-    def _fold_part_warnings_locked(self, state: _CoreState, lines: list) -> None:
+    def _fold_part_warnings_locked(self, state: CoreState, lines: list) -> None:
         """Hold each appliance's warnings as its warnings part lists them; an
         appliance that has refused this dial, or has gone, holds none."""
         for appliance_id, view in state.views.items():
@@ -1784,7 +1674,7 @@ class DialCore:
         for appliance_id in [a for a in state.appliance_warnings if a not in state.views]:
             self._store_appliance_warnings_locked(state, appliance_id, ())
 
-    def _fold_focused_locked(self, state: _CoreState, now: float, *, availability: bool) -> None:
+    def _fold_focused_locked(self, state: CoreState, now: float, *, availability: bool) -> None:
         """The focused (or reporting) appliance's snapshot, outputs and EQ, as
         folded now, and (with *availability*) what it offers: the EQ page
         (unless the view vetoes it), the page dots and the outputs list. An EQ
@@ -1813,7 +1703,7 @@ class DialCore:
         state.outputs_available = bool(usable and entry.dial_outputs)
         state.dots_active = dots_active(entry.repeat if entry is not None else None, state.eq_available)
 
-    def _settle_locked(self, state: _CoreState) -> None:
+    def _settle_locked(self, state: CoreState) -> None:
         """Drop the shown value of each accepted request that the appliance's
         folded state has overtaken (or that a newer request has replaced)."""
         for lane, waiting in list(self._waiting.items()):
@@ -1901,7 +1791,7 @@ class DialCore:
             return
         art = dataclasses.replace(art, url="")
 
-        def mutate(state: _CoreState) -> "bool | None":
+        def mutate(state: CoreState) -> "bool | None":
             if self._artwork_url != url:
                 return False
             state.artwork = art

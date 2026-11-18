@@ -34,6 +34,7 @@ ALLOWED = {
     "dial_touch_wiring": {"dial_touch_layout"},
     "dial_hd_static": set(),
     "dial_core_effects": set(),
+    "dial_core_model": {"dial_core_state"},
 }
 
 
