@@ -350,15 +350,59 @@ def test_a_volume_write_that_timed_out_holds_the_unit(w):
     assert len(volume_writes(w)) == writes
 
 
-def test_a_muted_speaker_is_not_moved(w):
+def test_a_muted_speakers_level_moves_and_it_stays_muted(w):
     setup3(w)
     land_writes(w)
     w.a.mute("3", Origin.USER)
+    set_level(w, "3", 20, muted=True)
     w.fb.calls.clear()
     report(w, "1", 15, 1.0)
-    assert volume_writes(w) == [("2", 20)]
+    assert volume_writes(w) == [("2", 20), ("3", 10)]
     u3 = snap().unit("3")
-    assert u3.muted and u3.volume == 20
+    assert u3.muted and u3.volume == 10
+
+
+def setup_held(w, held=(), levels=(30, 40, 20)):
+    """setup3 with rows that carry sessions; the speakers in *held* read held,
+    as the player reports a speaker it holds, so no write of ours is made."""
+    w.t[0] = T0 - spread.SPREAD_HOLD_S - 1
+    put(w, [group_row(i + 1, "streaming", selected=True, volume_percent=v, session_holdable=True,
+                      session_held=str(i + 1) in held)
+            for i, v in enumerate(levels)])
+    w.t[0] = T0
+    arm(w)
+
+
+def test_a_device_volume_on_a_held_unit_does_not_arm_a_spread(w):
+    setup_held(w, held=("1",))
+    land_writes(w)
+    assert snap().unit("1").held
+    report(w, "1", 15, 1.0)
+    assert w.a._units["1"].report_at == 0.0
+    assert (level("2"), level("3")) == (40, 20)
+    assert volume_writes(w) == []
+
+
+def test_a_held_unit_is_not_a_reporter(w):
+    setup_held(w)
+    land_writes(w)
+    # Armed while it played; the row read next says it is held
+    report(w, "1", 15, 1.0, read=False)
+    assert w.a._units["1"].report_at > 0.0
+    set_level(w, "1", 15, session_held=True)
+    w.a.on_outputs_changed()
+    at(w, 1.5)
+    assert snap().unit("1").held
+    assert (level("2"), level("3")) == (40, 20)
+    assert volume_writes(w) == []
+
+
+def test_a_held_target_moves(w):
+    setup_held(w, held=("3",))
+    land_writes(w)
+    report(w, "1", 15, 1.0)
+    assert volume_writes(w) == [("2", 20), ("3", 10)]
+    assert snap().unit("3").held and level("3") == 10
 
 
 @pytest.mark.parametrize("at_s", [1.0, 5.0])

@@ -1215,21 +1215,22 @@ class OutputAuthority:
                 restored = True
                 master = self._master_locked()
             else:
-                audible = [u for u in selected if not u.desired.muted]
-                current = round(sum(u.desired.volume for u in audible) / len(audible))
+                # Every selected speaker moves, a muted one too: its kept
+                # level follows and it stays muted
+                current = round(sum(u.desired.volume for u in selected) / len(selected))
                 new_master = _clamp(current + int(delta))
                 master = new_master
-                writes = [("volume", u) for u in self._scale_locked(audible, new_master, current, cause, now)]
+                writes = [("volume", u) for u in self._scale_locked(selected, new_master, current, cause, now)]
             future = self._queue_writes_locked(writes)
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
 
-    def _scale_locked(self, audible: list, level: int, base, cause: Origin, now: float) -> list:
-        """Move *audible* so a group standing at *base* stands at *level*, each
+    def _scale_locked(self, units: list, level: int, base, cause: Origin, now: float) -> list:
+        """Move *units* so a group standing at *base* stands at *level*, each
         unit keeping its proportion. A zero base puts every unit at *level*.
         Returns the units whose level moved."""
         changed = []
-        for u in audible:
+        for u in units:
             d = u.desired
             new = level if base == 0 else _clamp(round(d.volume * level / base))
             if new != d.volume:
@@ -1262,15 +1263,10 @@ class OutputAuthority:
                     )
                 unmuted, lifted = self._unmute_all_locked(cause, default_level, now)
                 restored = True
-            audible = [u for u in selected if not u.desired.muted]
-            if not audible:
-                # Only an offline speaker is still unmuted: nothing to scale.
-                return Applied(
-                    version=store().snapshot().version, outcome=None,
-                    master=self._master_locked(online_only=True), muted=True,
-                )
-            base = sum(u.desired.volume for u in audible) / len(audible)
-            moved = self._scale_locked(audible, level, base, cause, now)
+            # Every selected speaker the player has moves, a muted one too: its
+            # kept level follows and it stays muted
+            base = sum(u.desired.volume for u in selected) / len(selected)
+            moved = self._scale_locked(selected, level, base, cause, now)
             levels = lifted + [u for u in moved if u not in lifted]
             future = self._queue_writes_locked(self._restore_writes(unmuted, levels))
             master = self._master_locked(online_only=True)
@@ -1458,9 +1454,10 @@ class OutputAuthority:
     def device_volume_seen(self, unit_id: str, *, single: bool = True) -> None:
         """A volume was set on the speaker itself: stamped for the cause of
         the adoption that follows, and armed to apply to the other speakers
-        when made at one speaker (*single*) on an unmuted unit that autostream
-        did not just write. It never ends a mute: the player does not report
-        the level of a muted speaker; a turn of its knob arrives as a wake."""
+        when made at one speaker (*single*) on a unit neither muted nor held
+        that autostream did not just write. It never ends a mute: the player
+        does not report the level of a muted speaker; a turn of its knob
+        arrives as a wake. A stray one on a held or muted unit is ignored."""
         self._touched = True
         now = self._clock()
         with self._lock:
@@ -1469,7 +1466,7 @@ class OutputAuthority:
                 return
             u.device_volume_at = now
             d = u.desired
-            if single and not d.muted and not self._spread_held(u, now):
+            if single and not d.muted and not d.held and not self._spread_held(u, now):
                 u.report_at = now
 
     # -- the event sink (the event source thread; each only enqueues) ----------
@@ -2173,14 +2170,17 @@ class OutputAuthority:
         if not (self._session_active and self._delivers_device_events):
             return False
         d = u.desired
-        if not (d.selected and not d.muted and u.reported is not None and u.availability == "ok"):
+        # A silent speaker (held or muted) is never the one that moves the others
+        if not (d.selected and not d.muted and not d.held and u.reported is not None
+                and u.availability == "ok"):
             return False
         if self._spread_held(u, now):
             return False
         d.cause = Origin.DEVICE
         fx.publish_as = (Origin.DEVICE, f"device:{u.id}")
-        targets = [t for t in self._selected_locked(online_only=True)
-                   if t.id != u.id and not t.desired.muted]
+        # Every other playing speaker follows, a silent one too: its kept
+        # level moves and it stays silent
+        targets = [t for t in self._selected_locked(online_only=True) if t.id != u.id]
         b = self._spread_burst
         if b is not None and (b.reporter != u.id or b.expired(now) or self._foreign_locked(b)):
             self._end_burst_locked(fx)

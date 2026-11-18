@@ -764,6 +764,17 @@ class TestStepVolume:
         assert mutes(w) == [("1", False), ("2", False)]
         assert w.fb.updates() == [("1", dict(volume_percent=50, timeout=3.0))]
 
+    def test_a_unit_muted_on_its_own_keeps_its_mute_and_its_level_moves(self, w):
+        self.start(w, 40, 60)
+        w.a.mute("1", Origin.USER)
+        w.fb.calls.clear()
+        w.a.step_volume(10, Origin.USER, default_level=50)
+        p = snap()
+        # 50 -> 60: each scaled by 60/50, the muted one too
+        assert p.unit("1").muted is True and p.unit("1").volume == 48
+        assert p.unit("2").volume == 72
+        assert mutes(w) == [] and sorted(uid for uid, _ in w.fb.updates()) == ["1", "2"]
+
     def test_the_requester_is_on_the_change(self, w):
         self.start(w, 40)
         changes = []
@@ -839,13 +850,17 @@ class TestSetMaster:
         assert mutes(w) == [("1", False), ("2", False)]
         assert w.fb.updates() == [("1", dict(volume_percent=20, timeout=3.0))]
 
-    def test_a_unit_muted_on_its_own_is_left_alone(self, w):
+    def test_a_unit_muted_on_its_own_keeps_its_mute_and_its_level_moves(self, w):
         self.start(w, 40, 60)
         w.a.mute("1", Origin.USER)
-        w.a.set_master(30, Origin.USER, default_level=50)
+        w.fb.calls.clear()
+        w.a.set_master(25, Origin.USER, default_level=50)
         p = snap()
-        assert p.unit("1").muted is True and p.unit("1").volume == 40
+        assert p.unit("1").muted is True and p.unit("1").volume == 20
         assert p.unit("2").volume == 30
+        assert dict(w.fb.updates()) == {"1": dict(volume_percent=20, timeout=3.0),
+                                        "2": dict(volume_percent=30, timeout=3.0)}
+        assert mutes(w) == []
 
     def test_an_offline_selected_unit_is_left_alone_and_not_counted(self, w):
         merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=80)])
