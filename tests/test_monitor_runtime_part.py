@@ -19,7 +19,6 @@ if _CORE not in sys.path:
 from fake_store import fake_levels
 import autostream_core as core
 import autostream_state as state
-import autostream_webui_api as api
 import autostream_selfheal as selfheal
 import webui.common as webui_common
 import webui.browser.home_api as webui_home_api

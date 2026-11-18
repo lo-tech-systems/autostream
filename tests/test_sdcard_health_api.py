@@ -23,11 +23,9 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from autostream_webui_api import (
-    send_sdcard_health_disable_post_json,
-    send_sdcard_health_enable_post_json,
-    send_sdcard_health_get_json,
-)
+from webui.system.sdcard import send_sdcard_health_disable_post_json
+from webui.system.sdcard import send_sdcard_health_enable_post_json
+from webui.system.sdcard import send_sdcard_health_get_json
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +65,7 @@ _SAMPLE_STATE = {
 class TestSdcardHealthGetJson:
     def test_returns_state_as_is(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_state", return_value=_SAMPLE_STATE):
+        with patch("webui.system.sdcard.sdcard_health_state", return_value=_SAMPLE_STATE):
             send_sdcard_health_get_json(handler)
         code, body = _response(handler)
         assert code == 200
@@ -81,9 +79,9 @@ class TestSdcardHealthGetJson:
 class TestSdcardHealthEnablePost:
     def test_enables_on_passing_check(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check", return_value=(True, 0, {"success": True})) as m_check, \
-             patch("autostream_webui_api.sdcard_health_enable", return_value=(True, 0, {"output": "enabled"})) as m_enable, \
-             patch("autostream_webui_api.sdcard_health_state", return_value=_SAMPLE_STATE):
+        with patch("webui.system.sdcard.sdcard_health_check", return_value=(True, 0, {"success": True})) as m_check, \
+             patch("webui.system.sdcard.sdcard_health_enable", return_value=(True, 0, {"output": "enabled"})) as m_enable, \
+             patch("webui.system.sdcard.sdcard_health_state", return_value=_SAMPLE_STATE):
             send_sdcard_health_enable_post_json(handler, {"method": "auto"})
         code, body = _response(handler)
         assert code == 200
@@ -94,8 +92,8 @@ class TestSdcardHealthEnablePost:
 
     def test_unsupported_check_refuses_with_409_and_reason(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check", return_value=(False, 3, {"reason": "not supported"})), \
-             patch("autostream_webui_api.sdcard_health_enable") as m_enable:
+        with patch("webui.system.sdcard.sdcard_health_check", return_value=(False, 3, {"reason": "not supported"})), \
+             patch("webui.system.sdcard.sdcard_health_enable") as m_enable:
             send_sdcard_health_enable_post_json(handler, {"method": "sandisk"})
         code, body = _response(handler)
         assert code == 409
@@ -105,8 +103,8 @@ class TestSdcardHealthEnablePost:
 
     def test_hung_check_refuses_with_409(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check", return_value=(False, 4, {})), \
-             patch("autostream_webui_api.sdcard_health_enable") as m_enable:
+        with patch("webui.system.sdcard.sdcard_health_check", return_value=(False, 4, {})), \
+             patch("webui.system.sdcard.sdcard_health_enable") as m_enable:
             send_sdcard_health_enable_post_json(handler, {"method": "auto"})
         code, body = _response(handler)
         assert code == 409
@@ -115,8 +113,8 @@ class TestSdcardHealthEnablePost:
 
     def test_tool_missing_reports_503(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check", return_value=(False, 2, {})), \
-             patch("autostream_webui_api.sdcard_health_enable") as m_enable:
+        with patch("webui.system.sdcard.sdcard_health_check", return_value=(False, 2, {})), \
+             patch("webui.system.sdcard.sdcard_health_enable") as m_enable:
             send_sdcard_health_enable_post_json(handler, {"method": "auto"})
         code, body = _response(handler)
         # 503 is tunnelled through the NGINX offline-page boundary: transport
@@ -129,8 +127,8 @@ class TestSdcardHealthEnablePost:
 
     def test_other_check_failure_is_500(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check", return_value=(False, 1, {"output": "boom"})), \
-             patch("autostream_webui_api.sdcard_health_enable") as m_enable:
+        with patch("webui.system.sdcard.sdcard_health_check", return_value=(False, 1, {"output": "boom"})), \
+             patch("webui.system.sdcard.sdcard_health_enable") as m_enable:
             send_sdcard_health_enable_post_json(handler, {"method": "auto"})
         code, body = _response(handler)
         assert code == 500
@@ -139,8 +137,8 @@ class TestSdcardHealthEnablePost:
 
     def test_enable_failure_after_passing_check_is_500(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check", return_value=(True, 0, {})), \
-             patch("autostream_webui_api.sdcard_health_enable", return_value=(False, 1, {"output": "boom"})):
+        with patch("webui.system.sdcard.sdcard_health_check", return_value=(True, 0, {})), \
+             patch("webui.system.sdcard.sdcard_health_enable", return_value=(False, 1, {"output": "boom"})):
             send_sdcard_health_enable_post_json(handler, {"method": "auto"})
         code, body = _response(handler)
         assert code == 500
@@ -149,7 +147,7 @@ class TestSdcardHealthEnablePost:
     @pytest.mark.parametrize("bad_method", ["bogus", "", 123, None, True])
     def test_invalid_method_rejected(self, bad_method):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check") as m_check:
+        with patch("webui.system.sdcard.sdcard_health_check") as m_check:
             send_sdcard_health_enable_post_json(handler, {"method": bad_method})
         code, _ = _response(handler)
         assert code == 400
@@ -157,7 +155,7 @@ class TestSdcardHealthEnablePost:
 
     def test_extra_keys_rejected(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_check") as m_check:
+        with patch("webui.system.sdcard.sdcard_health_check") as m_check:
             send_sdcard_health_enable_post_json(handler, {"method": "auto", "extra": 1})
         code, _ = _response(handler)
         assert code == 400
@@ -177,8 +175,8 @@ class TestSdcardHealthEnablePost:
 class TestSdcardHealthDisablePost:
     def test_disables_successfully(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_disable", return_value=(True, 0, {"output": "disabled"})) as m_disable, \
-             patch("autostream_webui_api.sdcard_health_state", return_value=_SAMPLE_STATE):
+        with patch("webui.system.sdcard.sdcard_health_disable", return_value=(True, 0, {"output": "disabled"})) as m_disable, \
+             patch("webui.system.sdcard.sdcard_health_state", return_value=_SAMPLE_STATE):
             send_sdcard_health_disable_post_json(handler, {})
         code, body = _response(handler)
         assert code == 200
@@ -188,7 +186,7 @@ class TestSdcardHealthDisablePost:
 
     def test_admin_failure_is_500(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_disable", return_value=(False, 1, {"output": "boom"})):
+        with patch("webui.system.sdcard.sdcard_health_disable", return_value=(False, 1, {"output": "boom"})):
             send_sdcard_health_disable_post_json(handler, {})
         code, body = _response(handler)
         assert code == 500
@@ -196,7 +194,7 @@ class TestSdcardHealthDisablePost:
 
     def test_extra_keys_rejected(self):
         handler = _make_handler()
-        with patch("autostream_webui_api.sdcard_health_disable") as m_disable:
+        with patch("webui.system.sdcard.sdcard_health_disable") as m_disable:
             send_sdcard_health_disable_post_json(handler, {"extra": 1})
         code, _ = _response(handler)
         assert code == 400

@@ -322,7 +322,7 @@ class TestFactoryResetFailure:
         with patch("webui.session_state.AUTH", auth), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_webui.handle_factory_reset_post",
+             patch("webui.system.power.handle_factory_reset_post",
                    side_effect=lambda h2, s, a: fake_send_json(h2, 500, {"ok": False})):
             h.do_POST()
         # The handler itself is patched to produce 500; verify the route reaches it

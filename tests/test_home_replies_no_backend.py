@@ -19,7 +19,6 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_webui_api as api
 from autostream_settings import SettingsStore, as_view
 from fake_store import FakeStore, fake_levels
 import webui.browser.home_api as webui_home_api

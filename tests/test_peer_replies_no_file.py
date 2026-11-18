@@ -21,7 +21,6 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import webui.peer.gateway as gw
-import autostream_webui_api as api
 from autostream_settings import SettingsStore, as_view
 from fake_store import FakeStore, fake_levels
 import webui.peer.federation as webui_federation

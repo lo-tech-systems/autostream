@@ -28,7 +28,6 @@ from autostream_dials import (
     DialSighting,
 )
 from autostream_players import ActionResult, ListOutputsResult, OutputInfo
-import autostream_webui_api as api
 from webui.session_state import WebUIState
 from track_id.models import disabled_snapshot
 from autostream_state.outputs import get_authority

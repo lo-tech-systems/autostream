@@ -1036,7 +1036,6 @@ class TestAudioStatusPlayingFromSession:
     def _invoke(self, session_state, result=None):
         import io
         import json as _json
-        import autostream_webui_api as api_mod
         from autostream_players import ListOutputsResult, OutputInfo
         from webui.session_state import WebUIState
 

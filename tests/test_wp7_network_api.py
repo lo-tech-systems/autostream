@@ -27,12 +27,10 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from autostream_webui_api import (
-    build_network_card_presentation,
-    send_network_roaming_json,
-    send_network_setup_json,
-    send_network_status_json,
-)
+from webui.system.network import send_network_roaming_json
+from webui.system.network import send_network_setup_json
+from webui.system.network import send_network_status_json
+from webui.system.network import build_network_card_presentation
 from autostream_watcher_client import get_wifi_watcher_version
 
 
@@ -821,80 +819,22 @@ class TestRouteWiring:
     reach their respective handlers.  We patch at the module level in
     autostream_webui so we don't need a running server."""
 
-    def _load_webui(self):
-        """Import autostream_webui with heavy dependencies stubbed."""
-        import importlib
-        import types
-
-        stubs = [
-            "autostream_core", "autostream_config", "autostream_settings",
-            "autostream_auth", "autostream_federation", "autostream_appliances",
-            "webui.peer.gateway", "autostream_rpi",
-            "autostream_owntone", "autostream_nowplaying",
-            "autostream_playback_stats", "autostream_output_usage",
-            "autostream_dials", "autostream_players",
-            "autostream_mdns", "autostream_commissioning",
-            "autostream_log_policy",
-            "webui.common", "webui.dial.management",
-            "webui.browser.about", "webui.browser.equaliser",
-            "webui.browser.home", "webui.browser.logs",
-            "webui.browser.owntone", "webui.browser.setup.page",
-            "webui.browser.first_boot",
-        ]
-        for name in stubs:
-            if name not in sys.modules:
-                m = types.ModuleType(name)
-                sys.modules[name] = m
-
-        # autostream_webui_api must be the real module
-        if "autostream_webui_api" in sys.modules:
-            del sys.modules["autostream_webui_api"]
-        if "autostream_webui" in sys.modules:
-            del sys.modules["autostream_webui"]
-
-        # Provide minimal symbols that autostream_webui imports from stubs
-        sys.modules["webui.common"].build_nav_bar_html = MagicMock(return_value="")  # type: ignore[attr-defined]
-        for attr in ("send_about_page", "send_about_system_json"):
-            setattr(sys.modules["webui.browser.about"], attr, MagicMock())
-        for attr in ("send_equaliser_page", "send_remote_equaliser_page"):
-            setattr(sys.modules["webui.browser.equaliser"], attr, MagicMock())
-        for attr in ("send_airplay_page", "send_remote_home_page"):
-            setattr(sys.modules["webui.browser.home"], attr, MagicMock())
-        for attr in ("handle_logs_download", "send_logs_page"):
-            setattr(sys.modules["webui.browser.logs"], attr, MagicMock())
-        for attr in ("send_owntone_ready_json", "send_owntone_restarting_page", "send_owntone_setup_page"):
-            setattr(sys.modules["webui.browser.owntone"], attr, MagicMock())
-        for attr in ("dispatch_dial_management_post", "handle_dial_configure_get",
-                     "handle_dial_pin_recovery_status", "handle_dial_update_post",
-                     "handle_dial_update_status"):
-            setattr(sys.modules["webui.dial.management"], attr, MagicMock())
-        for attr in ("send_first_boot_owntone_page",):
-            setattr(sys.modules["webui.browser.first_boot"], attr, MagicMock())
-
-        # Stub out the heavy imports inside autostream_webui_api path
-        for name in ("flask", "urllib3"):
-            if name not in sys.modules:
-                sys.modules[name] = types.ModuleType(name)
-
-        import autostream_webui_api as api_mod
-        return api_mod
-
     # These tests just confirm the functions exist and are callable — full
     # behaviour is covered by TestSendNetworkStatusJson / TestSendNetworkSetupJson.
     def test_send_network_status_json_importable(self):
-        from autostream_webui_api import send_network_status_json
+        from webui.system.network import send_network_status_json
         assert callable(send_network_status_json)
 
     def test_send_network_setup_json_importable(self):
-        from autostream_webui_api import send_network_setup_json
+        from webui.system.network import send_network_setup_json
         assert callable(send_network_setup_json)
 
     def test_build_network_card_presentation_importable(self):
-        from autostream_webui_api import build_network_card_presentation
+        from webui.system.network import build_network_card_presentation
         assert callable(build_network_card_presentation)
 
     def test_send_network_roaming_json_importable(self):
-        from autostream_webui_api import send_network_roaming_json
+        from webui.system.network import send_network_roaming_json
         assert callable(send_network_roaming_json)
 
 

@@ -341,7 +341,6 @@ class TestSharedWorker:
 
 class TestPokeSites:
     def test_service_reset_pokes_after_a_successful_reset(self):
-        import autostream_webui_api as api
 
         handler = MagicMock()
         with (
@@ -358,7 +357,6 @@ class TestPokeSites:
         poke.assert_called_once_with()
 
     def test_service_reset_does_not_poke_when_nothing_was_reset(self):
-        import autostream_webui_api as api
 
         with (
             patch("autostream_playback_tracking.reset_input_stylus",
@@ -373,7 +371,6 @@ class TestPokeSites:
         poke.assert_not_called()
 
     def test_service_config_save_pokes(self, tmp_path):
-        import autostream_webui_api as api
         from autostream_settings import SettingsStore, as_view
 
         cfg_path = tmp_path / "config.json"
@@ -391,7 +388,7 @@ class TestPokeSites:
         with (
             patch("webui.common._config_snapshot", return_value=parsed),
             patch("autostream_playback_tracking.update_playback_input_config"),
-            patch("autostream_webui_api.classify_loopback_hw", return_value="x"),
+            patch("webui.system.bluetooth.classify_loopback_hw", return_value="x"),
             fake_playback(SimpleNamespace(inputs={})),
             patch("webui.common.send_json"),
             patch("autostream_dial_warnings.poke") as poke,

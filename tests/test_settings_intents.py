@@ -22,7 +22,8 @@ if _CORE not in sys.path:
 import autostream_core  # noqa: F401  (binds the intent handlers)
 import autostream_live_config as live_config
 import autostream_state as state
-import autostream_webui_api  # noqa: F401  (registers the personalisation rows)
+import webui.browser.api_settings  # noqa: F401
+import webui.browser.api_service  # noqa: F401
 from autostream_config import parse_config
 from autostream_intents import Intent, Origin, submit
 from autostream_settings import SettingsStore

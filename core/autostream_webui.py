@@ -17,12 +17,9 @@ Usage:
 
 from __future__ import annotations
 
-import html
 import logging
-import subprocess
 import sys
 import threading
-from pathlib import Path
 from typing import Optional
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse, quote
@@ -38,34 +35,31 @@ import json
 if __name__ == "__main__":
     sys.modules.setdefault("autostream_webui", sys.modules[__name__])
 
-from autostream_intents import Intent, Origin, submit
-from autostream_sysutils import (
-    reboot_system,
-)
-
 from autostream_auth import AuthManager, FLASH_COOKIE_NAME
 
 from webui import session_state
 from webui.browser import first_boot
-from autostream_webui_api import (
-    run_updater,
-    send_update_check_json,
-    send_update_status_json,
-    send_network_setup_json,
-    send_network_status_json,
-    send_network_roaming_json,
-    send_bluetooth_status_json,
-    send_bluetooth_scan_results_json,
+from webui.system.updates import _route_get_update_status, _route_post_update_apply, run_updater, send_update_check_json
+from webui.system.network import (
+    _route_get_network_status,
+    _route_post_network_roaming,
+    _route_post_network_setup,
+)
+from webui.system.bluetooth import (
+    _route_get_bluetooth_scan_results,
+    _route_post_bluetooth_buffer,
+    _route_post_bluetooth_forget,
+    _route_post_bluetooth_onboard,
+    _route_post_bluetooth_pair,
+    _route_post_bluetooth_scan,
+    _route_post_bluetooth_services,
     send_bluetooth_pair_status_json,
-    send_bluetooth_scan_post_json,
-    send_bluetooth_pair_post_json,
-    send_bluetooth_forget_post_json,
-    send_bluetooth_services_post_json,
-    send_bluetooth_onboard_post_json,
-    send_bluetooth_buffer_post_json,
-    send_sdcard_health_get_json,
-    send_sdcard_health_enable_post_json,
-    send_sdcard_health_disable_post_json,
+    send_bluetooth_status_json,
+)
+from webui.system.sdcard import (
+    _route_get_sdcard_health,
+    _route_post_sdcard_health_disable,
+    _route_post_sdcard_health_enable,
 )
 from webui.browser.home_api import _route_get_playing_status, send_audio_status_json, send_input_levels_json, send_owntone_outputs_json, send_owntone_outputs_state_json, send_playing_status_json, send_status_json
 from webui.browser.equaliser import _route_get_equaliser, _route_get_output_eq_status, _route_post_output_eq_reset, send_output_eq_config_json, send_output_eq_reset_json, send_output_eq_status_json
@@ -114,11 +108,10 @@ from webui.browser.about import _route_get_about_system, send_about_page
 from webui.browser.auth import _route_get_auth, _route_post_auth_verify, _route_post_pin_change
 from webui.browser.first_boot import _route_get_first_boot_appliance, _route_get_first_boot_owntone, _route_post_first_boot_continue, _route_post_first_boot_finish
 from webui.browser.post_handlers import handle_live_input_eq_update, handle_live_input_gain_update, handle_output_update
-from webui.system.power import handle_factory_reset_post
+from webui.system.power import _route_post_factory_reset, _route_post_reboot, handle_factory_reset_post
 
 from autostream_config import STATE_PATH
 import autostream_commissioning as commissioning
-import autostream_rpi as rpi
 from webui.peer.gateway import (
     _route_get_appliances_list,
     _route_get_gateway_sub,
@@ -144,21 +137,6 @@ from webui.system import updates
 _POLLING_LOG_PATHS: tuple = ()
 
 
-def _settings_save_barrier(state) -> bool:
-    """Flush dirty SettingsStore to disk before a destructive operation.
-
-    Returns True if save succeeded.
-    Returns False if the store exists and save_now() failed or timed out.
-    If no SettingsStore is attached, logs an error and allows the action to
-    proceed; this indicates a program wiring fault rather than a user- or
-    network-facing risk.
-    """
-    from autostream_settings import SettingsView
-    if not isinstance(getattr(state, "settings", None), SettingsView):
-        import logging as _logging
-        _logging.error("_settings_save_barrier: no SettingsStore attached; skipping flush")
-        return True
-    return submit(Intent("settings.save", {"timeout": 10.0}, Origin.USER, "webui", context=state)).ok
 
 
 # -----------------------------------------------------------------------------
@@ -174,16 +152,10 @@ def _settings_save_barrier(state) -> bool:
 # handler names stay greppable back to their real sender.
 
 
-def _route_get_network_status(handler, state):
-    send_network_status_json(handler)
 
 
-def _route_get_bluetooth_scan_results(handler, state):
-    send_bluetooth_scan_results_json(handler)
 
 
-def _route_get_update_status(handler, state):
-    send_update_status_json(handler)
 
 
 # -----------------------------------------------------------------------------
@@ -200,72 +172,32 @@ def _route_get_update_status(handler, state):
 # /api/update/apply).
 
 
-def _route_post_network_setup(handler, state, body_str):
-    send_network_setup_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_network_roaming(handler, state, body_str):
-    send_network_roaming_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_bluetooth_scan(handler, state, body_str):
-    send_bluetooth_scan_post_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_bluetooth_pair(handler, state, body_str):
-    send_bluetooth_pair_post_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_bluetooth_forget(handler, state, body_str):
-    send_bluetooth_forget_post_json(handler)
 
 
-def _route_post_bluetooth_services(handler, state, body_str):
-    send_bluetooth_services_post_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_bluetooth_onboard(handler, state, body_str):
-    send_bluetooth_onboard_post_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_bluetooth_buffer(handler, state, body_str):
-    send_bluetooth_buffer_post_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_get_sdcard_health(handler, state):
-    send_sdcard_health_get_json(handler)
 
 
-def _route_post_sdcard_health_enable(handler, state, body_str):
-    send_sdcard_health_enable_post_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_sdcard_health_disable(handler, state, body_str):
-    send_sdcard_health_disable_post_json(handler, common._route_post_json_obj(handler))
 
 
-def _route_post_update_apply(handler, state, body_str):
-    # Legacy inline pre-logic (do_POST's former /api/update/apply arm):
-    # flush dirty settings to disk before staging an update.
-    if not _settings_save_barrier(state):
-        common.send_json(handler, 200, {"ok": False, "error": "Settings could not be saved before update"})
-        return
-    handler._start_update_apply()
 
 
-def _route_post_reboot(handler, state, body_str):
-    # Legacy inline pre-logic (do_POST's former /api/reboot arm): flush
-    # dirty settings to disk before rebooting, then trigger the reboot
-    # (delayed 3s so this response can flush first) and reply immediately.
-    if not _settings_save_barrier(state):
-        common.send_json(handler, 200, {"ok": False, "error": "Settings could not be saved before reboot"})
-        return
-    reboot_system("UserRequestNormal", delay_s=3)
-    common.send_json(handler, 200, {"ok": True})
 
 
-def _route_post_factory_reset(handler, state, body_str):
-    handle_factory_reset_post(handler, state, session_state.AUTH)
 
 
 # -----------------------------------------------------------------------------
@@ -309,84 +241,8 @@ def _route_post_factory_reset(handler, state, body_str):
 # webui/common.py -- imported above -- so page modules can use it
 # without importing this file (avoids a circular import back into here).
 
-# -----------------------------------------------------------------------------
-# Background update-apply state
-# -----------------------------------------------------------------------------
-
-# Guards against a second POST /api/update/apply starting a concurrent
-# staging run while one is already in flight. The installer itself is
-# flock-protected once scheduled, so this only needs to cover the staging
-# window that now runs off the request thread.
-_update_apply_lock = threading.Lock()
-_update_apply_in_progress = False
-
-# Where the installer (autostream_install.sh) persists apply progress/result;
-# read by autostream_admin's "update-status" command for the /offline/updating
-# page. Root-owned, so this (unprivileged) process cannot write it directly.
-# autostream_updater (run as root via sudo) now owns every write to this file
-# for the phases before the installer takes over — including the failure/
-# timeout cases below — so this process only needs to log those outcomes.
-_UPDATE_RESULT_FILE = Path("/var/lib/autostream/update-result.env")
 
 
-def _update_apply_mark_finished() -> None:
-    global _update_apply_in_progress
-    with _update_apply_lock:
-        _update_apply_in_progress = False
-
-
-def _run_update_apply_background() -> None:
-    """Run the updater's apply step off the request thread.
-
-    Started as a daemon thread by _start_update_apply once the response has
-    already been sent to the client. Always clears the in-flight guard on
-    the way out, regardless of outcome.
-    """
-    try:
-        try:
-            rc, out, err = run_updater(["apply"], timeout=180)
-        except subprocess.TimeoutExpired:
-            # The updater subprocess (invoked via sudo) is not guaranteed to
-            # die with its parent, so a timeout here does not mean the apply
-            # itself failed — staging or the installer hand-off may still be
-            # under way. autostream_updater (running as root) is the sole
-            # writer of update-result.env for this window; if it is still
-            # progressing, its own writes continue to land regardless of this
-            # process losing track of the subprocess, so nothing needs to be
-            # written here — only logged.
-            logging.error("update apply: timed out waiting for updater subprocess")
-            return
-        except Exception as e:
-            # As above: autostream_updater owns update-result.env, including
-            # any failure state, so only logging is needed here.
-            logging.error("update apply: background apply raised: %s", e)
-            return
-
-        if rc == 0:
-            try:
-                result = json.loads(out or "{}")
-            except Exception:
-                result = {"ok": True}
-            if not result.get("ok", True):
-                # The updater has already written its own failure (or, for a
-                # detected concurrent update, deliberately left the running
-                # instance's own progress untouched) — log only.
-                logging.error("update apply: updater reported failure: %s", result)
-            return
-
-        try:
-            result = json.loads(out or "{}")
-            message = str(result.get("error") or "Update failed")
-        except Exception:
-            message = "Update failed"
-        if err.strip():
-            message = f"{message}: {err.strip()}"
-        # The updater owns update-result.env; a non-zero exit before it could
-        # write anything is rare (e.g. sudo/exec failure) but even then there
-        # is nothing this unprivileged process can do about the result file.
-        logging.error("update apply: updater exited rc=%s: %s", rc, message)
-    finally:
-        _update_apply_mark_finished()
 
 
 
@@ -495,45 +351,8 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
         return path
 
     def _start_update_apply(self) -> None:
-        """Accept an update-apply request and run it in the background.
-
-        Staging the release tarball can take long enough on slow hardware to
-        exceed the reverse proxy's read timeout, so this no longer blocks the
-        request: it starts run_updater("apply") on a daemon thread and
-        responds immediately with {ok: True, accepted: True}. The JS client
-        treats "accepted" the same way it used to treat a synchronous
-        success and navigates to /offline/updating, which polls the update
-        status autostream_updater (running as root) and, once scheduled,
-        the installer write to update-result.env. This process cannot write
-        that root-owned file itself, so _run_update_apply_background only
-        logs outcomes rather than persisting them there.
-
-        A second POST while an apply is already in flight does not start a
-        concurrent run -- it returns already_in_progress=True instead. The
-        installer itself is flock-protected once scheduled; this guard only
-        needs to cover the staging window that now runs here.
-        """
-        global _update_apply_in_progress
-        with _update_apply_lock:
-            if _update_apply_in_progress:
-                common.send_json(self, 200, {"ok": True, "accepted": True, "already_in_progress": True})
-                return
-            _update_apply_in_progress = True
-
-        try:
-            threading.Thread(
-                target=_run_update_apply_background,
-                name="update-apply",
-                daemon=True,
-            ).start()
-        except Exception as e:
-            # The guard must never outlive a run that was never started, or
-            # every later apply would be refused as already_in_progress.
-            _update_apply_mark_finished()
-            logging.error("update apply: could not start background thread: %s", e)
-            common.send_json(self, 200, {"ok": False, "error": "Could not start update"})
-            return
-        common.send_json(self, 200, {"ok": True, "accepted": True})
+        """Accept an update-apply request and run it in the background."""
+        updates.start_update_apply(self)
 
     # Reduce noisy TLS/HTTPS probes hitting this plain-HTTP server
     def log_error(self, format, *args):  # noqa: A003

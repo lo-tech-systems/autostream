@@ -27,14 +27,14 @@ never does this; a PIN-override write must be followed by an explicit
 ``flush(sync=True)`` call, exactly mirroring ``SettingsStore``'s own
 sync-flush callers (first-boot completion, reboot, ...). This module does
 not itself enforce that callers remember to do so -- see
-``autostream_webui_api.py``'s and any future PIN-write call site's own
+the web package's and any future PIN-write call site's own
 docstring for the explicit flush call once one migrates onto this store.
 
 SCOPE -- FOUNDATION ONLY, NOT YET WIRED. This module deliberately stops at
 "built and tested". NOTHING in the running appliance uses this store yet: every
 existing runtime-state call site (``autostream_auth.py``'s
 ``read_pin_override``/``write_pin_override``, ``autostream_commissioning.py``'s
-marker read/write, ``autostream_webui_api.py``'s known-outputs merge) still
+marker read/write, the web package's known-outputs merge) still
 goes through bare ``load_state``/``save_state`` and is untouched by this
 item. Those are security- and commissioning-critical paths, heavily tested
 elsewhere, and moving them is a separate, deliberately-deferred item. The

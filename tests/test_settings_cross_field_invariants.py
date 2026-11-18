@@ -75,7 +75,8 @@ class TestCrossValidateHostnameVisibilityCascade:
 class TestSettingsStoreSetEnforcesDuplicateDevice:
     def _make_store(self, tmp_path, raw):
         import json
-        import autostream_webui_api  # noqa: F401 -- registers SETTINGS_SCHEMA rows
+        import webui.browser.api_settings  # noqa: F401
+        import webui.browser.api_service  # noqa: F401
         from autostream_settings import SettingsStore
         p = tmp_path / "cfg.json"
         p.write_text(json.dumps(raw))

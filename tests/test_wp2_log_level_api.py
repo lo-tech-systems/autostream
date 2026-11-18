@@ -25,7 +25,6 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
-import autostream_webui_api as api_mod
 import autostream_auth as auth_mod
 import autostream_watcher_client as watcher_client
 from fake_store import fake_session

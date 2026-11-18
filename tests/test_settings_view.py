@@ -24,7 +24,8 @@ if str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 
 import autostream_core  # noqa: F401  (binds the intent handlers)
-import autostream_webui_api  # noqa: F401  (registers the service-field rows)
+import webui.browser.api_settings  # noqa: F401
+import webui.browser.api_service  # noqa: F401
 from autostream_intents import Intent, Origin, submit
 from autostream_settings import SettingsStore, SettingsView, as_view, writable_store
 from webui.session_state import WebUIState

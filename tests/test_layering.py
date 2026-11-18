@@ -34,7 +34,7 @@ sysutils watcher_client wifi_network
 """.split()
 _L2 = "align announce appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup".split()
 _L3 = """
-webui_api webui_routes
+webui_routes
 """.split()
 
 LAYERS: dict[str, str] = {
@@ -367,7 +367,6 @@ def l2_cycle(edges) -> list[str] | None:
 
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_routes', 'autostream_webui', '*'),
-    ('D', 'autostream_webui_api', 'subprocess', '*'),
 })
 
 

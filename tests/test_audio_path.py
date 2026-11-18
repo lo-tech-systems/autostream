@@ -591,29 +591,24 @@ class TestResyncAudioPathFreshness:
 
 class TestValidateAudioPath:
     def test_accepts_balanced_and_fast_regardless_of_hardware(self):
-        import autostream_webui_api as api
         with patch("autostream_live_config.is_high_performance_pi", return_value=False):
             assert live_config._validate_audio_path("balanced") == "balanced"
             assert live_config._validate_audio_path("fast") == "fast"
 
     def test_accepts_max_on_high_perf_hardware(self):
-        import autostream_webui_api as api
         with patch("autostream_live_config.is_high_performance_pi", return_value=True):
             assert live_config._validate_audio_path("max") == "max"
 
     def test_rejects_max_on_small_hardware(self):
-        import autostream_webui_api as api
         with patch("autostream_live_config.is_high_performance_pi", return_value=False):
             with pytest.raises(ValueError):
                 live_config._validate_audio_path("max")
 
     def test_rejects_unknown_value(self):
-        import autostream_webui_api as api
         with pytest.raises(ValueError):
             live_config._validate_audio_path("ultra")
 
     def test_rejects_non_string(self):
-        import autostream_webui_api as api
         with pytest.raises(ValueError):
             live_config._validate_audio_path(123)
 
@@ -630,7 +625,6 @@ class TestLiveAudioPath:
         return state, store
 
     def test_pushes_resample_quality_and_syncs_args(self, tmp_path):
-        import autostream_webui_api as api
         state, store = self._make_state(tmp_path)
         try:
             with patch("autostream_live_config.push_resample_quality") as push_mock, \
@@ -646,7 +640,6 @@ class TestLiveAudioPath:
         """Both callees are individually tolerant (never raise); the live_fn
         must still report success once the setting itself is safely
         persisted (which happens before live_fn runs)."""
-        import autostream_webui_api as api
         state, store = self._make_state(tmp_path)
         try:
             with patch("autostream_live_config.push_resample_quality", return_value=MagicMock()), \
@@ -657,7 +650,6 @@ class TestLiveAudioPath:
             store.close(save=False)
 
     def test_field_registered_with_correct_validator_and_live_fn(self):
-        import autostream_webui_api as api
         assert "general.audio_path" in webui_api_settings._SETTINGS_FIELDS
         section, key, validator, live_fn = webui_api_settings._SETTINGS_FIELDS["general.audio_path"]
         assert section == "general"

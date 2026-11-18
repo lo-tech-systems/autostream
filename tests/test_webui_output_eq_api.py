@@ -20,10 +20,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_settings import SettingsStore
-from autostream_webui_api import (
-    send_update_check_json,
-    send_update_status_json,
-)
+from webui.system.updates import send_update_status_json
+from webui.system.updates import send_update_check_json
 from webui.browser.equaliser import send_output_eq_reset_json
 from webui.browser.equaliser import send_output_eq_config_json
 
@@ -320,7 +318,7 @@ class TestUpdateCheckJson:
         sent = []
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater", return_value=(1, "", "error")):
+             patch("webui.system.updates.run_updater", return_value=(1, "", "error")):
             send_update_check_json(MagicMock())
         assert sent[0][1]["ok"] is False
 
@@ -328,7 +326,7 @@ class TestUpdateCheckJson:
         sent = []
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater",
+             patch("webui.system.updates.run_updater",
                    return_value=(0, '{"ok": true, "tag": "v2.0.0"}', "")):
             send_update_check_json(MagicMock())
         assert sent[0][1]["ok"] is True
@@ -338,7 +336,7 @@ class TestUpdateCheckJson:
         sent = []
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater", return_value=(0, "not-json", "")):
+             patch("webui.system.updates.run_updater", return_value=(0, "not-json", "")):
             send_update_check_json(MagicMock())
         assert sent[0][1]["ok"] is False
 
@@ -347,7 +345,7 @@ class TestUpdateCheckJson:
         payload = json.dumps({"ok": True, "tag": "v2.0.0", "release_notes": "- a\n- b"})
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+             patch("webui.system.updates.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
         data = sent[0][1]
         assert data["ok"] is True
@@ -360,7 +358,7 @@ class TestUpdateCheckJson:
         payload = json.dumps({"ok": True, "release_notes": "<script>alert(1)</script>"})
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+             patch("webui.system.updates.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
         html_out = sent[0][1]["release_notes_html"]
         assert "<script>" not in html_out
@@ -371,7 +369,7 @@ class TestUpdateCheckJson:
         payload = json.dumps({"ok": True, "tag": "v2.0.0"})
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+             patch("webui.system.updates.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
         assert "release_notes_html" not in sent[0][1]
 
@@ -380,7 +378,7 @@ class TestUpdateCheckJson:
         payload = json.dumps({"ok": True, "release_notes": ""})
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+             patch("webui.system.updates.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
         assert "release_notes_html" not in sent[0][1]
 
@@ -389,7 +387,7 @@ class TestUpdateCheckJson:
         payload = json.dumps(["not", "a", "dict"])
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater", return_value=(0, payload, "")):
+             patch("webui.system.updates.run_updater", return_value=(0, payload, "")):
             send_update_check_json(MagicMock())
         assert sent[0][1] == ["not", "a", "dict"]
 
@@ -403,7 +401,7 @@ class TestUpdateCheckJson:
         state.settings.save_now = MagicMock(side_effect=lambda **kw: order.append("flush"))
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: None), \
-             patch("autostream_webui_api.run_updater",
+             patch("webui.system.updates.run_updater",
                    side_effect=lambda *a, **kw: (order.append("check"), (0, '{"ok": true}', ""))[1]):
             send_update_check_json(MagicMock(), state)
         assert order == ["flush", "check"]
@@ -416,7 +414,7 @@ class TestUpdateCheckJson:
         state.settings.save_now = MagicMock(side_effect=RuntimeError("flush failed"))
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater",
+             patch("webui.system.updates.run_updater",
                    return_value=(0, '{"ok": true}', "")):
             send_update_check_json(MagicMock(), state)
         assert sent[0][1]["ok"] is True
@@ -425,7 +423,7 @@ class TestUpdateCheckJson:
         sent = []
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_updater",
+             patch("webui.system.updates.run_updater",
                    return_value=(0, '{"ok": true}', "")):
             send_update_check_json(MagicMock(), None)
         assert sent[0][1]["ok"] is True
@@ -441,7 +439,7 @@ class TestUpdateStatusJson:
         proc = MagicMock(returncode=1, stdout="")
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_admin_cmd", return_value=proc):
+             patch("webui.system.updates.run_admin_cmd", return_value=proc):
             send_update_status_json(MagicMock())
         assert sent[0][1]["status"] == "error"
         assert sent[0][1]["ok"] is False
@@ -453,7 +451,7 @@ class TestUpdateStatusJson:
         proc = MagicMock(returncode=0, stdout=payload)
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_admin_cmd", return_value=proc):
+             patch("webui.system.updates.run_admin_cmd", return_value=proc):
             send_update_status_json(MagicMock())
         assert sent[0][1]["status"] == "success"
         assert sent[0][1]["ok"] is True
@@ -463,7 +461,7 @@ class TestUpdateStatusJson:
         proc = MagicMock(returncode=0, stdout="not-json")
         with patch("webui.common.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("autostream_webui_api.run_admin_cmd", return_value=proc):
+             patch("webui.system.updates.run_admin_cmd", return_value=proc):
             send_update_status_json(MagicMock())
         assert sent[0][1]["status"] == "error"
         assert sent[0][1]["ok"] is False

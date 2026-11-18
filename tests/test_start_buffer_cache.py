@@ -168,7 +168,6 @@ def _daemon_block():
 
 
 def test_repeat_object_carries_int_latency_ms_from_cache():
-    import autostream_webui_api as api
 
     cache.note_saved(1950)
     with fake_repeat(_daemon_block()), \
@@ -180,7 +179,6 @@ def test_repeat_object_carries_int_latency_ms_from_cache():
 
 
 def test_repeat_object_without_cache_reports_default():
-    import autostream_webui_api as api
 
     with fake_repeat(_daemon_block()), \
             patch.object(cache, "_fetch", return_value=None):
@@ -190,7 +188,6 @@ def test_repeat_object_without_cache_reports_default():
 
 
 def test_webui_save_updates_cache_and_failed_save_does_not():
-    import autostream_webui_api as api
 
     handler = MagicMock()
     handler.wfile = __import__("io").BytesIO()

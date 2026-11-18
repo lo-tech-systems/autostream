@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 import webui.common as webui_common
+import webui.system.updates as webui_system_updates
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -46,12 +47,12 @@ _skip_no_webui = pytest.mark.skipif(
 def _clean_guard():
     """Reset the module-level in-flight guard before and after each test."""
     if _HAS_WEBUI:
-        with webui._update_apply_lock:
-            webui._update_apply_in_progress = False
+        with webui_system_updates._update_apply_lock:
+            webui_system_updates._update_apply_in_progress = False
     yield
     if _HAS_WEBUI:
-        with webui._update_apply_lock:
-            webui._update_apply_in_progress = False
+        with webui_system_updates._update_apply_lock:
+            webui_system_updates._update_apply_in_progress = False
 
 
 def _handler() -> "ConfigWebHandler":
@@ -61,8 +62,8 @@ def _handler() -> "ConfigWebHandler":
 def _wait_until_idle(timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        with webui._update_apply_lock:
-            if not webui._update_apply_in_progress:
+        with webui_system_updates._update_apply_lock:
+            if not webui_system_updates._update_apply_in_progress:
                 return
         time.sleep(0.02)
     raise AssertionError("background apply did not clear the in-flight guard in time")
@@ -87,7 +88,7 @@ class TestStartUpdateApplyAccepts:
             sent["payload"] = payload
 
         h = _handler()
-        with patch.object(webui, "run_updater", side_effect=blocking_run_updater), \
+        with patch.object(webui_system_updates, "run_updater", side_effect=blocking_run_updater), \
              patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h._start_update_apply()
 
@@ -114,7 +115,7 @@ class TestStartUpdateApplyAccepts:
             sent.append(payload)
 
         h1, h2 = _handler(), _handler()
-        with patch.object(webui, "run_updater", side_effect=blocking_run_updater) as mock_run, \
+        with patch.object(webui_system_updates, "run_updater", side_effect=blocking_run_updater) as mock_run, \
              patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h1._start_update_apply()
             h2._start_update_apply()
@@ -134,14 +135,14 @@ class TestStartUpdateApplyAccepts:
             sent.append(payload)
 
         h1 = _handler()
-        with patch.object(webui, "run_updater", return_value=(0, "{}", "")) as mock_run1, \
+        with patch.object(webui_system_updates, "run_updater", return_value=(0, "{}", "")) as mock_run1, \
              patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h1._start_update_apply()
             _wait_until_idle()
         assert mock_run1.call_count == 1
 
         h2 = _handler()
-        with patch.object(webui, "run_updater", return_value=(0, "{}", "")) as mock_run2, \
+        with patch.object(webui_system_updates, "run_updater", return_value=(0, "{}", "")) as mock_run2, \
              patch.object(webui_common, "send_json", side_effect=fake_send_json):
             h2._start_update_apply()
             _wait_until_idle()
@@ -163,33 +164,30 @@ class TestBackgroundApplyFailureLogging:
 
     def test_nonzero_rc_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         result_file = tmp_path / "update-result.env"
-        with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
-             patch.object(webui, "run_updater",
+        with patch.object(webui_system_updates, "run_updater",
                            return_value=(1, '{"error": "staging failed"}', "boom")), \
              caplog.at_level(logging.ERROR):
-            webui._run_update_apply_background()
+            webui_system_updates._run_update_apply_background()
 
-        assert webui._update_apply_in_progress is False
+        assert webui_system_updates._update_apply_in_progress is False
         assert not result_file.exists()
         assert "staging failed" in caplog.text
 
     def test_ok_false_json_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         result_file = tmp_path / "update-result.env"
-        with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
-             patch.object(webui, "run_updater",
+        with patch.object(webui_system_updates, "run_updater",
                            return_value=(0, '{"ok": false, "error": "no release"}', "")), \
              caplog.at_level(logging.ERROR):
-            webui._run_update_apply_background()
+            webui_system_updates._run_update_apply_background()
 
         assert not result_file.exists()
         assert "no release" in caplog.text
 
     def test_exception_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         result_file = tmp_path / "update-result.env"
-        with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
-             patch.object(webui, "run_updater", side_effect=OSError("sudo not found")), \
+        with patch.object(webui_system_updates, "run_updater", side_effect=OSError("sudo not found")), \
              caplog.at_level(logging.ERROR):
-            webui._run_update_apply_background()
+            webui_system_updates._run_update_apply_background()
 
         assert not result_file.exists()
         assert "sudo not found" in caplog.text
@@ -197,11 +195,10 @@ class TestBackgroundApplyFailureLogging:
     def test_timeout_logs_and_leaves_result_file_untouched(self, tmp_path, caplog):
         import subprocess
         result_file = tmp_path / "update-result.env"
-        with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
-             patch.object(webui, "run_updater",
+        with patch.object(webui_system_updates, "run_updater",
                            side_effect=subprocess.TimeoutExpired(cmd="autostream_updater", timeout=180)), \
              caplog.at_level(logging.ERROR):
-            webui._run_update_apply_background()
+            webui_system_updates._run_update_apply_background()
 
         # A subprocess timeout does not prove the apply failed (the sudo'd
         # child may survive and complete on its own): autostream_updater
@@ -212,20 +209,18 @@ class TestBackgroundApplyFailureLogging:
 
     def test_success_does_not_write_result_file(self, tmp_path):
         result_file = tmp_path / "update-result.env"
-        with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
-             patch.object(webui, "run_updater",
+        with patch.object(webui_system_updates, "run_updater",
                            return_value=(0, '{"ok": true, "staged_tag": "1.2.3"}', "")):
-            webui._run_update_apply_background()
+            webui_system_updates._run_update_apply_background()
 
         assert not result_file.exists()
 
     def test_background_apply_always_clears_guard(self, tmp_path):
         """Even on failure the in-flight guard must clear so a retry is possible."""
         result_file = tmp_path / "update-result.env"
-        with webui._update_apply_lock:
-            webui._update_apply_in_progress = True
-        with patch.object(webui, "_UPDATE_RESULT_FILE", result_file), \
-             patch.object(webui, "run_updater", return_value=(1, "{}", "error")):
-            webui._run_update_apply_background()
+        with webui_system_updates._update_apply_lock:
+            webui_system_updates._update_apply_in_progress = True
+        with patch.object(webui_system_updates, "run_updater", return_value=(1, "{}", "error")):
+            webui_system_updates._run_update_apply_background()
 
-        assert webui._update_apply_in_progress is False
+        assert webui_system_updates._update_apply_in_progress is False

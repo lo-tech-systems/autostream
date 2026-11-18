@@ -82,11 +82,11 @@ def _make_state(tmp_path: Path, **audio_overrides):
 
 class TestBluetoothStatusJson:
     def test_not_installed_returns_flags_false_daemon_none(self, tmp_path):
-        from autostream_webui_api import send_bluetooth_status_json
+        from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
                 send_bluetooth_status_json(handler, state)
         finally:
             store.close(save=False)
@@ -104,16 +104,16 @@ class TestBluetoothStatusJson:
         }
 
     def test_installed_live_status_returned(self, tmp_path):
-        from autostream_webui_api import send_bluetooth_status_json
+        from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         live = {"ok": True, "adapter_present": True, "paired": None, "link": "disconnected",
                 "streaming": False, "scanning": False, "buffer_ms": 200, "adapter_kind": "usb"}
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_services_enabled", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_onboard_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.status.return_value = live
                 send_bluetooth_status_json(handler, state)
         finally:
@@ -133,16 +133,16 @@ class TestBluetoothStatusJson:
         }
 
     def test_ui_enabled_not_paired(self, tmp_path):
-        from autostream_webui_api import send_bluetooth_status_json
+        from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         live = {"ok": True, "adapter_present": True, "paired": None, "link": "disconnected",
                 "streaming": False, "scanning": False}
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_services_enabled", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_onboard_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.status.return_value = live
                 send_bluetooth_status_json(handler, state)
         finally:
@@ -156,17 +156,17 @@ class TestBluetoothStatusJson:
         }
 
     def test_ui_paired_and_connected(self, tmp_path):
-        from autostream_webui_api import send_bluetooth_status_json
+        from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         live = {"ok": True, "adapter_present": True,
                 "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
                 "link": "connected", "streaming": True, "scanning": False}
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_services_enabled", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_onboard_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.status.return_value = live
                 send_bluetooth_status_json(handler, state)
         finally:
@@ -182,17 +182,17 @@ class TestBluetoothStatusJson:
     def test_ui_paired_but_disconnected(self, tmp_path):
         """The fifth state: paired device present but the link is down --
         must not be reported as 'connected'."""
-        from autostream_webui_api import send_bluetooth_status_json
+        from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         live = {"ok": True, "adapter_present": True,
                 "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
                 "link": "disconnected", "streaming": False, "scanning": False}
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_services_enabled", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_onboard_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.status.return_value = live
                 send_bluetooth_status_json(handler, state)
         finally:
@@ -206,17 +206,17 @@ class TestBluetoothStatusJson:
         }
 
     def test_installed_live_fails_falls_back_to_cache(self, tmp_path, fake_store):
-        from autostream_webui_api import send_bluetooth_status_json
+        from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         cached = {"ok": True, "adapter_present": True, "paired": None, "link": "disconnected",
                   "streaming": False, "scanning": False}
         fake_store.devices(bluetooth_status=cached)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_services_enabled", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_onboard_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.status.return_value = None
                 send_bluetooth_status_json(handler, state)
         finally:
@@ -229,14 +229,14 @@ class TestBluetoothStatusJson:
         """The card must always get a 200 ok:true so it can render the
         'no adapter' / disabled state rather than treating a down daemon as
         a request failure."""
-        from autostream_webui_api import send_bluetooth_status_json
+        from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.bluetooth_services_enabled", return_value=False), \
-                 patch("autostream_webui_api.bluetooth_onboard_enabled", return_value=False), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_services_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.bluetooth_onboard_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.status.return_value = None
                 send_bluetooth_status_json(handler, state)
         finally:
@@ -254,11 +254,11 @@ class TestBluetoothStatusJson:
 
 class TestBluetoothServicesPost:
     def test_enable_action(self):
-        from autostream_webui_api import send_bluetooth_services_post_json
+        from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.bt_services_enable", return_value=(True, "enabled")) as m_en, \
-             patch("autostream_webui_api.bt_services_disable") as m_dis:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.bt_services_enable", return_value=(True, "enabled")) as m_en, \
+             patch("webui.system.bluetooth.bt_services_disable") as m_dis:
             send_bluetooth_services_post_json(handler, {"action": "enable"})
         code, body = _response(handler)
         assert code == 200
@@ -267,20 +267,20 @@ class TestBluetoothServicesPost:
         m_dis.assert_not_called()
 
     def test_disable_action(self):
-        from autostream_webui_api import send_bluetooth_services_post_json
+        from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.bt_services_disable", return_value=(True, "disabled")):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.bt_services_disable", return_value=(True, "disabled")):
             send_bluetooth_services_post_json(handler, {"action": "disable"})
         code, body = _response(handler)
         assert code == 200
         assert body == {"ok": True, "message": "disabled"}
 
     def test_failure_reported_but_still_200(self):
-        from autostream_webui_api import send_bluetooth_services_post_json
+        from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.bt_services_enable", return_value=(False, "sudo failed")):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.bt_services_enable", return_value=(False, "sudo failed")):
             send_bluetooth_services_post_json(handler, {"action": "enable"})
         code, body = _response(handler)
         assert code == 200
@@ -288,26 +288,26 @@ class TestBluetoothServicesPost:
 
     @pytest.mark.parametrize("action", ["start", "stop", "", None, 1, "enable_all"])
     def test_invalid_action_rejected(self, action):
-        from autostream_webui_api import send_bluetooth_services_post_json
+        from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_services_post_json(handler, {"action": action})
         code, body = _response(handler)
         assert code == 400
         assert body["ok"] is False
 
     def test_extra_keys_rejected(self):
-        from autostream_webui_api import send_bluetooth_services_post_json
+        from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_services_post_json(handler, {"action": "enable", "extra": 1})
         code, body = _response(handler)
         assert code == 400
 
     def test_not_installed_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_services_post_json
+        from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_services_post_json(handler, {"action": "enable"})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
@@ -315,10 +315,10 @@ class TestBluetoothServicesPost:
 
 class TestBluetoothOnboardPost:
     def test_enable_reports_reboot_required(self):
-        from autostream_webui_api import send_bluetooth_onboard_post_json
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.bt_onboard_set", return_value=(True, "onboard on")) as m_set:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.bt_onboard_set", return_value=(True, "onboard on")) as m_set:
             send_bluetooth_onboard_post_json(handler, {"enabled": True})
         code, body = _response(handler)
         assert code == 200
@@ -327,19 +327,19 @@ class TestBluetoothOnboardPost:
         m_set.assert_called_once_with(True)
 
     def test_disable_reports_reboot_required(self):
-        from autostream_webui_api import send_bluetooth_onboard_post_json
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.bt_onboard_set", return_value=(True, "onboard off")):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.bt_onboard_set", return_value=(True, "onboard off")):
             send_bluetooth_onboard_post_json(handler, {"enabled": False})
         _, body = _response(handler)
         assert body["reboot_required"] is True
 
     def test_failure_no_reboot_required_key(self):
-        from autostream_webui_api import send_bluetooth_onboard_post_json
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.bt_onboard_set", return_value=(False, "sudo failed")):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.bt_onboard_set", return_value=(False, "sudo failed")):
             send_bluetooth_onboard_post_json(handler, {"enabled": True})
         _, body = _response(handler)
         assert body["ok"] is False
@@ -347,25 +347,25 @@ class TestBluetoothOnboardPost:
 
     @pytest.mark.parametrize("bad", ["true", 1, None, "yes"])
     def test_non_bool_enabled_rejected(self, bad):
-        from autostream_webui_api import send_bluetooth_onboard_post_json
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_onboard_post_json(handler, {"enabled": bad})
         code, _ = _response(handler)
         assert code == 400
 
     def test_extra_keys_rejected(self):
-        from autostream_webui_api import send_bluetooth_onboard_post_json
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_onboard_post_json(handler, {"enabled": True, "extra": 1})
         code, _ = _response(handler)
         assert code == 400
 
     def test_not_installed_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_onboard_post_json
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_onboard_post_json(handler, {"enabled": True})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
@@ -373,10 +373,10 @@ class TestBluetoothOnboardPost:
 
 class TestBluetoothBufferPost:
     def test_valid_value_accepted(self):
-        from autostream_webui_api import send_bluetooth_buffer_post_json
+        from webui.system.bluetooth import send_bluetooth_buffer_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.configure.return_value = {"ok": True}
             send_bluetooth_buffer_post_json(handler, {"buffer_ms": 250})
         code, body = _response(handler)
@@ -386,31 +386,31 @@ class TestBluetoothBufferPost:
 
     @pytest.mark.parametrize("bad", [99, 501, 0, -1, "200", 200.5, True, None])
     def test_out_of_range_or_wrong_type_rejected(self, bad):
-        from autostream_webui_api import send_bluetooth_buffer_post_json
+        from webui.system.bluetooth import send_bluetooth_buffer_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             send_bluetooth_buffer_post_json(handler, {"buffer_ms": bad})
         code, body = _response(handler)
         assert code == 400
         m_cls.return_value.configure.assert_not_called()
 
     def test_boundary_values_accepted(self):
-        from autostream_webui_api import send_bluetooth_buffer_post_json
+        from webui.system.bluetooth import send_bluetooth_buffer_post_json
         for val in (100, 500):
             handler = _make_handler()
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.configure.return_value = {"ok": True}
                 send_bluetooth_buffer_post_json(handler, {"buffer_ms": val})
             code, _ = _response(handler)
             assert code == 200
 
     def test_daemon_rejects_as_invalid(self):
-        from autostream_webui_api import send_bluetooth_buffer_post_json
+        from webui.system.bluetooth import send_bluetooth_buffer_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.configure.return_value = {"ok": False, "error": "invalid_buffer_ms"}
             send_bluetooth_buffer_post_json(handler, {"buffer_ms": 200})
         code, body = _response(handler)
@@ -418,27 +418,27 @@ class TestBluetoothBufferPost:
         assert body["error"] == "invalid_buffer_ms"
 
     def test_daemon_down_is_503(self):
-        from autostream_webui_api import send_bluetooth_buffer_post_json
+        from webui.system.bluetooth import send_bluetooth_buffer_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.configure.return_value = None
             send_bluetooth_buffer_post_json(handler, {"buffer_ms": 200})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
 
     def test_not_installed_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_buffer_post_json
+        from webui.system.bluetooth import send_bluetooth_buffer_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_buffer_post_json(handler, {"buffer_ms": 200})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
 
     def test_extra_keys_rejected(self):
-        from autostream_webui_api import send_bluetooth_buffer_post_json
+        from webui.system.bluetooth import send_bluetooth_buffer_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_buffer_post_json(handler, {"buffer_ms": 200, "extra": 1})
         code, _ = _response(handler)
         assert code == 400
@@ -497,20 +497,20 @@ class TestBluetoothStatusCopies:
 
 class TestBluetoothScanResultsAndPairStatus:
     def test_scan_results_disabled_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_scan_results_json
+        from webui.system.bluetooth import send_bluetooth_scan_results_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_scan_results_json(handler)
         _, body = _response(handler)
         assert body["ok"] is False
         assert body["error"] == "bluetooth_unavailable"
 
     def test_scan_results_success(self):
-        from autostream_webui_api import send_bluetooth_scan_results_json
+        from webui.system.bluetooth import send_bluetooth_scan_results_json
         handler = _make_handler()
         payload = {"ok": True, "devices": [{"mac": "AA:BB:CC:DD:EE:FF", "name": "TT", "rssi": -55, "paired": False}]}
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.scan_results.return_value = payload
             send_bluetooth_scan_results_json(handler)
         code, body = _response(handler)
@@ -518,10 +518,10 @@ class TestBluetoothScanResultsAndPairStatus:
         assert body == payload
 
     def test_scan_results_daemon_unreachable(self):
-        from autostream_webui_api import send_bluetooth_scan_results_json
+        from webui.system.bluetooth import send_bluetooth_scan_results_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.scan_results.return_value = None
             send_bluetooth_scan_results_json(handler)
         _, body = _response(handler)
@@ -531,11 +531,11 @@ class TestBluetoothScanResultsAndPairStatus:
     def test_pair_status_success(self):
         """A non-"done" state (here "connecting") passes the daemon payload
         through untouched -- no auto-configure attempt, no extra field."""
-        from autostream_webui_api import send_bluetooth_pair_status_json
+        from webui.system.bluetooth import send_bluetooth_pair_status_json
         handler = _make_handler()
         payload = {"ok": True, "state": "connecting"}
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.pair_status.return_value = payload
             send_bluetooth_pair_status_json(handler)
         code, body = _response(handler)
@@ -543,9 +543,9 @@ class TestBluetoothScanResultsAndPairStatus:
         assert body == payload
 
     def test_pair_status_disabled_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_pair_status_json
+        from webui.system.bluetooth import send_bluetooth_pair_status_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_pair_status_json(handler)
         _, body = _response(handler)
         assert body["ok"] is False
@@ -558,10 +558,10 @@ class TestBluetoothScanResultsAndPairStatus:
 
 class TestBluetoothScanPost:
     def test_start_action(self):
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.scan_start.return_value = {"ok": True}
             send_bluetooth_scan_post_json(handler, {"action": "start"})
         code, body = _response(handler)
@@ -571,10 +571,10 @@ class TestBluetoothScanPost:
         m_cls.return_value.scan_stop.assert_not_called()
 
     def test_stop_action(self):
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.scan_stop.return_value = {"ok": True}
             send_bluetooth_scan_post_json(handler, {"action": "stop"})
         code, body = _response(handler)
@@ -583,34 +583,34 @@ class TestBluetoothScanPost:
 
     @pytest.mark.parametrize("action", ["pause", "PAIR", "", None, 1, "start_and_stop"])
     def test_invalid_action_rejected(self, action):
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_scan_post_json(handler, {"action": action})
         code, body = _response(handler)
         assert code == 400
         assert body["ok"] is False
 
     def test_extra_keys_rejected(self):
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_scan_post_json(handler, {"action": "start", "extra": "nope"})
         code, body = _response(handler)
         assert code == 400
 
     def test_non_dict_body_rejected(self):
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_scan_post_json(handler, "not a dict")
         code, body = _response(handler)
         assert code == 400
 
     def test_disabled_is_unavailable_before_action_check(self):
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_scan_post_json(handler, {"action": "start"})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
@@ -618,10 +618,10 @@ class TestBluetoothScanPost:
     def test_scan_in_progress_is_409(self):
         """Daemon replies {"ok": false, "error": "scan_in_progress"} when a
         scan is already active -- surfaced as a 409."""
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.scan_start.return_value = {"ok": False, "error": "scan_in_progress"}
             send_bluetooth_scan_post_json(handler, {"action": "start"})
         code, body = _response(handler)
@@ -633,10 +633,10 @@ class TestBluetoothScanPost:
         """503 is tunneled through the NGINX-intercepted-status contract
         (transport 200 + error_status), same as the existing daemon-failure
         tests."""
-        from autostream_webui_api import send_bluetooth_scan_post_json
+        from webui.system.bluetooth import send_bluetooth_scan_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.scan_start.return_value = {"ok": False, "error": "adapter_missing"}
             send_bluetooth_scan_post_json(handler, {"action": "start"})
         _, body = _response(handler)
@@ -650,10 +650,10 @@ class TestBluetoothScanPost:
 
 class TestBluetoothPairPost:
     def test_valid_mac_accepted(self):
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.pair.return_value = {"ok": True}
             send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
         code, body = _response(handler)
@@ -667,10 +667,10 @@ class TestBluetoothPairPost:
         "AA:BB:CC:DD:EE:FF; rm -rf /",
     ])
     def test_invalid_mac_rejected(self, bad_address):
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             send_bluetooth_pair_post_json(handler, {"address": bad_address})
         code, body = _response(handler)
         assert code == 400
@@ -678,27 +678,27 @@ class TestBluetoothPairPost:
         m_cls.return_value.pair.assert_not_called()
 
     def test_extra_keys_rejected(self):
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
             send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF", "extra": 1})
         code, body = _response(handler)
         assert code == 400
 
     def test_daemon_failure_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.pair.return_value = None
             send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
 
     def test_disabled_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
@@ -707,10 +707,10 @@ class TestBluetoothPairPost:
         """Daemon replies {"ok": false, "error": "pair_in_progress"} when a
         pairing attempt is already active -- surfaced as a 409, mirroring
         send_network_setup_json's watcher-busy 409."""
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.pair.return_value = {"ok": False, "error": "pair_in_progress"}
             send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
         code, body = _response(handler)
@@ -724,10 +724,10 @@ class TestBluetoothPairPost:
         reason we don't have a dedicated mapping for.  503 is tunneled
         through the NGINX-intercepted-status contract (transport 200 +
         error_status), same as the existing daemon-failure tests."""
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.pair.return_value = {"ok": False, "error": "adapter_missing"}
             send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
         _, body = _response(handler)
@@ -750,9 +750,9 @@ class TestBluetoothPairStatusAutoConfigure:
     """
 
     def _poll(self, handler, state, daemon_state="done"):
-        from autostream_webui_api import send_bluetooth_pair_status_json
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        from webui.system.bluetooth import send_bluetooth_pair_status_json
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.pair_status.return_value = {"ok": True, "state": daemon_state}
             send_bluetooth_pair_status_json(handler, state=state)
 
@@ -904,10 +904,10 @@ class TestBluetoothPairStatusAutoConfigure:
     def test_no_state_available_omits_auto_configure_field(self):
         """When the route passes no WebUIState, the response is the plain
         daemon-passthrough shape rather than raising."""
-        from autostream_webui_api import send_bluetooth_pair_status_json
+        from webui.system.bluetooth import send_bluetooth_pair_status_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.pair_status.return_value = {"ok": True, "state": "done"}
             send_bluetooth_pair_status_json(handler)
         code, body = _response(handler)
@@ -967,12 +967,12 @@ class TestBluetoothPairStatusAutoConfigure:
         """The pair POST reply only means pairing *started* -- it must
         never touch settings or carry the auto-configure field, regardless
         of what the settings snapshot looks like."""
-        from autostream_webui_api import send_bluetooth_pair_post_json
+        from webui.system.bluetooth import send_bluetooth_pair_post_json
         state, store = _make_state(tmp_path, audio1={"enabled": False})
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-                 patch("autostream_webui_api.BluetoothClient") as m_cls:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
                 m_cls.return_value.pair.return_value = {"ok": True}
                 send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
             snap = store.snapshot()
@@ -992,10 +992,10 @@ class TestBluetoothPairStatusAutoConfigure:
 
 class TestBluetoothForgetPost:
     def test_success(self):
-        from autostream_webui_api import send_bluetooth_forget_post_json
+        from webui.system.bluetooth import send_bluetooth_forget_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.forget.return_value = {"ok": True}
             send_bluetooth_forget_post_json(handler)
         code, body = _response(handler)
@@ -1003,18 +1003,18 @@ class TestBluetoothForgetPost:
         assert body == {"ok": True}
 
     def test_disabled_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_forget_post_json
+        from webui.system.bluetooth import send_bluetooth_forget_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
             send_bluetooth_forget_post_json(handler)
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
 
     def test_daemon_failure_is_unavailable(self):
-        from autostream_webui_api import send_bluetooth_forget_post_json
+        from webui.system.bluetooth import send_bluetooth_forget_post_json
         handler = _make_handler()
-        with patch("autostream_webui_api.bluetooth_installed", return_value=True), \
-             patch("autostream_webui_api.BluetoothClient") as m_cls:
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
             m_cls.return_value.forget.return_value = None
             send_bluetooth_forget_post_json(handler)
         _, body = _response(handler)
@@ -1351,7 +1351,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=False):
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
                 send_settings_post_json(
                     handler, state,
                     {"field": "audio1.capture_device", "value": BLUETOOTH_PLAYBACK_DEVICE},
@@ -1369,7 +1369,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
                 send_settings_post_json(
                     handler, state,
                     {"field": "audio1.capture_device", "value": BLUETOOTH_CAPTURE_DEVICE},
@@ -1385,7 +1385,7 @@ class TestCaptureDeviceRejectsLoopbackPlayback:
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
-            with patch("autostream_webui_api.bluetooth_installed", return_value=True):
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
                 send_settings_post_json(
                     handler, state,
                     {"field": "audio1.capture_device", "value": "hw:1,0"},

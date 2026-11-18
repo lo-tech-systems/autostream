@@ -148,7 +148,6 @@ _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
 
 class TestSettingsFieldsMigration:
     def test_settings_fields_rows_all_present_in_schema(self):
-        import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         assert set(webui_api_settings._SETTINGS_FIELDS.keys()) == _EXPECTED_SETTINGS_FIELD_PATHS
@@ -156,7 +155,6 @@ class TestSettingsFieldsMigration:
             assert path in SETTINGS_SCHEMA, f"{path} missing from SETTINGS_SCHEMA"
 
     def test_schema_row_matches_settings_fields_tuple(self):
-        import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         for path, (section, key, validate, live) in webui_api_settings._SETTINGS_FIELDS.items():
@@ -167,7 +165,6 @@ class TestSettingsFieldsMigration:
             assert spec.live_fn is live
 
     def test_gain_db_bounds_enforced_via_schema_validate(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         spec = SETTINGS_SCHEMA["audio1.gain_db"]
@@ -176,7 +173,6 @@ class TestSettingsFieldsMigration:
             spec.validate(11.0)
 
     def test_bool_field_error_message_unchanged(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         spec = SETTINGS_SCHEMA["webui.dark_mode"]
@@ -184,7 +180,6 @@ class TestSettingsFieldsMigration:
             spec.validate("not-a-bool")
 
     def test_track_id_fields_carry_form_coerce_for_setup_form(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         for path in (
@@ -206,7 +201,6 @@ class TestSettingsFieldsMigration:
 
 class TestServiceFieldMapMigration:
     def test_service_field_map_rows_all_present_in_schema(self):
-        import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         assert len(webui_api_service._SERVICE_FIELD_MAP) == 10  # stylus x2 + (belt + bearing) x2 x2
@@ -214,7 +208,6 @@ class TestServiceFieldMapMigration:
             assert path in SETTINGS_SCHEMA, f"{path} missing from SETTINGS_SCHEMA"
 
     def test_schema_row_matches_service_field_map_tuple(self):
-        import autostream_webui_api as api
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         for path, (section, key, normaliser) in webui_api_service._SERVICE_FIELD_MAP.items():
@@ -224,7 +217,6 @@ class TestServiceFieldMapMigration:
             assert spec.normalise is normaliser
 
     def test_stylus_hours_normaliser_reachable_via_schema(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         spec = SETTINGS_SCHEMA["service_stylus_life_hours_input1"]
@@ -320,21 +312,20 @@ class TestSetupPostMigration:
 
 class TestWildcardTemplateRows:
     def test_template_row_registered_with_literal_star(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA
 
         assert "owntone.offsets.*" in SETTINGS_SCHEMA
         assert "owntone.airplay_modes.*" in SETTINGS_SCHEMA
 
     def test_get_field_spec_matches_concrete_output_id(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings_schema import SETTINGS_SCHEMA, get_field_spec
 
         spec = get_field_spec("owntone.offsets.abc123")
         assert spec is SETTINGS_SCHEMA["owntone.offsets.*"]
 
     def test_get_field_spec_exact_match_takes_priority_over_template(self):
-        import autostream_webui_api as api  # noqa: F401 -- ensure the real row exists first
+        import webui.browser.api_settings  # noqa: F401
+        import webui.browser.api_service  # noqa: F401
         from autostream_settings_schema import register_field, get_field_spec, SETTINGS_SCHEMA
 
         original = SETTINGS_SCHEMA.get("owntone.offsets.*")
@@ -359,7 +350,6 @@ class TestWildcardTemplateRows:
         assert template_leaf("audio1.gain_db", "audio1.gain_db") is None  # no "*" -> not a template
 
     def test_offset_clamp_matches_pre_migration_bounds(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings_schema import get_field_spec
 
         spec = get_field_spec("owntone.offsets.abc123")
@@ -370,7 +360,6 @@ class TestWildcardTemplateRows:
             spec.validate("not-a-number")
 
     def test_airplay_mode_enum_matches_valid_airplay_modes(self):
-        import autostream_webui_api as api  # noqa: F401
         from autostream_config import VALID_AIRPLAY_MODES
         from autostream_settings_schema import get_field_spec
 
@@ -379,7 +368,6 @@ class TestWildcardTemplateRows:
 
     def test_settings_store_set_writes_into_nested_output_dict(self, tmp_path):
         import json
-        import autostream_webui_api as api  # noqa: F401
         from autostream_settings import SettingsStore
 
         p = tmp_path / "cfg.json"

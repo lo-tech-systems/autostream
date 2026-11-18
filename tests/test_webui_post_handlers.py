@@ -829,7 +829,6 @@ class TestOutputRequesterPassed:
         assert mut.call_args.kwargs["pin_requester"] == "webui"
 
     def test_the_federation_route_names_the_webui_as_requester(self):
-        import autostream_webui_api as api
         parsed = MagicMock()
         parsed.owntone.base_url = "http://localhost:3689"
         parsed.owntone.output_offsets_ms = {}

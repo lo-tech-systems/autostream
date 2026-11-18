@@ -157,7 +157,8 @@ class TestGetSet:
         """A path registered under store="settings" (not "runtime_state")
         must not be settable through RuntimeStateStore -- the two stores
         are backed by different files and must not silently cross-write."""
-        import autostream_webui_api  # noqa: F401 -- registers a "settings" row
+        import webui.browser.api_settings  # noqa: F401
+        import webui.browser.api_service  # noqa: F401
         store = _make_store(tmp_path, raw={})
         with pytest.raises(ValueError, match="not a runtime_state"):
             store.set("webui.dark_mode", True)

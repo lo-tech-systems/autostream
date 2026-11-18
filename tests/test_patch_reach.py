@@ -418,7 +418,6 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_start_buffer_cache.py', 2, 'autostream_player_service', 'get_setting'),
     ('test_sysutils.py', 1, 'autostream_rpi', 'get_raspberry_pi_model'),
     ('test_sysutils.py', 2, 'autostream_rpi', 'get_raspberry_pi_model'),
-    ('test_update_apply_async.py', 1, 'autostream_webui', '_UPDATE_RESULT_FILE'),
     ('test_webui_dial_outputs.py', 1, 'autostream_player_service', 'config_airplay_mode_to_backend'),
     ('test_webui_dial_outputs.py', 2, 'autostream_player_service', 'config_airplay_mode_to_backend'),
     ('test_wp2_settings_ownership.py', 2, 'autostream_settings', 'SettingsStore'),

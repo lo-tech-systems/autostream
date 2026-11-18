@@ -604,7 +604,6 @@ class TestCoordinatorReloadDebounce:
         store._writer.side_effect = lambda path, data: save_calls.append(data)
 
         # Use a very short delay to actually fire the timer in test
-        import autostream_webui_api as _api
         orig_debounce = live_config._debounce_coordinator_reload
 
         fired = threading.Event()
@@ -778,7 +777,6 @@ class TestTrackIdRebuildDebounce:
         rebuilt_with = []
         fired = threading.Event()
 
-        import autostream_webui_api as _api
 
         def _capture(snap):
             rebuilt_with.append(snap)

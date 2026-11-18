@@ -193,7 +193,7 @@ def _format_due_date(service_at: Optional[str], life_years: int) -> str:
 #
 # These are the single source of truth for all display calculations.  Both the
 # initial HTML render (webui/browser/service.py) and the live JSON update
-# payloads (autostream_webui_api) call these functions so the displayed values
+# payloads (webui/browser/api_service.py) call these functions so the displayed values
 # are always identical, regardless of how the data reaches the browser.
 #
 # All dicts always contain the full set of keys so callers never need .get()

@@ -20,7 +20,6 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_logging as log_setup
-import autostream_webui_api as api
 from fake_store import FakeStore
 import webui.common as webui_common
 import webui.browser.home_api as webui_home_api

@@ -14,7 +14,7 @@ Responsibilities:
 
 Schema / display logic:
   All maintenance-item metadata and display calculations live in
-  webui/browser/service_schema.py so they are shared with autostream_webui_api
+  webui/browser/service_schema.py so they are shared with webui/browser/api_service.py
   without either module depending on the other.
 """
 
