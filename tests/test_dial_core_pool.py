@@ -51,9 +51,9 @@ class TestFold:
         assert snap.polling is True
 
     def test_the_pool_signal_wakes_the_core(self, rig):
-        rig.core._poll_wake.clear()
+        rig.core._wake.clear()
         rig.pool.signal()
-        assert rig.core._poll_wake.is_set()
+        assert rig.core._wake.is_set()
 
     def test_an_unchanged_snapshot_keeps_its_mapped_state(self, rig):
         rig.add("Kitchen", peer("Kitchen", playing=True))
@@ -316,3 +316,47 @@ class TestStartFailure:
     def test_a_recent_failure_read_first_is_shown(self, rig):
         rig.add("Kitchen", peer("Kitchen", playing=True, start_failure=failure(at=time.time() - 2)))
         assert rig.fold().start_failure is not None
+
+
+# ---- the volume target and the operator socket ---------------------------------
+
+
+class TestVolumeTarget:
+    def test_a_manual_focus_is_the_volume_target_by_its_appliance_id(self, rig):
+        assert rig.core.focus_volume_target() is None
+        rig.add("Kitchen", peer("Kitchen"))
+        rig.fold()
+        assert rig.core.focus_volume_target() is None
+        rig.core.set_focus(aid("Kitchen"))
+        target = rig.core.focus_volume_target()
+        assert target.appliance_id == aid("Kitchen") and rig.pool.get(target.appliance_id) is not None
+
+    def test_a_refused_or_gone_focus_is_no_target(self, rig):
+        rig.add("Kitchen", peer("Kitchen"))
+        rig.fold()
+        rig.core.set_focus(aid("Kitchen"))
+        rig.set("Kitchen", peer("Kitchen", access="none", access_reason="dial_not_authorized", seq=2))
+        rig.fold()
+        assert rig.core.focus_volume_target() is None
+        rig.remove("Kitchen")
+        rig.fold()
+        assert rig.core.focus_volume_target() is None
+
+
+class TestControlSocketRecords:
+    def test_the_records_come_from_the_folded_state(self, rig):
+        from dial_control import core_target_records
+        from dial_mdns import PlayingTarget
+        rig.add("Kitchen", peer("Kitchen", playing=True, master_volume=35,
+                                units=(unit("u1", selected=True), unit("u2"))))
+        rig.fold()
+        target = PlayingTarget(ip="192.0.2.10", port=80, name="autostream on Kitchen",
+                               dial_status=True, appliance_id=aid("Kitchen"))
+        gone = PlayingTarget(ip="192.0.2.11", port=80, name="autostream on Hall", appliance_id=aid("Hall"))
+        records = core_target_records(rig.core)([target, gone], "dial-uuid")
+        by_name = {r["name"]: r for r in records}
+        kitchen = by_name["autostream on Kitchen"]
+        assert (kitchen["master_volume"], kitchen["selected_output_count"], kitchen["status_error"]) == (35, 1, None)
+        assert by_name["autostream on Hall"]["status_error"] == "unreachable"
+        assert [r["name"] for r in records] == ["autostream on Hall", "autostream on Kitchen"]
+        assert rig.pool.get(aid("Kitchen")).sent() == []

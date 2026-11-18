@@ -4,8 +4,8 @@ pure decisions made over it.
 Frozen snapshot dataclasses (collections as tuples, no side-effecting
 methods) and reducers that take everything they need as arguments: no I/O,
 no threads, no locks, no clock reads (the time is always passed in), and no
-import of the display. Whoever owns the state (the core's poll tick) does
-the fetching and the writing, and calls these to decide.
+import of the display. Whoever owns the state (the core's fold) does the
+reading and the writing, and calls these to decide.
 
 Field order in every dataclass is append-only, so positional construction
 stays valid as fields are added at the end.
@@ -21,8 +21,7 @@ import unicodedata
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
-from dial_capabilities import appliance_capabilities, txt_capabilities
-from dial_mdns import PlayingTarget, appliance_display_name
+from dial_mdns import appliance_display_name
 from dial_network import NetworkView
 from dial_repeat_store import RepeatRecord
 from dial_sdhealth import SdHealthView
@@ -33,9 +32,6 @@ from dial_volume import select_volume_target
 AUTH_UNKNOWN = "unknown"
 AUTH_AUTHORIZED = "authorized"
 AUTH_UNAUTHORIZED = "unauthorized"
-
-# How often the outputs list is refetched while someone is watching it.
-OUTPUTS_REFRESH_S = 2.0
 
 # The EQ bass/treble range: both ends (the core's step and the appliance's
 # own apply_eq_fields) independently clamp to it.
@@ -115,13 +111,6 @@ def title_fallback(now_playing: "NowPlaying | None") -> str:
     if not awaiting_title(now_playing):
         return ""
     return now_playing.input_label or PLAYING_TEXT
-
-
-def input_label_from_record(record: dict | None) -> str:
-    """The input label carried by a status record, or "" when absent."""
-    value = record.get("input") if isinstance(record, dict) else None
-    label = value.get("label") if isinstance(value, dict) else ""
-    return label if isinstance(label, str) else ""
 
 
 @dataclass(frozen=True)
@@ -264,7 +253,7 @@ class TransportRequest:
     requested_at: float
     state: str                # "pending" | "accepted" | "rejected"
     changed_at: float
-    error: str | None         # the daemon's error string on rejection, or a reply id (see dial_core_poll.reply_error_id), else None
+    error: str | None         # the error name of a rejection, else None
     output_id: str | None = None   # the output an output request was for
     retry_after_s: int = 0         # seconds a rate-limited reply asked the sender to wait
     shown: tuple[bool, int | None] | None = None   # (selected, volume) an output request shows for its output until a later reading or a rejection
@@ -478,7 +467,7 @@ class DialInfo:               # this dial, for any surface
 
 @dataclass(frozen=True)
 class TickContext:
-    """What a poll tick started from, carried on the snapshot that ends it,
+    """What a fold started from, carried on the snapshot that ends it,
     so a view can tell what that tick changed: the reporting appliance, the
     now-playing line and the idle-screen affordance as they were before it,
     whether it cleared the manual focus, and whether it found a focus
@@ -515,7 +504,7 @@ class CoreSnapshot:
     dial: DialInfo                      # this dial: name, version, address, inputs present
     dots_active: bool = False           # the page dots are tappable for the focused/reporting appliance
     visible_playing: tuple[str, ...] = ()   # ids of the playing appliances this dial may use (not refused, identified)
-    ticks: int = 0                      # poll ticks completed; a snapshot with a new count ends a tick
+    ticks: int = 0                      # folds completed; a snapshot with a new count ends a tick
     tick: TickContext | None = None     # what the tick that ended in this snapshot started from
     auth_promotions: int = 0            # appliances a pushed auth change has confirmed as newly authorised
     outputs_request: TransportRequest | None = None  # the latest output request and its outcome
@@ -743,7 +732,7 @@ def attribute_appliance_warnings(warnings, name: str) -> tuple[ApplianceWarning,
     return tuple(replace(w, appliance_name=name) for w in warnings)
 
 
-# ---- poll decisions ------------------------------------------------------
+# ---- focus decisions-----------------------------------------------------
 
 
 def visible_targets(targets: Iterable) -> list:
@@ -751,16 +740,6 @@ def visible_targets(targets: Iterable) -> list:
     carrying an identity (an unresolved legacy or identity-less appliance
     cannot be addressed or tracked)."""
     return [t for t in targets if t.auth != AUTH_UNAUTHORIZED and t.appliance_id]
-
-
-def started_refused(targets: Iterable, prev_playing_ids: Iterable[str]) -> list[str]:
-    """Ids of refused appliances that have just started playing: in the
-    playing set now, not last tick, and confirmed unauthorized."""
-    prev = prev_playing_ids if isinstance(prev_playing_ids, (set, frozenset)) else set(prev_playing_ids)
-    return [
-        t.appliance_id for t in targets
-        if t.appliance_id not in prev and t.auth == AUTH_UNAUTHORIZED
-    ]
 
 
 @dataclass(frozen=True)
@@ -788,7 +767,7 @@ def resolve_focus(
     on an idle appliance is otherwise kept even while something else plays.
     A pending (picker-started replay) grace keeps a not-yet-rostered focus
     until it expires or the appliance is sighted. *auth_state* maps an
-    appliance id to its dial_auth state; it is read only for the grace
+    appliance id to its authorisation state; it is read only for the grace
     check."""
     focus_id = prev_manual
     pending = prev_pending
@@ -922,8 +901,7 @@ def select_from_records(ordered: list, records: dict, pin_target) -> Selection:
     """The whole walk's decision over already-fetched *records* (service
     name -> status record, absent for an errored or unfetched target).
     Unauthorized targets are skipped; a pinned target without status
-    support is selected by name alone. The same steps the poll takes one
-    fetch at a time."""
+    support is selected by name alone."""
     fallback = None
     for target in ordered:
         is_pin = pin_target is not None and target is pin_target
@@ -947,47 +925,6 @@ def reporting_for(idle_focus, visible: list, selected_service: str | None):
     if idle_focus is not None:
         return idle_focus
     return select_volume_target(visible, selected_service)
-
-
-def with_accepted_replay(
-    accepted: tuple[str, float] | None,
-    targets: list,
-    roster: list,
-    manual_id: str | None,
-    rec: RepeatRecord | None,
-    now: float,
-) -> tuple[list, tuple[str, float] | None]:
-    """*targets* (the mDNS playing set), plus the appliance whose replay the
-    dial has just had accepted, until its own playing advertisement
-    arrives. Returns (targets, accepted): *accepted* comes back None once
-    the window is over. The window ends as soon as the advertisement is
-    seen, when the dial stops following the appliance, when its repeat
-    record *rec* no longer says a replay is running, or at its deadline.
-    The roster is the one published by the previous poll."""
-    if accepted is None:
-        return targets, None
-    appliance_id, until = accepted
-    if (
-        now >= until
-        or manual_id != appliance_id
-        or any(t.appliance_id == appliance_id for t in targets)
-        or rec is None or not rec.available or rec.state not in ("replaying", "fading_out")
-    ):
-        return targets, None
-    entry = next(
-        (r for r in roster if r.appliance_id == appliance_id and r.auth != AUTH_UNAUTHORIZED),
-        None,
-    )
-    if entry is None:
-        return targets, accepted
-    return [*targets, PlayingTarget(
-        ip=entry.ip, port=entry.port, name=entry.name, dial_api=entry.dial_api,
-        audio_status=entry.audio_status, dial_status=entry.dial_status,
-        dial_outputs=entry.dial_outputs, dial_eq=entry.dial_eq,
-        service_name=entry.service_name, playing_since=now,
-        appliance_id=entry.appliance_id, auth=entry.auth,
-        dial_eq_version=getattr(entry, "dial_eq_version", 0),
-    )], accepted
 
 
 # ---- rows and availability -----------------------------------------------
@@ -1054,9 +991,8 @@ def display_order(entries: Iterable) -> list:
     appliance list is shown: authorisation first (authorised, then unknown,
     then refused), then playing before idle, then by display name, then by
     id. A total order on stable fields, so a list moves only when an
-    appliance's own state changes. The roster's own order is the poll's
-    walk order and is left alone; lists built for display come through
-    here."""
+    appliance's own state changes. The roster's own order is the walk
+    order and is left alone; lists built for display come through here."""
     def key(r):
         service_name = getattr(r, "service_name", "") or ""
         return (
@@ -1068,78 +1004,9 @@ def display_order(entries: Iterable) -> list:
     return sorted(entries, key=key)
 
 
-def appliance_states(
-    roster: Iterable, repeats: dict | None = None, appliance_warnings: dict | None = None,
-    capabilities: dict | None = None, statuses: dict | None = None,
-) -> tuple:
-    """One ApplianceState per roster entry, in display order (see
-    display_order). *repeats* maps
-    an appliance id to its repeat record, *appliance_warnings* to its
-    validated warnings, *statuses* to the (status_error, master_volume,
-    muted) the last poll tick read from it. *capabilities* maps an appliance id to its
-    Capabilities as already read through the switch point, for a caller that
-    holds a lock the registry's must not be taken under (an id missing from
-    it reads from the entry's mDNS flags); without it each entry is read
-    through the switch point here. Entries are read defensively:
-    anything an entry does not carry takes its neutral value. An appliance
-    the last tick did not ask has no entry in *statuses*, and its error,
-    volume and mute stay None."""
-    repeats = repeats or {}
-    statuses = statuses or {}
-    appliance_warnings = appliance_warnings or {}
-    out = []
-    for r in display_order(roster):
-        appliance_id = getattr(r, "appliance_id", "") or ""
-        service_name = getattr(r, "service_name", "") or ""
-        ip = getattr(r, "ip", "") or ""
-        port = getattr(r, "port", 0) or 0
-        if capabilities is None:
-            caps = appliance_capabilities(r)
-        else:
-            caps = capabilities.get(appliance_id) or txt_capabilities(r)
-        scheme, host, web_port = webui_address(ip, port)
-        status_error, master_volume, muted = statuses.get(appliance_id, (None, None, None))
-        out.append(ApplianceState(
-            appliance_id=appliance_id,
-            service_name=service_name,
-            name=appliance_display_name(service_name) if isinstance(service_name, str) else "",
-            ip=ip,
-            port=port,
-            playing=bool(getattr(r, "playing", False)),
-            playing_since=0.0,
-            auth=getattr(r, "auth", ""),
-            dial_status=bool(getattr(r, "dial_status", False)),
-            dial_outputs=caps.outputs,
-            dial_eq=caps.eq,
-            repeat_capable=caps.repeat,
-            dial_proto_version=getattr(r, "dial_proto_version", 0),
-            dial_eq_version=caps.eq_version,
-            dial_outputs_version=caps.outputs_version,
-            status_error=status_error,
-            master_volume=master_volume,
-            muted=muted,
-            repeat=repeats.get(appliance_id),
-            webui_scheme=scheme,
-            webui_host=host,
-            webui_port=web_port,
-            supplies_warnings=caps.warnings,
-            warnings=appliance_warnings.get(appliance_id, ()),
-        ))
-    return tuple(out)
-
-
 def eq_gain(bands: Iterable, band_id: str) -> int | None:
     """The gain of the band named *band_id*, or None when there is none."""
     return next((b.gain_db for b in bands if b.id == band_id), None)
-
-
-def idle_affordance(roster: Iterable, held_ids) -> bool:
-    """True when at least one rostered, authorized, repeat-capable appliance
-    is currently held (a retained recording with nothing else to show)."""
-    return any(
-        r.appliance_id in held_ids and r.auth == AUTH_AUTHORIZED and r.repeat_capable
-        for r in roster
-    )
 
 
 def _roster_entry(roster: Iterable, appliance_id: str | None):
@@ -1148,39 +1015,9 @@ def _roster_entry(roster: Iterable, appliance_id: str | None):
     return next((r for r in roster if r.appliance_id == appliance_id), None)
 
 
-def outputs_available(roster: Iterable, focused_id: str | None) -> bool:
-    entry = _roster_entry(roster, focused_id)
-    return (
-        entry is not None and appliance_capabilities(entry).outputs
-        and entry.auth != AUTH_UNAUTHORIZED
-    )
-
-
-def eq_available(
-    roster: Iterable, focused_id: str | None, compact: "bool | Callable[[], bool]",
-) -> bool:
-    """The EQ page is available for the focused appliance when it advertises
-    dial_eq and is not refused, with an extra veto on the compact tier.
-    *compact* may be a callable, read only when the other conditions hold."""
-    entry = _roster_entry(roster, focused_id)
-    return (
-        entry is not None and appliance_capabilities(entry).eq
-        and entry.auth != AUTH_UNAUTHORIZED
-        and not (compact() if callable(compact) else compact)
-    )
-
-
 def dots_active(rec: RepeatRecord | None, eq_is_available: bool) -> bool:
     """The page dots are tappable when the focused appliance has a fresh,
     available repeat record, or the EQ page is available for it."""
     return (rec is not None and rec.available) or eq_is_available
 
 
-def availability(
-    roster: Iterable, focused_id: str | None, compact: "bool | Callable[[], bool]",
-    rec: RepeatRecord | None,
-) -> tuple[bool, bool, bool]:
-    """(dots, outputs, eq) for the focused/reporting appliance. *rec* is its
-    repeat record, read from the store by the caller."""
-    eq = eq_available(roster, focused_id, compact)
-    return dots_active(rec, eq), outputs_available(roster, focused_id), eq

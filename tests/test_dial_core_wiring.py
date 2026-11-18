@@ -3,26 +3,20 @@ info (name, version, address, inputs, scopes), the volume readout, and the
 effects the worker callbacks queue for a view."""
 import os
 import sys
-import time
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
-import pytest
 
-import dial_core
-import dial_repeat_store as drs
-from dial_core_state import AUTH_AUTHORIZED
-from dial_core import ADDRESS_REFRESH_S, EFFECTS_BACKLOG_MAX, DialCore, RepeatEffect, SourceEffects
+from dial_core import ADDRESS_REFRESH_S, EFFECTS_BACKLOG_MAX, DialCore, SourceEffects
 from dial_core_state import NowPlaying
-from dial_mdns import RosterEntry
 from dial_network import LINK_CONNECTED, NetworkView
 
 AID = "a" * 20
 
 
 def _core():
-    return DialCore("dial-1", lambda: [], lambda: [])
+    return DialCore("dial-1")
 
 
 class TestDialInfo:
@@ -127,15 +121,6 @@ class TestReadoutChanged:
             core.mute_changed()
             core.readout_changed()
 
-    def test_the_end_of_a_tick_publishes_the_readout_as_the_store_has_it(self):
-        core = _core()
-        core.set_field("now_playing", NowPlaying("Kitchen", "", "", 40))
-        with patch("dial_core.shown_volume", return_value=31):
-            core.publish_tick(polling=True, volume_readout=core._readout_now())
-        assert core.snapshot().volume_readout == ("Kitchen", 31)
-        core.publish_tick(polling=True)
-        assert core.snapshot().volume_readout == ("Kitchen", 31)
-
     def test_a_view_is_told_to_repaint_before_it_is_woken(self):
         core = _core()
         seen = []
@@ -157,28 +142,6 @@ class TestQueuedWorkerEffects:
         effects = core.on_network_view(NetworkView(LINK_CONNECTED, "connected"))
         assert core.take_effects() == [effects]
         assert [c.warning_id for c in effects.changes] == ["nowifi"]
-
-    def test_a_repeat_result_queues_what_it_meant(self):
-        core = _core()
-        core.set_roster([RosterEntry(
-            appliance_id=AID, service_name="Kitchen", name="Kitchen", ip="192.0.2.10", port=80,
-            playing=False, repeat_capable=True, auth=AUTH_AUTHORIZED,
-        )])
-        drs.repeat_store.update(AID, drs.parse_repeat_object({
-            "available": True, "state": "replaying", "armed": False, "held": False,
-            "recording_seconds": 30.0,
-            "replay": {"active": True, "position_seconds": 1.0, "duration_seconds": 30.0},
-        }, time.monotonic()))
-        try:
-            with patch("dial_core.enqueue_transport"):
-                token = core.stop_replay(AID).token
-            outcome = core.on_repeat_result(
-                "transport", AID, 200, {"ok": True, "state": "hold"}, {"token": token},
-            )
-        finally:
-            drs.repeat_store.clear(AID)
-        assert outcome.stop_acked is True
-        assert core.take_effects() == [RepeatEffect(AID, outcome, token)]
 
     def test_a_queue_nobody_drains_keeps_the_newest(self):
         core = _core()

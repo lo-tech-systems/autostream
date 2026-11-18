@@ -3,7 +3,7 @@ control and the operator socket.
 
 The one mDNS browser the dial runs belongs to the peer registry
 (autostream_peer_registry); this module is a thin layer over its sightings.
-It turns each into a PlayingTarget or RosterEntry, with what the core knows of
+It turns each into a PlayingTarget, with what the core knows of
 the appliance (whether it is playing and since when, and whether it takes this
 dial's writes) read through the callable `attach` is given. Nothing here
 browses, fetches or decides who is authorised.
@@ -61,6 +61,7 @@ class PlayingTarget:
         return self.dial_proto_version >= 2
 
 
+# One appliance row with the fields the core's state helpers read.
 @dataclass(frozen=True)
 class RosterEntry:
     appliance_id:   str
@@ -146,32 +147,6 @@ def get_display_targets() -> list[PlayingTarget]:
 def get_playing_targets() -> list[PlayingTarget]:
     """One entry per playing appliance, for the fan-out."""
     return get_display_targets()
-
-
-def get_known_ips() -> dict[str, str]:
-    """appliance_id -> ip for every appliance sighted right now, playing or
-    idle."""
-    return {s.id: s.ip for s in _sightings()}
-
-
-def get_roster() -> list[RosterEntry]:
-    """Every sighted appliance: those playing first, then by display name."""
-    roster = []
-    for s in _sightings():
-        view = _view(s.id)
-        current = s.proto == PROTOCOL
-        roster.append(RosterEntry(
-            appliance_id=s.id, service_name=s.service_name, name=s.service_name,
-            ip=s.ip, port=s.port, playing=bool(view is not None and getattr(view, "playing", False)),
-            repeat_capable=current, audio_status=current, dial_status=current,
-            dial_outputs=current, dial_eq=current,
-            auth=getattr(view, "auth", _AUTH_UNKNOWN),
-            dial_proto_version=s.proto or 0, dial_eq_version=2 if current else 0, version=s.version,
-        ))
-    roster.sort(key=lambda r: (
-        not r.playing, appliance_display_name(r.service_name).lower(), r.appliance_id,
-    ))
-    return roster
 
 
 def _avahi_unescape(s: str) -> str:

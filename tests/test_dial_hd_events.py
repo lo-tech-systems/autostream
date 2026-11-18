@@ -2,7 +2,6 @@
 then real clients on a real HdServer over 127.0.0.1 with a FakeCore."""
 from __future__ import annotations
 
-import dataclasses
 import http.client
 import json
 import os
@@ -217,89 +216,6 @@ class TestChangeHub:
     def test_state_without_a_builder_is_an_error(self, core):
         with pytest.raises(RuntimeError):
             ChangeHub(core).state()
-
-
-class TestWatchFollow:
-    def watches(self, core):
-        return [w for w in core.watches]
-
-    def with_focus(self, core, manual=None, reporting=None):
-        focus = dataclasses.replace(core.snapshot().focus, manual_id=manual, reporting_id=reporting)
-        core.publish(focus=focus)
-
-    def test_nothing_is_watched_with_no_client(self, hub, core):
-        hub.start()
-        core.publish(polling=False)
-        time.sleep(0.1)
-        assert core.watches == []
-
-    def test_a_client_starts_the_follow_and_leaving_ends_it(self, hub, core):
-        clients = [0]
-        hub.set_client_counter(lambda: clients[0])
-        hub.start()
-        clients[0] = 1
-        hub.poke()
-        assert wait_until(lambda: len(core.watches) == 2)
-        assert core.watches == [
-            ("outputs", hs.LOUNGE, "hd", True), ("eq", hs.LOUNGE, "hd", True)]
-        clients[0] = 0
-        hub.poke()
-        assert wait_until(lambda: len(core.watches) == 4)
-        assert core.watches[2:] == [
-            ("outputs", hs.LOUNGE, "hd", False), ("eq", hs.LOUNGE, "hd", False)]
-
-    def test_the_follow_moves_with_focus(self, hub, core):
-        hub.set_client_counter(lambda: 1)
-        hub.start()
-        hub.poke()
-        assert wait_until(lambda: len(core.watches) == 2)
-        self.with_focus(core, manual=hs.KITCHEN, reporting=hs.LOUNGE)
-        assert wait_until(lambda: len(core.watches) == 4)
-        assert core.watches[2:] == [
-            ("outputs", hs.KITCHEN, "hd", True), ("eq", hs.KITCHEN, "hd", True)]
-
-    def test_losing_focus_drops_the_watch(self, hub, core):
-        hub.set_client_counter(lambda: 1)
-        hub.start()
-        hub.poke()
-        assert wait_until(lambda: len(core.watches) == 2)
-        self.with_focus(core, manual=None, reporting=None)
-        assert wait_until(lambda: len(core.watches) == 4)
-        assert core.watches[2:] == [
-            ("outputs", hs.LOUNGE, "hd", False), ("eq", hs.LOUNGE, "hd", False)]
-
-    def test_an_unchanged_focus_is_not_registered_again(self, hub, core):
-        hub.set_client_counter(lambda: 1)
-        hub.start()
-        hub.poke()
-        assert wait_until(lambda: len(core.watches) == 2)
-        for _ in range(5):
-            core.publish(polling=False)
-            time.sleep(0.02)
-        time.sleep(0.1)
-        assert len(core.watches) == 2
-
-    def test_stop_drops_the_watch(self, hub, core):
-        hub.set_client_counter(lambda: 1)
-        hub.start()
-        hub.poke()
-        assert wait_until(lambda: len(core.watches) == 2)
-        hub.stop()
-        assert core.watches[2:] == [
-            ("outputs", hs.LOUNGE, "hd", False), ("eq", hs.LOUNGE, "hd", False)]
-
-    def test_a_failing_core_call_does_not_stop_the_hub(self, hub, core):
-        def boom(*args, **kwargs):
-            raise RuntimeError("core went away")
-
-        core.watch_outputs = boom
-        hub.set_client_counter(lambda: 1)
-        hub.start()
-        hub.poke()
-        time.sleep(0.1)
-        core.publish(polling=False)
-        assert wait_until(lambda: hub.seq() >= 2)
-        hub.stop()
 
 
 # ---- the stream over a real socket -----------------------------------------
@@ -632,30 +548,3 @@ class TestSlowClients:
         assert wait_until(lambda: stack.server.client_count() == 0, 2.0)
 
 
-class TestWatchFollowWithClients:
-    def test_the_follow_runs_only_while_a_client_is_connected(self, stack):
-        core = stack.core
-        core.publish(polling=False)
-        time.sleep(0.1)
-        assert core.watches == []
-        client = connect(stack)
-        client.event()
-        assert wait_until(lambda: len(core.watches) == 2)
-        assert ("outputs", hs.LOUNGE, "hd", True) in core.watches
-        assert ("eq", hs.LOUNGE, "hd", True) in core.watches
-        client.close()
-        assert wait_until(lambda: len(core.watches) == 4)
-        assert ("outputs", hs.LOUNGE, "hd", False) in core.watches
-        assert ("eq", hs.LOUNGE, "hd", False) in core.watches
-
-    def test_a_second_client_does_not_register_again(self, stack):
-        a = connect(stack)
-        a.event()
-        assert wait_until(lambda: len(stack.core.watches) == 2)
-        b = connect(stack)
-        b.event()
-        time.sleep(0.15)
-        assert len(stack.core.watches) == 2
-        a.close()
-        time.sleep(0.5)
-        assert len(stack.core.watches) == 2        # b is still connected

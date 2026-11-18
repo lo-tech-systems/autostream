@@ -182,23 +182,14 @@ class TestShape:
         assert ids == [hs.LOUNGE]
 
     def test_the_state_list_and_the_screen_selector_show_the_same_order(self):
-        from dial_core import DialCore
-        from dial_mdns import RosterEntry
+        from dial_pool_support import Rig, peer
 
-        def entry(name, auth, playing=False):
-            return RosterEntry(
-                appliance_id=(name.encode().hex() + "0" * 20)[:20], service_name=name,
-                name=name, ip="192.0.2.10", port=80, playing=playing, repeat_capable=False,
-                auth=auth)
-
-        core = DialCore("dial-1", lambda: [], lambda: [])
-        core.set_roster([
-            entry("Alpha", "unauthorized", playing=True),
-            entry("Mid", "unknown"),
-            entry("Zulu", "authorized"),
-            entry("Beta", "authorized", playing=True),
-        ])
-        snapshot = core.snapshot()
+        rig = Rig(start_lane=False)
+        rig.add("Alpha", peer("Alpha", playing=True, access="none", access_reason="dial_not_authorized"))
+        rig.add("Mid", peer("Mid", access=None))
+        rig.add("Zulu", peer("Zulu"))
+        rig.add("Beta", peer("Beta", playing=True))
+        snapshot = rig.fold()
         scenario = hs.SCENARIOS["nothing_playing"]
         state = dataclasses.replace(scenario, snapshot=dataclasses.replace(
             scenario.snapshot, appliances=snapshot.appliances)).state()

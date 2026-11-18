@@ -15,15 +15,10 @@ its own socket (under a short write timeout) and the hub's condition while it
 waits, so a client that stops reading is dropped after one write timeout and
 the core, the hub and every other client carry on.
 
-The hub thread also keeps the focused appliance's outputs and EQ fetched while
-at least one client is connected (and only then), so a dial with no page open
-asks for neither.
-
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import logging
 import select
 import socket
 import threading
@@ -40,11 +35,8 @@ SSE_LIVENESS_S = 1.0
 # timeout, instead of sitting on a large buffer.
 SSE_SEND_BUFFER_BYTES = 32 * 1024
 
-# The name the hub watches the core's outputs and EQ under.
-WATCHER = "hd"
-
-# The hub thread wakes at least this often, so a client count that changed
-# without a publish is noticed.
+# The hub thread wakes at least this often, so a stop is noticed even when
+# its wake is lost.
 HUB_POLL_S = 1.0
 
 # A cached body older than this when it is served is built again (same
@@ -60,7 +52,7 @@ class ChangeHub:
         self._core = core
         self._clock = clock
         self._builder = builder
-        self._client_count: Callable[[], int] = lambda: 0
+
         self._event = threading.Event()
         self._flag_lock = threading.Lock()        # guards _dirty only; never held across a call out
         self._dirty = False
@@ -71,7 +63,6 @@ class ChangeHub:
         self._cache: tuple[int, bytes, float] | None = None   # (sequence, body, built at)
         self._thread: threading.Thread | None = None
         self._handle = None
-        self._watched: str | None = None
 
     # ---- wiring ------------------------------------------------------------
 
@@ -79,10 +70,6 @@ class ChangeHub:
         """The function that turns a sequence into the state body."""
         self._builder = builder
 
-    def set_client_counter(self, counter: "Callable[[], int]") -> None:
-        """How many event-stream clients are connected, asked by the hub
-        thread to decide whether to follow the focused appliance."""
-        self._client_count = counter
 
     # ---- lifecycle ---------------------------------------------------------
 
@@ -104,7 +91,6 @@ class ChangeHub:
             self._handle = None
         if thread is not None:
             thread.join(2.0)
-        self._follow(None)
 
     @property
     def stopped(self) -> bool:
@@ -164,30 +150,6 @@ class ChangeHub:
                 with self._cond:
                     self._seq += 1
                     self._cond.notify_all()
-            try:
-                self._follow_focus()
-            except Exception:
-                logging.debug("hd hub: follow failed", exc_info=True)
-
-    def _follow_focus(self) -> None:
-        target = None
-        if self._client_count() > 0:
-            target = self._core.snapshot().focused_id()
-        self._follow(target)
-
-    def _follow(self, target: "str | None") -> None:
-        """Watch the outputs and EQ of *target* (None drops the watch)."""
-        previous = self._watched
-        if target == previous:
-            return
-        self._watched = target
-        watched, on = (target, True) if target is not None else (previous, False)
-        for watch in (self._core.watch_outputs, self._core.watch_eq):
-            try:
-                watch(watched, WATCHER, on)
-            except Exception:
-                logging.debug("hd hub: watch failed", exc_info=True)
-
 
 def _parse_event_id(value: "str | None") -> "int | None":
     try:

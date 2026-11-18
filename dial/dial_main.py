@@ -17,7 +17,7 @@ from typing import Callable
 
 from dial_config import PIN_RESET_PATH, RUNNING_MARKER_PATH, SCOPE_ALL, load_config
 from dial_display_profiles import get_profile_or_default
-from dial_control import DialControlServer
+from dial_control import DialControlServer, core_target_records
 from dial_core import create_dial_core
 from dial_core_state import awaiting_pin
 from dial_hd_events import ChangeHub
@@ -36,7 +36,6 @@ from dial_led import DialLED
 import dial_mdns
 from dial_mdns import (
     get_display_targets,
-    get_known_ips,
     get_playing_targets,
 )
 from dial_network import latest as network_latest
@@ -63,7 +62,6 @@ except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core")))
     from autostream_peer_client import PeerClient, PeerPool  # noqa: E402
     from autostream_peer_registry import PeerRegistry  # noqa: E402
-from dial_target_status import enrich_targets
 from dial_volume import select_volume_target, start_volume_worker
 
 
@@ -277,32 +275,15 @@ def _clear_recovery_request() -> None:
 
 class _HeadlessDisplay(NoOpDisplayStatusProvider):
     """Stands in for the display when its stack will not load: there is no
-    screen, but the core still polls, so auth pushes are probed, volume and
-    mute follow the appliance the dial reports from, and warnings and the
-    update watch keep running. The poll follows the fitted flag the way a
-    real display's does. The core is built, started and stopped by the
+    screen, but the core still holds every appliance, so volume and mute
+    follow the appliance the dial reports from, and warnings and the update
+    watch keep running. The core is built, started and stopped by the
     caller."""
 
     def __init__(self, core, display_config) -> None:
         super().__init__()
         self.core = core
         self.update_config(display_config)
-
-    def update_config(self, config) -> dict:
-        status = super().update_config(config)
-        self.core.set_polling(config.fitted)
-        self.core.set_poll_interval(getattr(config, "poll_interval_s", None))
-        return status
-
-    def notify_auth_changed(self, appliance_id: str) -> None:
-        self.core.notify_auth_changed(appliance_id)
-
-    def notify_warnings_changed(self, appliance_id: str) -> None:
-        self.core.notify_warnings_changed(appliance_id)
-
-    def notify_state_changed(self, appliance_id: str, changed: tuple = (), *,
-                             wake: bool = True) -> None:
-        self.core.notify_state_changed(appliance_id, changed, wake=wake)
 
 
 def _core_view(core):
@@ -771,19 +752,19 @@ def main() -> None:
     # everything below that acts on appliances (the display, the workers,
     # the inputs) is handed it. It is started further down, after the
     # splash, and stopped in the finally block.
-    core = create_dial_core(cfg, get_display_targets)
+    core = create_dial_core(cfg)
 
     # The display is built and lit before anything else that costs time
     # (the update-timer reconcile and the announce verb both fork
     # subprocesses), so the panel shows "Starting..." as early as the
     # process can manage. Imported lazily so a Pillow/display-stack import
     # failure (e.g. an incomplete apt install) degrades to a screenless
-    # display, with the core still polling, rather than taking down the
+    # display, with the core still running, rather than taking down the
     # whole service — volume control must not depend on Pillow.
     display = _build_display(cfg, core)
     # The boot splash: opens the manager's one backend and paints
     # "Starting..." now, before any display thread exists; display.start()
-    # below reuses that open and the first poll replaces the splash.
+    # below reuses that open and the first fold replaces the splash.
     # getattr guards the NoOpDisplayStatusProvider fallback, which has no
     # screen. show_starting() never raises.
     show_starting = getattr(display, "show_starting", None)
@@ -795,10 +776,7 @@ def main() -> None:
 
     led = DialLED(cfg.led_gpio)
 
-    http_server = DialHTTPServer(
-        cfg, display_status_provider=display,
-        get_rostered_ips=get_known_ips,
-    )
+    http_server = DialHTTPServer(cfg, display_status_provider=display)
     http_server.start()
 
     # The HD page's loopback server runs on every dial. A port that cannot be
@@ -961,7 +939,7 @@ def main() -> None:
     control_server = DialControlServer(
         get_runtime_status=http_server.get_runtime_status,
         get_targets=get_playing_targets,
-        enrich_targets=enrich_targets,
+        enrich_targets=core_target_records(core),
         nudge_up=nudge_up,
         nudge_down=nudge_down,
         nudge_delta=nudge_delta,

@@ -2,18 +2,20 @@
 core, the real volume worker's stores and the real state builder together,
 with only the appliances' clients stood in for.
 
-Covers: the state following the appliance the dial reports from after a poll
+Covers: the state following the appliance the dial reports from after a fold
 (its level and its mute flag, whatever the readout last named), a mute toggle
-reaching the state at once under either scope without waiting for a poll, the
+reaching the state at once under either scope without waiting for a fold, the
 worker telling the core when it has written the mute store, and a view being
 left unpainted by it.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import queue
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,15 +23,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import pytest
 
-import dial_auth
 import dial_hd_server as hds
-import dial_repeat_store as drs
 import dial_volume as dv
-from dial_core import DialCore, PollIO
+from autostream_peer_registry import Sighting
+from dial_core import DialCore
 from dial_core_state import ActionResult
 from dial_hd_events import ChangeHub
 from dial_mdns import PlayingTarget
-from dial_pool_support import ok, refused
+from dial_pool_support import ok, peer, refused
 
 DIAL_ID = "dial-1"
 
@@ -54,8 +55,9 @@ def _status(volume, muted) -> dict:
 
 
 class Appliances:
-    """The appliances as the network stand-ins see them: each one's volume
-    and mute flag, answering status, mute and volume requests."""
+    """The appliances as the clients see them: each one's volume and mute
+    flag, held and answering mute and volume requests. Also the pool and the
+    registry the core reads them from."""
 
     def __init__(self, *targets, playing=None) -> None:
         self.all_targets = list(targets)
@@ -65,9 +67,20 @@ class Appliances:
         self.by_ip = {t.ip: t.service_name for t in targets}
         self.refuse_mute = False
 
-    def fetch_status(self, target, *args, **kwargs) -> dict:
-        name = target.service_name
-        return _status(self.volume[name], self.muted[name])
+    def sightings(self) -> dict:
+        return {t.appliance_id: Sighting(id=t.appliance_id, hostname=t.name, ip=t.ip, port=t.port,
+                                         version="0.8.0", control=True, proto=4,
+                                         service_name=t.service_name)
+                for t in self.all_targets}
+
+    def clients(self) -> dict:
+        return {t.appliance_id: self.client_for(t.appliance_id) for t in self.all_targets}
+
+    def get(self, appliance_id):
+        return self.client_for(appliance_id)
+
+    def subscribe(self, fn) -> int:
+        return 1
 
     def client_for(self, appliance_id):
         """The client the volume worker sends through for one appliance."""
@@ -84,8 +97,12 @@ class _Client:
         self.name = name
 
     def snapshot(self):
-        return SimpleNamespace(
-            reachable=True, parts={"outputs": {"muted_all": self.appliances.muted[self.name]}})
+        a = self.appliances
+        target = next(t for t in a.all_targets if t.service_name == self.name)
+        snap = peer(self.name, playing=any(t.service_name == self.name for t in a.targets),
+                    master_volume=a.volume[self.name], muted_all=a.muted[self.name],
+                    heard_at=time.monotonic())
+        return dataclasses.replace(snap, peer_id=target.appliance_id)
 
     def submit(self, intent, args, *, extra_body=None, read_s=None, backoff=True):
         a = self.appliances
@@ -108,41 +125,38 @@ def _drain_queue() -> None:
 
 @pytest.fixture(autouse=True)
 def _clean_stores():
-    """The worker's stores, its queue and the auth and repeat stores are
-    process-wide."""
+    """The worker's stores and its queue are process-wide."""
     def reset():
         dv.observe_mute_state(None, None)
         dv.observe_master_volume(None, None)
         _drain_queue()
-        dial_auth.auth_map.reset()
-        drs.repeat_store.prune(set())
     reset()
     yield
     reset()
 
 
 class Rig:
-    """A polling core over *appliances*, the worker's callbacks wired to it
-    as the service wires them, and the HD server's state builder."""
+    """A core reading *appliances* through their clients, the worker's
+    callbacks wired to it as the service wires them, and the HD server's
+    state builder."""
 
     def __init__(self, appliances: Appliances, mute_scope="current") -> None:
         self.appliances = appliances
         self.scope = mute_scope
-        self.core = DialCore(DIAL_ID, lambda: list(appliances.targets), lambda: [])
-        self.core.set_io(PollIO(fetch_status=appliances.fetch_status, enrich=lambda *a, **k: None))
+        self.core = DialCore(DIAL_ID)
+        self.core.attach_pool(appliances, appliances)
         self.core.set_mute_scope(lambda: self.scope)
         self.hub = ChangeHub(self.core)
         self.server = hds.HdServer(SimpleNamespace(), self.core, hub=self.hub, port=0)
         self.hub.set_builder(self.server.build_state_bytes)
         self.steps = 0
         self.core.subscribe(self._count)
-        self.core.set_polling(True)
 
     def _count(self) -> None:
         self.steps += 1
 
     def poll(self) -> None:
-        self.core.poll_once()
+        self.core.fold_once()
 
     def volume(self) -> dict:
         return json.loads(self.server.build_state_bytes(1))["volume"]

@@ -1,7 +1,7 @@
 """Tests for how the dial display folds the core's snapshots into the panel:
 no frame for a snapshot nothing on screen depends on, exactly the frames a
 real change needs, the wake rules for a sleeping panel, and the real threads
-(the core's poll, the view's repaint loop) end to end."""
+(the core's folds, the view's repaint loop) end to end."""
 import contextlib
 import time
 from unittest.mock import patch
@@ -17,6 +17,7 @@ from dial_test_support import (
     _track_id,
     make_display,
 )
+import dial_core
 import dial_display as dd
 from dial_core import SourceEffects
 
@@ -46,10 +47,10 @@ class _Rig:
         picture = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch(
-                "dial_core.fetch_target_status",
+                "dial_test_support.fetch_target_status",
                 side_effect=lambda *a, **k: _status_result(track_id=self.track),
             ))
-            stack.enter_context(patch("dial_core_poll.default_fetch_artwork", return_value=(b"jpeg", "")))
+            stack.enter_context(patch("dial_artwork.default_fetch_artwork", return_value=(b"jpeg", "")))
             stack.enter_context(patch("dial_display.decode_artwork", return_value=picture))
             stack.enter_context(patch(
                 "dial_display_compositor.transform_artwork_for_panel", return_value=picture,
@@ -109,8 +110,7 @@ class TestNoRedundantFrames:
         rig.tick()
         rig.display._subscription = rig.display._core.subscribe(rig.display._core_changed)
         frames = len(rig.fb.displayed)
-        rig.display._core.set_field("eq_available", True)
-        rig.display._core.set_field("outputs_available", True)
+        rig.display._core._publish(lambda state: None)
         assert rig.display._overlay_signal.is_set()        # the thread is woken ...
         _fold(rig.display)
         assert len(rig.fb.displayed) == frames             # ... and finds nothing to draw
@@ -177,15 +177,15 @@ class TestSleepingPanel:
         assert rig.display._display_sleeping
         assert rig.fb.wake_calls == 0 and len(rig.fb.displayed) == frames
 
-    def test_touch_wakes_it_and_asks_the_core_to_poll_and_reconcile(self):
+    def test_touch_wakes_it_and_asks_the_core_to_fold(self):
         rig = _Rig(targets=[])
         rig.tick()
         self._asleep(rig)
-        with patch.object(rig.display._core, "request_poll") as request_poll:
+        with patch.object(rig.display._core, "request_fold") as request_fold:
             rig.display.notify_touch_activity()
             _fold(rig.display)
         assert not rig.display._display_sleeping
-        request_poll.assert_called_with(reconcile=True)
+        request_fold.assert_called_with()
 
     def test_a_confirmed_push_wakes_it_even_with_nothing_playing(self):
         rig = _Rig(targets=[])
@@ -257,16 +257,16 @@ class TestRealThreads:
                 break
         return last
 
-    def test_core_and_view_threads_produce_a_frame_then_stay_quiet(self):
+    def test_core_and_view_threads_produce_a_frame_then_stay_quiet(self, monkeypatch):
         target = _target(auth="authorized")
         display, fb, gt = make_display(targets=[target])
         picture = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
-        with patch("dial_core.fetch_target_status",
+        with patch("dial_test_support.fetch_target_status",
                    side_effect=lambda *a, **k: _status_result(track_id=_track_id())), \
-             patch("dial_core_poll.default_fetch_artwork", return_value=(b"jpeg", "")), \
+             patch("dial_artwork.default_fetch_artwork", return_value=(b"jpeg", "")), \
              patch("dial_display.decode_artwork", return_value=picture), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=picture):
-            display._core.set_poll_interval(0.05)
+            monkeypatch.setattr(dial_core, "FOLD_INTERVAL_S", 0.05)
             display.start()
             try:
                 assert self._wait_until(lambda: len(fb.displayed) > 0, limit=2.0)
@@ -279,32 +279,9 @@ class TestRealThreads:
                 display.stop()
         assert display.get_status()["showing"] in ("artwork", "logo", "noop")
 
-    def test_a_sleeping_panel_wakes_while_the_walks_request_is_still_out(self):
-        target = _target(auth="authorized")
-        display, fb, gt = make_display(targets=[target])
-        display.enable()
-        with display._lock:
-            display._sleep_locked()
-        woke_during_request = []
-
-        def slow_status(*args, **kwargs):
-            # The panel must wake from the playing set, published before
-            # this request returns.
-            self._wait_until(lambda: fb.wake_calls >= 1, limit=2.0)
-            woke_during_request.append(fb.wake_calls)
-            return _status_result(track_id=None)
-
-        with patch("dial_core.fetch_target_status", side_effect=slow_status):
-            display.start()
-            try:
-                assert self._wait_until(lambda: woke_during_request, limit=3.0)
-            finally:
-                display.stop()
-        assert woke_during_request[0] == 1
-
-    def test_the_view_stops_cleanly_with_the_core_polling(self):
+    def test_the_view_stops_cleanly_with_the_core_folding(self, monkeypatch):
         display, fb, gt = make_display(targets=[])
-        display._core.set_poll_interval(0.02)
+        monkeypatch.setattr(dial_core, "FOLD_INTERVAL_S", 0.02)
         display.start()
         assert self._wait_until(lambda: display._core.snapshot().ticks >= 2)
         threads = [display._core._thread, display._repaint_thread]

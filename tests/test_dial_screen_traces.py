@@ -37,15 +37,17 @@ for _p in (_DIAL, _CORE):
 
 import dial_display as dd
 from dial_config import DialDisplayConfig
-from dial_core import FOCUS_PENDING_GRACE_S
+from dial_core_focus import FOCUS_PENDING_GRACE_S
 from dial_core_state import ApplianceWarning, eq_gain
 from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget, RosterEntry
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
-from dial_repeat_store import parse_repeat_object, repeat_store
 from dial_sdhealth import SdHealthView, STATUS_VALID
 from dial_touch_layout import TouchZone
-from dial_test_support import MONOTONIC_TARGETS, FakeBackend, _FakeClock
+from dial_test_support import (
+    MONOTONIC_TARGETS, FakeBackend, _FakeClock, attach_bridge, on_eq_result, on_outputs_result,
+    seed_repeat, set_appliance_warnings, set_roster,
+)
 from dial_warnings import WarningManager, WarningStore
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
@@ -151,9 +153,8 @@ def _art(url_tag: str, title: str = "Song", artist: str = "Artist") -> dict:
 def _aid(tag: str) -> str:
     """A stable, unique-enough 20-character appliance id for *tag*, so each
     scenario/walk can use its own id namespace without colliding with any
-    other's — both dial_auth's map and dial_repeat_store are process-wide
-    singletons, and this suite runs many scenarios back to back in one
-    process without resetting them between scenarios."""
+    other's, as this suite runs many scenarios back to back in one
+    process."""
     return (tag + "0" * 20)[:20]
 
 
@@ -166,13 +167,12 @@ def _make_display(targets, get_roster, cfg=None, backend=None, warnings=None) ->
     gt = MagicMock(return_value=list(targets))
     display = DialDisplay(
         config=cfg,
-        get_display_targets=gt,
         dial_id="dial-uuid",
         logo_path=_TEST_LOGO_PATH,
         backend_factory=lambda: fb,
-        get_roster=get_roster,
         warnings=warnings,
     )
+    attach_bridge(display, gt, get_roster)
     return display, fb, gt
 
 
@@ -205,14 +205,6 @@ class _Ctx:
         aid = getattr(target, "appliance_id", None)
         return self.status_by_id.get(aid, _status_result(appliance_id=aid))
 
-    def fake_enrich(self, targets, dial_id):
-        return [
-            {**self.status_by_id.get(t.appliance_id, _status_result(appliance_id=t.appliance_id)),
-             "name": t.service_name}
-            for t in targets
-        ]
-
-
 def _apply_step(ctx: _Ctx, step: tuple) -> None:
     d = ctx.display
     kind = step[0]
@@ -224,7 +216,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         ctx.status_by_id.update(step[1])
     elif kind == "repeat_store_seed":
         _, aid, obj = step
-        repeat_store.update(aid, parse_repeat_object(obj, ctx.clock.t))
+        seed_repeat(aid, obj)
     elif kind == "open_selector":
         d.open_selector()
     elif kind == "open_picker":
@@ -242,8 +234,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # worker's on_eq_result callback directly, the same shape the
         # worker itself calls it with after a fetch.
         _, aid, status, body = step
-        d.core.on_eq_result("fetch", aid, status, body, {})
-        d._apply_pending_snapshot()
+        on_eq_result(d, "fetch", aid, status, body)
     elif kind == "close_list":
         d.close_list()
     elif kind == "pop_secondary":
@@ -260,7 +251,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.core.set_focus(step[1])
     elif kind == "set_manual_focus_pending":
         d.core.set_focus_pending(step[1], step[2], ctx.clock.t + FOCUS_PENDING_GRACE_S)
-        d.core.request_poll()
+        d.core.request_fold()
     elif kind == "notify_touch_activity":
         d.notify_touch_activity()
     elif kind == "set_pressed":
@@ -270,9 +261,6 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "repaint":
         with d._lock:
             d._repaint_current_locked()
-        # What a repaint wake does after painting: keep the core's record
-        # of the pages being watched in step with the screens that are up.
-        d._sync_core_interest()
     elif kind == "check_timeout":
         d._check_secondary_timeout()
     elif kind == "tick_repeat_line":
@@ -296,7 +284,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         with d._lock:
             d._swap_backend_locked()
     elif kind == "clear_last_roster":
-        d.core.set_roster([])
+        set_roster(d, [])
     elif kind == "update_config":
         d.update_config(dataclasses.replace(d._config, **step[1]))
     elif kind == "open_outputs":
@@ -313,18 +301,13 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # shape the worker itself calls it with after a fetch, stamped with the
         # scenario clock as the worker stamps the fetch it requests.
         _, aid, status, body = step
-        d.core.on_outputs_result("fetch", aid, status, body, {"started_at": ctx.clock.t})
-        d._apply_pending_snapshot()
+        on_outputs_result(d, "fetch", aid, status, body)
     elif kind == "outputs_set_result":
         # ("outputs_set_result", appliance_id, status, body) -- the reply to
         # a set the outputs worker sent, fed to the same callback with the
         # token of the request it answers, as the worker hands it back.
         _, aid, status, body = step
-        held = d.core.snapshot().outputs_request
-        d.core.on_outputs_result(
-            "set", aid, status, body, {"token": None if held is None else held.requested_at},
-        )
-        d._apply_pending_snapshot()
+        on_outputs_result(d, "set", aid, status, body)
     elif kind == "start_failure_effect":
         # ("start_failure_effect", appliance_id, name, reason) -- the notice
         # the core raised for a start this dial asked for, queued for the view.
@@ -332,7 +315,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.core._queue_effects(dd.StartFailureEffect(aid, f"{aid}:b:1", name, reason))
         d._apply_pending_snapshot()
     elif kind == "tick_outputs_refresh":
-        d._tick_outputs_refresh()
+        pass
     elif kind == "hide_controls":
         d.hide_controls()
     elif kind == "tick_controls_hidden":
@@ -366,7 +349,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         # message, dismissal), ...]) -- the validated set the appliance's
         # warnings worker hands the core, replacing the appliance's last.
         _, aid, rows = step
-        d.core.set_appliance_warnings(aid, tuple(ApplianceWarning(*row) for row in rows))
+        set_appliance_warnings(d, aid, tuple(ApplianceWarning(*row) for row in rows))
     elif kind == "appliance_tap":
         # A tap on the one cell of the page showing (Dismiss, or OK).
         d.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
@@ -518,11 +501,8 @@ _FAKE_ARTWORK_IMAGE = Image.new("RGB", (FakeBackend.width, FakeBackend.height))
 # panel size needs. When a function that calls one of these moves to another
 # module, this tuple (and dial_test_support.MONOTONIC_TARGETS) is the one place to repoint.
 _PATCHES = (
-    ("dial_core.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
-    ("dial_core_poll.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
-    ("dial_core.enrich_targets", lambda ctx, img: {"side_effect": ctx.fake_enrich}),
-    ("dial_core_poll.enrich_targets", lambda ctx, img: {"side_effect": ctx.fake_enrich}),
-    ("dial_core_poll.default_fetch_artwork", lambda ctx, img: {"return_value": (b"jpegdata", "")}),
+    ("dial_test_support.fetch_target_status", lambda ctx, img: {"side_effect": ctx.fake_fetch}),
+    ("dial_artwork.default_fetch_artwork", lambda ctx, img: {"return_value": (b"jpegdata", "")}),
     ("dial_display.decode_artwork", lambda ctx, img: {"return_value": img}),
     ("dial_display_compositor.transform_artwork_for_panel", lambda ctx, img: {"return_value": img}),
     ("dial_display._request_reboot", lambda ctx, img: {}),

@@ -1,12 +1,16 @@
 """Shared helpers for dial display tests: a recording backend, builders for
-targets, roster entries and status results, a controllable clock and a
-display factory, shared by the display, trace and core tests."""
+targets, roster entries and status results, a controllable clock, and a
+display factory whose core reads its appliances from a StatusBridge, shared
+by the display, trace and core tests."""
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import sys
 import time
+import weakref
 from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -14,6 +18,8 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from autostream_peer_client import PeerReply, PeerSnapshot
+from autostream_peer_registry import Sighting
 from dial_config import DialDisplayConfig
 from dial_display import WARNING_DESCRIPTORS, DialDisplay
 from dial_display_profiles import DEFAULT_PROFILE_KEY
@@ -142,7 +148,7 @@ class _FakeClock:
 
 
 # Every place time.monotonic is read, all replaced together by patch_monotonic().
-MONOTONIC_TARGETS = ("dial_display.time.monotonic", "dial_core_poll.time.monotonic")
+MONOTONIC_TARGETS = ("dial_display.time.monotonic",)
 
 
 @contextlib.contextmanager
@@ -155,8 +161,8 @@ def patch_monotonic(clock):
 
 
 def _roster_from_targets(targets, repeat_capable=False) -> list:
-    """Default get_roster() stand-in: a RosterEntry per identity-carrying
-    target, rebuilt from whatever *targets* holds each time it is called."""
+    """Default roster stand-in: a RosterEntry per identity-carrying target,
+    rebuilt from whatever *targets* holds each time it is called."""
     return [
         RosterEntry(
             appliance_id=t.appliance_id, service_name=t.service_name, name=t.name,
@@ -166,6 +172,185 @@ def _roster_from_targets(targets, repeat_capable=False) -> list:
         )
         for t in targets if t.appliance_id
     ]
+
+
+def fetch_target_status(target, dial_id, timeout_seconds=None) -> dict:
+    """What an appliance says about itself when a test has not said: it
+    answers, with nothing identified. Tests patch this name."""
+    return _status_result()
+
+
+def _test_row(display, appliance_id):
+    """The target or roster row a test gave for *appliance_id*, or None."""
+    if not appliance_id:
+        return None
+    bridge = display.bridge
+    row = None
+    if bridge.roster_override is not None:
+        row = next((r for r in bridge.roster_override if r.appliance_id == appliance_id), None)
+    return row if row is not None else bridge._rows.get(appliance_id)
+
+
+def _block_from_repeat_obj(obj) -> dict | None:
+    """A repeat daemon block that maps back to the repeat object *obj*."""
+    if not isinstance(obj, dict):
+        return None
+    state = obj.get("state")
+    replay = obj.get("replay") if isinstance(obj.get("replay"), dict) else {}
+    replaying = state in ("replaying", "fading_out")
+    return {
+        "enabled": bool(obj.get("available")),
+        "armed": bool(obj.get("armed")),
+        "recording": {
+            "active": state == "recording",
+            "seconds": float(obj.get("recording_seconds") or 0.0) if state != "idle" else 0.0,
+            "bytes": 1000 if state not in ("idle",) else 0,
+        },
+        "replay": {
+            "active": replaying, "fading_out": state == "fading_out",
+            "position_seconds": float(replay.get("position_seconds") or 0.0),
+            "duration_seconds": float(replay.get("duration_seconds") or 0.0),
+        },
+    }
+
+
+def _unit_from_row(row) -> dict:
+    """An outputs part unit for an OutputRow or an old outputs reply row."""
+    get = (lambda k, d=None: row.get(k, d)) if isinstance(row, dict) else (lambda k, d=None: getattr(row, k, d))
+    unit = {"id": get("id"), "name": get("name"), "selected": bool(get("selected")),
+            "volume": get("volume") or 0, "availability": "ok",
+            "auto_start": bool(get("is_default"))}
+    if get("remote_in_use"):
+        unit["in_use_by"] = get("remote_owner") or "another appliance"
+    if get("needs_auth_key"):
+        unit["reported"] = {"needs_auth_key": True}
+    return unit
+
+
+class _BridgeClient:
+    """A PeerClient stand-in for one appliance of a StatusBridge."""
+
+    def __init__(self, bridge: "StatusBridge", appliance_id: str) -> None:
+        self.bridge = bridge
+        self.appliance_id = appliance_id
+
+    def snapshot(self):
+        return self.bridge.snapshot_for(self.appliance_id)
+
+    def submit(self, name, args, *, extra_body=None, read_s=None, backoff=True):
+        self.bridge.submitted.append((self.appliance_id, name, dict(args), extra_body))
+        return self.bridge.reply
+
+    def fetch(self, parts, *, merge=False):
+        return 200, {"parts": {}}
+
+
+class StatusBridge:
+    """The peer pool and registry behind a test display's core. On each fold
+    it builds one PeerSnapshot per appliance from the test's targets (those
+    playing), its roster (every appliance) and what `fetch_target_status`
+    says of each, plus the speakers, EQ and repeat record a test seeds."""
+
+    def __init__(self, get_targets, get_roster, dial_id: str) -> None:
+        self._get_targets = get_targets
+        self._get_roster = get_roster
+        self._dial_id = dial_id
+        self.repeats: dict = {}
+        self.units: dict = {}
+        self.bands: dict = {}
+        self.boots: dict = {}
+        self.versions: dict = {}
+        self.submitted: list = []
+        self.reply = None
+        self.roster_override = None
+        self._subs: list = []
+        self._rows: dict = {}
+
+    # The registry.
+    def sightings(self):
+        rows = {}
+        playing = set()
+        for t in self._get_targets() or ():
+            if t.appliance_id:
+                rows[t.appliance_id] = t
+                playing.add(t.appliance_id)
+        roster = self.roster_override if self.roster_override is not None else self._get_roster()
+        for r in roster or ():
+            if r.appliance_id and r.appliance_id not in rows:
+                rows[r.appliance_id] = r
+                if getattr(r, "playing", False):
+                    playing.add(r.appliance_id)
+        self._rows = rows
+        self._playing = playing
+        return {aid: Sighting(id=aid, hostname=r.name, ip=r.ip, port=r.port, version="0.8.0",
+                              control=True, proto=4, service_name=r.service_name)
+                for aid, r in rows.items()}
+
+    # The pool.
+    def clients(self):
+        return {aid: _BridgeClient(self, aid) for aid in self._rows}
+
+    def get(self, appliance_id):
+        return _BridgeClient(self, appliance_id) if appliance_id in self._rows else None
+
+    def subscribe(self, fn) -> int:
+        self._subs.append(fn)
+        return len(self._subs)
+
+    def unsubscribe(self, handle) -> None:
+        pass
+
+    def snapshot_for(self, appliance_id: str):
+        row = self._rows[appliance_id]
+        playing = appliance_id in self._playing
+        protocol_ok = getattr(row, "dial_status", True)
+        status = fetch_target_status(row, self._dial_id, timeout_seconds=2.0) if protocol_ok else {}
+        error = status.get("status_error")
+        reachable = protocol_ok and error in (None, "unauthorized")
+        access = "playback" if error is None and protocol_ok else "none" if error == "unauthorized" else None
+        if isinstance(row, RosterEntry) and self.roster_override is not None:
+            access = {"authorized": "playback", "unauthorized": "none"}.get(row.auth)
+        elif getattr(row, "auth", "") == "unauthorized":
+            access = "none"
+        parts: dict = {"session": {"active": playing, "source": "input1" if playing else ""}}
+        track = status.get("track_id")
+        if isinstance(track, dict):
+            parts["track"] = {"entries": {"1": dict(track)}}
+        units = self.units.get(appliance_id, [])
+        parts["outputs"] = {
+            "connected": True, "master_volume": status.get("master_volume"),
+            "muted_all": bool(status.get("muted")), "units": [dict(u) for u in units],
+        }
+        failure = status.get("start_failure")
+        if isinstance(failure, dict):
+            parts["outputs"]["start_failure"] = dict(failure)
+        if appliance_id in self.bands:
+            parts["eq"] = {"output_bands": list(self.bands[appliance_id])}
+        repeat = self.repeats.get(appliance_id, status.get("repeat"))
+        block = _block_from_repeat_obj(repeat)
+        if block is not None:
+            parts["repeat"] = {"block": block}
+        return PeerSnapshot(
+            peer_id=appliance_id, boot=self.boots.get(appliance_id, "b1"),
+            version=self.versions.get(appliance_id, 1), part_versions=MappingProxyType({}),
+            parts=MappingProxyType(parts), reachable=reachable, access=access,
+            access_reason="dial_not_authorized" if access == "none" else None,
+            protocol=4 if protocol_ok else 3, protocol_ok=protocol_ok, configured=True,
+            heard_at=0.0, seq=1)
+
+    def sent(self, core) -> list:
+        """The requests the core has queued on its request lane since the
+        last call, as (appliance_id, intent name, args, extra_body)."""
+        items = []
+        lane_queue = core._lane._queue
+        while True:
+            try:
+                item = lane_queue.get_nowait()
+            except Exception:
+                break
+            if item is not None:
+                items.append((item.appliance_id, item.name, dict(item.args or {}), item.extra_body))
+        return items
 
 
 def make_display(
@@ -195,15 +380,38 @@ def make_display(
         gr = lambda: _roster_from_targets(gt(), repeat_capable)
     display = DialDisplay(
         config=cfg,
-        get_display_targets=gt,
         dial_id="dial-uuid",
         logo_path=TEST_LOGO_PATH,
         backend_factory=lambda: fb,
         backend_factory_builder=backend_factory_builder,
-        get_roster=gr,
         warnings=warnings or WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=wall_clock or time.time),
     )
+    attach_bridge(display, gt, gr)
     return display, fb, gt
+
+
+def attach_bridge(display, get_targets, get_roster) -> "StatusBridge":
+    """Attach a StatusBridge over *get_targets* and *get_roster* to the core
+    *display* paints, with the artwork download run inline."""
+    bridge = StatusBridge(get_targets, get_roster, "dial-uuid")
+    display.core.attach_pool(bridge, bridge)
+    display.bridge = bridge
+    _DISPLAYS.add(display)
+    # A test row says whether its appliance has an EQ; a peer has every
+    # capability or none, so a row without one is held to no EQ page.
+    compact = display._compact_tier
+
+    def eq_veto() -> bool:
+        if compact():
+            return True
+        focus = display.core._state.focus
+        row = _test_row(display, focus.manual_id or focus.reporting_id)
+        return row is not None and not getattr(row, "dial_eq", False)
+    display.core.set_eq_veto(eq_veto)
+    # The artwork download runs inline, so a fold ends with it held.
+    io = display.core._io
+    display.core.set_io(dataclasses.replace(io, spawn=lambda fn, *args: fn(*args)))
+    return bridge
 
 
 # ---------------------------------------------------------------------------
@@ -243,34 +451,76 @@ def on_sd_health_view(display, view) -> None:
 
 def pending_token(display, lane) -> "float | None":
     """The token of the latest request on *lane* ("transport" or
-    "outputs_request"), which a worker would hand back with its reply."""
+    "outputs_request"), which its reply is folded against."""
     held = getattr(display.core.snapshot(), lane)
     return None if held is None else held.requested_at
 
 
+def _reply(status, body):
+    """The PeerReply an appliance's answer of *status* and *body* stands for:
+    ok for a 200 with ok true, else refused with its error name."""
+    if status == 200 and isinstance(body, dict) and body.get("ok") is True:
+        return PeerReply(True, None, None, None, dict(body), None)
+    if status is None:
+        return PeerReply(False, "unreachable", None, None, {}, None)
+    error = None
+    retry = None
+    if isinstance(body, dict):
+        error = ("pin_invalid" if body.get("pin_invalid") is True
+                 else "pin_required" if body.get("pin_required") is True else body.get("error"))
+        retry = body.get("retry_after_s") if isinstance(body.get("retry_after_s"), int) else None
+    return PeerReply(False, error if isinstance(error, str) and error else "backend_error",
+                     None, None, {}, retry)
+
+
+def _fold_reply(display, lane, appliance_id, status, body, request) -> None:
+    held = getattr(display.core.snapshot(), lane)
+    token = (request or {}).get("token") if isinstance(request, dict) else None
+    if token is None:
+        token = held.requested_at if held is not None else 0.0
+    kind = held.kind if held is not None else ""
+    display.core._fold_reply(appliance_id, kind, token, _reply(status, body))
+
+
 def on_repeat_result(display, kind, appliance_id, status, body, request=None) -> None:
-    """A repeat-transport worker result, handed to the core. Without a
-    *request* it answers the latest transport request."""
-    if request is None:
-        request = {"token": pending_token(display, "transport")}
-    display.core.on_repeat_result(kind, appliance_id, status, body, request)
+    """An appliance's answer to the latest transport request, folded by the
+    core. An accepted answer that says the daemon's state also becomes the
+    appliance's repeat record, as its next change would."""
+    if status == 200 and isinstance(body, dict) and body.get("ok") and isinstance(body.get("state"), str):
+        held = display.bridge.repeats.get(appliance_id) or {}
+        display.bridge.repeats[appliance_id] = dict(
+            held, available=True, state=body["state"],
+            armed=bool(body.get("armed", held.get("armed", False))))
+    elif isinstance(body, dict) and body.get("error") in ("source_active", "no_recording"):
+        display.bridge.repeats.pop(appliance_id, None)
+    _fold_reply(display, "transport", appliance_id, status, body, request)
     display._drain_effects()
 
 
 def on_outputs_result(display, kind, appliance_id, status, body, request=None) -> None:
-    """An outputs worker result, handed to the core; the view then follows
-    the snapshot it changed. A set result without a *request* answers the
-    latest output request."""
-    if request is None and kind == "set":
-        request = {"token": pending_token(display, "outputs_request")}
-    display.core.on_outputs_result(kind, appliance_id, status, body, request)
+    """An appliance's speakers (*kind* "fetch", the old list reply's shape)
+    or its answer to the latest output request ("set"); the view then
+    follows the snapshot it changed."""
+    if kind == "set":
+        _fold_reply(display, "outputs_request", appliance_id, status, body, request)
+    elif status == 200 and isinstance(body, dict) and body.get("ok") is True:
+        display.bridge.units[appliance_id] = [_unit_from_row(o) for o in body.get("outputs") or ()]
+        display.bridge.versions[appliance_id] = display.bridge.versions.get(appliance_id, 1) + 1
+        display.core.fold_once()
     fold(display)
 
 
 def on_eq_result(display, kind, appliance_id, status, body, request=None) -> None:
-    """An EQ worker result, handed to the core; the view then follows the
-    snapshot it changed."""
-    display.core.on_eq_result(kind, appliance_id, status, body, request)
+    """An appliance's EQ (the old reply's shape: bass and treble, or six
+    bands); the view then follows the snapshot it changed."""
+    if kind == "fetch" and status == 200 and isinstance(body, dict) and body.get("ok"):
+        bands = body.get("bands")
+        if isinstance(bands, list) and len(bands) == 6:
+            gains = [b.get("gain_db", 0) for b in bands]
+        else:
+            gains = [body.get("bass_db", 0), 0, 0, 0, 0, body.get("treble_db", 0)]
+        display.bridge.bands[appliance_id] = gains
+        display.core.fold_once()
     fold(display)
 
 
@@ -311,35 +561,18 @@ def apply_update_view(display, view) -> None:
 def set_focus_pending(display, appliance_id, service_name) -> None:
     """Pin the focus to *appliance_id* as pending for the grace window, as
     a picker-started replay does."""
-    from dial_core import FOCUS_PENDING_GRACE_S
+    from dial_core_focus import FOCUS_PENDING_GRACE_S
     display.core.set_focus_pending(appliance_id, service_name, time.monotonic() + FOCUS_PENDING_GRACE_S)
-    display.core.request_poll()
-
-
-def seed_outputs(display, rows, loaded=True) -> None:
-    """Make the core hold *rows* as the outputs of the appliance the
-    outputs screen shows."""
-    display.core.adopt_outputs(display._outputs.appliance_id, tuple(rows), loaded, overwrite=True)
+    display.core.request_fold()
 
 
 def tap_output(display, output_id, selected, volume) -> None:
     """Make the core show *selected* and *volume* for a held output, as a set
     just made would; nothing is sent."""
-    with patch("dial_core.enqueue_set"):
-        display.core.set_output(
-            display._outputs.appliance_id, output_id, selected=selected, volume=volume,
-        )
-
-
-def seed_eq(display, bass_db=None, treble_db=None, loaded=True) -> None:
-    """Make the core hold a bass/treble reading for the appliance the EQ
-    page shows."""
-    from dial_core_state import EQ_LIMIT_DB, EqBand
-    bands = tuple(
-        EqBand(band_id, None, gain, -EQ_LIMIT_DB, EQ_LIMIT_DB)
-        for band_id, gain in (("bass", bass_db), ("treble", treble_db)) if gain is not None
+    display.core.set_output(
+        display._outputs.appliance_id, output_id, selected=selected, volume=volume,
     )
-    display.core.adopt_eq(display._eq.appliance_id, bands, loaded, overwrite=True)
+    display.bridge.sent(display.core)
 
 
 def eq_optimistic(display):
@@ -371,3 +604,220 @@ def run_warning_action(display, warning_id, action) -> None:
     its cell does."""
     import dial_display as dd
     display._run_warning_action(dd._WARNING_BY_ID[warning_id], action)
+
+
+# ---------------------------------------------------------------------------
+# Seeding what the appliances report
+#
+# The displays a test has built, so a seed made without one in hand reaches
+# the core its screens read.
+# ---------------------------------------------------------------------------
+
+_DISPLAYS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _repeat_obj_from(record) -> "dict | None":
+    """The repeat object a RepeatRecord (or a repeat object) stands for."""
+    if record is None or isinstance(record, dict):
+        return record
+    return {
+        "available": record.available, "state": record.state, "armed": record.armed,
+        "recording_seconds": record.recording_seconds,
+        "replay": {"active": record.state in ("replaying", "fading_out"),
+                   "position_seconds": record.position_seconds,
+                   "duration_seconds": record.duration_seconds},
+        "latency_ms": int(round(record.latency_seconds * 1000)),
+    }
+
+
+def seed_repeat(appliance_id, record) -> None:
+    """Make *appliance_id* report *record* (a repeat object, a RepeatRecord,
+    or None for none) from now on, and show it at once in the appliance's
+    state as the core holds it, observed at the record's own time."""
+    from dial_repeat_store import RepeatRecord, parse_repeat_object
+    obj = _repeat_obj_from(record)
+    if isinstance(record, RepeatRecord):
+        rec = record
+    else:
+        rec = parse_repeat_object(obj, time.monotonic()) if obj is not None else None
+    for display in list(_DISPLAYS):
+        bridge = display.bridge
+        if obj is None:
+            bridge.repeats.pop(appliance_id, None)
+        else:
+            bridge.repeats[appliance_id] = obj
+        core = display.core
+
+        def mutate(state, rec=rec):
+            view = state.views.get(appliance_id)
+            if view is None:
+                # Not sighted yet: held for it all the same, as an idle,
+                # repeat-capable appliance the screens can read.
+                view = _state_of_row(SimpleNamespace(
+                    appliance_id=appliance_id, service_name=appliance_id, ip="", port=0,
+                    auth="unknown", repeat_capable=True))
+                state.roster = [*state.roster, view]
+            state.views = dict(state.views, **{appliance_id: dataclasses.replace(view, repeat=rec)})
+            state.roster = [state.views.get(r.appliance_id, r) for r in state.roster]
+            state.appliances = core._derive_appliances_locked(state)
+        core._publish(mutate)
+
+
+def repeat_of(appliance_id):
+    """The repeat record of *appliance_id* as the newest test display's core
+    holds it."""
+    for display in list(_DISPLAYS):
+        entry = display.core.snapshot().appliance(appliance_id)
+        if entry is not None:
+            return entry.repeat
+    return None
+
+
+def outputs_rows(body) -> tuple:
+    """The rows an old outputs reply body lists, as the screens hold them."""
+    from dial_core_state import OutputRow
+    rows = []
+    for o in body.get("outputs") or ():
+        in_use = bool(o.get("remote_in_use"))
+        rows.append(OutputRow(
+            id=o["id"], name=o["name"], selected=bool(o.get("selected")),
+            volume=max(0, min(100, int(o.get("volume") or 0))), remote_in_use=in_use,
+            remote_owner=(o.get("remote_owner") or None) if in_use else None,
+            is_default=bool(o.get("is_default")), needs_auth_key=o.get("needs_auth_key") is True,
+        ))
+    return tuple(rows)
+
+
+# ---------------------------------------------------------------------------
+# Holding state in the core by hand
+#
+# A screen test that sets the focus fields itself must not have them folded
+# away, so these write what the core holds directly, as a fold of the same
+# appliances would, and leave the focus alone. The bridge is told too, so a
+# later fold agrees.
+# ---------------------------------------------------------------------------
+
+def _state_of_row(row, repeat=None):
+    """The ApplianceState a fold would hold for roster row *row*."""
+    from dial_core_state import ApplianceState
+    from dial_mdns import appliance_display_name
+    eq_version = getattr(row, "dial_eq_version", 0) or (2 if getattr(row, "dial_eq", False) else 0)
+    return ApplianceState(
+        appliance_id=row.appliance_id, service_name=row.service_name,
+        name=appliance_display_name(row.service_name), ip=row.ip, port=row.port,
+        playing=bool(getattr(row, "playing", False)),
+        playing_since=float(getattr(row, "playing_since", 0.0) or 0.0),
+        auth=row.auth, dial_status=getattr(row, "dial_status", True),
+        dial_outputs=getattr(row, "dial_outputs", False), dial_eq=getattr(row, "dial_eq", False),
+        repeat_capable=getattr(row, "repeat_capable", False),
+        dial_proto_version=getattr(row, "dial_proto_version", 0) or 0,
+        dial_eq_version=eq_version, dial_outputs_version=2 if getattr(row, "dial_outputs", False) else 0,
+        status_error=None, master_volume=None, muted=None, repeat=repeat,
+        webui_scheme="http", webui_host=row.ip, webui_port=row.port,
+    )
+
+
+def set_roster(display, roster) -> None:
+    """Make the core hold *roster* (RosterEntry rows) as its appliances, each
+    with the authorisation and capabilities its row says and the repeat
+    record seeded for it, without touching the focus."""
+    from dial_repeat_store import parse_repeat_object
+    roster = list(roster)
+    display.bridge.roster_override = roster
+    core = display.core
+    now = time.monotonic()
+    views = {}
+    for r in roster:
+        obj = display.bridge.repeats.get(r.appliance_id)
+        views[r.appliance_id] = _state_of_row(r, parse_repeat_object(obj, now) if obj else None)
+
+    def mutate(state):
+        state.views = views
+        state.roster = [views[r.appliance_id] for r in roster]
+        state.appliances = core._derive_appliances_locked(state)
+    core._publish(mutate)
+
+
+def update_availability(display) -> None:
+    """What the focused (or reporting) appliance offers, worked out from the
+    appliance states the core holds, as a fold works it out."""
+    from dial_core_state import AUTH_UNAUTHORIZED, dots_active
+    core = display.core
+
+    def mutate(state):
+        focused = state.focus.manual_id or state.focus.reporting_id
+        entry = state.views.get(focused) if focused else None
+        usable = entry is not None and entry.auth != AUTH_UNAUTHORIZED
+        state.eq_available = bool(usable and entry.dial_eq and not core._eq_veto())
+        state.outputs_available = bool(usable and entry.dial_outputs)
+        state.dots_active = dots_active(entry.repeat if entry is not None else None, state.eq_available)
+    core._publish(mutate)
+
+
+def seed_outputs(display, rows, loaded=True) -> None:
+    """Make the appliance the outputs screen shows report *rows* as its
+    speakers, held by the core at once."""
+    from dial_core_state import OutputsState
+    appliance_id = display._outputs.appliance_id
+    display.bridge.units[appliance_id] = [_unit_from_row(r) for r in rows]
+    held = OutputsState(appliance_id, tuple(rows), loaded, time.monotonic())
+
+    def mutate(state):
+        state.outputs = held
+    display.core._publish(mutate)
+    fold(display)
+
+
+def seed_eq(display, bass_db=None, treble_db=None, loaded=True) -> None:
+    """Make the appliance the EQ page shows report a bass and treble (its
+    lowest and highest bands), held by the core at once."""
+    import dial_peer_view
+    appliance_id = display._eq.appliance_id
+    gains = [bass_db or 0, 0, 0, 0, 0, treble_db or 0]
+    display.bridge.bands[appliance_id] = gains
+    held = dial_peer_view.eq_state(appliance_id, {"eq": {"output_bands": gains}})
+    if not loaded:
+        held = dataclasses.replace(held, loaded=False)
+
+    def mutate(state):
+        state.eq = held
+    display.core._publish(mutate)
+    fold(display)
+
+
+def set_appliance_warnings(display, appliance_id, warnings):
+    """Make the core hold *warnings* as what *appliance_id* reports, as a
+    fold of its warnings part would; refused for an appliance the core does
+    not hold."""
+    from dial_core_state import ActionResult, attribute_appliance_warnings
+    core = display.core
+    outcome = []
+
+    def mutate(state):
+        view = state.views.get(appliance_id)
+        if view is None:
+            outcome.append(ActionResult(False, "unknown_appliance"))
+            return False
+        outcome.append(ActionResult(True))
+        new = attribute_appliance_warnings(tuple(warnings), view.name)
+        if not core._store_appliance_warnings_locked(state, appliance_id, new):
+            return False
+        state.appliances = core._derive_appliances_locked(state)
+        core._sync_warnings_locked(state)
+    core._publish(mutate)
+    return outcome[0]
+
+
+def sent(send_mock):
+    """(target, intent, token) of the last request a patched DialCore._send
+    was given; the target carries the appliance id the request went to."""
+    appliance_id, intent, token = send_mock.call_args[0]
+    return SimpleNamespace(appliance_id=appliance_id), intent, token
+
+
+def sent_kwargs(send_mock) -> dict:
+    """The speaker fields of the last outputs request a patched
+    DialCore._send was given, None for a field it did not set."""
+    _target, intent, _token = sent(send_mock)
+    return {"selected": intent.args.get("selected"), "volume": intent.args.get("volume"),
+            "pin": intent.args.get("pin")}

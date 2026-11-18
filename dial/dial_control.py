@@ -203,6 +203,34 @@ def _handle_targets(server: "DialControlServer") -> dict:
     return _ok(count=len(enriched), targets=enriched)
 
 
+def core_target_records(core) -> Callable:
+    """The `targets` reply's records, read from what *core* last folded for
+    each playing target: no request is made to any appliance. Returns the
+    callable DialControlServer takes as enrich_targets."""
+    def enrich(targets: list, dial_id: str) -> list[dict]:
+        snap = core.snapshot()
+        records = []
+        for t in targets:
+            state = snap.appliance(t.appliance_id) if t.appliance_id else None
+            peer = core.peer_snapshot(t.appliance_id) if t.appliance_id else None
+            outputs = peer.parts.get("outputs") if peer is not None else None
+            units = outputs.get("units") if isinstance(outputs, dict) else None
+            selected = (sum(1 for u in units if isinstance(u, dict) and u.get("selected") is True)
+                        if isinstance(units, list) else None)
+            records.append({
+                "name": t.name, "ip": t.ip, "port": t.port,
+                "dial_api": t.dial_api, "audio_status": t.audio_status, "dial_status": t.dial_status,
+                "playing": state.playing if state is not None else None,
+                "master_volume": state.master_volume if state is not None else None,
+                "selected_output_count": selected,
+                "muted": state.muted if state is not None else None,
+                "status_error": state.status_error if state is not None else "unreachable",
+                "appliance_id": t.appliance_id or None,
+            })
+        return sorted(records, key=lambda r: (r["name"].lower(), r["ip"], r["port"]))
+    return enrich
+
+
 def _handle_nudge(obj: dict, server: "DialControlServer") -> dict:
     has_direction = "direction" in obj
     has_delta = "delta" in obj

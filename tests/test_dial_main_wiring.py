@@ -345,8 +345,6 @@ class TestBuildDisplay:
             display = dm._build_display(self._cfg("hd_kiosk"), core)
         create.assert_not_called()
         assert isinstance(display, dm._HeadlessDisplay)
-        core.set_polling.assert_called_with(True)
-        core.set_poll_interval.assert_called_with(3)
 
     def test_spi_surface_uses_the_display_factory(self):
         import dial_main as dm

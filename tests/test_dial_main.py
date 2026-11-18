@@ -535,43 +535,6 @@ class TestDialFinalCleanup:
         assert vol_kwargs["on_readout_changed"] == display.core.readout_changed
         assert vol_kwargs["on_mute_changed"] == display.core.mute_changed
 
-        # DialHTTPServer must receive a get_rostered_ips callable — the
-        # /auth-changed route uses it to verify a push's source IP against a
-        # currently rostered sighting before enqueueing a probe.
-        assert callable(kwargs["get_rostered_ips"])
-
-    def test_get_rostered_ips_is_the_known_sighting_map(self):
-        """The get_rostered_ips callable passed to DialHTTPServer is the mDNS
-        module's known-sighting map, which covers idle appliances as well as
-        playing ones."""
-        import dial_main as dm
-        import dial_mdns
-
-        cfg = _make_cfg()
-        cfg.display = MagicMock(fitted=False, screen_size_inches=None)
-        mock_http = MagicMock()
-        mock_http._server = MagicMock()
-        mock_control = MagicMock()
-
-        class _QuickEvent(threading.Event):
-            def wait(self, timeout=None):
-                return True
-
-        with patch("dial_main._configure_logging"), \
-             patch("dial_main.load_config", return_value=cfg), \
-             patch("dial_main._reconcile_update_timer"), \
-             patch("dial_main._announce_self"), \
-             patch("dial_main.DialLED"), \
-             patch("dial_main.DialHTTPServer", return_value=mock_http) as mock_http_cls, \
-             patch("dial_main.start_volume_worker"), \
-             patch("dial_main.PeerRegistry"), \
-             patch("dial_main.start_network_worker"), \
-             patch("dial_main.DialControlServer", return_value=mock_control), \
-             patch("threading.Event", _QuickEvent):
-            dm.main()
-            _, kwargs = mock_http_cls.call_args
-            assert kwargs["get_rostered_ips"] is dial_mdns.get_known_ips
-
     def test_display_stack_import_failure_degrades_to_noop(self):
         """If dial_display (e.g. Pillow) is unavailable, main() must degrade to
         NoOpDisplayStatusProvider rather than fail the whole service — volume
@@ -620,10 +583,10 @@ class TestDialFinalCleanup:
         assert vol_kwargs["on_mute_changed"].__name__ == "mute_changed"
         assert callable(vol_kwargs["mute_targets_fn"])
 
-    def test_display_stack_import_failure_still_polls_through_the_core(self):
+    def test_display_stack_import_failure_still_runs_the_core(self):
         """Without the display stack the dial has no screen, but its appliance
         model is built, holds the appliances, is started with the service and
-        stopped with it, and takes auth pushes."""
+        stopped with it."""
         import builtins
         import dial_main as dm
 
@@ -660,14 +623,7 @@ class TestDialFinalCleanup:
         display = kwargs["display_status_provider"]
         assert isinstance(display, dm._HeadlessDisplay)
         assert display.core.snapshot().polling is True
-        assert display.core._poll_interval == 3
         assert len(started) == 1 and not started[0].is_alive()
-        display.notify_auth_changed("a" * 20)
-        assert display.core._push_pending == {"a" * 20}
-        display.notify_warnings_changed("b" * 20)
-        assert display.core._warnings_pending == {"b" * 20}
-        display.notify_state_changed("c" * 20, ("mute",))
-        assert display.core._state_pending == {"c" * 20: {"mute"}}
         # The appliances stay held whatever the fitted flag says.
         display.update_config(type("Cfg", (), {"fitted": False})())
         assert display.core.snapshot().polling is True
@@ -1098,12 +1054,10 @@ class TestScreenSettingsLiveApply:
         from dial_config import DialConfig, DialDisplayConfig
         from dial_display import DialDisplay, NoOpBackend
         from dial_http_server import DialHTTPServer
-        import dial_mdns as dm_mdns
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
         display = DialDisplay(
             config=cfg.display,
-            get_display_targets=dm_mdns.get_display_targets,
             dial_id=cfg.uuid,
             backend_factory=NoOpBackend,
         )
@@ -1129,12 +1083,10 @@ class TestScreenSettingsLiveApply:
         from dial_config import DialConfig, DialDisplayConfig
         from dial_display import DialDisplay, NoOpBackend
         from dial_http_server import DialHTTPServer
-        import dial_mdns as dm_mdns
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, rotate=False))
         display = DialDisplay(
             config=cfg.display,
-            get_display_targets=dm_mdns.get_display_targets,
             dial_id=cfg.uuid,
             backend_factory=NoOpBackend,
         )
@@ -1163,12 +1115,10 @@ class TestScreenSettingsLiveApply:
         from dial_config import DialConfig, DialDisplayConfig
         from dial_display import DialDisplay, NoOpBackend
         from dial_http_server import DialHTTPServer
-        import dial_mdns as dm_mdns
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, bgr=False))
         display = DialDisplay(
             config=cfg.display,
-            get_display_targets=dm_mdns.get_display_targets,
             dial_id=cfg.uuid,
             backend_factory=NoOpBackend,
         )
@@ -2308,7 +2258,7 @@ def _core_with_mute_scope(scope, source="svc"):
 
     http_server = MagicMock()
     http_server.effective_mute_scope = scope
-    core = DialCore("d" * 20, lambda: [])
+    core = DialCore("d" * 20)
     core.set_mute_scope(lambda: http_server.effective_mute_scope)
     core.current_source_service_name = MagicMock(return_value=source)
     return core
@@ -2353,43 +2303,6 @@ class TestMuteToggleDecision:
 
             with patch("urllib.request.urlopen", side_effect=boom):
                 core.mute_toggle()  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# Invariant: the merged roster is display-side only —
-# volume and mute must never read it, even indirectly.
-# ---------------------------------------------------------------------------
-
-class TestVolumeAndMuteNeverReadRoster:
-    def test_volume_targets_fn_never_reads_roster(self):
-        import dial_main as dm
-        import dial_mdns
-
-        def _boom():
-            raise AssertionError("volume resolver must never call get_roster")
-
-        with patch.object(dial_mdns, "get_roster", side_effect=_boom):
-            display = MagicMock()
-            display.current_source_service_name = MagicMock(return_value=None)
-            resolve = dm._build_volume_targets_fn(display, get_targets=lambda: [])
-            resolve()  # must not raise
-
-    def test_mute_targets_fn_never_reads_roster(self):
-        import dial_main as dm
-        import dial_mdns
-
-        def _boom():
-            raise AssertionError("mute resolver must never call get_roster")
-
-        with patch.object(dial_mdns, "get_roster", side_effect=_boom):
-            for scope, expected in (("current", ["single-target"]), ("all", [])):
-                http_server = MagicMock()
-                http_server.effective_mute_scope = scope
-                resolve = dm._build_mute_targets_fn(
-                    http_server, MagicMock(return_value=["single-target"]),
-                    get_all_targets=lambda: [],
-                )
-                assert resolve() == expected  # and get_roster was never called
 
 
 # ---------------------------------------------------------------------------

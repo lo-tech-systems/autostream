@@ -43,9 +43,8 @@ def view(playing=False, since=0.0, auth="authorized"):
 
 
 class TestWithNothingAttached:
-    def test_there_are_no_targets_and_no_roster(self):
-        assert dm.get_display_targets() == dm.get_playing_targets() == dm.get_roster() == []
-        assert dm.get_known_ips() == {}
+    def test_there_are_no_targets(self):
+        assert dm.get_display_targets() == dm.get_playing_targets() == []
 
 
 class TestTargets:
@@ -99,37 +98,6 @@ class TestTargets:
     def test_an_appliance_with_no_view_yet_is_not_playing(self):
         dm.attach(registry("Kitchen"), {}.get)
         assert dm.get_playing_targets() == []
-
-
-class TestKnownIps:
-    def test_every_sighted_appliance_playing_or_idle(self):
-        r = registry("Kitchen")
-        s = sighting("Lounge", ip="192.0.2.99")
-        r.seen[s.id] = s
-        dm.attach(r, {aid("Kitchen"): view(playing=True)}.get)
-        assert dm.get_known_ips() == {aid("Kitchen"): "192.0.2.10", aid("Lounge"): "192.0.2.99"}
-
-
-class TestRoster:
-    def test_playing_first_then_by_display_name(self):
-        r = registry("Study", "Lounge", "Kitchen")
-        dm.attach(r, {aid("Study"): view(playing=True)}.get)
-        assert [dm.appliance_display_name(e.service_name) for e in dm.get_roster()] == [
-            "Study", "Kitchen", "Lounge"]
-
-    def test_an_entry_carries_the_sighting_and_the_view(self):
-        r = registry("Kitchen", ip="192.0.2.30", port=8080)
-        dm.attach(r, {aid("Kitchen"): view(playing=True, auth="authorized")}.get)
-        (e,) = dm.get_roster()
-        assert (e.appliance_id, e.ip, e.port, e.playing, e.auth) == (
-            aid("Kitchen"), "192.0.2.30", 8080, True, "authorized")
-        assert e.version == "0.8.0" and e.dial_proto_version == PROTOCOL
-        assert e.repeat_capable and e.dial_eq_version == 2
-
-    def test_an_idle_appliance_with_no_view_is_unknown(self):
-        dm.attach(registry("Kitchen"), None)
-        (e,) = dm.get_roster()
-        assert e.playing is False and e.auth == "unknown"
 
 
 class TestApplianceDisplayName:

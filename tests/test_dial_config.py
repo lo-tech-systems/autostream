@@ -925,9 +925,8 @@ class TestAlwaysShowControlsSetting:
 
 
 class TestPollInterval:
-    def test_default_matches_the_display_constant(self):
-        import dial_display
-        assert dc.POLL_INTERVAL_DEFAULT_S == dial_display.DISPLAY_POLL_INTERVAL_SECONDS
+    def test_the_default(self):
+        assert dc.POLL_INTERVAL_DEFAULT_S == 6
         assert DialDisplayConfig().poll_interval_s == dc.POLL_INTERVAL_DEFAULT_S
 
     @pytest.mark.parametrize("value", [2, 3, 4, 5, 6])

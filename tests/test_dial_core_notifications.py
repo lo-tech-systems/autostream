@@ -18,24 +18,19 @@ import pytest
 import dial_core
 import dial_core_state
 from dial_core import EFFECTS_BACKLOG_MAX, DialCore
-from dial_core_state import FocusState
 
 WAIT = 10.0
 
 
 def _core():
-    return DialCore("dial-1", lambda: [], lambda: [])
+    return DialCore("dial-1")
 
 
 def _tick(core, polling=True):
-    return core.publish_tick(
-        polling=polling,
-        focus=FocusState(None, None, None, None, None, None, False),
-        now_playing=None,
-        idle_affordance=False,
-        outputs_available=False,
-        eq_available=False,
-    )
+    """One publish storing *polling*."""
+    def mutate(state):
+        state.polling = polling
+    return core._publish(mutate)
 
 
 class TestSubscriberReentrancy:
@@ -306,11 +301,7 @@ class TestCoreActionsStayInMemory:
                 patch.object(urllib.request, "urlopen", refuse), \
                 patch.object(http.client.HTTPConnection, "request", refuse), \
                 patch("dial_core.enqueue_delta"), patch("dial_core.enqueue_mute"), \
-                patch("dial_core.enqueue_mute_all"), patch("dial_core.enqueue_fetch"), \
-                patch("dial_core.enqueue_set"), patch("dial_core._enqueue_eq_fetch"), \
-                patch("dial_core._enqueue_eq_set"), patch("dial_core.enqueue_arm"), \
-                patch("dial_core.enqueue_transport"):
-            core.set_roster([])
+                patch("dial_core.enqueue_mute_all"):
             _tick(core)
             core.set_focus(None)
             core.clear_focus("test")
@@ -329,7 +320,7 @@ class TestCoreActionsStayInMemory:
             core.expire_warnings()
             core.flush_warnings()
             core.readout_changed()
-            core.notify_state_changed("a" * 20, ("mute",))
+            core.request_fold()
             core.set_inputs(["encoder"])
             core.take_effects()
             core.snapshot()

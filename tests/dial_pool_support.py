@@ -17,7 +17,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 
 from autostream_peer_client import PeerReply, PeerSnapshot  # noqa: E402
 from autostream_peer_registry import Sighting  # noqa: E402
-from dial_core import DialCore, PollIO  # noqa: E402
+from dial_core import CoreIO, DialCore  # noqa: E402
 from dial_warning_text import WARNING_DESCRIPTORS  # noqa: E402
 from dial_warnings import WarningManager, WarningStore  # noqa: E402
 
@@ -160,13 +160,13 @@ class Rig:
         self.t = 1000.0
         self.pool = FakePool()
         self.registry = FakeRegistry()
-        self.io = PollIO(
+        self.io = CoreIO(
             fetch_artwork=MagicMock(return_value=(b"jpeg", "")),
             artwork_eligible=lambda url: True,
             observe_mute=MagicMock(), observe_volume=MagicMock(), forget_mute=MagicMock(),
         )
         self.core = DialCore(
-            DIAL_ID, lambda: [], lambda: [], clock=clock or (lambda: self.t), io=self.io,
+            DIAL_ID, clock=clock or (lambda: self.t), io=self.io,
             warnings=WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=time.time),
         )
         self.core.attach_pool(self.pool, self.registry)

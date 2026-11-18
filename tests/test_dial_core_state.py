@@ -146,7 +146,7 @@ class TestCoreSnapshotHelpers:
             snap.seq = 2  # type: ignore[misc]
 
 
-# ---- visible_targets / started_refused ----------------------------------
+# ---- visible_targets ----------------------------------------------------
 
 
 class TestVisibleTargets:
@@ -159,22 +159,6 @@ class TestVisibleTargets:
 
     def test_empty(self):
         assert cs.visible_targets([]) == []
-
-
-class TestStartedRefused:
-    def test_only_new_refused(self):
-        a = _target("A", auth=AUTH_UNAUTHORIZED)
-        b = _target("B", auth=AUTH_UNAUTHORIZED)
-        c = _target("C", auth=AUTH_AUTHORIZED)
-        assert cs.started_refused([a, b, c], {b.appliance_id}) == [a.appliance_id]
-
-    def test_none_when_all_known(self):
-        a = _target("A", auth=AUTH_UNAUTHORIZED)
-        assert cs.started_refused([a], {a.appliance_id}) == []
-
-    def test_accepts_a_list_of_ids(self):
-        a = _target("A", auth=AUTH_UNAUTHORIZED)
-        assert cs.started_refused([a], [a.appliance_id]) == []
 
 
 # ---- resolve_focus -------------------------------------------------------
@@ -479,76 +463,6 @@ class TestReportingFor:
         assert cs.reporting_for(None, [], None) is None
 
 
-# ---- with_accepted_replay ------------------------------------------------
-
-
-class TestWithAcceptedReplay:
-    AID = _id("Den")
-
-    def _call(self, accepted=None, targets=None, roster=None, manual=None, rec=None, now=5.0):
-        return cs.with_accepted_replay(
-            accepted, [] if targets is None else targets,
-            [_entry("Den", auth=AUTH_AUTHORIZED)] if roster is None else roster,
-            manual, rec, now,
-        )
-
-    def test_no_window_is_identity(self):
-        targets = [_target("A")]
-        out, acc = self._call(None, targets)
-        assert out is targets and acc is None
-
-    def test_bridges_the_gap(self):
-        accepted = (self.AID, 25.0)
-        out, acc = self._call(accepted, manual=self.AID, rec=_rec("replaying"))
-        assert acc is accepted
-        assert len(out) == 1
-        t = out[0]
-        assert (t.appliance_id, t.service_name, t.playing_since) == (self.AID, "Den", 5.0)
-        assert t.auth == AUTH_AUTHORIZED and t.dial_status
-
-    def test_fading_out_still_bridges(self):
-        accepted = (self.AID, 25.0)
-        out, acc = self._call(accepted, manual=self.AID, rec=_rec("fading_out"))
-        assert acc is accepted and len(out) == 1
-
-    @pytest.mark.parametrize("label,kwargs", [
-        ("deadline", dict(now=25.0)),
-        ("focus moved", dict(manual="other")),
-        ("record gone", dict(rec=None)),
-        ("record unavailable", dict(rec=_rec("replaying", available=False))),
-        ("replay not running", dict(rec=_rec("hold"))),
-    ])
-    def test_window_closes(self, label, kwargs):
-        base = dict(accepted=(self.AID, 25.0), manual=self.AID, rec=_rec("replaying"))
-        base.update(kwargs)
-        targets = [_target("A")]
-        out, acc = self._call(targets=targets, **base)
-        assert out is targets and acc is None
-
-    def test_window_closes_when_advertisement_seen(self):
-        den = _target("Den")
-        out, acc = self._call((self.AID, 25.0), targets=[den], manual=self.AID,
-                              rec=_rec("replaying"))
-        assert out == [den] and acc is None
-
-    def test_unrostered_keeps_the_window_without_a_target(self):
-        accepted = (self.AID, 25.0)
-        targets = [_target("A")]
-        out, acc = self._call(accepted, targets, roster=[], manual=self.AID, rec=_rec("replaying"))
-        assert out is targets and acc is accepted
-
-    def test_refused_roster_entry_not_bridged(self):
-        accepted = (self.AID, 25.0)
-        out, acc = self._call(accepted, roster=[_entry("Den", auth=AUTH_UNAUTHORIZED)],
-                              manual=self.AID, rec=_rec("replaying"))
-        assert out == [] and acc is accepted
-
-    def test_input_list_not_mutated(self):
-        targets = [_target("A")]
-        self._call((self.AID, 25.0), targets, manual=self.AID, rec=_rec("replaying"))
-        assert len(targets) == 1
-
-
 # ---- rows ---------------------------------------------------------------
 
 
@@ -609,173 +523,6 @@ class TestPickerRows:
     def test_no_record(self):
         e = _entry("A", auth=AUTH_AUTHORIZED, repeat_capable=True)
         assert cs.picker_rows([e], lambda a, n: None, 0.0) == ()
-
-
-class TestIdleAffordance:
-    def test_true_for_held_authorized_capable(self):
-        e = _entry("A", auth=AUTH_AUTHORIZED, repeat_capable=True)
-        assert cs.idle_affordance([e], {e.appliance_id}) is True
-
-    @pytest.mark.parametrize("auth,capable,held", [
-        (AUTH_UNKNOWN, True, True),
-        (AUTH_UNAUTHORIZED, True, True),
-        (AUTH_AUTHORIZED, False, True),
-        (AUTH_AUTHORIZED, True, False),
-    ])
-    def test_false_otherwise(self, auth, capable, held):
-        e = _entry("A", auth=auth, repeat_capable=capable)
-        assert cs.idle_affordance([e], {e.appliance_id} if held else set()) is False
-
-    def test_empty_roster(self):
-        assert cs.idle_affordance([], {"x"}) is False
-
-
-# ---- availability --------------------------------------------------------
-
-
-class TestAvailability:
-    def test_nothing_focused(self):
-        e = _entry("A", dial_outputs=True, dial_eq=True)
-        assert cs.availability([e], None, False, None) == (False, False, False)
-
-    def test_focused_not_rostered(self):
-        assert cs.availability([], "x", False, _rec()) == (True, False, False)
-
-    def test_outputs_and_eq_from_the_entry(self):
-        e = _entry("A", dial_outputs=True, dial_eq=True)
-        assert cs.availability([e], e.appliance_id, False, None) == (True, True, True)
-
-    def test_unauthorized_vetoes_outputs_and_eq(self):
-        e = _entry("A", auth=AUTH_UNAUTHORIZED, dial_outputs=True, dial_eq=True)
-        assert cs.availability([e], e.appliance_id, False, None) == (False, False, False)
-
-    def test_unknown_auth_is_allowed(self):
-        e = _entry("A", auth=AUTH_UNKNOWN, dial_outputs=True)
-        assert cs.availability([e], e.appliance_id, False, None)[1] is True
-
-    def test_compact_vetoes_eq_only(self):
-        e = _entry("A", dial_outputs=True, dial_eq=True)
-        assert cs.availability([e], e.appliance_id, True, None) == (False, True, False)
-
-    def test_dots_from_an_available_repeat_record(self):
-        e = _entry("A")
-        assert cs.availability([e], e.appliance_id, False, _rec(available=True))[0] is True
-        assert cs.availability([e], e.appliance_id, False, _rec(available=False))[0] is False
-
-    def test_capability_flag_missing(self):
-        e = _entry("A")
-        assert cs.availability([e], e.appliance_id, False, None) == (False, False, False)
-
-    def test_compact_callable_read_only_when_needed(self):
-        calls = []
-
-        def compact():
-            calls.append(1)
-            return False
-
-        plain = _entry("A")
-        assert cs.eq_available([plain], plain.appliance_id, compact) is False
-        assert cs.eq_available([], None, compact) is False
-        assert calls == []
-        capable = _entry("B", dial_eq=True)
-        assert cs.eq_available([capable], capable.appliance_id, compact) is True
-        assert calls == [1]
-
-    def test_dots_active_helper(self):
-        assert cs.dots_active(None, False) is False
-        assert cs.dots_active(None, True) is True
-        assert cs.dots_active(_rec(available=True), False) is True
-        assert cs.dots_active(_rec(available=False), False) is False
-
-
-class TestApplianceStates:
-    def test_webui_address_is_plain_http_on_the_roster_address(self):
-        assert cs.webui_address("192.0.2.10", 80) == ("http", "192.0.2.10", 80)
-        assert cs.webui_address("192.0.2.11", 8080) == ("http", "192.0.2.11", 8080)
-
-    def test_one_state_per_roster_entry(self):
-        roster = [_entry("Kitchen", AUTH_AUTHORIZED, playing=True), _entry("Lounge")]
-        states = cs.appliance_states(roster)
-        assert [s.service_name for s in states] == ["Kitchen", "Lounge"]
-        assert states[0].playing is True and states[1].playing is False
-        assert states[0].auth == AUTH_AUTHORIZED
-        assert (states[0].webui_scheme, states[0].webui_host, states[0].webui_port) == (
-            "http", "192.0.2.10", 80,
-        )
-
-    def test_authorised_idle_sorts_above_unauthorised_playing(self):
-        roster = [
-            _entry("Alpha", AUTH_UNAUTHORIZED, playing=True),
-            _entry("Zulu", AUTH_AUTHORIZED, playing=False),
-        ]
-        assert [s.service_name for s in cs.appliance_states(roster)] == ["Zulu", "Alpha"]
-
-    def test_within_one_auth_state_playing_then_name_then_id(self):
-        roster = [
-            _entry("beta", AUTH_AUTHORIZED, appliance_id="2" * 20),
-            _entry("Alpha", AUTH_AUTHORIZED, appliance_id="3" * 20),
-            _entry("alpha", AUTH_AUTHORIZED, appliance_id="1" * 20),
-            _entry("Zulu", AUTH_AUTHORIZED, playing=True, appliance_id="4" * 20),
-        ]
-        states = cs.appliance_states(roster)
-        assert [(s.service_name, s.appliance_id[0]) for s in states] == [
-            ("Zulu", "4"), ("alpha", "1"), ("Alpha", "3"), ("beta", "2"),
-        ]
-
-    def test_each_auth_state_has_its_place(self):
-        roster = [
-            _entry("A", AUTH_UNAUTHORIZED),
-            _entry("B", AUTH_UNKNOWN),
-            _entry("C", "something-else"),
-            _entry("D", AUTH_AUTHORIZED),
-        ]
-        # Authorised, then not yet known (an unrecognised state counts as
-        # unknown, name order within it), then refused.
-        assert [s.service_name for s in cs.appliance_states(roster)] == ["D", "B", "C", "A"]
-
-    def test_the_order_does_not_depend_on_the_roster_order(self):
-        roster = [
-            _entry("A", AUTH_UNAUTHORIZED, playing=True), _entry("B", AUTH_UNKNOWN),
-            _entry("C", AUTH_AUTHORIZED), _entry("D", AUTH_AUTHORIZED, playing=True),
-        ]
-        forward = [s.appliance_id for s in cs.appliance_states(roster)]
-        assert [s.appliance_id for s in cs.appliance_states(roster[::-1])] == forward
-
-    def test_an_appliance_moves_once_when_it_becomes_authorised(self):
-        before = [_entry("A", AUTH_AUTHORIZED), _entry("B", AUTH_UNKNOWN), _entry("C", AUTH_AUTHORIZED)]
-        after = [before[0], _entry("B", AUTH_AUTHORIZED), before[2]]
-        assert [s.service_name for s in cs.appliance_states(before)] == ["A", "C", "B"]
-        assert [s.service_name for s in cs.appliance_states(after)] == ["A", "B", "C"]
-        # Unchanged states give the same list every time.
-        assert cs.appliance_states(after) == cs.appliance_states(list(after))
-
-    def test_the_selector_rows_follow_the_list_order(self):
-        roster = [
-            _entry("Alpha", AUTH_UNAUTHORIZED, playing=True),
-            _entry("Zulu", AUTH_AUTHORIZED),
-            _entry("Mid", AUTH_AUTHORIZED, playing=True),
-        ]
-        snapshot = _snapshot(cs.appliance_states(roster))
-        assert [r.label for r in snapshot.selector_rows()] == ["Mid", "Zulu", "Alpha"]
-
-    def test_repeat_records_are_attached_by_id(self):
-        roster = [_entry("Kitchen"), _entry("Lounge")]
-        rec = RepeatRecord(True, "hold", False, 30.0, 0.0, 0.0, 1.0)
-        states = cs.appliance_states(roster, {_id("Kitchen"): rec})
-        assert states[0].repeat is rec and states[1].repeat is None
-
-    def test_capability_versions_follow_the_flags(self):
-        states = cs.appliance_states([_entry("Kitchen", dial_eq=True, dial_outputs=True), _entry("Lounge")])
-        assert (states[0].dial_eq_version, states[0].dial_outputs_version) == (1, 1)
-        assert (states[1].dial_eq_version, states[1].dial_outputs_version) == (0, 0)
-
-    def test_state_appended_fields_have_defaults(self):
-        snap_fields = {f.name for f in dataclasses.fields(cs.CoreSnapshot)}
-        assert "dots_active" in snap_fields
-        applied = {f.name: f for f in dataclasses.fields(cs.ApplianceState)}
-        assert applied["webui_scheme"].default == "http"
-        assert applied["webui_host"].default == ""
-        assert applied["webui_port"].default == 0
 
 
 # ---------------------------------------------------------------------------
@@ -967,27 +714,6 @@ class TestApplianceWarningValidator:
         named = cs.attribute_appliance_warnings(out, "Kitchen")
         assert [w.appliance_name for w in named] == ["Kitchen", "Kitchen"]
         assert all(w.appliance_name == "" for w in out)
-
-
-class TestApplianceWarningsSlot:
-    def test_an_appliance_supplies_no_warnings_by_default(self):
-        (state,) = cs.appliance_states([_entry()])
-        assert state.supplies_warnings is False
-        assert state.warnings == ()
-
-    def test_the_capability_flag_reads_the_entry(self):
-        entry = _entry()
-        object.__setattr__(entry, "dial_warnings", True)
-        (state,) = cs.appliance_states([entry])
-        assert state.supplies_warnings is True
-
-    def test_warnings_are_slotted_by_appliance_id(self):
-        a, b = _entry("Kitchen"), _entry("Lounge")
-        w = cs.ApplianceWarning("x", "info", "T", "", "day", "Lounge")
-        first, second = cs.appliance_states([a, b], None, {b.appliance_id: (w,)})
-        assert first.warnings == () and second.warnings == (w,)
-
-    def test_new_fields_are_appended(self):
         names = [f.name for f in dataclasses.fields(cs.ApplianceState)]
         assert names[-2:] == ["supplies_warnings", "warnings"]
 
@@ -1092,18 +818,6 @@ class TestTitleFallback:
 
     def test_empty_for_nothing_held(self):
         assert cs.title_fallback(None) == ""
-
-
-class TestInputLabelFromRecord:
-    def test_label_read_from_a_well_formed_input(self):
-        record = {"input": {"index": 1, "type": "cd", "label": "CD"}}
-        assert cs.input_label_from_record(record) == "CD"
-
-    @pytest.mark.parametrize("record", [
-        {"input": None}, {}, None, {"input": "CD"}, {"input": {"label": 3}},
-    ])
-    def test_empty_when_absent_or_malformed(self, record):
-        assert cs.input_label_from_record(record) == ""
 
 
 def test_six_band():

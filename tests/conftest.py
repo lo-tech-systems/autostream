@@ -243,14 +243,6 @@ def _reset_dial_mdns():
                 m._general_conflicts.clear()
 
 
-@pytest.fixture(autouse=True)
-def _reset_dial_auth():
-    """Clear the dial auth map's module singleton after each test."""
-    yield
-    m = _mod("dial_auth")
-    if m is not None:
-        m.auth_map.reset()
-
 
 @pytest.fixture(autouse=True)
 def _reset_dial_volume_fail_counts():
@@ -298,31 +290,6 @@ def _reset_audio_status_fail_count():
     if m is not None:
         m._audio_status_fail_count = 0
 
-
-@pytest.fixture(autouse=True)
-def _reset_dial_repeat_store():
-    """Clear the dial repeat store's module singleton after each test."""
-    yield
-    m = _mod("dial_repeat_store")
-    if m is not None:
-        with m.repeat_store._lock:
-            m.repeat_store._records.clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_dial_repeat_worker():
-    """Reset the dial repeat-transport worker's module state after each
-    test — a fresh queue (so a leftover enqueued item from one test can
-    never be drained by the next) and cleared cfg/on_result (so a stray
-    worker thread from an earlier test can never call into another test's
-    callback)."""
-    yield
-    m = _mod("dial_repeat")
-    if m is not None:
-        import queue as _queue_mod
-        m._queue = _queue_mod.SimpleQueue()
-        m._cfg = None
-        m._on_result = None
 
 
 @pytest.fixture(autouse=True)

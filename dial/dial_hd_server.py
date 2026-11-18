@@ -285,7 +285,6 @@ class HdServer:
         self._server = _HdHTTPServer((LOOPBACK_ADDRESS, self._port), self._handler_class)
         if hub is not None:
             hub.set_builder(self.build_state_bytes)
-            hub.set_client_counter(self.client_count)
 
     # ---- event-stream clients --------------------------------------------
 

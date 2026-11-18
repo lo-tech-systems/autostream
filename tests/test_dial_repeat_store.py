@@ -1,9 +1,7 @@
-"""Tests for dial_repeat_store.py — the pure per-appliance repeat/replay
-belief store.
+"""Tests for dial_repeat_store.py — an appliance's repeat/replay record.
 
-Covers: parse_repeat_object() strict field-by-field validation, RepeatStore
-freshness (RECORD_MAX_AGE_S), apply_ack()'s optimistic replace-in-place,
-held_ids(), and prune().
+Covers: parse_repeat_object() strict field-by-field validation and the
+position helpers.
 """
 from __future__ import annotations
 
@@ -19,26 +17,24 @@ for _p in (_DIAL,):
         sys.path.insert(0, _p)
 
 from dial_repeat_store import (
-    RECORD_MAX_AGE_S,
     RepeatRecord,
-    RepeatStore,
     parse_repeat_object,
 )
 
 
 # ---------------------------------------------------------------------------
-# Purity: no hardware/HTTP/display imports, leaf lock only.
+# Purity: no hardware/HTTP/display imports, no module at all.
 # ---------------------------------------------------------------------------
 
 class TestModulePurity:
-    def test_only_threading_and_dataclasses_imported(self):
+    def test_no_module_imported(self):
         import dial_repeat_store as m
         import types
         module_names = {
             name for name, val in vars(m).items()
             if isinstance(val, types.ModuleType)
         }
-        assert module_names == {"threading"}
+        assert module_names == set()
 
 
 # ---------------------------------------------------------------------------
@@ -160,184 +156,13 @@ class TestParseRepeatObject:
 # RepeatStore: update/get/clear/freshness.
 # ---------------------------------------------------------------------------
 
-class TestRepeatStoreUpdateAndGet:
-    def test_update_then_get_returns_the_record(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=10.0)
-        changed = store.update("aid1", rec)
-        assert changed is True
-        assert store.get("aid1", now=10.0) == rec
-
-    def test_update_with_none_clears_the_record(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=10.0)
-        store.update("aid1", rec)
-        changed = store.update("aid1", None)
-        assert changed is True
-        assert store.get("aid1", now=10.0) is None
-
-    def test_update_with_none_when_absent_is_noop(self):
-        store = RepeatStore()
-        assert store.update("aid1", None) is False
-
-    def test_update_with_identical_record_reports_no_change(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=10.0)
-        store.update("aid1", rec)
-        assert store.update("aid1", rec) is False
-
-    def test_update_ignored_for_empty_appliance_id(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=10.0)
-        assert store.update("", rec) is False
-        assert store.get("", now=10.0) is None
-
-    def test_get_returns_none_for_unknown_id(self):
-        store = RepeatStore()
-        assert store.get("nope", now=10.0) is None
-
-    def test_get_returns_none_for_empty_id(self):
-        store = RepeatStore()
-        assert store.get("", now=10.0) is None
-
-    def test_clear_removes_the_entry(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=10.0)
-        store.update("aid1", rec)
-        store.clear("aid1")
-        assert store.get("aid1", now=10.0) is None
-
-    def test_clear_on_absent_id_is_noop(self):
-        store = RepeatStore()
-        store.clear("nope")  # must not raise
-
-    def test_clear_ignored_for_empty_appliance_id(self):
-        store = RepeatStore()
-        store.clear("")  # must not raise
-
-
-class TestRepeatStoreFreshness:
-    def test_get_within_max_age_returns_record(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=1000.0)
-        store.update("aid1", rec)
-        assert store.get("aid1", now=1000.0 + RECORD_MAX_AGE_S) is not None
-
-    def test_get_past_max_age_returns_none(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=1000.0)
-        store.update("aid1", rec)
-        assert store.get("aid1", now=1000.0 + RECORD_MAX_AGE_S + 0.001) is None
-
-
 # ---------------------------------------------------------------------------
 # apply_ack(): optimistic transport/arm-ack update.
 # ---------------------------------------------------------------------------
 
-class TestApplyAck:
-    def test_replaces_state_armed_position_keeps_recording_and_duration(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(
-            state="hold", armed=False,
-            replay={"active": False, "position_seconds": 0.0, "duration_seconds": 30.0},
-            recording_seconds=30.0,
-        ), now=10.0)
-        store.update("aid1", rec)
-
-        store.apply_ack("aid1", {"state": "replaying", "armed": True, "position_seconds": 5.0},
-                         now=11.0)
-        updated = store.get("aid1", now=11.0)
-        assert updated.state == "replaying"
-        assert updated.armed is True
-        assert updated.position_seconds == 5.0
-        assert updated.recording_seconds == 30.0
-        assert updated.duration_seconds == 30.0
-        assert updated.observed_at == 11.0
-
-    def test_noop_when_no_record_exists(self):
-        store = RepeatStore()
-        store.apply_ack("aid1", {"state": "replaying", "armed": True, "position_seconds": 0.0},
-                         now=1.0)
-        assert store.get("aid1", now=1.0) is None
-
-    def test_noop_for_empty_appliance_id(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=1.0)
-        store.update("aid1", rec)
-        store.apply_ack("", {"state": "replaying", "armed": True, "position_seconds": 0.0}, now=1.0)
-        assert store.get("aid1", now=1.0) == rec
-
-    def test_noop_for_non_dict_ack(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=1.0)
-        store.update("aid1", rec)
-        store.apply_ack("aid1", None, now=1.0)
-        assert store.get("aid1", now=1.0) == rec
-
-    def test_noop_for_invalid_state_in_ack(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=1.0)
-        store.update("aid1", rec)
-        store.apply_ack("aid1", {"state": "bogus", "armed": True, "position_seconds": 0.0}, now=2.0)
-        assert store.get("aid1", now=2.0) == rec
-
-    def test_noop_for_non_bool_armed_in_ack(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=1.0)
-        store.update("aid1", rec)
-        store.apply_ack("aid1", {"state": "hold", "armed": "yes", "position_seconds": 0.0}, now=2.0)
-        assert store.get("aid1", now=2.0) == rec
-
-    def test_noop_for_non_numeric_position_in_ack(self):
-        store = RepeatStore()
-        rec = parse_repeat_object(_valid_obj(), now=1.0)
-        store.update("aid1", rec)
-        store.apply_ack("aid1", {"state": "hold", "armed": False, "position_seconds": "x"}, now=2.0)
-        assert store.get("aid1", now=2.0) == rec
-
-
 # ---------------------------------------------------------------------------
 # held_ids() and prune().
 # ---------------------------------------------------------------------------
-
-class TestHeldIds:
-    def test_only_hold_state_ids_returned(self):
-        store = RepeatStore()
-        store.update("hold-id", parse_repeat_object(_valid_obj(state="hold"), now=10.0))
-        store.update("replaying-id", parse_repeat_object(_valid_obj(state="replaying"), now=10.0))
-        assert store.held_ids(now=10.0) == frozenset({"hold-id"})
-
-    def test_stale_hold_record_excluded(self):
-        store = RepeatStore()
-        store.update("hold-id", parse_repeat_object(_valid_obj(state="hold"), now=10.0))
-        assert store.held_ids(now=10.0 + RECORD_MAX_AGE_S + 1) == frozenset()
-
-    def test_no_records_returns_empty(self):
-        store = RepeatStore()
-        assert store.held_ids(now=10.0) == frozenset()
-
-
-class TestPrune:
-    def test_drops_ids_not_in_keep_set(self):
-        store = RepeatStore()
-        store.update("a", parse_repeat_object(_valid_obj(), now=1.0))
-        store.update("b", parse_repeat_object(_valid_obj(), now=1.0))
-        store.prune({"a"})
-        assert store.get("a", now=1.0) is not None
-        assert store.get("b", now=1.0) is None
-
-    def test_empty_keep_set_drops_everything(self):
-        store = RepeatStore()
-        store.update("a", parse_repeat_object(_valid_obj(), now=1.0))
-        store.prune(set())
-        assert store.get("a", now=1.0) is None
-
-    def test_prune_is_a_noop_when_nothing_to_drop(self):
-        store = RepeatStore()
-        store.update("a", parse_repeat_object(_valid_obj(), now=1.0))
-        store.prune({"a", "b"})
-        assert store.get("a", now=1.0) is not None
-
 
 # ---------------------------------------------------------------------------
 # latency_ms -> latency_seconds, and the shared heard-position functions.
@@ -379,14 +204,6 @@ class TestLatencyParsing:
     def test_the_field_is_the_last_one_and_defaulted(self):
         rec = RepeatRecord(True, "hold", False, 1.0, 0.0, 0.0, 5.0)
         assert rec.latency_seconds == 2.0
-
-    def test_an_ack_keeps_the_latency(self):
-        store = RepeatStore()
-        store.update("a" * 20, parse_repeat_object(_valid_obj(latency_ms=900), now=1.0))
-        store.apply_ack("a" * 20, {"state": "replaying", "armed": True,
-                                   "position_seconds": 0.0}, now=2.0)
-        assert store.get("a" * 20, 2.0).latency_seconds == 0.9
-
 
 def _rec(position=10.0, duration=100.0, observed_at=50.0, latency=2.0):
     return RepeatRecord(True, "replaying", True, 100.0, position, duration,

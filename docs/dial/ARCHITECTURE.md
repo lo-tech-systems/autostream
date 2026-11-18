@@ -10,7 +10,8 @@ each other. For what the dial does as a product, see
 ## The split in one paragraph
 
 The **core** (`dial/dial_core.py`) is the dial's model of the appliances it can
-control. It polls them, decides which one the dial is following, keeps the
+control. It reads them through one peer client each, decides which one the
+dial is following, keeps the
 now-playing line, artwork, outputs, EQ, repeat state, warnings, Wi-Fi link, SD
 health and update progress, and publishes all of that as immutable snapshots.
 The **view** (`dial/dial_display.py`) owns the panel. It subscribes to the
@@ -24,16 +25,18 @@ view](#the-hd-page-is-a-second-view).
 
 | Module | Responsibility |
 |---|---|
-| `dial_core.py` | `DialCore`: the model, the poll thread, the public action API, snapshots, subscriptions and the effects queue. |
+| `dial_core.py` | `DialCore`: the model, the core thread that folds the peer clients' snapshots, the public action API, snapshots, subscriptions and the effects queue. |
+| `dial_core_focus.py` | The focus rule: which appliance the dial follows, from the folded snapshots. Pure. |
+| `dial_core_requests.py` | The request lane: one thread that sends the screens' speaker, EQ and repeat requests through the peer clients, and the rule that settles a request once the appliance's state has caught up with its reply. |
+| `dial_peer_view.py` | The pure mapping from an appliance's peer snapshot to the dial's own state types. |
 | `dial_core_state.py` | The snapshot dataclasses and the pure decisions made over them (focus resolution, walk order, volume target choice, picker rows, warning attribution). No I/O, no threads, no locks, no clock reads. |
-| `dial_core_poll.py` | The poll tick's I/O steps as plain functions: status fetches, the reconcile fan-out, the artwork download, and feeding the auth map, repeat store and mute/volume observations. The network calls are injectable so a test can stub them. |
+| `dial_artwork.py` | The artwork download the core's artwork thread runs, with its size and time limits and a rate-limited failure log. |
 | `dial_warning_text.py` | The warning table and its fixed strings (No-WiFi, SD health, update cards) and the builder for appliance-supplied warnings. Pure data, no drawing. |
 | `dial_warnings.py` | The warning manager: registration, snooze persistence, severity ordering. |
 | `dial_display.py` | `DialDisplay`: the SPI view. Screen policy, the repaint thread, composing and pushing frames, panel sleep and wake, the artwork reveal slide, the pressed channel and the touch surface. |
 | `dial_display_compositor.py`, `dial_display_image.py`, `dial_display_profiles.py`, `dial_display_adafruit.py` | Drawing, image policy, panel profiles and the hardware backend. |
 | `dial_touch*.py` | Touch drivers, filtering and the zone layout. The touch source calls core actions through the view's taps. |
-| `dial_capabilities.py` | What an appliance can do for the dial. A small registry of what appliances' capabilities replies said, and `appliance_capabilities()`, the one place every caller asks. An appliance of a generation with a capabilities endpoint is read from its reply once that has landed; every other appliance, and one whose reply has not arrived, is read from its mDNS flags. Pure data and one leaf lock. |
-| `dial_appliance_fetch.py` | The reader for what an appliance says about itself (its capabilities and its warnings). One worker thread, queue and HTTP client of its own, so a slow appliance delays nothing else. Results go back to the core. |
+
 | `dial_hd_server.py` | `HdServer`: the HD page's loopback web server, the page's static files, the state body, the held artwork, the event stream route and the settings, info, action and panel routes. Also the optional development listener. |
 | `dial_hd_backdrop.py` | `BackdropStore`: the page's blurred backdrops, rendered on first request on the handler thread and kept in memory, one per artwork key and one for the logo. |
 | `dial_hd_events.py` | `ChangeHub`: turns the core's change signals into a sequence number, builds each state body once per change and feeds the event stream. |
@@ -47,16 +50,17 @@ view](#the-hd-page-is-a-second-view).
 
 | Thread | Owner | What it does |
 |---|---|---|
-| `dial-core` | core | Polls appliances every poll interval, or sooner when asked or when an appliance pushes a change (a poll asked for within 0.4 s of the last one's end waits for that gap). Once a second it also does housekeeping: the update watch, expiring warnings, the snooze write, and refreshing watched outputs and EQ. |
+| `dial-core` | core | Folds the peer clients' snapshots into one publish when a client signals a change (a fold asked for within 0.4 s of the last one's end waits for that gap) and at the fold interval. Once a second it also does housekeeping: the update watch, expiring warnings, the snooze write, and the replay position read while an appliance replays. |
 | `dial-display-repaint` | view | Waits for a core snapshot or an overlay signal, folds the newest snapshot into the screen and paints. This is the only thread that composes and pushes frames. |
 | `touch-event-source` | touch | Reads the touch controller and turns touches into taps. Taps call core actions (never while holding the view lock) and the view's own screen changes. |
-| `volume-worker`, `eq-worker`, `outputs-worker`, `repeat-worker`, `network-worker` | workers | Do the slow appliance and system calls. Their results are handed back to the core, which folds them into state and queues what they mean for the screen. |
-| mDNS browsers | roster | Keep the list of appliances and which are playing. The core reads them each tick. |
+| one per appliance | peer clients | Each holds one appliance's state from its change stream and signals the core when it moves. |
+| `requests`, `volume-worker`, `network-worker` | workers | Send the screens' requests and the knob's volume and mute through the peer clients, and read the Wi-Fi link. Replies are folded by the core, which queues what they mean for the screen. |
+| `dial-artwork` | core | Short-lived: downloads the focused appliance's artwork when its URL changes. |
+| mDNS browser | peer registry | Keeps the list of sighted appliances that the peer pool holds a client for. |
 | HTTP server threads | control API | Serve the dial's own API. They call core actions, not the view's internals. |
-| `appliance-fetch-worker` | appliance fetch | Reads appliances' capabilities and warnings, one at a time. Its results are handed to the core. |
 | `dial-hd`, plus one thread per connection | HD server | Accepts connections on the loopback address and serves each on a thread of its own. Every socket has a short timeout, so a stalled client holds only its own thread. |
 | `dial-hd-dev`, plus one thread per connection | HD server | The development listener, present only while it is switched on. |
-| `hd-events` | change hub | Turns core change signals into sequence numbers, and while a page is connected keeps the followed appliance's outputs and EQ fetched. Each event stream client also has its handler thread. |
+| `hd-events` | change hub | Turns core change signals into sequence numbers. Each event stream client also has its handler thread. |
 | `hd-panel` | HD panel | Runs the idle clock and the sleep and wake decisions, and writes the backlight. |
 | `hd-ddc` | HD panel | Present only with a DDC backlight. Applies the newest wanted level to the panel (power on or off, brightness); the slow bus work happens here, never on a caller. |
 
@@ -66,14 +70,13 @@ view](#the-hd-page-is-a-second-view).
 reference read; no lock is taken. Every change goes through one `_publish`
 step that mutates state under the core lock, builds the next snapshot with an
 incremented sequence number, and wakes waiters and subscribers. A snapshot
-that ends a poll tick carries a new `ticks` count and a `TickContext` saying
-what the tick started from. That is how a view tells a finished tick from the
+that ends a fold carries a new `ticks` count and a `TickContext` saying
+what the fold started from. That is how a view tells a finished tick from the
 writes made in the middle of one, and it reacts to the finished tick only.
 
 **Actions.** Everything that changes appliance state on the dial's behalf is a
 core method: setting focus, setting an output, setting EQ, starting and
-stopping replay, arming repeat, toggling mute, requesting a poll or reconcile,
-and so on. Actions return an `ActionResult` and never touch the screen.
+stopping replay, arming repeat, toggling mute, requesting a fold, and so on. Actions return an `ActionResult` and never touch the screen.
 
 **Notifications.** `core.subscribe(callback)` registers a zero-argument
 callback, and `core.wait_for_change(seen_seq, timeout)` blocks until something
@@ -82,26 +85,14 @@ into one wake, and the consumer reads the newest snapshot, so a consumer that
 tracks the last `seq` it saw never misses the latest state (it may skip
 intermediate ones).
 
-**Pushes from appliances.** The dial's HTTP server accepts three advisory
-pushes from an appliance: `/auth-changed`, `/warnings-changed` and
-`/state-changed`. Each is checked against the appliance's current sighting,
-only queues the appliance id (a state push also carries what it said changed)
-and wakes the core thread; nothing is fetched on the HTTP thread. The rate
-limiter on the state route decides only whether the core is woken: a state
-push from the appliance's sighted address always has its kinds queued, so
-hints a busy sender delivers close together are not lost, and the core is
-woken anyway when no tick is already due to take them. The core's
-reaction is a poll, so the push brings the next status request forward and the
-poll is still the truth. A state push also asks again for the speakers list
-or the equaliser when the dial is watching that appliance and the kinds the
-push names could have changed it (a push naming nothing asks for both); the
-speakers list is left alone while this dial's own speaker request to that
-appliance is still pending, and a kind the core does not recognise asks for
-nothing beyond the poll. A poll woken within 0.4 s of the last one's end waits
-for the gap, and hints that arrive meanwhile join that poll, so a burst of
-pushes costs one poll per gap; the regular poll is not delayed. A push that is
-lost or never sent costs nothing but the wait for the regular poll (and, for
-the speakers list, its own periodic refresh).
+**Appliance changes.** Each sighted appliance is held by a peer client that
+keeps its state from the appliance's change stream. A client that moves only
+signals the core thread, which reads every moved client's snapshot, maps it
+with `dial_peer_view` and publishes once, however many moved. The speakers
+list, the equaliser, warnings and the repeat record are always held, so
+nothing is asked for when a screen opens. The replay position is the one
+value read on its own: every 5 s while an appliance replays, and once after an
+accepted seek or stop.
 
 **The effects queue.** Some things the core learns are not state but an event
 the screen should react to once: a warning source began or cleared an incident,
@@ -198,21 +189,20 @@ the `panel_power_off` reader runs on its worker, outside that condition.
 ## Locking rules
 
 1. The core lock is held only for in-memory work. It is never held across
-   network or file I/O, a frame push, a subscriber callback, or a call into
-   `auth_map`.
+   network or file I/O, a frame push or a subscriber callback.
 2. The core lock and the view's locks are never nested, in either order. The
    view calls core actions outside its own lock, and the repaint thread reads
    `core.snapshot()` without a lock.
 3. Subscriber callbacks run inline on the publishing thread and must only
    signal (`Event.set`, `queue.put_nowait`, `Condition.notify`). A callback
    that blocks delays that one publisher and nothing else.
-4. Callbacks that the core makes into the view while polling (the EQ veto and
+4. Callbacks that the core makes into the view while folding (the EQ veto and
    the idle hold below) are plain lock-free reads, because they run on the
    core thread.
 
 ## The idle hold
 
-When a poll finds nothing playing, the core normally clears what it reports as
+When a fold finds nothing playing, the core normally clears what it reports as
 now playing and the idle state that follows from it. The view registers a
 predicate with `core.set_idle_hold` that can tell the core to leave things as
 they are for that tick. It returns true when the panel is asleep or about to
@@ -232,8 +222,8 @@ already closed, so the two sides cannot disagree.
 If the display stack will not load (an incomplete install of Pillow, for
 example), `dial_main.py` substitutes a headless stand-in for the display. There
 is no screen, but the core is built, started and stopped by `dial_main.py` in
-the same way, so the poll still runs. That keeps authorisation probes going,
-volume and mute following the appliance the dial reports from, and the warning
+the same way, so the appliances are still held. That keeps volume and mute
+following the appliance the dial reports from, and the warning
 and update watches running. Volume control never depends on the display.
 
 ## Startup and shutdown order
