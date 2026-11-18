@@ -104,7 +104,7 @@ def _make_handler(path: str, sess_token: str, csrf_token: str) -> "ConfigWebHand
 # the stub.  The stub is the first downstream call that would be made if the
 # auth guard were absent, so assert_not_called() proves the guard fired.
 _PROTECTED = [
-    ("/setup",              "autostream_webui.handle_setup_post"),
+    ("/setup",              "autostream_webui._route_post_setup_form"),
     ("/api/input_eq",       "autostream_webui.handle_live_input_eq_update"),
     ("/api/input_gain",     "autostream_webui.handle_live_input_gain_update"),
     ("/api/update/apply",   "autostream_webui.run_updater"),

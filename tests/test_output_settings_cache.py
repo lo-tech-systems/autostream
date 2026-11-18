@@ -90,19 +90,6 @@ def test_binding_again_forgets_what_was_cached(store, tmp_path):
     assert lc.include_tv_for("1") is True
 
 
-def test_a_setup_form_save_keeps_the_include_tv_section(tmp_path, monkeypatch):
-    import test_webui_post_handlers as handlers
-    base = handlers._minimal_config()
-    base["owntone"]["include_tv"] = {"1": False}
-    base["outputs"] = {"device_pause_scope": "all"}
-    monkeypatch.setattr(handlers, "_minimal_config", lambda: base)
-    form = {"audio_capture_device": "hw:0,0", "silence_seconds": "10",
-            "owntone_output_name": "S", "owntone_volume_percent": "50"}
-    saved = handlers._call_setup_post(form, tmp_path)["saved"][0]
-    assert saved["owntone"]["include_tv"] == {"1": False}
-    assert saved["outputs"] == {"device_pause_scope": "all"}
-
-
 def test_the_reset_is_cheap_when_nothing_touched_the_cache():
     lc.reset_output_settings_for_tests()
     before = threading.active_count()

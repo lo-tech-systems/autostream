@@ -172,7 +172,6 @@ from autostream_webui_post_handlers import (
     handle_live_input_eq_update,
     handle_live_input_gain_update,
     handle_output_update,
-    handle_setup_post,
 )
 
 from autostream_config import STATE_PATH

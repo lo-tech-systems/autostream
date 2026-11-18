@@ -17,7 +17,7 @@ owning their validator/normaliser functions in the module they always lived
 in; this module is purely the shared registry those four modules populate
 one row at a time, at their own import time, replacing what used to be four
 separate dicts (`_SETTINGS_FIELDS`, `_SERVICE_FIELD_MAP`, the EQ module's
-inline field handling, and `handle_setup_post`'s ad hoc per-field parsing).
+inline field handling, and the Setup form's ad hoc per-field parsing).
 
 Scope note -- what this module deliberately does NOT do:
   - It does not implement `SettingsStore.set()`/`SetOutcome`; those live in
@@ -43,9 +43,8 @@ cross-field validation it runs:
     against the raw dict about to be committed): "an atomic, race-safe
     check at commit time". Two rules exist today: cross-input
     capture-device uniqueness and the hostname-visibility cascade -- see
-    the bottom of this module. Both ``send_settings_post_json`` and
-    ``handle_setup_post`` call the *same* callables (via this table), so
-    the setup form and the settings API enforce the same rule.
+    the bottom of this module. ``send_settings_post_json`` calls them
+    through this table.
   - `mutate` -- overrides the default ``raw[section][key] = value`` write
     for the handful of fields whose on-disk shape isn't a flat
     ``section[key]`` assignment (e.g. the input type, which calls
@@ -155,7 +154,7 @@ class FieldSpec:
                    style coercion: receives the raw string already extracted
                    from the submitted form (via ``fld(...)``), returns the
                    normalised value, exactly reproducing what
-                   ``handle_setup_post`` did inline before this migration
+                   the Setup form did inline before this migration
                    (deliberately including the absence of bounds checking
                    where none existed -- see module docstring).
       normalise:   ``Callable[[str], object]`` -- the Service-page
@@ -270,17 +269,10 @@ def template_leaf(template_path: str, concrete_path: str) -> Optional[str]:
 
 
 # -----------------------------------------------------------------------------
-# Cross-field invariants, schema-declared so both POST /api/settings and
-# POST /setup enforce the same rule. Bodies are the exact logic that
-# previously lived inline, once each, in send_settings_post_json's mutator
-# (the duplicate-device authoritative check, the hostname-visibility
-# cascade) -- relocating them here so both write paths call the one
-# function does not change either rule's behaviour on the path that
-# already enforced it. handle_setup_post did NOT previously call the
-# duplicate-device check at all: routing it through this same callable is
-# a deliberate behaviour fix, not a silent side effect -- see
-# autostream_webui_post_handlers.py's own call site for the flash-error path
-# this now takes.
+# Cross-field invariants, schema-declared so the rule lives in one place.
+# Bodies are the exact logic that previously lived inline, once each, in
+# send_settings_post_json's mutator (the duplicate-device authoritative
+# check, the hostname-visibility cascade).
 # -----------------------------------------------------------------------------
 
 def cross_validate_capture_device_unique(raw: dict, section: str, key: str, value: object) -> None:

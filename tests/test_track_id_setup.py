@@ -4,28 +4,19 @@ Covers:
 - Config defaults and normalization
 - Invalid intervals normalize to 15
 - Existing configs without the section continue to parse
-- Save with switch checked/unchecked
-- Save with API key persists the key (without logging it)
-- Save preserves nested provider settings
-- Initial setup without sentinel does not create/overwrite the section
-- Track ID changes apply the service live without restarting monitors
+- Unknown provider ids in a stored section are discarded
+- The Setup card describes track-change re-identification
 """
 from __future__ import annotations
 
-import json
-import logging
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
-
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_config as cfg_mod
 from autostream_config import (
     TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS,
     TRACK_ID_DEFAULT_PROVIDER,
@@ -51,9 +42,7 @@ from autostream_config import (
     normalize_track_id_track_change_silence_seconds,
     parse_config,
 )
-import autostream_live_config as live_config
 import autostream_core as core
-import autostream_runtime as runtime
 
 
 # ---------------------------------------------------------------------------
@@ -224,152 +213,12 @@ class TestNormalizeTrackIdScheduling:
 
 
 # ---------------------------------------------------------------------------
-# Setup page save (handle_setup_post)
+# Parsing a stored section, and the Setup card text
 # ---------------------------------------------------------------------------
 
-def _make_state(tmp_path: Path, extra_cfg: dict | None = None) -> MagicMock:
-    base = {"general": {}, "owntone": {"base_url": "http://localhost:3689", "output_name": "Sp"}}
-    if extra_cfg:
-        def _deep(d, u):
-            for k, v in u.items():
-                if isinstance(v, dict) and isinstance(d.get(k), dict):
-                    _deep(d[k], v)
-                else:
-                    d[k] = v
-        _deep(base, extra_cfg)
-    cfg_path = tmp_path / "autostream.json"
-    cfg_path.write_text(json.dumps(base))
-    state = MagicMock()
-    state.config_path = str(cfg_path)
-    return state
-
-
-def _run_setup_post(form_fields: dict, tmp_path: Path, extra_cfg: dict | None = None):
-    """Run handle_setup_post with minimal patches.
-
-    Returns (saved_cfg, mock_reload, mock_live_apply).
-    """
-    import autostream_webui_post_handlers as ph
-    from urllib.parse import urlencode
-
-    state = _make_state(tmp_path, extra_cfg)
-
-    body = urlencode(form_fields)
-    handler = MagicMock()
-    auth = MagicMock()
-    auth.get_csrf_token.return_value = "tok"
-
-    with (
-        patch.object(ph, "get_system_hostname", return_value="myhost"),
-        patch.object(ph, "set_system_hostname"),
-        patch.object(live_config, "update_live_owntone_runtime"),
-        patch.object(cfg_mod, "suggested_silence_threshold_dbfs", return_value=-60.0),
-        patch.object(runtime, "request_config_reload") as mock_reload,
-        patch.object(live_config, "identification") as hooks,
-        patch.object(live_config, "update_live_silence_seconds", return_value=True),
-        patch.object(ph, "_set_flash_cookie"),
-    ):
-        ph.handle_setup_post(handler, state, auth, body)
-
-    saved = json.loads(Path(state.config_path).read_text())
-    return saved, mock_reload, hooks.apply_track_id_config_live
-
-
-class TestHandleSetupPostTrackId:
-
-    def test_sentinel_absent_does_not_create_section(self, tmp_path):
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        assert "track_identification" not in saved
-
-    def test_switch_checked_saves_enabled_true(self, tmp_path):
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "track_identification_enabled": "on",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        assert saved["track_identification"]["enabled"] is True
-
-    def test_switch_unchecked_saves_enabled_false(self, tmp_path):
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        assert saved["track_identification"]["enabled"] is False
-
-    def test_sentinel_value_not_in_logs(self, tmp_path, caplog):
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-        }
-        with caplog.at_level(logging.DEBUG):
-            _run_setup_post(form, tmp_path)
-        assert "supersecretkey" not in caplog.text
-
-    def test_live_apply_called_when_enabled_changes(self, tmp_path):
-        # Seed audio device so daemon_changed is False; only TI changes.
-        existing = {
-            "audio1": {"capture_device": "hw:1,0", "silence_threshold": -60.0, "turntable": False},
-            "audio2": {"enabled": False, "capture_device": "", "silence_threshold": -60.0, "turntable": False},
-            "track_identification": {"enabled": False},
-        }
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "track_identification_enabled": "on",
-        }
-        _, mock_reload, mock_live_apply = _run_setup_post(form, tmp_path, extra_cfg=existing)
-        # Track ID changes must apply the service live, not restart the coordinator.
-        mock_reload.assert_not_called()
-        mock_live_apply.assert_called_once()
-
-    def test_no_reload_when_track_id_unchanged(self, tmp_path):
-        # Pre-seed config with enabled=True and matching audio devices.
-        # Submitting the same enabled state must not trigger a live apply.
-        existing = {
-            "audio1": {"capture_device": "hw:1,0", "silence_threshold": -60.0, "turntable": False},
-            "audio2": {"enabled": False, "capture_device": "", "silence_threshold": -60.0, "turntable": False},
-            "track_identification": {"enabled": True},
-        }
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "track_identification_enabled": "on",
-        }
-        _, mock_reload, mock_live_apply = _run_setup_post(form, tmp_path, extra_cfg=existing)
-        mock_reload.assert_not_called()
-        mock_live_apply.assert_not_called()
-
-    def test_unknown_provider_discarded_in_parsed_config(self, tmp_path):
-        existing = {
+class TestTrackIdStoredSection:
+    def test_unknown_provider_ids_are_discarded_by_parse_config(self):
+        raw = {
             "track_identification": {
                 "enabled": False,
                 "providers": {
@@ -378,117 +227,13 @@ class TestHandleSetupPostTrackId:
                 },
             }
         }
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path, extra_cfg=existing)
-        # parse_config must discard unknown provider IDs regardless of raw file contents
-        parsed = parse_config(saved)
+        parsed = parse_config(raw)
         assert "acoustid_musicbrainz" not in parsed.track_identification.providers
         assert "future_provider" not in parsed.track_identification.providers
-
-    def test_setup_post_persists_new_scheduling_defaults(self, tmp_path):
-        """POST with sentinel present must write the five new scheduling defaults."""
-        from autostream_config import (
-            TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS,
-            TRACK_ID_DEFAULT_SNAPSHOT_SECONDS,
-            TRACK_ID_DEFAULT_RETRY_SECONDS,
-            TRACK_ID_DEFAULT_REFRESH_SECONDS,
-            TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS,
-        )
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        ti = saved.get("track_identification", {})
-        assert ti.get("analysis_lead_in_seconds") == TRACK_ID_DEFAULT_ANALYSIS_LEAD_IN_SECONDS
-        assert ti.get("snapshot_seconds") == TRACK_ID_DEFAULT_SNAPSHOT_SECONDS
-        assert ti.get("retry_seconds") == TRACK_ID_DEFAULT_RETRY_SECONDS
-        assert ti.get("refresh_seconds") == TRACK_ID_DEFAULT_REFRESH_SECONDS
-        assert ti.get("track_change_silence_seconds") == TRACK_ID_DEFAULT_TRACK_CHANGE_SILENCE_SECONDS
-
-    def test_setup_post_does_not_write_interval_seconds(self, tmp_path):
-        """interval_seconds must never appear in the saved config."""
-        # Even if it was present in a legacy config, it must not be preserved.
-        existing = {"track_identification": {"enabled": False, "interval_seconds": 30}}
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "audio_silence_threshold": "-60",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path, extra_cfg=existing)
-        assert "interval_seconds" not in saved.get("track_identification", {})
 
     def test_setup_page_card_describes_track_change_detection(self):
         """Setup page card text must describe the track-change / re-identification behaviour."""
         import inspect
         import autostream_webui_page_setup as m
         src = inspect.getsource(m)
-        assert "re-identif" in src.lower() or "track change" in src.lower(), \
-            "Setup card text should describe track-change re-identification behaviour"
-
-    def test_setup_post_saves_analysis_lead_in_from_form(self, tmp_path):
-        """Explicit ti_analysis_lead_in_seconds form value must be saved."""
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "ti_analysis_lead_in_seconds": "20",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        assert saved["track_identification"]["analysis_lead_in_seconds"] == 20
-
-    def test_setup_post_saves_refresh_seconds_from_form(self, tmp_path):
-        """Explicit ti_refresh_seconds form value must be saved."""
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "ti_refresh_seconds": "600",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        assert saved["track_identification"]["refresh_seconds"] == 600
-
-    def test_setup_post_saves_track_change_silence_from_form(self, tmp_path):
-        """Explicit ti_track_change_silence_seconds form value must be saved."""
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "ti_track_change_silence_seconds": "2.0",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        assert saved["track_identification"]["track_change_silence_seconds"] == pytest.approx(2.0)
-
-    def test_setup_post_clamps_out_of_range_lead_in(self, tmp_path):
-        """Out-of-range ti_analysis_lead_in_seconds must be clamped, not rejected."""
-        form = {
-            "audio_capture_device": "hw:1,0",
-            "owntone_output_name": "Sp",
-            "owntone_volume_percent": "20",
-            "silence_seconds": "30",
-            "track_identification_present": "1",
-            "ti_analysis_lead_in_seconds": "999",
-        }
-        saved, *_ = _run_setup_post(form, tmp_path)
-        from autostream_config import TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS
-        assert saved["track_identification"]["analysis_lead_in_seconds"] == TRACK_ID_MAX_ANALYSIS_LEAD_IN_SECONDS
+        assert "re-identif" in src.lower() or "track change" in src.lower(),             "Setup card text should describe track-change re-identification behaviour"

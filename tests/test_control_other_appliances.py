@@ -15,7 +15,6 @@ import io
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from urllib.parse import urlencode
 
 import pytest
 from _source_text import page_data, page_with_static
@@ -104,75 +103,6 @@ def _make_post(path: str, body: bytes = b"") -> "ConfigWebHandler":
     h._pending_set_cookies = []
     h._csrf_token = "testcsrf"
     return h
-
-
-def _minimal_config():
-    return {
-        "audio1": {"capture_device": "hw:0,0", "silence_threshold": -50,
-                   "turntable": False, "gain_db": 0.0,
-                   "eq_40hz_db": 0.0, "eq_100hz_db": 0.0, "eq_8khz_db": 0.0},
-        "audio2": {"enabled": False, "capture_device": "hw:1,0", "silence_threshold": -50,
-                   "turntable": False, "gain_db": 0.0,
-                   "eq_40hz_db": 0.0, "eq_100hz_db": 0.0, "eq_8khz_db": 0.0},
-        "owntone": {"base_url": "http://localhost:3689",
-                    "output_name": "Default", "volume_percent": 50},
-        "general": {"silence_seconds": 10},
-        "updates": {"auto_update": False},
-    }
-
-
-def _call_setup_post_control(form_data: dict) -> dict:
-    """Call handle_setup_post focused on control_other_appliances, returning saved configs."""
-    from autostream_webui_post_handlers import handle_setup_post
-
-    body = urlencode(form_data)
-    cfg = _minimal_config()
-    saved_cfgs = []
-
-    def fake_save(path, data):
-        saved_cfgs.append(dict(data))
-
-    with patch("autostream_webui_post_handlers.load_config", return_value=cfg), \
-         patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
-         patch("autostream_webui_post_handlers.save_config", side_effect=fake_save), \
-         patch("autostream_webui_post_handlers.mark_configured"), \
-         patch("autostream_webui_post_handlers.get_system_hostname", return_value="host"), \
-         patch("autostream_webui_post_handlers.set_system_hostname"), \
-         patch("autostream_webui_post_handlers.run_admin_cmd",
-               return_value=MagicMock(returncode=0, stderr="")), \
-         patch("autostream_live_config.update_live_owntone_runtime"), \
-         patch("autostream_live_config.identification"), \
-         patch("autostream_webui_post_handlers.send_setup_page"), \
-         patch("autostream_webui_post_handlers._set_flash_cookie"), \
-         patch("autostream_webui_post_handlers.build_top_banner_html", return_value=("", "")), \
-         patch("autostream_runtime.request_config_reload"):
-        p = mock_parse.return_value
-        p.audio1.capture_device = "hw:0,0"
-        p.audio1.silence_threshold_dbfs = -50.0
-        for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
-                     "stylus_life_hours", "belt_life_hours", "belt_life_years",
-                     "bearing_life_hours", "bearing_life_years"):
-            setattr(p.audio1, attr, 0.0)
-        p.audio2.capture_device = "hw:1,0"
-        p.audio2.silence_threshold_dbfs = -50.0
-        for attr in ("gain_db", "eq_40hz_db", "eq_100hz_db", "eq_8khz_db",
-                     "stylus_life_hours", "belt_life_hours", "belt_life_years",
-                     "bearing_life_hours", "bearing_life_years"):
-            setattr(p.audio2, attr, 0.0)
-        p.audio2_enabled = False
-        p.owntone.output_name = "Default"
-        p.owntone.volume_percent = 50
-        p.owntone.base_url = "http://localhost:3689"
-        p.owntone.output_offsets_ms = {}
-        p.owntone.output_airplay_modes = {}
-        p.general.silence_seconds = 10
-        p.general.log_file = "/var/log/autostream.log"
-        p.general.fifo_path = "/run/autostream/audio.fifo"
-        p.updates.auto_update = False
-        p.webui.advertise_appliance = True
-        handle_setup_post(MagicMock(), MagicMock(), MagicMock(), body)
-
-    return {"saved": saved_cfgs}
 
 
 # ---------------------------------------------------------------------------
@@ -326,82 +256,6 @@ class TestEquiliserLocalStripping:
         result = self._build([(_PEER_ID, "")])
         peer = next(r for r in result if r["id"] == _PEER_ID)
         assert peer["hostname"] == "autostream"
-
-
-# ---------------------------------------------------------------------------
-# 4. Setup POST — control_other_appliances persistence
-# ---------------------------------------------------------------------------
-
-_BASE_FORM = {
-    "audio_capture_device": "hw:0,0",
-    "silence_seconds": "10",
-    "owntone_output_name": "Speaker",
-    "owntone_volume_percent": "50",
-    "webui_show_master_volume_present": "1",
-}
-
-
-class TestSetupPostControlOtherAppliances:
-    def test_no_sentinel_does_not_save_flag(self):
-        # No webui_show_master_volume_present → webui block never touched.
-        form = {
-            "audio_capture_device": "hw:0,0",
-            "silence_seconds": "10",
-            "owntone_output_name": "Speaker",
-            "owntone_volume_percent": "50",
-            "webui_control_other_appliances_present": "1",
-            "webui_control_other_appliances": "1",
-        }
-        result = _call_setup_post_control(form)
-        assert result["saved"], "save_config must be called"
-        saved = result["saved"][0]
-        # No webui block should have been written
-        assert "control_other_appliances" not in saved.get("webui", {})
-
-    def test_sentinel_and_checked_saves_true(self):
-        form = {
-            **_BASE_FORM,
-            "webui_show_hostname_on_home": "1",
-            "webui_control_other_appliances_present": "1",
-            "webui_control_other_appliances": "1",
-        }
-        result = _call_setup_post_control(form)
-        saved = result["saved"][0]
-        assert saved["webui"]["control_other_appliances"] is True
-
-    def test_sentinel_and_unchecked_saves_false(self):
-        form = {
-            **_BASE_FORM,
-            "webui_show_hostname_on_home": "1",
-            "webui_control_other_appliances_present": "1",
-            # checkbox absent → False
-        }
-        result = _call_setup_post_control(form)
-        saved = result["saved"][0]
-        assert saved["webui"]["control_other_appliances"] is False
-
-    def test_hostname_off_forces_control_other_to_false(self):
-        # Even with the checkbox checked, if show_hostname is off, control_other must be False.
-        form = {
-            **_BASE_FORM,
-            # webui_show_hostname_on_home absent → hostname = False
-            "webui_control_other_appliances_present": "1",
-            "webui_control_other_appliances": "1",  # would be True if respected
-        }
-        result = _call_setup_post_control(form)
-        saved = result["saved"][0]
-        assert saved["webui"]["control_other_appliances"] is False
-
-    def test_hostname_on_no_control_sentinel_leaves_flag_unchanged(self):
-        # Hostname is on but no control_other sentinel → flag not updated.
-        form = {
-            **_BASE_FORM,
-            "webui_show_hostname_on_home": "1",
-            # no webui_control_other_appliances_present
-        }
-        result = _call_setup_post_control(form)
-        saved = result["saved"][0]
-        assert "control_other_appliances" not in saved.get("webui", {})
 
 
 # ---------------------------------------------------------------------------

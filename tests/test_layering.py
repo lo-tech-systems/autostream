@@ -371,7 +371,6 @@ def l2_cycle(edges) -> list[str] | None:
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_routes', 'autostream_webui', '*'),
     ('C', 'autostream_webui_common', 'autostream_config', 'load_config'),
-    ('C', 'autostream_webui_post_handlers', 'autostream_config', 'load_config'),
     ('D', 'autostream_webui_api', 'subprocess', '*'),
     ('D', 'autostream_webui_common', 'subprocess', '*'),
     ('D', 'autostream_webui_page_about', 'subprocess', '*'),

@@ -1591,8 +1591,8 @@ class _DuplicateCaptureDeviceError(Exception):
 # rather than living only here -- the validator functions and live_fn
 # callables themselves are unchanged (same bodies, same error strings),
 # only their bookkeeping is single-sourced. form_coerce is set for the
-# handful of fields handle_setup_post's hand-parsed form also writes
-# (POST /setup), reusing the exact same raw-string normaliser it already
+# handful of fields the Setup form's hand-parsed fields also wrote,
+# reusing the exact same raw-string normaliser it already
 # called directly -- see autostream_settings_schema.py's module docstring
 # for why the JSON API's validate and the form's form_coerce are two
 # different callables for the same field (typed JSON value vs. plain form

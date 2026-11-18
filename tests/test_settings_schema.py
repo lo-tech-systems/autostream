@@ -193,8 +193,8 @@ class TestSettingsFieldsMigration:
         ):
             spec = SETTINGS_SCHEMA[path]
             assert spec.form_coerce is not None, f"{path} missing form_coerce"
-            # form_coerce must accept a raw form string, matching what
-            # handle_setup_post has always passed it (never a typed value).
+            # form_coerce must accept a raw form string, as the Setup form
+            # always passed it (never a typed value).
             assert spec.form_coerce("3") is not None
 
 
@@ -280,13 +280,11 @@ class TestOutputEqMigration:
 
 
 # ---------------------------------------------------------------------------
-# 5. handle_setup_post migration (autostream_webui_post_handlers.py, POST /setup)
+# 5. Form coercions kept in the schema
 #
-# Only the fields whose form-path normalisation was already identical to the
-# JSON API's schema-declared normaliser are migrated here -- see the scope
-# comment above handle_setup_post() in autostream_webui_post_handlers.py for
-# why the rest (gain_db, EQ bands, silence_seconds, ...) are deliberately
-# left untouched by this item.
+# The Setup form is retired; the fields whose form-path normalisation was
+# identical to the JSON API's schema-declared normaliser keep their
+# form_coerce slot.
 # ---------------------------------------------------------------------------
 
 class TestSetupPostMigration:

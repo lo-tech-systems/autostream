@@ -1690,12 +1690,10 @@ register(
         kind="api",
         allow_unconfigured=False,
         comment=(
-            "The legacy arm's 'if _is_commissioning: handle_setup_post(...)' branch "
-            "was already dead code: /setup is not in do_POST's commissioning "
-            "allowlist, so a commissioning-time POST was already blocked upstream "
-            "(409) before ever reaching this arm -- it could only ever be reached "
-            "once configured, where it unconditionally 405s. Reproduced verbatim, "
-            "dead branch included (allow_unconfigured=False gives the same 409)."
+            "The Setup form is retired: /setup is not in do_POST's commissioning "
+            "allowlist, so a commissioning-time POST is blocked upstream (409) "
+            "before it reaches this arm, and once configured it unconditionally "
+            "405s (allow_unconfigured=False gives the same 409)."
         ),
     )
 )
