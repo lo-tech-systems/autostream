@@ -431,8 +431,9 @@ MonitorLogLevel logger_get_level();
 // Set the current log level, flushing any pending repeat summary first.
 void logger_set_level(MonitorLogLevel level);
 
-// Flush any pending "suppressed N duplicates" summary into the logging
-// queue.  This only enqueues the summary line -- it does not itself wait
+// Flush any pending "suppressed N duplicates" summary, and the rate
+// limiter's pending counts, into the logging queue.  This only enqueues the
+// summary lines -- it does not itself wait
 // for the message to reach the sink.  Called internally by logger_shutdown()
 // and logger_set_level(); exposed for tests that want to force the summary
 // to be queued without stopping the logging thread.
@@ -494,10 +495,96 @@ std::size_t logger_test_queue_depth();
 // in-flight line when this returns false.
 bool logger_test_wait_drained(int timeout_ms = 1000);
 
+// Replace the clock the rate limiter reads, in nanoseconds (nullptr restores
+// CLOCK_MONOTONIC).  Set it before any thread logs through a rated site.
+void logger_test_set_clock(std::int64_t (*clock_ns)());
+
+// Run the rate limiter's window-end scan on the calling thread.  Summaries
+// are queued rather than written, so the logging thread stays the sink's
+// only writer; follow with logger_test_wait_drained().
+void logger_test_rate_sweep();
+
 #define LOG_WARN(...)  logger_log(MonitorLogLevel::Warn,  __VA_ARGS__)
 #define LOG_INFO(...)  logger_log(MonitorLogLevel::Info,  __VA_ARGS__)
 #define LOG_DEBUG(...) logger_log(MonitorLogLevel::Debug, __VA_ARGS__)
 #define LOG_SPAM(...)  logger_log(MonitorLogLevel::Spam,  __VA_ARGS__)
+
+// ---------------------------------------------------------------------------
+// Keyed rate limit.
+//
+// A rated site names a key (and, for per-input sites, the 1-based input
+// number) and a window in seconds.  The first call in a window is written;
+// calls inside the window are only counted.  The count rides on the next
+// line written for the key and, if nothing else is written, on a summary
+// line when the window ends.  A rated line skips the identical-text rule
+// above, since it is already limited.
+//
+// The decision (logger_rate_admit) is lock-free, allocates nothing and reads
+// the same CLOCK_MONOTONIC as get_monotonic_time(), so it is safe on the
+// real-time threads.  The macro arguments after the window are evaluated
+// only when the call is admitted.  The macros evaluate level and slot twice:
+// they must be free of side effects.
+// ---------------------------------------------------------------------------
+
+enum class LogKey : std::uint8_t
+{
+    CaptureRingFull,
+    FifoReaderStalled,
+    OutputLiveWaitTimeout,
+    OutputSchedulingGap,
+    RateStep,
+    RateMismatch,
+    SrcError,
+    FifoOpenFailed,
+    FifoNotPipe,
+    FifoOpened,
+    FifoBrokenPipe,
+    FifoWriteError,
+    RateWindowDiscarded,
+    RateClassCandidate,
+    WatchdogStopped,
+    WatchdogRestarted,
+    WatchdogRestartFailed,
+    WatchdogQuickDeath,
+    Count
+};
+
+// Instances per key: 0 means "no instance", inputs are numbered from 1.
+inline constexpr int kLogKeyInstances = 3;
+
+struct LogSlot
+{
+    std::uint16_t index;
+};
+
+// An instance outside [0, kLogKeyInstances) maps to 0.
+constexpr LogSlot log_key(LogKey key, int instance = 0)
+{
+    const int inst = (instance >= 0 && instance < kLogKeyInstances) ? instance : 0;
+    return LogSlot{static_cast<std::uint16_t>(
+        static_cast<int>(key) * kLogKeyInstances + inst)};
+}
+
+// True if a line may be written now: the level is enabled and the slot's
+// window has ended.  Otherwise the call is counted and false is returned.
+// Preserves errno.
+bool logger_rate_admit(MonitorLogLevel level, LogSlot slot, double seconds);
+
+// Write one admitted line.  Does not re-check the level.  Returns true once
+// the line has been handed to the queue (the queue may still drop it).
+bool logger_log_rated(MonitorLogLevel level, LogSlot slot, const char* fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+
+// Let the next call in this slot be admitted at once.
+void logger_rate_rearm(LogSlot slot);
+
+// Evaluates to true if the line was admitted and queued.
+#define LOG_EVERY_(lvl, slot, secs, ...) \
+    (logger_rate_admit((lvl), (slot), (secs)) \
+        && logger_log_rated((lvl), (slot), __VA_ARGS__))
+#define LOG_WARN_EVERY(slot, secs, ...)  LOG_EVERY_(MonitorLogLevel::Warn,  slot, secs, __VA_ARGS__)
+#define LOG_INFO_EVERY(slot, secs, ...)  LOG_EVERY_(MonitorLogLevel::Info,  slot, secs, __VA_ARGS__)
+#define LOG_DEBUG_EVERY(slot, secs, ...) LOG_EVERY_(MonitorLogLevel::Debug, slot, secs, __VA_ARGS__)
 
 
 // =============================================================================

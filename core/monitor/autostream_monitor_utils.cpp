@@ -342,6 +342,10 @@ struct MonitorLoggerState
     std::thread       thread;
     std::atomic<bool> thread_running{false};
     std::atomic<bool> stop_requested{false};
+
+    // Set (under queue_mutex) to make the logging thread scan the rate
+    // limiter's slots on its next wake.
+    std::atomic<bool> rate_wake{false};
 };
 
 static MonitorLoggerState g_logger;
@@ -444,23 +448,161 @@ static void logger_write_to_sink(const std::string& line)
     std::fflush(stderr);
 }
 
+// =============================================================================
+// Keyed rate limit
+// =============================================================================
+
+namespace
+{
+    struct LogRateSlot
+    {
+        std::atomic<std::int64_t>  next_ns{0};       // window end
+        std::atomic<std::int64_t>  last_emit_ns{0};
+        std::atomic<std::uint32_t> suppressed{0};
+        std::atomic<std::uint8_t>  level{0};         // level of the last line written
+    };
+
+    constexpr std::size_t kLogRateSlotCount =
+        static_cast<std::size_t>(LogKey::Count) * kLogKeyInstances;
+
+    LogRateSlot g_rate_slots[kLogRateSlotCount];
+
+    static_assert(std::atomic<std::int64_t>::is_always_lock_free,
+                  "the rate limiter's decision path must not take a lock");
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free,
+                  "the rate limiter's decision path must not take a lock");
+
+    constexpr const char* kLogKeyNames[] = {
+        "capture ring full",
+        "fifo reader stalled",
+        "output live wait timeout",
+        "output scheduling gap",
+        "capture rate step",
+        "capture rate mismatch",
+        "sample rate converter error",
+        "fifo open failed",
+        "fifo path not a pipe",
+        "fifo opened",
+        "fifo broken pipe",
+        "fifo write error",
+        "rate window discarded",
+        "rate class candidate",
+        "input stopped unexpectedly",
+        "input restarted",
+        "input restart failed",
+        "input stopped soon after a restart",
+    };
+    static_assert(sizeof(kLogKeyNames) / sizeof(kLogKeyNames[0])
+                      == static_cast<std::size_t>(LogKey::Count),
+                  "every log key needs a name");
+
+    std::atomic<std::int64_t (*)()> g_rate_clock{nullptr};
+
+    std::int64_t rate_now_ns()
+    {
+        if (auto fn = g_rate_clock.load(std::memory_order_relaxed))
+            return fn();
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return static_cast<std::int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
+    }
+}
+
+// One text for the window-end sweep and for logger_flush_repeats().  A summary
+// written straight to the sink can carry a later timestamp than a queued line
+// written after it, as the "[logger] dropped" line already can.
+static std::string format_rate_summary(std::size_t index, std::uint32_t count,
+                                       std::int64_t last_emit_ns, std::int64_t now_ns)
+{
+    const int level = g_rate_slots[index].level.load(std::memory_order_relaxed);
+    const std::size_t key = index / kLogKeyInstances;
+    const std::size_t instance = index % kLogKeyInstances;
+    const long long elapsed_s = std::max<long long>(
+        0, std::llround(static_cast<double>(now_ns - last_emit_ns) / 1.0e9));
+
+    std::ostringstream oss;
+    oss << '[' << log_level_name(static_cast<MonitorLogLevel>(level)) << "] [log] "
+        << kLogKeyNames[key];
+    if (instance != 0)
+        oss << ", input " << instance;
+    oss << ": " << count << " more suppressed in " << elapsed_s << " s";
+    return format_log_line(oss.str());
+}
+
+// Report the counts of slots whose window has ended (every slot with a count
+// if `force`), either straight to the sink (the logging thread) or through the
+// queue (any other thread).  Returns the earliest end of a window still open,
+// or 0 if none is.  Each count is reported once: by this scan or by the next
+// line written for the slot.  A scan racing with a winner may take the count
+// the winner would have appended; that is accepted.
+static std::int64_t logger_rate_scan(bool force, bool to_sink)
+{
+    const std::int64_t now = rate_now_ns();
+    std::int64_t earliest = 0;
+
+    for (std::size_t i = 0; i < kLogRateSlotCount; ++i)
+    {
+        LogRateSlot& slot = g_rate_slots[i];
+        const std::int64_t next = slot.next_ns.load(std::memory_order_relaxed);
+        if (next > now)
+        {
+            if (earliest == 0 || next < earliest)
+                earliest = next;
+            if (!force)
+                continue;
+        }
+        if (slot.suppressed.load(std::memory_order_relaxed) == 0)
+            continue;
+        const std::uint32_t count = slot.suppressed.exchange(0, std::memory_order_relaxed);
+        if (count == 0)
+            continue;
+        if (!log_level_enabled(static_cast<MonitorLogLevel>(
+                slot.level.load(std::memory_order_relaxed))))
+            continue;
+        std::string line = format_rate_summary(
+            i, count, slot.last_emit_ns.load(std::memory_order_relaxed), now);
+        if (to_sink)
+            logger_write_to_sink(line);
+        else
+            logger_enqueue(std::move(line));
+    }
+    return earliest;
+}
+
 // The dedicated logging thread: drains the queue and does all blocking I/O,
 // so no producer (logger_log() caller) is ever blocked on a slow sink.  If
 // the sink stalls, the queue simply backs up (bounded) and further messages
 // are dropped-and-counted rather than piling every thread up behind a
 // single global mutex.
+//
+// While a rate-limited window is open the thread also wakes when the earliest
+// one ends, to report what was suppressed in it.  With none open it keeps the
+// untimed wait, so an idle monitor gains no wakeups.
 static void logger_thread_func()
 {
+    std::int64_t earliest_window_end = 0;
     for (;;)
     {
         std::deque<std::string> batch;
         {
             std::unique_lock<std::mutex> lock(g_logger.queue_mutex);
-            g_logger.queue_cv.wait(lock, []
+            auto ready = []
             {
                 return !g_logger.queue.empty()
-                    || g_logger.stop_requested.load(std::memory_order_relaxed);
-            });
+                    || g_logger.stop_requested.load(std::memory_order_relaxed)
+                    || g_logger.rate_wake.load(std::memory_order_relaxed);
+            };
+            if (earliest_window_end > 0)
+            {
+                const std::int64_t wait_ns =
+                    std::max<std::int64_t>(earliest_window_end - rate_now_ns(), 1000000);
+                g_logger.queue_cv.wait_for(lock, std::chrono::nanoseconds(wait_ns), ready);
+            }
+            else
+            {
+                g_logger.queue_cv.wait(lock, ready);
+            }
+            g_logger.rate_wake.store(false, std::memory_order_relaxed);
             batch.swap(g_logger.queue);
         }
 
@@ -482,6 +624,8 @@ static void logger_thread_func()
                 << " (queue full)";
             logger_write_to_sink(format_log_line(oss.str()));
         }
+
+        earliest_window_end = logger_rate_scan(false, true);
 
         if (g_logger.stop_requested.load(std::memory_order_relaxed))
         {
@@ -556,11 +700,10 @@ static void logger_emit_repeat_summary_locked()
     g_logger.suppressed = 0;
 }
 
-static void logger_vlog(MonitorLogLevel level, const char* fmt, va_list args)
+// Render "[LEVEL] message".  Returns false if the format failed.
+static bool render_log_key(MonitorLogLevel level, const char* fmt, va_list args,
+                           std::string& key)
 {
-    if (!log_level_enabled(level))
-        return;
-
     char stack_buf[1024];
     va_list args_copy;
     va_copy(args_copy, args);
@@ -568,24 +711,32 @@ static void logger_vlog(MonitorLogLevel level, const char* fmt, va_list args)
     va_end(args_copy);
 
     if (needed < 0)
-        return;
+        return false;
 
-    std::string message;
+    key = "[";
+    key += log_level_name(level);
+    key += "] ";
     if (static_cast<size_t>(needed) < sizeof(stack_buf))
     {
-        message.assign(stack_buf, static_cast<size_t>(needed));
+        key.append(stack_buf, static_cast<size_t>(needed));
     }
     else
     {
         std::vector<char> dynamic_buf(static_cast<size_t>(needed) + 1);
         std::vsnprintf(dynamic_buf.data(), dynamic_buf.size(), fmt, args);
-        message.assign(dynamic_buf.data(), static_cast<size_t>(needed));
+        key.append(dynamic_buf.data(), static_cast<size_t>(needed));
     }
+    return true;
+}
 
-    std::string key = "[";
-    key += log_level_name(level);
-    key += "] ";
-    key += message;
+static void logger_vlog(MonitorLogLevel level, const char* fmt, va_list args)
+{
+    if (!log_level_enabled(level))
+        return;
+
+    std::string key;
+    if (!render_log_key(level, fmt, args, key))
+        return;
 
     std::lock_guard<std::mutex> lock(g_logger.mutex);
     if (key == g_logger.last_key)
@@ -661,6 +812,14 @@ void logger_init(MonitorLogLevel level)
     g_logger.last_key.clear();
     g_logger.last_printed = 0;
     g_logger.suppressed   = 0;
+
+    for (LogRateSlot& slot : g_rate_slots)
+    {
+        slot.next_ns.store(0, std::memory_order_relaxed);
+        slot.last_emit_ns.store(0, std::memory_order_relaxed);
+        slot.suppressed.store(0, std::memory_order_relaxed);
+        slot.level.store(0, std::memory_order_relaxed);
+    }
 }
 
 MonitorLogLevel logger_get_level()
@@ -672,6 +831,7 @@ void logger_set_level(MonitorLogLevel level)
 {
     std::lock_guard<std::mutex> lock(g_logger.mutex);
     logger_emit_repeat_summary_locked();
+    logger_rate_scan(true, false);
     g_logger.last_key.clear();
     g_logger.last_printed = 0;
     g_logger.level.store(level, std::memory_order_relaxed);
@@ -681,6 +841,97 @@ void logger_flush_repeats()
 {
     std::lock_guard<std::mutex> lock(g_logger.mutex);
     logger_emit_repeat_summary_locked();
+    logger_rate_scan(true, false);
+}
+
+bool logger_rate_admit(MonitorLogLevel level, LogSlot slot, double seconds)
+{
+    if (!log_level_enabled(level))
+        return false;
+
+    // The sites pass strerror(errno) after this returns.
+    const int saved_errno = errno;
+    const std::int64_t now = rate_now_ns();
+    errno = saved_errno;
+
+    LogRateSlot& s = g_rate_slots[slot.index];
+    std::int64_t next = s.next_ns.load(std::memory_order_relaxed);
+    if (now < next)
+    {
+        s.suppressed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    // Strong CAS on purpose: a spurious failure of a weak one would count a
+    // genuine first occurrence as suppressed.  Losing means another thread
+    // opened this window a moment ago, so the call belongs in its count.
+    const std::int64_t window_end = now + static_cast<std::int64_t>(seconds * 1.0e9);
+    if (!s.next_ns.compare_exchange_strong(next, window_end, std::memory_order_relaxed))
+    {
+        s.suppressed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    return true;
+}
+
+bool logger_log_rated(MonitorLogLevel level, LogSlot slot, const char* fmt, ...)
+{
+    LogRateSlot& s = g_rate_slots[slot.index];
+    const std::int64_t now = rate_now_ns();
+    const std::uint32_t count = s.suppressed.exchange(0, std::memory_order_relaxed);
+    const std::int64_t previous = s.last_emit_ns.exchange(now, std::memory_order_relaxed);
+    s.level.store(static_cast<std::uint8_t>(level), std::memory_order_relaxed);
+
+    std::string key;
+    va_list args;
+    va_start(args, fmt);
+    const bool rendered = render_log_key(level, fmt, args, key);
+    va_end(args);
+    if (!rendered)
+        return false;
+
+    if (count > 0)
+    {
+        const long long ago_s = std::max<long long>(
+            0, std::llround(static_cast<double>(now - previous) / 1.0e9));
+        key += " (" + std::to_string(count) + " more suppressed since the last, "
+             + std::to_string(ago_s) + " s ago)";
+    }
+
+    // Enqueuing wakes the logging thread, which then times its wait to the
+    // window this call just opened.
+    std::lock_guard<std::mutex> lock(g_logger.mutex);
+    logger_emit_repeat_summary_locked();
+    g_logger.last_key.clear();
+    g_logger.last_printed = 0;
+    logger_emit_raw_line(key);
+    return true;
+}
+
+void logger_rate_rearm(LogSlot slot)
+{
+    LogRateSlot& s = g_rate_slots[slot.index];
+    s.next_ns.store(0, std::memory_order_relaxed);
+    if (s.suppressed.load(std::memory_order_relaxed) == 0)
+        return;
+
+    // The window is over, so its count is reported by the logging thread
+    // rather than waiting for the next line.
+    {
+        std::lock_guard<std::mutex> lock(g_logger.queue_mutex);
+        g_logger.rate_wake.store(true, std::memory_order_relaxed);
+    }
+    g_logger.queue_cv.notify_one();
+}
+
+void logger_test_set_clock(std::int64_t (*clock_ns)())
+{
+    g_rate_clock.store(clock_ns, std::memory_order_relaxed);
+}
+
+void logger_test_rate_sweep()
+{
+    logger_rate_scan(false, false);
 }
 
 void logger_log(MonitorLogLevel level, const char* fmt, ...)

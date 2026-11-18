@@ -21,10 +21,13 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <new>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -881,6 +884,369 @@ static void test_resize_fifo_pipe_grows_a_real_fifo()
     ::unlink(fifo_path.c_str());
     ::rmdir(dir);
 }
+// ---------------------------------------------------------------------------
+// Keyed rate limit
+//
+// Every test drives the limiter with a fake clock, captures the sink through
+// a file, and re-initialises the logger before and after so no slot state
+// leaks between tests.
+// ---------------------------------------------------------------------------
+
+static std::atomic<std::int64_t> g_fake_ns{0};
+
+static std::int64_t fake_clock_ns()
+{
+    return g_fake_ns.load(std::memory_order_relaxed);
+}
+
+static void set_fake_seconds(double seconds)
+{
+    g_fake_ns.store(static_cast<std::int64_t>(seconds * 1.0e9), std::memory_order_relaxed);
+}
+
+// Captures the logger's sink into a file for the scope of one test.
+class RateCapture
+{
+public:
+    RateCapture()
+    {
+        std::snprintf(_path, sizeof(_path), "/tmp/test_monitor_utils_rate_XXXXXX");
+        _fd = ::mkstemp(_path);
+        if (_fd >= 0)
+            _redirect = new StderrRedirect(_fd);
+    }
+
+    ~RateCapture()
+    {
+        finish();
+    }
+
+    // Wait for the sink, stop capturing, and return the lines written.
+    std::vector<std::string> finish()
+    {
+        if (_fd < 0)
+            return {};
+        logger_test_wait_drained(1000);
+        delete _redirect;
+        _redirect = nullptr;
+        ::close(_fd);
+        _fd = -1;
+        std::vector<std::string> lines = read_captured_lines(_path);
+        ::unlink(_path);
+        return lines;
+    }
+
+private:
+    char _path[64];
+    int _fd = -1;
+    StderrRedirect* _redirect = nullptr;
+};
+
+static void rate_test_begin(MonitorLogLevel level = MonitorLogLevel::Warn)
+{
+    logger_init(level);
+    set_fake_seconds(1.0);
+    logger_test_set_clock(fake_clock_ns);
+}
+
+static void rate_test_end()
+{
+    logger_test_set_clock(nullptr);
+    logger_init(MonitorLogLevel::Warn);
+}
+
+static bool contains(const std::string& text, const char* needle)
+{
+    return text.find(needle) != std::string::npos;
+}
+
+static void test_rate_second_call_in_window_is_suppressed()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+
+    bool first = LOG_WARN_EVERY(slot, 5.0, "[test] rated %d", 1);
+    set_fake_seconds(2.0);
+    bool second = LOG_WARN_EVERY(slot, 5.0, "[test] rated %d", 2);
+
+    std::vector<std::string> lines = capture.finish();
+    CHECK(first, "T1 first call in a window is admitted");
+    CHECK(!second, "T1 second call inside the window is suppressed");
+    CHECK(lines.size() == 1, "T1 exactly one line written");
+    rate_test_end();
+}
+
+static void test_rate_arguments_not_evaluated_when_suppressed()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+    int evaluated = 0;
+
+    LOG_WARN_EVERY(slot, 5.0, "[test] eval %d", ++evaluated);
+    LOG_WARN_EVERY(slot, 5.0, "[test] eval %d", ++evaluated);
+    LOG_WARN_EVERY(slot, 5.0, "[test] eval %d", ++evaluated);
+
+    capture.finish();
+    CHECK(evaluated == 1, "T2 arguments are evaluated only for the admitted call");
+    rate_test_end();
+}
+
+static void test_rate_count_rides_on_the_next_line()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    set_fake_seconds(2.0);
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    set_fake_seconds(3.0);
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    set_fake_seconds(6.0);
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+
+    std::vector<std::string> lines = capture.finish();
+    CHECK(lines.size() == 2, "T3 two lines written over two windows");
+    if (lines.size() == 2)
+    {
+        CHECK(!contains(lines[0], "suppressed"), "T3 first line carries no count");
+        CHECK(contains(lines[1], "[test] rated (2 more suppressed since the last, 5 s ago)"),
+              "T3 second line carries the count and the time since the last line");
+    }
+    rate_test_end();
+}
+
+static void test_rate_keys_and_instances_are_independent()
+{
+    rate_test_begin();
+    RateCapture capture;
+
+    bool a = LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, 1), 5.0, "[test] a");
+    bool b = LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, 2), 5.0, "[test] b");
+    bool c = LOG_WARN_EVERY(log_key(LogKey::SrcError, 1), 5.0, "[test] c");
+    CHECK(a && b && c, "T4 different instances and keys have their own windows");
+
+    CHECK(log_key(LogKey::SrcError, 9).index == log_key(LogKey::SrcError, 0).index,
+          "T4 an instance past the end maps to the no-instance slot");
+    CHECK(log_key(LogKey::SrcError, -1).index == log_key(LogKey::SrcError, 0).index,
+          "T4 a negative instance maps to the no-instance slot");
+    bool d = LOG_WARN_EVERY(log_key(LogKey::FifoOpened, 99), 5.0, "[test] d");
+    CHECK(d, "T4 an out-of-range instance still logs");
+
+    capture.finish();
+    rate_test_end();
+}
+
+static void test_rate_disabled_level_does_not_touch_the_slot()
+{
+    rate_test_begin(MonitorLogLevel::Warn);
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::RateWindowDiscarded, 1);
+
+    bool first = LOG_DEBUG_EVERY(slot, 5.0, "[test] debug line");
+    bool second = LOG_DEBUG_EVERY(slot, 5.0, "[test] debug line");
+    CHECK(!first && !second, "T5 a disabled level writes nothing");
+
+    logger_set_level(MonitorLogLevel::Debug);
+    bool third = LOG_DEBUG_EVERY(slot, 5.0, "[test] debug line");
+    CHECK(third, "T5 the first call after enabling the level is admitted at once");
+
+    std::vector<std::string> lines = capture.finish();
+    CHECK(lines.size() == 1 && !contains(lines[0], "suppressed"),
+          "T5 the disabled calls were not counted");
+    rate_test_end();
+}
+
+static void test_rate_sweep_reports_the_count_once()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    set_fake_seconds(2.0);
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+
+    set_fake_seconds(3.0);
+    logger_test_rate_sweep();
+    logger_test_wait_drained(1000);
+
+    set_fake_seconds(7.0);
+    logger_test_rate_sweep();
+    logger_test_wait_drained(1000);
+    logger_test_rate_sweep();
+    logger_test_wait_drained(1000);
+
+    set_fake_seconds(8.0);
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+
+    std::vector<std::string> lines = capture.finish();
+    CHECK(lines.size() == 3, "T6 the line, one summary, and the next line");
+    if (lines.size() == 3)
+    {
+        CHECK(contains(lines[1], "[WARN] [log] capture ring full, input 1: 2 more suppressed in 6 s"),
+              "T6 the sweep writes one summary once the window has ended");
+        CHECK(!contains(lines[2], "suppressed"),
+              "T6 the next line does not repeat the reported count");
+    }
+    rate_test_end();
+}
+
+static void test_rate_lines_skip_the_identical_text_rule()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+
+    for (int window = 0; window < 10; ++window)
+    {
+        set_fake_seconds(1.0 + 6.0 * window);
+        LOG_WARN_EVERY(slot, 5.0, "[test] same text every window");
+    }
+
+    std::vector<std::string> lines = capture.finish();
+    CHECK(lines.size() == 10, "T7 ten windows of identical text give ten lines");
+    for (const std::string& line : lines)
+        CHECK(!contains(line, "suppressing further duplicates"),
+              "T7 no identical-text marker on a rated line");
+    rate_test_end();
+}
+
+static void test_rate_concurrent_callers_elect_one_emitter()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+    constexpr int kThreads = 4;
+    constexpr int kCalls = 10000;
+    std::atomic<int> admitted{0};
+
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t)
+        threads.emplace_back([&]
+        {
+            for (int i = 0; i < kCalls; ++i)
+                if (LOG_WARN_EVERY(slot, 5.0, "[test] contended"))
+                    admitted.fetch_add(1);
+        });
+    for (std::thread& t : threads)
+        t.join();
+
+    logger_flush_repeats();
+    std::vector<std::string> lines = capture.finish();
+    CHECK(admitted.load() == 1, "T8 exactly one thread wins the window");
+    CHECK(lines.size() == 2, "T8 one line and one flushed summary");
+    if (lines.size() == 2)
+    {
+        const char* at = std::strstr(lines[1].c_str(), "input 1: ");
+        long long flushed = at ? std::atoll(at + std::strlen("input 1: ")) : -1;
+        CHECK(admitted.load() + flushed == kThreads * kCalls,
+              "T8 emitted plus flushed counts equal the number of calls");
+    }
+    rate_test_end();
+}
+
+static void test_rate_admit_preserves_errno()
+{
+    rate_test_begin();
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+
+    errno = ENOENT;
+    logger_rate_admit(MonitorLogLevel::Warn, slot, 5.0);
+    CHECK(errno == ENOENT, "T9 errno survives an admitted call");
+    errno = EPIPE;
+    logger_rate_admit(MonitorLogLevel::Warn, slot, 5.0);
+    CHECK(errno == EPIPE, "T9 errno survives a suppressed call");
+    rate_test_end();
+}
+
+static void test_rate_rearm_admits_inside_the_window()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::RateStep, 1);
+
+    LOG_WARN_EVERY(slot, 60.0, "[test] rated");
+    set_fake_seconds(2.0);
+    bool suppressed = LOG_WARN_EVERY(slot, 60.0, "[test] rated");
+    logger_rate_rearm(slot);
+    bool rearmed = LOG_WARN_EVERY(slot, 60.0, "[test] rated");
+
+    capture.finish();
+    CHECK(!suppressed, "T10 the second call is inside the window");
+    CHECK(rearmed, "T10 a re-armed slot admits the next call at once");
+    rate_test_end();
+}
+
+static void test_rate_flush_and_init_handle_pending_counts()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 2);
+
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    logger_flush_repeats();
+    logger_test_wait_drained(1000);
+
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    logger_init(MonitorLogLevel::Warn);
+    logger_flush_repeats();
+    bool after_init = LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+
+    std::vector<std::string> lines = capture.finish();
+    CHECK(lines.size() == 3, "T11 first line, flushed summary, and the line after init");
+    if (lines.size() == 3)
+    {
+        CHECK(contains(lines[1], "capture ring full, input 2: 2 more suppressed"),
+              "T11 a flush reports the pending count inside the window");
+    }
+    CHECK(after_init, "T11 init cleared the window and the pending count");
+    rate_test_end();
+}
+
+// Counts heap allocations made by the thread that has armed the counter.
+static thread_local bool t_count_allocations = false;
+static thread_local int t_allocations = 0;
+
+__attribute__((noinline)) void* operator new(std::size_t size)
+{
+    if (t_count_allocations)
+        ++t_allocations;
+    if (void* p = std::malloc(size))
+        return p;
+    throw std::bad_alloc();
+}
+
+__attribute__((noinline)) void operator delete(void* p) noexcept { std::free(p); }
+__attribute__((noinline)) void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+
+static void test_rate_suppressed_path_does_not_allocate()
+{
+    rate_test_begin();
+    RateCapture capture;
+    const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
+    LOG_WARN_EVERY(slot, 5.0, "[test] rated");
+    capture.finish();
+
+    t_allocations = 0;
+    t_count_allocations = true;
+    int admitted = 0;
+    for (int i = 0; i < 1000; ++i)
+        if (LOG_WARN_EVERY(slot, 5.0, "[test] rated"))
+            ++admitted;
+    t_count_allocations = false;
+
+    CHECK(admitted == 0, "T12 every call in the window is suppressed");
+    CHECK(t_allocations == 0, "T12 the suppressed path does not allocate");
+    rate_test_end();
+}
+
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -948,6 +1314,20 @@ int main()
     test_logger_drop_counting();
     test_logger_stall_does_not_block_producer();
     test_logger_shutdown_flushes_and_stops();
+
+    // Keyed rate limit
+    test_rate_second_call_in_window_is_suppressed();
+    test_rate_arguments_not_evaluated_when_suppressed();
+    test_rate_count_rides_on_the_next_line();
+    test_rate_keys_and_instances_are_independent();
+    test_rate_disabled_level_does_not_touch_the_slot();
+    test_rate_sweep_reports_the_count_once();
+    test_rate_lines_skip_the_identical_text_rule();
+    test_rate_concurrent_callers_elect_one_emitter();
+    test_rate_admit_preserves_errno();
+    test_rate_rearm_admits_inside_the_window();
+    test_rate_flush_and_init_handle_pending_counts();
+    test_rate_suppressed_path_does_not_allocate();
 
     // The logging thread is a background std::thread owned by process-wide
     // state (g_logger); it must be stopped (joined) before main() returns,
