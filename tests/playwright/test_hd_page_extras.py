@@ -1401,7 +1401,7 @@ def token_colour(page, name):
         " document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; }", name)
 
 
-def lounge_warning_while_on_kitchen(*, snoozed=False):
+def lounge_warning_while_on_kitchen():
     """The Lounge has a stylus warning while the Kitchen is the focus."""
     base = hs.SCENARIOS["appliance_warning"]
     kitchen = hs.appliance(KITCHEN, "Kitchen", playing=True, master_volume=35, muted=False)
@@ -1411,28 +1411,25 @@ def lounge_warning_while_on_kitchen(*, snoozed=False):
         now_playing=NowPlaying("Kitchen", "Joni Mitchell", "Blue", 35, album="Blue"),
         volume_readout=("Kitchen", 35), artwork=None,
     )
-    if snoozed:
-        changes["warnings"] = tuple(
-            dataclasses.replace(w, snoozed_until=hs.WALL_NOW + 3600) if w.id == LOUNGE_STYLUS else w
-            for w in base.snapshot.warnings)
     return base.with_snapshot(**changes)
 
 
 class TestDialWarnings:
-    def test_no_wifi_has_dismiss_and_restart(self, page, hd):
+    def test_no_wifi_has_close_and_restart(self, page, hd):
         hd.show(hs.SCENARIOS["warning_nowifi"])
         sent = watch_actions(page)
         open_page(page, hd)
         expect(modal_card(page)).to_be_visible()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Dismiss", "Restart"]
+        assert page.locator("#card-buttons button").all_text_contents() == ["Close", "Restart"]
         expect(page.locator("#card-progress")).to_be_hidden()
         page.locator("#card-buttons button", has_text="Restart").click()
         page.wait_for_timeout(150)
         assert sent == [("dial_restart", {})]
-        page.locator("#card-buttons button", has_text="Dismiss").click()
+        page.locator("#card-buttons button", has_text="Close").click()
         page.wait_for_timeout(150)
-        assert sent[-1] == ("warning_dismiss", {"warning_id": "nowifi"})
+        assert sent == [("dial_restart", {})]               # closing a warning asks nothing of the dial
+        expect(modal_card(page)).to_be_hidden()
 
     def test_a_card_with_buttons_is_not_closed_by_the_dimmed_area(self, page, hd):
         hd.show(hs.SCENARIOS["warning_nowifi"])
@@ -1449,10 +1446,32 @@ class TestDialWarnings:
         open_page(page, hd)
         expect(page.locator("#card-title")).to_have_text("microSD Health")
         expect(page.locator("#card-message")).to_have_text("6%: Replace Soon")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Dismiss"]
+        assert page.locator("#card-buttons button").all_text_contents() == ["Close"]
         page.locator("#card-buttons button").click()
         page.wait_for_timeout(150)
-        assert sent == [("warning_dismiss", {"warning_id": "sdhealth"})]
+        assert sent == []
+        expect(modal_card(page)).to_be_hidden()
+
+    def test_a_closed_warning_stays_closed_until_its_incident_ends(self, page, hd):
+        hd.show(hs.SCENARIOS["warning_sdhealth"])
+        open_page(page, hd)
+        page.locator("#card-buttons button").click()
+        expect(modal_card(page)).to_be_hidden()
+        hd.show(hs.SCENARIOS["warning_sdhealth"].with_snapshot(
+            warnings=hs.warning_states({"sdhealth": 5})))
+        page.wait_for_timeout(200)
+        expect(modal_card(page)).to_be_hidden()
+        base = hs.SCENARIOS["warning_sdhealth"]
+        later = tuple(dataclasses.replace(w, active_since=w.active_since + 60) if w.active else w
+                      for w in base.snapshot.warnings)
+        hd.show(base.with_snapshot(warnings=later))
+        expect(modal_card(page)).to_be_visible()
+
+    def test_a_dial_warning_does_not_hide_the_status_card(self, page, hd):
+        hd.show(hs.SCENARIOS["warning_update"].with_snapshot(
+            warnings=hs.warning_states({"sdhealth": 6, "update": hs.SCENARIOS["warning_update"].snapshot.update})))
+        open_page(page, hd)
+        expect(page.locator("#card-title")).to_have_text("Updating...")
 
     def test_the_update_progress_card_cannot_be_dismissed(self, page, hd):
         hd.show(hs.SCENARIOS["warning_update"])
@@ -1474,21 +1493,21 @@ class TestDialWarnings:
         open_page(page, hd)
         base = hs.SCENARIOS["warning_update"]
         update = dataclasses.replace(base.snapshot.update, percent=80)
-        states = tuple(dataclasses.replace(w, severity=update) if w.id == "update" else w
+        states = tuple(dataclasses.replace(w, reading=update) if w.id == "update" else w
                        for w in base.snapshot.warnings)
         hd.show(base.with_snapshot(update=update, warnings=states))
         page.wait_for_function(
             "() => document.getElementById('card-bar').style.getPropertyValue('--fill') === '80%'")
 
-    def test_the_update_result_can_be_dismissed(self, page, hd):
+    def test_the_update_result_can_be_closed(self, page, hd):
         hd.show(hs.SCENARIOS["warning_update_result"])
         sent = watch_actions(page)
         open_page(page, hd)
         expect(page.locator("#card-title")).to_have_text("Updated")
         expect(page.locator("#card-message")).to_have_text("Version 0.8.0")
-        page.locator("#card-buttons button", has_text="Dismiss").click()
+        page.locator("#card-buttons button", has_text="Close").click()
         page.wait_for_timeout(150)
-        assert sent == [("warning_dismiss", {"warning_id": "update_result"})]
+        assert sent == [("status_close", {"status_id": "update_result"})]
 
     def test_the_card_goes_when_the_state_says_so(self, page, hd):
         hd.show(hs.SCENARIOS["warning_sdhealth"])
@@ -1541,10 +1560,11 @@ class TestApplianceWarnings:
         expect(page.locator("#card-title")).to_have_text("Technics stylus")
         expect(page.locator("#card-message")).to_have_text("Needs changing soon.")
         expect(page.locator("#card-source")).to_have_text("Lounge")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Dismiss"]
+        assert page.locator("#card-buttons button").all_text_contents() == ["Close"]
         page.locator("#card-buttons button").click()
         page.wait_for_timeout(150)
-        assert sent == [("warning_dismiss", {"warning_id": LOUNGE_STYLUS})]
+        assert sent == []
+        expect(modal_card(page)).to_be_hidden()
 
     def test_the_row_carries_a_badge_with_the_count(self, page, hd):
         hd.show(hs.SCENARIOS["appliance_warning"])
@@ -1617,20 +1637,14 @@ class TestApplianceWarnings:
         lounge.click()
         assert sent == [("focus", {"appliance_id": LOUNGE})]
 
-    def test_a_card_opened_from_its_badge_can_be_dismissed(self, page, hd):
+    def test_a_card_opened_from_its_badge_can_be_closed(self, page, hd):
         hd.show(lounge_warning_while_on_kitchen())
         sent = watch_actions(page)
         open_page(page, hd)
         rows(page).filter(has_text="Lounge").locator(".warn-badge").click()
-        page.locator("#card-buttons button", has_text="Dismiss").click()
+        page.locator("#card-buttons button", has_text="Close").click()
         page.wait_for_timeout(150)
-        assert sent == [("warning_dismiss", {"warning_id": LOUNGE_STYLUS})]
-        expect(modal_card(page)).to_be_hidden()
-
-    def test_a_snoozed_warning_has_no_badge_and_no_card(self, page, hd):
-        hd.show(lounge_warning_while_on_kitchen(snoozed=True))
-        open_page(page, hd)
-        expect(rows(page).filter(has_text="Lounge").locator(".warn-badge")).to_be_hidden()
+        assert sent == []
         expect(modal_card(page)).to_be_hidden()
 
     def test_an_appliance_on_an_older_protocol_has_a_badge_and_an_update_card(self, page, hd):
@@ -1641,7 +1655,7 @@ class TestApplianceWarnings:
         expect(page.locator("#card-title")).to_have_text("Update Lounge")
         expect(page.locator("#card-message")).to_have_text(
             "Its software is older than this dial's. Update it from its web UI.")
-        assert page.locator("#card-buttons button").all_text_contents() == ["Dismiss"]
+        assert page.locator("#card-buttons button").all_text_contents() == ["Close"]
 
     def test_the_card_shows_when_the_warning_appliance_becomes_the_focus(self, page, hd):
         hd.show(lounge_warning_while_on_kitchen())
@@ -2244,7 +2258,7 @@ class TestSpeakerPin:
         expect(page.locator("#card-title")).to_have_text("Confirm you are at the dial")
         expect(page.locator("#card-pin-pad")).to_be_hidden()
         hd.show(hs.SCENARIOS["pin_required"].with_snapshot(
-            warnings=hs.warning_states({"sdhealth": 6}), due_warning_id="sdhealth"))
+            warnings=hs.warning_states({"sdhealth": 6})))
         expect(page.locator(PIN_CARD)).to_be_visible()
         expect(page.locator("#card-title")).to_have_text("Enter PIN for Patio")
         page.locator("#card-buttons button", has_text="Cancel").click()

@@ -15,11 +15,11 @@ import dial_core
 from dial_core import DialCore
 from dial_update_watch import STATUS_IN_PROGRESS, UpdateView
 from dial_warning_text import WARNING_DESCRIPTORS
-from dial_warnings import WarningManager, WarningStore
+from dial_warnings import WarningManager
 
 
 def _make():
-    return DialCore("dial-1", warnings=WarningManager(WARNING_DESCRIPTORS, WarningStore(None)))
+    return DialCore("dial-1", warnings=WarningManager(WARNING_DESCRIPTORS))
 
 
 @pytest.fixture

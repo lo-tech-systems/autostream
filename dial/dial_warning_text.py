@@ -13,7 +13,8 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 from dial_core_state import (
-    ApplianceWarning, SEVERITY_CRITICAL, SEVERITY_INFO, SEVERITY_WARNING,
+    APPLIANCE_WARNING_MESSAGE_MAX, ApplianceWarning, DIAL_WARNING_ID, SEVERITY_CRITICAL,
+    SEVERITY_INFO, SEVERITY_WARNING, _clean_text,
 )
 from dial_touch_layout import (
     GEOMETRY_NONE,
@@ -23,36 +24,35 @@ from dial_touch_layout import (
 )
 from dial_update_watch import STATUS_SUCCESS, UpdateView
 from dial_warnings import (
-    ACTION_DISMISS,
+    ACTION_CLOSE,
     ACTION_RESTART,
     APPLIANCE_WARNING_PREFIX,
+    KIND_STATUS,
+    KIND_WARNING,
     WarningButton,
     WarningDescriptor,
 )
 
 # The No-WiFi page's fixed strings.
+NOWIFI_WARNING_ID = "nowifi"
 NOWIFI_MESSAGE_TEXT = "No WiFi"
-NOWIFI_DISMISS_TEXT = "Dismiss"
+NOWIFI_CLOSE_TEXT = "Close"
 NOWIFI_RESTART_TEXT = "Restart"
 # The SD card warning's fixed strings: a title at readout size and a body
-# line at body size (the percent is filled in), over one Dismiss cell.
+# line at body size (the percent is filled in), over one Close cell.
 SDHEALTH_TITLE_TEXT = "microSD Health"
 SDHEALTH_BODY_TEXT = "{percent}%: Replace Soon"
 SDHEALTH_BODY_TEXT_NO_PERCENT = "Replace Soon"
-SDHEALTH_DISMISS_TEXT = "Dismiss"
+SDHEALTH_CLOSE_TEXT = "Close"
 
-# How long a Dismiss of the SD card warning holds: a week, or a day once
-# the reading is under SDHEALTH_CRITICAL_PERCENT. Persisted, so a restart
-# does not bring the page back early; forgotten when the reading recovers.
-SDHEALTH_SNOOZE_S = 7 * 86400.0
+# The SD card warning is critical once the reading is under this.
 SDHEALTH_CRITICAL_PERCENT = 3
-SDHEALTH_CRITICAL_SNOOZE_S = 86400.0
 
 
-def _sdhealth_snooze_for(percent) -> float:
+def _sdhealth_severity_for(percent) -> str:
     if isinstance(percent, int) and percent < SDHEALTH_CRITICAL_PERCENT:
-        return SDHEALTH_CRITICAL_SNOOZE_S
-    return SDHEALTH_SNOOZE_S
+        return SEVERITY_CRITICAL
+    return SEVERITY_WARNING
 
 
 def _sdhealth_message_for(percent) -> str:
@@ -69,7 +69,7 @@ def _sdhealth_message_for(percent) -> str:
 UPDATING_TEXT = "Updating..."
 UPDATED_TEXT = "Updated"
 UPDATE_FAILED_TEXT = "Update failed"
-UPDATE_RESULT_DISMISS_TEXT = "Dismiss"
+UPDATE_RESULT_CLOSE_TEXT = "Close"
 UPDATE_PHASE_FALLBACK_TEXT = "Please wait"
 UPDATE_PHASE_TEXT = {
     "download": "Downloading",
@@ -84,7 +84,7 @@ UPDATE_PHASE_TEXT = {
 
 # How long the result card waits for someone to see it before clearing
 # itself: an update can take most of an hour and is often left unattended.
-# Dismiss clears it sooner.
+# Close clears it sooner.
 UPDATE_RESULT_SECONDS = 3600.0
 
 
@@ -117,16 +117,34 @@ def _update_result_message_for(view) -> str:
     return f"{view.previous_tag} kept" if view.previous_tag else "Previous kept"
 
 
+def _warning_severity(_reading) -> str:
+    return SEVERITY_WARNING
+
+
+def _info_severity(_reading) -> str:
+    return SEVERITY_INFO
+
+
+# The warning for a dial older than an appliance it talks to. Its reading is
+# the tuple of those appliances' names.
+UPDATE_DIAL_TITLE_TEXT = "Update this dial"
+
+
+def _update_dial_message_for(names) -> str:
+    names = tuple(names or ())
+    verb = "needs" if len(names) == 1 else "need"
+    return _clean_text(f"{', '.join(names)} {verb} a newer dial", APPLIANCE_WARNING_MESSAGE_MAX)
+
+
 # ---------------------------------------------------------------------------
 # On-screen warnings
 #
 # One descriptor per warning. A warning's source (the network poller, the
 # SD health reader) reports it active or cleared on the
-# manager; everything else (which page, which buttons, what a Dismiss
-# means, what survives a restart, which one wins when two are due) is read
-# from its row here. Adding a warning is adding a row plus a source; the
-# screen-policy table, the opener, the painter and the touch dispatch are
-# all driven from this tuple.
+# manager; everything else (which page, which buttons, its severity, which
+# one wins when two are due) is read from its row here. Adding a warning is
+# adding a row plus a source; the screen-policy table, the opener, the
+# painter and the touch dispatch are all driven from this tuple.
 #
 # Priority: a lost link outranks a worn card (the page is the only way to
 # ask for a restart), so "nowifi" carries the higher number.
@@ -139,49 +157,56 @@ def _update_result_message_for(view) -> str:
 
 WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     WarningDescriptor(
-        id="nowifi", priority=100, screen="nowifi", geometry=GEOMETRY_NOWIFI,
-        title=NOWIFI_MESSAGE_TEXT, message_for=None,
+        id=NOWIFI_WARNING_ID, kind=KIND_WARNING, priority=100, screen="nowifi", geometry=GEOMETRY_NOWIFI,
+        title=NOWIFI_MESSAGE_TEXT, message_for=None, severity_for=_warning_severity,
         buttons=(
-            WarningButton(TouchZone.NOWIFI_DISMISS, NOWIFI_DISMISS_TEXT, ACTION_DISMISS),
+            WarningButton(TouchZone.NOWIFI_DISMISS, NOWIFI_CLOSE_TEXT, ACTION_CLOSE),
             WarningButton(TouchZone.NOWIFI_RESTART, NOWIFI_RESTART_TEXT, ACTION_RESTART),
         ),
-        persisted=False, snooze_for=None,
     ),
     WarningDescriptor(
-        id="sdhealth", priority=50, screen="sdhealth", geometry=GEOMETRY_SDHEALTH,
+        id="sdhealth", kind=KIND_WARNING, priority=50, screen="sdhealth", geometry=GEOMETRY_SDHEALTH,
         title=SDHEALTH_TITLE_TEXT, message_for=_sdhealth_message_for,
+        severity_for=_sdhealth_severity_for,
         buttons=(
-            WarningButton(TouchZone.SDHEALTH_DISMISS, SDHEALTH_DISMISS_TEXT, ACTION_DISMISS),
+            WarningButton(TouchZone.SDHEALTH_DISMISS, SDHEALTH_CLOSE_TEXT, ACTION_CLOSE),
         ),
-        persisted=True, snooze_for=_sdhealth_snooze_for,
+    ),
+    # The dial itself is older than an appliance it talks to: one warning
+    # for all of them, its reading the names of the appliances that are
+    # ahead of it.
+    WarningDescriptor(
+        id=DIAL_WARNING_ID, kind=KIND_WARNING, priority=40, screen=DIAL_WARNING_ID,
+        geometry=GEOMETRY_SDHEALTH, title=UPDATE_DIAL_TITLE_TEXT,
+        message_for=_update_dial_message_for, severity_for=_warning_severity,
+        buttons=(
+            WarningButton(TouchZone.SDHEALTH_DISMISS, SDHEALTH_CLOSE_TEXT, ACTION_CLOSE),
+        ),
     ),
     # A software update in progress: above No-WiFi (the link may drop while
     # the system upgrades), no buttons (touch does nothing), shown over
     # whatever is up and waking the panel; its source clears it.
     WarningDescriptor(
-        id="update", priority=200, screen="update", geometry=GEOMETRY_NONE,
-        title=UPDATING_TEXT, message_for=_update_message_for,
+        id="update", kind=KIND_STATUS, priority=200, screen="update", geometry=GEOMETRY_NONE,
+        title=UPDATING_TEXT, message_for=_update_message_for, severity_for=_info_severity,
         buttons=(),
-        persisted=False, snooze_for=None,
         title_for=_update_title_for, progress_for=_update_progress_for,
         interrupting=True,
     ),
-    # How an update ended: one Dismiss (the SD page's cell), clears itself
+    # How an update ended: one Close (the SD page's cell), clears itself
     # after UPDATE_RESULT_SECONDS.
     WarningDescriptor(
-        id="update_result", priority=150, screen="update_result", geometry=GEOMETRY_SDHEALTH,
-        title=UPDATED_TEXT, message_for=_update_result_message_for,
+        id="update_result", kind=KIND_STATUS, priority=150, screen="update_result",
+        geometry=GEOMETRY_SDHEALTH, title=UPDATED_TEXT, message_for=_update_result_message_for,
+        severity_for=_info_severity,
         buttons=(
-            WarningButton(TouchZone.SDHEALTH_DISMISS, UPDATE_RESULT_DISMISS_TEXT, ACTION_DISMISS),
+            WarningButton(TouchZone.SDHEALTH_DISMISS, UPDATE_RESULT_CLOSE_TEXT, ACTION_CLOSE),
         ),
-        persisted=False, snooze_for=None,
         title_for=_update_result_title_for,
         interrupting=True, auto_clear_after_s=UPDATE_RESULT_SECONDS,
     ),
 )
 _WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIPTORS}
-_WARNING_BY_SCREEN: dict[str, WarningDescriptor] = {d.screen: d for d in WARNING_DESCRIPTORS}
-
 
 
 # ---------------------------------------------------------------------------
@@ -190,12 +215,13 @@ _WARNING_BY_SCREEN: dict[str, WarningDescriptor] = {d.screen: d for d in WARNING
 # The dial, never the appliance, decides how an appliance warning behaves:
 # it ranks below every warning of the dial's own (the band below), never
 # interrupts and never wakes the panel; the appliance chooses only the text,
-# a severity within the band, all from the validator's closed sets. A Dismiss is a local snooze persisted under a key namespaced
-# by the appliance's id; the cause is acknowledged on the appliance.
+# a severity within the band, all from the validator's closed sets. A card
+# is put away in the view that shows it; the cause is acknowledged on the
+# appliance.
 # ---------------------------------------------------------------------------
 
 # The priority band for appliance warnings, all below the lowest of the
-# dial's own (sdhealth, 50). A more severe warning ranks higher inside it.
+# dial's own (update_dial, 40). A more severe warning ranks higher inside it.
 APPLIANCE_WARNING_PRIORITY = {
     SEVERITY_INFO: 10,
     SEVERITY_WARNING: 11,
@@ -210,30 +236,23 @@ APPLIANCE_WARNING_SCREEN = "appliance_warning"
 # Who the page is attributed to when the roster has no name for the appliance.
 APPLIANCE_WARNING_SOURCE_FALLBACK = "Appliance"
 
-# How long a Dismiss holds.
-APPLIANCE_WARNING_SNOOZE_S = 86400.0
-
 
 def appliance_warning_key(appliance_id: str, warning_id: str) -> str:
     """The manager's id for one appliance's warning: the appliance's own id
-    is part of it, so two appliances can use the same warning id and a
-    persisted snooze belongs to exactly one of them."""
+    is part of it, so two appliances can use the same warning id."""
     return f"{APPLIANCE_WARNING_PREFIX}{appliance_id}:{warning_id}"
 
 
 def appliance_warning_descriptor(appliance_id: str, warning: ApplianceWarning) -> WarningDescriptor:
     """The descriptor for one validated appliance warning. Its text is the
-    warning's own (data, never a format template) and its Dismiss is a
-    persisted snooze."""
-    buttons = (WarningButton(TouchZone.SDHEALTH_DISMISS, NOWIFI_DISMISS_TEXT, ACTION_DISMISS),)
+    warning's own (data, never a format template), with one Close cell."""
     message = warning.message
     return WarningDescriptor(
-        id=appliance_warning_key(appliance_id, warning.id),
+        id=appliance_warning_key(appliance_id, warning.id), kind=KIND_WARNING,
         priority=APPLIANCE_WARNING_PRIORITY.get(warning.severity, APPLIANCE_WARNING_PRIORITY[SEVERITY_INFO]),
         screen=APPLIANCE_WARNING_SCREEN, geometry=GEOMETRY_SDHEALTH,
-        title=warning.title, message_for=lambda _severity: message,
-        buttons=buttons, persisted=True,
-        snooze_for=lambda _severity: APPLIANCE_WARNING_SNOOZE_S,
-        interrupting=False,
+        title=warning.title, message_for=lambda _reading: message,
+        severity_for=lambda _reading: warning.severity,
+        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, NOWIFI_CLOSE_TEXT, ACTION_CLOSE),),
         source_name=warning.appliance_name or APPLIANCE_WARNING_SOURCE_FALLBACK,
     )

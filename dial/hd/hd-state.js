@@ -16,7 +16,7 @@ export const hooks = { render: () => {}, touched: () => {} };
 export const ui = {
     dial: null, focused: null, time: 0, stateAt: Date.now(), offline: false, vm: null,
     eqOpen: false, eqFor: null, sheetOpen: false, info: null, infoBusy: false,
-    notice: null, viewing: null, autoStartAsked: false, activityAt: 0,
+    notice: null, viewing: null, closed: {}, autoStartAsked: false, activityAt: 0,
     startFailureAnswered: null,   // the key of the "could not start" card the person has answered
     // The idle clock for the open panels: its timer, the fingers now held
     // on a followed drag, and whether the last look at the state was asleep.

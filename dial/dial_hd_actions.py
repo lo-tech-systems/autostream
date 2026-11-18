@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from dial_core_state import ActionResult
-from dial_warnings import ACTION_RESTART
+from dial_warning_text import NOWIFI_WARNING_ID
 
 ACTION_NAME_RE = re.compile(r"^[a-z_]{1,32}$")
 ID_MAX = 128
@@ -72,10 +72,9 @@ class Context:
 
 
 def _dial_restart(ctx: Context, args: dict) -> ActionResult:
-    """The No-WiFi card's Restart: taken only while the warning that shows
-    a Restart button is the one due."""
-    due = ctx.core.warnings.due()
-    if due is None or not any(b.action == ACTION_RESTART for b in due.buttons):
+    """The No-WiFi card's Restart: taken only while the No-WiFi warning is
+    active."""
+    if not ctx.core.warnings.is_active(NOWIFI_WARNING_ID):
         return ActionResult(False, "wrong_state")
     if not ctx.core.request_dial_reboot():
         return ActionResult(False, "wrong_state")
@@ -121,9 +120,9 @@ ACTIONS: "dict[str, tuple[dict, Callable[[Context, dict], ActionResult]]]" = {
         {"key": text},
         lambda c, a: c.core.dismiss_start_failure(a["key"]),
     ),
-    "warning_dismiss": (
-        {"warning_id": text},
-        lambda c, a: c.core.dismiss_warning(a["warning_id"]),
+    "status_close": (
+        {"status_id": text},
+        lambda c, a: c.core.close_status(a["status_id"]),
     ),
     "dial_restart": ({}, _dial_restart),
     "dial_shutdown": ({}, _dial_shutdown),

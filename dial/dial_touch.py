@@ -77,11 +77,11 @@ the selector/picker); "output" maps to GEOMETRY_OUTPUT (the per-output
 detail page); "info" maps to GEOMETRY_INFO (the idle screen's read-only
 info page — the list table with every row entry removed, so a row tap
 lands in no zone); "eq" maps to GEOMETRY_EQ (the EQ page, rich/large only);
-"nowifi" maps to GEOMETRY_NOWIFI (the No-WiFi page's Dismiss/Restart
+"nowifi" maps to GEOMETRY_NOWIFI (the No-WiFi page's Close/Restart
 cells); "sdhealth" maps to GEOMETRY_SDHEALTH (the SD card warning's one
-Dismiss cell); "update" maps to GEOMETRY_NONE and "update_result" and
-"appliance_warning" to GEOMETRY_SDHEALTH (the update result card and an
-appliance's warning); "restarting" maps to GEOMETRY_NONE (nothing tappable, so no press
+Close cell); "update" maps to GEOMETRY_NONE and "update_result",
+"update_dial" and "appliance_warning" to GEOMETRY_SDHEALTH (the update
+result card, the dial's own update warning and an appliance's warning); "restarting" maps to GEOMETRY_NONE (nothing tappable, so no press
 can arm anything while the reboot is pending)
 — all held like the selector. The map is many-to-one on purpose: which surfaces share a geometry is a policy decision (reveal
 timing, what a row tap does), never a geometric one —
@@ -237,21 +237,24 @@ SURFACE_INFO_VALUE = "info_value"
 # OUTPUTS reused from the main geometry, plus the bass/treble bar steppers).
 SURFACE_EQ = "eq"
 # The No-WiFi page: held like every other secondary surface; its geometry
-# (GEOMETRY_NOWIFI) is the two cells, Dismiss and Restart.
+# (GEOMETRY_NOWIFI) is the two cells, Close and Restart.
 SURFACE_NOWIFI = "nowifi"
 # The "Restarting..." screen: held (so the touch side treats it as a
 # visible surface, not a reveal-on-touch one) but with an EMPTY geometry —
 # no press anywhere can arm anything until the reboot takes the panel down.
 SURFACE_RESTARTING = "restarting"
 # The SD card warning: held like every other secondary surface; its
-# geometry (GEOMETRY_SDHEALTH) is the one Dismiss cell.
+# geometry (GEOMETRY_SDHEALTH) is the one Close cell.
 SURFACE_SDHEALTH = "sdhealth"
 # The software update cards: the progress card has no buttons (empty
-# geometry, so touch does nothing); the result card has the one Dismiss
+# geometry, so touch does nothing); the result card has the one Close
 # cell, the SD card warning's geometry.
 SURFACE_UPDATE = "update"
 SURFACE_UPDATE_RESULT = "update_result"
-# An appliance's warning: the one cell (Dismiss or OK), the SD card warning's
+# The dial's own "Update this dial" warning: the one Close cell, the SD card
+# warning's geometry.
+SURFACE_UPDATE_DIAL = "update_dial"
+# An appliance's warning: the one Close cell, the SD card warning's
 # geometry; every appliance warning shares this surface.
 SURFACE_APPLIANCE_WARNING = "appliance_warning"
 
@@ -277,6 +280,7 @@ _GEOMETRY_FOR_SURFACE = {
     SURFACE_SDHEALTH: GEOMETRY_SDHEALTH,
     SURFACE_UPDATE: GEOMETRY_NONE,
     SURFACE_UPDATE_RESULT: GEOMETRY_SDHEALTH,
+    SURFACE_UPDATE_DIAL: GEOMETRY_SDHEALTH,
     SURFACE_APPLIANCE_WARNING: GEOMETRY_SDHEALTH,
 }
 

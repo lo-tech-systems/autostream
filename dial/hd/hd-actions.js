@@ -142,9 +142,9 @@ function loadInfo() {
 
 // What each button on a modal card does.
 export const CARD_ACTIONS = {
-    dismiss: (card) => {
+    status_close: (card) => {
         ui.viewing = null;
-        post("warning_dismiss", { warning_id: card.key });
+        post("status_close", { status_id: card.key });
         hooks.render();
     },
     restart: () => post("dial_restart", {}),
@@ -168,7 +168,8 @@ export const CARD_ACTIONS = {
         submit("outputs.save_default", {});
         hooks.render();
     },
-    close: () => {
+    close: (card) => {
+        if (card && card.warning) { ui.closed[card.key] = card.since; }
         ui.notice = null;
         ui.viewing = null;
         ui.autoStartAsked = false;

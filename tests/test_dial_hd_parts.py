@@ -30,7 +30,6 @@ def parts_of(scenario, **overrides):
     return build_parts(
         scenario.snapshot, descriptors=scenario.descriptors, panel=scenario.panel,
         settings=scenario.settings, recovery=scenario.recovery, now=scenario.now,
-        wall_now=scenario.wall_now,
     )
 
 

@@ -959,8 +959,237 @@
       "appliance_warnings": {
         "appliance:aw100000000000000000:belt_in1": [
           true,
-          false
+          true
         ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "appliance_warnings": {
+        "appliance:aw100000000000000000:belt_in1": [
+          true,
+          true
+        ],
+        "appliance:aw100000000000000000:stylus_in1": [
+          true,
+          true
+        ]
+      },
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ],
+      "warning_page": null
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "logo",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "appliance_warnings": {
         "appliance:aw100000000000000000:stylus_in1": [
           true,
           false
@@ -1007,10 +1236,6 @@
     },
     {
       "appliance_warnings": {
-        "appliance:aw100000000000000000:belt_in1": [
-          true,
-          false
-        ],
         "appliance:aw100000000000000000:stylus_in1": [
           true,
           false
@@ -1057,10 +1282,6 @@
     },
     {
       "appliance_warnings": {
-        "appliance:aw100000000000000000:belt_in1": [
-          true,
-          false
-        ],
         "appliance:aw100000000000000000:stylus_in1": [
           true,
           false
@@ -1112,10 +1333,6 @@
     },
     {
       "appliance_warnings": {
-        "appliance:aw100000000000000000:belt_in1": [
-          true,
-          false
-        ],
         "appliance:aw100000000000000000:stylus_in1": [
           true,
           true
@@ -1162,10 +1379,6 @@
     },
     {
       "appliance_warnings": {
-        "appliance:aw100000000000000000:belt_in1": [
-          true,
-          false
-        ],
         "appliance:aw100000000000000000:stylus_in1": [
           true,
           true
@@ -7357,7 +7570,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -7415,7 +7628,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -7468,7 +7681,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -7521,7 +7734,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -7574,7 +7787,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -7632,7 +7845,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -7685,7 +7898,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -7743,7 +7956,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -14584,7 +14797,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -14637,7 +14850,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -14690,7 +14903,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -14743,7 +14956,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -14801,7 +15014,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -14854,7 +15067,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -14912,7 +15125,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -14957,7 +15170,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 4,
         "ever_connected": true,
         "link": "down"
@@ -15002,7 +15215,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 5,
         "ever_connected": true,
         "link": "down"
@@ -15047,7 +15260,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 6,
         "ever_connected": true,
         "link": "down"
@@ -15097,7 +15310,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 6,
         "ever_connected": true,
         "link": "down"
@@ -15142,7 +15355,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 2,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -15187,7 +15400,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -15232,7 +15445,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -15277,7 +15490,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -15327,7 +15540,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -15460,7 +15673,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -15513,7 +15726,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -15566,7 +15779,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -15624,7 +15837,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -15677,7 +15890,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -15730,7 +15943,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -15788,7 +16001,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -15929,7 +16142,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -15982,7 +16195,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -16035,7 +16248,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -16088,7 +16301,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -16146,7 +16359,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -16199,7 +16412,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -16257,7 +16470,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -16302,7 +16515,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -16352,7 +16565,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -16485,7 +16698,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -16538,7 +16751,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -16591,7 +16804,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -16644,7 +16857,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "ignored"
@@ -16697,7 +16910,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -16750,7 +16963,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -16808,7 +17021,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -17001,7 +17214,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -17059,7 +17272,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -17112,7 +17325,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": false,
         "link": "down"
@@ -17165,7 +17378,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": false,
         "link": "down"
@@ -17218,7 +17431,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 4,
         "ever_connected": false,
         "link": "down"
@@ -17271,7 +17484,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 5,
         "ever_connected": false,
         "link": "down"
@@ -17329,7 +17542,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 5,
         "ever_connected": false,
         "link": "down"
@@ -17382,7 +17595,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 5,
         "ever_connected": false,
         "link": "down"
@@ -17435,7 +17648,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 5,
         "ever_connected": false,
         "link": "down"
@@ -17493,7 +17706,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 5,
         "ever_connected": false,
         "link": "down"
@@ -17546,7 +17759,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 2,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -17604,7 +17817,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 2,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -17657,7 +17870,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -17710,7 +17923,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -17763,7 +17976,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -17821,7 +18034,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -17962,7 +18175,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -18020,7 +18233,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -18073,7 +18286,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -18131,7 +18344,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -18184,7 +18397,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -18242,7 +18455,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 1,
         "ever_connected": false,
         "link": "down"
@@ -18375,7 +18588,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -18428,7 +18641,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -18490,7 +18703,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -18547,7 +18760,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -18604,7 +18817,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -18661,7 +18874,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -18718,7 +18931,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 4,
         "ever_connected": true,
         "link": "down"
@@ -18780,7 +18993,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 4,
         "ever_connected": true,
         "link": "down"
@@ -18837,7 +19050,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 4,
         "ever_connected": true,
         "link": "down"
@@ -18895,7 +19108,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 4,
         "ever_connected": true,
         "link": "down"
@@ -18940,7 +19153,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 5,
         "ever_connected": true,
         "link": "down"
@@ -18990,7 +19203,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 5,
         "ever_connected": true,
         "link": "down"
@@ -19123,7 +19336,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -19176,7 +19389,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -19229,7 +19442,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -19282,7 +19495,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19340,7 +19553,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19393,7 +19606,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19451,7 +19664,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19504,7 +19717,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19557,7 +19770,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19607,7 +19820,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19740,7 +19953,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -19793,7 +20006,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -19846,7 +20059,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -19899,7 +20112,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -19957,7 +20170,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20010,7 +20223,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20060,7 +20273,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20193,7 +20406,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -20246,7 +20459,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -20299,7 +20512,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -20352,7 +20565,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20410,7 +20623,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20463,7 +20676,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20513,7 +20726,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20558,7 +20771,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20608,7 +20821,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -20741,7 +20954,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -20799,7 +21012,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -20852,7 +21065,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -20910,7 +21123,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -20963,7 +21176,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -21021,7 +21234,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -21074,7 +21287,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -21132,7 +21345,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -21185,7 +21398,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -21243,7 +21456,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -21376,7 +21589,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -21429,7 +21642,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -21482,7 +21695,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -21535,7 +21748,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "unknown"
@@ -21588,7 +21801,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -21646,7 +21859,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -83362,7 +83575,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -83420,7 +83633,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -83473,7 +83686,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -83526,7 +83739,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -83579,7 +83792,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -83637,7 +83850,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -83690,7 +83903,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -83748,7 +83961,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -83801,7 +84014,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -83854,7 +84067,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -83904,7 +84117,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -85930,7 +86143,7 @@
       ]
     }
   ],
-  "sdhealth_critical_snooze_is_one_day": [
+  "sdhealth_close_then_wake_stays_closed": [
     {
       "bound_appliance_id": null,
       "display_sleeping": false,
@@ -86209,7 +86422,7 @@
     },
     {
       "bound_appliance_id": null,
-      "display_sleeping": false,
+      "display_sleeping": true,
       "eq": null,
       "eq_available": false,
       "eq_optimistic": null,
@@ -86237,7 +86450,7 @@
       "screen_request": null,
       "sdhealth_open": false,
       "selector": null,
-      "showing": "logo",
+      "showing": "sleeping",
       "source_artwork_url": "",
       "touch_surface": [
         "idle",
@@ -86248,46 +86461,7 @@
     },
     {
       "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": "sdhealth",
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
+      "display_sleeping": true,
       "eq": null,
       "eq_available": false,
       "eq_optimistic": null,
@@ -86316,14 +86490,97 @@
       "repeat_close_reveal": false,
       "reporting_appliance_id": null,
       "restarting_open": false,
-      "screen": "sdhealth",
+      "screen": "main",
       "screen_request": null,
-      "sdhealth_open": true,
+      "sdhealth_open": false,
       "selector": null,
-      "showing": "logo",
+      "showing": "sleeping",
       "source_artwork_url": "",
       "touch_surface": [
-        "sdhealth",
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": true,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 0,
+      "frame_sizes": [],
+      "idle_started": true,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "sleeping",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "bound_appliance_id": null,
+      "display_sleeping": false,
+      "eq": null,
+      "eq_available": false,
+      "eq_optimistic": null,
+      "focus_pending": false,
+      "frame_count": 1,
+      "frame_sizes": [
+        [
+          128,
+          160
+        ]
+      ],
+      "idle_started": false,
+      "info": null,
+      "manual_focus_id": null,
+      "network": null,
+      "now_playing": null,
+      "nowifi_open": false,
+      "output_detail": null,
+      "outputs": null,
+      "outputs_optimistic": null,
+      "page_request": 0,
+      "persistent_overlay_shown": false,
+      "picker": null,
+      "pressed": null,
+      "repeat_appliance_id": null,
+      "repeat_close_reveal": false,
+      "reporting_appliance_id": null,
+      "restarting_open": false,
+      "screen": "main",
+      "screen_request": null,
+      "sdhealth_open": false,
+      "selector": null,
+      "showing": "waking",
+      "source_artwork_url": "",
+      "touch_surface": [
+        "idle",
         false,
         false,
         false
@@ -86851,450 +87108,6 @@
       "source_artwork_url": "",
       "touch_surface": [
         "sdhealth",
-        false,
-        false,
-        false
-      ]
-    }
-  ],
-  "sdhealth_dismiss_then_wake_stays_snoozed": [
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": false,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": "sdhealth",
-      "sdhealth_open": false,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 1,
-      "frame_sizes": [
-        [
-          128,
-          160
-        ]
-      ],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "sdhealth",
-      "screen_request": null,
-      "sdhealth_open": true,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "sdhealth",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "sdhealth",
-      "screen_request": "main",
-      "sdhealth_open": true,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "sdhealth",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 1,
-      "frame_sizes": [
-        [
-          128,
-          160
-        ]
-      ],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": true,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "sleeping",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": true,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 1,
-      "frame_sizes": [
-        [
-          128,
-          160
-        ]
-      ],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "sleeping",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": true,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "sleeping",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 1,
-      "frame_sizes": [
-        [
-          128,
-          160
-        ]
-      ],
-      "idle_started": false,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "waking",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
         false,
         false,
         false
@@ -88374,7 +88187,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -88427,7 +88240,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -88480,7 +88293,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -88533,7 +88346,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -88591,7 +88404,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -88644,7 +88457,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -88702,7 +88515,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -88755,7 +88568,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -88813,7 +88626,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -88858,7 +88671,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -88908,7 +88721,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -89760,406 +89573,6 @@
       "sdhealth_open": true,
       "selector": null,
       "showing": "waking",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "sdhealth",
-        false,
-        false,
-        false
-      ]
-    }
-  ],
-  "sdhealth_snooze_expires_and_reshows": [
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": false,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": "sdhealth",
-      "sdhealth_open": false,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 1,
-      "frame_sizes": [
-        [
-          128,
-          160
-        ]
-      ],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "sdhealth",
-      "screen_request": null,
-      "sdhealth_open": true,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "sdhealth",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "sdhealth",
-      "screen_request": "main",
-      "sdhealth_open": true,
-      "selector": {
-        "opened_at": 0.0,
-        "page": 0,
-        "rows": 0
-      },
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "sdhealth",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 1,
-      "frame_sizes": [
-        [
-          128,
-          160
-        ]
-      ],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": null,
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 0,
-      "frame_sizes": [],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "main",
-      "screen_request": "sdhealth",
-      "sdhealth_open": false,
-      "selector": null,
-      "showing": "logo",
-      "source_artwork_url": "",
-      "touch_surface": [
-        "idle",
-        false,
-        false,
-        false
-      ]
-    },
-    {
-      "bound_appliance_id": null,
-      "display_sleeping": false,
-      "eq": null,
-      "eq_available": false,
-      "eq_optimistic": null,
-      "focus_pending": false,
-      "frame_count": 1,
-      "frame_sizes": [
-        [
-          128,
-          160
-        ]
-      ],
-      "idle_started": true,
-      "info": null,
-      "manual_focus_id": null,
-      "network": null,
-      "now_playing": null,
-      "nowifi_open": false,
-      "output_detail": null,
-      "outputs": null,
-      "outputs_optimistic": null,
-      "page_request": 0,
-      "persistent_overlay_shown": false,
-      "picker": null,
-      "pressed": null,
-      "repeat_appliance_id": null,
-      "repeat_close_reveal": false,
-      "reporting_appliance_id": null,
-      "restarting_open": false,
-      "screen": "sdhealth",
-      "screen_request": null,
-      "sdhealth_open": true,
-      "selector": null,
-      "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
         "sdhealth",
@@ -93112,7 +92525,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -93165,7 +92578,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -93227,7 +92640,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 3,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 0,
         "ever_connected": true,
         "link": "connected"
@@ -93284,7 +92697,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 1,
         "ever_connected": true,
         "link": "down"
@@ -93341,7 +92754,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 2,
         "ever_connected": true,
         "link": "down"
@@ -93398,7 +92811,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93455,7 +92868,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93517,7 +92930,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93574,7 +92987,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93632,7 +93045,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93677,7 +93090,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93727,7 +93140,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": false,
+        "closed": false,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93772,7 +93185,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93822,7 +93235,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93867,7 +93280,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"
@@ -93917,7 +93330,7 @@
       "manual_focus_id": null,
       "network": {
         "bars": 0,
-        "dismissed": true,
+        "closed": true,
         "down_streak": 3,
         "ever_connected": true,
         "link": "down"

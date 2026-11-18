@@ -789,7 +789,7 @@ def main() -> None:
         kiosk_surface = get_profile_or_default(cfg.display.screen_type).surface == "kiosk"
 
         def panel_inputs() -> tuple[bool, bool, bool]:
-            due = core.warnings.due()
+            due = core.warnings.due_status()
             snap = core.snapshot()
             return (
                 bool(snap.visible_playing),

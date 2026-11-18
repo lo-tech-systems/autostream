@@ -58,9 +58,9 @@ function speakerNote(focus, focused, rows) {
     return focused && focused.reachable ? "No speakers on this appliance." : "Loading speakers...";
 }
 
-// The badge for the appliance's warnings that have a card and are not snoozed.
+// The badge for the appliance's warnings that have a card.
 function warnBadge(a, cardsById) {
-    const list = a.warnings.filter((w) => !w.snoozed && cardsById.has(w.key));
+    const list = a.warnings.filter((w) => cardsById.has(w.key));
     if (!list.length) { return null; }
     const worst = list.reduce((top, w) => (
         SEVERITY_ORDER.indexOf(w.severity) > SEVERITY_ORDER.indexOf(top) ? w.severity : top
@@ -148,7 +148,7 @@ function cardFrom(card, owner) {
         key: card.id, source: card.source || "", title: card.title, message: card.message,
         severity: card.severity, progress: typeof card.progress === "number" ? card.progress : null,
         buttons: card.buttons.map((b, i) => ({ id: i + ":" + b.action, label: b.label, act: b.action })),
-        closable: false, owner: owner, kind: "notice"
+        closable: false, owner: owner, kind: "notice", warning: card.kind === "warning", since: card.since
     };
 }
 
@@ -203,12 +203,12 @@ function derivePower(dial, local) {
 // has just asked for it), then the Auto-Start question (asked for too),
 // then the PIN recovery confirmation, a speaker's PIN, a speaker that could
 // not start, the not-allowed notice, an appliance warning opened from its
-// badge, then the warning the dial says is due.
+// badge, then the status the dial says is due, then the first open warning.
 function deriveModal(dial, p, focus, local) {
     const cardsById = new Map(dial.warnings.cards.map((c) => [c.id, c]));
     const owners = new Map();
     dial.appliances.forEach((a) => a.warnings.forEach((w) => owners.set(w.key, a.id)));
-    const due = cardsById.get(dial.warnings.due);
+    const status = cardsById.get(dial.warnings.due);
 
     const power = derivePower(dial, local);
     if (power) {
@@ -234,18 +234,18 @@ function deriveModal(dial, p, focus, local) {
             kind: "notice", buttons: [{ id: "ok", label: "OK", act: "close" }]
         };
     }
-    // The due warning is shown when it belongs to the dial or to the
-    // focused appliance; a card opened from a badge is the same card, and
-    // then it is as much owed an answer.
-    const owner = due ? owners.get(due.id) : null;
-    const dueShown = !!due && !due.snoozed && (!owner || (!!focus && owner === focus.id));
+    // A warning is shown when it belongs to the dial or to the focused
+    // appliance and this incident of it has not been closed; a card opened
+    // from a badge is the same card, and then it is as much owed an answer.
+    const owed = (c) => (!owners.has(c.id) || owners.get(c.id) === (focus && focus.id)) && local.closed[c.id] !== c.since;
+    const auto = status || dial.warnings.cards.find((c) => c.kind === "warning" && owed(c));
     const viewed = cardsById.get(local.viewing);
-    if (viewed && !viewed.snoozed) {
+    if (viewed) {
         const card = cardFrom(viewed, owners.get(viewed.id));
-        card.closable = !(dueShown && due.id === viewed.id);
+        card.closable = !(auto && auto.id === viewed.id);
         return card;
     }
-    return dueShown ? cardFrom(due, owner) : null;
+    return auto ? cardFrom(auto, owners.get(auto.id)) : null;
 }
 
 // The dial's own screen is a loopback page, a laptop is not.

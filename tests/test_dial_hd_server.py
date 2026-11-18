@@ -482,7 +482,7 @@ class TestState:
     def test_the_parts_match_build_parts_for_the_same_inputs(self, make_server, core):
         scenario = hs.SCENARIOS["playing_artwork"]
         server = make_server(
-            clock=lambda: hs.NOW, wall_clock=lambda: hs.WALL_NOW,
+            clock=lambda: hs.NOW,
             panel=SimpleNamespace(view=lambda: dict(hs.PANEL_AWAKE)),
         )
         server._http_server.display_config = DialDisplayConfig(brightness=80, sleep_after_s=300)
@@ -491,7 +491,7 @@ class TestState:
         expected = build_parts(
             scenario.snapshot, descriptors=core.warnings.descriptors(), panel=hs.PANEL_AWAKE,
             settings={"brightness": 80, "sleep_after_s": 300},
-            recovery=(False, False), now=hs.NOW, wall_now=hs.WALL_NOW)
+            recovery=(False, False), now=hs.NOW)
         assert body["parts"] == json.loads(json.dumps(expected))
 
     def test_a_newly_published_snapshot_is_served(self, server, core):

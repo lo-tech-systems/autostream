@@ -44,6 +44,7 @@ from dial_touch import (  # noqa: E402
     SURFACE_RESTARTING,
     SURFACE_SDHEALTH,
     SURFACE_UPDATE,
+    SURFACE_UPDATE_DIAL,
     SURFACE_UPDATE_RESULT,
     SURFACE_SELECTOR,
     TouchAction,
@@ -2136,11 +2137,12 @@ class TestNoWifiAndRestartingSurfaces:
     def test_sdhealth_surface_map(self):
         assert _GEOMETRY_FOR_SURFACE[SURFACE_SDHEALTH] == GEOMETRY_SDHEALTH
 
-    def test_update_surfaces_map_to_geometry_none_and_the_dismiss_cell(self):
-        # The progress card has no buttons; the result card reuses the SD
-        # warning's one Dismiss cell.
+    def test_update_surfaces_map_to_geometry_none_and_the_close_cell(self):
+        # The progress card has no buttons; the result card and the dial's own
+        # update warning reuse the SD warning's one Close cell.
         assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE] == GEOMETRY_NONE
         assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE_RESULT] == GEOMETRY_SDHEALTH
+        assert _GEOMETRY_FOR_SURFACE[SURFACE_UPDATE_DIAL] == GEOMETRY_SDHEALTH
 
     def test_update_progress_card_is_touch_inert(self):
         l = sdhealth_layout_for(WIDTH, HEIGHT)
@@ -2458,6 +2460,7 @@ _ASLEEP_PROBE = {
     SURFACE_NOWIFI: (49, 67),
     SURFACE_SDHEALTH: (WIDTH // 2, 67),
     SURFACE_UPDATE_RESULT: (WIDTH // 2, 67),
+    SURFACE_UPDATE_DIAL: (WIDTH // 2, 67),
     SURFACE_APPLIANCE_WARNING: (WIDTH // 2, 67),
 }
 _ASLEEP_CASES = [

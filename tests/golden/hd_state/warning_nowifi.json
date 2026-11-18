@@ -39,10 +39,12 @@
   "outputs_request": null,
   "start_failure": null,
   "warnings": {
-    "due": "nowifi",
+    "due": null,
     "cards": [
       {
         "id": "nowifi",
+        "kind": "warning",
+        "since": 1699999970.0,
         "severity": "warning",
         "title": "No WiFi",
         "message": "",
@@ -50,16 +52,15 @@
         "source": "",
         "buttons": [
           {
-            "label": "Dismiss",
-            "action": "dismiss"
+            "label": "Close",
+            "action": "close"
           },
           {
             "label": "Restart",
             "action": "restart"
           }
         ],
-        "interrupting": false,
-        "snoozed": false
+        "interrupting": false
       }
     ]
   },

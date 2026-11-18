@@ -115,7 +115,7 @@ def test_every_request_the_script_makes_names_a_real_route():
     assert submitted and submitted <= set(HD_INTENTS), submitted - set(HD_INTENTS)
     # Every appliance intent the dial takes from the page is one the page sends.
     assert submitted == set(HD_INTENTS)
-    assert {"warning_dismiss", "dial_restart", "presence", "focus", "volume_set", "mute_toggle"} <= posted
+    assert {"status_close", "dial_restart", "presence", "focus", "volume_set", "mute_toggle"} <= posted
 
     routes = {"/api/v1/settings", "/api/v1/info", "/api/v1/state", "/api/v1/events",
               "/api/v1/panel/wake", "/api/v1/panel/sleep", "/api/v1/panel/activity",

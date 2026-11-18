@@ -1,19 +1,14 @@
 """Tests for dial_warnings.py: the dial's on-screen warning framework.
 
-Covers: due()'s priority and eligibility rule, the two dismiss policies
-(incident-scoped vs a persisted time snooze), severity refresh, clearing
-an incident (and what it forgets), WarningStore's atomic write and its
-never-raise degrade paths, pruning on load, and button-owner resolution.
+Covers: the two due rules (the status that is due, the warning a view would
+open that it has not closed), reading refresh, clearing an incident,
+button-owner resolution, run-time registration, expiry, and the invariants
+the descriptor table keeps (a warning never interrupts).
 """
 from __future__ import annotations
 
-import json
-import logging
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 _DIAL = str(REPO_ROOT / "dial")
@@ -21,13 +16,15 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 from dial_touch_layout import TouchZone
+from dial_warning_text import WARNING_DESCRIPTORS
 from dial_warnings import (
-    ACTION_DISMISS,
+    ACTION_CLOSE,
     ACTION_RESTART,
+    KIND_STATUS,
+    KIND_WARNING,
     WarningButton,
     WarningDescriptor,
     WarningManager,
-    WarningStore,
 )
 
 
@@ -41,248 +38,132 @@ class _Clock:
         return self.t
 
 
+def _severity(_reading) -> str:
+    return "warning"
+
+
 def _hi() -> WarningDescriptor:
-    """An incident-scoped, non-persisted, two-button warning: the
-    No-WiFi shape."""
+    """A two-button warning: the No-WiFi shape."""
     return WarningDescriptor(
-        id="hi", priority=100, screen="hi", geometry="hi",
-        title="Hi", message_for=None,
+        id="hi", kind=KIND_WARNING, priority=100, screen="hi", geometry="hi",
+        title="Hi", message_for=None, severity_for=_severity,
         buttons=(
-            WarningButton(TouchZone.NOWIFI_DISMISS, "Dismiss", ACTION_DISMISS),
+            WarningButton(TouchZone.NOWIFI_DISMISS, "Close", ACTION_CLOSE),
             WarningButton(TouchZone.NOWIFI_RESTART, "Restart", ACTION_RESTART),
         ),
-        persisted=False, snooze_for=None,
     )
 
 
 def _lo() -> WarningDescriptor:
-    """A persisted, time-snoozed, one-button warning: the SD health
-    shape, a week, or a day when the severity is "critical"."""
+    """A one-button warning with a message that reads the reading: the SD
+    health shape."""
     return WarningDescriptor(
-        id="lo", priority=50, screen="lo", geometry="lo",
-        title="Lo", message_for=lambda s: f"severity {s}",
-        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Dismiss", ACTION_DISMISS),),
-        persisted=True, snooze_for=lambda s: 86400.0 if s == "critical" else 604800.0,
+        id="lo", kind=KIND_WARNING, priority=50, screen="lo", geometry="lo",
+        title="Lo", message_for=lambda s: f"reading {s}", severity_for=_severity,
+        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Close", ACTION_CLOSE),),
     )
 
 
-def _manager(path=None, clock=None) -> WarningManager:
-    return WarningManager((_hi(), _lo()), WarningStore(path), clock=clock or _Clock().now)
+def _status(wid="st", priority=150) -> WarningDescriptor:
+    return WarningDescriptor(
+        id=wid, kind=KIND_STATUS, priority=priority, screen=wid, geometry="none",
+        title="St", message_for=None, severity_for=_severity, buttons=(),
+    )
 
 
-class TestDueAndPriority:
+def _manager(clock=None) -> WarningManager:
+    return WarningManager((_hi(), _lo(), _status()), clock=clock or _Clock().now)
+
+
+class TestDueStatus:
     def test_nothing_due_when_nothing_active(self):
-        m = _manager()
-        assert m.due() is None
+        assert _manager().due_status() is None
 
-    def test_set_active_makes_it_due(self):
+    def test_a_status_is_due_when_active(self):
         m = _manager()
-        m.set_active("lo")
-        assert m.due().id == "lo"
+        m.set_active("st")
+        assert m.due_status().id == "st"
 
-    def test_priority_picks_the_higher_when_both_active(self):
+    def test_a_warning_is_never_a_due_status(self):
         m = _manager()
         m.set_active("hi")
         m.set_active("lo")
-        assert m.due().id == "hi"
-        m.clear("hi")
-        assert m.due().id == "lo"
+        assert m.due_status() is None
 
-    def test_severity_refreshes_on_every_set_active(self):
-        m = _manager()
-        m.set_active("lo", severity=15)
-        assert m.severity("lo") == 15
-        m.set_active("lo", severity=2)
-        assert m.severity("lo") == 2
+    def test_the_higher_priority_status_wins_and_ties_keep_registry_order(self):
+        m = WarningManager((_status("a", 10), _status("b", 20), _status("c", 20)))
+        for wid in "abc":
+            m.set_active(wid)
+        assert m.due_status().id == "b"
+        m.clear("b")
+        assert m.due_status().id == "c"
 
     def test_clear_deactivates(self):
         m = _manager()
-        m.set_active("hi")
-        m.clear("hi")
-        assert m.is_active("hi") is False
-        assert m.due() is None
+        m.set_active("st")
+        m.clear("st")
+        assert m.is_active("st") is False
+        assert m.due_status() is None
 
 
-class TestDismissPolicy:
-    def test_incident_dismiss_holds_until_clear(self):
-        clock = _Clock()
-        m = _manager(clock=clock.now)
-        m.set_active("hi")
-        m.dismiss("hi")
-        clock.t += 10 * 365 * 86400.0
-        assert m.is_snoozed("hi") is True
-        m.clear("hi")
-        assert m.is_snoozed("hi") is False
-        m.set_active("hi")
-        assert m.due().id == "hi"
-
-    def test_incident_dismiss_is_never_persisted(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        m = WarningManager((_hi(), _lo()), WarningStore(path))
-        m.set_active("hi")
-        m.dismiss("hi")
-        m.flush()
-        assert WarningStore(path).load() == {}
-
-    def test_time_dismiss_snoozes_for_the_policy_duration(self):
-        clock = _Clock()
-        m = _manager(clock=clock.now)
-        m.set_active("lo")
-        m.dismiss("lo")
-        assert m.is_snoozed("lo", now=clock.t + 604799) is True
-        assert m.is_snoozed("lo", now=clock.t + 604800) is False
-
-    def test_time_dismiss_uses_severity(self):
-        clock = _Clock()
-        m = _manager(clock=clock.now)
-        m.set_active("lo", severity="critical")
-        m.dismiss("lo")
-        assert m.is_snoozed("lo", now=clock.t + 86399) is True
-        assert m.is_snoozed("lo", now=clock.t + 86400) is False
-
-    def test_snooze_expiry_makes_it_due_again(self):
-        clock = _Clock()
-        m = _manager(clock=clock.now)
-        m.set_active("lo")
-        m.dismiss("lo")
-        assert m.due() is None
-        clock.t += 604800.0 + 1
-        assert m.due().id == "lo"
-
-    def test_clear_forgets_a_time_snooze(self):
+class TestDueWarning:
+    def test_the_higher_priority_warning_wins(self):
         m = _manager()
         m.set_active("lo")
-        m.dismiss("lo")
-        m.clear("lo")
-        m.set_active("lo")
-        assert m.due().id == "lo"
+        assert m.due_warning().id == "lo"
+        m.set_active("hi")
+        assert m.due_warning().id == "hi"
+        m.clear("hi")
+        assert m.due_warning().id == "lo"
 
-    def test_dismiss_of_an_inactive_warning_still_records_the_snooze(self):
-        # The never-connected icon-tap page: a Dismiss lands while the
-        # source has not (yet) called set_active.
+    def test_a_status_is_never_a_due_warning(self):
         m = _manager()
-        m.dismiss("hi")
-        assert m.is_snoozed("hi") is True
+        m.set_active("st")
+        assert m.due_warning() is None
 
-
-class TestPersistence:
-    def test_persistence_round_trip(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        m = WarningManager((_hi(), _lo()), WarningStore(path))
+    def test_a_closed_warning_is_skipped(self):
+        m = _manager()
+        m.set_active("hi")
         m.set_active("lo")
-        m.dismiss("lo")
-        m.flush()
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        assert set(data) == {"lo"}
-        m2 = WarningManager((_hi(), _lo()), WarningStore(path))
-        assert m2.is_snoozed("lo") is True
+        assert m.due_warning(closed={"hi"}).id == "lo"
+        assert m.due_warning(closed={"hi", "lo"}) is None
 
-    def test_flush_writes_only_when_dirty(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        m = WarningManager((_hi(), _lo()), WarningStore(path))
+    def test_a_closed_id_that_is_not_active_is_harmless(self):
+        m = _manager()
         m.set_active("lo")
-        m.dismiss("lo")
-        with patch.object(m._store, "save", wraps=m._store.save) as save:
-            m.flush()
-            m.flush()
-        save.assert_called_once()
+        assert m.due_warning(closed={"hi"}).id == "lo"
 
-    def test_clear_marks_dirty_and_removes_the_key(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        m = WarningManager((_hi(), _lo()), WarningStore(path))
-        m.set_active("lo")
-        m.dismiss("lo")
-        m.flush()
+
+class TestReading:
+    def test_the_reading_refreshes_on_every_set_active(self):
+        m = _manager()
+        m.set_active("lo", reading=15)
+        assert m.reading("lo") == 15
+        m.set_active("lo", reading=2)
+        assert m.reading("lo") == 2
+
+    def test_clear_forgets_the_reading(self):
+        m = _manager()
+        m.set_active("lo", reading=15)
         m.clear("lo")
-        m.flush()
-        assert json.loads(Path(path).read_text(encoding="utf-8")) == {}
-
-    def test_missing_file_loads_empty_and_does_not_create_it(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        m = WarningManager((_hi(), _lo()), WarningStore(path))
-        assert m.due() is None
-        assert not Path(path).exists()
-        m.set_active("lo")
-        m.dismiss("lo")
-        m.flush()
-        assert Path(path).exists()
-
-    def test_first_flush_creates_the_file_atomically(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        m = WarningManager((_hi(), _lo()), WarningStore(path))
-        m.set_active("lo")
-        m.dismiss("lo")
-        m.flush()
-        assert Path(path).exists()
-        assert list(tmp_path.glob("*.tmp")) == []
-
-    def test_corrupt_file_loads_empty(self, tmp_path):
-        path = tmp_path / "w.json"
-        path.write_text("not json", encoding="utf-8")
-        m = WarningManager((_hi(), _lo()), WarningStore(str(path)))
-        assert m.due() is None
-        m.set_active("lo")
-        m.dismiss("lo")
-        m.flush()
-        assert set(json.loads(path.read_text(encoding="utf-8"))) == {"lo"}
-
-    def test_non_object_json_loads_empty(self, tmp_path):
-        path = tmp_path / "w.json"
-        path.write_text("[1, 2]", encoding="utf-8")
-        assert WarningStore(str(path)).load() == {}
-
-    def test_expired_entries_are_pruned_on_load(self, tmp_path):
-        path = tmp_path / "w.json"
-        now = 1_000_000.0
-        path.write_text(json.dumps({"lo": now - 1}), encoding="utf-8")
-        m = WarningManager((_hi(), _lo()), WarningStore(str(path)), clock=lambda: now)
-        assert m.is_snoozed("lo") is False
-        m.flush()
-        assert json.loads(path.read_text(encoding="utf-8")) == {}
-
-    def test_unknown_ids_are_dropped_on_load(self, tmp_path):
-        path = tmp_path / "w.json"
-        now = 1_000_000.0
-        path.write_text(json.dumps({"gone": now + 1e6}), encoding="utf-8")
-        m = WarningManager((_hi(), _lo()), WarningStore(str(path)), clock=lambda: now)
-        assert m.is_snoozed("gone") is False
-        assert m.due() is None
-
-    def test_unreadable_path_degrades_to_memory(self, tmp_path):
-        # A directory where the store expects a file: every load/save fails.
-        m = WarningManager((_hi(), _lo()), WarningStore(str(tmp_path)))
-        m.set_active("lo")
-        m.dismiss("lo")
-        m.flush()          # never raises
-        assert m.is_snoozed("lo") is True
-
-    def test_save_failure_logged_once(self, tmp_path, caplog):
-        store = WarningStore(str(tmp_path))   # a directory: save() always fails
-        with caplog.at_level(logging.DEBUG, logger="root"):
-            assert store.save({"lo": 1.0}) is False
-            assert store.save({"lo": 1.0}) is False
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
-        assert len(warnings) == 1
-        assert len(debugs) >= 1
+        assert m.reading("lo") is None
 
 
 class TestButtonResolution:
     def test_button_owner_resolves_the_first_registered_owner(self):
         shared = WarningDescriptor(
-            id="lo2", priority=10, screen="lo2", geometry="lo2",
-            title="Lo2", message_for=None,
-            buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Dismiss", ACTION_DISMISS),),
-            persisted=False, snooze_for=None,
+            id="lo2", kind=KIND_WARNING, priority=10, screen="lo2", geometry="lo2",
+            title="Lo2", message_for=None, severity_for=_severity,
+            buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Close", ACTION_CLOSE),),
         )
-        m = WarningManager((_lo(), shared), WarningStore(None))
+        m = WarningManager((_lo(), shared))
         owner = m.button_owner(TouchZone.SDHEALTH_DISMISS)
         assert owner is not None
         assert owner[0].id == "lo"
 
     def test_descriptor_button_for(self):
         desc = _hi()
-        assert desc.button_for(TouchZone.NOWIFI_DISMISS).action == ACTION_DISMISS
+        assert desc.button_for(TouchZone.NOWIFI_DISMISS).action == ACTION_CLOSE
         assert desc.button_for(TouchZone.SDHEALTH_DISMISS) is None
 
 
@@ -292,19 +173,19 @@ class TestButtonResolution:
 
 def _timed(after, wid="t") -> WarningDescriptor:
     return WarningDescriptor(
-        id=wid, priority=10, screen=wid, geometry="none", title="T", message_for=None,
-        buttons=(), persisted=False, snooze_for=None, auto_clear_after_s=after,
+        id=wid, kind=KIND_STATUS, priority=10, screen=wid, geometry="none", title="T",
+        message_for=None, severity_for=_severity, buttons=(), auto_clear_after_s=after,
     )
 
 
 class TestGenericFields:
-    def test_new_fields_default_to_the_existing_behaviour(self):
+    def test_optional_fields_default_to_the_plain_behaviour(self):
         for desc in (_hi(), _lo()):
             assert desc.title_for is None and desc.progress_for is None
             assert desc.interrupting is False and desc.auto_clear_after_s is None
 
     def test_set_active_reports_a_new_incident_only(self):
-        manager = WarningManager([_timed(5.0)], WarningStore(None))
+        manager = WarningManager([_timed(5.0)])
         assert manager.set_active("t") is True
         assert manager.set_active("t") is False
         assert manager.set_active("nope") is False
@@ -314,8 +195,7 @@ class TestGenericFields:
     def test_expired_lists_only_rows_past_their_limit(self):
         clock = _Clock()
         manager = WarningManager(
-            [_timed(60.0, "a"), _timed(None, "b"), _timed(10.0, "c")],
-            WarningStore(None), clock=clock.now,
+            [_timed(60.0, "a"), _timed(None, "b"), _timed(10.0, "c")], clock=clock.now,
         )
         manager.set_active("a")
         manager.set_active("b")
@@ -329,16 +209,16 @@ class TestGenericFields:
 
     def test_a_refresh_keeps_the_incident_start(self):
         clock = _Clock()
-        manager = WarningManager([_timed(30.0)], WarningStore(None), clock=clock.now)
-        manager.set_active("t", severity=1)
+        manager = WarningManager([_timed(30.0)], clock=clock.now)
+        manager.set_active("t", reading=1)
         clock.t += 20.0
-        manager.set_active("t", severity=2)
+        manager.set_active("t", reading=2)
         clock.t += 11.0
         assert manager.expired() == ["t"]
 
     def test_clear_restarts_the_clock_and_inactive_rows_never_expire(self):
         clock = _Clock()
-        manager = WarningManager([_timed(30.0)], WarningStore(None), clock=clock.now)
+        manager = WarningManager([_timed(30.0)], clock=clock.now)
         assert manager.expired() == []
         manager.set_active("t")
         clock.t += 40.0
@@ -348,135 +228,107 @@ class TestGenericFields:
         clock.t += 29.0
         assert manager.expired() == []
 
-    def test_a_dismissed_row_still_expires(self):
-        clock = _Clock()
-        manager = WarningManager([_timed(30.0)], WarningStore(None), clock=clock.now)
-        manager.set_active("t")
-        manager.dismiss("t")
-        clock.t += 31.0
-        assert manager.expired() == ["t"]
-
 
 # ---------------------------------------------------------------------------
 # Run-time registration (warnings an appliance supplies)
 # ---------------------------------------------------------------------------
 
-def _ns(appliance_id="a1", warning_id="stylus", *, persisted=True, buttons=True, snooze=3600.0):
+def _ns(appliance_id="a1", warning_id="stylus", *, buttons=True):
     return WarningDescriptor(
-        id=f"appliance:{appliance_id}:{warning_id}", priority=10, screen="appliance_warning",
-        geometry="sdhealth", title="T", message_for=lambda _s: "m",
-        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Dismiss", ACTION_DISMISS),) if buttons else (),
-        persisted=persisted, snooze_for=lambda _s: snooze,
+        id=f"appliance:{appliance_id}:{warning_id}", kind=KIND_WARNING, priority=10,
+        screen="appliance_warning", geometry="sdhealth", title="T",
+        message_for=lambda _s: "m", severity_for=_severity,
+        buttons=(WarningButton(TouchZone.SDHEALTH_DISMISS, "Close", ACTION_CLOSE),) if buttons else (),
     )
 
 
 class TestRegistration:
     def test_a_registered_warning_joins_the_registry_and_the_due_rule(self):
-        manager = WarningManager([_hi()], WarningStore(None))
+        manager = WarningManager([_hi()])
         manager.register(_ns())
         assert [d.id for d in manager.descriptors()] == ["hi", "appliance:a1:stylus"]
         manager.set_active("appliance:a1:stylus")
-        assert manager.due().id == "appliance:a1:stylus"
+        assert manager.due_warning().id == "appliance:a1:stylus"
         manager.set_active("hi")
-        assert manager.due().id == "hi"
+        assert manager.due_warning().id == "hi"
 
     def test_re_registering_replaces_the_descriptor_and_keeps_the_state(self):
-        manager = WarningManager([], WarningStore(None))
+        manager = WarningManager([])
         manager.register(_ns())
         manager.set_active("appliance:a1:stylus", "x")
-        manager.dismiss("appliance:a1:stylus")
-        newer = _ns()
-        newer = WarningDescriptor(**{**newer.__dict__, "title": "New"})
+        newer = WarningDescriptor(**{**_ns().__dict__, "title": "New"})
         manager.register(newer)
         assert manager.descriptor("appliance:a1:stylus").title == "New"
-        assert manager.is_active("appliance:a1:stylus") and manager.is_snoozed("appliance:a1:stylus")
+        assert manager.is_active("appliance:a1:stylus")
         assert len(manager.descriptors()) == 1
 
-    def test_unregister_ends_the_incident_and_forgets_a_persisted_snooze(self, tmp_path):
-        path = tmp_path / "w.json"
-        clock = _Clock()
-        manager = WarningManager([], WarningStore(str(path)), clock=clock.now)
+    def test_unregister_ends_the_incident_and_removes_the_descriptor(self):
+        manager = WarningManager([])
         manager.register(_ns())
         manager.set_active("appliance:a1:stylus")
-        manager.dismiss("appliance:a1:stylus")
-        manager.flush()
-        assert "appliance:a1:stylus" in json.loads(path.read_text())
         manager.unregister("appliance:a1:stylus")
-        manager.flush()
-        assert json.loads(path.read_text()) == {}
-        assert manager.descriptors() == () and manager.due() is None
+        assert manager.descriptors() == () and manager.due_warning() is None
         assert not manager.is_active("appliance:a1:stylus")
 
-    def test_a_run_time_incident_scoped_dismiss_holds_until_the_source_clears(self, tmp_path):
-        path = tmp_path / "w.json"
-        clock = _Clock()
-        manager = WarningManager([], WarningStore(str(path)), clock=clock.now)
-        key = "appliance:a1:notice"
-        manager.register(WarningDescriptor(**{**_ns("a1", "notice", persisted=False).__dict__, "snooze_for": None}))
-        manager.set_active(key)
-        manager.dismiss(key)
-        clock.t += 400 * 86400.0
-        assert manager.is_snoozed(key) and manager.due() is None
-        assert manager.runtime()[0][4] == float("inf")
-        manager.flush()
-        assert not path.exists() or json.loads(path.read_text()) == {}
-        manager.clear(key)
-        manager.set_active(key)
-        assert manager.due().id == key
-
-    def test_a_severity_refresh_on_a_registered_warning_keeps_its_snooze(self):
-        manager = WarningManager([], WarningStore(None))
+    def test_a_reading_refresh_on_a_registered_warning_keeps_it_active(self):
+        manager = WarningManager([])
         key = "appliance:a1:stylus"
         manager.register(_ns())
         manager.set_active(key, "warning")
-        manager.dismiss(key)
         manager.register(_ns())
         manager.set_active(key, "critical")
-        assert manager.severity(key) == "critical"
-        assert manager.is_snoozed(key) and manager.due() is None
+        assert manager.reading(key) == "critical" and manager.due_warning().id == key
 
     def test_unregistering_an_unknown_id_is_harmless(self):
-        manager = WarningManager([_hi()], WarningStore(None))
+        manager = WarningManager([_hi()])
         manager.unregister("nope")
         assert [d.id for d in manager.descriptors()] == ["hi"]
 
-    def test_a_persisted_namespaced_snooze_is_parked_until_registered(self, tmp_path):
-        path = tmp_path / "w.json"
-        clock = _Clock()
-        path.write_text(json.dumps({
-            "appliance:a1:stylus": clock.t + 1000, "appliance:a1:old": clock.t - 5,
-            "elsewhere": clock.t + 1000,
-        }))
-        manager = WarningManager([_lo()], WarningStore(str(path)), clock=clock.now)
-        manager.flush()
-        assert json.loads(path.read_text()) == {"appliance:a1:stylus": clock.t + 1000}
-        manager.register(_ns())
-        assert manager.is_snoozed("appliance:a1:stylus")
-
-    def test_a_parked_snooze_is_not_applied_to_a_non_persisted_registration(self, tmp_path):
-        path = tmp_path / "w.json"
-        clock = _Clock()
-        path.write_text(json.dumps({"appliance:a1:stylus": clock.t + 1000}))
-        manager = WarningManager([], WarningStore(str(path)), clock=clock.now)
-        manager.register(_ns(persisted=False))
-        assert not manager.is_snoozed("appliance:a1:stylus")
-
     def test_runtime_reports_state_in_registry_order(self):
         clock = _Clock()
-        manager = WarningManager([_hi()], WarningStore(None), clock=clock.now)
+        manager = WarningManager([_hi()], clock=clock.now)
         manager.register(_ns())
         manager.set_active("appliance:a1:stylus", "sev")
-        manager.dismiss("appliance:a1:stylus")
         rows = manager.runtime()
         assert [r[0] for r in rows] == ["hi", "appliance:a1:stylus"]
-        assert rows[0][1:] == (False, None, None, None)
-        wid, active, severity, since, until = rows[1]
-        assert active and severity == "sev" and since == clock.t and until == clock.t + 3600.0
-        clock.t += 3601
-        assert manager.runtime()[1][4] is None
+        assert rows[0][1:] == (False, None, None)
+        assert rows[1] == ("appliance:a1:stylus", True, "sev", clock.t)
 
-    def test_an_incident_scoped_dismissal_reports_infinity(self):
-        manager = WarningManager([_hi()], WarningStore(None))
-        manager.set_active("hi")
-        manager.dismiss("hi")
-        assert manager.runtime()[0][4] == float("inf")
+
+# ---------------------------------------------------------------------------
+# The descriptor table
+# ---------------------------------------------------------------------------
+
+class TestTheTable:
+    def test_each_kind_is_one_of_the_two(self):
+        assert {d.kind for d in WARNING_DESCRIPTORS} == {KIND_WARNING, KIND_STATUS}
+
+    def test_update_and_its_result_are_status_and_the_rest_are_warnings(self):
+        by_id = {d.id: d.kind for d in WARNING_DESCRIPTORS}
+        assert by_id["update"] == by_id["update_result"] == KIND_STATUS
+        assert by_id["nowifi"] == by_id["sdhealth"] == by_id["update_dial"] == KIND_WARNING
+
+    def test_a_warning_never_interrupts(self):
+        assert [d.id for d in WARNING_DESCRIPTORS if d.kind == KIND_WARNING and d.interrupting] == []
+
+    def test_a_status_with_buttons_closes_with_close(self):
+        for desc in WARNING_DESCRIPTORS:
+            if desc.kind == KIND_STATUS:
+                assert [b.action for b in desc.buttons] in ([], [ACTION_CLOSE])
+
+    def test_every_descriptor_gives_one_of_the_three_severities(self):
+        for desc in WARNING_DESCRIPTORS:
+            assert desc.severity_for(None) in ("info", "warning", "critical")
+
+    def test_the_sd_card_is_critical_below_the_critical_percent(self):
+        from dial_warning_text import SDHEALTH_CRITICAL_PERCENT, _WARNING_BY_ID
+        severity_for = _WARNING_BY_ID["sdhealth"].severity_for
+        assert severity_for(SDHEALTH_CRITICAL_PERCENT - 1) == "critical"
+        assert severity_for(SDHEALTH_CRITICAL_PERCENT) == "warning"
+        assert severity_for(None) == "warning"
+
+    def test_the_dial_update_message_names_the_appliances(self):
+        from dial_warning_text import _WARNING_BY_ID
+        message_for = _WARNING_BY_ID["update_dial"].message_for
+        assert message_for(("Lounge",)) == "Lounge needs a newer dial"
+        assert message_for(("Lounge", "Kitchen")) == "Lounge, Kitchen need a newer dial"

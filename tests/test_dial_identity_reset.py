@@ -404,9 +404,8 @@ class TestFactoryResetIdentity:
         assert not settings.exists()
         assert dial.hw_uuid() == OLD_UUID
 
-    def test_the_dial_forgets_the_appliance_records_it_keeps_on_disk(self):
-        import dial_warnings
-        assert Path(dial_warnings.WARNINGS_PATH) in m.FACTORY_RESET_DIAL_DELETE_FILES
+    def test_the_dial_keeps_no_warnings_file_to_forget(self):
+        assert not [p for p in m.FACTORY_RESET_DIAL_DELETE_FILES if "warnings" in p.name]
 
 
 @posix_only

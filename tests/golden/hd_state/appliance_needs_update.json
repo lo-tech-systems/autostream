@@ -35,8 +35,7 @@
           "id": "update_appliance",
           "severity": "warning",
           "title": "Update Lounge",
-          "message": "Its software is older than this dial's. Update it from its web UI.",
-          "snoozed": false
+          "message": "Its software is older than this dial's. Update it from its web UI."
         }
       ],
       "webui": "http://192.0.2.20:80/",
@@ -52,10 +51,12 @@
   "outputs_request": null,
   "start_failure": null,
   "warnings": {
-    "due": "appliance:aaaaaaaaaaaaaaaaaaaa:update_appliance",
+    "due": null,
     "cards": [
       {
         "id": "appliance:aaaaaaaaaaaaaaaaaaaa:update_appliance",
+        "kind": "warning",
+        "since": 1699999970.0,
         "severity": "warning",
         "title": "Update Lounge",
         "message": "Its software is older than this dial's. Update it from its web UI.",
@@ -63,12 +64,11 @@
         "source": "Lounge",
         "buttons": [
           {
-            "label": "Dismiss",
-            "action": "dismiss"
+            "label": "Close",
+            "action": "close"
           }
         ],
-        "interrupting": false,
-        "snoozed": false
+        "interrupting": false
       }
     ]
   },

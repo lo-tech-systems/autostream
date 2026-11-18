@@ -56,7 +56,7 @@ from dial_display import (
     NoOpBackend,
     create_dial_display,
 )
-from dial_warnings import WarningManager, WarningStore
+from dial_warnings import KIND_STATUS, WarningManager
 from dial_test_support import (
     FakeBackend,
     _FakeClock,
@@ -78,6 +78,8 @@ from dial_test_support import (
     patch_monotonic,
     pending_token,
     repeat_of,
+    close_warning,
+    is_closed,
     run_warning_action,
     seed_bands,
     seed_eq,
@@ -94,6 +96,7 @@ from dial_test_support import (
     tick_warnings,
     update_availability,
     warning_active,
+    warning_cleared,
 )
 
 
@@ -7598,10 +7601,10 @@ class TestOutputsPaintBuilders:
 # ---------------------------------------------------------------------------
 
 class TestScreenPolicyTable:
-    def test_table_has_exactly_the_fifteen_screens(self):
+    def test_table_has_exactly_the_sixteen_screens(self):
         assert set(SCREEN_POLICIES) == {
             "main", "selector", "picker", "info", "info_value", "repeat", "eq", "outputs", "output",
-            "nowifi", "restarting", "sdhealth", "update", "update_result", "appliance_warning",
+            "nowifi", "restarting", "sdhealth", "update", "update_result", "update_dial", "appliance_warning",
         }
 
     def test_nowifi_and_restarting_rows(self):
@@ -8709,12 +8712,12 @@ class TestNoWifiStateMachine:
         on_network_view(display, _view(LINK_DOWN))
         assert display._screen_request == "nowifi"
 
-    def test_ignored_resets_the_streak_but_keeps_the_dismissal(self):
+    def test_ignored_resets_the_streak_but_keeps_the_close(self):
         display, fb = self._idle_display()
-        display.core.warnings.dismiss("nowifi")
+        close_warning(display, "nowifi")
         on_network_view(display, _view(LINK_DOWN))
         on_network_view(display, _view(LINK_IGNORED))
-        assert display.core.wifi_down_streak() == 0 and display.core.warnings.is_snoozed("nowifi")
+        assert display.core.wifi_down_streak() == 0 and is_closed(display, "nowifi")
         assert display._screen_request is None
 
     def test_connected_auto_closes_the_page_and_ends_the_incident(self):
@@ -8727,7 +8730,7 @@ class TestNoWifiStateMachine:
         assert display._screen_request == "main"
         _fold(display)
         assert display._screen == "main" and display._warning_screen is None
-        assert display.core.wifi_down_streak() == 0 and not display.core.warnings.is_snoozed("nowifi")
+        assert display.core.wifi_down_streak() == 0 and not is_closed(display, "nowifi")
 
     def test_connected_cancels_a_pending_open(self):
         display, fb = self._idle_display()
@@ -8737,13 +8740,13 @@ class TestNoWifiStateMachine:
         on_network_view(display, _view(LINK_CONNECTED, bars=1))
         assert display._screen_request is None
 
-    def test_dismiss_suppresses_reopen_until_connected(self):
+    def test_close_suppresses_reopen_until_connected(self):
         display, fb = self._idle_display()
         for _ in range(3):
             on_network_view(display, _view(LINK_DOWN))
         _fold(display)
-        run_warning_action(display, "nowifi", dd.ACTION_DISMISS)
-        assert display.core.warnings.is_snoozed("nowifi")
+        run_warning_action(display, "nowifi", dd.ACTION_CLOSE)
+        assert is_closed(display, "nowifi")
         _fold(display)
         assert display._screen == "main"
         for _ in range(5):
@@ -8757,13 +8760,13 @@ class TestNoWifiStateMachine:
         on_network_view(display, _view(LINK_DOWN))
         assert display._screen_request == "nowifi"        # a fresh incident
 
-    def test_icon_tap_opens_despite_dismissal_and_is_inert_while_connected(self):
+    def test_icon_tap_opens_despite_close_and_is_inert_while_connected(self):
         display, fb = self._idle_display()
         on_network_view(display, _view(LINK_CONNECTED, bars=3))
         display.open_nowifi()
         assert display._screen_request is None
         on_network_view(display, _view(LINK_DOWN))
-        display.core.warnings.dismiss("nowifi")
+        close_warning(display, "nowifi")
         display.open_nowifi()
         assert display._screen_request == "nowifi"
         _fold(display)
@@ -8992,13 +8995,13 @@ class TestNoWifiStateMachine:
         _fold(display2)
         assert display2._screen == "nowifi"
         display2.warning_button_tap(TouchZone.NOWIFI_DISMISS)
-        assert display2.core.warnings.is_snoozed("nowifi")
+        assert is_closed(display2, "nowifi")
 
     def test_stale_warning_zone_with_no_page_falls_back_to_the_registry_owner(self):
         display, fb = self._idle_display()
         assert display._warning_screen is None
         display.warning_button_tap(TouchZone.NOWIFI_DISMISS)
-        assert display.core.warnings.is_snoozed("nowifi")
+        assert is_closed(display, "nowifi")
 
     def test_compact_page_paints(self):
         display, fb, gt = _make_compact_display(targets=[])
@@ -9019,8 +9022,8 @@ class TestNoWifiStateMachine:
 # ---------------------------------------------------------------------------
 
 class _Clock:
-    """A settable fake wall clock for the warning manager's snooze math:
-    pass `.now` as WarningManager's clock= and move `.t` directly."""
+    """A settable fake wall clock for the warning manager: pass `.now` as
+    WarningManager's clock= and move `.t` directly."""
 
     def __init__(self, t: float) -> None:
         self.t = t
@@ -9065,20 +9068,20 @@ class TestSdHealthStateMachine:
         assert display._screen == "sdhealth"
         assert display._screen_request is None
 
-    def test_stale_dismiss_zone_with_no_page_falls_back_to_the_registry_owner(self):
+    def test_stale_close_zone_with_no_page_falls_back_to_the_registry_owner(self):
         display, fb = self._idle_display()
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         assert display._warning_screen is None        # requested, not yet folded in
         display.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
-        assert display.core.warnings.is_snoozed("sdhealth")
+        assert is_closed(display, "sdhealth")
 
-    def test_dismiss_tap_requests_main(self):
+    def test_close_tap_requests_main(self):
         display, fb = self._idle_display()
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         _fold(display)
-        run_warning_action(display, "sdhealth", dd.ACTION_DISMISS)
+        run_warning_action(display, "sdhealth", dd.ACTION_CLOSE)
         assert display._screen_request == "main"
-        assert display.core.warnings.is_snoozed("sdhealth")
+        assert is_closed(display, "sdhealth")
 
     def test_recovered_view_closes_open_page_and_clears_latch(self):
         display, fb = self._idle_display()
@@ -9187,66 +9190,28 @@ class TestSdHealthStateMachine:
             with display._lock:
                 display._display_warning_locked()
         assert mock_compose.call_args.args[3].message == "17%: Replace Soon"
-        assert mock_compose.call_args.args[3].buttons == ("Dismiss",)
+        assert mock_compose.call_args.args[3].buttons == ("Close",)
 
-    def test_dismiss_then_wake_does_not_reshow(self):
+    def test_close_then_wake_does_not_reshow(self):
         display, fb = self._idle_display()
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         _fold(display)
-        run_warning_action(display, "sdhealth", dd.ACTION_DISMISS)
+        run_warning_action(display, "sdhealth", dd.ACTION_CLOSE)
         _fold(display)
         assert display._screen == "main"
         display.notify_touch_activity()
         _fold(display)
         assert display._screen == "main"
 
-    def test_snooze_expiry_reshows_via_the_tick(self):
-        clock = _Clock(1_000_000.0)
-        display, fb = self._idle_display(wall_clock=clock.now)
-        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
-        _fold(display)
-        run_warning_action(display, "sdhealth", dd.ACTION_DISMISS)
-        _fold(display)
-        assert display._screen == "main"
-        clock.t += 604801.0
-        tick_warnings(display)
-        assert display._screen_request == "sdhealth"
-
-    def test_recovered_reading_forgets_the_snooze(self):
+    def test_recovered_reading_forgets_the_close(self):
         display, fb = self._idle_display()
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         _fold(display)
-        run_warning_action(display, "sdhealth", dd.ACTION_DISMISS)
+        run_warning_action(display, "sdhealth", dd.ACTION_CLOSE)
         _fold(display)
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=26))
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=10))
         assert display._screen_request == "sdhealth"
-
-    def test_dismiss_is_written_by_the_tick_not_the_tap(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        warnings = WarningManager(WARNING_DESCRIPTORS, WarningStore(path))
-        display, fb = self._idle_display(warnings=warnings)
-        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
-        _fold(display)
-        run_warning_action(display, "sdhealth", dd.ACTION_DISMISS)
-        assert not Path(path).exists()
-        tick_warnings(display)
-        assert json.loads(Path(path).read_text(encoding="utf-8")).keys() == {"sdhealth"}
-
-    def test_persisted_snooze_suppresses_the_page_after_a_restart(self, tmp_path):
-        path = tmp_path / "w.json"
-        now = time.time()
-        path.write_text(json.dumps({"sdhealth": now + 604800.0}), encoding="utf-8")
-        warnings = WarningManager(WARNING_DESCRIPTORS, WarningStore(str(path)))
-        display, fb = self._idle_display(warnings=warnings)
-        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
-        assert display._screen_request is None
-
-        path.write_text(json.dumps({"sdhealth": now - 1.0}), encoding="utf-8")
-        warnings2 = WarningManager(WARNING_DESCRIPTORS, WarningStore(str(path)))
-        display2, fb2 = self._idle_display(warnings=warnings2)
-        on_sd_health_view(display2, _sd_view(STATUS_VALID, percent=15))
-        assert display2._screen_request == "sdhealth"
 
     def test_nowifi_outranks_sdhealth_when_both_become_due_at_once(self):
         display, fb = self._idle_display()
@@ -9262,18 +9227,6 @@ class TestSdHealthStateMachine:
         tick_warnings(display)
         _fold(display)
         assert display._screen == "nowifi"
-
-    def test_stop_flushes_the_store(self, tmp_path):
-        path = str(tmp_path / "w.json")
-        warnings = WarningManager(WARNING_DESCRIPTORS, WarningStore(path))
-        display, fb = self._idle_display(warnings=warnings)
-        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
-        _fold(display)
-        run_warning_action(display, "sdhealth", dd.ACTION_DISMISS)
-        assert not Path(path).exists()
-        display.stop()
-        assert json.loads(Path(path).read_text(encoding="utf-8")).keys() == {"sdhealth"}
-
 
 # ---------------------------------------------------------------------------
 # The boot splash: show_starting() opens the one backend and paints
@@ -9575,7 +9528,7 @@ class TestIdentifiedWithoutArtwork:
 
 # ---------------------------------------------------------------------------
 # Generic warning capabilities: title_for, progress_for, interrupting,
-# auto_clear_after_s and the button-less notice form, driven through rows
+# auto_clear_after_s and the button-less form, driven through rows
 # registered for the test only.
 # ---------------------------------------------------------------------------
 
@@ -9583,9 +9536,9 @@ def _notice_descriptor(**overrides):
     from dial_touch_layout import GEOMETRY_NONE
     from dial_warnings import WarningDescriptor
     fields = dict(
-        id="notice", priority=200, screen="notice", geometry=GEOMETRY_NONE,
-        title="Working", message_for=lambda sev: f"step {sev}", buttons=(),
-        persisted=False, snooze_for=None,
+        id="notice", kind=KIND_STATUS, priority=200, screen="notice", geometry=GEOMETRY_NONE,
+        title="Working", message_for=lambda sev: f"step {sev}", severity_for=lambda sev: "info",
+        buttons=(),
         title_for=lambda sev: f"Title {sev}", progress_for=lambda sev: sev * 10,
         interrupting=True, auto_clear_after_s=None,
     )
@@ -9603,7 +9556,7 @@ class TestGenericWarningCapabilities:
             notice = _notice_descriptor(**overrides)
             display, fb, gt = make_display(
                 targets=[],
-                warnings=WarningManager(WARNING_DESCRIPTORS + (notice,), WarningStore(None), clock=clock.now),
+                warnings=WarningManager(WARNING_DESCRIPTORS + (notice,), clock=clock.now),
             )
             for p in (
                 patch.dict(dd._WARNING_BY_ID, {notice.id: notice}),
@@ -9786,7 +9739,7 @@ class TestUpdateWarnings:
         clock = _Clock(1_000_000.0)
         display, fb, gt = make_display(
             targets=[],
-            warnings=WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=clock.now),
+            warnings=WarningManager(WARNING_DESCRIPTORS, clock=clock.now),
         )
         display.core.update_seen_path = str(tmp_path / "seen")
         display.core.update_watcher = UpdateWatcher(str(tmp_path / "update-result.env"))
@@ -9914,7 +9867,7 @@ class TestUpdateWarnings:
         assert display._screen == "update_result"
         assert not display.core.warnings.is_active("update")
         view = self._painted_view(display)
-        assert (view.title, view.message, view.buttons) == ("Updated", "Version 0.7.0", ("Dismiss",))
+        assert (view.title, view.message, view.buttons) == ("Updated", "Version 0.7.0", ("Close",))
         assert view.percent is None
         display.clock.t += dd.UPDATE_RESULT_SECONDS - 1
         tick_warnings(display)
@@ -9929,7 +9882,7 @@ class TestUpdateWarnings:
         _fold(display)
         assert display._screen == "main"
 
-    def test_result_card_dismiss_clears_it(self, rig):
+    def test_result_card_close_ends_the_status(self, rig):
         display = rig
         apply_update_view(display, self._finished())
         _fold(display)
@@ -9937,6 +9890,7 @@ class TestUpdateWarnings:
         display.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
         _fold(display)
         assert display._screen == "main"
+        assert not display.core.warnings.is_active("update_result")
         tick_warnings(display)
         _fold(display)
         assert display._screen == "main"
@@ -9989,7 +9943,7 @@ class TestUpdateWarnings:
         tick_update_watch(display)
         _fold(display)
         assert display._screen == "update"
-        assert display.core.warnings.severity("update").percent == 30
+        assert display.core.warnings.reading("update").percent == 30
         display._screen_request = "main"
         _fold(display)
         tick_update_watch(display)
@@ -10316,11 +10270,10 @@ class TestTapsCallTheCoreActions:
             display.eq_step("treble", -1)
         action.assert_called_once_with(aid, "treble", -1)
 
-    def test_warning_buttons_call_dismiss_and_reboot(self):
+    def test_warning_buttons_close_in_the_view_and_call_reboot(self):
         display = TestNoWifiStateMachine()._idle_display()[0]
-        with self._core_action(display, "dismiss_warning") as action:
-            display.warning_button_tap(TouchZone.NOWIFI_DISMISS)
-        action.assert_called_once_with("nowifi")
+        display.warning_button_tap(TouchZone.NOWIFI_DISMISS)
+        assert is_closed(display, "nowifi")
         with patch.object(display._core, "request_dial_reboot", return_value=True) as action:
             display.warning_button_tap(TouchZone.NOWIFI_RESTART)
         action.assert_called_once_with()
@@ -10342,20 +10295,17 @@ def _app_key(wid="stylus"):
 
 class TestApplianceWarningPaging:
     @pytest.fixture
-    def rig(self, tmp_path):
+    def rig(self):
         clock = _Clock(1_000_000.0)
         display, fb, gt = make_display(
             targets=[], roster=[_roster_entry(auth="authorized", appliance_id=_APP_AID)],
-            warnings=WarningManager(
-                WARNING_DESCRIPTORS, WarningStore(str(tmp_path / "warnings.json")), clock=clock.now,
-            ),
+            warnings=WarningManager(WARNING_DESCRIPTORS, clock=clock.now),
         )
         display.enable()
         display._poll_once()
         _fold(display)
         display.clock = clock
         display.fb = fb
-        display.snooze_file = tmp_path / "warnings.json"
         return display
 
     @staticmethod
@@ -10377,7 +10327,7 @@ class TestApplianceWarningPaging:
         return mock_compose.call_args.args[3]
 
     @staticmethod
-    def _dismiss(display):
+    def _close(display):
         display.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
         _fold(display)
 
@@ -10392,13 +10342,13 @@ class TestApplianceWarningPaging:
         assert display._warning_screen.warning_id == _app_key()
         assert display.touch_surface() == ("appliance_warning", False, False, False)
 
-    def test_the_page_shows_the_appliance_text_with_its_source_and_one_dismiss(self, rig):
+    def test_the_page_shows_the_appliance_text_with_its_source_and_one_close(self, rig):
         display = rig
         self._set(display, _app_warning(title="Technics stylus", message="Needs changing soon."))
         self._page(display)
         view = self._painted_view(display)
         assert (view.title, view.message, view.source) == ("Technics stylus", "Needs changing soon.", "Kitchen")
-        assert view.buttons == ("Dismiss",) and view.geometry == "sdhealth"
+        assert view.buttons == ("Close",) and view.geometry == "sdhealth"
 
     def test_a_dial_warning_view_has_no_source(self, rig):
         display = rig
@@ -10437,7 +10387,7 @@ class TestApplianceWarningPaging:
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         _fold(display)
         assert display._screen == "sdhealth"
-        self._dismiss(display)
+        self._close(display)
         assert display._screen == "main"
         tick_warnings(display)
         _fold(display)
@@ -10451,12 +10401,12 @@ class TestApplianceWarningPaging:
         assert display._screen_request is None
         _fold(display)
         assert display._screen == "appliance_warning"
-        self._dismiss(display)
+        self._close(display)
         tick_warnings(display)
         _fold(display)
         assert display._screen == "sdhealth"
 
-    def test_appliance_warnings_page_by_severity_one_dismiss_at_a_time(self, rig):
+    def test_appliance_warnings_page_by_severity_one_close_at_a_time(self, rig):
         display = rig
         self._set(
             display, _app_warning("a", "info", "Info one"), _app_warning("c", "critical", "Critical one"),
@@ -10466,32 +10416,31 @@ class TestApplianceWarningPaging:
         for _ in range(3):
             self._page(display)
             shown.append(display._warning_screen.warning_id)
-            self._dismiss(display)
+            self._close(display)
             assert display._screen == "main"
         assert shown == [_app_key("c"), _app_key("b"), _app_key("a")]
         self._page(display)
         assert display._screen == "main"
 
-    def test_a_dismiss_snoozes_a_day_and_the_page_returns_after_it(self, rig):
+    def test_a_close_keeps_the_page_away_until_the_incident_ends(self, rig):
         display = rig
         self._set(display, _app_warning())
         self._page(display)
-        self._dismiss(display)
-        display.core.flush_warnings()
-        assert json.loads(display.snooze_file.read_text())[_app_key()] == pytest.approx(
-            display.clock.t + 86400.0)
-        display.clock.t += 86399.0
+        self._close(display)
+        display.clock.t += 30 * 86400.0
         self._page(display)
         assert display._screen == "main"
-        display.clock.t += 2.0
+        self._set(display)
+        self._page(display)
+        self._set(display, _app_warning())
         self._page(display)
         assert display._screen == "appliance_warning"
 
-    def test_escalation_keeps_a_snooze_so_the_page_stays_away(self, rig):
+    def test_escalation_keeps_the_close_so_the_page_stays_away(self, rig):
         display = rig
         self._set(display, _app_warning(severity="warning"))
         self._page(display)
-        self._dismiss(display)
+        self._close(display)
         self._set(display, _app_warning(severity="critical"))
         from dial_warning_text import APPLIANCE_WARNING_PRIORITY
         assert display.core.warnings.descriptor(_app_key()).priority == APPLIANCE_WARNING_PRIORITY["critical"]
@@ -10538,19 +10487,18 @@ class TestApplianceWarningPaging:
         _fold(display)
         assert display._screen == "main"
 
-    def test_the_tap_dismisses_the_warning_on_screen_not_the_first_row_with_that_zone(self, rig):
+    def test_the_tap_closes_the_warning_on_screen_not_the_first_row_with_that_zone(self, rig):
         display = rig
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         _fold(display)
-        self._dismiss(display)
-        until = display.core.warnings._state["sdhealth"].dismissed_until
-        display.clock.t += 60.0
+        self._close(display)
+        closed = display._closed_warnings
+        assert closed == {"sdhealth"}
         self._set(display, _app_warning())
         self._page(display)
         assert display._screen == "appliance_warning"
-        self._dismiss(display)
-        assert display.core.warnings.is_snoozed(_app_key())
-        assert display.core.warnings._state["sdhealth"].dismissed_until == until
+        self._close(display)
+        assert display._closed_warnings == closed | {_app_key()}
 
     def test_two_appliances_with_the_same_warning_id_page_separately(self, rig):
         display = rig
@@ -10566,10 +10514,59 @@ class TestApplianceWarningPaging:
             self._page(display)
             assert display._screen == "appliance_warning"
             sources.append(self._painted_view(display).source)
-            self._dismiss(display)
+            self._close(display)
         assert sorted(sources) == ["Kitchen", "Lounge"]
         self._page(display)
         assert display._screen == "main"
+
+
+class TestDialUpdateWarning:
+    @pytest.fixture
+    def rig(self):
+        display, fb, gt = make_display(targets=[])
+        display.enable()
+        display._poll_once()
+        _fold(display)
+        return display
+
+    def _raise(self, display, *names):
+        display.core.warning_active("update_dial", tuple(names))
+        tick_warnings(display)
+        _fold(display)
+
+    def test_it_opens_its_own_page_naming_the_appliances(self, rig):
+        display = rig
+        self._raise(display, "Lounge", "Kitchen")
+        assert display._screen == "update_dial"
+        assert display.touch_surface() == ("update_dial", False, False, False)
+        with patch.object(
+            display._compositor, "compose_warning", wraps=display._compositor.compose_warning,
+        ) as mock_compose:
+            with display._lock:
+                display._display_warning_locked()
+        view = mock_compose.call_args.args[3]
+        assert (view.title, view.message, view.buttons, view.source) == (
+            "Update this dial", "Lounge, Kitchen need a newer dial", ("Close",), "")
+
+    def test_close_puts_it_away_until_the_appliances_have_gone_and_it_comes_back(self, rig):
+        display = rig
+        self._raise(display, "Lounge")
+        display.warning_button_tap(TouchZone.SDHEALTH_DISMISS)
+        _fold(display)
+        assert display._screen == "main" and is_closed(display, "update_dial")
+        tick_warnings(display)
+        assert display._screen_request is None
+        warning_cleared(display, "update_dial")
+        assert not is_closed(display, "update_dial")
+        self._raise(display, "Lounge")
+        assert display._screen == "update_dial"
+
+    def test_a_sleeping_panel_is_not_woken(self, rig):
+        display = rig
+        with display._lock:
+            display._sleep_locked()
+        self._raise(display, "Lounge")
+        assert display._display_sleeping and display._screen == "main"
 
 
 _TIER_PANELS = {

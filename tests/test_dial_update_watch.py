@@ -175,4 +175,4 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     for view in result_views:
         assert fits(update_result.title_for(view), readout_font, result_w), view
         assert fits(update_result.message_for(view), body_font, result_w), view
-    assert fits(dd.UPDATE_RESULT_DISMISS_TEXT, body_font, cell_w)
+    assert fits(dd.UPDATE_RESULT_CLOSE_TEXT, body_font, cell_w)

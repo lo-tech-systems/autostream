@@ -48,7 +48,7 @@ from dial_test_support import (
     MONOTONIC_TARGETS, FakeBackend, _FakeClock, attach_bridge, on_eq_result, on_outputs_result,
     seed_repeat, set_appliance_warnings, set_roster,
 )
-from dial_warnings import WarningManager, WarningStore
+from dial_warnings import WarningManager
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 GOLDEN_PATH = GOLDEN_DIR / "dial_screen_traces.json"
@@ -190,7 +190,7 @@ class _Ctx:
         # The warning manager's own clock is the same fake clock the
         # "advance" step moves, kept in memory only (no state file):
         # every scenario is fully deterministic and self-contained.
-        warnings = WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=self.clock)
+        warnings = WarningManager(WARNING_DESCRIPTORS, clock=self.clock)
         self.display, self.fb, self.gt = _make_display(
             targets, self._get_roster, cfg=cfg, backend=backend, warnings=warnings,
         )
@@ -267,10 +267,9 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d._tick_repeat_line()
     elif kind == "tick_warnings":
         # The core's warning housekeeping, then the view's own tick that
-        # raises a warning whose snooze has just run out.
+        # raises a warning that was due while another page was up.
         d._apply_source_effects(d.core.expire_warnings())
         d._tick_due_warning()
-        d.core.flush_warnings()
     elif kind == "advance":
         ctx.clock.t += step[1]
     elif kind == "enable":
@@ -330,7 +329,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "open_nowifi":
         d.open_nowifi()
     elif kind == "nowifi_dismiss":
-        d._run_warning_action(dd._WARNING_BY_ID["nowifi"], dd.ACTION_DISMISS)
+        d._run_warning_action(dd._WARNING_BY_ID["nowifi"], dd.ACTION_CLOSE)
     elif kind == "nowifi_restart":
         d._run_warning_action(dd._WARNING_BY_ID["nowifi"], dd.ACTION_RESTART)
     elif kind == "tick_wifi_flash":
@@ -343,7 +342,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         d.core.on_sd_health_view(SdHealthView(status=status, percent=percent, updated_at=ctx.clock.t))
         d._drain_effects()
     elif kind == "sdhealth_dismiss":
-        d._run_warning_action(dd._WARNING_BY_ID["sdhealth"], dd.ACTION_DISMISS)
+        d._run_warning_action(dd._WARNING_BY_ID["sdhealth"], dd.ACTION_CLOSE)
     elif kind == "appliance_warnings":
         # ("appliance_warnings", appliance_id, [(id, severity, title,
         # message), ...]) -- the validated set the appliance's
@@ -416,8 +415,8 @@ def _snapshot(ctx: _Ctx) -> dict:
     # Present only once an appliance has registered a warning, so a scenario
     # that never involves one records exactly the fields it always did.
     appliance_rows = {
-        wid: [active, snoozed_until is not None]
-        for wid, active, _severity, _since, snoozed_until in d.core.warnings.runtime()
+        wid: [active, wid in d._closed_warnings]
+        for wid, active, _reading, _since in d.core.warnings.runtime()
         if wid.startswith("appliance:")
     }
     appliance_extra = {} if not appliance_rows else {
@@ -465,7 +464,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "network": None if network is None else {
             "link": network.link, "bars": network.bars,
             "down_streak": d.core.wifi_down_streak(),
-            "dismissed": d.core.warnings.is_snoozed("nowifi"),
+            "closed": "nowifi" in d._closed_warnings,
             "ever_connected": core_snap.wifi_ever_connected,
         },
         "nowifi_open": d._warning_screen is not None and d._warning_screen.warning_id == "nowifi",
@@ -1742,7 +1741,7 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
-    add("sdhealth_dismiss_then_wake_stays_snoozed", [
+    add("sdhealth_close_then_wake_stays_closed", [
         ("targets", []),
         ("poll",),
         ("sd_health_view", STATUS_VALID, 15),
@@ -1752,30 +1751,6 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("sleep_locked",),
         ("repaint",),
         ("notify_touch_activity",),
-        ("repaint",),
-    ])
-
-    add("sdhealth_snooze_expires_and_reshows", [
-        ("targets", []),
-        ("poll",),
-        ("sd_health_view", STATUS_VALID, 15),
-        ("repaint",),
-        ("sdhealth_dismiss",),
-        ("repaint",),
-        ("advance", 604801.0),
-        ("tick_warnings",),
-        ("repaint",),
-    ])
-
-    add("sdhealth_critical_snooze_is_one_day", [
-        ("targets", []),
-        ("poll",),
-        ("sd_health_view", STATUS_VALID, 2),
-        ("repaint",),
-        ("sdhealth_dismiss",),
-        ("repaint",),
-        ("advance", 86401.0),
-        ("tick_warnings",),
         ("repaint",),
     ])
 
@@ -1815,15 +1790,17 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
 
     # An appliance's warnings page below every warning of the dial's own:
     # the SD card warning shows first, then the critical stylus warning,
-    # then the belt warning. The day's snooze runs out and both return.
+    # then the belt warning. Time alone brings none of them back; a new
+    # incident of one shows again.
     aid = _aid("aw1")
     lounge = _idle_row("Lounge", aid)
+    stylus = ("stylus_in1", "critical", "Technics stylus", "Needs changing now.")
     add("appliance_warning_pages_below_sdhealth", [
         ("roster", [lounge]),
         ("poll",),
         ("repaint",),
         ("appliance_warnings", aid, [
-            ("stylus_in1", "critical", "Technics stylus", "Needs changing now."),
+            stylus,
             ("belt_in1", "warning", "Drive belt", "Service due soon."),
         ]),
         ("sd_health_view", STATUS_VALID, 12),
@@ -1835,14 +1812,19 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("appliance_tap",),
         ("repaint",),
         ("tick_warnings",),
-        ("repaint",),               # the next one follows the Dismiss
+        ("repaint",),               # the next one follows the Close
         ("appliance_tap",),
         ("repaint",),
         ("tick_warnings",),
         ("repaint",),               # nothing left
         ("advance", 86401.0),
         ("tick_warnings",),
-        ("repaint",),               # the day's snooze is over
+        ("repaint",),               # nothing comes back with time
+        ("appliance_warnings", aid, []),
+        ("tick_warnings",),
+        ("appliance_warnings", aid, [stylus]),
+        ("tick_warnings",),
+        ("repaint",),               # a new incident shows again
         ("appliance_tap",),
         ("repaint",),
     ])

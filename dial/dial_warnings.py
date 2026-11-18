@@ -1,46 +1,40 @@
 """dial_warnings.py: the dial's on-screen warning framework.
 
-A warning is described once (WarningDescriptor: identity, priority, the
-screen and touch geometry it paints with, its text, its buttons and how a
-Dismiss is remembered) and driven by a source that calls set_active() and
-clear() on the manager. The manager keeps the per-warning runtime state
-(active, severity, dismissed_until), decides which warning is due (the
-highest-priority one that is active and not snoozed), applies the dismiss
-policy, and persists time snoozes through WarningStore so a dismissed
-warning stays dismissed across a restart.
+A warning is described once (WarningDescriptor: identity, kind, priority,
+the screen and touch geometry it paints with, its text and its buttons) and
+driven by a source that calls set_active() and clear() on the manager. The
+manager keeps the per-warning runtime state (active, reading, since when)
+and decides which status screen is due (the highest-priority active one) and
+which warning a view would open by itself.
 
 Pure: no hardware, no drawing, no threads of its own. The display manager
 owns one WarningManager and is the only caller that turns "due" into a
-screen request. The store never raises: a missing or unreadable file reads
-as nothing dismissed, and a failed write degrades to an in-memory snooze
-that resets on restart.
+screen request.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import json
-import logging
-import math
-import os
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from dial_touch_layout import TouchZone
 
-WARNINGS_PATH = "/var/lib/autostream/dial-warnings.json"
-
-# Button actions. Dismiss applies the descriptor's snooze policy and closes
-# the page; Restart shows the restarting screen and asks for the reboot.
-ACTION_DISMISS = "dismiss"
+# Button actions. Close puts a warning card away in the view that shows it
+# (and, for a status card, ends the status); Restart shows the restarting
+# screen and asks for the reboot.
+ACTION_CLOSE = "close"
 ACTION_RESTART = "restart"
 
+# The two kinds of descriptor. A warning is a condition a person may want to
+# know about and can set aside; a status is what the dial is doing right now
+# (an update running or finished) and opens by itself.
+KIND_WARNING = "warning"
+KIND_STATUS = "status"
+
 # Warnings an appliance supplies are registered at run time under keys that
-# start with this prefix (then the appliance id), so a persisted snooze for
-# one is kept across a restart until its appliance reports it again.
+# start with this prefix (then the appliance id).
 APPLIANCE_WARNING_PREFIX = "appliance:"
 
 
@@ -58,41 +52,40 @@ class WarningButton:
 class WarningDescriptor:
     """Everything the framework needs to know about one warning.
 
-    id: the key sources, the store and the runtime state use.
+    id: the key sources and the runtime state use.
+    kind: KIND_WARNING or KIND_STATUS.
     priority: higher wins when more than one warning is due at once, and
       a lower-priority page never opens over a higher one.
     screen: the screen-policy row name, which is also the touch surface.
     geometry: the touch geometry the page's cells are laid out with.
-    title: the readout-size line. message_for(severity) -> the body-size
-      line under it, or None for a single centred line.
+    title: the readout-size line. message_for(reading) -> the body-size
+      line under it, or None for a single centred line. The reading is
+      what the source reported when it set the warning active.
+    severity_for(reading) -> "info", "warning" or "critical".
     buttons: left to right, in geometry order.
-    persisted: whether a finite dismissed_until is written to the store.
-    snooze_for(severity) -> seconds, or None for an incident-scoped
-      dismiss (suppressed until the source clears the warning).
-    title_for(severity) -> the readout-size line, replacing `title` when
-      set (a page whose heading depends on its severity).
-    progress_for(severity) -> a percent 0..100 drawn as a bar under the
+    title_for(reading) -> the readout-size line, replacing `title` when
+      set (a page whose heading depends on its reading).
+    progress_for(reading) -> a percent 0..100 drawn as a bar under the
       message, or None for no bar.
     interrupting: the page may open over a secondary screen, and a source
       activating it wakes a sleeping panel. Priority still decides which
-      warning shows.
+      status shows. Always False for a warning.
     auto_clear_after_s: the manager reports the warning expired once it
       has been active this long, and the display clears it like a source
       would. None: only the source clears it.
     source_name: who the warning is attributed to (an appliance warning
       carries its appliance's name); "" for the dial's own.
-    A warning with no buttons is a notice: it cannot be dismissed and its
-    page is touch-inert.
+    A descriptor with no buttons has a touch-inert page.
     """
     id: str
+    kind: str
     priority: int
     screen: str
     geometry: str
     title: str
     message_for: "object | None"
+    severity_for: "object"
     buttons: tuple[WarningButton, ...]
-    persisted: bool
-    snooze_for: "object | None"
     title_for: "object | None" = None
     progress_for: "object | None" = None
     interrupting: bool = False
@@ -106,105 +99,24 @@ class WarningDescriptor:
         return None
 
 
-class WarningStore:
-    """The dismissed_until map on disk: {"<id>": <epoch seconds>}.
-
-    path=None keeps everything in memory (tests, or a deliberate opt-out).
-    load() and save() never raise. The first save creates the file; the
-    directory is the dial's own state directory, owned by the service
-    user, so no install step is needed."""
-
-    def __init__(self, path: "str | None" = WARNINGS_PATH) -> None:
-        self._path = Path(path) if path else None
-        self._save_failed_logged = False
-
-    @property
-    def path(self) -> "Path | None":
-        return self._path
-
-    def load(self) -> dict[str, float]:
-        if self._path is None:
-            return {}
-        try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        except Exception:
-            logging.warning("dial warnings: state file unreadable, treating as empty")
-            return {}
-        if not isinstance(raw, dict):
-            return {}
-        out: dict[str, float] = {}
-        for key, value in raw.items():
-            if isinstance(key, str) and isinstance(value, (int, float)) and math.isfinite(value):
-                out[key] = float(value)
-        return out
-
-    def save(self, until: dict[str, float]) -> bool:
-        if self._path is None:
-            return True
-        try:
-            fd, tmp_path = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(until, f, indent=2, sort_keys=True)
-                    f.flush()
-                    os.fsync(f.fileno())
-                Path(tmp_path).replace(self._path)
-            except BaseException:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-            return True
-        except Exception:
-            if not self._save_failed_logged:
-                self._save_failed_logged = True
-                logging.warning("dial warnings: cannot write state file, snoozes will not survive a restart")
-            else:
-                logging.debug("dial warnings: state write failed", exc_info=True)
-            return False
-
-
 @dataclass
 class _WarningRuntime:
     active: bool = False
-    severity: object = None
-    dismissed_until: "float | None" = None   # None: not dismissed; inf: until the source clears
+    reading: object = None
     active_since: "float | None" = None      # when the current incident began; None while inactive
 
 
 class WarningManager:
-    """Runtime state for every registered warning, the due rule, the
-    dismiss policy and the persistence handshake. Thread-safe through one
-    leaf lock that is never held across I/O or a call out."""
+    """Runtime state for every registered warning and the due rules.
+    Thread-safe through one leaf lock that is never held across a call
+    out."""
 
-    def __init__(self, descriptors, store: WarningStore, clock=time.time) -> None:
+    def __init__(self, descriptors, clock=time.time) -> None:
         self._by_id: dict[str, WarningDescriptor] = {d.id: d for d in descriptors}
         self._order: tuple[str, ...] = tuple(d.id for d in descriptors)
-        self._store = store
         self._clock = clock
         self._lock = threading.Lock()
         self._state: dict[str, _WarningRuntime] = {wid: _WarningRuntime() for wid in self._by_id}
-        self._dirty = False
-        # Snoozes loaded for appliance warnings that are not registered yet:
-        # held (and written back) until the warning is registered or the
-        # snooze runs out, so a restart does not forget them.
-        self._parked: dict[str, float] = {}
-        now = clock()
-        loaded = store.load()
-        for wid, until in loaded.items():
-            desc = self._by_id.get(wid)
-            if desc is None and wid.startswith(APPLIANCE_WARNING_PREFIX) and until > now:
-                self._parked[wid] = until
-                continue
-            if desc is None or not desc.persisted or until <= now:
-                # An expired, unknown or non-persisted entry is pruned;
-                # the next flush writes the pruned map back.
-                self._dirty = True
-                continue
-            self._state[wid].dismissed_until = until
 
     # ---- descriptors ----------------------------------------------------
 
@@ -229,8 +141,7 @@ class WarningManager:
 
     def register(self, descriptor: WarningDescriptor) -> None:
         """Add a warning at run time, or replace the descriptor of one that
-        is registered (its runtime state is kept). A parked snoozed
-        dismissal for the id is picked up by a new registration."""
+        is registered (its runtime state is kept)."""
         with self._lock:
             wid = descriptor.id
             if wid in self._by_id:
@@ -238,46 +149,30 @@ class WarningManager:
                 return
             self._by_id[wid] = descriptor
             self._order = self._order + (wid,)
-            state = _WarningRuntime()
-            self._state[wid] = state
-            until = self._parked.pop(wid, None)
-            if until is not None and descriptor.persisted and until > self._clock():
-                state.dismissed_until = until
-            elif until is not None:
-                self._dirty = True
+            self._state[wid] = _WarningRuntime()
 
     def unregister(self, warning_id: str) -> None:
         """Remove a run-time warning: its incident ends like a source's
-        clear (any dismissal forgotten, in memory and on disk) and the
-        descriptor goes."""
+        clear and the descriptor goes."""
         with self._lock:
-            state = self._state.pop(warning_id, None)
-            desc = self._by_id.pop(warning_id, None)
+            self._state.pop(warning_id, None)
+            self._by_id.pop(warning_id, None)
             self._order = tuple(wid for wid in self._order if wid != warning_id)
-            if self._parked.pop(warning_id, None) is not None:
-                self._dirty = True
-            if state is not None and desc is not None and desc.persisted \
-                    and state.dismissed_until is not None:
-                self._dirty = True
 
     def runtime(self) -> tuple:
         """Every registered warning's runtime state, in registry order, as
-        (id, active, severity, active_since, snoozed_until) tuples; the last
-        is None unless a dismissal is still in force (inf: until the source
-        clears the warning)."""
+        (id, active, reading, active_since) tuples."""
         with self._lock:
-            now = self._clock()
             return tuple(
-                (wid, s.active, s.severity, s.active_since,
-                 s.dismissed_until if s.dismissed_until is not None and now < s.dismissed_until else None)
+                (wid, s.active, s.reading, s.active_since)
                 for wid in self._order
                 for s in (self._state[wid],)
             )
 
     # ---- source API -------------------------------------------------------
 
-    def set_active(self, warning_id: str, severity=None) -> bool:
-        """Report the condition present. A repeat refreshes the severity
+    def set_active(self, warning_id: str, reading=None) -> bool:
+        """Report the condition present. A repeat refreshes the reading
         and keeps the incident's start time. Returns True when this call
         began a new incident (it was inactive), False for a refresh or an
         unknown id."""
@@ -289,38 +184,18 @@ class WarningManager:
             if began:
                 state.active_since = self._clock()
             state.active = True
-            state.severity = severity
+            state.reading = reading
             return began
 
     def clear(self, warning_id: str) -> None:
-        """End the incident: inactive, any dismissal forgotten (memory and
-        file), so the next incident starts clean."""
+        """End the incident: inactive, so the next one starts clean."""
         with self._lock:
             state = self._state.get(warning_id)
             if state is None:
                 return
             state.active = False
-            state.severity = None
+            state.reading = None
             state.active_since = None
-            if state.dismissed_until is not None:
-                state.dismissed_until = None
-                if self._by_id[warning_id].persisted:
-                    self._dirty = True
-
-    # ---- dismiss policy -----------------------------------------------------
-
-    def dismiss(self, warning_id: str) -> None:
-        with self._lock:
-            desc = self._by_id.get(warning_id)
-            state = self._state.get(warning_id)
-            if desc is None or state is None:
-                return
-            if desc.snooze_for is None:
-                state.dismissed_until = math.inf
-            else:
-                state.dismissed_until = self._clock() + float(desc.snooze_for(state.severity))
-                if desc.persisted:
-                    self._dirty = True
 
     # ---- queries --------------------------------------------------------------
 
@@ -329,17 +204,10 @@ class WarningManager:
             state = self._state.get(warning_id)
             return bool(state and state.active)
 
-    def is_snoozed(self, warning_id: str, now: "float | None" = None) -> bool:
-        if now is None:
-            now = self._clock()
+    def reading(self, warning_id: str):
         with self._lock:
             state = self._state.get(warning_id)
-            return bool(state and state.dismissed_until is not None and now < state.dismissed_until)
-
-    def severity(self, warning_id: str):
-        with self._lock:
-            state = self._state.get(warning_id)
-            return state.severity if state else None
+            return state.reading if state else None
 
     def expired(self, now: "float | None" = None) -> list[str]:
         """The ids of active warnings whose auto_clear_after_s has run
@@ -357,42 +225,23 @@ class WarningManager:
                     out.append(wid)
         return out
 
-    def due(self, now: "float | None" = None) -> "WarningDescriptor | None":
-        """The highest-priority warning that is active and not snoozed, or
-        None. Ties keep registry order."""
-        if now is None:
-            now = self._clock()
+    def due_status(self) -> "WarningDescriptor | None":
+        """The highest-priority active status descriptor, or None. Ties keep
+        registry order."""
+        return self._due(KIND_STATUS, ())
+
+    def due_warning(self, closed=()) -> "WarningDescriptor | None":
+        """The highest-priority active warning that is not among the ids in
+        *closed*, or None. Ties keep registry order."""
+        return self._due(KIND_WARNING, closed)
+
+    def _due(self, kind: str, closed) -> "WarningDescriptor | None":
         best: "WarningDescriptor | None" = None
         with self._lock:
             for wid in self._order:
-                state = self._state[wid]
-                if not state.active:
-                    continue
-                if state.dismissed_until is not None and now < state.dismissed_until:
+                if not self._state[wid].active or wid in closed:
                     continue
                 desc = self._by_id[wid]
-                if best is None or desc.priority > best.priority:
+                if desc.kind == kind and (best is None or desc.priority > best.priority):
                     best = desc
         return best
-
-    # ---- persistence ------------------------------------------------------------
-
-    def flush(self) -> None:
-        """Write the persisted snoozes if anything changed since the last
-        write. The snapshot is taken under the lock; the write is not."""
-        with self._lock:
-            if not self._dirty:
-                return
-            self._dirty = False
-            snapshot = {
-                wid: state.dismissed_until
-                for wid, state in self._state.items()
-                if self._by_id[wid].persisted
-                and state.dismissed_until is not None
-                and math.isfinite(state.dismissed_until)
-            }
-            now = self._clock()
-            for wid in [w for w, until in self._parked.items() if until <= now]:
-                del self._parked[wid]
-            snapshot.update(self._parked)
-        self._store.save(snapshot)

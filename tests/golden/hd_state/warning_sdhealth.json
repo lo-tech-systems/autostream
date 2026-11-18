@@ -39,10 +39,12 @@
   "outputs_request": null,
   "start_failure": null,
   "warnings": {
-    "due": "sdhealth",
+    "due": null,
     "cards": [
       {
         "id": "sdhealth",
+        "kind": "warning",
+        "since": 1699999970.0,
         "severity": "warning",
         "title": "microSD Health",
         "message": "6%: Replace Soon",
@@ -50,12 +52,11 @@
         "source": "",
         "buttons": [
           {
-            "label": "Dismiss",
-            "action": "dismiss"
+            "label": "Close",
+            "action": "close"
           }
         ],
-        "interrupting": false,
-        "snoozed": false
+        "interrupting": false
       }
     ]
   },

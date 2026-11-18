@@ -19,7 +19,7 @@ from autostream_peer_client import PeerReply, PeerSnapshot  # noqa: E402
 from autostream_peer_registry import Sighting  # noqa: E402
 from dial_core import CoreIO, DialCore  # noqa: E402
 from dial_warning_text import WARNING_DESCRIPTORS  # noqa: E402
-from dial_warnings import WarningManager, WarningStore  # noqa: E402
+from dial_warnings import WarningManager  # noqa: E402
 
 DIAL_ID = "dial-uuid"
 
@@ -167,7 +167,7 @@ class Rig:
         )
         self.core = DialCore(
             DIAL_ID, clock=clock or (lambda: self.t), io=self.io,
-            warnings=WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=time.time),
+            warnings=WarningManager(WARNING_DESCRIPTORS, clock=time.time),
         )
         self.core.attach_pool(self.pool, self.registry)
         if start_lane:

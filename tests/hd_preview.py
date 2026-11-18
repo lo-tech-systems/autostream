@@ -87,8 +87,8 @@ class HdPreview:
             SimpleNamespace(), self.core, http_server=self.management, hub=self.hub, port=port,
             panel=self.panel, info_fn=lambda: FakePanel.INFO_ROWS, dev_port=dev_port,
             **({} if static_root is None else {"static_root": static_root}),
-            # The scenarios carry fixed readings, so the server reads fixed clocks.
-            clock=lambda: self.dial_clock[0], wall_clock=lambda: hd_scenarios.WALL_NOW,
+            # The scenarios carry fixed readings, so the server reads a fixed clock.
+            clock=lambda: self.dial_clock[0],
         )
         self.url = f"http://127.0.0.1:{self.server.port}"
         self._first_screen = {k: v for k, v in self.management.screen_report().items() if k != "surface"}

@@ -116,12 +116,12 @@ from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFo
 
 from dial_display_image import transform_artwork_for_panel
 from dial_warning_text import (
-    NOWIFI_DISMISS_TEXT,
+    NOWIFI_CLOSE_TEXT,
     NOWIFI_MESSAGE_TEXT,
     NOWIFI_RESTART_TEXT,
     SDHEALTH_BODY_TEXT,
     SDHEALTH_BODY_TEXT_NO_PERCENT,
-    SDHEALTH_DISMISS_TEXT,
+    SDHEALTH_CLOSE_TEXT,
     SDHEALTH_TITLE_TEXT,
 )
 from dial_touch_layout import (
@@ -1145,7 +1145,7 @@ class DialDisplayCompositor:
             base, width, height,
             WarningView(
                 title=NOWIFI_MESSAGE_TEXT, message="",
-                buttons=(NOWIFI_DISMISS_TEXT, NOWIFI_RESTART_TEXT),
+                buttons=(NOWIFI_CLOSE_TEXT, NOWIFI_RESTART_TEXT),
                 geometry=GEOMETRY_NOWIFI, pressed=view.pressed,
             ),
             rotate=rotate, bgr=bgr, metrics=metrics,
@@ -1156,7 +1156,7 @@ class DialDisplayCompositor:
         metrics: LayoutMetrics | None = None,
     ):
         """The SD card warning as a warning frame: the fixed title over a
-        body line carrying the percent, and one Dismiss cell. Kept for
+        body line carrying the percent, and one Close cell. Kept for
         existing direct callers/tests."""
         line = (
             SDHEALTH_BODY_TEXT.format(percent=view.percent)
@@ -1165,7 +1165,7 @@ class DialDisplayCompositor:
         return self.compose_warning(
             base, width, height,
             WarningView(
-                title=SDHEALTH_TITLE_TEXT, message=line, buttons=(SDHEALTH_DISMISS_TEXT,),
+                title=SDHEALTH_TITLE_TEXT, message=line, buttons=(SDHEALTH_CLOSE_TEXT,),
                 geometry=GEOMETRY_SDHEALTH, pressed=view.pressed,
             ),
             rotate=rotate, bgr=bgr, metrics=metrics,

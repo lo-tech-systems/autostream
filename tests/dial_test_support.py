@@ -26,7 +26,7 @@ from dial_config import DialDisplayConfig
 from dial_display import WARNING_DESCRIPTORS, DialDisplay
 from dial_display_profiles import DEFAULT_PROFILE_KEY
 from dial_mdns import PlayingTarget, RosterEntry
-from dial_warnings import WarningManager, WarningStore
+from dial_warnings import WarningManager
 
 
 @dataclasses.dataclass(frozen=True)
@@ -465,7 +465,7 @@ def make_display(
         logo_path=TEST_LOGO_PATH,
         backend_factory=lambda: fb,
         backend_factory_builder=backend_factory_builder,
-        warnings=warnings or WarningManager(WARNING_DESCRIPTORS, WarningStore(None), clock=wall_clock or time.time),
+        warnings=warnings or WarningManager(WARNING_DESCRIPTORS, clock=wall_clock or time.time),
     )
     attach_bridge(display, gt, gr)
     return display, fb, gt
@@ -646,10 +646,9 @@ def warning_cleared(display, warning_id) -> None:
 
 def tick_warnings(display) -> None:
     """The core's warning housekeeping run by hand, then the view's own tick
-    that raises a warning whose snooze has just run out."""
+    that raises a warning that was due while another page was up."""
     display._apply_source_effects(display.core.expire_warnings())
     display._tick_due_warning()
-    display.core.flush_warnings()
 
 
 def tick_update_watch(display) -> None:
@@ -705,8 +704,17 @@ def set_eq_optimistic(display, value) -> None:
     display.core.set_eq_override(pairs, expires_at)
 
 
+def close_warning(display, warning_id) -> None:
+    """Put a warning's card away in the view, as a Close does."""
+    display._closed_warnings = display._closed_warnings | {warning_id}
+
+
+def is_closed(display, warning_id) -> bool:
+    return warning_id in display._closed_warnings
+
+
 def run_warning_action(display, warning_id, action) -> None:
-    """Run a warning page's button action (Dismiss or Restart) as a tap on
+    """Run a warning page's button action (Close or Restart) as a tap on
     its cell does."""
     import dial_display as dd
     display._run_warning_action(dd._WARNING_BY_ID[warning_id], action)

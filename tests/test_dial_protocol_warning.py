@@ -42,13 +42,24 @@ class TestProtocolWarning:
         assert warning.appliance_name == "Lounge"
 
     @pytest.mark.parametrize("proto", [5, 9])
-    def test_a_higher_number_gives_update_dial(self, proto):
-        warning = cs.protocol_warning(entry(proto=proto), OWN)
-        assert warning.id == cs.DIAL_WARNING_ID == "update_dial"
-        assert warning.severity == "warning"
-        assert warning.title == "Update this dial"
-        assert warning.message == "Lounge needs a newer dial"
-        assert warning.appliance_name == "Lounge"
+    def test_a_higher_number_gives_no_appliance_warning(self, proto):
+        assert cs.protocol_warning(entry(proto=proto), OWN) is None
+
+    def test_the_newer_appliances_are_named_in_roster_order(self):
+        roster = (
+            entry("Lounge", appliance_id="a" * 20, proto=5),
+            entry("Kitchen", appliance_id="b" * 20, proto=OWN),
+            entry("Study", appliance_id="c" * 20, proto=2),
+            entry("Patio", appliance_id="d" * 20, proto=9),
+        )
+        assert cs.newer_appliance_names(roster, OWN) == ("Lounge", "Patio")
+
+    @pytest.mark.parametrize("proto", [0, None, True, OWN])
+    def test_an_appliance_with_no_newer_number_is_not_named(self, proto):
+        assert cs.newer_appliance_names((entry(proto=proto),), OWN) == ()
+
+    def test_an_appliance_with_no_identity_is_not_named(self):
+        assert cs.newer_appliance_names((entry(appliance_id="", proto=9),), OWN) == ()
 
     def test_the_same_number_gives_none(self):
         assert cs.protocol_warning(entry(proto=OWN), OWN) is None
@@ -70,8 +81,9 @@ class TestProtocolWarning:
         assert warning.title.startswith("Update xxx")
 
     def test_a_long_name_is_fitted_to_the_message_of_the_dial_warning(self):
-        warning = cs.protocol_warning(entry("x" * 300, proto=5), OWN)
-        assert len(warning.message) <= cs.APPLIANCE_WARNING_MESSAGE_MAX
+        from dial_warning_text import _WARNING_BY_ID
+        names = cs.newer_appliance_names((entry("x" * 300, proto=5),), OWN)
+        assert len(_WARNING_BY_ID["update_dial"].message_for(names)) <= cs.APPLIANCE_WARNING_MESSAGE_MAX
 
     def test_a_name_from_the_network_is_cleaned(self):
         warning = cs.protocol_warning(entry("Lo‮unge\x07"), OWN)
@@ -104,6 +116,11 @@ class Pool:
         a = self.rig.core.snapshot().appliance(aid("Lounge"))
         return () if a is None else a.warnings
 
+    def dial_warning(self):
+        """The reading of the dial's own warning, None when it is not active."""
+        warnings = self.rig.core.warnings
+        return warnings.reading(cs.DIAL_WARNING_ID) if warnings.is_active(cs.DIAL_WARNING_ID) else None
+
     def ids(self):
         return [w.id for w in self.held()]
 
@@ -123,9 +140,10 @@ class TestCore:
         pool.set(hello=3)
         assert pool.ids() == [cs.PROTOCOL_WARNING_ID]
 
-    def test_a_higher_hello_raises_update_dial(self, pool):
+    def test_a_higher_hello_raises_the_dials_own_warning_naming_the_appliance(self, pool):
         pool.set(hello=5)
-        assert pool.ids() == [cs.DIAL_WARNING_ID]
+        assert pool.ids() == []
+        assert pool.dial_warning() == ("Lounge",)
 
     def test_an_equal_hello_raises_nothing(self, pool):
         pool.set(hello=PROTOCOL, access="playback")
@@ -135,7 +153,7 @@ class TestCore:
         pool.set(hello=None, record=3)
         assert pool.ids() == [cs.PROTOCOL_WARNING_ID]
         pool.set(hello=None, record=5)
-        assert pool.ids() == [cs.DIAL_WARNING_ID]
+        assert pool.ids() == [] and pool.dial_warning() == ("Lounge",)
 
     def test_the_hello_wins_over_the_record(self, pool):
         pool.set(hello=PROTOCOL, record=3, access="playback")
@@ -174,8 +192,15 @@ class TestCore:
     def test_it_changes_with_the_direction(self, pool):
         pool.set(hello=3)
         pool.set(hello=5, seq=2)
-        assert pool.ids() == [cs.DIAL_WARNING_ID]
+        assert pool.ids() == [] and pool.dial_warning() == ("Lounge",)
         assert not any(s.id == pool.key for s in pool.rig.core.snapshot().warnings)
+        pool.set(hello=PROTOCOL, access="playback", seq=3)
+        assert pool.dial_warning() is None
+
+    def test_the_dial_warning_clears_when_the_appliance_leaves(self, pool):
+        pool.set(hello=5)
+        pool.remove()
+        assert pool.dial_warning() is None
 
     def test_one_info_line_per_raise_and_per_clear(self, pool, caplog):
         with caplog.at_level(logging.INFO):
@@ -188,6 +213,18 @@ class TestCore:
         assert lines == [
             "dial core: Lounge speaks a different dial protocol",
             "dial core: Lounge no longer needs an update",
+        ]
+
+    def test_one_info_line_per_raise_and_per_clear_of_the_dials_own_warning(self, pool, caplog):
+        with caplog.at_level(logging.INFO):
+            pool.set(hello=5)
+            pool.rig.core._housekeeping(2.0)
+            pool.set(hello=PROTOCOL, access="playback", seq=2)
+        lines = [r.getMessage() for r in caplog.records if "dial protocol" in r.getMessage()
+                 or "needs an update" in r.getMessage() or "this dial" in r.getMessage()]
+        assert lines == [
+            "dial core: Lounge speaks a newer dial protocol",
+            "dial core: this dial no longer needs an update",
         ]
 
 

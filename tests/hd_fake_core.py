@@ -18,12 +18,12 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 from autostream_peer_client import PeerReply
 from dial_core_state import ActionResult
 from dial_warning_text import WARNING_DESCRIPTORS
-from dial_warnings import WarningManager, WarningStore
+from dial_warnings import WarningManager
 
 # The core methods the HD actions call, each recorded and answered. Appliance
 # intents go through submit_intent, below.
 ACTION_METHODS = (
-    "set_focus", "dismiss_warning", "volume_step", "volume_set", "mute_toggle", "dismiss_start_failure",
+    "set_focus", "close_status", "volume_step", "volume_set", "mute_toggle", "dismiss_start_failure",
 )
 
 
@@ -33,9 +33,7 @@ class FakeCore:
         self._cond = threading.Condition()
         self._subscribers: dict = {}
         self._next_handle = 1
-        self.warnings = warnings if warnings is not None else WarningManager(
-            WARNING_DESCRIPTORS, WarningStore(None),
-        )
+        self.warnings = warnings if warnings is not None else WarningManager(WARNING_DESCRIPTORS)
         self.calls: list = []                 # (method, args, kwargs), in order
         self.results: dict = dict(results or {})   # method -> ActionResult
         self.default_result = ActionResult(True)

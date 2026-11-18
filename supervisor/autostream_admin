@@ -116,7 +116,6 @@ autostream-dial product — identity:
 
 autostream-dial product — deleted (fixed allowlist, no wildcards):
   /var/lib/autostream/dial-settings.json
-  /var/lib/autostream/dial-warnings.json
   /opt/autostream/ssid
   /etc/autostream-network.json
 
@@ -210,7 +209,6 @@ FACTORY_RESET_DELETE_FILES = (
 # autostream-dial product files deleted on factory reset
 FACTORY_RESET_DIAL_DELETE_FILES = (
     Path("/var/lib/autostream/dial-settings.json"),
-    Path("/var/lib/autostream/dial-warnings.json"),
     Path("/opt/autostream/ssid"),
     Path("/etc/autostream-network.json"),
 )

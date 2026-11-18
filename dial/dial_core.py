@@ -74,9 +74,9 @@ from dial_core_state import (
     DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
     DialInfo, FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
-    pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState,
-    _roster_entry, artwork_key, display_order, dots_active, eq_gain, protocol_warning,
-    reopen_for_pin, six_band, start_failure_action,
+    DIAL_WARNING_ID, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState,
+    _roster_entry, artwork_key, display_order, dots_active, eq_gain, newer_appliance_names,
+    protocol_warning, reopen_for_pin, six_band, start_failure_action,
 )
 from dial_mdns import PROTOCOL
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED
@@ -93,7 +93,7 @@ from dial_volume import (
     shown_volume,
 )
 from dial_warning_text import WARNING_DESCRIPTORS, appliance_warning_descriptor, appliance_warning_key
-from dial_warnings import ACTION_DISMISS, WarningManager, WarningStore
+from dial_warnings import KIND_STATUS, WarningManager
 
 # How often the clients are folded when nothing signals: the slowest the
 # pending-focus and accepted-replay windows move on.
@@ -165,7 +165,7 @@ class _CoreState:
     outputs_available: bool
     eq_available: bool
     warnings: tuple
-    due_warning_id: str | None
+    due_status_id: str | None
     network: object | None
     wifi_ever_connected: bool
     sd_health: object | None
@@ -297,7 +297,7 @@ def _initial_state(dial_id: str) -> _CoreState:
         outputs_available=False,
         eq_available=False,
         warnings=(),
-        due_warning_id=None,
+        due_status_id=None,
         network=None,
         wifi_ever_connected=False,
         sd_health=None,
@@ -368,13 +368,11 @@ class DialCore:
         self._seq = 0
         self._subscribers: dict[int, Callable[[], None]] = {}
         self._next_handle = 1
-        # The warning manager owns which warnings are active, snoozed or due
-        # and persists the snoozes; it has its own leaf lock and is never
-        # called while it could call back. The update watcher and the seen
+        # The warning manager owns which warnings are active and which
+        # status is due; it has its own leaf lock and is never called while
+        # it could call back. The update watcher and the seen
         # marker belong to the update source, driven from one thread.
-        self.warnings = warnings if warnings is not None else WarningManager(
-            WARNING_DESCRIPTORS, WarningStore(),
-        )
+        self.warnings = warnings if warnings is not None else WarningManager(WARNING_DESCRIPTORS)
         self.update_watcher = update_watcher if update_watcher is not None else UpdateWatcher()
         self.update_seen_path = update_seen_path
         self._update_seen: str | None = None
@@ -916,53 +914,45 @@ class DialCore:
         return merged
 
     def _sync_warnings_locked(self, state: _CoreState) -> bool:
-        """Copy the warning manager's runtime state and due warning into
+        """Copy the warning manager's runtime state and due status into
         *state*. True when either changed."""
-        warnings = tuple(
-            WarningState(wid, active, severity, active_since, snoozed_until)
-            for wid, active, severity, active_since, snoozed_until in self.warnings.runtime()
-        )
-        due = self.warnings.due()
+        warnings = tuple(WarningState(*row) for row in self.warnings.runtime())
+        due = self.warnings.due_status()
         due_id = due.id if due is not None else None
-        changed = warnings != state.warnings or due_id != state.due_warning_id
+        changed = warnings != state.warnings or due_id != state.due_status_id
         state.warnings = warnings
-        state.due_warning_id = due_id
+        state.due_status_id = due_id
         return changed
 
-    def warning_active(self, warning_id: str, severity=None) -> WarningChange:
+    def warning_active(self, warning_id: str, reading=None) -> WarningChange:
         """A source reports its condition present (again); a repeat only
-        refreshes the severity. The change says whether this began a new
+        refreshes the reading. The change says whether this began a new
         incident."""
         began = []
 
         def mutate(state: _CoreState) -> "bool | None":
-            began.append(self.warnings.set_active(warning_id, severity))
+            began.append(self.warnings.set_active(warning_id, reading))
             return None if self._sync_warnings_locked(state) else False
         self._publish(mutate)
         return WarningChange(warning_id, True, bool(began and began[0]))
 
     def warning_cleared(self, warning_id: str) -> WarningChange:
-        """A source reports its condition gone: the incident ends and any
-        dismissal of it, in memory or on disk, is forgotten."""
+        """A source reports its condition gone: the incident ends."""
         def mutate(state: _CoreState) -> "bool | None":
             self.warnings.clear(warning_id)
             return None if self._sync_warnings_locked(state) else False
         self._publish(mutate)
         return WarningChange(warning_id, False)
 
-    def dismiss_warning(self, warning_id: str) -> ActionResult:
-        """Apply the warning's dismiss policy (an incident-scoped or timed
-        snooze, persisted or not). Refused with wrong_state for a warning
-        that is not registered or has no Dismiss button, as a notice has
-        none."""
-        desc = self.warnings.descriptor(warning_id)
-        if desc is None or not any(b.action == ACTION_DISMISS for b in desc.buttons):
+    def close_status(self, status_id: str) -> ActionResult:
+        """End a status the person has closed (the update result): the same
+        as its source clearing it. Refused with wrong_state for an id that
+        is not a registered status. Warnings are closed in the view that
+        shows them and never reach the core."""
+        desc = self.warnings.descriptor(status_id)
+        if desc is None or desc.kind != KIND_STATUS:
             return ActionResult(False, "wrong_state")
-
-        def mutate(state: _CoreState) -> "bool | None":
-            self.warnings.dismiss(warning_id)
-            return None if self._sync_warnings_locked(state) else False
-        self._publish(mutate)
+        self.warning_cleared(status_id)
         return ActionResult(True)
 
     def request_dial_reboot(self) -> bool:
@@ -1009,11 +999,6 @@ class DialCore:
                 return False
             state.power = PowerState("failed", self._clock())
         self._changed(mutate)
-
-    def flush_warnings(self) -> None:
-        """Write any snooze changed since the last write. File I/O: call
-        with no lock held."""
-        self.warnings.flush()
 
     def wifi_down_streak(self) -> int:
         return self._state.wifi_down_streak
@@ -1119,7 +1104,7 @@ class DialCore:
     def expire_warnings(self) -> SourceEffects:
         """Clear the warnings that have been active for their
         auto_clear_after_s, as a source's clear would, and refresh the
-        published due warning (a snooze may just have run out)."""
+        published due status."""
         changes = tuple(self.warning_cleared(wid) for wid in self.warnings.expired())
 
         def mutate(state: _CoreState) -> "bool | None":
@@ -1128,11 +1113,10 @@ class DialCore:
         return SourceEffects(changes, signal=bool(changes))
 
     def tick_housekeeping(self, now: float) -> SourceEffects:
-        """The once-a-second tick: the update watch, expired warnings, and
-        the snooze write. Does file I/O: call with no lock held."""
+        """The once-a-second tick: the update watch and expired warnings.
+        Does file I/O: call with no lock held."""
         watched = self.tick_update_watch(now)
         expired = self.expire_warnings()
-        self.flush_warnings()
         if watched is None:
             return expired
         return SourceEffects(
@@ -1466,7 +1450,7 @@ class DialCore:
 
     def _housekeeping(self, now: float) -> None:
         """The once-a-second work: the update watch, expiring warnings, the
-        snooze write, the start failure notice's hold and the replay
+        start failure notice's hold and the replay
         position. What it did to the warnings is queued for a view and the
         subscribers are told."""
         effects = self.tick_housekeeping(now)
@@ -1478,10 +1462,10 @@ class DialCore:
             self._queue_effects(effects)
 
     def _refresh_protocol_warnings(self) -> None:
-        """Raise the update warning for each rostered appliance whose protocol
-        number differs from this dial's ("Update <appliance>" when it is
-        lower, "Update this dial" when it is higher), and end it for one that
-        now agrees or has left the roster. One log line per change."""
+        """Raise "Update <appliance>" for each rostered appliance whose
+        protocol number is lower than this dial's, and the dial's own
+        "Update this dial" while any is higher; end each that now agrees or
+        has left the roster. One log line per change."""
         lines: list = []
 
         def mutate(state: _CoreState) -> "bool | None":
@@ -1491,23 +1475,32 @@ class DialCore:
                 if warning is not None:
                     wanted[r.appliance_id] = warning
             held = state.protocol_warnings
-            if wanted == held:
+            if wanted != held:
+                for appliance_id, warning in held.items():
+                    if wanted.get(appliance_id) != warning:
+                        self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
+                        if appliance_id not in wanted:
+                            lines.append(f"{warning.appliance_name} no longer needs an update")
+                for appliance_id, warning in wanted.items():
+                    if held.get(appliance_id) != warning:
+                        key = appliance_warning_key(appliance_id, warning.id)
+                        self.warnings.register(appliance_warning_descriptor(appliance_id, warning))
+                        self.warnings.set_active(key, warning.severity)
+                        if appliance_id not in held:
+                            lines.append(f"{warning.appliance_name} speaks a different dial protocol")
+                state.protocol_warnings = wanted
+                state.appliances = self._derive_appliances_locked(state)
+            names = newer_appliance_names(state.roster, PROTOCOL)
+            if names and self.warnings.reading(DIAL_WARNING_ID) != names:
+                if not self.warnings.is_active(DIAL_WARNING_ID):
+                    lines.append(f"{', '.join(names)} speaks a newer dial protocol")
+                self.warnings.set_active(DIAL_WARNING_ID, names)
+            elif not names and self.warnings.is_active(DIAL_WARNING_ID):
+                self.warnings.clear(DIAL_WARNING_ID)
+                lines.append("this dial no longer needs an update")
+            changed = self._sync_warnings_locked(state)
+            if wanted == held and not changed:
                 return False
-            for appliance_id, warning in held.items():
-                if wanted.get(appliance_id) != warning:
-                    self.warnings.unregister(appliance_warning_key(appliance_id, warning.id))
-                    if appliance_id not in wanted:
-                        lines.append(f"{warning.appliance_name} no longer needs an update")
-            for appliance_id, warning in wanted.items():
-                if held.get(appliance_id) != warning:
-                    key = appliance_warning_key(appliance_id, warning.id)
-                    self.warnings.register(appliance_warning_descriptor(appliance_id, warning))
-                    self.warnings.set_active(key, warning.severity)
-                    if appliance_id not in held:
-                        lines.append(f"{warning.appliance_name} speaks a different dial protocol")
-            state.protocol_warnings = wanted
-            state.appliances = self._derive_appliances_locked(state)
-            self._sync_warnings_locked(state)
         self._publish(mutate)
         for line in lines:
             logging.info("dial core: %s", line)

@@ -127,7 +127,6 @@ def _stylus_scenario(track: Track):
             dataclasses.replace(a, warnings=(warning,)) if a.appliance_id == ident else a
             for a in snapshot.appliances),
         warnings=hs.warning_states({key: warning.severity}, extra=(key,)),
-        due_warning_id=key,
     )
     return hs.Scenario("warning-stylus", snapshot, descriptors=WARNING_DESCRIPTORS + (descriptor,))
 

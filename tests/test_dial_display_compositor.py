@@ -2398,7 +2398,7 @@ class TestComposeWarning:
                                             rotate=False, bgr=False, metrics=metrics)
         generic = compositor.compose_warning(
             base, width, height,
-            WarningView(title="No WiFi", message="", buttons=("Dismiss", "Restart"),
+            WarningView(title="No WiFi", message="", buttons=("Close", "Restart"),
                         geometry=GEOMETRY_NOWIFI, pressed=pressed),
             rotate=False, bgr=False, metrics=metrics,
         )
@@ -2415,7 +2415,7 @@ class TestComposeWarning:
                                               rotate=False, bgr=False, metrics=metrics)
         generic = compositor.compose_warning(
             base, width, height,
-            WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Dismiss",),
+            WarningView(title="microSD Health", message="15%: Replace Soon", buttons=("Close",),
                         geometry=GEOMETRY_SDHEALTH, pressed=pressed),
             rotate=False, bgr=False, metrics=metrics,
         )

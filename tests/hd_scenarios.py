@@ -101,16 +101,14 @@ def repeat_record(state, *, armed=False, recording=1122.0, position=0.0, duratio
     )
 
 
-def warning_states(active: dict | None = None, snoozed: dict | None = None, extra: tuple = ()) -> tuple:
+def warning_states(active: dict | None = None, extra: tuple = ()) -> tuple:
     """The registry's states, in registry order: the dial's own four, then
-    *extra* ids. *active* maps an id to its severity (or reading)."""
+    *extra* ids. *active* maps an id to its reading."""
     active = active or {}
-    snoozed = snoozed or {}
     ids = tuple(d.id for d in WARNING_DESCRIPTORS) + tuple(extra)
     return tuple(
         WarningState(
             wid, wid in active, active.get(wid), WALL_NOW - 30 if wid in active else None,
-            snoozed.get(wid),
         )
         for wid in ids
     )
@@ -143,7 +141,7 @@ def base(**overrides) -> CoreSnapshot:
         focus=FocusState(None, None, None, None, None, None, False),
         now_playing=None, artwork=None, idle_affordance=False, outputs=None, eq=None,
         outputs_available=False, eq_available=False, warnings=warning_states(),
-        due_warning_id=None,
+        due_status_id=None,
         network=NetworkView(link=LINK_CONNECTED, bars=3, ssid="HomeNet", signal="Strong"),
         wifi_ever_connected=True,
         sd_health=SdHealthView(status=STATUS_VALID, percent=84),
@@ -286,7 +284,6 @@ class Scenario:
     recovery: tuple = (False, False)
     muted: bool | None = False
     now: float = NOW
-    wall_now: float = WALL_NOW
     # The focused appliance's PeerSnapshot (or None), else DERIVED.
     peer: object = DERIVED
 
@@ -303,7 +300,7 @@ class Scenario:
         from dial_hd_state import build_parts
         return build_parts(
             self.snapshot, descriptors=self.descriptors, panel=self.panel, settings=self.settings,
-            recovery=self.recovery, now=self.now, wall_now=self.wall_now,
+            recovery=self.recovery, now=self.now,
         )
 
     def with_snapshot(self, **overrides) -> "Scenario":
@@ -342,17 +339,14 @@ def _update_warning():
     return protocol_warning(entry, 3)
 
 
-def _appliance_warning_scenario(name, warning, snoozed=False, proto=3, supplies=True) -> Scenario:
+def _appliance_warning_scenario(name, warning, proto=3, supplies=True) -> Scenario:
     key = appliance_warning_key(LOUNGE, warning.id)
     descriptor = appliance_warning_descriptor(LOUNGE, warning)
     snapshot = _playing(
         appliances=(appliance(
             playing=True, master_volume=42, muted=False, warnings=(warning,), proto=proto,
             supplies_warnings=supplies),),
-        warnings=warning_states(
-            {key: warning.severity}, {key: WALL_NOW + 3600} if snoozed else None, extra=(key,),
-        ),
-        due_warning_id=key,
+        warnings=warning_states({key: warning.severity}, extra=(key,)),
     )
     return Scenario(name, snapshot, descriptors=WARNING_DESCRIPTORS + (descriptor,))
 
@@ -407,21 +401,21 @@ def _build() -> dict:
     add(Scenario("eq_six", _playing()))
 
     add(Scenario("warning_sdhealth", base(
-        warnings=warning_states({"sdhealth": 6}), due_warning_id="sdhealth",
+        warnings=warning_states({"sdhealth": 6}),
         sd_health=SdHealthView(status="stale", percent=6),
     ), muted=None))
     add(Scenario("warning_update", base(
         warnings=warning_states({"update": UpdateView(
             status=STATUS_IN_PROGRESS, percent=40, phase="python")}),
-        due_warning_id="update",
+        due_status_id="update",
         update=UpdateView(status=STATUS_IN_PROGRESS, percent=40, phase="python"),
     ), muted=None))
     done = UpdateView(status=STATUS_SUCCESS, percent=100, phase="done", tag="0.8.0", previous_tag="0.7.0")
     add(Scenario("warning_update_result", base(
-        warnings=warning_states({"update_result": done}), due_warning_id="update_result", update=done,
+        warnings=warning_states({"update_result": done}), due_status_id="update_result", update=done,
     ), muted=None))
     add(Scenario("warning_nowifi", base(
-        warnings=warning_states({"nowifi": None}), due_warning_id="nowifi",
+        warnings=warning_states({"nowifi": None}),
         network=NetworkView(link=LINK_DOWN),
     ), muted=None))
     add(_appliance_warning_scenario("appliance_warning", _stylus_warning()))

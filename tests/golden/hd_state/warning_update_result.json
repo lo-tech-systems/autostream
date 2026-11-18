@@ -43,6 +43,8 @@
     "cards": [
       {
         "id": "update_result",
+        "kind": "status",
+        "since": 1699999970.0,
         "severity": "info",
         "title": "Updated",
         "message": "Version 0.8.0",
@@ -50,12 +52,11 @@
         "source": "",
         "buttons": [
           {
-            "label": "Dismiss",
-            "action": "dismiss"
+            "label": "Close",
+            "action": "status_close"
           }
         ],
-        "interrupting": true,
-        "snoozed": false
+        "interrupting": true
       }
     ]
   },

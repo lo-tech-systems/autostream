@@ -35,8 +35,7 @@
           "id": "stylus_in1",
           "severity": "info",
           "title": "Technics stylus",
-          "message": "Needs changing soon.",
-          "snoozed": false
+          "message": "Needs changing soon."
         }
       ],
       "webui": "http://192.0.2.20:80/",
@@ -52,10 +51,12 @@
   "outputs_request": null,
   "start_failure": null,
   "warnings": {
-    "due": "appliance:aaaaaaaaaaaaaaaaaaaa:stylus_in1",
+    "due": null,
     "cards": [
       {
         "id": "appliance:aaaaaaaaaaaaaaaaaaaa:stylus_in1",
+        "kind": "warning",
+        "since": 1699999970.0,
         "severity": "info",
         "title": "Technics stylus",
         "message": "Needs changing soon.",
@@ -63,12 +64,11 @@
         "source": "Lounge",
         "buttons": [
           {
-            "label": "Dismiss",
-            "action": "dismiss"
+            "label": "Close",
+            "action": "close"
           }
         ],
-        "interrupting": false,
-        "snoozed": false
+        "interrupting": false
       }
     ]
   },

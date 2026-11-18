@@ -241,9 +241,8 @@ class EqState:
 class WarningState:
     id: str
     active: bool
-    severity: object
+    reading: object                # what the source reported; the descriptor reads it
     active_since: float | None     # wall clock; a change means a new incident
-    snoozed_until: float | None    # wall clock; inf until the source clears it
 
 
 @dataclass(frozen=True)
@@ -494,7 +493,7 @@ class CoreSnapshot:
     outputs_available: bool             # focused/reporting appliance advertises dial_outputs and is not refused
     eq_available: bool                  # same for dial_eq (the compact-tier veto is the view's)
     warnings: tuple[WarningState, ...]  # registry order
-    due_warning_id: str | None          # the warning manager's due() at publish time
+    due_status_id: str | None           # the warning manager's due_status() at publish time
     network: NetworkView | None
     wifi_ever_connected: bool
     sd_health: SdHealthView | None
@@ -607,38 +606,55 @@ def _enum_or_default(value, allowed: tuple, default: str) -> str:
 
 
 # The ids of the warnings a dial raises for an appliance that speaks a
-# different protocol number: the appliance is older, or the dial is.
+# different protocol number: the appliance is older (a warning about it, on
+# its row), or the dial is (one warning about this dial).
 PROTOCOL_WARNING_ID = "update_appliance"
 DIAL_WARNING_ID = "update_dial"
 _PROTOCOL_WARNING_MESSAGE = "Its software is older than this dial's. Update it from its web UI."
 
 
-def protocol_warning(entry, own_protocol: int) -> ApplianceWarning | None:
-    """The warning for a rostered appliance with an identity whose protocol
-    number (entry.dial_proto_version: the hello's when it has been read, else
-    the one its record advertises) differs from *own_protocol*; None when they
-    agree or the appliance has not said one. A lower number gives "Update
-    <appliance>"; a higher one gives "Update this dial". Severity "warning".
-    Access is not asked: a mismatch opens no stream, so it
-    is never learned. Pure."""
-    appliance_id = getattr(entry, "appliance_id", "")
-    if not appliance_id:
+def _entry_protocol(entry, own_protocol: int) -> "int | None":
+    """The protocol number of a rostered appliance with an identity
+    (entry.dial_proto_version: the hello's when it has been read, else the
+    one its record advertises) when it differs from *own_protocol*; None
+    when they agree or the appliance has not said one."""
+    if not getattr(entry, "appliance_id", ""):
         return None
     protocol = getattr(entry, "dial_proto_version", 0)
     if not isinstance(protocol, int) or isinstance(protocol, bool) or protocol <= 0 or protocol == own_protocol:
         return None
+    return protocol
+
+
+def _entry_name(entry) -> str:
     service_name = getattr(entry, "service_name", "")
-    name = appliance_display_name(service_name) if isinstance(service_name, str) else ""
-    if protocol < own_protocol:
-        return ApplianceWarning(
-            id=PROTOCOL_WARNING_ID, severity=SEVERITY_WARNING,
-            title=_clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
-            message=_PROTOCOL_WARNING_MESSAGE, appliance_name=name,
-        )
+    return appliance_display_name(service_name) if isinstance(service_name, str) else ""
+
+
+def protocol_warning(entry, own_protocol: int) -> ApplianceWarning | None:
+    """"Update <appliance>" for a rostered appliance whose protocol number is
+    lower than *own_protocol*; None when it agrees, is higher (that is the
+    dial's own warning, see newer_appliance_names) or has not said one.
+    Severity "warning". Access is not asked: a mismatch opens no stream, so
+    it is never learned. Pure."""
+    protocol = _entry_protocol(entry, own_protocol)
+    if protocol is None or protocol > own_protocol:
+        return None
+    name = _entry_name(entry)
     return ApplianceWarning(
-        id=DIAL_WARNING_ID, severity=SEVERITY_WARNING, title="Update this dial",
-        message=_clean_text(f"{name} needs a newer dial", APPLIANCE_WARNING_MESSAGE_MAX),
-        appliance_name=name,
+        id=PROTOCOL_WARNING_ID, severity=SEVERITY_WARNING,
+        title=_clean_text("Update " + name, APPLIANCE_WARNING_TITLE_MAX) or "Update appliance",
+        message=_PROTOCOL_WARNING_MESSAGE, appliance_name=name,
+    )
+
+
+def newer_appliance_names(roster, own_protocol: int) -> tuple[str, ...]:
+    """The names of the rostered appliances whose protocol number is higher
+    than *own_protocol*, in roster order: the reading of the dial's own
+    "Update this dial" warning. Pure."""
+    return tuple(
+        _entry_name(r) for r in roster
+        if (_entry_protocol(r, own_protocol) or 0) > own_protocol
     )
 
 

@@ -95,12 +95,10 @@ from dial_repeat_store import (
 )
 from dial_warning_text import (  # re-exported: the warning table and its text live there
     APPLIANCE_WARNING_SCREEN,
-    SDHEALTH_CRITICAL_SNOOZE_S,
-    SDHEALTH_SNOOZE_S,
     UPDATE_FAILED_TEXT,
     UPDATE_PHASE_FALLBACK_TEXT,
     UPDATE_PHASE_TEXT,
-    UPDATE_RESULT_DISMISS_TEXT,
+    UPDATE_RESULT_CLOSE_TEXT,
     UPDATE_RESULT_SECONDS,
     UPDATED_TEXT,
     UPDATING_TEXT,
@@ -126,8 +124,10 @@ from dial_volume import (
     shown_volume,
 )
 from dial_warnings import (
-    ACTION_DISMISS,
+    ACTION_CLOSE,
     ACTION_RESTART,
+    KIND_STATUS,
+    KIND_WARNING,
     WarningDescriptor,
     WarningManager,
 )
@@ -611,7 +611,7 @@ class EqScreenState:
 class WarningScreenState:
     """A warning page on screen: which warning, and the clock every
     screen state carries. Its text is read at paint time from the
-    descriptor and the manager's latest severity, so a later reading
+    descriptor and the manager's latest reading, so a later reading
     shows without reopening."""
     warning_id: str
     opened_at: float
@@ -1137,6 +1137,9 @@ class DialDisplay:
         # records the due warning's id here beside the screen request and
         # the opener reads it.
         self._requested_warning_id: "str | None" = None
+        # The warnings whose card this view has closed, so the one-second
+        # tick does not open them again; one goes when its incident ends.
+        self._closed_warnings: frozenset = frozenset()
         # The (zone, index) currently pressed on whichever screen is
         # showing — one channel for every screen, written by the touch
         # thread via set_pressed() and read at compose time by each
@@ -1221,8 +1224,6 @@ class DialDisplay:
                 self._repaint_thread.join(timeout=2)
             except RuntimeError:
                 pass
-        # A Dismiss inside the last tick has not been written yet.
-        self._core.flush_warnings()
         with self._lock:
             self._disable_locked()
 
@@ -3835,7 +3836,7 @@ class DialDisplay:
         """Compose and push the warning page on screen over the current
         base image (the idle logo or the last artwork, dimmed; a flat
         chassis when nothing has been rendered yet). Text comes from the
-        descriptor and the manager's latest severity, so a fresh reading
+        descriptor and the manager's latest reading, so a fresh reading
         shows on the next repaint. Bypasses _display_locked() like every
         other secondary screen. Caller holds self._lock."""
         screen = self._warning_screen
@@ -3849,10 +3850,10 @@ class DialDisplay:
             self._overlay_signal.set()
             return
         pressed = self._pressed[0] if self._pressed is not None else None
-        severity = self._core.warnings.severity(desc.id)
-        message = desc.message_for(severity) if desc.message_for is not None else ""
-        title = desc.title_for(severity) if desc.title_for is not None else desc.title
-        percent = desc.progress_for(severity) if desc.progress_for is not None else None
+        reading = self._core.warnings.reading(desc.id)
+        message = desc.message_for(reading) if desc.message_for is not None else ""
+        title = desc.title_for(reading) if desc.title_for is not None else desc.title
+        percent = desc.progress_for(reading) if desc.progress_for is not None else None
         view = WarningView(
             title=title, message=message,
             buttons=tuple(b.label for b in desc.buttons), geometry=desc.geometry, pressed=pressed,
@@ -4173,6 +4174,7 @@ class DialDisplay:
         desc = self._core.warnings.descriptor(warning_id)
         if desc is None:
             return
+        self._closed_warnings = self._closed_warnings - {warning_id}
         screen = desc.screen
         if self._screen == screen:
             # A screen row several warnings share (an appliance's) closes
@@ -4200,8 +4202,9 @@ class DialDisplay:
             self._overlay_signal.set()
 
     def _request_due_warning(self, wake: bool = False) -> None:
-        """Request the page of the highest-priority warning that is active
-        and not snoozed, if any, and only while the main screen is showing
+        """Request the page of the due status or, failing that, the
+        highest-priority active warning this view has not closed, if any,
+        and only while the main screen is showing
         with nothing else requested and the panel awake (never over a
         list, the info page, another warning or the restart screen, and
         never into a sleeping panel: the wake path calls this again).
@@ -4212,7 +4215,8 @@ class DialDisplay:
         requested again while its own page is up. Callable with or
         without self._lock: plain reads and one plain request write, the
         same writes the core's source effects make."""
-        desc = self._core.warnings.due()
+        warnings = self._core.warnings
+        desc = warnings.due_status() or warnings.due_warning(self._closed_warnings)
         if desc is None:
             return
         if desc.interrupting:
@@ -4273,7 +4277,7 @@ class DialDisplay:
     def open_nowifi(self) -> None:
         """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_WIFI
         tap): open the No-WiFi page while the link is down — the manual
-        route to Restart after a Dismiss (it ignores the dismissal) and the
+        route to Restart after a Close (it ignores the closed page) and the
         only route while the dial has never connected since boot (the
         page never auto-opens in that state). Inert while connected/
         unknown (the corner square is always in the idle table; only a
@@ -4301,12 +4305,14 @@ class DialDisplay:
         self._run_warning_action(desc, button.action)
 
     def _run_warning_action(self, desc: "WarningDescriptor", action: str) -> None:
-        if action == ACTION_DISMISS:
-            # Dismiss is the only thing that starts a snooze: the manager
-            # applies the row's policy (incident-scoped or timed, and
-            # persisted or not) and the page closes. The icon keeps
+        if action == ACTION_CLOSE:
+            # A status ends in the core; a warning is only put away here,
+            # and stays away until its incident ends. The icon keeps
             # flashing for No-WiFi; a tap on it re-opens the page.
-            self._core.dismiss_warning(desc.id)
+            if desc.kind == KIND_STATUS:
+                self._core.close_status(desc.id)
+            else:
+                self._closed_warnings = self._closed_warnings | {desc.id}
             self._screen_request = _policy(desc.screen).back_to
             self._overlay_signal.set()
         elif action == ACTION_RESTART:
@@ -4328,15 +4334,17 @@ class DialDisplay:
 
     def _tick_due_warning(self) -> None:
         """Once a second from the repaint thread's own timeout branch:
-        raise a warning whose snooze has just run out (or one that was due
-        while a list or menu was open). Lock-free plain reads, the
-        _check_secondary_timeout() discipline. The core's housekeeping
-        clears warnings that have been up for their auto_clear_after_s and
-        writes the snoozes; what that did reaches this view as queued
+        raise a warning that was due while a list or menu was open, and
+        forget the closed warnings whose incident has ended. Lock-free
+        plain reads, the _check_secondary_timeout() discipline. The core's
+        housekeeping clears warnings that have been up for their
+        auto_clear_after_s; what that did reaches this view as queued
         effects (see _apply_pending_snapshot). It also closes a
         shared-row page (an appliance's) whose warning the appliance has
         stopped reporting, which no source effect announces."""
         self._close_gone_shared_page()
+        self._closed_warnings = frozenset(
+            w for w in self._closed_warnings if self._core.warnings.is_active(w))
         self._request_due_warning()
 
     def _close_gone_shared_page(self) -> None:
@@ -4879,7 +4887,7 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
 def _warning_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
     """The policy row every warning page shares: opened by the warning
     manager (or a tap on the flashing idle icon, for No-WiFi), painted
-    from its descriptor, closed by Dismiss, by its source clearing the
+    from its descriptor, closed by Close, by its source clearing the
     condition, or by Restart (which replaces it). No inactivity timeout:
     it is an alarm, not a menu, and stays until acted on or cleared.
     defers_sleep=False: the page sleeps with the normal idle timer like
@@ -4899,8 +4907,8 @@ def _warning_policy_row(desc: WarningDescriptor) -> ScreenPolicy:
 # The one row every appliance warning shares (its geometry is the SD card
 # warning's one cell); which warning it shows is the id requested with it.
 _APPLIANCE_WARNING_ROW = WarningDescriptor(
-    id=None, priority=0, screen=APPLIANCE_WARNING_SCREEN, geometry=GEOMETRY_SDHEALTH,
-    title="", message_for=None, buttons=(), persisted=False, snooze_for=None,
+    id=None, kind=KIND_WARNING, priority=0, screen=APPLIANCE_WARNING_SCREEN,
+    geometry=GEOMETRY_SDHEALTH, title="", message_for=None, severity_for=None, buttons=(),
 )
 
 for _desc in WARNING_DESCRIPTORS + (_APPLIANCE_WARNING_ROW,):

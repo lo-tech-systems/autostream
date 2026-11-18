@@ -30,7 +30,7 @@ from dial_display_image import load_logo  # noqa: E402
 from dial_display_profiles import get_profile, layout_context_for  # noqa: E402
 from dial_touch_layout import CONTENT_COMPACT, list_layout_for, metrics_for  # noqa: E402
 from dial_warning_text import (  # noqa: E402
-    UPDATE_FAILED_TEXT, UPDATE_PHASE_TEXT, UPDATE_RESULT_DISMISS_TEXT, UPDATED_TEXT, UPDATING_TEXT)
+    UPDATE_FAILED_TEXT, UPDATE_PHASE_TEXT, UPDATE_RESULT_CLOSE_TEXT, UPDATED_TEXT, UPDATING_TEXT)
 from music import BY_KEY  # noqa: E402
 
 LOGO = REPO_ROOT / "images" / "autostream-logo-centred-dark.png"
@@ -188,12 +188,12 @@ def updating(panel):
 
 def updated(panel):
     return warning(panel, comp.WarningView(
-        title=UPDATED_TEXT, message="Version 0.7.0", buttons=(UPDATE_RESULT_DISMISS_TEXT,)))
+        title=UPDATED_TEXT, message="Version 0.7.0", buttons=(UPDATE_RESULT_CLOSE_TEXT,)))
 
 
 def update_failed(panel):
     return warning(panel, comp.WarningView(
-        title=UPDATE_FAILED_TEXT, message="Restored 0.6.0", buttons=(UPDATE_RESULT_DISMISS_TEXT,)))
+        title=UPDATE_FAILED_TEXT, message="Restored 0.6.0", buttons=(UPDATE_RESULT_CLOSE_TEXT,)))
 
 
 def appliance_warning(panel, notice=False):

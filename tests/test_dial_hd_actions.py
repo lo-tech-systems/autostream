@@ -120,10 +120,8 @@ VALID = [
     ("volume_set", {"appliance_id": L, "level": 100}, "volume_set", (100, L), {}),
     ("volume_step", {"appliance_id": L, "delta": -3}, "volume_step", (-3, L), {}),
     ("mute_toggle", {"appliance_id": L}, "mute_toggle", (L,), {}),
-    ("warning_dismiss", {"warning_id": "sdhealth"}, "dismiss_warning", ("sdhealth",), {}),
+    ("status_close", {"status_id": "update_result"}, "close_status", ("update_result",), {}),
     ("start_failure_dismiss", {"key": L + ":boot-a:3"}, "dismiss_start_failure", (L + ":boot-a:3",), {}),
-    ("warning_dismiss", {"warning_id": "appliance:" + L + ":w1"}, "dismiss_warning",
-     ("appliance:" + L + ":w1",), {}),
 ]
 
 
@@ -162,7 +160,7 @@ class TestActionTable:
     def test_the_table_names_exactly_the_documented_actions(self):
         assert set(hda.ACTIONS) == {
             "focus", "volume_set", "volume_step", "mute_toggle",
-            "start_failure_dismiss", "warning_dismiss", "dial_restart", "dial_shutdown", "presence",
+            "start_failure_dismiss", "status_close", "dial_restart", "dial_shutdown", "presence",
         }
 
     def test_the_valid_table_covers_every_core_calling_action(self):
@@ -185,8 +183,8 @@ class TestActionTable:
         ("volume_step", {"appliance_id": L, "delta": -101}, "delta"),
         ("volume_step", {"delta": 1}, "appliance_id"),
         ("mute_toggle", {}, "appliance_id"),
-        ("warning_dismiss", {}, "warning_id"),
-        ("warning_dismiss", {"warning_id": 4}, "warning_id"),
+        ("status_close", {}, "status_id"),
+        ("status_close", {"status_id": 4}, "status_id"),
         ("start_failure_dismiss", {}, "key"),
         ("start_failure_dismiss", {"key": 4}, "key"),
         ("start_failure_dismiss", {"key": ""}, "key"),
@@ -445,30 +443,29 @@ class TestRefusalSentences:
 
 
 class TestDialRestart:
-    def test_refused_while_no_warning_is_due(self, server, core):
+    def test_refused_while_the_no_wifi_warning_is_not_active(self, server, core):
         response, data = act(server, "dial_restart")
         assert response.status == 409
         assert error_of(data) == "wrong_state"
         assert ("request_dial_reboot", (), {}) not in core.calls
 
-    def test_accepted_while_the_no_wifi_warning_is_due(self, server, core):
+    def test_accepted_while_the_no_wifi_warning_is_active(self, server, core):
         core.warnings.set_active("nowifi")
         response, data = act(server, "dial_restart")
         assert response.status == 200
         assert ("request_dial_reboot", (), {}) in core.calls
 
-    def test_refused_when_the_due_warning_has_no_restart_button(self, server, core):
-        core.warnings.set_active("sdhealth", "critical")
+    def test_refused_when_only_another_warning_is_active(self, server, core):
+        core.warnings.set_active("sdhealth", 2)
         response, data = act(server, "dial_restart")
         assert response.status == 409
         assert ("request_dial_reboot", (), {}) not in core.calls
 
-    def test_refused_when_the_no_wifi_warning_is_snoozed(self, server, core):
+    def test_accepted_with_other_warnings_active_too(self, server, core):
+        core.warnings.set_active("sdhealth", 2)
         core.warnings.set_active("nowifi")
-        core.warnings.dismiss("nowifi")
         response, _ = act(server, "dial_restart")
-        assert response.status == 409
-        assert ("request_dial_reboot", (), {}) not in core.calls
+        assert response.status == 200
 
     def test_refused_when_the_reboot_request_is_not_taken(self, make_server, core):
         core.reboot_result = False

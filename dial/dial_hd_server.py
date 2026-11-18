@@ -236,7 +236,7 @@ class HdServer:
 
     def __init__(
         self, cfg, core, *, http_server=None, panel=None, hub=None, static_root=HD_STATIC_ROOT,
-        clock=time.monotonic, wall_clock=time.time, extra_routes=(),
+        clock=time.monotonic, extra_routes=(),
         port: int | None = None, dev_port: int | None = None, info_fn=None,
         dev_bind_address: str = DEV_BIND_ADDRESS, backdrops: BackdropStore | None = None,
     ) -> None:
@@ -247,7 +247,6 @@ class HdServer:
         self._hub = hub
         self._static_root = Path(static_root)
         self._clock = clock
-        self._wall_clock = wall_clock
         # The dial's boot id: every event id and state body names it, so a
         # page can tell a restarted dial's sequence from this one's.
         self._boot = secrets.token_hex(8)
@@ -394,7 +393,7 @@ class HdServer:
         panel = self._panel.view() if self._panel is not None else None
         return build_parts(
             snapshot, descriptors=descriptors, panel=panel, settings=self._settings(),
-            recovery=self._recovery(), now=now, wall_now=self._wall_clock(),
+            recovery=self._recovery(), now=now,
         )
 
     def _step(self, seq: int) -> tuple:

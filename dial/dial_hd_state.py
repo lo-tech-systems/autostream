@@ -21,6 +21,11 @@ from typing import Any, Iterable, Mapping
 
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, awaiting_pin, pin_window_end
 from dial_warning_text import appliance_warning_key
+from dial_warnings import ACTION_CLOSE, KIND_STATUS
+
+# What the page posts to end a status card (a warning card is put away in the
+# page and posts nothing).
+STATUS_CLOSE_ACTION = "status_close"
 
 # The version of the `dial` part, bumped only for a change the page could not read.
 DIAL_PART_VERSION = 2
@@ -43,12 +48,6 @@ LOGO_BACKDROP_PATH = "/api/v1/logo/backdrop"
 # The panel values shown before the panel service has said anything.
 DEFAULT_BRIGHTNESS = 80
 DEFAULT_SLEEP_AFTER_S = 300
-
-# Severity of a card whose own severity is not one of the three names (the
-# dial's own warnings carry a reading, not a severity).
-_CARD_SEVERITIES = ("info", "warning", "critical")
-_CARD_SEVERITY_BY_ID = {"update": "info", "update_result": "info"}
-_CARD_SEVERITY_DEFAULT = "warning"
 
 _REPLAYING_STATES = ("replaying", "fading_out")
 
@@ -136,23 +135,20 @@ def _repeat_block(record) -> dict | None:
     }
 
 
-def _appliance_warnings(appliance, snoozed_until: dict, wall_now: float) -> list:
-    out = []
-    for warning in appliance.warnings:
-        key = appliance_warning_key(appliance.appliance_id, warning.id)
-        until = snoozed_until.get(key)
-        out.append({
-            "key": key,
+def _appliance_warnings(appliance) -> list:
+    return [
+        {
+            "key": appliance_warning_key(appliance.appliance_id, warning.id),
             "id": warning.id,
             "severity": warning.severity,
             "title": warning.title,
             "message": warning.message,
-            "snoozed": until is not None and until > wall_now,
-        })
-    return out
+        }
+        for warning in appliance.warnings
+    ]
 
 
-def _appliance_block(a, wall_now: float, snoozed_until: dict) -> dict:
+def _appliance_block(a) -> dict:
     return {
         "id": a.appliance_id,
         "name": a.name,
@@ -164,7 +160,7 @@ def _appliance_block(a, wall_now: float, snoozed_until: dict) -> dict:
         # say the rest.
         "reachable": a.status_error is None or a.status_error in ("unauthorized", "protocol"),
         "repeat": _repeat_block(a.repeat),
-        "warnings": _appliance_warnings(a, snoozed_until, wall_now),
+        "warnings": _appliance_warnings(a),
         "webui": f"{a.webui_scheme}://{a.webui_host}:{a.webui_port}/" if a.webui_host else "",
         "update_needed": a.status_error == "protocol",
     }
@@ -212,39 +208,42 @@ def _request_block(held, now: float) -> dict | None:
     }
 
 
-def _card_severity(state) -> str:
-    if isinstance(state.severity, str) and state.severity in _CARD_SEVERITIES:
-        return state.severity
-    return _CARD_SEVERITY_BY_ID.get(state.id, _CARD_SEVERITY_DEFAULT)
-
-
 def _card_progress(value) -> int | None:
     value = _int_or_none(value)
     return None if value is None else max(0, min(100, value))
 
 
-def _warnings_block(snapshot, descriptors: dict, wall_now: float) -> dict:
-    cards = []
+def _warnings_block(snapshot, descriptors: dict) -> dict:
+    """The active cards, the highest priority first. `due` is the status the
+    page shows by itself; a status card closes by asking the core, a warning
+    card in the page."""
+    ranked = []
     for state in snapshot.warnings:
         if not state.active:
             continue
         descriptor = descriptors.get(state.id)
         if descriptor is None:
             continue
-        title = _call(descriptor.title_for, state.severity) or descriptor.title
-        message = _call(descriptor.message_for, state.severity)
-        cards.append({
+        status = descriptor.kind == KIND_STATUS
+        title = _call(descriptor.title_for, state.reading) or descriptor.title
+        message = _call(descriptor.message_for, state.reading)
+        ranked.append((descriptor.priority, {
             "id": state.id,
-            "severity": _card_severity(state),
+            "kind": descriptor.kind,
+            "since": state.active_since,
+            "severity": descriptor.severity_for(state.reading),
             "title": title,
             "message": message if isinstance(message, str) else "",
-            "progress": _card_progress(_call(descriptor.progress_for, state.severity)),
+            "progress": _card_progress(_call(descriptor.progress_for, state.reading)),
             "source": descriptor.source_name,
-            "buttons": [{"label": b.label, "action": b.action} for b in descriptor.buttons],
+            "buttons": [
+                {"label": b.label, "action": STATUS_CLOSE_ACTION if status and b.action == ACTION_CLOSE else b.action}
+                for b in descriptor.buttons
+            ],
             "interrupting": bool(descriptor.interrupting),
-            "snoozed": state.snoozed_until is not None and state.snoozed_until > wall_now,
-        })
-    return {"due": snapshot.due_warning_id, "cards": cards}
+        }))
+    ranked.sort(key=lambda r: -r[0])
+    return {"due": snapshot.due_status_id, "cards": [card for _, card in ranked]}
 
 
 def _network_block(view) -> dict | None:
@@ -331,7 +330,7 @@ def _start_failure_block(snapshot) -> dict | None:
 
 def _dial_part(
     snapshot, *, descriptors: "Mapping | Iterable | None" = None, panel: "Mapping | None" = None,
-    settings: "Mapping | None" = None, recovery=None, now: float = 0.0, wall_now: float = 0.0,
+    settings: "Mapping | None" = None, recovery=None, now: float = 0.0,
 ) -> dict:
     """The part about the dial itself, with none of the appliance's own parts
     and no reading that moves with the clock, so it changes only when
@@ -343,12 +342,10 @@ def _dial_part(
     view (asleep, brightness, sleep_after_s, backlight) and *settings* the
     dial's screen settings, which fill in what the panel does not say.
     *recovery* is (active, confirmed) or a mapping with those keys. *now* is
-    the monotonic time (the request deadlines are readings on it) and
-    *wall_now* the wall clock (a snooze runs to a wall-clock time)."""
+    the monotonic time (the request deadlines are readings on it)."""
     descriptors = _descriptor_map(descriptors)
-    snoozed_until = {s.id: s.snoozed_until for s in snapshot.warnings}
     appliances = [
-        _appliance_block(a, wall_now, snoozed_until)
+        _appliance_block(a)
         for a in snapshot.appliances
         if a.appliance_id and a.auth in (AUTH_AUTHORIZED, AUTH_UNAUTHORIZED)
     ]
@@ -365,7 +362,7 @@ def _dial_part(
         "transport": _request_block(snapshot.transport, now),
         "outputs_request": _request_block(snapshot.outputs_request, now),
         "start_failure": _start_failure_block(snapshot),
-        "warnings": _warnings_block(snapshot, descriptors, wall_now),
+        "warnings": _warnings_block(snapshot, descriptors),
         "network": _network_block(snapshot.network),
         "sd_health": _sd_health_block(snapshot.sd_health),
         "update": _update_block(snapshot.update),
@@ -393,7 +390,7 @@ def _focused_part(peer) -> dict | None:
 
 def build_parts(
     snapshot, *, descriptors: "Mapping | Iterable | None" = None, panel: "Mapping | None" = None,
-    settings: "Mapping | None" = None, recovery=None, now: float = 0.0, wall_now: float = 0.0,
+    settings: "Mapping | None" = None, recovery=None, now: float = 0.0,
 ) -> dict:
     """The two parts of the page's state, {"dial": ..., "focused": ... | None}.
     Both come from the one *snapshot*: the focused part is the appliance
@@ -402,7 +399,7 @@ def build_parts(
     return {
         "dial": _dial_part(
             snapshot, descriptors=descriptors, panel=panel, settings=settings, recovery=recovery,
-            now=now, wall_now=wall_now,
+            now=now,
         ),
         "focused": _focused_part(snapshot.focused_peer),
     }
