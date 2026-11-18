@@ -24,6 +24,7 @@ ALLOWED = {
     "dial_eq_model": {"autostream_eq_bands", "dial_values"},
     "dial_touch_surfaces": set(),
     "dial_display_backend": {"dial_display_profiles"},
+    "dial_display_palette": set(),
 }
 
 

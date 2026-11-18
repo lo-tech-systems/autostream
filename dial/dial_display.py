@@ -68,6 +68,7 @@ from dial_display_image import (
 from dial_display_backend import (
     DEFAULT_PANEL_HEIGHT, DEFAULT_PANEL_WIDTH, DisplayBackend, NoOpBackend, backend_factory_for,
 )
+from dial_display_palette import TRANSITION_RGB
 from dial_display_profiles import layout_context_for
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_eq_model import DERIVED_EQ_IDS
@@ -208,12 +209,6 @@ WIFI_FLASH_HALF_PERIOD_S = 0.5
 # down. If the reboot request itself failed (nginx down, helper refused),
 # fall back to main after this long so the dial is never stuck on it.
 RESTARTING_TIMEOUT_SECONDS = 90.0
-
-# A plain dark base pushed for the moment between the display switching to
-# show a different appliance and that appliance's own artwork/logo actually
-# landing — see _show_transition_locked(). A step lighter than the list
-# chassis (16, 16, 16) so it reads as "waiting", not as a list screen.
-_TRANSITION_RGB = (32, 32, 32)
 
 # The overlay an artwork tap's hide window substitutes for whatever the
 # touch side has published: nothing drawn. See _effective_overlay_locked().
@@ -2179,7 +2174,7 @@ class DialDisplay:
         self._source_artwork_key = ""
         self._current_rendered_image = None
         self._showing = "waiting"
-        self._display_locked(Image.new("RGB", (width, height), _TRANSITION_RGB))
+        self._display_locked(Image.new("RGB", (width, height), TRANSITION_RGB))
 
     def _effective_overlay_locked(
         self, snapshot: OverlayState, now: float | None = None, animating: bool | None = None,

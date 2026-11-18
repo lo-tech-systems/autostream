@@ -36,7 +36,8 @@ for _p in (_DIAL, _CORE):
 import logging
 
 from dial_config import DialDisplayConfig
-from dial_display_compositor import DEFAULT_MARK, OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL, _LIST_BG_RGB
+from dial_display_compositor import DEFAULT_MARK, OverlayState, WIFI_GREY, WIFI_OFF, WIFI_RED, WIFI_SIGNAL
+from dial_display_palette import LIST_BG_RGB
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile, mm_per_px_for_size
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
 from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
@@ -8803,8 +8804,8 @@ class TestBootSplash:
         assert display.get_status()["active"] is True
         frame = fb.displayed[0]
         # Flat chassis with ink in the middle — the centred-label look.
-        assert frame.getpixel((0, 0)) == _LIST_BG_RGB
-        assert any(frame.getpixel((x, frame.height // 2)) != _LIST_BG_RGB for x in range(frame.width))
+        assert frame.getpixel((0, 0)) == LIST_BG_RGB
+        assert any(frame.getpixel((x, frame.height // 2)) != LIST_BG_RGB for x in range(frame.width))
 
     def test_start_after_show_starting_reuses_the_open_backend(self):
         display, fb, gt = make_display(targets=[])

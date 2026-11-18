@@ -27,6 +27,7 @@ import numpy
 
 import dial_spi_bus
 from dial_display_backend import DisplayBackend
+from dial_display_palette import LOGO_BACKGROUND_RGB
 from dial_display_profiles import DisplayProfile, backend_name_for
 from dial_values import is_int
 
@@ -43,8 +44,6 @@ _BACKLIGHT_GPIO = 18
 # Memory Access Control — the register that selects the controller's scan
 # order. See DisplayProfile.madctl.
 _MADCTL_COMMAND = 0x36
-
-_BACKGROUND_RGB = (14, 40, 65)
 
 # Driver tag -> (module path, class name) for lazy import inside open().
 _DRIVER_MODULES = {
@@ -105,10 +104,11 @@ def _fit_image_to_panel(image, width: int, height: int):
     try:
         from PIL import Image
 
+        from dial_display_image import letterbox
+
         img = image.convert("RGB")
         img.thumbnail((width, height), Image.Resampling.LANCZOS)
-        canvas = Image.new("RGB", (width, height), _BACKGROUND_RGB)
-        canvas.paste(img, ((width - img.width) // 2, (height - img.height) // 2))
+        canvas = letterbox(img, width, height)
         logging.warning(
             "dial display: adapted image from %s to panel size %dx%d",
             getattr(image, "size", "unknown"), width, height,
@@ -121,7 +121,7 @@ def _fit_image_to_panel(image, width: int, height: int):
 def _solid_background_image(width: int, height: int):
     from PIL import Image
 
-    return Image.new("RGB", (width, height), _BACKGROUND_RGB)
+    return Image.new("RGB", (width, height), LOGO_BACKGROUND_RGB)
 
 
 def _pack_rgb565(image) -> bytes | None:

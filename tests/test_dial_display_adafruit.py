@@ -37,6 +37,7 @@ except ImportError:
 
 import dial_display_adafruit as dda
 import dial_display_backend
+import dial_display_palette
 import dial_spi_bus
 from dial_display_adafruit import AdafruitDisplayBackend
 from dial_display_profiles import DEFAULT_PROFILE_KEY, DISPLAY_PROFILES, get_profile
@@ -330,7 +331,7 @@ class TestMockedHardwareBackend:
         assert frame.size == (160, 128)
         # Black survives 565 exactly, so this stays an equality check.
         assert frame.getpixel((0, 0)) == (0, 0, 0)
-        assert frame.getpixel((0, 0)) != dda._BACKGROUND_RGB
+        assert frame.getpixel((0, 0)) != dial_display_palette.LOGO_BACKGROUND_RGB
 
     def test_wake_turns_backlight_on_and_renders_nothing(self):
         modules, spi_ctor, dio_ctor, st7735_ctor, fake_display = (

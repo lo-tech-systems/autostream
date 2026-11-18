@@ -58,6 +58,31 @@ from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFo
 
 from dial_display_image import transform_artwork_for_panel
 from dial_core_state import SEVERITY_CRITICAL, SEVERITY_WARNING
+from dial_display_palette import (
+    GLYPH_RGB,
+    PRESSED_FILL_RGB,
+    PRESSED_FILL_ALPHA,
+    ROW_HIGHLIGHT_RGB,
+    ROW_HIGHLIGHT_ALPHA,
+    MUTE_WASH_ALPHA,
+    DIVIDER_RGB,
+    HALO_RGBA,
+    LIST_BG_RGB,
+    LIST_SEPARATOR_RGB,
+    DIMMED_GLYPH_RGB,
+    INVERTED_GLYPH_RGB,
+    ALARM_RGB,
+    CARD_FILL_RGB,
+    CARD_OUTLINE_RGB,
+    CARD_OUTLINE_ALPHA,
+    CARD_SHADOW_RGB,
+    CARD_SHADOW_ALPHA,
+    BELL_INFO_RGB,
+    CORNER_DISC_RGBA,
+    OVERLAY_DIM_FACTOR,
+    BELL_WARNING_RGB,
+    BELL_CRITICAL_RGB,
+)
 from dial_eq_model import EQ_BASS_TREBLE_LIMIT_DB
 from dial_values import clamp, clamp_percent
 from dial_touch_layout import (
@@ -93,68 +118,15 @@ _BOX = Image.Resampling.BOX
 
 _logger = logging.getLogger(__name__)
 
-# Overlay dim factor: the top and bottom bands are multiplied down to this
-# fraction of their brightness before the glyphs/text are drawn on top, the
-# same ImageEnhance.Brightness idiom dial_display_image.py uses for the
-# ambient-blur backdrop (see BACKDROP_DARKEN_PERCENT there). 0.32 reads as a
-# ~68% dim — dark enough that the glyphs and the pressed-zone highlight are
-# unambiguous against any artwork, while the dimmed art is still faintly
-# visible behind it. Set against real hardware: 0.4 left bright album art
-# competing with the glyphs. The middle half of the panel is never dimmed.
-OVERLAY_DIM_FACTOR = 0.32
-
-# Glyph stroke colour and the pressed-zone highlight fill, chosen for
-# contrast against the dimmed backdrop produced by OVERLAY_DIM_FACTOR. Text
-# (artist name, volume number) is drawn in the same colour — see
-# _draw_text_safe().
-_GLYPH_RGB = (255, 255, 255)
-_PRESSED_FILL_RGB = (255, 255, 255)
-_PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
-
-# The current-row wash on the list chassis: the same translucent white
-# wash a press uses, at a fraction of the strength, drawn under any press
-# so a pressed current row still reads brighter than an unpressed one.
-# Alpha 21 lifts the (16,16,16) chassis to (36,36,36): visibly lighter
-# than the chassis, still darker than the (48,48,48) separators, and far
-# from competing with white text or the marker.
-_ROW_HIGHLIGHT_RGB = (255, 255, 255)
-_ROW_HIGHLIGHT_ALPHA = 21
-
-# A persistent STATE wash on a dimmed band (currently: the mute cell while
-# muted) — stronger than the row highlight above, which was tuned for the
-# undimmed list chassis and all but disappears over a dimmed footer band
-# under a white glyph. 96 lifts a mid-dark dimmed region clearly above its
-# surroundings while still reading as lighter, not "already pressed", under
-# the separate momentary press wash (_PRESSED_FILL_ALPHA) on top of it.
-_MUTE_WASH_ALPHA = 96
-
-# Divider-line colour: pure white, matching the glyph/text colour, so the
-# single boundary line between DOWN and UP reads as clean structure against
-# the dimmed backdrop rather than blending into it.
-_DIVIDER_RGB = (255, 255, 255)
-
 # DejaVu Sans, installed by the dial installer via fonts-dejavu-core (see
 # installer/dial/helpers.sh install_image_packages()).
 DEJAVU_SANS_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-
-_HALO_RGBA = (0, 0, 0, 255)
-
-# Selector chassis (compose_list) — a dark background distinct from any
-# artwork, so the list unambiguously reads as a different screen.
-_LIST_BG_RGB = (16, 16, 16)
-_LIST_SEPARATOR_RGB = (48, 48, 48)
 
 # Small glyphs (the selector's check mark and back/down/up chevrons) are
 # drawn at this multiple of their target box size on a transparent layer,
 # then downsampled with LANCZOS — antialiasing applied per glyph, not to
 # the whole frame. See _draw_glyph().
 _GLYPH_SUPERSAMPLE = 4
-
-# A disabled repeat-screen label (Start/Stop when the daemon state does not
-# accept that action right now) is drawn in this dimmed shade of the glyph
-# colour — the same OVERLAY_DIM_FACTOR the overlay's chevrons use for their
-# own disabled state.
-_DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
 
 # The appliance selector's secondary text for an appliance that has refused
 # this dial. A row carrying exactly this text is drawn dimmed throughout
@@ -182,26 +154,6 @@ START_FAILURE_LINE_FALLBACK = "{name} did not start"
 # A list row's trailing mark for the appliance's default output. Drawn after
 # the label and never truncated; present in the DejaVu faces the dial ships.
 DEFAULT_MARK = "•"
-
-# The compact tier's muted mute-cell: a solid wash (see the main-screen
-# frame builder) plus the glyph inverted to black, so "muted" reads at a
-# glance on a cell too small for the large tiers' translucent wash to read
-# clearly against a white glyph.
-_INVERTED_GLYPH_RGB = (0, 0, 0)
-
-# The idle screen's Wi-Fi glyph while the link is down alternates between
-# all-grey (_DIMMED_GLYPH_RGB) and this alarm red — a clear "something is
-# wrong" that still reads against a dimmed logo.
-_ALARM_RGB = (226, 62, 51)
-
-# A warning or status card off the compact tier: a flat dark surface, a thin
-# translucent white outline, and a soft dark drop shadow offset down-right —
-# sharp (rectangular) corners throughout, no rounding.
-_CARD_FILL_RGB = (24, 25, 28)
-_CARD_OUTLINE_RGB = (255, 255, 255)
-_CARD_OUTLINE_ALPHA = 70
-_CARD_SHADOW_RGB = (0, 0, 0)
-_CARD_SHADOW_ALPHA = 140
 
 # Fraction of a compact cell's own short side a cell's centred glyph box
 # occupies (0.5): 57px at the 240x240 reference, 30px at 128x128. Minus/
@@ -570,7 +522,7 @@ class _RevealArrays:
 # Background sources for _new_frame(): where a frame's base image comes
 # from before anything is drawn on top of it.
 BG_BASE = "base"          # the caller's panel-sized image (artwork or logo)
-BG_CHASSIS = "chassis"    # flat _LIST_BG_RGB fill, no caller image involved
+BG_CHASSIS = "chassis"    # flat LIST_BG_RGB fill, no caller image involved
 
 # Body kinds — the screen-specific content between the top and bottom
 # bands, dispatched through _BODY_RENDERERS.
@@ -820,7 +772,7 @@ class DialDisplayCompositor:
     ):
         """Build one display-ready frame for the appliance-selector screen.
 
-        Always starts from a flat dark background (_LIST_BG_RGB) — there is
+        Always starts from a flat dark background (LIST_BG_RGB) — there is
         no artwork on this screen. Draws up to ListLayout.rows_per_page rows
         (label, plus a faint wash on the row `state` marks current, and the
         play marker on rows whose secondary is PLAY_GLYPH), a 1px separator
@@ -862,7 +814,7 @@ class DialDisplayCompositor:
 
         Draws the shared top band (dots, name, mute/volume readout — see
         _draw_top_band_content()) over either a flat dark background
-        (_LIST_BG_RGB, the same chassis colour as compose_list()) for the
+        (LIST_BG_RGB, the same chassis colour as compose_list()) for the
         enable layout — the "Repeat Play" row, with a hollow or solid dot
         marker depending on `state.armed` — or, for the replaying layout,
         *base* (the current artwork frame or the logo, already panel-sized;
@@ -1207,7 +1159,7 @@ def _draw_band_divider(
     y0 = layout.bottom_band[1]
     y1 = layout.bottom_band[3] - 1
     for x in xs:
-        draw.line([(x, y0), (x, y1)], fill=_DIVIDER_RGB, width=line_width)
+        draw.line([(x, y0), (x, y1)], fill=DIVIDER_RGB, width=line_width)
 
 
 def _draw_bottom_band(
@@ -1249,12 +1201,12 @@ def _draw_wash(image: Image.Image, rect: tuple[int, int, int, int], rgb, alpha: 
 
 def _draw_pressed_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
     """The pressed-zone wash: _draw_wash at the press strength."""
-    _draw_wash(image, rect, _PRESSED_FILL_RGB, _PRESSED_FILL_ALPHA)
+    _draw_wash(image, rect, PRESSED_FILL_RGB, PRESSED_FILL_ALPHA)
 
 
 def _draw_row_highlight(image: Image.Image, rect: tuple[int, int, int, int]) -> None:
     """The list's current-row wash: _draw_wash at the fainter row strength."""
-    _draw_wash(image, rect, _ROW_HIGHLIGHT_RGB, _ROW_HIGHLIGHT_ALPHA)
+    _draw_wash(image, rect, ROW_HIGHLIGHT_RGB, ROW_HIGHLIGHT_ALPHA)
 
 
 def _zone_center_and_span(rect: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -1268,13 +1220,13 @@ def _zone_center_and_span(rect: tuple[int, int, int, int]) -> tuple[int, int, in
     return cx, cy, radius
 
 
-def _draw_minus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], color=_GLYPH_RGB) -> None:
+def _draw_minus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], color=GLYPH_RGB) -> None:
     cx, cy, r = _zone_center_and_span(rect)
     width = max(1, r // 3)
     draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=width)
 
 
-def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], color=_GLYPH_RGB) -> None:
+def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], color=GLYPH_RGB) -> None:
     cx, cy, r = _zone_center_and_span(rect)
     stroke = max(1, r // 3)
     draw.line([(cx - r, cy), (cx + r, cy)], fill=color, width=stroke)
@@ -1282,7 +1234,7 @@ def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int],
 
 
 def _draw_speaker_glyph(
-    draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], muted: bool | None, color=_GLYPH_RGB,
+    draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], muted: bool | None, color=GLYPH_RGB,
 ) -> None:
     """Draw a simple speaker glyph: a body (rectangle + triangle "cone") plus
     sound-wave arcs when unmuted, or a diagonal slash through the body when
@@ -1362,7 +1314,7 @@ def _text_size(
 
 
 def _draw_text_safe(
-    draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font, fill=_GLYPH_RGB,
+    draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font, fill=GLYPH_RGB,
 ) -> bool:
     """Draw *text* at *xy* in *fill* (the glyph colour by default), guarded
     so a Pillow/font failure degrades to "no text drawn" rather than an
@@ -1606,7 +1558,7 @@ def _halo_layer(text: str, font, local_xy: tuple[int, int], w: int, h: int, stro
     """
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     ImageDraw.Draw(layer).text(
-        local_xy, text, font=font, fill=_HALO_RGBA, stroke_width=stroke, stroke_fill=_HALO_RGBA,
+        local_xy, text, font=font, fill=HALO_RGBA, stroke_width=stroke, stroke_fill=HALO_RGBA,
     )
     return layer.filter(ImageFilter.GaussianBlur(radius))
 
@@ -1633,18 +1585,16 @@ GLYPH_WIFI = "wifi"                    # params: (lit, color) — the idle scree
 # (outer arc radius 0.33 of its zone).
 _BELL_GLYPH_FRACTION = 0.80
 
-# The bell's fill by the worst severity it holds: the warning orange, the
-# danger red, and the accent blue for an informational entry.
+# The bell's fill by the worst severity it holds (an informational entry
+# uses BELL_INFO_RGB).
 _BELL_RGB = {
-    SEVERITY_WARNING: (233, 113, 50),
-    SEVERITY_CRITICAL: (220, 53, 69),
+    SEVERITY_WARNING: BELL_WARNING_RGB,
+    SEVERITY_CRITICAL: BELL_CRITICAL_RGB,
 }
-_BELL_INFO_RGB = (82, 152, 216)
 
-# The corner bell on resting artwork: a dark translucent disc under it, and
-# the bell's share of the disc. The bell's share of its zone in the top band
-# and in the compact dots quadrant.
-_CORNER_DISC_RGBA = (0, 0, 0, 150)
+# The corner bell on resting artwork sits on a dark translucent disc
+# (CORNER_DISC_RGBA); this is the bell's share of the disc. The bell's share
+# of its zone in the top band and in the compact dots quadrant.
 _CORNER_BELL_FRACTION = 0.62
 _BAND_BELL_FRACTION = 0.8
 _DOTS_BELL_FRACTION = 0.85
@@ -1725,7 +1675,7 @@ def _draw_chevron(draw: ImageDraw.ImageDraw, w: int, h: int, direction: str, lit
     see _draw_glyph. *lit*=False dims it to OVERLAY_DIM_FACTOR of the glyph
     colour, matching a disabled/no-more-pages affordance."""
     stroke = max(1, min(w, h) // 7)
-    color = _GLYPH_RGB if lit else tuple(round(c * OVERLAY_DIM_FACTOR) for c in _GLYPH_RGB)
+    color = GLYPH_RGB if lit else tuple(round(c * OVERLAY_DIM_FACTOR) for c in GLYPH_RGB)
     cx, cy = w / 2, h / 2
     r = min(w, h) * 0.28
     if direction == "left":
@@ -1751,11 +1701,11 @@ def _draw_play_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     s = r / 3
     draw.polygon(
         [(cx - r + s, cy - r), (cx - r + s, cy + r), (cx + r + s, cy)],
-        fill=_GLYPH_RGB,
+        fill=GLYPH_RGB,
     )
 
 
-def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int, color=_GLYPH_RGB) -> None:
+def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int, color=GLYPH_RGB) -> None:
     """Two small circles side by side, one of them (*filled*: 0 for the
     left one, 1 for the right) drawn solid and the other outlined — the
     main/repeat screen pager dots (also reused, dimmed when inert, as the
@@ -1774,7 +1724,7 @@ def _draw_two_dots(draw: ImageDraw.ImageDraw, w: int, h: int, filled: int, color
             draw.ellipse(box, outline=color, width=max(1, r // 3))
 
 
-def _draw_page_dots(draw: ImageDraw.ImageDraw, w: int, h: int, count: int, filled: int, color=_GLYPH_RGB) -> None:
+def _draw_page_dots(draw: ImageDraw.ImageDraw, w: int, h: int, count: int, filled: int, color=GLYPH_RGB) -> None:
     """*count* small circles evenly spaced, one of them (*filled*) drawn
     solid and the rest outlined — generalises _draw_two_dots for a page
     count other than two (currently only 3, the EQ page's own third dot);
@@ -1803,9 +1753,9 @@ def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> Non
     cx, cy = w / 2.0, h / 2.0
     box = [cx - r, cy - r, cx + r, cy + r]
     if armed:
-        draw.ellipse(box, fill=_GLYPH_RGB)
+        draw.ellipse(box, fill=GLYPH_RGB)
     else:
-        draw.ellipse(box, outline=_GLYPH_RGB, width=max(1, r // 3))
+        draw.ellipse(box, outline=GLYPH_RGB, width=max(1, r // 3))
 
 
 def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
@@ -1816,8 +1766,8 @@ def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     stroke = max(1, min(w, h) // 7)
     cx, cy = w / 2, h / 2
     r = min(w, h) * 0.28
-    draw.line([(cx - r, cy - r), (cx + r, cy + r)], fill=_GLYPH_RGB, width=stroke)
-    draw.line([(cx - r, cy + r), (cx + r, cy - r)], fill=_GLYPH_RGB, width=stroke)
+    draw.line([(cx - r, cy - r), (cx + r, cy + r)], fill=GLYPH_RGB, width=stroke)
+    draw.line([(cx - r, cy + r), (cx + r, cy - r)], fill=GLYPH_RGB, width=stroke)
 
 
 # Fraction of the footer cell's short side the mute glyph's own bounding box
@@ -1826,7 +1776,7 @@ def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
 _MUTE_GLYPH_BOX_FRACTION = 0.56
 
 
-def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
+def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=GLYPH_RGB) -> None:
     """The main screen's own footer mute glyph: the crossed speaker, drawn
     via the same painter the header readout uses (_draw_speaker_glyph),
     always in its muted variant — this cell IS the mute control, so there
@@ -1848,7 +1798,7 @@ def _draw_speaker_tile(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
     _draw_speaker_glyph(draw, (0, 0, w, h), False)
 
 
-def _draw_restart_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
+def _draw_restart_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=GLYPH_RGB) -> None:
     """The compact tier's Restart control: the conventional media-player
     "seek to start" icon ("|<<") — a vertical bar near the left edge of the
     glyph's own box, then two filled triangles beside it, both pointing
@@ -1884,7 +1834,7 @@ def _draw_restart_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_
     _triangle(area_x0 + tri_w + gap)
 
 
-def _draw_stop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=_GLYPH_RGB) -> None:
+def _draw_stop_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=GLYPH_RGB) -> None:
     """The compact tier's Stop control: a filled square, reach 0.28 of the
     short side (side 0.56 of it), centred — the conventional "stop" glyph.
     Rendered into a (w, h) canvas — see _draw_glyph."""
@@ -1907,7 +1857,7 @@ def _draw_bell_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, severity: str, c
     def pt(x, y):
         return (ox + x * u, oy + y * u)
 
-    colour = _BELL_RGB.get(severity, _BELL_INFO_RGB)
+    colour = _BELL_RGB.get(severity, BELL_INFO_RGB)
     draw.ellipse([*pt(10.4, 1.6), *pt(13.6, 4.8)], fill=colour)
     draw.ellipse([*pt(5.2, 3.8), *pt(18.8, 17.4)], fill=colour)
     draw.polygon([pt(5.2, 10.6), pt(18.8, 10.6), pt(18.8, 15.0), pt(21.0, 17.2), pt(21.0, 18.6),
@@ -1918,7 +1868,7 @@ def _draw_bell_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, severity: str, c
     _draw_label_centered(draw, tuple(round(v) for v in box), label, _load_font(max(6, round(u * 9.5))))
 
 
-def _draw_wifi_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, lit: int, color=_GLYPH_RGB) -> None:
+def _draw_wifi_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, lit: int, color=GLYPH_RGB) -> None:
     """The idle screen's Wi-Fi status glyph: a dot with three arcs fanning
     upward from it. The innermost *lit* arcs (0..3) and the dot are drawn in
     *color*; the rest in the dimmed glyph shade. lit=0 dims the dot as well,
@@ -1937,7 +1887,7 @@ def _draw_wifi_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, lit: int, color=
     stroke = max(2, round(short * 0.062))
     outer_r = 0.33 * short
     dot_r = round(stroke * 0.78)
-    dim = _DIMMED_GLYPH_RGB
+    dim = DIMMED_GLYPH_RGB
     for i, fraction in enumerate((0.42, 0.71, 1.00)):
         r = outer_r * fraction
         arc_color = color if i < lit else dim
@@ -1968,7 +1918,7 @@ _GLYPH_PAINTERS = {
 
 def _draw_label(
     draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, pad: int,
-    color=_GLYPH_RGB,
+    color=GLYPH_RGB,
 ) -> None:
     """Draw *text* left-aligned inside *rect*, no halo — used on the flat
     dark repeat-screen background, where (unlike compose()'s overlay over
@@ -1997,7 +1947,7 @@ def _draw_label(
 
 def _draw_label_right(
     draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, pad: int,
-    color=_GLYPH_RGB,
+    color=GLYPH_RGB,
 ) -> None:
     """Draw *text* right-aligned inside *rect*, no halo and no truncation —
     the right-aligned secondary-text path _body_list_rows() draws inline,
@@ -2017,7 +1967,7 @@ def _draw_label_right(
 
 
 def _draw_label_centered(
-    draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, color=_GLYPH_RGB,
+    draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, color=GLYPH_RGB,
 ) -> None:
     """Draw *text* centred within *rect*, no halo — same degrade-gracefully
     discipline as _draw_label()."""
@@ -2049,7 +1999,7 @@ def _new_frame(base, width: int, height: int, background: str) -> Image.Image:
             return img
         except Exception:
             pass
-    return Image.new("RGB", (width, height), _LIST_BG_RGB)
+    return Image.new("RGB", (width, height), LIST_BG_RGB)
 
 
 def _finish(img: Image.Image, rotate: bool, bgr: bool) -> Image.Image:
@@ -2348,11 +2298,11 @@ def _body_idle_badge(img: Image.Image, metrics: LayoutMetrics, body: Body) -> No
     if style == WIFI_OFF:
         return
     if style == WIFI_RED:
-        lit, color = 3, _ALARM_RGB
+        lit, color = 3, ALARM_RGB
     elif style == WIFI_GREY:
-        lit, color = 0, _GLYPH_RGB
+        lit, color = 0, GLYPH_RGB
     else:
-        lit, color = clamp(int(body.wifi_bars), 0, 3), _GLYPH_RGB
+        lit, color = clamp(int(body.wifi_bars), 0, 3), GLYPH_RGB
     _draw_glyph(img, layout.wifi, GLYPH_WIFI, lit, color, supersample=metrics.supersample)
 
 
@@ -2513,7 +2463,7 @@ def _row_text_color(secondary) -> tuple:
     """The text colour of a list row: dimmed when its secondary text is the
     selector's "not authorised" or "needs an update" label, the plain glyph
     colour otherwise."""
-    return _DIMMED_GLYPH_RGB if secondary in (NOT_AUTHORISED_TEXT, NEEDS_UPDATE_TEXT) else _GLYPH_RGB
+    return DIMMED_GLYPH_RGB if secondary in (NOT_AUTHORISED_TEXT, NEEDS_UPDATE_TEXT) else GLYPH_RGB
 
 
 def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -2523,7 +2473,7 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
     pad = metrics.pad
 
     for i, (x0, y0, x1, y1) in enumerate(layout.rows):
-        draw.line([(x0, y1 - 1), (x1 - 1, y1 - 1)], fill=_LIST_SEPARATOR_RGB, width=1)
+        draw.line([(x0, y1 - 1), (x1 - 1, y1 - 1)], fill=LIST_SEPARATOR_RGB, width=1)
         if i >= len(body.rows):
             continue
         row = body.rows[i]
@@ -2625,12 +2575,12 @@ def _draw_compact_picker_dividers(img: Image.Image, layout: "CompactPickerLayout
     draw = ImageDraw.Draw(img)
     w = metrics.divider_w
     draw.line(
-        [(0, layout.title_divider_y), (metrics.width - 1, layout.title_divider_y)], fill=_DIVIDER_RGB, width=w,
+        [(0, layout.title_divider_y), (metrics.width - 1, layout.title_divider_y)], fill=DIVIDER_RGB, width=w,
     )
-    draw.line([(0, layout.divider_y), (metrics.width - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
+    draw.line([(0, layout.divider_y), (metrics.width - 1, layout.divider_y)], fill=DIVIDER_RGB, width=w)
     draw.line(
         [(layout.divider_x, layout.title_divider_y), (layout.divider_x, metrics.height - 1)],
-        fill=_DIVIDER_RGB, width=w,
+        fill=DIVIDER_RGB, width=w,
     )
 
 
@@ -2647,15 +2597,15 @@ def _draw_compact_dividers(
     "none" (neither row has a vertical divider)."""
     draw = ImageDraw.Draw(img)
     w = metrics.divider_w
-    draw.line([(0, layout.divider_y), (metrics.width - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
+    draw.line([(0, layout.divider_y), (metrics.width - 1, layout.divider_y)], fill=DIVIDER_RGB, width=w)
     if vertical == "full":
-        draw.line([(layout.divider_x, 0), (layout.divider_x, metrics.height - 1)], fill=_DIVIDER_RGB, width=w)
+        draw.line([(layout.divider_x, 0), (layout.divider_x, metrics.height - 1)], fill=DIVIDER_RGB, width=w)
     elif vertical == "top":
         y1 = layout.top_row[3]
-        draw.line([(layout.divider_x, 0), (layout.divider_x, y1 - 1)], fill=_DIVIDER_RGB, width=w)
+        draw.line([(layout.divider_x, 0), (layout.divider_x, y1 - 1)], fill=DIVIDER_RGB, width=w)
     elif vertical == "bottom":
         y0 = layout.bottom_row[1]
-        draw.line([(layout.divider_x, y0), (layout.divider_x, metrics.height - 1)], fill=_DIVIDER_RGB, width=w)
+        draw.line([(layout.divider_x, y0), (layout.divider_x, metrics.height - 1)], fill=DIVIDER_RGB, width=w)
 
 
 def _body_compact_controls(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -2665,11 +2615,11 @@ def _body_compact_controls(img: Image.Image, metrics: LayoutMetrics, body: Body)
     runs), minus and plus."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
     ss = metrics.supersample
-    dots_color = _GLYPH_RGB if body.dots_lit else _DIMMED_GLYPH_RGB
+    dots_color = GLYPH_RGB if body.dots_lit else DIMMED_GLYPH_RGB
     _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 0, dots_color, supersample=ss)
     if body.bell is not None:
         _draw_bell(img, dots_bell_rect(c.tl), body.bell, metrics, _DOTS_BELL_FRACTION)
-    mute_color = _INVERTED_GLYPH_RGB if body.muted else _GLYPH_RGB
+    mute_color = INVERTED_GLYPH_RGB if body.muted else GLYPH_RGB
     _draw_glyph(img, _compact_glyph_box(c.tr), GLYPH_MUTE, mute_color, supersample=ss)
     draw = ImageDraw.Draw(img)
     _draw_minus_glyph(draw, c.bl)
@@ -2741,7 +2691,7 @@ def _body_compact_toggle(img: Image.Image, metrics: LayoutMetrics, body: Body) -
     tier's row ever is, so the label needs the width back to fit "Repeat
     Play" whole (see _draw_toggle_row's own dot_box paragraph)."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
-    _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, _GLYPH_RGB, supersample=metrics.supersample)
+    _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, GLYPH_RGB, supersample=metrics.supersample)
     _draw_toggle_row(img, metrics, c.bottom_row, body.label, body.armed, dot_box=metrics.icon)
     _draw_compact_dividers(img, c, metrics, vertical="top")
 
@@ -2755,12 +2705,12 @@ def _body_compact_replay(img: Image.Image, metrics: LayoutMetrics, body: Body) -
     not currently accepted."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
     ss = metrics.supersample
-    _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, _GLYPH_RGB, supersample=ss)
+    _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, GLYPH_RGB, supersample=ss)
     font = _load_font(metrics.font_readout)
     position = body.line.split(" / ", 1)[0] if body.line else body.line
     _draw_text_with_halo(img, c.tr, position, font, metrics, align="center")
-    start_color = _GLYPH_RGB if body.start_enabled else _DIMMED_GLYPH_RGB
-    stop_color = _GLYPH_RGB if body.stop_enabled else _DIMMED_GLYPH_RGB
+    start_color = GLYPH_RGB if body.start_enabled else DIMMED_GLYPH_RGB
+    stop_color = GLYPH_RGB if body.stop_enabled else DIMMED_GLYPH_RGB
     _draw_glyph(img, _compact_glyph_box(c.bl), GLYPH_RESTART, start_color, supersample=ss)
     _draw_glyph(img, _compact_glyph_box(c.br), GLYPH_STOP, stop_color, supersample=ss)
     _draw_compact_dividers(img, c, metrics, vertical="full")
@@ -2812,21 +2762,21 @@ def _draw_eq_bar(img: Image.Image, bar, label: str, value: "int | None", metrics
     _draw_label_right(draw, bar.caption, _eq_caption_text(value), font, pad)
 
     w = metrics.divider_w
-    draw.line([(bar.track_x0, bar.track_y), (bar.track_x1, bar.track_y)], fill=_DIMMED_GLYPH_RGB, width=w)
+    draw.line([(bar.track_x0, bar.track_y), (bar.track_x1, bar.track_y)], fill=DIMMED_GLYPH_RGB, width=w)
     draw.line(
-        [(bar.centre_x, bar.track_y - 2 * w), (bar.centre_x, bar.track_y + 2 * w)], fill=_GLYPH_RGB, width=w,
+        [(bar.centre_x, bar.track_y - 2 * w), (bar.centre_x, bar.track_y + 2 * w)], fill=GLYPH_RGB, width=w,
     )
     if value is not None:
         marker_x = bar.centre_x + round(value * (bar.track_x1 - bar.centre_x) / EQ_BASS_TREBLE_LIMIT_DB)
         x0, x1 = sorted((bar.centre_x, marker_x))
-        draw.line([(x0, bar.track_y), (x1, bar.track_y)], fill=_GLYPH_RGB, width=3 * w)
+        draw.line([(x0, bar.track_y), (x1, bar.track_y)], fill=GLYPH_RGB, width=3 * w)
         r = max(3, pad // 2)
-        draw.ellipse([marker_x - r, bar.track_y - r, marker_x + r, bar.track_y + r], fill=_GLYPH_RGB)
+        draw.ellipse([marker_x - r, bar.track_y - r, marker_x + r, bar.track_y + r], fill=GLYPH_RGB)
 
     at_min = value is not None and value <= -EQ_BASS_TREBLE_LIMIT_DB
     at_max = value is not None and value >= EQ_BASS_TREBLE_LIMIT_DB
-    minus_color = _DIMMED_GLYPH_RGB if (value is None or at_min) else _GLYPH_RGB
-    plus_color = _DIMMED_GLYPH_RGB if (value is None or at_max) else _GLYPH_RGB
+    minus_color = DIMMED_GLYPH_RGB if (value is None or at_min) else GLYPH_RGB
+    plus_color = DIMMED_GLYPH_RGB if (value is None or at_max) else GLYPH_RGB
     _draw_minus_glyph(draw, bar.down, color=minus_color)
     _draw_plus_glyph(draw, bar.up, color=plus_color)
 
@@ -2841,7 +2791,7 @@ def _body_eq_bars(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     _draw_eq_bar(img, layout.treble, "Treble", body.treble_db, metrics)
     divider_y = (layout.bass.row[3] + layout.treble.row[1]) // 2
     ImageDraw.Draw(img).line(
-        [(0, divider_y), (metrics.width - 1, divider_y)], fill=_DIVIDER_RGB, width=metrics.divider_w,
+        [(0, divider_y), (metrics.width - 1, divider_y)], fill=DIVIDER_RGB, width=metrics.divider_w,
     )
 
 
@@ -2878,7 +2828,7 @@ def _plan_warning_text(
     used = 0.0
     source = _truncate_to_width(draw, body.source, fonts[small_px], max_w)
     if source:
-        out.append((source, fonts[small_px], small_px, _DIMMED_GLYPH_RGB))
+        out.append((source, fonts[small_px], small_px, DIMMED_GLYPH_RGB))
         used += small_px * 1.2
 
     def fitted(title_px: int, message_px: int):
@@ -2905,8 +2855,8 @@ def _plan_warning_text(
         title = _cap_lines(draw, title, title_n, fonts[title_px], max_w)
         message_n = int((max_h - used - title_n * title_px * 1.2) // (message_px * 1.2))
         message = _cap_lines(draw, message, message_n, fonts[message_px], max_w) if message_n > 0 else ()
-    out.extend((line, fonts[title_px], title_px, _GLYPH_RGB) for line in title)
-    out.extend((line, fonts[message_px], message_px, _GLYPH_RGB) for line in message)
+    out.extend((line, fonts[title_px], title_px, GLYPH_RGB) for line in title)
+    out.extend((line, fonts[message_px], message_px, GLYPH_RGB) for line in message)
     return out
 
 
@@ -2967,9 +2917,9 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
         bar_y0 = my1 - zone // 2 - bar_h // 2
         x0, x1 = mx0 + metrics.pad, mx1 - metrics.pad
         fill_x1 = x0 + round((x1 - x0) * clamp_percent(body.percent) / 100)
-        draw.rectangle([x0, bar_y0, x1 - 1, bar_y0 + bar_h - 1], fill=_DIMMED_GLYPH_RGB)
+        draw.rectangle([x0, bar_y0, x1 - 1, bar_y0 + bar_h - 1], fill=DIMMED_GLYPH_RGB)
         if fill_x1 > x0:
-            draw.rectangle([x0, bar_y0, fill_x1 - 1, bar_y0 + bar_h - 1], fill=_GLYPH_RGB)
+            draw.rectangle([x0, bar_y0, fill_x1 - 1, bar_y0 + bar_h - 1], fill=GLYPH_RGB)
         my1 -= zone
     if body.source:
         _draw_fitted_warning_text(draw, (mx0, my0, mx1, my1), body, metrics)
@@ -2984,9 +2934,9 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     if not layout.cells:
         return
     cx0, cy0, cx1, cy1 = layout.card
-    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=_DIVIDER_RGB, width=w)
+    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=DIVIDER_RGB, width=w)
     for x in layout.divider_xs:
-        draw.line([(x, layout.cells[0][1]), (x, cy1 - 1)], fill=_DIVIDER_RGB, width=w)
+        draw.line([(x, layout.cells[0][1]), (x, cy1 - 1)], fill=DIVIDER_RGB, width=w)
 
 
 def _body_centred_label(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -3020,12 +2970,12 @@ def _footer_none(img: Image.Image, layout, metrics: LayoutMetrics, footer: Foote
 
 def _footer_volume(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     """The two-way minus/plus footer (the repeat screen's replaying layout,
-    the per-output detail page). Each glyph dims to _DIMMED_GLYPH_RGB when
+    the per-output detail page). Each glyph dims to DIMMED_GLYPH_RGB when
     its own side is disabled (Footer.left_enabled/right_enabled) — the
     detail page's own steppers when the output is not selected, matching
     the shade the disabled Restart/Stop labels already use elsewhere."""
-    left_color = _GLYPH_RGB if footer.left_enabled else _DIMMED_GLYPH_RGB
-    right_color = _GLYPH_RGB if footer.right_enabled else _DIMMED_GLYPH_RGB
+    left_color = GLYPH_RGB if footer.left_enabled else DIMMED_GLYPH_RGB
+    right_color = GLYPH_RGB if footer.right_enabled else DIMMED_GLYPH_RGB
     _draw_bottom_band(
         img, layout, metrics,
         left_rect=layout.down, right_rect=layout.up,
@@ -3052,8 +3002,8 @@ def _footer_volume_mute(img: Image.Image, layout, metrics: LayoutMetrics, footer
 
 def _footer_labels(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     font = _load_font(metrics.font_readout)
-    left_color = _GLYPH_RGB if footer.left_enabled else _DIMMED_GLYPH_RGB
-    right_color = _GLYPH_RGB if footer.right_enabled else _DIMMED_GLYPH_RGB
+    left_color = GLYPH_RGB if footer.left_enabled else DIMMED_GLYPH_RGB
+    right_color = GLYPH_RGB if footer.right_enabled else DIMMED_GLYPH_RGB
     _draw_bottom_band(
         img, layout, metrics,
         left_rect=layout.down, right_rect=layout.up,
@@ -3082,7 +3032,7 @@ def _footer_list_rail(img: Image.Image, layout, metrics: LayoutMetrics, footer: 
     ll = list_layout_for(metrics.width, metrics.height, metrics=metrics)
     _dim_rect(img, ll.rail)
     ImageDraw.Draw(img).line(
-        [(ll.rail[0] - 1, 0), (ll.rail[0] - 1, ll.rail[3] - 1)], fill=_LIST_SEPARATOR_RGB, width=1,
+        [(ll.rail[0] - 1, 0), (ll.rail[0] - 1, ll.rail[3] - 1)], fill=LIST_SEPARATOR_RGB, width=1,
     )
     ss = metrics.supersample
     side = metrics.rail_glyph
@@ -3114,9 +3064,9 @@ def _draw_card(img: Image.Image, rect: Rect, metrics: LayoutMetrics) -> None:
         min(metrics.width, x0 + offset), min(metrics.height, y0 + offset),
         min(metrics.width, x1 + offset), min(metrics.height, y1 + offset),
     )
-    _draw_wash(img, shadow, _CARD_SHADOW_RGB, _CARD_SHADOW_ALPHA)
+    _draw_wash(img, shadow, CARD_SHADOW_RGB, CARD_SHADOW_ALPHA)
     draw = ImageDraw.Draw(img)
-    draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=_CARD_FILL_RGB)
+    draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=CARD_FILL_RGB)
     _draw_card_outline(img, (x0, y0, x1, y1), metrics.divider_w)
 
 
@@ -3129,7 +3079,7 @@ def _draw_card_outline(img: Image.Image, rect: Rect, width: int) -> None:
         return
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     ImageDraw.Draw(layer).rectangle(
-        [0, 0, w - 1, h - 1], outline=(*_CARD_OUTLINE_RGB, _CARD_OUTLINE_ALPHA), width=width,
+        [0, 0, w - 1, h - 1], outline=(*CARD_OUTLINE_RGB, CARD_OUTLINE_ALPHA), width=width,
     )
     region = img.crop(rect).convert("RGBA")
     composited = Image.alpha_composite(region, layer).convert("RGB")
@@ -3175,7 +3125,7 @@ def _compose_frame(
     for rect in frame.highlights:
         _draw_row_highlight(img, rect)
     for rect, alpha in frame.washes:
-        _draw_wash(img, rect, _PRESSED_FILL_RGB, alpha)
+        _draw_wash(img, rect, PRESSED_FILL_RGB, alpha)
     for rect in frame.pressed:
         _draw_pressed_highlight(img, rect)
     if frame.header is not None:
@@ -3222,7 +3172,7 @@ def _with_corner_bell(image, overlay, metrics: LayoutMetrics):
     x0, y0, x1, y1 = idle_layout_for(image.width, image.height, metrics=metrics).info
     w, h, ss = x1 - x0, y1 - y0, metrics.supersample
     disc = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
-    ImageDraw.Draw(disc).ellipse([0, 0, w * ss - 1, h * ss - 1], fill=_CORNER_DISC_RGBA)
+    ImageDraw.Draw(disc).ellipse([0, 0, w * ss - 1, h * ss - 1], fill=CORNER_DISC_RGBA)
     disc = disc.resize((w, h), _LANCZOS)
     frame.paste(Image.alpha_composite(frame.crop((x0, y0, x1, y1)).convert("RGBA"), disc).convert("RGB"), (x0, y0))
     _draw_bell(frame, (x0, y0, x1, y1), overlay.bell, metrics, _CORNER_BELL_FRACTION)
@@ -3266,7 +3216,7 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: 
         # A dedicated (stronger) strength from the row-highlight wash below,
         # which was tuned for the undimmed list chassis and all but
         # disappears over a dimmed footer band under a white glyph.
-        washes=((layout.footer_mute, _MUTE_WASH_ALPHA),) if overlay.muted else (),
+        washes=((layout.footer_mute, MUTE_WASH_ALPHA),) if overlay.muted else (),
         header=Header(
             name=overlay.name, volume=overlay.volume,
             dots_filled=0 if overlay.dots else None,

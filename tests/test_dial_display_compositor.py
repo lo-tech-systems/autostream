@@ -87,18 +87,11 @@ from dial_display_compositor import (  # noqa: E402
     WIFI_RED,
     WIFI_SIGNAL,
     _BODY_RENDERERS,
-    _ALARM_RGB,
-    _CARD_FILL_RGB,
-    _DIMMED_GLYPH_RGB,
     _FOOTER_RENDERERS,
     _GLYPH_PAINTERS,
-    _GLYPH_RGB,
     _GLYPH_SUPERSAMPLE,
     _BELL_GLYPH_FRACTION,
     _BELL_RGB,
-    _INVERTED_GLYPH_RGB,
-    _LIST_BG_RGB,
-    OVERLAY_DIM_FACTOR,
     timer_area,
     _COMPACT_PICKER_TITLE,
     _COMPACT_SMALL_GLYPH_FRACTION,
@@ -126,6 +119,15 @@ from dial_display_compositor import (  # noqa: E402
     _truncate_to_width,
     _zone_rect,
     format_mmss,
+)
+from dial_display_palette import (  # noqa: E402
+    ALARM_RGB,
+    CARD_FILL_RGB,
+    DIMMED_GLYPH_RGB,
+    GLYPH_RGB,
+    INVERTED_GLYPH_RGB,
+    LIST_BG_RGB,
+    OVERLAY_DIM_FACTOR,
 )
 from dial_touch_layout import (  # noqa: E402
     CONTENT_BASE,
@@ -1278,11 +1280,11 @@ class TestComposeList:
 
         dimmed = render(NOT_AUTHORISED_TEXT)
         normal = render("Not authorised.")  # a plain secondary string: drawn at full white
-        assert self._brightest(normal) > _DIMMED_GLYPH_RGB[0]
+        assert self._brightest(normal) > DIMMED_GLYPH_RGB[0]
         # Label and secondary are both drawn, and nothing in the row is brighter than the dim colour.
         blank = render("")
         assert list(dimmed.getdata()) != list(blank.getdata())
-        assert self._brightest(dimmed) <= max(_DIMMED_GLYPH_RGB)
+        assert self._brightest(dimmed) <= max(DIMMED_GLYPH_RGB)
 
 
 # ---------------------------------------------------------------------------
@@ -1995,7 +1997,7 @@ class TestWifiGlyph:
         assert GLYPH_WIFI in _GLYPH_PAINTERS
 
     def test_corners_transparent(self):
-        tile = _glyph_tile(GLYPH_WIFI, (3, _GLYPH_RGB), self.S, self.S, 4)
+        tile = _glyph_tile(GLYPH_WIFI, (3, GLYPH_RGB), self.S, self.S, 4)
         px = tile.load()
         for corner in ((0, 0), (self.S - 1, 0), (0, self.S - 1), (self.S - 1, self.S - 1)):
             assert px[corner][3] == 0
@@ -2008,7 +2010,7 @@ class TestWifiGlyph:
 
     @pytest.mark.parametrize("lit", [0, 1, 2, 3])
     def test_innermost_lit_arcs_are_white_and_the_rest_grey(self, lit):
-        tile = _glyph_tile(GLYPH_WIFI, (lit, _GLYPH_RGB), self.S, self.S, 4)
+        tile = _glyph_tile(GLYPH_WIFI, (lit, GLYPH_RGB), self.S, self.S, 4)
         px = tile.load()
         arcs, dot = self._arc_points()
         for i, (x, y) in enumerate(arcs):
@@ -2023,7 +2025,7 @@ class TestWifiGlyph:
         assert (r > 150) == (lit > 0)
 
     def test_alarm_colour_reaches_every_part(self):
-        tile = _glyph_tile(GLYPH_WIFI, (3, _ALARM_RGB), self.S, self.S, 4)
+        tile = _glyph_tile(GLYPH_WIFI, (3, ALARM_RGB), self.S, self.S, 4)
         px = tile.load()
         arcs, dot = self._arc_points()
         for x, y in arcs + [dot]:
@@ -2039,7 +2041,7 @@ class TestWifiGlyph:
         # where both sides are already near-transparent noise) still catches
         # any genuine left/right asymmetry in the glyph's own geometry.
         s = 61
-        tile = _glyph_tile(GLYPH_WIFI, (2, _GLYPH_RGB), s, s, 4)
+        tile = _glyph_tile(GLYPH_WIFI, (2, GLYPH_RGB), s, s, 4)
         px = tile.load()
         for y in range(0, s, 5):
             for dx in range(0, s // 2, 5):
@@ -2050,10 +2052,10 @@ class TestWifiGlyph:
 
     def test_lit_and_colour_are_distinct_cache_keys(self):
         _glyph_tile.cache_clear()
-        _glyph_tile(GLYPH_WIFI, (1, _GLYPH_RGB), 30, 30, 4)
-        _glyph_tile(GLYPH_WIFI, (2, _GLYPH_RGB), 30, 30, 4)
-        _glyph_tile(GLYPH_WIFI, (2, _ALARM_RGB), 30, 30, 4)
-        _glyph_tile(GLYPH_WIFI, (2, _ALARM_RGB), 30, 30, 4)
+        _glyph_tile(GLYPH_WIFI, (1, GLYPH_RGB), 30, 30, 4)
+        _glyph_tile(GLYPH_WIFI, (2, GLYPH_RGB), 30, 30, 4)
+        _glyph_tile(GLYPH_WIFI, (2, ALARM_RGB), 30, 30, 4)
+        _glyph_tile(GLYPH_WIFI, (2, ALARM_RGB), 30, 30, 4)
         info = _glyph_tile.cache_info()
         assert info.misses == 3 and info.hits == 1
 
@@ -2183,12 +2185,12 @@ class TestComposeCard:
         frame = self._frame(compositor, (320, 240), self._view(), 0.1778)
         card = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778)).card
         # An interior point away from text/dividers is the flat fill.
-        assert frame.getpixel((card[0] + 6, card[1] + 6)) == _CARD_FILL_RGB
+        assert frame.getpixel((card[0] + 6, card[1] + 6)) == CARD_FILL_RGB
         # The outline is a thin translucent white edge on the card's own
         # border: lighter than the fill in every channel, but not fully
         # white (it is blended, not opaque).
         outline_px = frame.getpixel((card[0], card[1] + 20))
-        assert all(outline_px[i] > _CARD_FILL_RGB[i] for i in range(3))
+        assert all(outline_px[i] > CARD_FILL_RGB[i] for i in range(3))
         assert outline_px != (255, 255, 255)
         # The shadow darkens the dimmed backdrop just outside the bottom-right corner.
         dimmed = round(200 * OVERLAY_DIM_FACTOR)
@@ -2204,16 +2206,16 @@ class TestComposeCard:
         assert frame.getpixel((divider_x, l.card[3] - 2)) == (255, 255, 255)
         # No vertical line through the message row (just inside the card fill,
         # clear of the text: sample near the row's top-left).
-        assert frame.getpixel((divider_x, l.message[1] + 4)) == _CARD_FILL_RGB
+        assert frame.getpixel((divider_x, l.message[1] + 4)) == CARD_FILL_RGB
 
     def test_pressed_cell_washes_only_itself(self, compositor):
         plain = self._frame(compositor, (320, 240), self._view(), 0.1778)
         pressed = self._frame(compositor, (320, 240), self._view(pressed=0), 0.1778)
         l = warning_layout_for(320, 240, buttons=2, metrics=metrics_for(320, 240, 0.1778))
         first, second = l.cells
-        assert pressed.getpixel((first[0] + 3, first[1] + 3))[0] > _CARD_FILL_RGB[0]
-        assert plain.getpixel((first[0] + 3, first[1] + 3)) == _CARD_FILL_RGB
-        assert pressed.getpixel((second[0] + 3, second[1] + 3)) == _CARD_FILL_RGB
+        assert pressed.getpixel((first[0] + 3, first[1] + 3))[0] > CARD_FILL_RGB[0]
+        assert plain.getpixel((first[0] + 3, first[1] + 3)) == CARD_FILL_RGB
+        assert pressed.getpixel((second[0] + 3, second[1] + 3)) == CARD_FILL_RGB
         assert list(pressed.crop(l.message).getdata()) == list(plain.crop(l.message).getdata())
 
     @pytest.mark.parametrize("stale", [2, 7, -1])
@@ -2224,7 +2226,7 @@ class TestComposeCard:
 
     def test_none_base_falls_back_to_chassis(self, compositor):
         frame = self._frame(compositor, (160, 128), self._view(), base=False)
-        dimmed = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        dimmed = tuple(round(c * OVERLAY_DIM_FACTOR) for c in LIST_BG_RGB)
         assert frame.getpixel((1, 1)) == dimmed
 
     def test_compact_is_full_screen_two_by_two_no_card(self, compositor):
@@ -2249,7 +2251,7 @@ class TestComposeCard:
         l = warning_layout_for(320, 240, buttons=1, metrics=metrics_for(320, 240, 0.1778))
         assert l.divider_xs == ()
         for x in range(l.cells[0][0] + 4, l.cells[0][2] - 4, 7):
-            assert frame.getpixel((x, l.cells[0][3] - 6)) == _CARD_FILL_RGB
+            assert frame.getpixel((x, l.cells[0][3] - 6)) == CARD_FILL_RGB
 
     def test_rotate_and_bgr_applied(self, compositor):
         plain = self._frame(compositor, (160, 128), self._view())
@@ -2448,9 +2450,9 @@ class TestComposeRestarting:
     def test_flat_chassis_with_centred_text(self, compositor, width, height):
         frame = compositor.compose_restarting(width, height, rotate=False, bgr=False)
         for xy in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
-            assert frame.getpixel(xy) == _LIST_BG_RGB
+            assert frame.getpixel(xy) == LIST_BG_RGB
         row = [frame.getpixel((x, height // 2)) for x in range(width)]
-        ink_x = [x for x, p in enumerate(row) if p != _LIST_BG_RGB]
+        ink_x = [x for x, p in enumerate(row) if p != LIST_BG_RGB]
         assert ink_x
         # The ink's own bounding box is centred on the panel — a per-column
         # ink-count comparison would be thrown off by "Restarting..." itself
@@ -2462,7 +2464,7 @@ class TestComposeRestarting:
     def test_font_failure_leaves_the_flat_fill(self, compositor):
         with patch("dial_display_compositor._load_font", return_value=None):
             frame = compositor.compose_restarting(160, 128, rotate=False, bgr=False)
-        assert set(frame.getdata()) == {_LIST_BG_RGB}
+        assert set(frame.getdata()) == {LIST_BG_RGB}
 
 
 # ---------------------------------------------------------------------------
@@ -2481,9 +2483,9 @@ class TestComposeStarting:
     def test_flat_chassis_with_centred_text(self, compositor, width, height):
         frame = compositor.compose_starting(width, height, rotate=False, bgr=False)
         for xy in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
-            assert frame.getpixel(xy) == _LIST_BG_RGB
+            assert frame.getpixel(xy) == LIST_BG_RGB
         row = [frame.getpixel((x, height // 2)) for x in range(width)]
-        ink_x = [x for x, p in enumerate(row) if p != _LIST_BG_RGB]
+        ink_x = [x for x, p in enumerate(row) if p != LIST_BG_RGB]
         assert ink_x
         bbox_mid = (min(ink_x) + max(ink_x)) / 2
         assert abs(bbox_mid - width / 2) <= max(6, width * 0.08)
@@ -2491,7 +2493,7 @@ class TestComposeStarting:
     def test_font_failure_leaves_the_flat_fill(self, compositor):
         with patch("dial_display_compositor._load_font", return_value=None):
             frame = compositor.compose_starting(160, 128, rotate=False, bgr=False)
-        assert set(frame.getdata()) == {_LIST_BG_RGB}
+        assert set(frame.getdata()) == {LIST_BG_RGB}
 
     def test_differs_from_restarting_only_by_its_text(self, compositor):
         starting = compositor.compose_starting(160, 128, rotate=False, bgr=False)
@@ -3179,12 +3181,12 @@ class TestRailFooterRendering:
         assert result.size == (320, 240)
 
     def test_separator_column_is_drawn_left_of_the_rail(self, compositor):
-        from dial_display_compositor import _LIST_SEPARATOR_RGB
+        from dial_display_palette import LIST_SEPARATOR_RGB
         layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
         result = compositor.compose_list(
             320, 240, ListState(rows=self._rows()), rotate=False, bgr=False, metrics=_RICH_METRICS,
         )
-        assert result.getpixel((layout.rail[0] - 1, 10)) == _LIST_SEPARATOR_RGB
+        assert result.getpixel((layout.rail[0] - 1, 10)) == LIST_SEPARATOR_RGB
 
     def test_rail_column_is_dimmed_relative_to_the_chassis(self, compositor):
         layout = list_layout_for(320, 240, metrics=_RICH_METRICS)
@@ -3849,7 +3851,7 @@ class TestFooterVolumeMute:
         [((160, 128), None), ((320, 240), _RICH_METRICS)],
     )
     def test_dividers_drawn_between_the_three_thirds(self, compositor, size, metrics):
-        from dial_display_compositor import _DIVIDER_RGB
+        from dial_display_palette import DIVIDER_RGB
         img = Image.new("RGB", size, (60, 60, 60))
         result = compositor.compose(
             img, *size, rotate=False, bgr=False, is_artwork=False,
@@ -3858,7 +3860,7 @@ class TestFooterVolumeMute:
         layout = layout_for(*size, metrics=metrics)
         mid_y = (layout.bottom_band[1] + layout.bottom_band[3]) // 2
         for x in layout.footer_dividers:
-            assert result.getpixel((x, mid_y)) == _DIVIDER_RGB
+            assert result.getpixel((x, mid_y)) == DIVIDER_RGB
 
     def test_thirds_sit_between_the_footer_dividers_in_order(self):
         """The order: minus (DOWN) left, plus (UP) middle, mute
@@ -4174,7 +4176,8 @@ class TestComposeOutput:
         (the same size the rail's own cancel control uses), not a chevron
         stretched across the whole dots zone — a corner of the dots rect,
         outside that box, must be untouched chrome."""
-        from dial_display_compositor import OVERLAY_DIM_FACTOR, _LIST_BG_RGB, _centred_box
+        from dial_display_compositor import _centred_box
+        from dial_display_palette import OVERLAY_DIM_FACTOR, LIST_BG_RGB
         metrics = metrics_for(160, 128)
         layout = layout_for(160, 128, metrics=metrics)
         box = _centred_box(layout.dots, metrics.icon)
@@ -4183,7 +4186,7 @@ class TestComposeOutput:
         with_back = compositor.compose_output(160, 128, _output_state(), rotate=False, bgr=False)
         # compose_output's own chassis background, dimmed the same way the
         # top band always is — the plain, glyph-free corner colour.
-        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in LIST_BG_RGB)
         assert with_back.getpixel(corner) == expected
 
 
@@ -4561,8 +4564,8 @@ class TestCompactPicker:
             metrics.width, metrics.height, ListState(rows=(("Kitchen", False, "1:23"),)),
             rotate=False, bgr=False, metrics=metrics, base=None,
         )
-        from dial_display_compositor import _LIST_BG_RGB
-        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        from dial_display_palette import LIST_BG_RGB
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in LIST_BG_RGB)
         assert result.getpixel((2, 2)) == expected
 
     def test_default_fields_are_byte_identical_to_before_they_existed(self, compositor):
@@ -4658,10 +4661,10 @@ class TestInfoListVariant:
         result = compositor.compose_list(
             metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics, base=base,
         )
-        from dial_display_compositor import _LIST_BG_RGB
+        from dial_display_palette import LIST_BG_RGB
         # Flat chassis, undimmed — not the dimmed base colour a picker frame
         # would show at the same corner (see test_base_is_dimmed_behind_when_given).
-        assert result.getpixel((2, 2)) == _LIST_BG_RGB
+        assert result.getpixel((2, 2)) == LIST_BG_RGB
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_labels_upper_half_values_lower_half(self, compositor, metrics):
@@ -4702,8 +4705,8 @@ class TestInfoListVariant:
         )
         result = compositor.compose_list(metrics.width, metrics.height, state, rotate=False, bgr=False, metrics=metrics)
         chassis_bg = result.getpixel((1, metrics.height - 1))
-        from dial_display_compositor import _LIST_BG_RGB
-        assert chassis_bg == _LIST_BG_RGB
+        from dial_display_palette import LIST_BG_RGB
+        assert chassis_bg == LIST_BG_RGB
 
     def test_x_in_cancel_and_chevron_lit_iff_more_pages(self, compositor):
         metrics = _COMPACT_240
@@ -4798,12 +4801,12 @@ class TestInfoValueView:
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_background_is_flat_chassis(self, compositor, metrics):
-        from dial_display_compositor import _LIST_BG_RGB
+        from dial_display_palette import LIST_BG_RGB
         result = compositor.compose_info_value(
             metrics.width, metrics.height, InfoValueView(label="IPv4", value="10.0.0.5"),
             rotate=False, bgr=False, metrics=metrics,
         )
-        assert result.getpixel((1, 1)) == _LIST_BG_RGB
+        assert result.getpixel((1, 1)) == LIST_BG_RGB
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_label_lands_in_the_label_band(self, compositor, metrics):
@@ -4995,13 +4998,13 @@ class TestCompactRepeatEnable:
         assert min(result.getpixel(left_centre)) < 200
 
     def test_right_lit_glyph_tile_differs_from_the_left_lit_one(self):
-        right = _glyph_tile(GLYPH_TWO_DOTS, (1, _GLYPH_RGB), 32, 32, 4)
-        left = _glyph_tile(GLYPH_TWO_DOTS, (0, _GLYPH_RGB), 32, 32, 4)
+        right = _glyph_tile(GLYPH_TWO_DOTS, (1, GLYPH_RGB), 32, 32, 4)
+        left = _glyph_tile(GLYPH_TWO_DOTS, (0, GLYPH_RGB), 32, 32, 4)
         assert list(right.getdata()) != list(left.getdata())
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_nothing_drawn_in_the_dead_top_right_cell(self, compositor, metrics):
-        from dial_display_compositor import _LIST_BG_RGB
+        from dial_display_palette import LIST_BG_RGB
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         armed = compositor.compose_repeat(
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=True),
@@ -5011,7 +5014,7 @@ class TestCompactRepeatEnable:
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
             rotate=False, bgr=False, metrics=metrics,
         )
-        expected = tuple(round(ch * OVERLAY_DIM_FACTOR) for ch in _LIST_BG_RGB)
+        expected = tuple(round(ch * OVERLAY_DIM_FACTOR) for ch in LIST_BG_RGB)
         assert all(px == expected for px in armed.crop(c.tr).getdata())
         assert all(px == expected for px in disarmed.crop(c.tr).getdata())
 
@@ -5157,14 +5160,14 @@ class TestCompactRepeatReplaying:
 
 class TestCompactGlyphTiles:
     def test_restart_and_stop_tiles_are_non_empty(self):
-        restart = _glyph_tile(GLYPH_RESTART, (_GLYPH_RGB,), 32, 32, 4)
-        stop = _glyph_tile(GLYPH_STOP, (_GLYPH_RGB,), 32, 32, 4)
+        restart = _glyph_tile(GLYPH_RESTART, (GLYPH_RGB,), 32, 32, 4)
+        stop = _glyph_tile(GLYPH_STOP, (GLYPH_RGB,), 32, 32, 4)
         assert any(p[3] > 0 for p in restart.getdata())
         assert any(p[3] > 0 for p in stop.getdata())
 
     def test_stop_tile_is_a_centred_filled_square(self):
         w = h = 40
-        tile = _glyph_tile(GLYPH_STOP, (_GLYPH_RGB,), w, h, 4)
+        tile = _glyph_tile(GLYPH_STOP, (GLYPH_RGB,), w, h, 4)
         pixels = tile.load()
         cx, cy = w // 2, h // 2
         assert pixels[cx, cy][3] > 0
@@ -5183,7 +5186,7 @@ class TestCompactGlyphTiles:
         # checked structurally (per-column opaque extent) rather than at
         # one hand-picked pixel, so it does not depend on exact rounding.
         w = h = 40
-        tile = _glyph_tile(GLYPH_RESTART, (_GLYPH_RGB,), w, h, 4)
+        tile = _glyph_tile(GLYPH_RESTART, (GLYPH_RGB,), w, h, 4)
         pixels = tile.load()
 
         def col_extent(x):
@@ -5219,8 +5222,8 @@ class TestCompactGlyphTiles:
 
     def test_lit_and_dimmed_are_distinct_cache_keys_and_pixels(self):
         _reset_render_caches()
-        lit = _glyph_tile(GLYPH_RESTART, (_GLYPH_RGB,), 32, 32, 4)
-        dimmed = _glyph_tile(GLYPH_RESTART, (_DIMMED_GLYPH_RGB,), 32, 32, 4)
+        lit = _glyph_tile(GLYPH_RESTART, (GLYPH_RGB,), 32, 32, 4)
+        dimmed = _glyph_tile(GLYPH_RESTART, (DIMMED_GLYPH_RGB,), 32, 32, 4)
         assert _glyph_tile.cache_info().misses == 2
         assert list(lit.getdata()) != list(dimmed.getdata())
 
@@ -5229,11 +5232,11 @@ class TestCompactGlyphTiles:
         # the tile key (kind, (), w, h, ss) — and therefore its pixels —
         # must be unaffected by the new trailing colour parameter.
         two_dots_default = _glyph_tile(GLYPH_TWO_DOTS, (0,), 24, 24, 4)
-        two_dots_explicit_default_color = _glyph_tile(GLYPH_TWO_DOTS, (0, _GLYPH_RGB), 24, 24, 4)
+        two_dots_explicit_default_color = _glyph_tile(GLYPH_TWO_DOTS, (0, GLYPH_RGB), 24, 24, 4)
         assert list(two_dots_default.getdata()) == list(two_dots_explicit_default_color.getdata())
 
         mute_default = _glyph_tile(GLYPH_MUTE, (), 24, 24, 4)
-        mute_explicit_default_color = _glyph_tile(GLYPH_MUTE, (_GLYPH_RGB,), 24, 24, 4)
+        mute_explicit_default_color = _glyph_tile(GLYPH_MUTE, (GLYPH_RGB,), 24, 24, 4)
         assert list(mute_default.getdata()) == list(mute_explicit_default_color.getdata())
 
 
@@ -5406,11 +5409,11 @@ class TestComposeEq:
         assert list(result.crop(layout.dots).getdata()) != list(two_dots_frame.crop(layout.dots).getdata())
 
     def test_top_band_is_dimmed(self, compositor):
-        from dial_display_compositor import _LIST_BG_RGB
+        from dial_display_palette import LIST_BG_RGB
         result = compositor.compose_eq(320, 240, _eq_state(name=""), rotate=False, bgr=False, metrics=_RICH_METRICS)
         layout = layout_for(320, 240, metrics=_RICH_METRICS)
         corner = (layout.top_band[0], layout.top_band[1])
-        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in _LIST_BG_RGB)
+        expected = tuple(round(c * OVERLAY_DIM_FACTOR) for c in LIST_BG_RGB)
         assert result.getpixel(corner) == expected
 
     def test_labels_and_db_text_drawn_in_captions(self, compositor):
@@ -5436,7 +5439,7 @@ class TestComposeEq:
         # A white pixel should appear at (or immediately around) the expected
         # marker x on the track row.
         found = any(
-            result.getpixel((x, bar.track_y)) == _GLYPH_RGB
+            result.getpixel((x, bar.track_y)) == GLYPH_RGB
             for x in range(max(0, expected_x - 2), min(320, expected_x + 3))
         )
         assert found
@@ -5452,8 +5455,8 @@ class TestComposeEq:
         )
         right_of_centre = (bar.centre_x + 10, bar.track_y)
         left_of_centre = (bar.centre_x - 10, bar.track_y)
-        assert positive.getpixel(right_of_centre) == _GLYPH_RGB
-        assert negative.getpixel(left_of_centre) == _GLYPH_RGB
+        assert positive.getpixel(right_of_centre) == GLYPH_RGB
+        assert negative.getpixel(left_of_centre) == GLYPH_RGB
 
     def test_unloaded_shows_dash_and_dimmed_controls(self, compositor):
         layout = eq_layout_for(320, 240, metrics=_RICH_METRICS)
@@ -6350,6 +6353,7 @@ def _reference_body_warning(img, metrics, body):
     renderer, as the reference the existing pages must still match."""
     from PIL import ImageDraw
     import dial_display_compositor as dcm
+    from dial_display_palette import DIVIDER_RGB
     layout = warning_layout_for(metrics.width, metrics.height, buttons=max(1, len(body.buttons)), metrics=metrics)
     draw = ImageDraw.Draw(img)
     readout_font = dcm._load_font(metrics.font_readout)
@@ -6367,9 +6371,9 @@ def _reference_body_warning(img, metrics, body):
         dcm._draw_label_centered(draw, rect, label, font)
     w = metrics.divider_w
     cx0, cy0, cx1, cy1 = layout.card
-    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=dcm._DIVIDER_RGB, width=w)
+    draw.line([(cx0, layout.divider_y), (cx1 - 1, layout.divider_y)], fill=dcm.DIVIDER_RGB, width=w)
     for x in layout.divider_xs:
-        draw.line([(x, layout.cells[0][1]), (x, cy1 - 1)], fill=dcm._DIVIDER_RGB, width=w)
+        draw.line([(x, layout.cells[0][1]), (x, cy1 - 1)], fill=dcm.DIVIDER_RGB, width=w)
 
 
 class TestWarningGenericBody:

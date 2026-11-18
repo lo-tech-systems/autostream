@@ -23,9 +23,9 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_display_image as ddi
+from dial_display_palette import LOGO_BACKGROUND_RGB
 from dial_display_image import (
     BACKDROP_DARKEN_PERCENT,
-    LOGO_BACKGROUND_RGB,
     PANEL_HEIGHT,
     PANEL_WIDTH,
     decode_artwork,

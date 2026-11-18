@@ -1,0 +1,101 @@
+"""dial_display_palette.py -- every colour and alpha the dial's panel paints with.
+
+One place for the display's colours so the compositor, the display manager
+and the hardware backend agree on them. Pure data: no imports, no drawing
+library.
+
+Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
+"""
+from __future__ import annotations
+
+# Overlay dim factor: the top and bottom bands are multiplied down to this
+# fraction of their brightness before the glyphs/text are drawn on top, the
+# same ImageEnhance.Brightness idiom dial_display_image.py uses for the
+# ambient-blur backdrop (see BACKDROP_DARKEN_PERCENT there). 0.32 reads as a
+# ~68% dim — dark enough that the glyphs and the pressed-zone highlight are
+# unambiguous against any artwork, while the dimmed art is still faintly
+# visible behind it. Set against real hardware: 0.4 left bright album art
+# competing with the glyphs. The middle half of the panel is never dimmed.
+OVERLAY_DIM_FACTOR = 0.32
+
+# Glyph stroke colour and the pressed-zone highlight fill, chosen for
+# contrast against the dimmed backdrop produced by OVERLAY_DIM_FACTOR. Text
+# (artist name, volume number) is drawn in the same colour — see
+# the compositor's _draw_text_safe().
+GLYPH_RGB = (255, 255, 255)
+PRESSED_FILL_RGB = (255, 255, 255)
+PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
+
+# The current-row wash on the list chassis: the same translucent white
+# wash a press uses, at a fraction of the strength, drawn under any press
+# so a pressed current row still reads brighter than an unpressed one.
+# Alpha 21 lifts the (16,16,16) chassis to (36,36,36): visibly lighter
+# than the chassis, still darker than the (48,48,48) separators, and far
+# from competing with white text or the marker.
+ROW_HIGHLIGHT_RGB = (255, 255, 255)
+ROW_HIGHLIGHT_ALPHA = 21
+
+# A persistent STATE wash on a dimmed band (currently: the mute cell while
+# muted) — stronger than the row highlight above, which was tuned for the
+# undimmed list chassis and all but disappears over a dimmed footer band
+# under a white glyph. 96 lifts a mid-dark dimmed region clearly above its
+# surroundings while still reading as lighter, not "already pressed", under
+# the separate momentary press wash (PRESSED_FILL_ALPHA) on top of it.
+MUTE_WASH_ALPHA = 96
+
+# Divider-line colour: pure white, matching the glyph/text colour, so the
+# single boundary line between DOWN and UP reads as clean structure against
+# the dimmed backdrop rather than blending into it.
+DIVIDER_RGB = (255, 255, 255)
+
+HALO_RGBA = (0, 0, 0, 255)
+
+# Selector chassis (compose_list) — a dark background distinct from any
+# artwork, so the list unambiguously reads as a different screen.
+LIST_BG_RGB = (16, 16, 16)
+LIST_SEPARATOR_RGB = (48, 48, 48)
+
+# A disabled repeat-screen label (Start/Stop when the daemon state does not
+# accept that action right now) is drawn in this dimmed shade of the glyph
+# colour — the same OVERLAY_DIM_FACTOR the overlay's chevrons use for their
+# own disabled state.
+DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in GLYPH_RGB)
+
+# The compact tier's muted mute-cell: a solid wash (see the main-screen
+# frame builder) plus the glyph inverted to black, so "muted" reads at a
+# glance on a cell too small for the large tiers' translucent wash to read
+# clearly against a white glyph.
+INVERTED_GLYPH_RGB = (0, 0, 0)
+
+# The idle screen's Wi-Fi glyph while the link is down alternates between
+# all-grey (DIMMED_GLYPH_RGB) and this alarm red — a clear "something is
+# wrong" that still reads against a dimmed logo.
+ALARM_RGB = (226, 62, 51)
+
+# A warning or status card off the compact tier: a flat dark surface, a thin
+# translucent white outline, and a soft dark drop shadow offset down-right —
+# sharp (rectangular) corners throughout, no rounding.
+CARD_FILL_RGB = (24, 25, 28)
+CARD_OUTLINE_RGB = (255, 255, 255)
+CARD_OUTLINE_ALPHA = 70
+CARD_SHADOW_RGB = (0, 0, 0)
+CARD_SHADOW_ALPHA = 140
+
+# The bell's fill by the worst severity it holds: the warning orange, the
+# danger red, and the accent blue for an informational entry.
+BELL_WARNING_RGB = (233, 113, 50)
+BELL_CRITICAL_RGB = (220, 53, 69)
+BELL_INFO_RGB = (82, 152, 216)
+
+# The dark translucent disc under the bell on resting artwork.
+CORNER_DISC_RGBA = (0, 0, 0, 150)
+
+# A plain dark base pushed for the moment between the display switching to
+# show a different appliance and that appliance's own artwork/logo actually
+# landing. A step lighter than the list chassis (16, 16, 16) so it reads as
+# "waiting", not as a list screen.
+TRANSITION_RGB = (32, 32, 32)
+
+# Matches the web UI dark-theme --color-bg and the logo asset's own
+# background, so letterbox padding is seamless.
+LOGO_BACKGROUND_RGB = (14, 40, 65)

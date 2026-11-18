@@ -16,6 +16,7 @@ import warnings
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
+from dial_display_palette import LOGO_BACKGROUND_RGB
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile
 from dial_touch_layout import scale_px
 
@@ -46,10 +47,6 @@ MAX_EXPANDED_ARTWORK_BYTES = 64 * 1024 * 1024
 _DEFAULT_PROFILE = get_profile(DEFAULT_PROFILE_KEY)
 PANEL_WIDTH = _DEFAULT_PROFILE.width
 PANEL_HEIGHT = _DEFAULT_PROFILE.height
-
-# Matches the web UI dark-theme --color-bg and the logo asset's own
-# background, so letterbox padding is seamless.
-LOGO_BACKGROUND_RGB = (14, 40, 65)
 
 _ARTWORK_FORMATS = ("JPEG", "PNG", "WEBP")
 
@@ -211,6 +208,13 @@ def transform_artwork_for_panel(
     return backdrop
 
 
+def letterbox(img, width: int, height: int, background=LOGO_BACKGROUND_RGB):
+    """*img* centred on a new (width, height) canvas of *background*."""
+    canvas = Image.new("RGB", (width, height), background)
+    canvas.paste(img, ((width - img.width) // 2, (height - img.height) // 2))
+    return canvas
+
+
 def load_logo(path: str, width: int = PANEL_WIDTH, height: int = PANEL_HEIGHT) -> Image.Image | None:
     """Load the fallback logo, scaled to fit and letterboxed to (width, height).
 
@@ -232,13 +236,7 @@ def load_logo(path: str, width: int = PANEL_WIDTH, height: int = PANEL_HEIGHT) -
         fitted = resize_supersampled(
             img, (max(1, round(img.width * scale)), max(1, round(img.height * scale))),
         )
-        canvas = Image.new("RGB", (width, height), LOGO_BACKGROUND_RGB)
-        offset = (
-            (width - fitted.width) // 2,
-            (height - fitted.height) // 2,
-        )
-        canvas.paste(fitted, offset)
-        return canvas
+        return letterbox(fitted, width, height)
     except Exception as e:
         logging.debug("dial display: logo transform failed: %s", e)
         return None
