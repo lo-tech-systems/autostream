@@ -296,6 +296,10 @@ class TestResolveCommittedUuid:
         clear.assert_called_once_with("resolved-uuid", watcher.wifi_net.CROSS_ADAPTER_RESTRICTIONS)
 
 
+YES = {"connection.autoconnect": "yes"}
+NO = {"connection.autoconnect": "no"}
+
+
 class TestClientProfileAutoconnectMigration:
     """The startup migration disables NM autoconnect on every managed
     non-AP Wi-Fi client profile (self-healing), skipping AP profiles."""
@@ -317,7 +321,7 @@ class TestClientProfileAutoconnectMigration:
                           return_value=profiles), \
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           side_effect=lambda ident: modes[ident]), \
-             patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
+             patch.object(watcher.nm, "profile_fields", return_value=YES),              patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
             count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
 
         assert count == 2
@@ -341,7 +345,7 @@ class TestClientProfileAutoconnectMigration:
                           return_value=profiles), \
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           return_value="infrastructure"), \
-             patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
+             patch.object(watcher.nm, "profile_fields", return_value=YES),              patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
             count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
         assert count == 1   # uuid-1 failed, uuid-2 succeeded, sweep continued
 
@@ -364,8 +368,54 @@ class TestClientProfileAutoconnectMigration:
                           return_value=profiles), \
              patch.object(watcher.wifi_net, "wifi_profile_mode",
                           side_effect=lambda ident: modes[ident]), \
-             patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
+             patch.object(watcher.nm, "profile_fields", return_value=YES),              patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
             count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
 
         assert count == 1
         assert issued == [("uuid-yes", "Home")]        # client only; AP skipped
+
+    def _sweep(self, watcher, profiles, fields, modes=None):
+        """Run the sweep; return (count, writes, reads)."""
+        writes, reads = [], []
+
+        def fake_fields(uuid, name, keys):
+            reads.append(uuid)
+            return fields(uuid) if callable(fields) else fields
+
+        def fake_modify(uuid, name=""):
+            writes.append(uuid)
+            return self._res()
+
+        with patch.object(watcher.wifi_net, "list_wifi_connection_profiles",
+                          return_value=profiles),              patch.object(watcher.wifi_net, "wifi_profile_mode",
+                          side_effect=lambda ident: (modes or {}).get(ident, "infrastructure")),              patch.object(watcher.nm, "profile_fields", side_effect=fake_fields),              patch.object(watcher.nm, "set_autoconnect_no", side_effect=fake_modify):
+            count = watcher.wifi_config.migrate_client_profiles_autoconnect_no(watcher.CONFIG_CTX)
+        return count, writes, reads
+
+    def test_profile_already_off_is_not_written(self, watcher, caplog):
+        with caplog.at_level("INFO"):
+            count, writes, _ = self._sweep(watcher, [("u1", "Home")], NO)
+        assert (count, writes) == (0, [])
+        assert not [r for r in caplog.records if "Ensured autoconnect=no" in r.getMessage()]
+
+    def test_failed_read_still_writes(self, watcher):
+        count, writes, _ = self._sweep(watcher, [("u1", "Home")], None)
+        assert (count, writes) == (1, ["u1"])
+
+    def test_unrecognised_value_still_writes(self, watcher):
+        count, writes, _ = self._sweep(
+            watcher, [("u1", "Home")], {"connection.autoconnect": "nein"})
+        assert (count, writes) == (1, ["u1"])
+
+    def test_mixed_list_writes_only_the_profile_that_is_on(self, watcher):
+        profiles = [("u-off", "A"), ("u-on", "B")]
+        count, writes, _ = self._sweep(
+            watcher, profiles, lambda u: NO if u == "u-off" else YES)
+        assert (count, writes) == (1, ["u-on"])
+
+    def test_ap_profile_is_never_read(self, watcher):
+        profiles = [("u-ap", "Hotspot"), ("u1", "Home")]
+        _, writes, reads = self._sweep(
+            watcher, profiles, YES, modes={"u-ap": "ap"})
+        assert reads == ["u1"]
+        assert writes == ["u1"]

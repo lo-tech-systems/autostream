@@ -101,13 +101,20 @@ def migrate_client_profiles_autoconnect_no(ctx: ConfigContext) -> int:
     pre-exist the install (OS/user-created, or imported by the installer with
     autoconnect=yes).  Running this every boot ensures no client profile can race
     the watcher's single-decider path onto a stale radio.  AP (hotspot) profiles
-    are skipped so the recovery hotspot is unaffected.  Best-effort: a per-profile
+    are skipped so the recovery hotspot is unaffected.  A profile that already
+    reads back ``no`` is left alone: every profile write makes NetworkManager
+    regenerate its netplan configuration, which is slow on small boards.  Any
+    other read result, or a failed read, writes.  Best-effort: a per-profile
     nmcli failure is logged and does not abort the sweep.  Returns the number of
     client profiles for which the modify succeeded.
     """
     modified = 0
     for uuid, name in wifi_net.list_wifi_connection_profiles():
         if wifi_net.wifi_profile_mode(uuid or name) == "ap":
+            continue
+        current = ctx.nm.profile_fields(uuid, name, ("connection.autoconnect",))
+        if current is not None and current.get("connection.autoconnect") == "no":
+            ctx.logger.debug("autoconnect already off on '%s'", name or uuid)
             continue
         r = ctx.nm.set_autoconnect_no(uuid, name)
         if r.returncode == 0:

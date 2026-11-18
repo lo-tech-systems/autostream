@@ -146,6 +146,19 @@ class NMClient:
 
     # ---- profile admin ----
 
+    def profile_fields(self, uuid: str, name: str, keys) -> Optional[dict]:
+        """Read the given properties of a profile (uuid preferred, else name).
+
+        ``None`` on a non-zero exit, a timeout or output that cannot be read
+        unambiguously; callers treat that as "unknown" and write.
+        """
+        ident = ["uuid", uuid] if uuid else ["id", name]
+        r = run_cmd(wifi_net.connection_fields_cmd(ident, tuple(keys)),
+                    timeout=self._quick_timeout, warn_on_failure=False)
+        if r.returncode != 0:
+            return None
+        return wifi_net.parse_connection_fields(r.stdout)
+
     def set_autoconnect_no(self, uuid: str, name: str = ""):
         """Disable NM autoconnect on a profile (uuid preferred, else name)."""
         return run_cmd(wifi_net.set_autoconnect_no_cmd(uuid, name),

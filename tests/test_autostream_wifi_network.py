@@ -572,6 +572,36 @@ class TestSetBssidCommand:
 # Scan parsing and exact-SSID merging
 # ---------------------------------------------------------------------------
 
+class TestConnectionFields:
+    def test_command_for_uuid_and_name(self):
+        assert wifi_net.connection_fields_cmd(["uuid", "u1"], ("a.b", "c.d")) == [
+            "nmcli", "-t", "-f", "a.b,c.d", "connection", "show", "uuid", "u1"]
+        assert wifi_net.connection_fields_cmd(["id", "Home"], ("a.b",)) == [
+            "nmcli", "-t", "-f", "a.b", "connection", "show", "id", "Home"]
+
+    def test_parses_plain_blank_and_escaped_values(self):
+        out = (
+            "connection.autoconnect:no\n"
+            + r"802-11-wireless.bssid:AA\:BB\:CC\:DD\:EE\:FF" + "\n"
+            + "802-11-wireless.band:\n"
+        )
+        assert wifi_net.parse_connection_fields(out) == {
+            "connection.autoconnect": "no",
+            "802-11-wireless.bssid": "AA:BB:CC:DD:EE:FF",
+            "802-11-wireless.band": "",
+        }
+
+    def test_junk_lines_are_ignored(self):
+        assert wifi_net.parse_connection_fields("junk\nk:v\n\n") == {"k": "v"}
+
+    def test_repeated_key_is_ambiguous(self):
+        assert wifi_net.parse_connection_fields("k:a\nk:b\n") is None
+
+    def test_non_text_input_is_none(self):
+        assert wifi_net.parse_connection_fields(MagicMock()) is None
+        assert wifi_net.parse_connection_fields(None) is None
+
+
 class TestScanMerge:
     def test_parse_skips_hidden_and_nonnumeric(self):
         out = "Home:80\n:60\nBad:notnum\n"

@@ -1369,6 +1369,36 @@ def set_autoconnect_no_cmd(uuid: str, name: str = "") -> list[str]:
     return ["nmcli", "connection", "modify", *ident, "connection.autoconnect", "no"]
 
 
+def connection_fields_cmd(ident: list[str], keys: tuple[str, ...]) -> list[str]:
+    """Build a read of the given profile properties, e.g. ``["uuid", u]`` as *ident*.
+
+    A read persists nothing, so unlike a modify it does not make NetworkManager
+    regenerate its netplan configuration.
+    """
+    return ["nmcli", "-t", "-f", ",".join(keys), "connection", "show", *ident]
+
+
+def parse_connection_fields(stdout) -> Optional[dict[str, str]]:
+    """Parse terse ``key:value`` lines from ``connection_fields_cmd`` output.
+
+    Returns ``None`` for non-text input or when a key repeats (an ``id <name>``
+    lookup prints one block per profile of that name, so the answer is
+    ambiguous).  The value is unescaped by ``split_nmcli_terse`` whatever the
+    split limit, so a BSSID reads back as ``AA:BB:...``.
+    """
+    if not isinstance(stdout, str):
+        return None
+    fields: dict[str, str] = {}
+    for line in stdout.splitlines():
+        parts = split_nmcli_terse(line, maxsplit=1)
+        if len(parts) != 2:
+            continue
+        if parts[0] in fields:
+            return None
+        fields[parts[0]] = parts[1].strip()
+    return fields
+
+
 def get_profile_uuid(con_name: str) -> str:
     """Return the UUID of a profile by exact name, or "" if not found/ambiguous."""
     r = run_cmd(["nmcli", "-t", "-f", "NAME,UUID", "connection", "show"],

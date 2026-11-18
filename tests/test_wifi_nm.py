@@ -127,9 +127,34 @@ class TestNMClientBounds:
             nm.disconnect_device("wlan0")
             nm.add_ap_connection("wlan0", "ssid", "Hotspot")
             nm.set_autoconnect_no("u", "n")
-        assert rc.call_count == 10
+            nm.profile_fields("u", "n", ("k",))
+        assert rc.call_count == 11
         for call in rc.call_args_list:
             assert call.kwargs.get("timeout") is not None
+
+
+class TestProfileFields:
+    def test_reads_with_timeout_and_without_failure_warning(self, nm):
+        r = MagicMock(returncode=0, stdout="connection.autoconnect:no\n")
+        with patch.object(wifi_nm, "run_cmd", return_value=r) as rc:
+            got = nm.profile_fields("u1", "Home", ("connection.autoconnect",))
+        assert got == {"connection.autoconnect": "no"}
+        cmd, kw = _last(rc)
+        assert cmd == ["nmcli", "-t", "-f", "connection.autoconnect",
+                       "connection", "show", "uuid", "u1"]
+        assert kw["timeout"] == QUICK_TIMEOUT
+        assert kw["warn_on_failure"] is False
+
+    def test_name_used_when_no_uuid(self, nm):
+        r = MagicMock(returncode=0, stdout="k:v\n")
+        with patch.object(wifi_nm, "run_cmd", return_value=r) as rc:
+            nm.profile_fields("", "Home", ("k",))
+        assert _last(rc)[0][-2:] == ["id", "Home"]
+
+    def test_failure_is_none(self, nm):
+        r = MagicMock(returncode=10, stdout="")
+        with patch.object(wifi_nm, "run_cmd", return_value=r):
+            assert nm.profile_fields("u1", "", ("k",)) is None
 
 
 class TestTeardownTolerance:
