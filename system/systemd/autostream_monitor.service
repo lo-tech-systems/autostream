@@ -6,8 +6,10 @@
 
 [Unit]
 Description=Autostream audio monitor daemon
-After=sound.target systemd-udev-settle.service
-Wants=systemd-udev-settle.service
+# No dependency on systemd-udev-settle: it holds up the whole boot, and inputs
+# are opened later by the coordinator, which retries a capture device that is
+# not there yet.
+After=sound.target
 
 [Service]
 Type=simple

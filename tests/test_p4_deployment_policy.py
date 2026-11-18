@@ -1144,3 +1144,17 @@ class TestLinuxServiceValidation:
         assert r.returncode == 0, (
             f"visudo -cf failed for {sudoers.name}:\n{r.stdout}\n{r.stderr}"
         )
+
+
+class TestBootOrdering:
+    """The boot must not wait for the whole device queue to settle."""
+
+    @pytest.mark.parametrize("unit", ALL_UNITS, ids=ALL_UNITS_IDS)
+    def test_no_unit_waits_for_udev_settle(self, unit):
+        for key in ("After", "Wants", "Requires", "BindsTo", "Requisite"):
+            assert "systemd-udev-settle" not in _unit_field(unit, "Unit", key), (
+                f"{unit.name} {key}= pulls in systemd-udev-settle.service")
+
+    def test_monitor_ordered_after_sound_target(self):
+        unit = SYSTEMD_DIR / "autostream_monitor.service"
+        assert "sound.target" in _unit_field(unit, "Unit", "After").split()
