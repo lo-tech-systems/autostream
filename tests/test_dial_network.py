@@ -93,7 +93,7 @@ class TestPollOnce:
 
     def test_connected_view_carries_bars_ssid_and_signal(self):
         view = self._poll(body=_snapshot("online"))
-        assert view == dn.NetworkView(link=dn.LINK_CONNECTED, device_state="online", bars=3,
+        assert view == dn.NetworkView(link=dn.LINK_CONNECTED, bars=3,
                                       ssid="HomeNet", signal=SIGNAL_STRONG, updated_at=100.0)
         assert dn.latest() is view
         method, path, _, headers = _FakeConn.last.requests[0]

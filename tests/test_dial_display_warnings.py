@@ -59,7 +59,7 @@ def _fold(display):
 
 
 def _link(link, bars=0):
-    return NetworkView(link=link, device_state="", bars=bars, updated_at=1.0)
+    return NetworkView(link=link, bars=bars, updated_at=1.0)
 
 
 def _sd(percent):

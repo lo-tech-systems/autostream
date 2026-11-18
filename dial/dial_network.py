@@ -93,7 +93,6 @@ class NetworkView:
     """One poll's worth of link state, immutable.
 
     link: one of the LINK_* verdicts.
-    device_state: the watcher's raw device.state string ("" when unknown).
     bars: lit arcs for the idle icon, 0..3 — 0 unless link is connected.
     ssid: the joined SSID as the dial's own probe sees it ("" if none).
     signal: the dial's own coarse category label ("" if none).
@@ -101,7 +100,6 @@ class NetworkView:
     """
 
     link: str = LINK_UNKNOWN
-    device_state: str = ""
     bars: int = 0
     ssid: str = ""
     signal: str = ""
@@ -233,8 +231,7 @@ def _view_from_snapshot(snapshot: "dict | None", now: float) -> NetworkView:
         bars = bars_for_category(category)
         signal = category if bars else ""
     return NetworkView(
-        link=link, device_state=state if isinstance(state, str) else "",
-        bars=bars, ssid=ssid, signal=signal, updated_at=now,
+        link=link, bars=bars, ssid=ssid, signal=signal, updated_at=now,
     )
 
 

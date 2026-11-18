@@ -140,7 +140,7 @@ class TestReadoutChanged:
 class TestQueuedWorkerEffects:
     def test_a_network_reading_queues_what_it_did_to_the_warnings(self):
         core = _core()
-        effects = core.on_network_view(NetworkView(LINK_CONNECTED, "connected"))
+        effects = core.on_network_view(NetworkView(link=LINK_CONNECTED))
         assert core.take_effects() == [effects]
         assert [c.warning_id for c in effects.changes] == ["nowifi"]
 

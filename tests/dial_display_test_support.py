@@ -28,7 +28,7 @@ from dial_test_support import (
 
 
 def _view(link, bars=0):
-    return NetworkView(link=link, device_state="", bars=bars, updated_at=1.0)
+    return NetworkView(link=link, bars=bars, updated_at=1.0)
 
 
 def _fold(display):

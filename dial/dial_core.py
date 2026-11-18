@@ -162,7 +162,6 @@ class DialCore:
         shutdown: Callable[[Callable[[bool], None]], bool] | None = None,
         io: CoreIO | None = None,
     ) -> None:
-        self._dial_id = dial_id
         # Looked up at each call, so a test that replaces time.monotonic
         # moves the core's clock with everything else.
         self._clock = clock if clock is not None else (lambda: time.monotonic())
