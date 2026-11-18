@@ -19,8 +19,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
-from autostream_state import InputsPart, WarningEntry
-from autostream_sysutils import SD_LEVEL_FAILING, SD_LEVEL_OK, sd_card_text
+from autostream_playback_stats import format_hours
+from autostream_state import InputsPart, WarningEntry, format_khz
+from autostream_sysutils import SD_LEVEL_FAILING, SD_LEVEL_OK, format_day, sd_card_text
 
 if TYPE_CHECKING:
     from autostream_playback_stats import InputPlaybackSnapshot, PlaybackSnapshot
@@ -80,8 +81,7 @@ def _entry(id, severity, kind, title, message, link, subject="", detail="") -> W
 # One group of rows per source
 # ---------------------------------------------------------------------------
 
-# snapshot item key, title suffix, message when overdue, message when due soon
-# (the stylus adds the hours left).
+# snapshot item key, title suffix, message when overdue, message when due soon.
 _MAINTENANCE_ITEMS = (
     ("stylus", "stylus", "Change now", "Change soon"),
     ("belt", "drive belt", "Service now", "Service soon"),
@@ -102,6 +102,38 @@ def _item_state(snap: "InputPlaybackSnapshot", item: str) -> Optional[str]:
     return None
 
 
+def _maintenance_detail(snap: "InputPlaybackSnapshot", item: str, state: str) -> str:
+    """Why *item* is *state* ("overdue" or "due"): the hours used or left and,
+    for a belt or bearing, the time since it was last serviced. It reads the
+    same flags _item_state does and never decides whether a row exists."""
+    if item == "stylus":
+        life = f"{snap.stylus_life_hours} h"
+        if state == "overdue":
+            text = f"Played {format_hours(snap.stylus_playback_seconds)} of its {life} life."
+        elif snap.stylus_remaining_seconds is not None:
+            text = f"{format_hours(snap.stylus_remaining_seconds)} left of its {life} life."
+        else:
+            text = ""
+        day = format_day(snap.last_stylus_reset_at)
+        return f"{text} Last changed {day}.".strip() if day else text
+    parts = []
+    hours_overdue = getattr(snap, f"{item}_hours_overdue")
+    if hours_overdue or getattr(snap, f"{item}_hours_warning"):
+        life = f"{getattr(snap, f'{item}_life_hours')} h"
+        left = getattr(snap, f"{item}_hours_remaining")   # seconds
+        if hours_overdue or left is None:
+            used = format_hours(getattr(snap, f"{item}_playback_seconds"))
+            parts.append(f"Played {used} of its {life} service interval.")
+        else:
+            parts.append(f"{format_hours(left)} left of its {life} service interval.")
+    if getattr(snap, f"{item}_time_overdue") or getattr(snap, f"{item}_time_warning"):
+        day = format_day(getattr(snap, f"last_{item}_service_at"))
+        years = getattr(snap, f"{item}_life_years")
+        if day and years > 0:
+            parts.append(f"Last serviced {day}, due every {years} year{'' if years == 1 else 's'}.")
+    return " ".join(parts)
+
+
 def _maintenance(playback) -> list[tuple[int, WarningEntry]]:
     out = []
     for index, snap in sorted(playback.inputs.items()):
@@ -111,15 +143,13 @@ def _maintenance(playback) -> list[tuple[int, WarningEntry]]:
                 continue
             title = _title(snap.label, suffix)
             entry_id = f"{item}_in{int(index)}"
+            detail = _maintenance_detail(snap, item, state)
             if state == "overdue":
                 entry = _entry(entry_id, "warning", item, title, overdue_text,
-                               "/service", subject=snap.label)
+                               "/service", subject=snap.label, detail=detail)
             else:
-                message = due_text
-                if item == "stylus" and snap.stylus_remaining_hours is not None:
-                    message = f"{due_text}, {snap.stylus_remaining_hours:.1f} h left"
-                entry = _entry(entry_id, "info", item, title, message,
-                               "/service", subject=snap.label)
+                entry = _entry(entry_id, "info", item, title, due_text,
+                               "/service", subject=snap.label, detail=detail)
             out.append((int(index), entry))
     return out
 
@@ -134,7 +164,8 @@ def _sample_rates(i: Inputs) -> list[tuple[int, WarningEntry]]:
         out.append((e.index, _entry(
             f"sample_rate_in{e.index}", "warning", "sample_rate",
             _title(label, "sample rate"), "Turn on rate matching",
-            f"/setup#input{e.index}", subject=label)))
+            f"/setup#input{e.index}", subject=label,
+            detail=f"{label} is running at {format_khz(e.rate_mismatch_hz)}.")))
     return out
 
 
@@ -142,31 +173,32 @@ def _power(throttled: Optional[int]) -> list[WarningEntry]:
     if throttled is None:
         return []
     if throttled & 0x1:
-        return [_entry("psu", "critical", "psu", "Power supply",
-                       "Low voltage now", None)]
+        return [_entry("psu", "critical", "psu", "Power supply", "Low voltage now", None,
+                       detail="The power supply cannot hold the voltage up. "
+                              "Use a supply rated for this board.")]
     if (throttled >> 16) & 0x1:
-        return [_entry("psu", "warning", "psu", "Power supply",
-                       "Low voltage seen earlier", None)]
+        return [_entry("psu", "warning", "psu", "Power supply", "Low voltage seen", None,
+                       detail="Low voltage was seen since the last restart.")]
     return []
 
 
 def _temperature(status: str, temp_c: Optional[float]) -> list[WarningEntry]:
     if status not in ("high", "critical"):
         return []
-    degrees = "" if temp_c is None else f", {round(temp_c)} °C"
+    detail = "" if temp_c is None else f"CPU at {round(temp_c)} °C."
     if status == "critical":
         return [_entry("cpu_temp", "critical", "cpu_temp", "CPU temperature",
-                       f"Too hot{degrees}", "/about#system")]
+                       "Too hot", "/about#system", detail=detail)]
     return [_entry("cpu_temp", "warning", "cpu_temp", "CPU temperature",
-                   f"Running hot{degrees}", "/about#system")]
+                   "Running hot", "/about#system", detail=detail)]
 
 
-def _card(level: str, percent: Optional[int]) -> list[WarningEntry]:
+def _card(level: str, percent: Optional[int], read_at: Optional[str]) -> list[WarningEntry]:
     if percent is None or level == SD_LEVEL_OK:
         return []
-    title, message = sd_card_text(level, percent)
+    title, message, detail = sd_card_text(level, percent, read_at)
     severity = "critical" if level == SD_LEVEL_FAILING else "warning"
-    return [_entry("sd_health", severity, "sd_health", title, message, "/about#system")]
+    return [_entry("sd_health", severity, "sd_health", title, message, "/about#system", detail=detail)]
 
 
 def _no_input(playback) -> list[WarningEntry]:
@@ -186,7 +218,7 @@ def derive(i: Inputs) -> tuple[WarningEntry, ...]:
     input; at most MAX_ENTRIES. Every entry's incident is ""."""
     ranked: list[tuple[int, WarningEntry]] = []
     for entry in (*_power(i.throttled), *_temperature(i.cpu_status, i.cpu_temp_c),
-                  *_card(i.sd_level, i.sd_percent)):
+                  *_card(i.sd_level, i.sd_percent, i.sd_read_at)):
         ranked.append((0, entry))
     ranked.extend(_maintenance(i.playback))
     ranked.extend(_sample_rates(i))
@@ -195,7 +227,8 @@ def derive(i: Inputs) -> tuple[WarningEntry, ...]:
         ranked.append((0, _entry(
             "dial_update", "warning", "dial_update", "Dials",
             "1 needs updating" if n == 1 else f"{n} need updating",
-            "/setup#dials")))
+            "/setup#dials",
+            detail="Update it from Setup, Dials." if n == 1 else "Update them from Setup, Dials.")))
     if i.unlicensed:
         ranked.append((0, _entry(
             "licence", "warning", "licence", "Licence",

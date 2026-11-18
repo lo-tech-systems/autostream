@@ -46,8 +46,8 @@
         "source": "This Dial",
         "severity": "warning",
         "title": "microSD card",
-        "message": "18% life left, replace soon",
-        "detail": "",
+        "message": "Replace soon",
+        "detail": "18% of its life left. Read 3 Mar 2026.",
         "actions": []
       }
     ]

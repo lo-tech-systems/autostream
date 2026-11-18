@@ -23,15 +23,30 @@ LONG_LABEL = "A very long turntable label that cannot possibly fit"
 
 
 def snap(label="Turntable", *, enabled=True, stylus="", belt="", bearing="",
-         life=1000, remaining=None):
-    """One input's playback view; each item is "", "due" or "overdue"."""
-    return SimpleNamespace(
+         life=1000, remaining=None, stylus_used=450, stylus_reset="2026-03-03T10:00:00+00:00",
+         belt_why=("hours",), service_at="2025-06-01T09:30:00+00:00", used=800, left=50):
+    """One input's playback view; each item is "", "due" or "overdue". The
+    hours are given as hours and held as seconds, as the tracker holds them.
+    belt_why says which dimensions of a belt or bearing are due."""
+    fields = dict(
         label=label, enabled=enabled, stylus_life_hours=life,
-        stylus_remaining_hours=remaining,
+        stylus_playback_seconds=stylus_used * 3600,
+        stylus_remaining_seconds=None if remaining is None else round(remaining * 3600),
         stylus_warning=stylus == "due", stylus_overdue=stylus == "overdue",
-        belt_warning=belt == "due", belt_overdue=belt == "overdue",
-        bearing_warning=bearing == "due", bearing_overdue=bearing == "overdue",
+        last_stylus_reset_at=stylus_reset,
     )
+    for item, state in (("belt", belt), ("bearing", bearing)):
+        fields.update({
+            f"{item}_warning": state == "due", f"{item}_overdue": state == "overdue",
+            f"{item}_life_hours": 1000, f"{item}_life_years": 2,
+            f"{item}_playback_seconds": used * 3600, f"{item}_hours_remaining": left * 3600,
+            f"{item}_hours_overdue": state == "overdue" and "hours" in belt_why,
+            f"{item}_hours_warning": state == "due" and "hours" in belt_why,
+            f"{item}_time_overdue": state == "overdue" and "time" in belt_why,
+            f"{item}_time_warning": state == "due" and "time" in belt_why,
+            f"last_{item}_service_at": service_at,
+        })
+    return SimpleNamespace(**fields)
 
 
 def make(inputs=None, *, entries=(), **kw):
@@ -67,7 +82,8 @@ class TestRows:
 
     def test_psu_since_boot_only(self):
         e = only(w.derive(make(throttled=0x10000)))
-        assert (e.severity, e.message) == ("warning", "Low voltage seen earlier")
+        assert (e.severity, e.message, e.detail) == (
+            "warning", "Low voltage seen", "Low voltage was seen since the last restart.")
 
     def test_now_wins_over_earlier(self):
         assert only(w.derive(make(throttled=0x10001))).message == "Low voltage now"
@@ -78,23 +94,25 @@ class TestRows:
 
     def test_cpu_hot_and_too_hot(self):
         hot = only(w.derive(make(cpu_status="high", cpu_temp_c=71.6)))
-        assert (hot.id, hot.severity, hot.message) == (
-            "cpu_temp", "warning", "Running hot, 72 °C")
+        assert (hot.id, hot.severity, hot.message, hot.detail) == (
+            "cpu_temp", "warning", "Running hot", "CPU at 72 °C.")
         crit = only(w.derive(make(cpu_status="critical", cpu_temp_c=81.2)))
-        assert (crit.severity, crit.message) == ("critical", "Too hot, 81 °C")
+        assert (crit.severity, crit.message, crit.detail) == ("critical", "Too hot", "CPU at 81 °C.")
+        assert only(w.derive(make(cpu_status="high", cpu_temp_c=None))).detail == ""
         assert hot.link == crit.link == "/about#system"
 
     def test_sd_failing_and_low(self):
         bad = only(w.derive(make(sd_percent=8, sd_level="failing")))
         assert (bad.severity, bad.message, bad.link, bad.title) == (
-            "critical", "8% life left, replace now", "/about#system", "microSD card")
-        low = only(w.derive(make(sd_percent=18, sd_level="low")))
-        assert (low.severity, low.message, low.link) == (
-            "warning", "18% life left, replace soon", "/about#system")
+            "critical", "Replace now", "/about#system", "microSD card")
+        assert bad.detail == "8% of its life left."
+        low = only(w.derive(make(sd_percent=18, sd_level="low", sd_read_at="2026-03-03T10:00:00+00:00")))
+        assert (low.severity, low.message, low.link) == ("warning", "Replace soon", "/about#system")
+        assert low.detail == "18% of its life left. Read 3 Mar 2026."
 
-    def test_no_row_has_a_detail_yet(self):
-        entries = w.derive(make(sd_percent=8, sd_level="failing", throttled=0x1))
-        assert entries and all(e.detail == "" for e in entries)
+    def test_licence_and_no_input_have_no_detail(self):
+        assert only(w.derive(make(unlicensed=True))).detail == ""
+        assert only(w.derive(make({1: snap(enabled=False)}))).detail == ""
 
     def test_the_entry_helper_fits_a_detail(self):
         entry = w._entry("x", "info", "k", "t", "m", None, detail="word " * 60)
@@ -111,8 +129,7 @@ class TestRows:
             "stylus_in1", "warning", "stylus", "Turntable", "Turntable stylus",
             "Change now", "/service")
         due = only(w.derive(make({1: snap(stylus="due", remaining=4.46)})))
-        assert (due.severity, due.message) == (
-            "info", "Change soon, 4.5 h left")
+        assert (due.severity, due.message) == ("info", "Change soon")
         assert only(w.derive(make({1: snap(stylus="due")}))).message == "Change soon"
 
     def test_a_stylus_with_no_life_set_says_nothing(self):
@@ -129,6 +146,33 @@ class TestRows:
         due = only(w.derive(make({2: snap("CD", **{item: "due"})})))
         assert (due.message, due.severity) == ("Service soon", "info")
 
+    def test_the_stylus_detail_gives_the_hours_and_the_date(self):
+        over = only(w.derive(make({1: snap(stylus="overdue", life=500)})))
+        assert over.detail == "Played 450.0 h of its 500 h life. Last changed 3 Mar 2026."
+        due = only(w.derive(make({1: snap(stylus="due", life=500, remaining=50)})))
+        assert due.detail == "50.0 h left of its 500 h life. Last changed 3 Mar 2026."
+
+    def test_a_missing_date_drops_its_sentence_not_the_detail(self):
+        over = only(w.derive(make({1: snap(stylus="overdue", life=500, stylus_reset=None)})))
+        assert over.detail == "Played 450.0 h of its 500 h life."
+        assert only(w.derive(make({1: snap(stylus="overdue", stylus_reset="garbage")}))).detail.startswith("Played")
+
+    @pytest.mark.parametrize("item", ["belt", "bearing"])
+    def test_belt_and_bearing_details_name_the_cause(self, item):
+        hours = only(w.derive(make({1: snap(**{item: "overdue"})})))
+        assert hours.detail == "Played 800.0 h of its 1000 h service interval."
+        soon = only(w.derive(make({1: snap(**{item: "due"})})))
+        assert soon.detail == "50.0 h left of its 1000 h service interval."
+        time_only = only(w.derive(make({1: snap(belt_why=("time",), **{item: "overdue"})})))
+        assert time_only.detail == "Last serviced 1 Jun 2025, due every 2 years."
+        both = only(w.derive(make({1: snap(belt_why=("hours", "time"), **{item: "overdue"})})))
+        assert both.detail == ("Played 800.0 h of its 1000 h service interval. "
+                               "Last serviced 1 Jun 2025, due every 2 years.")
+
+    def test_sample_rate_detail_gives_the_rate(self):
+        assert only(w.derive(make({1: snap(), 2: snap("CD")}, entries=[mismatch(2)]))).detail == (
+            "CD is running at 44.1 kHz.")
+
     def test_sample_rate(self):
         e = only(w.derive(make({1: snap(), 2: snap("CD")}, entries=[mismatch(2)])))
         assert (e.id, e.severity, e.kind, e.subject, e.title, e.message, e.link) == (
@@ -139,7 +183,9 @@ class TestRows:
         one = only(w.derive(make(dials_needing_update=1)))
         assert (one.id, one.title, one.message, one.link) == (
             "dial_update", "Dials", "1 needs updating", "/setup#dials")
-        assert only(w.derive(make(dials_needing_update=3))).message == "3 need updating"
+        assert one.detail == "Update it from Setup, Dials."
+        three = only(w.derive(make(dials_needing_update=3)))
+        assert (three.message, three.detail) == ("3 need updating", "Update them from Setup, Dials.")
 
     def test_licence(self):
         e = only(w.derive(make(unlicensed=True)))

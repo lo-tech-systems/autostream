@@ -784,7 +784,7 @@ class DialCore:
             level = wear_level(view, state.sd_level)
             state.sd_level = level
             if level != SD_LEVEL_OK:
-                began = self.warnings.set_active(SDHEALTH_WARNING_ID, (level, view.percent))
+                began = self.warnings.set_active(SDHEALTH_WARNING_ID, (level, view.percent, view.date))
                 changes.append(WarningChange(SDHEALTH_WARNING_ID, True, began))
             else:
                 self.warnings.clear(SDHEALTH_WARNING_ID)

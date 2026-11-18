@@ -63,7 +63,8 @@ class TestDialBell:
     def test_the_sd_card_entry_reads_its_text_and_attribution(self):
         bell = dial_bell(_snapshot({"sdhealth": ("low", 18)}), WARNING_DESCRIPTORS)
         assert bell.entries == (BellEntry(
-            "sdhealth", DIAL_SOURCE, "warning", "microSD card", "18% life left, replace soon", ()),)
+            "sdhealth", DIAL_SOURCE, "warning", "microSD card", "Replace soon", (),
+            detail="18% of its life left."),)
 
     def test_a_dial_is_attributed_to_this_dial_whatever_it_is_called(self):
         snap = dataclasses.replace(

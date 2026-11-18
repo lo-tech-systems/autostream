@@ -356,7 +356,8 @@ class TestWarnings:
         bell = _state("warning_sdhealth")["bell"]
         assert bell == {"severity": "warning", "entries": [{
             "key": "sdhealth", "source": "This Dial", "severity": "warning",
-            "title": "microSD card", "message": "18% life left, replace soon", "detail": "", "actions": []}]}
+            "title": "microSD card", "message": "Replace soon",
+            "detail": "18% of its life left. Read 3 Mar 2026.", "actions": []}]}
         assert _state("warning_sdhealth")["status"] is None
 
     def test_the_sd_card_is_critical_below_three_percent(self):
@@ -423,6 +424,7 @@ class TestWarnings:
         (entry,) = dataclasses.replace(scenario, snapshot=snapshot).state()["bell"]["entries"]
         assert (entry["key"], entry["source"]) == ("update_dial", "This Dial")
         assert entry["title"] == "Update this dial" and entry["message"] == "Lounge, Kitchen need a newer dial"
+        assert entry["detail"] == "Update it from Lounge's web UI (Setup, Dials)."
 
     def test_an_inactive_or_unknown_warning_makes_no_entry(self):
         scenario = hs.SCENARIOS["warning_sdhealth"]

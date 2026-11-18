@@ -3429,7 +3429,7 @@
        "kind": "sd_health",
        "subject": "",
        "title": "SD card",
-       "message": "4% life left, replace now",
+       "message": "Replace now",
        "link": null
       }
      ]
@@ -3445,7 +3445,7 @@
      {
       "severity": "critical",
       "title": "SD card",
-      "message": "4% life left, replace now"
+      "message": "Replace now"
      }
     ],
     "strip": [],

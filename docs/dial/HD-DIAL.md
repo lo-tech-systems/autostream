@@ -253,9 +253,11 @@ a look, and a tap on it opens the card.
   the end of its life, a drive belt or main bearing due for service, or a low
   power-supply voltage.
 
-Tap a bell to open a card over a dimmed page. The card names where the warning
-comes from and, when the bell holds more than one, which it is ("Turntable ·
-1 of 2"). **Next** moves to the following one and wraps round after the last.
+Tap a bell to open a card over a dimmed page. A band across the top of the
+card names where the warning comes from and, when the bell holds more than one,
+which it is ("Turntable · 1 of 2"); a rule under the band shows how urgent it
+is. Under the title and message, a smaller line gives the reason for the
+warning, when there is one (for example the hours a stylus has played). **Next** moves to the following one and wraps round after the last.
 No WiFi also offers **Restart**, which reboots the dial. **Close** puts the
 card away and does nothing else: the bell keeps counting for as long as the
 cause is there, and the warning is not hidden or postponed. A warning goes

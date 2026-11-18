@@ -33,7 +33,7 @@ Start-up and system screens:
 - `update-failed.png`: the update failed and the previous version was restored.
 - `no-wifi.png`: the No WiFi card, with Restart and Close.
 - `sd-health.png`: the microSD health warning, with Close.
-- `appliance-warning.png`: a warning from an appliance (the stylus reminder), with Close.
+- `appliance-warning.png`: a warning from an appliance (the stylus reminder, with the reason under its message where it fits), with Close.
 - `appliance-warning-paged.png`: the same card when the bell holds more than one warning, with the warning's place ("1 of 2") and Next.
 
 Idle:

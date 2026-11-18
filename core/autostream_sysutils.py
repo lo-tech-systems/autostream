@@ -17,6 +17,7 @@ import tempfile
 import time
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, IO, Optional
 
 logger = logging.getLogger(__name__)
@@ -134,10 +135,26 @@ def sd_level(percent: "int | None", previous: str = SD_LEVEL_OK) -> str:
     return SD_LEVEL_OK
 
 
-def sd_card_text(level: str, percent: int) -> "tuple[str, str]":
-    """The title and message of the microSD wear warning for a non-ok *level*."""
+def format_day(iso: "str | None") -> str:
+    """An ISO 8601 date or date and time as "3 Mar 2026"; "" when *iso* is
+    missing or does not parse."""
+    try:
+        day = datetime.fromisoformat(str(iso).strip())
+    except (TypeError, ValueError):
+        return ""
+    return f"{day.day} {day:%b %Y}"
+
+
+def sd_card_text(level: str, percent: int, read_at: "str | None" = None) -> "tuple[str, str, str]":
+    """The title, message and detail of the microSD wear warning for a non-ok
+    *level*: the message says what to do, the detail how much life is left and,
+    when *read_at* (ISO 8601) is known, when it was read."""
     urgency = "now" if level == SD_LEVEL_FAILING else "soon"
-    return SD_CARD_TITLE, f"{percent}% life left, replace {urgency}"
+    detail = f"{percent}% of its life left."
+    day = format_day(read_at)
+    if day:
+        detail += f" Read {day}."
+    return SD_CARD_TITLE, f"Replace {urgency}", detail
 
 # Manufacturer-id families that appear in the health tool's own support
 # table. Advisory only: a consumer card from the same manufacturer shares

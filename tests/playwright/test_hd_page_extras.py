@@ -1539,7 +1539,8 @@ class TestDialBell:
         open_page(page, hd)
         dial_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("microSD card")
-        expect(page.locator("#card-message")).to_have_text("18% life left, replace soon")
+        expect(page.locator("#card-message")).to_have_text("Replace soon")
+        expect(page.locator("#card-detail")).to_have_text("18% of its life left. Read 3 Mar 2026.")
         assert card_buttons(page) == ["Close"]
         page.locator("#card-buttons button").click()
         page.wait_for_timeout(150)

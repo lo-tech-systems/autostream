@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from autostream_sysutils import SD_CARD_TITLE, SD_LEVEL_FAILING, SD_LEVEL_LOW, sd_card_text
 from dial_appliance_warnings import (
-    APPLIANCE_WARNING_MESSAGE_MAX, ApplianceWarning, DIAL_WARNING_ID, SEVERITY_CRITICAL,
+    APPLIANCE_WARNING_DETAIL_MAX, APPLIANCE_WARNING_MESSAGE_MAX, ApplianceWarning, DIAL_WARNING_ID, SEVERITY_CRITICAL,
     SEVERITY_INFO, SEVERITY_WARNING, clean_text,
 )
 from dial_update_watch import STATUS_SUCCESS, UpdateView
@@ -44,8 +44,9 @@ UPDATE_RESULT_WARNING_ID = "update_result"
 # The No-WiFi warning's fixed title.
 NOWIFI_MESSAGE_TEXT = "No WiFi"
 
-# The SD card warning's reading is (level, percent): "low" is a warning and
-# "failing" is critical; the words are the appliance's own.
+# The SD card warning's reading is (level, percent) or (level, percent,
+# read_at): "low" is a warning and "failing" is critical; the words are the
+# appliance's own.
 def _sdhealth_severity_for(reading) -> str:
     level = reading[0] if reading else SD_LEVEL_LOW
     return SEVERITY_CRITICAL if level == SD_LEVEL_FAILING else SEVERITY_WARNING
@@ -53,6 +54,10 @@ def _sdhealth_severity_for(reading) -> str:
 
 def _sdhealth_message_for(reading) -> str:
     return sd_card_text(*reading)[1] if reading else ""
+
+
+def _sdhealth_detail_for(reading) -> str:
+    return sd_card_text(*reading)[2] if reading else ""
 
 
 # The software update cards. The in-progress card's title is fixed and its
@@ -129,6 +134,13 @@ def _update_dial_message_for(names) -> str:
     return clean_text(f"{', '.join(names)} {verb} a newer dial", APPLIANCE_WARNING_MESSAGE_MAX)
 
 
+def _update_dial_detail_for(names) -> str:
+    names = tuple(names or ())
+    if not names:
+        return ""
+    return clean_text(f"Update it from {names[0]}'s web UI (Setup, Dials).", APPLIANCE_WARNING_DETAIL_MAX)
+
+
 # ---------------------------------------------------------------------------
 # On-screen warnings
 #
@@ -160,7 +172,7 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     WarningDescriptor(
         id=SDHEALTH_WARNING_ID, kind=KIND_WARNING,
         title=SD_CARD_TITLE, message_for=_sdhealth_message_for,
-        severity_for=_sdhealth_severity_for,
+        detail_for=_sdhealth_detail_for, severity_for=_sdhealth_severity_for,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
     ),
     # The dial itself is older than an appliance it talks to: one warning
@@ -168,7 +180,8 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
     # ahead of it.
     WarningDescriptor(
         id=DIAL_WARNING_ID, kind=KIND_WARNING, title=UPDATE_DIAL_TITLE_TEXT,
-        message_for=_update_dial_message_for, severity_for=_warning_severity,
+        message_for=_update_dial_message_for, detail_for=_update_dial_detail_for,
+        severity_for=_warning_severity,
         buttons=(WarningButton(CLOSE_TEXT, ACTION_CLOSE),),
     ),
     # A software update in progress: the top status, no buttons (touch does

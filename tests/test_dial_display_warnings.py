@@ -199,7 +199,8 @@ class TestTheCard:
         assert display.touch_surface() == ("card1", False, False, False, False)
         view = _painted(display)
         assert (view.title, view.message, view.source, view.buttons) == (
-            "microSD card", "15% life left, replace soon", "This Dial", ("Close",))
+            "microSD card", "Replace soon", "This Dial", ("Close",))
+        assert view.detail == "15% of its life left."
 
     def test_an_appliance_warning_card_names_the_appliance(self):
         display = _rig()
@@ -216,6 +217,7 @@ class TestTheCard:
         view = _painted(display)
         assert (view.title, view.message, view.source) == (
             "Update this dial", "Lounge, Kitchen need a newer dial", "This Dial")
+        assert view.detail == "Update it from Lounge's web UI (Setup, Dials)."
 
     def test_no_wifi_has_close_then_restart(self):
         display = _rig()
@@ -258,7 +260,7 @@ class TestTheCard:
         open_warnings_page(display)
         on_sd_health_view(display, _sd(12))
         _fold(display)
-        assert _painted(display).message == "12% life left, replace soon"
+        assert _painted(display).detail == "12% of its life left."
 
     def test_the_pressed_cell_is_passed_to_the_compositor_by_index(self):
         display = _rig()

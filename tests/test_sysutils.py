@@ -553,8 +553,20 @@ class TestSdHealthThresholds:
         assert su.SD_HEALTH_FAILING_RECOVER_THRESHOLD == 15
 
     def test_card_text_for_each_level(self):
-        assert su.sd_card_text("low", 18) == ("microSD card", "18% life left, replace soon")
-        assert su.sd_card_text("failing", 8) == ("microSD card", "8% life left, replace now")
+        assert su.sd_card_text("low", 18) == ("microSD card", "Replace soon", "18% of its life left.")
+        assert su.sd_card_text("failing", 8) == ("microSD card", "Replace now", "8% of its life left.")
+
+    def test_card_text_adds_the_read_date_when_it_is_known(self):
+        assert su.sd_card_text("low", 18, "2026-03-03T10:00:00+00:00")[2] == (
+            "18% of its life left. Read 3 Mar 2026.")
+        assert su.sd_card_text("low", 18, "not a date")[2] == "18% of its life left."
+
+    @pytest.mark.parametrize("iso,expected", [
+        ("2026-03-03T10:00:00+00:00", "3 Mar 2026"), ("2025-12-25", "25 Dec 2025"),
+        (None, ""), ("", ""), ("garbage", ""),
+    ])
+    def test_format_day(self, iso, expected):
+        assert su.format_day(iso) == expected
 
     @pytest.mark.parametrize("percent,previous,expected", [
         (None, "failing", "ok"),

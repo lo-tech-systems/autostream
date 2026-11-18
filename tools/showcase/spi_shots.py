@@ -204,7 +204,7 @@ def appliance_warning(panel, paged=False):
     """An appliance's warning on the warnings card: Close alone, or Close | Next
     with the entry's place among the bell's entries."""
     return warning(panel, views.WarningView(
-        title="Stylus wear", message="Over 450 hours played",
+        title="Stylus wear", message="Change now", detail="Played 450.0 h of its 400 h life.",
         buttons=(CLOSE_TEXT, NEXT_TEXT) if paged else (CLOSE_TEXT,),
         source="Turntable · 1 of 2" if paged else "Turntable"))
 

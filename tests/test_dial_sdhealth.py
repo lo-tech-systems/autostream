@@ -74,6 +74,13 @@ class TestReadHealth:
         assert view.percent == 87
         assert view.check == "passed"
 
+    def test_the_reading_carries_the_day_it_was_taken(self):
+        state = _state(health_percent=87, last_sampled_at="2026-03-03T10:00:00+00:00")
+        with patch.object(sh, "sdcard_health_state", return_value=state),              patch.object(sh, "SDCARD_HEALTH_JSON_FILE", Path("/nonexistent/sdcardhealth.json")):
+            assert sh.read_health(now=1.0).date == "2026-03-03T10:00:00+00:00"
+        with patch.object(sh, "sdcard_health_state", return_value=_state()),              patch.object(sh, "SDCARD_HEALTH_JSON_FILE", Path("/nonexistent/sdcardhealth.json")):
+            assert sh.read_health(now=1.0).date is None
+
     def test_stale_when_file_older_than_threshold(self, tmp_path):
         health_file = tmp_path / "sdcardhealth.json"
         health_file.write_text("{}", encoding="utf-8")

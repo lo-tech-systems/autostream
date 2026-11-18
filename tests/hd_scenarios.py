@@ -407,8 +407,8 @@ def _build() -> dict:
     add(Scenario("eq_six", _playing()))
 
     add(Scenario("warning_sdhealth", base(
-        warnings=warning_states({"sdhealth": ("low", 18)}),
-        sd_health=SdHealthView(status="stale", percent=18),
+        warnings=warning_states({"sdhealth": ("low", 18, "2026-03-03T10:00:00+00:00")}),
+        sd_health=SdHealthView(status="stale", percent=18, date="2026-03-03T10:00:00+00:00"),
     ), muted=None))
     add(Scenario("warning_update", base(
         warnings=warning_states({"update": UpdateView(

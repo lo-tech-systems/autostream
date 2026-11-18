@@ -280,12 +280,23 @@ class TestTheTable:
         desc = WARNING_BY_ID["sdhealth"]
         reading = ("failing", 8)
         assert (desc.title_text(reading), desc.message_text(reading)) == (
-            "microSD card", "8% life left, replace now")
+            "microSD card", "Replace now")
+        assert desc.detail_text(reading) == "8% of its life left."
+
+    def test_the_sd_card_detail_adds_the_read_date_when_the_reading_has_one(self):
+        desc = WARNING_BY_ID["sdhealth"]
+        assert desc.detail_text(("low", 18, "2026-03-03T10:00:00+00:00")) == "18% of its life left. Read 3 Mar 2026."
+        assert desc.detail_text(("low", 18, None)) == "18% of its life left."
 
     def test_a_descriptor_without_a_detail_gives_an_empty_one(self):
-        assert WARNING_BY_ID["sdhealth"].detail_text(("low", 18)) == ""
+        assert WARNING_BY_ID["nowifi"].detail_text(None) == ""
 
     def test_the_dial_update_message_names_the_appliances(self):
         message_for = WARNING_BY_ID["update_dial"].message_for
         assert message_for(("Lounge",)) == "Lounge needs a newer dial"
         assert message_for(("Lounge", "Kitchen")) == "Lounge, Kitchen need a newer dial"
+
+    def test_the_dial_update_detail_names_the_first_appliance(self):
+        detail_for = WARNING_BY_ID["update_dial"].detail_for
+        assert detail_for(("Lounge", "Kitchen")) == "Update it from Lounge's web UI (Setup, Dials)."
+        assert detail_for(()) == ""

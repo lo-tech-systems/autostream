@@ -50,6 +50,7 @@ class SdHealthView:
     percent: "int | None" = None
     check: str = "none"
     updated_at: float = 0.0
+    date: "str | None" = None     # when the health file was read (ISO 8601), None when unknown
 
 
 UNKNOWN_VIEW = SdHealthView()
@@ -96,7 +97,9 @@ def read_health(now: "float | None" = None) -> SdHealthView:
             status = STATUS_STALE
     except OSError:
         pass
-    return SdHealthView(status=status, percent=percent, check=check, updated_at=now)
+    return SdHealthView(
+        status=status, percent=percent, check=check, updated_at=now, date=state.get("last_sampled_at"),
+    )
 
 
 def wear_level(view: SdHealthView, previous: str) -> str:

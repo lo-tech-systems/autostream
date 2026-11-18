@@ -407,7 +407,7 @@ The knob still sets the volume whatever the screen is showing.
 
 Tap the bell to open a card:
 
-![A warnings card reading Stylus wear and Over 450 hours played, with Close and Next](images/showcase/spi-dial/appliance-warning-paged.png)
+![A warnings card reading Stylus wear and Change now, with Close and Next](images/showcase/spi-dial/appliance-warning-paged.png)
 
 *One warning at a time. Small text at the top says where it comes from and
 which of the bell's warnings this is ("Turntable · 1 of 2").*
@@ -459,10 +459,13 @@ screen down. Identical on every tier.*
 
 Shown in the bell when SD card health monitoring is turned on (from the
 appliance's Setup page) and the card's remaining endurance drops low. The card
-has a title, a body line with the remaining percentage and a **Close** button.
-The wording is the same as on the appliance: "replace soon" below 20 percent,
-and under 10 percent the warning counts as critical, reads "replace now" and the
-bell turns red.
+has a title, a message and a **Close** button. The wording is the same as on
+the appliance: "Replace soon" below 20 percent, and under 10 percent the warning
+counts as critical, reads "Replace now" and the bell turns red. Under the
+message a smaller line gives the remaining percentage and, when it is known,
+the day the card was read. That line is shown only where the whole of it fits,
+so a small screen may show the message alone; the percentage is always on the
+[Info page](#info-page).
 
 ![SD card warning for a worn microSD card](images/showcase/spi-dial/sd-health.png)
 
@@ -479,8 +482,11 @@ of its life, a drive belt or main bearing due for service, or a power supply
 that has dipped below its voltage. They are counted in the dial's bell and shown
 on the same card as the others: the appliance's name in small text on top
 (with the warning's place, "1 of 2", when there is more than one), then a title
-(for example "Stylus wear"), a short message (for example "Over 450 hours
-played") and **Close**, with **Next** when the bell holds more than one.
+(for example "Stylus wear"), a short message saying what to do (for example
+"Change now") and **Close**, with **Next** when the bell holds more than one.
+Where there is room, a smaller line under the message says why (for example
+"Played 450.0 h of its 400 h life."). It is shown whole or not at all, so a
+small screen may show the message alone.
 
 ![An appliance's warning card with Close alone](images/showcase/spi-dial/appliance-warning.png)
 
