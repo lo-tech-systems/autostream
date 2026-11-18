@@ -3,7 +3,7 @@
 TouchEventSource is a thin thread wrapper with no policy of its own. It
 blocks on T_IRQ via gpiozero, drives a driver + a TouchFilter + a
 dial_touch.TouchStateMachine, and hands the resulting actions to injected
-callables. It does NOT import dial_volume or dial_display: dial_main wires
+callables. It does NOT import dial_volume or dial_display: dial_touch_wiring wires
 those in by passing their methods as the callables here. gpiozero and
 dial_touch_drivers are imported lazily so this module stays importable on a
 machine with neither installed.
@@ -55,7 +55,7 @@ _IDLE_TICK_INTERVAL_S = 0.1
 class TouchEventSource:
     """Drives driver -> filter -> state machine and dispatches the resulting
     actions through injected callables. Constructed with an already-open
-    driver, filter, and state machine (dial_main.py wiring, once it exists,
+    driver, filter, and state machine (dial_touch_wiring.py, once it exists,
     owns creating those); this class adds only the thread and the IRQ wait.
     """
 
@@ -98,7 +98,7 @@ class TouchEventSource:
         # (zone=None), pass index=None.
         self._on_set_pressed_zone = on_set_pressed_zone
         # ACTION_ZONE_TAP callback: on_zone_tap(zone, index) — NAME (opens
-        # the selector) and the LIST_* zones (act on it). See dial_main.py's
+        # the selector) and the LIST_* zones (act on it). See dial_touch_wiring.py's
         # wiring for what each zone does; this module knows nothing about
         # the display beyond dispatching the action.
         self._on_zone_tap = on_zone_tap
@@ -172,7 +172,7 @@ class TouchEventSource:
         touch axes must invert with it — otherwise every press lands
         diagonally opposite the button the user is looking at. The profile's
         own axis signs describe the UNROTATED panel, so rotate is XOR'd in,
-        exactly as dial_main does when first building the filter.
+        exactly as dial_touch_wiring does when first building the filter.
 
         *layout*, when given, is a dial_display_profiles.LayoutContext: the
         filter is re-scaled to its logical size and the state machine

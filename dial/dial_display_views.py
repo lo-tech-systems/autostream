@@ -160,7 +160,7 @@ class ListState:
         as before.
     has_prev: whether a previous page exists — gates whether the LIST_UP
         chevron is drawn lit (see dial_touch_layout.ListLayout.up and the
-        LIST_UP -> selector_page(-1) dispatch in dial_main.py).
+        LIST_UP -> selector_page(-1) dispatch in dial_touch_wiring.py).
     has_next: whether a next page exists — gates the LIST_DOWN chevron
         (selector_page(+1)).
     pressed: the (TouchZone, index) currently being pressed, or None. index

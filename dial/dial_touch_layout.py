@@ -220,7 +220,7 @@ BELL_ZONES = frozenset((
     TouchZone.IDLE_BELL, TouchZone.BAND_BELL, TouchZone.DOTS_BELL, TouchZone.ARTWORK_BELL,
 ))
 
-# A card's button zones, left to right; dial_main routes any of these to the
+# A card's button zones, left to right; dial_touch_wiring routes any of these to the
 # display's card dispatch, which reads the index as the cell tapped.
 CARD_BUTTON_ZONES = (TouchZone.CARD_BUTTON_0, TouchZone.CARD_BUTTON_1, TouchZone.CARD_BUTTON_2)
 

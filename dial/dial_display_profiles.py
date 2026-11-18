@@ -199,7 +199,7 @@ DISPLAY_PROFILES: dict[str, DisplayProfile] = {
         # (they depend on which edge the sheet's tails leave the glass on
         # this board); these were established against real hardware, with
         # the panel's 180-degree rotate setting on. They describe the
-        # UNROTATED panel — dial_main XORs the rotate setting in.
+        # UNROTATED panel — dial_touch_wiring XORs the rotate setting in.
         touch_swap_xy=True,
         touch_invert_x=True,
         touch_invert_y=True,

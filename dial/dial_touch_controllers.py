@@ -12,7 +12,7 @@ the whole dial service, including volume control.
 Resolving a driver_tag to an actual driver class happens lazily inside
 dial_touch_drivers.py's open(), exactly as dial_display_adafruit.py resolves
 DisplayProfile.driver_tag — so this table stays free of hardware even though
-dial_main.py selects a controller from it at startup.
+dial_touch_wiring.py selects a controller from it at startup.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """

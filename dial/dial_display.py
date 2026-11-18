@@ -1418,7 +1418,7 @@ class DialDisplay:
         self._controls_shown_until = time.monotonic() + CONTROLS_HIDE_SECONDS
 
     def hide_controls(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for an ARTWORK
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for an ARTWORK
         tap on the now-playing screen, or a tap on the replay screen's own
         artwork while a replay runs): hide the top/bottom bands for
         CONTROLS_HIDE_SECONDS, so a tap on the artwork itself gives an
@@ -2261,7 +2261,7 @@ class DialDisplay:
         )
         # An artwork tap's hide window wins over a touch-published visible
         # snapshot: the user asked for the artwork, whichever mode the
-        # controls are in. The touch side is told the same (see dial_main's
+        # controls are in. The touch side is told the same (see dial_touch_wiring's
         # ARTWORK dispatch) so its session matches.
         bell = self._bell_badge(snap)
         if self._controls_hidden(now) and not revealing:
@@ -2455,12 +2455,12 @@ class DialDisplay:
     # thread never builds rows, it only reads the last-published state.
 
     def open_selector(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a NAME tap)."""
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a NAME tap)."""
         self._screen_request = "selector"
         self._overlay_signal.set()
 
     def close_list(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_BACK
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a LIST_BACK
         tap): pop back from whichever list-chassis screen is open — to its
         policy row's back_to, or for the outputs list to the main page it
         was opened from (see _back_target())."""
@@ -2486,7 +2486,7 @@ class DialDisplay:
         self._overlay_signal.set()
 
     def list_page(self, delta: int) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_DOWN/
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a LIST_DOWN/
         LIST_UP tap): +1 for the next page, -1 for the previous, on
         whichever list-chassis screen is open. Clamped to the valid range
         by _apply_screen_requests_locked()."""
@@ -2532,7 +2532,7 @@ class DialDisplay:
         self.close_list()
 
     def list_row_tap(self, index: int) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a LIST_ROW
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a LIST_ROW
         tap): routes to whichever list-chassis screen is actually open —
         the appliance selector (selector_pick), the replay picker
         (picker_pick), the outputs list (outputs_row_tap) or, on the
@@ -2612,7 +2612,7 @@ class DialDisplay:
         return rec is not None and rec.available
 
     def cycle_pages(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a DOTS tap):
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a DOTS tap):
         advance to the next available page — main -> repeat -> eq -> main,
         wrapping, and skipping a page with nothing to show (no held repeat
         record, or no EQ-capable focused/reporting appliance) so a dot
@@ -2667,7 +2667,7 @@ class DialDisplay:
         return value
 
     def repeat_toggle_tap(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_PLAY
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a REPEAT_PLAY
         tap): toggle arm/disarm — only meaningful in the enable layout
         (a live source recording/pending, or idle with the daemon still
         enabled); a tap here while the replaying/hold layout is showing
@@ -2687,7 +2687,7 @@ class DialDisplay:
             self.hide_controls()
 
     def repeat_start_tap(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_START
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a REPEAT_START
         tap): seek to 0 — restart a running replay, or start one from
         Hold. A no-op while fading out (the appliance would refuse it with
         "fading_out" anyway) or while a live source is recording."""
@@ -2701,7 +2701,7 @@ class DialDisplay:
             self._core.restart_replay(screen.appliance_id)
 
     def repeat_stop_tap(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a REPEAT_STOP
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a REPEAT_STOP
         tap): stop a running replay (fades out, lands in Hold, disarmed).
         A no-op outside Replaying — while fading out the button is drawn
         pressed and inert, and in Hold there is nothing to stop."""
@@ -2741,7 +2741,7 @@ class DialDisplay:
         self.pop_secondary("repeat")
 
     def open_picker(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for an IDLE_REPLAY
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for an IDLE_REPLAY
         tap). Refuses (plain bool read, no lock) when no replay is actually
         held — the corner glyphs are reachable on every idle dial (see
         _idle_chassis_due_locked), but a replay tap on a plain logo stays
@@ -2752,7 +2752,7 @@ class DialDisplay:
         self._overlay_signal.set()
 
     def open_info(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for the idle
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for the idle
         screen's IDLE_WIFI tap). Requests the info page and starts one
         bounded gather on its own daemon thread; the page paints at once
         with placeholder "-" values (see _open_info_locked) and fills in
@@ -2840,7 +2840,7 @@ class DialDisplay:
         return entry
 
     def open_outputs(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for an OUTPUTS
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for an OUTPUTS
         tap): request the outputs list, which the core always holds for the
         focused appliance. Lock-free, like open_selector(); refuses (no
         request at all) when there is no focused/reporting appliance
@@ -4008,7 +4008,7 @@ class DialDisplay:
         ))
 
     def eq_step(self, control: str, delta: int) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for an EQ_BASS_*/
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for an EQ_BASS_*/
         EQ_TREBLE_* tap, repeating): absolute clamp(shown + delta, -6, +6)
         for *control* ("bass" or "treble") — the same shape as
         output_volume_tap(): the appliance clamps again defensively.
@@ -4145,13 +4145,13 @@ class DialDisplay:
         return 0, WIFI_GREY
 
     def open_warnings(self) -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a bell tap):
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a bell tap):
         request the warnings card. Two plain writes and a repaint signal."""
         self._screen_request = "warnings"
         self._overlay_signal.set()
 
     def card_button_tap(self, zone: "TouchZone") -> None:
-        """Touch-thread entry (dial_main's on_zone_tap, for a card's button
+        """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a card's button
         zones): run the action of the cell tapped on the card the finger
         saw. A tap on a card that has closed, or whose entry has moved on,
         runs nothing. Plain writes plus a repaint signal; no lock, no I/O on

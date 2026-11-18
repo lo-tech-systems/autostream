@@ -2375,7 +2375,7 @@ class TestOverlaySetAndRepaintExecutor:
         spy_lock = _SpyLock()
         display._lock = spy_lock
 
-        # Everything dial_main wires to the touch callbacks.
+        # Everything dial_touch_wiring wires to the touch callbacks.
         display.set_overlay(OverlayState(visible=True, pressed=TouchZone.UP))
         display.notify_touch_activity()
         display.set_overlay(OverlayState(visible=False))
@@ -8027,7 +8027,7 @@ class TestCompactTimeTapBack:
             display._repaint_current_locked()
         assert display._screen == "repeat"
 
-        # dial_main.py's on_zone_tap routes every DOTS tap to this same
+        # dial_touch_wiring.py's on_zone_tap routes every DOTS tap to this same
         # entry point regardless of which screen/layout drew the cell the
         # finger landed on -- the compact replaying layout's own "time"
         # strip is drawn there, but the dispatch is identical.
