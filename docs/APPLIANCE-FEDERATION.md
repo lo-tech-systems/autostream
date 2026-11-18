@@ -166,8 +166,10 @@ Authorization: Bearer <token>
 | `POST` | `/api/federation/v1/repeat` | Arm or disarm repeat-buffer replay |
 
 The **home** response additionally carries `session` (the unified playback-session
-flag/source, always present) and `repeat` (the daemon's repeat-buffer status block,
-present only when the target's repeat feature has ever reported one). Both fields
+flag/source, always present), `repeat` (the daemon's repeat-buffer status block,
+present only when the target's repeat feature has ever reported one) and
+`start_failure` (the latest speaker that could not start, present only when there is
+one; the Home page's object, `requester` included). All three fields
 are additive within v1: a target running an older release simply omits them, and a
 gateway UI that does not recognise them hides the corresponding control rather than
 erroring.

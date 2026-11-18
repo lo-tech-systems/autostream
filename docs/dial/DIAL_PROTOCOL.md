@@ -4,8 +4,8 @@ This document is the authoritative spec for the wire protocol between autostream
 and autostream appliances. Breaking changes require a version bump and a new capability indicator
 in the mDNS TXT record.
 
-This document describes the protocol between 0.7 appliances and 0.7 dials. Earlier
-appliances and dials are not supported.
+This document describes the protocol between appliances and dials of the same release.
+Earlier appliances and dials are not supported.
 
 Out of scope: the dial's own loopback poll of its local Wi-Fi watcher (`GET
 127.0.0.1:9080/network_status`, every 15 s) and its use of the local nginx offline-recovery
@@ -441,6 +441,7 @@ Advertised via `dial_status=v1` in the `_autostream-playing._tcp` TXT record.
 | `repeat` | object | Repeat-recording/replay state (see below). Omitted entirely when the daemon has never reported it (no poll yet) |
 | `appliance_id` | string\|null | This appliance's stable identity (20 lowercase hex characters), or `null` for an identity-less appliance |
 | `input` | object\|null | The input behind the current session (see below); `null` when nothing is playing |
+| `start_failure` | object | The latest speaker that could not start (see below). Omitted entirely when there is none |
 
 `master_volume` uses the same arithmetic-mean calculation as the home-page master control
 and `POST /api/dial/volume`; `muted` is an explicit flag the appliance sets and clears from
@@ -510,6 +511,26 @@ track from before the seek.
 `type` and `label` reflect the appliance's current settings, so a mid-session type change is
 visible on the next poll. The object rides on `dial_status=v1` without a new capability
 indicator, like `track_id`.
+
+#### `start_failure` object
+
+```json
+{"start_failure": {"seq": 3, "boot": "b1c2", "unit_id": "1001", "name": "Speaker A", "reason": "refused", "mine": true, "age_s": 4}}
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `seq` | int | Counts failures since the appliance started; with `boot`, names one failure for ever |
+| `boot` | string | Identifies the appliance's run; `seq` starts again at 1 on a new `boot` |
+| `unit_id` | string | The speaker row id, the `id` a dial sends to `/api/dial/outputs/set` |
+| `name` | string | The speaker's display name |
+| `reason` | string | One of `pin_required`, `pin_invalid`, `encoder_capacity`, `refused`, `failed`, `timed_out`. A later release may add tokens; a dial treats an unknown token as "did not start" |
+| `mine` | bool | `true` when the dial asking for the status is the one whose request failed |
+| `age_s` | int | Seconds since the failure |
+
+The key is absent when there is no failure, and on `ok: false` responses. A dial shows each
+`(boot, seq)` once. It rides on `dial_status=v1` without a new capability indicator, like
+`track_id` and `input`.
 
 #### `repeat` object
 

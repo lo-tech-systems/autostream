@@ -370,6 +370,28 @@ class TestFederationHome:
         assert data["ok"] is True
         assert "outputs" in data
         assert "appliance" in data
+        assert "start_failure" not in data
+
+    def test_carries_the_home_shape_of_a_failed_start(self, tmp_path):
+        from fake_store import FakeStore
+        FakeStore().outputs(
+            [FakeStore.output_row("1001", "Speaker A")],
+            start_failure={"unit_id": "1001", "reason": "refused", "requester": "webui", "at": 100.0})
+        state = _fake_state(tmp_path)
+        bearer = _get_bearer()
+        h = _make_handler("GET", "/api/federation/v1/home",
+                          headers={"Authorization": bearer})
+        playback = MagicMock()
+        playback.to_public_dict.return_value = {}
+        playback.stylus_banner_text = ""
+        playback.belt_banner_text = ""
+        playback.bearing_banner_text = ""
+        with fake_levels([]),              fake_playback(playback),              patch("autostream_appliance_models._wall", return_value=103.2),              patch("autostream_start_buffer_cache.current_ms", return_value=100),              patch("autostream_appliance_models.get_appliance_id", return_value="aabb"),              patch("autostream_appliance_models.get_system_hostname", return_value="host"),              patch("autostream_appliance_models.get_app_version", return_value="1.0"):
+            code, data = _call(h, state)
+        assert code == 200
+        f = data["start_failure"]
+        assert (f["unit_id"], f["name"], f["reason"], f["requester"], f["age_s"]) == (
+            "1001", "Speaker A", "refused", "webui", 3)
 
 
 # ---------------------------------------------------------------------------

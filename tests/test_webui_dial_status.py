@@ -133,6 +133,7 @@ def _invoke(
     speaks_v2: bool = True,
     source_input: int | None = None,
     input_types: tuple[str, str] = ("line", "line"),
+    start_failure: dict | None = None,
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_status_post_json and return (status, body, update_mock).
 
@@ -145,7 +146,8 @@ def _invoke(
     or no poll yet). session_state, when given, is the session put into the
     store instead of one derived from `playing`. source_input is the input
     behind a playing session (input 1 by default); input_types are the two
-    inputs' configured types.
+    inputs' configured types. start_failure, a dict of unit_id, reason and
+    optionally requester and at, is a failed start put into the store.
     """
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
@@ -158,6 +160,11 @@ def _invoke(
 
     update_mock = MagicMock()
     _arrange_outputs(list_result)
+    if start_failure is not None:
+        FakeStore().outputs([_output("1001", 50), _output("1002", 50)],
+                            start_failure=start_failure)
+        if not list_result.ok:
+            FakeStore().outputs_unreachable()
 
     parsed = MagicMock()
     parsed.owntone.base_url = BASE_URL
@@ -465,6 +472,50 @@ def _daemon_block(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+class TestStartFailureField:
+    FAILURE = {"unit_id": "1002", "reason": "refused", "requester": "webui", "at": 1000.0}
+
+    @pytest.fixture(autouse=True)
+    def _clock(self, monkeypatch):
+        import autostream_appliance_models as models
+        monkeypatch.setattr(models, "_wall", lambda: 1004.9)
+
+    def test_no_key_without_a_failure(self):
+        _, body, _ = _invoke({"dial_id": DIAL_ID})
+        assert "start_failure" not in body
+
+    def test_the_key_carries_the_failure_fields(self):
+        _, body, _ = _invoke({"dial_id": DIAL_ID}, start_failure=self.FAILURE)
+        f = body["start_failure"]
+        assert set(f) == {"seq", "boot", "unit_id", "name", "reason", "mine", "age_s"}
+        assert (f["seq"], f["unit_id"], f["name"], f["reason"], f["age_s"]) == (
+            1, "1002", "1002", "refused", 4)
+        assert isinstance(f["boot"], str) and f["boot"]
+
+    @pytest.mark.parametrize("requester, mine", [
+        (f"dial:{DIAL_ID}", True),
+        ("dial:another-dial", False),
+        ("webui", False),
+        ("peer", False),
+        (None, False),
+    ])
+    def test_mine_is_whether_this_dial_asked(self, requester, mine):
+        failure = dict(self.FAILURE, requester=requester)
+        _, body, _ = _invoke({"dial_id": DIAL_ID}, start_failure=failure)
+        assert body["start_failure"]["mine"] is mine
+        assert "requester" not in body["start_failure"]
+
+    def test_absent_when_the_config_fails(self):
+        _, body, _ = _invoke({"dial_id": DIAL_ID}, config_error=True,
+                             start_failure=self.FAILURE)
+        assert body == {"ok": False, "error": "config_error"}
+
+    def test_absent_when_the_player_is_unavailable(self):
+        _, body, _ = _invoke({"dial_id": DIAL_ID}, list_result=_fail_list(),
+                             start_failure=self.FAILURE)
+        assert body == {"ok": False, "error": "backend_unavailable"}
 
 
 class TestInputField:
@@ -858,6 +909,11 @@ class TestDialProtocolDoc:
         assert "track_id" in text
         assert "artwork_url" in text
         assert "provider artwork" in text.lower()
+
+    def test_dial_protocol_documents_start_failure_object(self):
+        doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "#### `start_failure` object" in text
 
     def test_dial_protocol_documents_input_object(self):
         doc = REPO_ROOT / "docs" / "dial" / "DIAL_PROTOCOL.md"

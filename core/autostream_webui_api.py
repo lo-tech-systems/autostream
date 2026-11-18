@@ -94,6 +94,7 @@ from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
 from autostream_appliance_models import (
     home_outputs_reply,
     home_status_fields,
+    start_failure_reply,
     submit_output_change,
     bass_treble_from_eq,
     build_equaliser_state,
@@ -989,6 +990,15 @@ def _dial_auth_gate(handler, json_obj: dict) -> str | None:
     return dial_id
 
 
+def _dial_start_failure(snap, dial_id: str) -> dict:
+    """The latest failed speaker start as a dial sees it: the Home fields with
+    the requester replaced by whether this dial asked."""
+    body = start_failure_reply(snap)
+    requester = body.pop("requester")
+    body["mine"] = requester == dial_requester(dial_id)
+    return body
+
+
 def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> None:
     """POST /api/dial/status -- UUID-auth only (no session/CSRF required).
 
@@ -1031,6 +1041,8 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         "muted": muted,
         "input": _dial_input_dict(parsed, snap),
     }
+    if snap.outputs.start_failure is not None:
+        response["start_failure"] = _dial_start_failure(snap, dial_id)
     repeat = _dial_repeat_object(base_url, snap)
     if repeat is not None:
         response["repeat"] = repeat

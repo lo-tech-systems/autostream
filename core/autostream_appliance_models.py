@@ -89,8 +89,9 @@ def build_home_state(snap, parsed) -> dict:
     from the start-buffer cache.
 
     Keys: ok, appliance, preferences, playback, input_levels, warnings,
-    outputs, muted, vu_delay_ms, track_identification, session, and repeat
-    (only when the daemon has reported one).
+    outputs, muted, vu_delay_ms, track_identification, start_failure (only
+    when a start has failed), session, and repeat (only when the daemon has
+    reported one).
     """
     input_levels = snap.inputs.levels()
 
@@ -111,7 +112,7 @@ def build_home_state(snap, parsed) -> dict:
     ti_dict = active_track(snap).to_public_dict()
 
     hostname = _format_hostname(get_system_hostname())
-    return {
+    reply = {
         "ok": True,
         "appliance": {
             "id": get_appliance_id() or "",
@@ -135,8 +136,11 @@ def build_home_state(snap, parsed) -> dict:
         "muted": snap.outputs.muted_all,
         "vu_delay_ms": int(vu_delay_ms),
         "track_identification": ti_dict,
-        **_session_and_repeat_fields(snap),
     }
+    if snap.outputs.start_failure is not None:
+        reply["start_failure"] = start_failure_reply(snap)
+    reply.update(_session_and_repeat_fields(snap))
+    return reply
 
 
 def home_status_fields(snap) -> dict:
@@ -161,7 +165,7 @@ def home_status_fields(snap) -> dict:
 _wall = time.time
 
 
-def _start_failure_reply(snap) -> dict:
+def start_failure_reply(snap) -> dict:
     """The latest failed speaker start, for the Home page's notice. The age is
     given in seconds so the browser never compares its clock with ours; with the
     boot id, (boot, seq) names one failure for ever."""
@@ -187,7 +191,7 @@ def home_outputs_reply(snap, parsed) -> dict:
         pass
     reply = {"ok": True, "outputs": outputs, "muted": snap.outputs.muted_all}
     if snap.outputs.start_failure is not None:
-        reply["start_failure"] = _start_failure_reply(snap)
+        reply["start_failure"] = start_failure_reply(snap)
     return reply
 
 
