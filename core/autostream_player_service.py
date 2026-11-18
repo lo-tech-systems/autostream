@@ -44,8 +44,19 @@ from autostream_sysutils import run_admin_cmd
 
 _CACHE_LOCK = threading.Lock()
 _DETECTION_CACHE_SECONDS = 120.0
+# A guess, or a kept detection while the player does not answer, is cached
+# briefly, so probing continues about every five seconds and a recovered
+# player is seen at once.
+_FALLBACK_CACHE_SECONDS = 5.0
 # (cached_at_monotonic, backend_id, version, last_seen_at, detection_confident)
 _DETECTION_CACHE: dict[str, tuple[float, str, str, float, bool]] = {}
+# The last positive detection per URL as (backend_id, version). A probe that
+# matches nothing keeps this adapter rather than swapping to the generic
+# guess, so a player that is restarting or too busy to answer is still
+# spoken to in its own dialect. Never written by a fallback.
+_CONFIDENT: dict[str, tuple[str, str]] = {}
+# URLs whose current outage has already been logged at INFO.
+_KEPT_LOGGED: set[str] = set()
 LOG = logging.getLogger(__name__)
 
 
@@ -55,8 +66,9 @@ class ResolvedBackend:
     backend: Any
     # True when this backend_id came from a POSITIVE detection match (a
     # probe in detect_backend() actually confirmed it); False when
-    # detect_backend() matched nothing and resolve_backend() fell back to
-    # the generic BACKEND_OWNTONE adapter as a guess (see resolve_backend()
+    # detect_backend() matched nothing and resolve_backend() kept the adapter
+    # of the URL's last positive detection, or, with none, fell back to the
+    # generic BACKEND_OWNTONE adapter as a guess (see resolve_backend()
     # "No playback backend probe matched" branch). Callers that enforce
     # backend-declared policy (e.g. reconcile_monitor_format(),
     # reconcile_pipe_format_with_backend()) MUST gate enforcement on this
@@ -1328,24 +1340,34 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
 
     with _CACHE_LOCK:
         cached = _DETECTION_CACHE.get(normalized_base_url)
-        if cached and (time.monotonic() - cached[0]) <= _DETECTION_CACHE_SECONDS:
+        detection_confident = (cached[4] if len(cached) > 4 else True) if cached else False
+        max_age = _DETECTION_CACHE_SECONDS if detection_confident else _FALLBACK_CACHE_SECONDS
+        if cached and (time.monotonic() - cached[0]) <= max_age:
             backend_id = cached[1]
             version = cached[2]
             last_seen_at = cached[3]
-            detection_confident = cached[4] if len(cached) > 4 else True
             LOG.debug(
                 "Playback backend cache hit for %s: backend=%s age=%.2fs",
                 normalized_base_url,
                 backend_id,
                 time.monotonic() - cached[0],
             )
-            _set_owntone_runtime_info(
-                base_url=normalized_base_url,
-                backend_id=backend_id,
-                version=version or "unknown",
-                connected=True,
-                last_seen_at=last_seen_at,
-            )
+            if detection_confident:
+                _set_owntone_runtime_info(
+                    base_url=normalized_base_url,
+                    backend_id=backend_id,
+                    version=version or "unknown",
+                    connected=True,
+                    last_seen_at=last_seen_at,
+                )
+            else:
+                # Nothing answered the last probe: the cached adapter is a
+                # guess or a kept detection, not a connected player.
+                _set_owntone_runtime_info(
+                    base_url=normalized_base_url,
+                    backend_id=backend_id,
+                    connected=False,
+                )
             return ResolvedBackend(
                 backend_id=backend_id,
                 backend=create_backend(backend_id, base_url=normalized_base_url, timeout=timeout),
@@ -1372,14 +1394,33 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
     # detection_confident's docstring -- enforcement callers must not treat
     # a fallback guess as evidence of what the real backend needs.
     detection_confident = backend is not None
+    kept_version = ""
     if backend is None:
-        LOG.info(
-            "No playback backend probe matched for %s; falling back to backend=%s",
-            normalized_base_url,
-            BACKEND_OWNTONE,
-        )
+        with _CACHE_LOCK:
+            kept = _CONFIDENT.get(normalized_base_url)
+            first_in_outage = normalized_base_url not in _KEPT_LOGGED
+            if kept is not None:
+                _KEPT_LOGGED.add(normalized_base_url)
         _set_owntone_runtime_info(base_url=normalized_base_url, connected=False)
-        backend = create_backend(BACKEND_OWNTONE, base_url=normalized_base_url, timeout=timeout)
+        if kept is not None:
+            # A player that is restarting or busy fails the probe; keeping
+            # the adapter it was last detected as keeps its speaker list and
+            # session fields readable the moment it answers again. It is
+            # still reported as not confident, since nothing confirmed it.
+            kept_id, kept_version = kept
+            (LOG.info if first_in_outage else LOG.debug)(
+                "No playback backend probe matched for %s; keeping %s from its last detection",
+                normalized_base_url,
+                kept_id,
+            )
+            backend = create_backend(kept_id, base_url=normalized_base_url, timeout=timeout)
+        else:
+            LOG.info(
+                "No playback backend probe matched for %s; falling back to backend=%s",
+                normalized_base_url,
+                BACKEND_OWNTONE,
+            )
+            backend = create_backend(BACKEND_OWNTONE, base_url=normalized_base_url, timeout=timeout)
     backend_id = backend.backend_id
     selected_detection = next(
         (d for d in detections if d.matched and d.backend_id == backend_id),
@@ -1388,7 +1429,7 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
     detected_version = (
         str(selected_detection.version).strip()
         if selected_detection is not None
-        else ""
+        else kept_version
     )
     detected_at = time.time()
     LOG.debug(
@@ -1405,11 +1446,14 @@ def resolve_backend(base_url: str, *, timeout: float = 3.0) -> ResolvedBackend:
             detected_at,
             detection_confident,
         )
+        if detection_confident:
+            _CONFIDENT[normalized_base_url] = (backend_id, detected_version)
+            _KEPT_LOGGED.discard(normalized_base_url)
         LOG.debug(
             "Cached playback backend selection for %s: backend=%s ttl=%.1fs confident=%s",
             normalized_base_url,
             backend_id,
-            _DETECTION_CACHE_SECONDS,
+            _DETECTION_CACHE_SECONDS if detection_confident else _FALLBACK_CACHE_SECONDS,
             detection_confident,
         )
 

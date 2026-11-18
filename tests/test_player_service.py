@@ -28,6 +28,20 @@ import autostream_player_service as svc
 
 def _clear_cache():
     svc._DETECTION_CACHE.clear()
+    svc._CONFIDENT.clear()
+    svc._KEPT_LOGGED.clear()
+
+
+def _age_cache_entry(url, seconds):
+    """Move the cached detection for *url* *seconds* into the past."""
+    key = svc._normalize_base_url(url)
+    entry = svc._DETECTION_CACHE[key]
+    svc._DETECTION_CACHE[key] = (entry[0] - seconds,) + tuple(entry[1:])
+
+
+def _player_down():
+    import requests as rq
+    return patch("autostream_players._session.get", side_effect=rq.RequestException("refused"))
 
 
 def _resp(status=200, json_data=None):
@@ -146,6 +160,100 @@ class TestResolveBackendCache:
             svc.resolve_backend("http://localhost:3689")
 
         assert probe_called["n"] > 0
+
+    def test_a_fallback_guess_is_cached_for_five_seconds(self):
+        url = "http://down:3689"
+        with _player_down() as get:
+            svc.resolve_backend(url)
+            assert get.call_count > 0
+        _age_cache_entry(url, svc._FALLBACK_CACHE_SECONDS - 0.5)
+        with patch("autostream_players._session.get", side_effect=Exception("must not call")) as get:
+            assert svc.resolve_backend(url).detection_confident is False
+            get.assert_not_called()
+        _age_cache_entry(url, 1.0)
+        with _player_down() as get:
+            assert svc.resolve_backend(url).backend_id == ap.BACKEND_OWNTONE
+            assert get.call_count > 0
+
+    def test_a_failed_probe_after_a_confident_detection_keeps_that_backend(self, caplog):
+        url = "http://localhost:3689"
+        with patch("autostream_players._session.get", return_value=_mini_config_resp()):
+            assert svc.resolve_backend(url).backend_id == ap.BACKEND_OWNTONE_MINI
+        _age_cache_entry(url, svc._DETECTION_CACHE_SECONDS + 1)
+        with caplog.at_level("INFO", logger=svc.LOG.name), _player_down():
+            result = svc.resolve_backend(url)
+        assert result.backend_id == ap.BACKEND_OWNTONE_MINI
+        assert result.backend.backend_id == ap.BACKEND_OWNTONE_MINI
+        assert f"keeping {ap.BACKEND_OWNTONE_MINI} from its last detection" in caplog.text
+        assert "falling back" not in caplog.text
+
+    def test_the_kept_backend_reads_not_connected_and_not_confident(self):
+        url = "http://localhost:3689"
+        with patch("autostream_players._session.get", return_value=_mini_config_resp()):
+            svc.resolve_backend(url)
+        assert svc._get_owntone_runtime_info_cached().connected is True
+        _age_cache_entry(url, svc._DETECTION_CACHE_SECONDS + 1)
+        with _player_down():
+            result = svc.resolve_backend(url)
+        assert result.detection_confident is False
+        info = svc._get_owntone_runtime_info_cached()
+        assert info.connected is False
+        assert info.backend_id == ap.BACKEND_OWNTONE_MINI
+        assert info.version == "1.0"
+        # A cache hit inside the short window reads the same.
+        with patch("autostream_players._session.get", side_effect=Exception("must not call")):
+            again = svc.resolve_backend(url)
+        assert again.detection_confident is False
+        assert again.backend_id == ap.BACKEND_OWNTONE_MINI
+        assert svc._get_owntone_runtime_info_cached().connected is False
+
+    def test_a_fallback_never_overwrites_the_confident_detection(self):
+        url = "http://localhost:3689"
+        key = svc._normalize_base_url(url)
+        with patch("autostream_players._session.get", return_value=_mini_config_resp()):
+            svc.resolve_backend(url)
+        assert svc._CONFIDENT[key] == (ap.BACKEND_OWNTONE_MINI, "1.0")
+        for _ in range(3):
+            _age_cache_entry(url, svc._DETECTION_CACHE_SECONDS + 1)
+            with _player_down():
+                assert svc.resolve_backend(url).backend_id == ap.BACKEND_OWNTONE_MINI
+            assert svc._DETECTION_CACHE[key][4] is False
+        assert svc._CONFIDENT[key] == (ap.BACKEND_OWNTONE_MINI, "1.0")
+
+    def test_probing_while_the_player_is_down_is_once_per_five_seconds(self, caplog):
+        url = "http://localhost:3689"
+        with patch("autostream_players._session.get", return_value=_mini_config_resp()):
+            svc.resolve_backend(url)
+        _age_cache_entry(url, svc._DETECTION_CACHE_SECONDS + 1)
+        with caplog.at_level("DEBUG", logger=svc.LOG.name):
+            for _ in range(3):
+                with _player_down(), patch.object(svc, "detect_backend", wraps=svc.detect_backend) as probe:
+                    for _ in range(5):
+                        assert svc.resolve_backend(url).backend_id == ap.BACKEND_OWNTONE_MINI
+                    assert probe.call_count == 1
+                _age_cache_entry(url, svc._FALLBACK_CACHE_SECONDS + 0.1)
+        kept = [r for r in caplog.records if "keeping" in r.getMessage()]
+        assert [r.levelname for r in kept] == ["INFO", "DEBUG", "DEBUG"]
+
+    def test_a_recovered_player_is_detected_on_the_next_probe(self, caplog):
+        url = "http://localhost:3689"
+        with patch("autostream_players._session.get", return_value=_mini_config_resp()):
+            svc.resolve_backend(url)
+        _age_cache_entry(url, svc._DETECTION_CACHE_SECONDS + 1)
+        with _player_down():
+            assert svc.resolve_backend(url).detection_confident is False
+        _age_cache_entry(url, svc._FALLBACK_CACHE_SECONDS + 0.1)
+        with patch("autostream_players._session.get", return_value=_mini_config_resp()):
+            result = svc.resolve_backend(url)
+        assert result.detection_confident is True
+        assert result.backend_id == ap.BACKEND_OWNTONE_MINI
+        assert svc._get_owntone_runtime_info_cached().connected is True
+        # The next outage is announced again.
+        _age_cache_entry(url, svc._DETECTION_CACHE_SECONDS + 1)
+        with caplog.at_level("INFO", logger=svc.LOG.name), _player_down():
+            svc.resolve_backend(url)
+        assert sum(1 for r in caplog.records
+                   if "keeping" in r.getMessage() and r.levelname == "INFO") == 1
 
     def test_ensure_builtin_backends_registered_repopulates_cleared_registry(self):
         """ensure_builtin_backends_registered() must re-register builtins even

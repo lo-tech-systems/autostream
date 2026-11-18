@@ -192,6 +192,8 @@ def _reset_player_state():
     ps = _mod("autostream_player_service")
     if ps is not None:
         ps._DETECTION_CACHE.clear()
+        ps._CONFIDENT.clear()
+        ps._KEPT_LOGGED.clear()
 
 
 @pytest.fixture(autouse=True)
