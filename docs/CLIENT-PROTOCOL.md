@@ -112,6 +112,18 @@ Besides the speakers, `outputs` carries `master_volume` (the mean level of
 the selected speakers the appliance can reach, or `null` when there are
 none) and `selected_count`, so a client does not work these out for itself.
 
+The Auto-Start set is the speakers that start playing with each session. The
+part describes it in three places:
+
+| Field | Meaning |
+|---|---|
+| `units[].auto_start` | `true` for a speaker in the set, including the card of a member the player does not have at the moment. |
+| `default_members` | The set, in order. Each entry has `key` (stable within the set), `id` (the saved speaker id, `""` for a member saved before ids were kept), `name` (the speaker's own name when it is present, else the saved name), `volume` (the saved level), `unit_id` (the card that stands for it), `placeholder` (`true` when the player has no such speaker and `unit_id` is the placeholder card) and `pending` (`true` while the appliance still means to add it in this session). |
+| `default_matches` | `true` when the selected speakers are exactly the set, each at its saved level. A muted selection that otherwise matches still counts. A client can use it to show whether the current selection is already the saved one. |
+
+A set with one member, which is every appliance that has not saved a larger
+one, reads as before: that speaker is the only `auto_start` unit.
+
 ---
 
 ## Events: `GET /api/v1/events`
@@ -201,7 +213,7 @@ later, such as a speaker asking for a PIN, appears in the `outputs` part
 
 | Intent | Role needed |
 |---|---|
-| `outputs.set`, `output.pin.submit`, `outputs.want_default` | playback |
+| `outputs.set`, `output.pin.submit`, `outputs.want_default`, `outputs.save_default` | playback |
 | `volume.step`, `volume.set`, `mute.set` | playback |
 | `output.eq.set`, `output.eq.reset` | playback |
 | `repeat.arm`, `repeat.transport`, `repeat.seek` | playback |
@@ -216,6 +228,20 @@ a speaker intent, or `default_level` with a volume intent, is answered
 `volume.set` takes `level` from 0 to 100 and scales the selected speakers in
 proportion; a level outside that range is `invalid_level`.
 
+`outputs.save_default` takes no arguments. It makes the speakers that are
+playing now the Auto-Start set, in the order of the `outputs` part, each at
+the level it returns to if muted (the start volume when that level is 0). A
+speaker waiting for a PIN is not saved. The reply's `result` is
+`{"ok": true, "members": [{"id": "...", "name": "...", "volume": 30}]}`. It is
+refused `nothing_selected` when no speaker is playing, and
+`settings_unavailable` when the appliance cannot store the change. Once saved,
+`default_matches` is `true` until the selection changes.
+
+`outputs.want_default` takes `wanted` and, optionally, `id`, the card of a
+member the player does not have at the moment (`placeholder` in
+`default_members`). It asks for that member to be started when it appears, or
+not. Without `id` it applies to the first such card.
+
 ### Who is asking
 
 | Caller | Identified by | Role |
@@ -229,8 +255,9 @@ without the role an intent needs is refused `admin_required`.
 
 ### Refusal names
 
-The reply's `error` is one of the names an intent itself returns, or one of
-these from the protocol layer: `not_allowed`, `admin_required`,
+The reply's `error` is one of the names an intent itself returns (for
+example `nothing_selected` and `settings_unavailable` from
+`outputs.save_default`), or one of these from the protocol layer: `not_allowed`, `admin_required`,
 `unconfigured`, `dial_not_authorized`, `auth_unavailable`, `control_disabled`,
 `protocol_mismatch`, `unknown_intent`, `invalid_args`, `invalid_level`,
 `rate_limited`.
