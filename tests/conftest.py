@@ -267,6 +267,15 @@ def _reset_runtime():
 
 
 @pytest.fixture(autouse=True)
+def _reset_log_every():
+    """Forget the per-key log timers after each test."""
+    yield
+    m = _mod("autostream_logging")
+    if m is not None:
+        m.reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _reset_webui_api_fail_counts():
     """Reset web-UI API failure counters after each test."""
     yield

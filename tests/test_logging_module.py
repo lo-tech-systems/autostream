@@ -56,3 +56,20 @@ def test_update_live_log_level_changes_the_reported_level():
               logging.getLogger().level == logging.DEBUG)
     """)
     assert out == "debug debug True"
+
+
+def test_setup_limits_the_queue_handler_but_not_lifecycle_lines(tmp_path):
+    log_file = tmp_path / "app.log"
+    out = _run(f"""
+        import logging, time
+        import autostream_logging
+        autostream_logging.setup_logging({str(log_file)!r}, "info")
+        from autostream_sysutils import log_lifecycle
+        for _ in range(20):
+            logging.warning("flood")
+            log_lifecycle("lifecycle line")
+        time.sleep(0.5)
+        text = open({str(log_file)!r}).read()
+        print("RESULT", text.count("flood"), text.count("lifecycle line"))
+    """)
+    assert out.splitlines()[-1] == "RESULT 5 20"
