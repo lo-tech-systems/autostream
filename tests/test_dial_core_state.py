@@ -103,7 +103,7 @@ def _appliance(aid, **kw) -> cs.ApplianceState:
         appliance_id=aid, service_name=aid, name=aid, ip="192.0.2.1", port=80,
         playing=False, playing_since=0.0, auth=AUTH_AUTHORIZED, dial_status=True,
         dial_outputs=False, dial_eq=False, repeat_capable=False, dial_proto_version=2,
-        dial_eq_version=0, dial_outputs_version=0, status_error=None,
+        dial_outputs_version=0, status_error=None,
         master_volume=None, muted=None, repeat=None,
     )
     base.update(kw)
@@ -655,7 +655,7 @@ class TestApplianceWarningValidator:
         assert [w.appliance_name for w in named] == ["Kitchen", "Kitchen"]
         assert all(w.appliance_name == "" for w in out)
         names = [f.name for f in dataclasses.fields(cs.ApplianceState)]
-        assert names[-2:] == ["supplies_warnings", "warnings"]
+        assert names[-1] == "warnings"
 
 
 def _request(kind, state, error=None, changed_at=100.0):

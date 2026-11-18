@@ -165,7 +165,6 @@ class ApplianceState:
     dial_eq: bool
     repeat_capable: bool
     dial_proto_version: int
-    dial_eq_version: int      # 0 = none, 1 = bass/treble, 2 = six bands
     dial_outputs_version: int  # 0 = none, 1 = the first outputs capability
     status_error: str | None  # last fetch outcome this tick; None = ok or not fetched
     master_volume: int | None  # last good record's master_volume, else None
@@ -174,7 +173,6 @@ class ApplianceState:
     webui_scheme: str = "http"   # where this appliance's web UI is reached:
     webui_host: str = ""         # its roster address, and the port it
     webui_port: int = 0          # serves the web UI and the dial API on
-    supplies_warnings: bool = False  # advertises the appliance-warnings capability
     warnings: tuple = ()             # its validated warnings, ApplianceWarning each
 
 

@@ -78,16 +78,16 @@ SETTINGS = {"brightness": 80, "sleep_after_s": 300}
 def appliance(
     appliance_id=LOUNGE, name="Lounge", *, auth=AUTH_AUTHORIZED, playing=False, eq_version=2,
     outputs_version=1, repeat=None, status_error=None, master_volume=None, muted=None,
-    warnings=(), supplies_warnings=True, ip="192.0.2.20", proto=3,
+    warnings=(), ip="192.0.2.20", proto=3,
 ) -> ApplianceState:
     return ApplianceState(
         appliance_id=appliance_id, service_name=name, name=name, ip=ip, port=80,
         playing=playing, playing_since=NOW - 60 if playing else 0.0, auth=auth,
         dial_status=True, dial_outputs=outputs_version > 0, dial_eq=eq_version > 0,
-        repeat_capable=True, dial_proto_version=proto, dial_eq_version=eq_version,
+        repeat_capable=True, dial_proto_version=proto,
         dial_outputs_version=outputs_version, status_error=status_error,
         master_volume=master_volume, muted=muted, repeat=repeat, webui_scheme="http",
-        webui_host=ip, webui_port=80, supplies_warnings=supplies_warnings, warnings=warnings,
+        webui_host=ip, webui_port=80, warnings=warnings,
     )
 
 
@@ -340,13 +340,12 @@ def _update_warning():
     return protocol_warning(entry, 3)
 
 
-def _appliance_warning_scenario(name, warning, proto=3, supplies=True) -> Scenario:
+def _appliance_warning_scenario(name, warning, proto=3) -> Scenario:
     key = appliance_warning_key(LOUNGE, warning.id)
     descriptor = appliance_warning_descriptor(LOUNGE, warning)
     snapshot = _playing(
         appliances=(appliance(
-            playing=True, master_volume=42, muted=False, warnings=(warning,), proto=proto,
-            supplies_warnings=supplies),),
+            playing=True, master_volume=42, muted=False, warnings=(warning,), proto=proto),),
         warnings=warning_states({key: warning.severity}, extra=(key,)),
     )
     return Scenario(name, snapshot, descriptors=WARNING_DESCRIPTORS + (descriptor,))
@@ -422,7 +421,7 @@ def _build() -> dict:
     add(_appliance_warning_scenario("appliance_warning", _stylus_warning()))
     add(_appliance_warning_scenario("appliance_warning_info", _stylus_warning(severity="info")))
     needs_update = _appliance_warning_scenario(
-        "appliance_needs_update", _update_warning(), proto=2, supplies=False)
+        "appliance_needs_update", _update_warning(), proto=2)
     add(needs_update.with_snapshot(appliances=tuple(
         dataclasses.replace(a, status_error="protocol") for a in needs_update.snapshot.appliances)))
     add(Scenario("pin_required", _pin_snapshot(pin_request("rejected", "pin_required"))))

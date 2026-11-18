@@ -30,7 +30,7 @@ def entry(name, *, playing=False, since=0.0, auth=AUTH_AUTHORIZED, repeat=None, 
         appliance_id=aid, service_name=f"autostream on {name}", name=name, ip="192.0.2.1", port=80,
         playing=playing, playing_since=since if playing else 0.0, auth=auth, dial_status=status,
         dial_outputs=True, dial_eq=True, repeat_capable=True, dial_proto_version=4,
-        dial_eq_version=2, dial_outputs_version=2, status_error=None, master_volume=40, muted=False,
+        dial_outputs_version=2, status_error=None, master_volume=40, muted=False,
         repeat=repeat,
     )
 

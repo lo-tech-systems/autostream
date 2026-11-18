@@ -89,10 +89,10 @@ class TestApplianceState:
     def test_capabilities_follow_the_protocol(self):
         a = state(snap({"outputs": outputs()}))
         assert (a.dial_status, a.dial_outputs, a.dial_eq, a.repeat_capable) == (True,) * 4
-        assert (a.dial_eq_version, a.dial_outputs_version, a.dial_proto_version) == (2, 2, 4)
+        assert (a.dial_outputs_version, a.dial_proto_version) == (2, 4)
         b = state(snap(protocol=5, protocol_ok=False, reachable=False))
         assert (b.dial_status, b.dial_outputs, b.dial_eq, b.repeat_capable) == (False,) * 4
-        assert (b.dial_eq_version, b.dial_outputs_version, b.dial_proto_version) == (0, 0, 5)
+        assert (b.dial_outputs_version, b.dial_proto_version) == (0, 5)
 
     def test_status_error(self):
         assert state(snap({"outputs": outputs()})).status_error is None
@@ -114,10 +114,6 @@ class TestApplianceState:
         parts = {"repeat": {"block": block}, "outputs": outputs()}
         assert state(snap(parts)).repeat.state == "hold"
         assert state(snap(parts, reachable=False)).repeat is None
-
-    def test_warnings_supplied_when_the_part_is_present(self):
-        assert state(snap({"warnings": {"entries": []}})).supplies_warnings is True
-        assert state(snap({})).supplies_warnings is False
 
     def test_warnings_carry_the_name(self):
         entries = [{"id": "psu", "incident": "", "severity": "critical", "kind": "psu",

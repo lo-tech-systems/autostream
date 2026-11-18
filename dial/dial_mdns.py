@@ -40,7 +40,6 @@ class PlayingTarget:
     playing_since:      float = 0.0
     appliance_id:       str   = ""
     auth:               str   = _AUTH_UNKNOWN
-    dial_eq_version:    int   = 0
 
 
 _registry = None
@@ -80,7 +79,6 @@ def _target(sighting, view) -> PlayingTarget:
         playing_since=float(getattr(view, "playing_since", 0.0) or 0.0),
         appliance_id=sighting.id,
         auth=getattr(view, "auth", _AUTH_UNKNOWN),
-        dial_eq_version=2 if current else 0,
     )
 
 

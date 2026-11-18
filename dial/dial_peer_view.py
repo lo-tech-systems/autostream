@@ -329,7 +329,6 @@ def appliance_state(sighting, snap, *, now: float, playing_since: float = 0.0) -
         repeat_capable=ok,
         dial_proto_version=(snap.protocol if snap is not None and snap.protocol is not None
                             else (sighting.proto or 0)),
-        dial_eq_version=2 if ok else 0,
         dial_outputs_version=2 if ok else 0,
         status_error=_status_error(snap) if snap is not None else "unreachable",
         master_volume=master_volume(parts),
@@ -338,6 +337,5 @@ def appliance_state(sighting, snap, *, now: float, playing_since: float = 0.0) -
         webui_scheme=scheme,
         webui_host=host,
         webui_port=port,
-        supplies_warnings="warnings" in _map(parts),
         warnings=appliance_warnings(_part(parts, "warnings").get("entries"), name),
     )

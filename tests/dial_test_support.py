@@ -47,7 +47,6 @@ class RosterEntry:
     dial_eq:        bool = False
     auth:           str = "unknown"
     dial_proto_version: int = 0
-    dial_eq_version: int = 0
     version: str = ""      # the advertised software version, "" when none is known
 
 
@@ -75,7 +74,7 @@ class _RowPeerView:
             outputs, eq, repeat = offers
             state = dataclasses.replace(
                 state, dial_outputs=outputs, dial_eq=eq, repeat_capable=repeat,
-                dial_outputs_version=2 if outputs else 0, dial_eq_version=2 if eq else 0,
+                dial_outputs_version=2 if outputs else 0,
             )
         return state
 
@@ -839,7 +838,6 @@ def _state_of_row(row, repeat=None):
     """The ApplianceState a fold would hold for roster row *row*."""
     from dial_core_state import ApplianceState
     from dial_mdns import appliance_display_name
-    eq_version = getattr(row, "dial_eq_version", 0) or (2 if getattr(row, "dial_eq", False) else 0)
     return ApplianceState(
         appliance_id=row.appliance_id, service_name=row.service_name,
         name=appliance_display_name(row.service_name), ip=row.ip, port=row.port,
@@ -849,7 +847,7 @@ def _state_of_row(row, repeat=None):
         dial_outputs=getattr(row, "dial_outputs", False), dial_eq=getattr(row, "dial_eq", False),
         repeat_capable=getattr(row, "repeat_capable", False),
         dial_proto_version=getattr(row, "dial_proto_version", 0) or 0,
-        dial_eq_version=eq_version, dial_outputs_version=2 if getattr(row, "dial_outputs", False) else 0,
+        dial_outputs_version=2 if getattr(row, "dial_outputs", False) else 0,
         status_error=None, master_volume=None, muted=None, repeat=repeat,
         webui_scheme="http", webui_host=row.ip, webui_port=row.port,
     )
